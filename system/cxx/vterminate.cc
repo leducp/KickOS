@@ -8,8 +8,11 @@
 
 #include <cstdlib>
 #include <kickos/kos.h>
+#include <kickos/sys/image.h>
 
 #include "exception_report.h"
+
+KOS_IMAGE_BOTH_OBJECT()
 
 namespace kickos::cxx
 {

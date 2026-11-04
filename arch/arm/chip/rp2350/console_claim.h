@@ -59,6 +59,16 @@ namespace kickos::rp2350::console
             return held_ and owner_ == self_ and left() > MARGIN_US;
         }
 
+        // The microseconds left on this node's own live grant, 0 where it holds none.
+        uint32_t left_us(void) const
+        {
+            if (not holding())
+            {
+                return 0;
+            }
+            return left();
+        }
+
         // One byte's claim. A claim not yet held is waited for masked, by a caller already
         // masked: panic, fault and ISR output. A fault landing inside a line this node holds
         // writes into it rather than waiting out its own claim.

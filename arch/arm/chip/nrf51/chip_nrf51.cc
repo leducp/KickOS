@@ -73,6 +73,7 @@ void Reset_Handler(void)
     {
         *b = 0;
     }
+    kickos_crt_images_data();
     kickos_crt_tail();
 }
 

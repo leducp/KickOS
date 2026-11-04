@@ -48,10 +48,9 @@ namespace
         Atomic<uint32_t, Order::RELAXED> tail = 0; // bytes drained; written by the drain OR a producer
         int irq_line = -1;
         bool armed = false;
-        // Set across an insert's copy and a record line's polled room-making. A synchronous
-        // CPU fault is not gated by the mask and its reporter writes to this same console: a
-        // nested insert would build its line at a head this one has not published yet, or send
-        // bytes this one is sending. It is refused instead.
+        // Set across an insert's copy. A synchronous CPU fault is not gated by the mask and its
+        // reporter writes to this same console: a nested insert would build its line at a head
+        // this one has not published yet. It is refused instead.
         bool inserting = false;
         // Bytes ever queued, modulo 2^32: `queued - used()` counts the bytes that have left, so a
         // producer drain knows when its own line has gone whoever sent it.
@@ -150,7 +149,7 @@ extern "C" void kickos_line_step(void);
     } while (false)
 #endif
 
-static uint32_t line_needed(char const* buf, size_t n, int crlf)
+uint32_t console_tx_line_needed(char const* buf, size_t n, int crlf)
 {
     uint32_t needed = static_cast<uint32_t>(n);
     if (crlf != 0)
@@ -178,7 +177,7 @@ static __attribute__((noinline)) bool insert_locked(char const* buf, size_t n, i
     {
         return false;
     }
-    if (line_needed(buf, n, crlf) > r.space())
+    if (console_tx_line_needed(buf, n, crlf) > r.space())
     {
         return false;
     }
@@ -226,98 +225,59 @@ static __attribute__((noinline)) bool insert_locked(char const* buf, size_t n, i
     return true;
 }
 
+struct QueuedLine
+{
+    bool unbuffered;
+    bool refused;
+    uint32_t until;
+};
+
+// The line queued, refused, or left to an unarmed ring, under one lock. noinline: inlined, the
+// lock joins console_tx_insert_line's frame under the panic red zone check_trap_redzone.sh
+// measures.
+static __attribute__((noinline)) QueuedLine queue_line(char const* buf, size_t n, int crlf)
+{
+    ConsoleTxRing& r = tx();
+    QueuedLine q = {false, false, 0};
+    kickos::IrqLock lock;
+    if (not r.armed)
+    {
+        q.unbuffered = true;
+    }
+    else if (not insert_locked(buf, n, crlf))
+    {
+        q.refused = true;
+    }
+    q.until = r.queued;
+    return q;
+}
+
 // One line, indivisibly, or nothing (nonzero on success). A line that does not fit is refused
 // WHOLE and does not go out: the drain is already a writer at the device, and a direct write of
-// the refused line would interleave with it mid-line. A fault record's line makes room instead
-// (console_tx_insert_record_line).
+// the refused line would interleave with it mid-line.
 //
-// The unarmed ring, before console_tx_init, is written directly: no ring means no drain. That
-// case is decided under the same lock as everything else, so it cannot race an arm.
+// The unarmed ring, before console_tx_init, is written directly, one masked byte at a time
+// (console_write_line_owned): no ring means no drain. That case is decided under the same lock
+// as everything else, so it cannot race an arm.
 //
 // CRLF is expanded during the copy. A caller-side cooked buffer would stand on the fault
 // reporter's descent, which the trap red-zone gate measures (kickos/diag.h).
 int console_tx_insert_line(char const* buf, size_t n, int crlf)
 {
-    ConsoleTxRing& r = tx();
     if (n == 0)
     {
         return 0;
     }
-
-    bool unbuffered = false;
-    uint32_t until = 0;
-    {
-        kickos::IrqLock lock;
-        if (not r.armed)
-        {
-            unbuffered = true;
-        }
-        else if (not insert_locked(buf, n, crlf))
-        {
-            return 0;
-        }
-        until = r.queued;
-    }
-
-    if (unbuffered)
-    {
-        console_write_line_sync(buf, n);
-        return static_cast<int>(n);
-    }
-    drain_in_producer(until);
-    return static_cast<int>(n);
-}
-
-// Under the mask, the oldest queued bytes go out through the polled writer, in ring order, until
-// the line fits: never more than the line needs.
-//
-// `inserting` is held across the polled loop and each run is TAKEN before it is written: a
-// synchronous fault in the UART poke can nest a record or a panic flush here, and either must
-// find the run gone rather than send it again or move the tail back. After a run the writer
-// could not send, the rest is taken unsent, so a wedged channel costs one stall per line.
-int console_tx_insert_record_line(char const* buf, size_t n, int crlf)
-{
-    ConsoleTxRing& r = tx();
-    if (n == 0)
+    QueuedLine const q = queue_line(buf, n, crlf);
+    if (q.refused)
     {
         return 0;
     }
-    uint32_t until = 0;
+    if (q.unbuffered)
     {
-        kickos::IrqLock lock;
-        if (not r.armed or r.inserting or r.pushing)
-        {
-            return 0;
-        }
-        uint32_t const needed = line_needed(buf, n, crlf);
-        if (needed > r.size - 1u)
-        {
-            return 0;
-        }
-        r.inserting = true;
-        bool live = true;
-        while (r.space() < needed)
-        {
-            uint32_t const tail = r.tail;
-            uint32_t run = needed - r.space();
-            if (run > r.size - tail)
-            {
-                run = r.size - tail;
-            }
-            r.tail = (tail + run) & r.mask;
-            if (live)
-            {
-                live = arch_console_write_sync(r.buf + tail, run);
-            }
-        }
-        r.inserting = false;
-        if (not insert_locked(buf, n, crlf))
-        {
-            return 0;
-        }
-        until = r.queued;
+        return console_write_line_owned(buf, n);
     }
-    drain_in_producer(until);
+    drain_in_producer(q.until);
     return static_cast<int>(n);
 }
 
@@ -373,7 +333,7 @@ static __attribute__((noinline)) void drain_in_producer(uint32_t until)
     }
 }
 
-int console_tx_make_room(char const* buf, size_t n, int crlf)
+int console_tx_make_room(uint32_t needed)
 {
     ConsoleTxRing& r = tx();
     uint32_t until = 0;
@@ -383,7 +343,6 @@ int console_tx_make_room(char const* buf, size_t n, int crlf)
         {
             return 0;
         }
-        uint32_t const needed = line_needed(buf, n, crlf);
         uint32_t const space = r.space();
         if (needed <= space)
         {
@@ -399,14 +358,13 @@ int console_tx_make_room(char const* buf, size_t n, int crlf)
     return 0;
 }
 
-int console_tx_room_want(char const* buf, size_t n, int crlf)
+int console_tx_room_want(uint32_t needed)
 {
     ConsoleTxRing& r = tx();
     if (not r.armed)
     {
         return 0;
     }
-    uint32_t const needed = line_needed(buf, n, crlf);
     if (needed <= r.space())
     {
         return 0;
@@ -416,6 +374,17 @@ int console_tx_room_want(char const* buf, size_t n, int crlf)
         r.room_wanted = needed;
     }
     return 1;
+}
+
+uint32_t console_tx_sent(void)
+{
+    ConsoleTxRing& r = tx();
+    kickos::IrqLock lock;
+    if (not r.armed)
+    {
+        return 0;
+    }
+    return r.queued - r.used();
 }
 
 #if KICKOS_BENCH
@@ -461,7 +430,7 @@ void console_tx_wait_progress(void)
 #endif
 
 // console_tx_deinit detaches the handler and NVIC-masks the TX line under the same IrqLock
-// that enters HANDING_OFF, strictly before kos_console_publish flips to USER_OWNED, so this
+// that enters HANDING_OFF, strictly before the handover flips to USER_OWNED, so this
 // ISR has already stopped by the time a driver owns the console. That ordering is what stands
 // in for the chip-writer bracket every other device poke takes.
 void console_tx_isr(void)
@@ -575,6 +544,16 @@ void console_buffer_init(void)
 // `armed` under that lock as its copy does. The caller holds the state at HANDING_OFF across
 // this, never USER_OWNED, so the flush here and a synchronous fault mid-deinit both act on a
 // kernel-owned, kernel-inited UART.
+int console_tx_line(void)
+{
+    ConsoleTxRing const& r = tx();
+    if (not r.armed)
+    {
+        return -1;
+    }
+    return r.irq_line;
+}
+
 void console_tx_deinit(void)
 {
     ConsoleTxRing& r = tx();
@@ -650,7 +629,7 @@ static uint32_t held_fit(ConsoleTxRing const& r, uint32_t at, uint32_t end)
 
 // The entries of [at, end) that fit, in order, stopping at the first that does not:
 //   for (HeldWalk w(r, from, end); w.size != 0; w.next()) { w.at, w.size }
-// always_inline: console_held_append runs on kprintf_fault's descent.
+// always_inline: console_held_append runs on kvprintf_fault's descent.
 struct HeldWalk
 {
     __attribute__((always_inline)) HeldWalk(ConsoleTxRing const& ring, uint32_t from, uint32_t to)

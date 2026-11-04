@@ -226,7 +226,7 @@ discarded, and is never hit.
 
 **Why, and the contract:** [Book: what's under #include](../book/whats-under-include-libc-and-the-cxx-runtime.md)
 (global constructor order on a freestanding OS),
-[Reference: `ctors-run-before-init-entry`](../reference/invariants.md#app-entry--init-seam)
+[Reference: `ctors-run-before-their-image-entry`](../reference/invariants.md#app-entry--init-seam)
 
 ### Stop 4: `arch_init` brings up the chip: clocks and core priorities
 
@@ -572,7 +572,7 @@ two data regions, bit 28: execute-never.
 A user thread can name a kernel object only through a **capability**: an entry in the thread's own
 capability table that names the object and the rights the thread has over it. User code holds a
 **handle**, the number that picks the entry. Root gets a table with room for
-`KICKOS_MAX_HANDLES` entries (16 here) out of a shared slab (`cap_slab_attach`).
+the init's width in entries (16 here) out of a shared slab (`cap_slab_attach`).
 
 One thing is seated before root runs: **the authority word** (`cap_seat_authority`), a set of
 bits for acts that name no object: shutting down the system, creating tasks, reserving memory.
@@ -763,11 +763,13 @@ region, and then enables the MPU:
     // Do not drop this because kickos_arm_mpu_fixed_init also enables the MPU: only imxrt1062
     // calls that, so on every other PMSAv7 chip this is the ONLY write that enables it. It
     // enables, so unlike a leading MPU_CTRL = 0 it cannot stop the chip fixed rows applying.
-    reg32(MPU_CTRL) = MPU_CTRL_ENABLE | MPU_CTRL_PRIVDEFENA;
+    // HFNMIENA keeps the fixed rows in force inside HardFault and NMI.
+    reg32(MPU_CTRL) = MPU_CTRL_ENABLE | MPU_CTRL_HFNMIENA | MPU_CTRL_PRIVDEFENA;
 ```
 
 `PRIVDEFENA` keeps the default memory map for privileged code, so the kernel still reaches
-everything; unprivileged code reaches only the programmed regions. **This is the instant the
+everything; unprivileged code reaches only the programmed regions. `HFNMIENA` keeps the MPU on
+inside the HardFault and NMI handlers too. **This is the instant the
 MPU switches on**, and it is during the first switch, not during boot: the boot code never
 runs under it.
 
@@ -849,13 +851,15 @@ isolation is real, and you just watched it refuse.
 
 ### Stop 15: the C and C++ runtime starts in user mode
 
-**Where:** `user/src/root_entry.cc`, `kickos_root_entry` and `image_start`; `arch/arm/common/cortexm.ld.h`,
+**Where:** `user/src/root_entry.cc`, `kickos_root_entry`; `user/src/image_start.cc`, `image_start`; `arch/arm/common/cortexm.ld.h`,
 `.kickos_app_init_array`; `user/src/newlib_reent.cc`, `s_reent`; `user/src/newlib_sbrk.cc`,
 `_sbrk`; `user/src/newlib_lock.cc`; `kernel/thread/reent.cc`, `reent_seam_read`
 
-Root now does what a normal C runtime does before `main`: it runs the constructors. These are
-the ones Stop 3 kept out of the kernel's list. `kickos_root_entry` calls `image_start`, and
-`image_start` walks the list:
+Root now does what a normal C runtime does before `main`: it runs the constructors, the ones
+Stop 3 kept out of the kernel's list. Each image runs its own: `kickos_root_entry` runs the
+init's image's, and the first task the init starts runs the app's image's, in
+`kickos_task_entry`, before the task's own entry (Stop 16). Both call `kickos_image_start_once`,
+and its `image_start` walks the image's list:
 
 ```c++
     void image_start()
@@ -871,8 +875,9 @@ the ones Stop 3 kept out of the kernel's list. `kickos_root_entry` calls `image_
 Then `kickos_root_entry` calls `kickos_init_entry`. On a board with an MMU, `kickos_task_start`
 runs `image_start` instead, once for each space. See [10](10-the-mmu.md).
 
-They run unprivileged, on root's stack, at root's priority 31, one after another, with the
-kernel fully alive. So a constructor may make a syscall. In `hello` there are three, none from
+They run unprivileged, one after another, with the kernel fully alive: the init's on root's
+stack at root's priority 31, the app's on its first task's stack at that task's priority. So a
+constructor may make a syscall. In `hello` the app's image has three, none from
 the application itself: newlib's `register_fini`, `kickos_exception_report_install`
 (`system/cxx/exception_report.cc`) and libstdc++'s emergency exception-buffer pool.
 
@@ -944,13 +949,13 @@ unprivileged. The walk through a contended `kos_mutex_lock` into the kernel is
 
 **Why, and the contract:** [Book: what's under #include](../book/whats-under-include-libc-and-the-cxx-runtime.md),
 [Book: where your RAM goes](../book/where-your-ram-goes-full-cxx-memory-floor-and-the-linker-split.md),
-[Reference: `ctors-run-before-init-entry`](../reference/invariants.md#app-entry--init-seam)
+[Reference: `ctors-run-before-their-image-entry`](../reference/invariants.md#app-entry--init-seam)
 
 ### Stop 16: the init reads the composition and starts the `main` task
 
 **Where:** `system/init/compose/entry.cc`, `kickos_init_entry`; `system/init/compose/walk.cc`,
-`Walk::run`, `Walk::boot`, `Walk::start`, `Walk::spawn`; `boards/qemu/composition.yaml`;
-`user/src/syscall_stubs.cc`, `kos_task_create`, `kos_thread_create`
+`Walk::run`, `Walk::boot`, `Walk::start`, `Walk::create`; `boards/qemu/composition.yaml`;
+`user/src/syscall_stubs.cc`, `kos_task_create`, `kos_task_watch`
 
 After the constructors, root becomes the **init**. `kickos_init_entry` walks a table that the
 build generated from the composition (`boards/qemu/composition.yaml`). For a plain application
@@ -959,108 +964,90 @@ the table holds one task:
 ```yaml
 tasks:
   - name: main
-    entry: kickos_main
+    program: main
     stack: 8192
     priority: 2
     ceiling: 31
     authority: [memory, system, tasks]
 ```
 
-`Walk::boot` first lowers root to the init's priority (2). `Walk::start` then makes a new task
-with `kos_task_create` and gives it its first thread with `kos_thread_create`. Both are
-ordinary syscalls; [08](08-spawn-and-caps.md) walks them in full.
+`Walk::boot` first lowers root to the init's priority (2) and finds the image's program with
+`kos_program_find`. `Walk::start` then calls `Walk::create`, which asks the kernel to build the
+task and start it with `kos_task_create`. Then it sets a watch on the task with
+`kos_task_watch`. Both are ordinary syscalls; [08](08-spawn-and-caps.md) walks them in full.
 
 ```c++
-        kos_thread_params p = {};
-        p.entry = task_trampoline;
-        p.arg = const_cast<kos_table_task*>(&t);
-        p.name = name(s.task);
-        p.prio = t.priority;
-        p.policy = KOS_POLICY_FIFO;
+        kos_task_params p = {};
+        p.instance = name(s.task);
+        p.cap_count = static_cast<uint8_t>(t.cap_grant_count);
         // ...
-        p.authority = t.authority;
-        p.task = s.handle;
-        kos_thread_t thread = KOS_THREAD_NONE;
-        return kos_thread_create(&p, &thread);
+        return kos_task_create(program_, &p, &s.handle);
 ```
 
-Inside the kernel, `kos_thread_create` ends in the same `thread_create` and
-`arch_context_init` you saw in Stop 8: a fabricated frame, unprivileged, entry
-`task_trampoline`. The new thread is ready but does not run yet. It has priority 2, the same as
-the init, and both are FIFO, so it waits until the init blocks. The init blocks in
+The init names the instance and nothing more about the thread. The kernel finds that
+instance's declaration in the image, takes its priority and authority from it, builds the task,
+and creates the entry thread itself. Inside the kernel, the thread goes through the same
+`thread_create` and `arch_context_init` you saw in Stop 8: a fabricated frame, unprivileged,
+entry `kickos_task_entry`. The new thread is ready but does not run yet. It has priority 2, the
+same as the init, and both are FIFO, so it waits until the init blocks. The init blocks in
 `Walk::wake`, waiting for news about its tasks.
 
-**Try it:**
+**Try it:** `break kos_task_create` and `continue` stop on the init's call. `break
+arch_context_init` and `continue` then stop in the kernel, inside the syscall, where the entry
+is `kickos_task_entry` and the argument is the `kos_task_args` block at the top of the new
+thread's stack. The backtrace crosses the user/kernel line: the syscall entered the kernel and
+the dispatcher called `task_create_call`, which called the thread-creation code. This stop,
+unlike Stop 14, can read kernel memory, because the core is now running privileged inside a
+syscall.
 
-```
-(gdb) break kos_thread_create
-(gdb) continue
-Breakpoint 1, kos_thread_create (params=0x20023e18, out_thread=0x20023de4) at .../user/src/syscall_stubs.cc:361
-(gdb) p *params
-$1 = {entry = 0x19c9 <kickos::init::task_trampoline(void*)>, arg = 0x106b0 <kickos_table_image+32>,
-      name = 0x106e8 <kickos_table_image+88> "main", prio = 2 '\002', policy = 0 '\000',
-      cap_count = 0 '\000', ..., stack_base = 0x0, stack_size = 0, ..., authority = 81, task = 3}
-(gdb) break arch_context_init
-(gdb) continue
-Breakpoint 2, arch_context_init (ctx=0x20005030 <kickos::detail::g_instance+2160>,
-    entry=0x19c9 <kickos::init::task_trampoline(void*)>, arg=0x106b0 <kickos_table_image+32>,
-    stack_base=0x20026000, stack_size=8192, privileged=0) at .../arch/arm/armv7m/arch_armv7m.cc:191
-(gdb) bt 6
-#0  arch_context_init (...) at .../arch/arm/armv7m/arch_armv7m.cc:191
-#1  kickos::thread_create (...) at .../kernel/thread/thread.cc:666
-#2  kickos::spawn_masked (...) at .../kernel/syscall/syscall_thread.cc:1141
-#3  kickos::thread_create_call (...) at .../kernel/syscall/syscall_thread.cc:1164
-#4  (anonymous namespace)::syscall_body (nr=7, ...) at .../kernel/syscall/syscall.cc:700
-#5  syscall_dispatch (nr=7, ...) at .../kernel/syscall/syscall.cc:421
-```
-
-`authority = 81` is `0x51`: the three bits the composition lists, narrower than root's `0x1ff`.
-The stack is left to the kernel (`stack_base = 0x0`): on this board every thread stack is one
-power-of-two block from the arena, here `0x20026000`. The backtrace crosses the user/kernel
-line: the syscall entered the kernel and the dispatcher called the thread-creation code. This
-stop, unlike Stop 14, can read kernel memory, because the core is now running privileged inside
-a syscall.
+The authority of the thread is the three bits the composition lists (`0x51`), narrower than
+root's `0x1ff`. The stack is one power-of-two block from the arena on this board.
 
 **Why, and the contract:** [Reference: `app-entry-via-init-seam`](../reference/invariants.md#app-entry--init-seam),
 [Reference: user/kernel separation](../reference/architecture.md#userkernel-separation)
 
 ### Stop 17: the first instruction of `main`
 
-**Where:** `user/src/task_trampoline.cc`, `kickos::init::task_trampoline`;
-`system/init/compose/main.cc`, `kickos_main`; `user/include/kickos/app.h`, `kickos_app_main`;
-`user/apps/common/hello/main.cc`, `main`
+**Where:** `user/src/program_entry.cc`, `kickos_program_entry`, `kickos_program_run`;
+user/src/task_enter.cc, `kickos_task_enter`; `user/apps/common/hello/main.cc`, `main`
 
 When the init blocks, the scheduler picks the `main` thread, and a PendSV restores its
 fabricated frame exactly as in Stop 13. This time the outgoing thread (the init) is saved
 first, and the MPU record is already valid: `main`'s region set differs from root's only in
 the stack region, so the commit rewrites that one descriptor. The thread starts in
-`task_trampoline`, which calls the task's entry from the table, `kickos_main`:
+`kickos_program_entry`, the start the program's image header names:
 
 ```c++
-    void task_trampoline(void* self)
-    {
-        auto const task = static_cast<kos_self_t const*>(self);
-        task->entry.task(task);
-        // Never exit(): its handlers and destructors are the image's, which every task shares.
-        fflush(stdout);
-        fflush(stderr);
-        kos_exit(0);
-    }
-```
-
-```c++
-extern "C" void kickos_main(struct kos_table_task const* self)
+extern "C" void kickos_program_entry(void* args)
 {
-    (void)self;
-    exit(kickos_app_main(kickos_init_args.argc, kickos_init_args.argv));
+    auto const a = static_cast<kos_task_args*>(args);
+    kickos_program_run(kickos_task_enter(a), a);
 }
 ```
 
-`kickos_app_main` is the application's `main`. The build compiles every application file with
-`-Dmain=kickos_app_main` and force-includes `kickos/app.h`, which declares it `extern "C"`. So
-you write an ordinary `int main(int argc, char** argv)`, and the kernel never calls it
-directly. When `main` returns, `exit` runs, and because the composition says the system
-`ends: main`, the whole system shuts down with that status. `hello` never returns.
+`kickos_task_enter` runs the image's startup, records which declaration the task is (the one
+`kos_self` answers) and returns the task's record from the table. `kickos_program_run` calls
+the record's program entry, the application's `main`, with the argument vector the create
+passed, or the system's where it passed none:
+
+```c++
+extern "C" void kickos_program_run(kos_table_task const* t, kos_task_args* a)
+{
+    int argc = static_cast<int>(a->argc);
+    char** argv = a->argv;
+    if (argc == 0)
+    {
+        argc = kickos_init_args.argc;
+        argv = kickos_init_args.argv;
+    }
+    exit(t->entry.program(argc, argv));
+}
+```
+
+You write an ordinary `int main(int argc, char** argv)`, and the build leaves it named `main`
+where a composition runs it as a program. When `main` returns, `exit` runs, and because the
+composition says the system `ends: main`, the whole system shuts down with that status. `hello`
+never returns.
 
 **Try it:** first the switch into `main`. The set waiting for the commit names `main`'s stack
 at `0x20026000`, where root's named `0x20022000`; the other two regions are the same words.
@@ -1078,34 +1065,14 @@ $1 = {rbar = {0x0, 0x20010000, 0x20026000, 0x0, 0x0, 0x0, 0x0, 0x0},
       rasr = {0x603002b, 0x1303001f, 0x13030019, 0x0, 0x0, 0x0, 0x0, 0x0}}
 ```
 
-Then `main` itself. `break main` does not work, because no function has that name in the
-image.
+Then `main` itself: `break main` and `continue` stop in the application's `main`, with
+`kickos_program_run` below it in the backtrace.
 
-```
-(gdb) break main
-Function "main" not defined.
-(gdb) break kickos_app_main
-(gdb) continue
-Breakpoint 1, kickos_app_main () at .../user/apps/common/hello/main.cc:58
-58	    kos::print("hello from KickOS userspace!\n");
-(gdb) bt
-#0  kickos_app_main () at .../user/apps/common/hello/main.cc:58
-#1  kickos_main (self=<optimized out>) at .../system/init/compose/main.cc:15
-#2  kickos::init::task_trampoline (self=<optimized out>) at .../user/src/task_trampoline.cc:16
-#3  kos_panic (msg=<optimized out>) at .../user/src/syscall_stubs.cc:393
-(gdb) info registers pc sp psp control
-pc             0x190               0x190 <kickos_app_main(int, char**)>
-sp             0x20027ff0          0x20027ff0
-psp            0x20027ff0          537034736
-control        0x3                 3
-(gdb) p _impure_ptr
-$1 = (_reent *) 0x200106d0 <s_reent+320>
-```
-
-This is the end of the walk: `main`, unprivileged (`CONTROL = 3`), on its own stack just below
-`0x20028000`, with its own C library state (`s_reent[1]`, one `_reent` further than root's).
-Frame #3 is not a panic: it is the return address the kernel planted,
-`kickos_user_thread_return`, which gdb names by the function just before it (see the
+This is the end of the walk: `main`, unprivileged (`CONTROL = 3`), on its own stack, with its
+own C library state (one `_reent` further than root's). The backtrace goes on through
+`kickos_program_entry`. Below it gdb may name a function that is
+not a caller: the return address the kernel planted, `kickos_user_thread_return`, which gdb
+names by the function just before it (see the
 [README](README.md#reading-with-gdb-or-without-it)).
 
 The next line calls `kos::print`, which ends in a syscall. That is where
@@ -1116,8 +1083,8 @@ The next line calls `kos::print`, which ends in a syscall. That is where
 ## Where to next
 
 - [2. The first syscall](02-first-syscall.md): what happens on `kos::print`.
-- [8. Spawn and capabilities](08-spawn-and-caps.md): `kos_task_create` and `kos_thread_create`
-  from Stop 16, in full.
+- [8. Spawn and capabilities](08-spawn-and-caps.md): `kos_task_create` from Stop 16 and
+  `kos_thread_create`, in full.
 - [10. The MMU](10-the-mmu.md): the same boot on `qemu-arm64`, where root's regions become an
   address space.
 
@@ -1132,5 +1099,5 @@ The next line calls `kos::print`, which ends in a syscall. That is where
    `x/wx 0x20000000` (the kernel's data). Predict which read works. Then do the same two reads
    at Stop 16, inside the syscall, and explain the difference.
 3. **Who runs first.** Change the `main` task's `priority` in `boards/qemu/composition.yaml`
-   from 2 to 3 and rebuild. Predict whether `kickos_app_main` is now reached before or after
+   from 2 to 3 and rebuild. Predict whether `main` is now reached before or after
    `Walk::wake`. Check with breakpoints on both.

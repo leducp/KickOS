@@ -21,7 +21,7 @@ set(_ring ${KICKOS_HAVE_PRIV_RING})
 
 add_executable(ringpriv main.cc)
 target_include_directories(ringpriv PRIVATE "${PROJECT_SOURCE_DIR}/user/apps/common/include")
-target_link_libraries(ringpriv PRIVATE KickOS::kernel KickOS::system_default)
+target_link_libraries(ringpriv PRIVATE KickOS::kickos KickOS::system_default)
 kickos_emit_image(ringpriv)
 target_compile_definitions(ringpriv PRIVATE RINGPRIV_EXPECT_RING=${_ring})
 
@@ -29,6 +29,6 @@ target_compile_definitions(ringpriv PRIVATE RINGPRIV_EXPECT_RING=${_ring})
 # succeeds, and correctly so, which would make a confinement gate assert the opposite.
 if(_ring)
   add_executable(ringppb ppb.cc)
-  target_link_libraries(ringppb PRIVATE KickOS::kernel KickOS::system_default)
+  target_link_libraries(ringppb PRIVATE KickOS::kickos KickOS::system_default)
   kickos_emit_image(ringppb)
 endif()

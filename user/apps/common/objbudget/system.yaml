@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# The arms as main, and their peer, a program of its own, which main creates to see that another
+# task's endpoint budget is its own.
+
+version: 1
+stdout: kernel
+ends: main
+
+tasks:
+  - name: main
+    program: objbudget
+    priority: 2
+    ceiling: 31
+    authority: [memory, system, tasks]
+
+  - name: peer
+    program: objbudget_peer
+    priority: 3
+    ceiling: 10
+    start: on_request
+    budgets: { threads: 1 }

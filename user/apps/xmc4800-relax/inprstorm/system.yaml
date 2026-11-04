@@ -9,7 +9,7 @@ ends: never
 
 tasks:
   - name: inprstorm
-    entry: inprstorm_main
+    program: main
     priority: 2
     ceiling: 2
     devices: [/dev/usic0/ch1]

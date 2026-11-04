@@ -10,7 +10,7 @@
 # makes (KICKOS_HELD_STEP). HOST-ONLY: the second record has to open while the first is still
 # being written, which no image can arrange.
 kickos_add_unit_test(NAME console_held
-  SOURCES held_record.cc held_store.cc record_room.cc
+  SOURCES held_record.cc held_store.cc record_room.cc polled_line.cc
           ${_console_seam}
           "${PROJECT_SOURCE_DIR}/kernel/irq/irq_route.cc"
           "${PROJECT_SOURCE_DIR}/kernel/init/console.cc"
@@ -64,7 +64,8 @@ kickos_add_unit_test(NAME console_dark SOURCES dark_e2e.cc
 kickos_add_unit_test(NAME console_own_task SOURCES own_console.cc
   LIBRARIES kickos_kseam_console)
 
-# console_room: a writer the ring refuses, drained by the producer or woken by the TX drain.
+# console_room: a writer the ring refuses, drained by the producer or woken by the TX drain, and a
+# fault record's line, whose wait is bounded and dropped where it would wait on its own task.
 kickos_add_unit_test(NAME console_room SOURCES room_wait.cc
   LIBRARIES kickos_kseam_console)
 
@@ -88,7 +89,8 @@ kickos_add_unit_test(NAME console_room_amp SOURCES room_wait.cc TEST_PREFIX amp_
   LIBRARIES kickos_kseam_console_amp)
 
 # console_claim: an own-image AMP node's writer a peer's claim refuses, parked until the release
-# rings its node, over the same seam at that posture and the real virt_arm64 claim.
+# rings its node, and one another thread's open line on the node refuses, parked until that line
+# ends, over the same seam at that posture and the real virt_arm64 claim.
 kickos_add_kseam(kickos_kseam_console_claim
   EXTRA "${PROJECT_SOURCE_DIR}/tests/unit/fusedwake/ipc_seam.cc"
         dark_seam.cc "${_cs}/console_leaves.cc" "${PROJECT_SOURCE_DIR}/lib/libc/fmt.cc"

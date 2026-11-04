@@ -492,19 +492,22 @@ int main(int, char**)
     core_mask = static_cast<uint32_t>(cores) & (0u - static_cast<uint32_t>(cores));
 #endif
     auto const c = kos::thread::create(checker, nullptr, "checker", 20, KOS_POLICY_FIFO, 0,
-                                       nullptr, 0, nullptr, 0, nullptr, 0, nullptr, 0, 0,
-                                       nullptr, KOS_TASK_NONE, core_mask);
-    auto const t = kos::thread::create(trasher, nullptr, "trasher", 5, KOS_POLICY_FIFO, 0,
-                                       nullptr, 0, nullptr, 0, nullptr, 0, nullptr, 0, 0,
-                                       nullptr, KOS_TASK_NONE, core_mask);
-    bool ok = c.valid() and t.valid();
+                                       nullptr, 0, nullptr, 0, nullptr, 0, 0, nullptr, core_mask);
+    bool ok = c.valid();
 #if defined(__XTENSA__)
     auto const p = kos::thread::create(preempter, nullptr, "preempter", 25, KOS_POLICY_FIFO, 0,
-                                       nullptr, 0, nullptr, 0, nullptr, 0, nullptr, 0, 0,
-                                       nullptr, KOS_TASK_NONE, core_mask);
+                                       nullptr, 0, nullptr, 0, nullptr, 0, 0, nullptr, core_mask);
     ok = ok and p.valid();
 #endif
     if (not ok)
+    {
+        kos::print("  FP FAIL: a test thread could not be created\n");
+        return 1;
+    }
+    // Last: a created thread that outranks main runs at once, and the trasher never blocks.
+    auto const t = kos::thread::create(trasher, nullptr, "trasher", 5, KOS_POLICY_FIFO, 0,
+                                       nullptr, 0, nullptr, 0, nullptr, 0, 0, nullptr, core_mask);
+    if (not t.valid())
     {
         kos::print("  FP FAIL: a test thread could not be created\n");
         return 1;

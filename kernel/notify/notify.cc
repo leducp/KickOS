@@ -21,12 +21,12 @@ namespace kickos
 {
     uint32_t notify_cap_bit(CapEntry const& e)
     {
-        uint8_t const stored = cap_badge(e);
+        uint32_t const stored = cap_badge(e);
         if (stored == KCAP_BADGE_NONE)
         {
             return 0;
         }
-        return static_cast<uint32_t>(stored) - 1u;
+        return stored - 1u;
     }
 
     namespace
@@ -62,14 +62,12 @@ namespace kickos
         IrqLock lock;
         *out_cap = KCAP_INVALID;
         Kernel& k = kernel();
-        // Before the pool, as at the other object creators: a task at its ceiling is refused
-        // without churning a slot.
-        if (not task_object_admit(CapType::CAP_NOTIFY, c->task))
+        int const i = k.notifies.alloc(c->task);
+        Notification* const n = k.notifies.at(i); // total over alloc()'s refusals, below
+        if (i == SLOT_OVER_BUDGET)
         {
-            return -KOS_EAGAIN;
+            return -KOS_EAGAIN; // the task holds its budget of notifications
         }
-        int const i = k.notifies.alloc();
-        Notification* const n = k.notifies.at(i); // total over alloc()'s -1: one refusal below
         if (n == nullptr)
         {
             return -KOS_ENOMEM;
@@ -79,14 +77,14 @@ namespace kickos
         n->bound = nullptr;
         n->accept = 0;
         n->signallers = NOTIFY_SIGNALLER_NONE;
-        k.notify_refs[i] = 1; // the creator's cap is the first reference
+        k.notifies.refs()[i] = 1; // the creator's cap is the first reference
         int const obj = k.notifies.handle_for(i);
         uint32_t cap = KCAP_INVALID;
         int const rc = cap_install(c, obj, CapType::CAP_NOTIFY,
                                    CAP_WAIT | CAP_SIGNAL | CAP_TRANSFER, &cap);
         if (rc != 0)
         {
-            k.notify_refs[i] = 0;
+            k.notifies.refs()[i] = 0;
             k.notifies.free(obj);
             return rc;
         }
@@ -103,7 +101,8 @@ namespace kickos
             return -KOS_EINVAL;
         }
         CapEntry const* const e = cap_lookup(c, src_cap);
-        if (e == nullptr or e->type != static_cast<uint8_t>(CapType::CAP_NOTIFY))
+        if (e == nullptr or e->type != static_cast<uint8_t>(CapType::CAP_NOTIFY)
+            or not cap_obj_live(*e))
         {
             return -KOS_EBADF;
         }
@@ -127,8 +126,7 @@ namespace kickos
             return -KOS_EMFILE;
         }
         CapEntry const* const ne =
-            cap_install_at(c, static_cast<int>(index), obj, CapType::CAP_NOTIFY, rights,
-                           static_cast<uint8_t>(bit + 1u));
+            cap_install_at(c, static_cast<int>(index), obj, CapType::CAP_NOTIFY, rights, bit + 1u);
         *out_cap = (static_cast<uint32_t>(ne->gen) << KCAP_INDEX_BITS) | index;
         return 0;
     }
@@ -300,7 +298,7 @@ namespace kickos
     void notify_ref_drop(int obj_handle)
     {
         Kernel& k = kernel();
-        int const idx = obj_ref_last(k.notifies, k.notify_refs, obj_handle);
+        int const idx = obj_ref_last(k.notifies, k.notifies.refs(), obj_handle);
         if (idx < 0)
         {
             return;
@@ -309,9 +307,10 @@ namespace kickos
         // so this count cannot reach zero under it. The same fact is what lets the last IRQ
         // capability close while a driver is parked: the driver is parked on the object, not on
         // the line.
-        Notification const* const n = k.notifies.at(idx);
+        Notification const* const n = k.notifies.slot(idx);
         KICKOS_ASSERT(n->bound == nullptr);
         KICKOS_ASSERT(n->signallers == NOTIFY_SIGNALLER_NONE);
+        task_watch_notify_gone(obj_handle);
         k.notifies.free(obj_handle);
     }
 

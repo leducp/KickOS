@@ -21,15 +21,14 @@ static uint32_t gate_read32(uintptr_t at)
     return *(volatile uint32_t const*)at;
 }
 
-void ampping_gate_serve(kos_self_t const* self, struct ampbook_row* row)
+void ampping_gate_serve(struct ampbook_row* row)
 {
-    (void)self;
     (void)row;
 }
 
-void ampping_gate_report(kos_self_t const* self, struct ampbook_row* book)
+void ampping_gate_report(struct ampbook_row* book)
 {
-    kos_window_t const uart0 = kos_grant_mmio(self, "/dev/uart0");
+    kos_window_t const uart0 = kos_grant_mmio("/dev/uart0");
     uintptr_t const base = (uintptr_t)kos_window_addr(uart0);
     if (base == 0u)
     {

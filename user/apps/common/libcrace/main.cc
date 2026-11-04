@@ -1,144 +1,40 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Four threads, two in main's task and two in a task of their own, print through stdio and
-// allocate from the heap at once, each preempted every few tens of microseconds. Every line a
-// worker prints is one known text, and every block it allocates holds its pattern until freed.
-// On a region board the two tasks share one heap and one stdout; on a translating one each task
-// has its own, shared by its two threads. Main's task's workers start on a heap main has
-// exhausted, and a round the heap cannot serve waits for it. Before they start: a thread killed
-// while it waits for the malloc lock ends alone, and so does one that holds the libc lock and
-// hands it over; a killed waiter asks again at the kernel and ends there; a holder killed while
-// it runs releases the malloc lock; getenv with a kill pending takes the free libc lock with no
-// kernel entry; a malloc lock taken from a holder that died holding it ends the taker's task;
-// and a printf completes while another thread of main's task holds the malloc lock.
+// Four threads, two in main's task and two in the task of a peer program (peer.cc), print through
+// stdio and allocate from the heap at once, each preempted every few tens of microseconds. Every
+// line a worker prints is one known text, and every block it allocates holds its pattern until
+// freed. Each task has its own heap and its own stdout, shared by its two threads, and the two
+// tasks' lines meet only on the console. A line leaves in one write where stdout is line-buffered;
+// where it is unbuffered (microbit) the two tasks' lines mix there. Main's task's workers start on
+// a heap main has exhausted to the end of its window, and a round the heap cannot serve waits for
+// it. Before they start: a thread killed while it waits for the malloc lock ends alone, and so
+// does one that holds the libc lock and hands it over; a killed waiter asks again at the kernel
+// and ends there; a holder killed while it runs releases the malloc lock; getenv with a kill
+// pending takes the free libc lock with no kernel entry; a malloc lock taken from a holder that
+// died holding it ends the taker's task; and a printf completes while another thread of main's
+// task holds the malloc lock.
 
-#include <kickos/config/priorities.h>
+#include <kickos/apps/peer_run.h>
+#include <kickos/chip_limits.h> // KICKOS_CHIP_ONE_TASK
 #include <kickos/kos.h>
 #include <kickos/sys.h>
 
-#include <malloc.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
+#include "libcrace.h"
 
 #if defined(_NEWLIB_VERSION)
-// newlib ships this header with no C++ linkage of its own.
-extern "C"
-{
-#include <envlock.h>
-}
+// The image's heap window and its break (user/src/newlib_sbrk.cc).
+extern "C" char _kickos_heap_start[];
+extern "C" char _kickos_heap_limit[];
+extern "C" void* _sbrk(intptr_t incr);
 #endif
 
 namespace
 {
-    constexpr int WORKERS = 4;
-    constexpr int ROUNDS = 300;
-    constexpr int PAYLOAD = 40;
-    constexpr int BLOCKS = 3;
-    constexpr uint32_t QUANTUM_NS = 20000;
-    constexpr uint8_t WORKER_PRIO = 10;
-    constexpr uint32_t PRINT_WAIT_US = 3000000;
-    constexpr uint8_t VICTIM_PRIO = KICKOS_PRIO_MAX;
+    using namespace libcrace;
 
-    // The semaphores between main and the threads it spawns. A task of a translating board holds
-    // its own copy of every static, so there they lie in a granule main reserves, which a thread
-    // of another task reaches through the first window of its spawn.
-    struct Gates
-    {
-        kos_sem_t done;
-        kos_sem_t starved;
-        kos_sem_t held;
-        kos_sem_t release;
-        kos_sem_t entering;
-        kos_sem_t printed;
-        kos_sem_t go;
-    };
-    Gates g_static_gates = {};
-    Gates* g_gates = &g_static_gates;
-#if KICKOS_HAVE_ASPACE
-    constexpr uint32_t GATES_BYTES = 4096;
-#endif
-
-    Gates* gates()
-    {
-#if KICKOS_HAVE_ASPACE
-        kos_window w = {};
-        if (kos_window_get(0, &w) == 0)
-        {
-            return reinterpret_cast<Gates*>(w.base);
-        }
-#endif
-        return g_gates;
-    }
-
-    // Every gate at 0, in main before any thread of the run exists.
-    bool gates_seat()
-    {
-#if KICKOS_HAVE_ASPACE
-        void* const page = kos_ram_alloc(GATES_BYTES);
-        if (page == nullptr or kos_mem_self_grant(page, GATES_BYTES, 0) != 0)
-        {
-            return false;
-        }
-        g_gates = static_cast<Gates*>(page);
-#endif
-        kos_sem_t* const all[] = {&g_gates->done, &g_gates->starved, &g_gates->held,
-                                  &g_gates->release, &g_gates->entering, &g_gates->printed,
-                                  &g_gates->go};
-        for (kos_sem_t* const g : all)
-        {
-            (void)kos_sem_init(g, 0);
-        }
-        return true;
-    }
-
-    // What a spawn into `task` passes for the gates: nothing for main's own task.
-    uint16_t gates_window(kos_task_t task, kos_window* w)
-    {
-        *w = {};
-#if KICKOS_HAVE_ASPACE
-        if (task != KOS_TASK_NONE)
-        {
-            w->base = reinterpret_cast<uintptr_t>(g_gates);
-            w->size = GATES_BYTES;
-            w->kind = KOS_WINDOW_MEMORY;
-            return 1;
-        }
-#else
-        (void)task;
-#endif
-        return 0;
-    }
-
-    // `entry` in `task`, reaching the gates.
-    kos::thread::Handle spawn_in(void (*entry)(void*), void* arg, char const* name, uint8_t prio,
-                                 kos_task_t task, uint32_t core_mask,
-                                 uint8_t policy = KOS_POLICY_FIFO, uint32_t quantum_ns = 0)
-    {
-        kos_window w;
-        uint16_t const windows = gates_window(task, &w);
-        return kos::thread::create(entry, arg, name, prio, policy, quantum_ns, nullptr, 0,
-                                   nullptr, 0, &w, windows, nullptr, 0, 0, nullptr, task,
-                                   core_mask);
-    }
-
-    char letter(int w, int i)
-    {
-        return static_cast<char>('a' + (w * 7 + i) % 26);
-    }
-
-    bool whole(char const* block, size_t len, char c)
-    {
-        for (size_t k = 0; k < len; k++)
-        {
-            if (block[k] != c)
-            {
-                return false;
-            }
-        }
-        return true;
-    }
+    // The racing workers of main's task: the others run in the peer's, where there is one.
+    constexpr int MAIN_WORKERS = static_cast<int>(TASK_RACERS);
 
     // The sim's host libc has no lock to hold.
     void malloc_holder(void*)
@@ -151,13 +47,6 @@ namespace
 #if defined(_NEWLIB_VERSION)
         __malloc_unlock(_REENT);
 #endif
-    }
-
-    void malloc_victim(void*)
-    {
-        kos_sem_post(&gates()->entering);
-        void* volatile block = malloc(32);
-        free(block);
     }
 
     // The env lock is the libc lock.
@@ -174,32 +63,6 @@ namespace
 #endif
     }
 
-#if defined(_NEWLIB_VERSION) or (KICKOS_FAULT_ISOLATION and KICKOS_HAVE_ASPACE)
-    void anchor(void*)
-    {
-        while (true)
-        {
-            kos::sleep_ns(1000000000ull);
-        }
-    }
-#endif
-
-#if KICKOS_FAULT_ISOLATION and KICKOS_HAVE_ASPACE
-    // Never unlocks: a kill must find it at the re-wait, holding the malloc lock.
-    void dead_malloc_holder(void*)
-    {
-#if defined(_NEWLIB_VERSION)
-        __malloc_lock(_REENT);
-#endif
-        Gates* const g = gates();
-        kos_sem_post(&g->held);
-        while (true)
-        {
-            (void)kos_sem_wait(&g->release, KOS_TIMEOUT_NONE);
-        }
-    }
-#endif
-
     void printer(void*)
     {
         printf("libcrace: printf beside the malloc lock %d\n", 1);
@@ -210,7 +73,6 @@ namespace
     uint32_t g_core_mask = 0;
     uint32_t g_reask_took = 0;
     bool g_reask_ran = false;
-    uint32_t g_release_go = 0;
     uint32_t g_env_after_kill = 0;
     char const* volatile g_env = nullptr;
 
@@ -227,34 +89,11 @@ namespace
     void reask_holder(void*)
     {
         __malloc_lock(_REENT);
-        auto victim = spawn_in(reask_victim, nullptr, "mreask", VICTIM_PRIO, KOS_TASK_NONE,
-                               g_core_mask);
+        auto victim = spawn_in(reask_victim, nullptr, "mreask", VICTIM_PRIO, g_core_mask);
         bool parked = victim.valid() and kos_sem_wait(&g_gates->entering, KOS_TIMEOUT_NONE) == 0;
         bool const killed = victim.valid() and victim.cancel(KOS_CANCEL_KILL, 0) == 0;
         __malloc_unlock(_REENT);
         g_reask_ran = parked and killed and victim.join() == 0;
-    }
-
-    // Takes the malloc lock with no entry, then spins with none, so a kill finds it running.
-    void running_holder(void*)
-    {
-        __malloc_lock(_REENT);
-        kos_sem_post(&gates()->held);
-        while (__atomic_load_n(&g_release_go, __ATOMIC_ACQUIRE) == 0)
-        {
-        }
-        __malloc_unlock(_REENT);
-        while (true)
-        {
-            kos_yield();
-        }
-    }
-
-    // In the holder's task, whose copy of the flag the holder reads.
-    void release_setter(void*)
-    {
-        (void)kos_sem_wait(&gates()->go, KOS_TIMEOUT_NONE);
-        __atomic_store_n(&g_release_go, 1u, __ATOMIC_RELEASE);
     }
 
     void getenv_after_kill(void*)
@@ -289,49 +128,6 @@ namespace
         holder.join();
     }
 
-    // Pins main to the core it runs on. A one-core kernel has nothing to pin; any other refusal
-    // refuses the arm, which would otherwise kill a victim that had not parked yet.
-    bool pin_main(uint32_t* core_mask)
-    {
-        int const core = kos_core_current();
-        int const rc = kos_thread_affinity(kos_thread_self(), 1u << core);
-        *core_mask = 0;
-        if (rc == -KOS_ENOSYS)
-        {
-            return true;
-        }
-        if (rc < 0)
-        {
-            return false;
-        }
-        *core_mask = 1u << core;
-        return true;
-    }
-
-    void unpin_main(uint32_t core_mask)
-    {
-        if (core_mask != 0)
-        {
-            kos_thread_affinity(kos_thread_self(), 0);
-        }
-    }
-
-    // The victim outranks main on main's core, so main, woken by its post, runs again only once
-    // it has parked. Invalid when the spawn or the post fails.
-    kos::thread::Handle spawn_parked(void (*entry)(void*), char const* name, kos_task_t task,
-                                     uint32_t core_mask)
-    {
-        (void)kos_sem_init(&g_gates->entering, 0);
-        auto victim = spawn_in(entry, nullptr, name, VICTIM_PRIO, task, core_mask);
-        if (victim.valid() and kos_sem_wait(&g_gates->entering, KOS_TIMEOUT_NONE) != 0)
-        {
-            victim.cancel(KOS_CANCEL_KILL, 0);
-            victim.join();
-            return kos::thread::Handle();
-        }
-        return victim;
-    }
-
     // `entry` parks inside malloc, behind a holder of the malloc lock, and is killed there.
     bool kill_inside_malloc(void (*entry)(void*), char const* name)
     {
@@ -344,7 +140,7 @@ namespace
         bool ended = false;
         if (hold_malloc(&holder))
         {
-            auto victim = spawn_parked(entry, name, KOS_TASK_NONE, core_mask);
+            auto victim = spawn_parked(entry, name, core_mask);
             ended = victim.valid() and victim.cancel(KOS_CANCEL_KILL, 0) == 0
                     and victim.join() == 0;
             end_hold(holder);
@@ -384,74 +180,9 @@ namespace
         g_core_mask = core_mask;
         g_reask_took = 0;
         g_reask_ran = false;
-        auto holder = spawn_in(reask_holder, nullptr, "mholder", VICTIM_PRIO, KOS_TASK_NONE,
-                               core_mask);
+        auto holder = spawn_in(reask_holder, nullptr, "mholder", VICTIM_PRIO, core_mask);
         bool const ran = holder.valid() and holder.join() == 0 and g_reask_ran;
         *asked = __atomic_load_n(&g_reask_took, __ATOMIC_RELAXED) == 0;
-        unpin_main(core_mask);
-        return ran;
-    }
-
-    // In a task of its own, whose entry only anchors it: a holder of the malloc lock is killed
-    // while it runs, a taker parks behind it, and the holder releases. *lived when the taker took
-    // the lock and its task did not end.
-    bool running_killed_holder_releases(bool* lived)
-    {
-        *lived = false;
-        uint32_t core_mask = 0;
-        if (not pin_main(&core_mask))
-        {
-            return false;
-        }
-        kos_task_t task = KOS_TASK_NONE;
-        (void)kos_sem_init(&g_gates->held, 0);
-        (void)kos_sem_init(&g_gates->go, 0);
-        bool ran = kos_task_create(nullptr, 0, 0, &task) == 0
-                   and kos_task_sched_grant(task, VICTIM_PRIO, 0) == 0;
-        kos::thread::Handle base;
-        kos::thread::Handle holder;
-        kos::thread::Handle setter;
-        if (ran)
-        {
-            base = kos::thread::create_caps(anchor, nullptr, "manchor", WORKER_PRIO, nullptr, 0,
-                                            KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr, task);
-            setter = spawn_in(release_setter, nullptr, "mgo", WORKER_PRIO, task, core_mask);
-            // Below main, so it holds the lock and spins only while main waits.
-            holder = spawn_in(running_holder, nullptr, "mrunner", KICKOS_PRIO_MIN, task,
-                              core_mask);
-            ran = base.valid() and setter.valid() and holder.valid()
-                  and kos_sem_wait(&g_gates->held, KOS_TIMEOUT_NONE) == 0
-                  and holder.cancel(KOS_CANCEL_KILL, 0) == 0
-                  and kos_sem_post(&g_gates->go) == 0 and setter.join() == 0;
-        }
-        if (ran)
-        {
-            auto taker = spawn_parked(malloc_victim, "mtaker", task, core_mask);
-            ran = taker.valid() and taker.join() == 0 and holder.join() == 0;
-        }
-        if (ran)
-        {
-            // A live task leaves the status untouched.
-            int status = -99;
-            int const state = kos_task_state(task, &status);
-            *lived = state >= 0 and (state & KOS_TASK_ENDED) == 0 and status == -99;
-        }
-        if (task != KOS_TASK_NONE)
-        {
-            kos_task_slay(task, 0);
-        }
-        if (base.valid())
-        {
-            base.join();
-        }
-        if (holder.valid())
-        {
-            holder.join();
-        }
-        if (setter.valid())
-        {
-            setter.join();
-        }
         unpin_main(core_mask);
         return ran;
     }
@@ -471,8 +202,7 @@ namespace
         g_env_after_kill = 0;
         // The child outranks main on main's core, so main, woken by its post, runs again only
         // once it has parked on the release gate.
-        auto child = spawn_in(getenv_after_kill, nullptr, "menv", VICTIM_PRIO, KOS_TASK_NONE,
-                              core_mask);
+        auto child = spawn_in(getenv_after_kill, nullptr, "menv", VICTIM_PRIO, core_mask);
         bool const ran = child.valid() and kos_sem_wait(&g_gates->entering, KOS_TIMEOUT_NONE) == 0
                          and child.cancel(KOS_CANCEL_KILL, 0) == 0 and child.join() == 0;
         *read = __atomic_load_n(&g_env_after_kill, __ATOMIC_RELAXED) != 0;
@@ -481,65 +211,66 @@ namespace
     }
 #endif
 
-#if KICKOS_FAULT_ISOLATION and KICKOS_HAVE_ASPACE
-    // In a task of its own, whose entry only anchors it: a holder of the malloc lock is killed,
-    // with a taker parked behind it or, `waiting` false, one that comes only after the death, so
-    // the taker takes the lock from a dead owner.
-    bool dead_malloc_holder_ends_the_takers_task(bool waiting, bool* ended)
+#if not KICKOS_CHIP_ONE_TASK
+    // The peer program run with a role, whose task's exit status is the answer.
+    class PeerRun
     {
-        *ended = false;
-        uint32_t core_mask = 0;
-        if (not pin_main(&core_mask))
+    public:
+        bool start(char const* role, kos_cap_grant const* caps = nullptr, uint8_t cap_count = 0)
         {
-            return false;
+            if (kos_program_find(LIBCRACE_PEER, &prog_) != 0)
+            {
+                return false;
+            }
+            char const* const argv[] = {"peer", role, nullptr};
+            kos_task_params params = {};
+            params.argv = argv;
+            params.caps = caps;
+            params.cap_count = cap_count;
+            running_ = kickos::apps::create_peer(prog_, params, &task_) == 0;
+            return running_;
         }
-        kos_task_t task = KOS_TASK_NONE;
-        (void)kos_sem_init(&g_gates->held, 0);
-        (void)kos_sem_init(&g_gates->release, 0);
-        bool ran = kos_task_create(nullptr, 0, 0, &task) == 0
-                   and kos_task_sched_grant(task, VICTIM_PRIO, 0) == 0;
-        kos::thread::Handle base;
-        kos::thread::Handle holder;
-        if (ran)
+
+        bool running() const
         {
-            base = kos::thread::create_caps(anchor, nullptr, "manchor", WORKER_PRIO, nullptr, 0,
-                                            KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr, task);
-            holder = spawn_in(dead_malloc_holder, nullptr, "mholder", WORKER_PRIO, task, 0);
-            ran = base.valid() and holder.valid()
-                  and kos_sem_wait(&g_gates->held, KOS_TIMEOUT_NONE) == 0;
+            return running_;
         }
-        if (ran and waiting)
+
+        // The status once the task is dead, or -1000 where it never ran.
+        int finish()
         {
-            auto taker = spawn_parked(malloc_victim, "mwaiter", task, core_mask);
-            ran = taker.valid() and holder.cancel(KOS_CANCEL_KILL, 0) == 0 and holder.join() == 0
-                  and taker.join() == 0;
+            int status = -1000;
+            if (running_)
+            {
+                status = -99;
+                while (kickos::apps::wait_dead(task_, &status, 1000u) == -KOS_ETIMEDOUT)
+                {
+                }
+                (void)kos_task_slay(task_, 0);
+                running_ = false;
+            }
+            if (prog_ != KOS_CAP_NONE)
+            {
+                (void)kos_handle_close(prog_);
+                prog_ = KOS_CAP_NONE;
+            }
+            return status;
         }
-        else if (ran)
+
+    private:
+        kos_program_t prog_ = KOS_CAP_NONE;
+        kos_task_t task_ = KOS_TASK_NONE;
+        bool running_ = false;
+    };
+
+    [[maybe_unused]] int run_peer(char const* role)
+    {
+        PeerRun run;
+        if (not run.start(role))
         {
-            ran = holder.cancel(KOS_CANCEL_KILL, 0) == 0 and holder.join() == 0;
-            auto taker = spawn_parked(malloc_victim, "mlater", task, core_mask);
-            ran = ran and taker.valid() and taker.join() == 0;
+            return -1000;
         }
-        if (ran)
-        {
-            int status = 0;
-            int const state = kos_task_state(task, &status);
-            *ended = state >= 0 and (state & KOS_TASK_ENDED) != 0 and status == KOS_EXIT_FAULT;
-        }
-        if (task != KOS_TASK_NONE)
-        {
-            kos_task_slay(task, 0);
-        }
-        if (base.valid())
-        {
-            base.join();
-        }
-        if (holder.valid())
-        {
-            holder.join();
-        }
-        unpin_main(core_mask);
-        return ran;
+        return run.finish();
     }
 #endif
 
@@ -596,6 +327,28 @@ namespace
         return head;
     }
 
+#if defined(_NEWLIB_VERSION)
+    // Within the allocator's own headers and alignment of the window's end.
+    constexpr size_t HEAP_END_SLACK = 64;
+
+    // How far the allocator moved the break, once the heap is exhausted, against the window.
+    void report_heap_end()
+    {
+        char* const brk = static_cast<char*>(_sbrk(0));
+        size_t const window = static_cast<size_t>(_kickos_heap_limit - _kickos_heap_start);
+        size_t const reached = static_cast<size_t>(brk - _kickos_heap_start);
+        if (reached + HEAP_END_SLACK >= window)
+        {
+            kos::print("libcrace: main's heap ran out at its end\n");
+        }
+        else
+        {
+            printf("libcrace: main's heap ran out %u B short of its %u B\n",
+                   static_cast<unsigned>(window - reached), static_cast<unsigned>(window));
+        }
+    }
+#endif
+
     void release_heap(Ballast* head)
     {
         while (head != nullptr)
@@ -606,82 +359,23 @@ namespace
         }
     }
 
-    // A heap the workers' blocks exhaust answers NULL, which is not a torn block: the round
-    // gives back what it took and asks again.
-    bool take_blocks(char* (&blocks)[BLOCKS], size_t const (&sizes)[BLOCKS], char c)
+    // One line naming the arm, and main's failure status.
+    int refused(char const* arm)
     {
-        for (int b = 0; b < BLOCKS; b++)
-        {
-            blocks[b] = static_cast<char*>(malloc(sizes[b]));
-            if (blocks[b] == nullptr)
-            {
-                for (int k = 0; k < b; k++)
-                {
-                    free(blocks[k]);
-                    blocks[k] = nullptr;
-                }
-                return false;
-            }
-            memset(blocks[b], c, sizes[b]);
-        }
-        return true;
-    }
-
-    void worker(void* arg)
-    {
-        int const w = static_cast<int>(reinterpret_cast<uintptr_t>(arg));
-        Gates* const g = gates();
-        int torn = 0;
-        bool starved = false;
-        for (int i = 0; i < ROUNDS; i++)
-        {
-            char const c = letter(w, i);
-            size_t const sizes[BLOCKS] = {16u + static_cast<size_t>((i * 13) % 96), 64u, 24u};
-            char* blocks[BLOCKS] = {};
-            while (not take_blocks(blocks, sizes, c))
-            {
-                if (not starved)
-                {
-                    starved = true;
-                    kos_sem_post(&g->starved);
-                }
-                kos::sleep_ns(QUANTUM_NS);
-            }
-            char payload[PAYLOAD + 1];
-            memset(payload, c, PAYLOAD);
-            payload[PAYLOAD] = '\0';
-            printf("libcrace w%d i%d %s\n", w, i, payload);
-            for (int b = 0; b < BLOCKS; b++)
-            {
-                if (not whole(blocks[b], sizes[b], c))
-                {
-                    torn++;
-                }
-                free(blocks[b]);
-            }
-        }
-        printf("libcrace w%d done torn=%d\n", w, torn);
-        kos_sem_post(&g->done);
-        // The other task's entry returning would end its sibling with it.
-        while (true)
-        {
-            kos::sleep_ns(1000000000ull);
-        }
+        char line[72];
+        ksnprintf(line, sizeof(line), "libcrace: the %s arm was refused\n", arm);
+        kos::print(line);
+        return 1;
     }
 }
 
 int main(int, char**)
 {
     printf("libcrace: %d workers x %d rounds\n", WORKERS, ROUNDS);
-    if (not gates_seat())
-    {
-        kos::print("libcrace: setup refused\n");
-        return 1;
-    }
+    gates_seat();
     if (not kill_inside_malloc(malloc_victim, "mvictim"))
     {
-        kos::print("libcrace: the malloc kill arm was refused\n");
-        return 1;
+        return refused("malloc kill");
     }
     kos::print("libcrace: a thread killed waiting for malloc ended alone\n");
     if (not kill_inside_malloc(libc_holder_victim, "mlibc") or not libc_lock_handed_over())
@@ -694,8 +388,7 @@ int main(int, char**)
     bool asked = false;
     if (not killed_waiter_asks_the_kernel(&asked))
     {
-        kos::print("libcrace: the killed waiter's re-ask arm was refused\n");
-        return 1;
+        return refused("killed waiter's re-ask");
     }
     if (asked)
     {
@@ -705,13 +398,16 @@ int main(int, char**)
     {
         kos::print("libcrace: a killed malloc waiter took the lock freed under it\n");
     }
-    bool lived = false;
-    if (not running_killed_holder_releases(&lived))
+#if KICKOS_CHIP_ONE_TASK
+    kos::print("libcrace: skip - a holder killed while running released malloc, and its taker's "
+               "task lived: this board holds one task\n");
+#else
+    int const released = run_peer("release");
+    if (released != 0 and released != KOS_EXIT_FAULT)
     {
-        kos::print("libcrace: the running killed holder arm was refused\n");
-        return 1;
+        return refused("running killed holder");
     }
-    if (lived)
+    if (released == 0)
     {
         kos::print("libcrace: a holder killed while running released malloc, and its taker's "
                    "task lived\n");
@@ -721,11 +417,11 @@ int main(int, char**)
         kos::print("libcrace: a holder killed while running died holding malloc, and its taker's "
                    "task ended\n");
     }
+#endif
     bool read = false;
     if (not getenv_with_a_kill_pending(&read))
     {
-        kos::print("libcrace: the getenv kill arm was refused\n");
-        return 1;
+        return refused("getenv kill");
     }
     if (read)
     {
@@ -737,13 +433,12 @@ int main(int, char**)
     }
 #endif
 #if KICKOS_FAULT_ISOLATION and KICKOS_HAVE_ASPACE
-    bool dead_ended = false;
-    if (not dead_malloc_holder_ends_the_takers_task(true, &dead_ended))
+    int dead = run_peer("dead_waiting");
+    if (dead != 0 and dead != KOS_EXIT_FAULT)
     {
-        kos::print("libcrace: the dead malloc holder arm was refused\n");
-        return 1;
+        return refused("dead malloc holder");
     }
-    if (dead_ended)
+    if (dead == KOS_EXIT_FAULT)
     {
         kos::print("libcrace: a malloc lock taken from a dead holder ended its task\n");
     }
@@ -751,12 +446,12 @@ int main(int, char**)
     {
         kos::print("libcrace: a malloc lock taken from a dead holder did not end its task\n");
     }
-    if (not dead_malloc_holder_ends_the_takers_task(false, &dead_ended))
+    dead = run_peer("dead_later");
+    if (dead != 0 and dead != KOS_EXIT_FAULT)
     {
-        kos::print("libcrace: the unwatched dead malloc holder arm was refused\n");
-        return 1;
+        return refused("unwatched dead malloc holder");
     }
-    if (dead_ended)
+    if (dead == KOS_EXIT_FAULT)
     {
         kos::print("libcrace: a malloc lock its holder died in unwatched ended the next taker's "
                    "task\n");
@@ -772,40 +467,70 @@ int main(int, char**)
 #endif
     if (not print_beside_malloc())
     {
-        kos::print("libcrace: the printf beside malloc arm was refused\n");
-        return 1;
-    }
-    kos_task_t other = KOS_TASK_NONE;
-    if (kos_task_create(nullptr, 0, 0, &other) != 0)
-    {
-        kos::print("libcrace: setup refused\n");
-        return 1;
+        return refused("printf beside malloc");
     }
     Ballast* const ballast = exhaust_heap();
+#if defined(_NEWLIB_VERSION)
+    report_heap_end();
+#endif
+    // Above the racers while the ballast holds the heap: a racer that cannot allocate polls, and a
+    // poller above main keeps main from ever releasing it.
+    (void)kos_thread_set_priority(WORKER_PRIO + 1);
+    kos_cap_t meet_main = KOS_CAP_NONE;
+    kos_cap_t meet_peer = KOS_CAP_NONE;
     int started = 0;
-    for (int w = 0; w < WORKERS; w++)
+#if not KICKOS_CHIP_ONE_TASK
+    if (kos_notify_create(&meet_main) != 0 or kos_notify_create(&meet_peer) != 0)
     {
-        kos_task_t task = KOS_TASK_NONE;
-        if (w >= WORKERS / 2)
+        kos::print("libcrace: no notification for the two tasks' racers to meet on\n");
+        return 1;
+    }
+    constexpr uint8_t PASS_ON = KOS_CAP_TRANSFER;
+    kos_cap_grant const peer_meet[2] = {{meet_peer, KOS_CAP_WAIT | PASS_ON},
+                                        {meet_main, KOS_CAP_SIGNAL | PASS_ON}};
+    PeerRun racers;
+    if (racers.start("racers", peer_meet, 2))
+    {
+        started += WORKERS - MAIN_WORKERS;
+    }
+    else
+    {
+        (void)kos_notify(meet_main);
+    }
+#endif
+    uint32_t main_started = 0;
+    for (int w = 0; w < MAIN_WORKERS; w++)
+    {
+        if (spawn_racer(worker, w, meet_main, meet_peer).valid())
         {
-            task = other;
-        }
-        auto h = spawn_in(worker, reinterpret_cast<void*>(static_cast<uintptr_t>(w)), "racer",
-                          WORKER_PRIO, task, 0, KOS_POLICY_RR, QUANTUM_NS);
-        if (h.valid())
-        {
-            started++;
+            main_started++;
         }
     }
+    if (main_started != TASK_RACERS)
+    {
+        return refused("racer spawn");
+    }
+    started += static_cast<int>(main_started);
     if (ballast != nullptr and started == WORKERS)
     {
         kos_sem_wait(&g_gates->starved, KOS_TIMEOUT_NONE);
     }
     release_heap(ballast);
-    for (int w = 0; w < started; w++)
+    for (uint32_t w = 0; w < main_started; w++)
     {
         kos_sem_wait(&g_gates->done, KOS_TIMEOUT_NONE);
     }
+#if not KICKOS_CHIP_ONE_TASK
+    if (racers.running())
+    {
+        if (racers.finish() != 0)
+        {
+            started = 0;
+        }
+    }
+    (void)kos_handle_close(meet_main);
+    (void)kos_handle_close(meet_peer);
+#endif
     if (started != WORKERS)
     {
         kos::print("libcrace: spawn refused\n");

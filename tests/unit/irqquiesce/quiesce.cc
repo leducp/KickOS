@@ -7,6 +7,8 @@
 // Threaded cases block the peer on the kernel lock while teardown runs;
 // doorbells can be answered there without completing the dispatch epoch.
 
+#include "../common/seam_pools.h"
+
 #include <gtest/gtest.h>
 
 #include <atomic>
@@ -94,6 +96,17 @@ namespace
         g_claim_thread.affinity = 1u << core;
     }
 
+    // Every binding slot's generation past 32767, so the next handle the pool hands out has bit
+    // 31 set and is negative as an int.
+    void age_binding_slots()
+    {
+        uint32_t* const gen = kickos::pool_local(kickos::kickos_kernel_pools.irq_bindings.arrays.gen);
+        for (int i = 0; i < KICKOS_SEAM_IRQ_BINDINGS; i++)
+        {
+            gen[i] = gen[i] | 0x8000u;
+        }
+    }
+
     struct IrqQuiesce : public ::testing::Test
     {
         int handle = -1;
@@ -115,14 +128,14 @@ namespace
         void seat_binding()
         {
             kickos::Kernel& k = kickos::kernel();
-            index = k.irq_bindings.alloc();
+            index = k.irq_bindings.alloc(nullptr);
             ASSERT_GE(index, 0);
             handle = k.irq_bindings.handle_for(index);
             kickos::IrqBinding* b = k.irq_bindings.at(index);
             ASSERT_NE(b, nullptr);
             *b = kickos::IrqBinding();
             b->line = LINE_TARGET;
-            k.irq_refs[index] = 1;
+            k.irq_bindings.refs()[index] = 1;
             ASSERT_TRUE(kickos::irq_attach(LINE_TARGET, probe_handler, b));
         }
 
@@ -184,6 +197,19 @@ namespace
         EXPECT_NE(kickos::irq_published(LINE_TARGET).handler,
                   static_cast<kickos::IrqHandler>(probe_handler))
             << "the line was not put back on the null-object default";
+    }
+
+    TEST_F(IrqQuiesce, TeardownOfAnAgedHandleFreesTheSlot)
+    {
+        age_binding_slots();
+        seat_binding();
+        ASSERT_LT(handle, 0) << "the handle carries bit 31, as one does past 32767 recycles";
+
+        kickos::irq_ref_drop(handle, kickos::IrqLock());
+
+        EXPECT_EQ(kickos::kernel().irq_bindings.resolve(handle), nullptr)
+            << "the retirement took a handle with bit 31 set for no binding, so the slot it "
+               "owes the pool is never freed";
     }
 
     // Nothing is poked, on any path: the retirement decides by reading epochs, so a teardown
@@ -314,9 +340,15 @@ namespace
             return target->notify != nullptr and (target->notify->pending & 1u) != 0u;
         }
 
+        bool aged = false;
+
         void SetUp() override
         {
             IrqQuiesce::SetUp();
+            if (aged)
+            {
+                age_binding_slots();
+            }
             g_cyc.lock_held.store(false);
             g_cyc.peer_done.store(false);
             g_cyc.handoff_ok.store(true);
@@ -338,12 +370,12 @@ namespace
             kickos::irqfix::g_core = 0;
             ASSERT_EQ(claimed, 0);
             obj = kickos::irqfix::installed_handle();
-            ASSERT_GE(obj, 0);
+            ASSERT_NE(obj, -1);
             idx = index_of(obj);
             ASSERT_GE(idx, 0);
             target = kickos::kernel().irq_bindings.at(idx);
             ASSERT_NE(target, nullptr);
-            ASSERT_EQ(kickos::kernel().irq_refs[idx], 1u);
+            ASSERT_EQ(kickos::kernel().irq_bindings.refs()[idx], 1u);
             // The line needs somewhere to raise: without it the ISR masks and returns, and
             // every "the post completed" assertion below would read as a failure. The seam's
             // one object, reached through the real attach path.
@@ -371,7 +403,7 @@ namespace
                     g_cyc.sends_in_teardown.store(kickos::irqfix::ipi_sends(0) - before);
                     g_cyc.slot_live_at_return.store(
                         kickos::kernel().irq_bindings.resolve(obj) != nullptr);
-                    g_cyc.refs_at_return.store(kickos::kernel().irq_refs[idx]);
+                    g_cyc.refs_at_return.store(kickos::kernel().irq_bindings.refs()[idx]);
                     g_cyc.teardown_returned.store(true);
                 }
             } // the lock drops here, which is what lets the peer's post through
@@ -435,6 +467,29 @@ namespace
             << "the line is still bound to the torn-down driver, so it is lost for the lifetime "
                "of the image: a driver can turn load into permanent exhaustion by closing its "
                "last capability while its line is under delivery";
+        EXPECT_EQ(kickos::kernel().irq_bindings.resolve(obj), nullptr)
+            << "the retired slot never returned to the pool";
+    }
+
+    struct IrqCycleAged : public IrqCycle
+    {
+        IrqCycleAged()
+        {
+            aged = true;
+        }
+    };
+
+    // As above for a handle with bit 31 set: the record keeps owing its slot until reclamation.
+    TEST_F(IrqCycleAged, AnAgedSlotIsRecoveredAfterThePeerLeaves)
+    {
+        ASSERT_LT(obj, 0) << "the handle carries bit 31, as one does past 32767 recycles";
+        tear_down_against_wedged_peer();
+        ASSERT_TRUE(g_cyc.handoff_ok.load()) << "the cycle was not reproduced";
+        ASSERT_TRUE(g_cyc.peer_done.load());
+        EXPECT_TRUE(g_cyc.slot_live_at_return.load());
+
+        uint32_t again = 0;
+        EXPECT_EQ(kickos::irq_claim(&g_claim_thread, LINE_TARGET, 0u, &again), 0);
         EXPECT_EQ(kickos::kernel().irq_bindings.resolve(obj), nullptr)
             << "the retired slot never returned to the pool";
     }
@@ -508,7 +563,7 @@ namespace
         uint32_t again = 0;
         ASSERT_EQ(kickos::irq_claim(&g_claim_thread, LINE_TARGET, 0u, &again), 0);
         int const second = kickos::irqfix::installed_handle();
-        ASSERT_GE(second, 0);
+        ASSERT_NE(second, -1);
 
         kickos::irqfix::g_core = 0;
         kickos::handle_close(&g_claim_thread, again, kickos::IrqLock());
@@ -530,11 +585,11 @@ namespace
     unsigned free_bindings()
     {
         kickos::Kernel& k = kickos::kernel();
-        int taken[KICKOS_MAX_IRQ_HANDLES];
+        int taken[KICKOS_SEAM_IRQ_BINDINGS];
         unsigned n = 0;
-        while (n < KICKOS_MAX_IRQ_HANDLES)
+        while (n < KICKOS_SEAM_IRQ_BINDINGS)
         {
-            int const i = k.irq_bindings.alloc();
+            int const i = k.irq_bindings.alloc(nullptr);
             if (i < 0)
             {
                 break;

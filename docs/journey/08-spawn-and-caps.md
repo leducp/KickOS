@@ -25,10 +25,10 @@ We use `initdemo` (`user/apps/common/initdemo/main.cc`). Its composition
 `memory, system, console, tasks`. Its `main` does, in order:
 
 1. `kos_endpoint_create`: a new endpoint, and a capability to it in `main`'s own table.
-2. `kos_ram_alloc` and `kos_task_create`: a stack block and an empty task.
+2. `kos_ram_alloc` and the empty-task create: a stack block and an empty task.
 3. `kos::thread::create_caps`: a thread called `sink`, in that task, on that stack, with one
    capability granted: the endpoint, narrowed to receive only.
-4. `kos_console_publish`: stdout of every later thread goes to that endpoint.
+4. the console publish call: stdout of every later thread goes to that endpoint.
 5. `kos_handle_close`: `main` drops its own copy of the endpoint capability.
 6. `kos::thread::create`: a thread called `worker`, whose `printf` now reaches `sink`.
 
@@ -157,8 +157,8 @@ word holds the list links: the next free index in the low half, the previous one
 half, both biased by one so that 0 can mean "none". `Thread::cap_free_head` is the head,
 biased the same way.
 
-Two widths matter. Root, the first thread, gets `KICKOS_MAX_HANDLES` slots (16 here, two
-chunks). Every other thread gets `KICKOS_CAP_CHILD_WIDTH` (10 here, also two chunks, with the
+Two widths matter. Root, the first thread, gets the init's width (16 here, two
+chunks). Every other thread gets its task's declared width (10 here, also two chunks, with the
 tail of the second unused). The slab is sized at build time so that every thread slot that
 could ever be in use has its run waiting: a spawn is never refused for want of a chunk.
 
@@ -216,8 +216,9 @@ console instead. Root holds no capability to any other object. Everything else i
 is created later, by root or by the threads it starts.
 
 Root never runs the application directly. Its entry, `kickos_root_entry`
-(`user/src/root_entry.cc`), runs the app's global constructors and then the **init**,
-`kickos_init_entry` (`system/init/compose/entry.cc`), which walks the composition table.
+(`user/src/root_entry.cc`), runs the global constructors of the init's own image and then the
+**init**, `kickos_init_entry` (`system/init/compose/entry.cc`), which walks the composition table.
+The app's constructors run in the first task the init starts.
 
 **Try it:** in the same session, still at the `kickos::sched::start` stop of Stop 2:
 
@@ -239,8 +240,8 @@ Slot 0 is empty (type 0), and so is slot 1, whose `obj` is a free-list link (Sto
 [Reference: invariants, `root-unprivileged-idle-alone-privileged`](../reference/invariants.md)
 
 ### Stop 4: the init hands authority down
-**Where:** `system/init/compose/walk.cc`, `Walk::boot`, `Walk::start`, `Walk::spawn`, `Walk::release`;
-`user/src/task_trampoline.cc`, `kickos::init::task_trampoline`
+**Where:** `system/init/compose/walk.cc`, `Walk::boot`, `Walk::start`, `Walk::create`, `Walk::release`;
+`kernel/syscall/syscall_thread.cc`, `task_create_call`; user/src/task_enter.cc, `kickos_task_entry`
 
 The init runs as root, unprivileged, and uses only system calls. `Walk::boot` sets up what
 the init itself keeps for the life of the system: it lowers its own priority, creates a
@@ -253,58 +254,58 @@ endpoint, so it gives up `WAIT` at once.
 Then `Walk::start` starts each task in the table. For `initdemo` there is one, `main`:
 
 ```
-            check(kos_task_create(data, data_size, 0u, &handle), "kos_task_create", i);
-            // ...
-            rc = kos_task_sched_grant(handle, t.ceiling, t.core_mask);
+            s.step = "kos_task_create";
+            rc = take_lines(s);
             if (rc == 0)
             {
-                s.step = "kos_task_watch";
-                rc = kos_task_watch(handle, copy, r.endpoint);
+                rc = mint_uses(s);
             }
             if (rc == 0)
             {
-                rc = take_lines(s);
+                s.step = "kos_task_create";
+                rc = create(s);
+                handle = s.handle;
             }
             if (rc == 0)
             {
-                s.step = "kos_thread_create";
-                rc = spawn(s);
+                // The task runs already: a watch armed after its end or its readiness reports it,
+                // and a refused one would leave its death unreported.
+                check(kos_task_watch(handle, copy, KOS_CAP_NONE), "kos_task_watch", i);
             }
             release(s);
 ```
 
-In words: create an empty task; give it a priority ceiling (12, from `ceiling:` in the
-YAML); ask the kernel to raise a bit in the init's notification when that task ends, dies, or
-becomes ready (`copy` is a badged copy of the notification, minted by `kos_notify_badge` just
-above); claim any interrupt lines the task is granted; and spawn the task's first thread. `Walk::spawn` builds
-the `kos_thread_params` from the table entry. Two fields carry the hand-down:
+In words: take the task's interrupt lines and mint the badged copies it is granted; ask the
+kernel to build the task and start it (`create`); then ask the kernel to raise a bit in the
+init's notification when that task ends, dies, or becomes ready (`copy` is a badged copy of the
+notification, minted by `kos_notify_badge` just above). `Walk::create` fills a
+`kos_task_params` from the table entry and calls `kos_task_create`:
 
 ```
-        p.authority = t.authority;
-        p.task = s.handle;
+        kos_task_params p = {};
+        p.instance = name(s.task);
+        p.cap_count = static_cast<uint8_t>(t.cap_grant_count);
+        // ...
+        return kos_task_create(program_, &p, &s.handle);
 ```
 
-`t.authority` is the composition's `authority:` list as bits, and the kernel refuses any bit
-the spawner does not hold itself (Stop 8). The thread's entry is `task_trampoline`, which
-calls `kickos_main`, which calls the application's renamed `main`. Finally `Walk::release`
-closes the badged copy: the kernel's watch keeps its own record, so the init does not need
-the capability any more.
+`program_` is the program capability that `Walk::boot` got from `kos_program_find`. The
+declaration the kernel selects with `p.instance` is the static facts the composer wrote into
+the image beside the table: the priority, the priority ceiling (12, from `ceiling:` in the
+YAML), the cores and the authority. The init does not pass them. The kernel takes them from the
+declaration, and it refuses a declaration whose authority bits, ceiling or cores the creator
+does not hold. The kernel then starts the task's entry thread itself. The thread's entry is
+`kickos_program_entry` for a program, which calls the program's `main`.
+Finally `Walk::release` closes the badged copy: the kernel's watch keeps its own record, so the
+init does not need the capability any more.
 
-**Try it:** `break kickos::spawn_masked`, `continue`. The first hit is the init spawning
-`main` (the backtrace goes through `syscall_dispatch` from `svc_trampoline`):
-
-```
-(gdb) p *p
-$1 = {entry = 0x1a41 <kickos::init::task_trampoline(void*)>, arg = 0xfaa8 <kickos_table_image+32>,
-  name = 0xfae0 <kickos_table_image+88> "main", prio = 2 '\002', policy = 0 '\000',
-  cap_count = 0 '\000', quantum_ns = 0, mem_base = 0x0, mem_size = 0, windows = 0x0,
-  window_count = 0, stack_base = 0x0, stack_size = 0, caps = 0x0, cap_dest = 0x0,
-  core_mask = 0, authority = 113, task = 3}
-```
-
-113 is `0x71`: memory (1), system (16), console (32) and tasks (64). Root holds `0x1ff`; `main`
-gets only the four bits its composition lists. Now `break kickos::handle_close`, `continue`:
-the init closes handle 2, its badged copy.
+**Try it:** `break kickos::task_create_call`, `continue`. The first hit is the init creating
+`main` (the backtrace goes through `syscall_dispatch` from `svc_trampoline`). The declaration
+it selects carries the authority `0x71`: memory (1), system (16), console (32) and tasks (64).
+Root holds `0x1ff`; `main` gets only the four bits its composition lists. The entry thread's
+entry is `kickos_task_entry`, and its argument is the `kos_task_args` block at the top of its
+own stack. Now `break kickos::handle_close`, `continue`: the init closes handle 2, its badged
+copy.
 
 ```
 (gdb) p c->caps.chunk[0][1]
@@ -401,15 +402,16 @@ number plus one, so it named slot 1 before the call and names slot 2 after it.
 ("Lifecycle", and the own-create rule)
 
 ### Stop 6: a task is an empty group with a creator
-**Where:** `kernel/syscall/syscall_thread.cc`, `task_create_call`, `task_create_admit`;
+**Where:** `kernel/syscall/syscall_thread.cc`, `task_create_empty_call`, `task_build`, `task_create_admit`;
 `kernel/task/task.cc`, `task_create`, `task_seat`, `task_handle`
 
 A **task** is a group of threads that share one memory domain and live and die together: a
 fault in one ends the whole task ([Fault and kill](09-fault-and-kill.md)). `main` wants
 `sink` to be able to die without taking `main` along, so it creates a task for it.
 
-`task_create_call` first runs `task_create_admit`, which needs `AUTH_TASKS` and, if a memory
-grant is passed, checks the caller may grant it. Then `task_create` does the work:
+`task_create_empty_call` calls `task_build`, which first runs `task_create_admit`. That needs
+`AUTH_TASKS` and, if a memory grant is passed, checks the caller may grant it. Then `task_create`
+does the work:
 
 ```
         Domain* const d =
@@ -436,18 +438,17 @@ the task shares the default user domain (`domain_default_user`); on a board with
 it would get an address space of its own ([The MMU](10-the-mmu.md)). `task_seat` takes a free
 task slot and keeps its generation. `creator_tag` records who created it: only that thread
 may spawn into the task, watch it, or kill it (`task_created_by`). A thread's tag is its
-pool index plus one. Back in `task_create_call`, `task_sched_inherit` copies the creator's
+pool index plus one. Back in `task_build`, `task_sched_inherit` copies the creator's
 priority ceiling, and `task_handle` packs the slot index (plus one) and the generation into
 the `kos_task_t` handle.
 
 A task is not a capability. It is named by its own generational handle, and the authority to
 use that name is "I created it", checked by tag.
 
-**Try it:** the first `task_create_call` is the init's; the second is `main`'s.
+**Try it:** the first `task_create_empty_call` is `main`'s.
 
 ```
-(gdb) break kickos::task_create_call
-(gdb) continue
+(gdb) break kickos::task_create_empty_call
 (gdb) continue
 (gdb) finish
 0x00007272 in (anonymous namespace)::syscall_body (nr=51, a0=0, a1=0, a2=537034632, a3=0) at .../kernel/syscall/syscall.cc:1267
@@ -489,7 +490,7 @@ There are two ways a thread gets a stack from it:
   block and records which task reserved it (`kernel/include/kickos/ramown.h`): a later grant
   of that block is admitted only to its owner. The block is cleared before it is returned.
 - **The kernel picks one.** A spawn with `stack_base == nullptr` gets a block of
-  `KICKOS_USER_STACK_SIZE` (8 KiB here). `spawn_masked` first tries the free list
+  `KICKOS_USER_STACK_SIZE` (8 KiB here). `spawn_locked` first tries the free list
   (`ThreadPool::stack_pop`, zeroing a recycled block), then `arch_ram_alloc`. Such a stack is
   marked `kstack_owned`, and when the thread's pool slot is reused (`ThreadPool::alloc`) the
   block goes back on that free list. One size class, so the list never fragments.
@@ -505,15 +506,15 @@ Breakpoint 1, arch_ram_alloc (size=8192)
 Breakpoint 1, arch_ram_alloc (size=64)
 #1  kickos::ram_owner_alloc (owner=<optimized out>, size=64)
 Breakpoint 2, kickos::ThreadPool::stack_pop (this=<optimized out>)
-#1  kickos::spawn_masked (p=..., p@entry=0x20023e18, ...)
+#1  kickos::spawn_locked (p=..., ...)
 Breakpoint 1, arch_ram_alloc (size=8192)
-#1  kickos::spawn_masked (p=..., p@entry=0x20023e18, ...)
+#1  kickos::spawn_locked (p=..., ...)
 Breakpoint 1, arch_ram_alloc (size=8192)
 #1  kickos::ram_owner_alloc (owner=<optimized out>, size=8192)
 Breakpoint 2, kickos::ThreadPool::stack_pop (this=<optimized out>)
-#1  kickos::spawn_masked (p=..., p@entry=0x20027f98, ...)
+#1  kickos::spawn_locked (p=..., ...)
 Breakpoint 1, arch_ram_alloc (size=8192)
-#1  kickos::spawn_masked (p=..., p@entry=0x20027f98, ...)
+#1  kickos::spawn_locked (p=..., ...)
 ```
 
 In order: idle's stack, root's stack, the init's private block (64 bytes), `main`'s stack
@@ -800,7 +801,7 @@ authority at all: it was spawned with `authority = 0`.
 **Where:** `kernel/syscall/cap.cc`, `cap_console_publish_through`, `cap_console_publish`,
 `cap_seat_stdout`, `cap_console_serve`, `cap_install_defaults`
 
-`kos_console_publish(ep, sink_task)` needs `AUTH_CONSOLE`, and the capability it names must
+`the console publish call(ep, sink_task)` needs `AUTH_CONSOLE`, and the capability it names must
 carry `HANDOUT`. `cap_console_publish` then takes two references on the endpoint: one for
 the kernel itself (the published target, so the endpoint outlives every thread's copy), and
 one for the publisher's own slot 0, which `cap_seat_stdout` fills with a `SIGNAL`-only copy.

@@ -7,10 +7,13 @@
 #include "message.h"
 
 #include <kickos/amp.h>
+#include <kickos/chip_limits.h> // KICKOS_CHIP_ONE_TASK
 #include <kickos/sys/driver_service.h> // KOS_DRV_HANDOVER_PROBE_US
 #include <kickos/sys/emit.h> // kconsole_write_all
 #include <kickos/sys/errno.h>
-#include <kickos/sys/task_trampoline.h>
+#include <kickos/sys/image.h>
+
+KOS_IMAGE_INIT_OBJECT()
 
 namespace kickos::init
 {
@@ -22,6 +25,25 @@ namespace kickos::init
         }
 
         static_assert(Message::CAPACITY <= KOS_EP_MSG_MAX, "a diagnostic line is one send");
+
+        // A chip that holds one task composes no watcher and no shared region (supply.one-task).
+        uint16_t watches_of(kos_table_task const& t)
+        {
+            if (KICKOS_CHIP_ONE_TASK)
+            {
+                return 0u;
+            }
+            return t.watch_count;
+        }
+
+        uint16_t regions_of(kos_table_header const& h)
+        {
+            if (KICKOS_CHIP_ONE_TASK)
+            {
+                return 0u;
+            }
+            return h.region_count;
+        }
 
         // The capability the kernel seated in root for crossing `port` of `node`, or KOS_CAP_NONE.
         kos_cap_t seated_port(uint64_t node, uint64_t port)
@@ -67,6 +89,7 @@ namespace kickos::init
         , build_{build}
         , ends_{KOS_TABLE_NONE}
         , notify_{KOS_CAP_NONE}
+        , program_{KOS_CAP_NONE}
         , private_{nullptr}
         , reports_{}
         , report_count_{0}
@@ -105,6 +128,11 @@ namespace kickos::init
     kos_cap_t Walk::notify() const
     {
         return notify_;
+    }
+
+    kos_program_t Walk::program() const
+    {
+        return program_;
     }
 
     void Walk::refused(char const* step, uint16_t task, char const* answer) const
@@ -185,9 +213,10 @@ namespace kickos::init
 
         check(kos_notify_create(&notify_), "kos_notify_create", KOS_TABLE_NONE);
         check(kos_notify_bind(notify_), "kos_notify_bind", KOS_TABLE_NONE);
+        check(kos_program_find(build_.program, &program_), "kos_program_find", KOS_TABLE_NONE);
 
         // The order of the reservations is the arena's, which admission replays.
-        uint32_t const private_size = (count + header_->region_count) * KICKOS_INIT_PRIVATE_RECORD_SIZE;
+        uint32_t const private_size = (count + regions_of(*header_)) * KICKOS_INIT_PRIVATE_RECORD_SIZE;
         private_ = static_cast<PrivateRecord*>(reserve(private_size, "kos_ram_alloc of the private block",
                                                        KOS_TABLE_NONE));
         check(kos_mem_self_grant(private_, private_size, 0u), "kos_mem_self_grant of the private block",
@@ -209,7 +238,7 @@ namespace kickos::init
         // Each watcher's own status block holds the tasks it watches alone, in `watches` order.
         for (uint16_t i = 0; i < count; i++)
         {
-            uint32_t const status_size = tasks_[i].watch_count * KICKOS_INIT_STATUS_RECORD_SIZE;
+            uint32_t const status_size = watches_of(tasks_[i]) * KICKOS_INIT_STATUS_RECORD_SIZE;
             if (status_size == 0u)
             {
                 continue;
@@ -219,12 +248,12 @@ namespace kickos::init
             check(kos_mem_self_grant(r.status, status_size, 0u), "kos_mem_self_grant of the status block", i);
             // status_write keeps the count's parity, so a count left odd would hold every
             // reader off for good.
-            for (uint16_t k = 0; k < tasks_[i].watch_count; k++)
+            for (uint16_t k = 0; k < watches_of(tasks_[i]); k++)
             {
                 StatusWriter::clear(&r.status[k]);
             }
         }
-        for (uint16_t r = 0; r < header_->region_count; r++)
+        for (uint16_t r = 0; r < regions_of(*header_); r++)
         {
             if ((regions_[r].flags & KOS_TABLE_REGION_PARTITION) != 0u)
             {
@@ -248,7 +277,7 @@ namespace kickos::init
             {
                 continue;
             }
-            if (not build_.sp_masked)
+            if (not build_.sp_masked and (t.flags & KOS_TABLE_TASK_ON_REQUEST) == 0u)
             {
                 record(i).block = reserve(t.stack, "kos_ram_alloc of the stack", i);
             }
@@ -256,7 +285,9 @@ namespace kickos::init
 
         for (uint16_t i = 0; i < count; i++)
         {
-            if (grant_of(i, KOS_GRANT_ENDPOINT_SERVE) == nullptr)
+            // A task started on request is passed its endpoint by its creator.
+            if (grant_of(i, KOS_GRANT_ENDPOINT_SERVE) == nullptr
+                or (tasks_[i].flags & KOS_TABLE_TASK_ON_REQUEST) != 0u)
             {
                 continue;
             }
@@ -272,7 +303,7 @@ namespace kickos::init
         }
         for (uint16_t i = 0; i < count; i++)
         {
-            if (tasks_[i].watch_count != 0u)
+            if (watches_of(tasks_[i]) != 0u)
             {
                 check(kos_notify_create(&record(i).notify), "kos_notify_create", i);
             }
@@ -374,6 +405,10 @@ namespace kickos::init
             return false;
         }
         kos_table_task const& t = tasks_[i];
+        if ((t.flags & (KOS_TABLE_TASK_ON_REQUEST | KOS_TABLE_TASK_HOSTED)) != 0u)
+        {
+            return false;
+        }
         for (uint16_t k = 0; k < t.use_count; k++)
         {
             if (not serving(refs_[t.first_use + k].task))
@@ -420,35 +455,30 @@ namespace kickos::init
         }
         else
         {
-            void* data = nullptr;
-            uint32_t data_size = 0u;
-            if (build_.translating)
-            {
-                data = r.block;
-                data_size = t.stack;
-            }
-            check(kos_task_create(data, data_size, 0u, &handle), "kos_task_create", i);
             Start s;
             s.task = i;
-            s.handle = handle;
+            s.handle = KOS_TASK_NONE;
             s.copy = copy;
             s.line_count = 0u;
+            s.badged_count = 0u;
             s.pinned = false;
-            s.step = "kos_task_sched_grant";
-            rc = kos_task_sched_grant(handle, t.ceiling, t.core_mask);
+            s.step = "kos_task_create";
+            rc = take_lines(s);
             if (rc == 0)
             {
-                s.step = "kos_task_watch";
-                rc = kos_task_watch(handle, copy, r.endpoint);
+                rc = mint_uses(s);
             }
             if (rc == 0)
             {
-                rc = take_lines(s);
+                s.step = "kos_task_create";
+                rc = create(s);
+                handle = s.handle;
             }
             if (rc == 0)
             {
-                s.step = "kos_thread_create";
-                rc = spawn(s);
+                // The task runs already: a watch armed after its end or its readiness reports it,
+                // and a refused one would leave its death unreported.
+                check(kos_task_watch(handle, copy, KOS_CAP_NONE), "kos_task_watch", i);
             }
             release(s);
             step = s.step;
@@ -499,6 +529,28 @@ namespace kickos::init
         return 0;
     }
 
+    int Walk::mint_uses(Start& s)
+    {
+        kos_table_task const& t = tasks_[s.task];
+        for (uint16_t k = 0; k < t.grant_count; k++)
+        {
+            kos_table_grant const& g = grants_[t.first_grant + k];
+            if (g.kind != KOS_GRANT_ENDPOINT_USE or g.badge == KOS_BADGE_NONE)
+            {
+                continue;
+            }
+            s.step = "kos_endpoint_badge";
+            int const rc = kos_endpoint_badge(record(g.target).endpoint, g.badge,
+                                              &s.badged[s.badged_count]);
+            if (rc != 0)
+            {
+                return rc;
+            }
+            s.badged_count++;
+        }
+        return 0;
+    }
+
     int Walk::claim(uint16_t line, kos_cap_t* out)
     {
         uint32_t retries = 0;
@@ -516,7 +568,7 @@ namespace kickos::init
         }
     }
 
-    int Walk::spawn(Start& s)
+    int Walk::create(Start& s)
     {
         kos_table_task const& t = tasks_[s.task];
         TaskRecord& r = record(s.task);
@@ -524,6 +576,7 @@ namespace kickos::init
         kos_cap_grant caps[KICKOS_MAX_SPAWN_GRANTS] = {};
         uint16_t window_count = 0;
         uint16_t line = 0;
+        uint16_t badged = 0;
         for (uint16_t k = 0; k < t.grant_count; k++)
         {
             kos_table_grant const& g = grants_[t.first_grant + k];
@@ -538,20 +591,20 @@ namespace kickos::init
                 {
                     w.kind = KOS_WINDOW_PORTS;
                 }
-                else if (g.kind == KOS_GRANT_REGION)
+                else if (not KICKOS_CHIP_ONE_TASK and g.kind == KOS_GRANT_REGION)
                 {
                     w.base = reinterpret_cast<uintptr_t>(private_[header_->task_count + g.target].region);
                     w.size = regions_[g.target].size;
                     w.kind = KOS_WINDOW_MEMORY;
                 }
-                else if (g.kind == KOS_GRANT_STATUS)
+                else if (not KICKOS_CHIP_ONE_TASK and g.kind == KOS_GRANT_STATUS)
                 {
                     w.base = reinterpret_cast<uintptr_t>(r.status);
                     w.kind = KOS_WINDOW_MEMORY;
                 }
                 window_count++;
             }
-            if (g.cap_slot == KOS_TABLE_NONE)
+            if (g.cap_slot == KOS_TABLE_NONE or g.kind == KOS_GRANT_ENDPOINT_HOSTED)
             {
                 continue;
             }
@@ -561,6 +614,12 @@ namespace kickos::init
                 // WAIT from the HANDOUT the init holds.
                 c.source_cap = r.endpoint;
                 c.rights_mask = KOS_CAP_WAIT;
+            }
+            else if (g.kind == KOS_GRANT_ENDPOINT_USE and g.badge != KOS_BADGE_NONE)
+            {
+                c.source_cap = s.badged[badged];
+                c.rights_mask = KOS_CAP_SIGNAL;
+                badged++;
             }
             else if (g.kind == KOS_GRANT_ENDPOINT_USE)
             {
@@ -585,12 +644,8 @@ namespace kickos::init
             }
         }
 
-        kos_thread_params p = {};
-        p.entry = task_trampoline;
-        p.arg = const_cast<kos_table_task*>(&t);
-        p.name = name(s.task);
-        p.prio = t.priority;
-        p.policy = KOS_POLICY_FIFO;
+        kos_task_params p = {};
+        p.instance = name(s.task);
         p.cap_count = static_cast<uint8_t>(t.cap_grant_count);
         if (window_count != 0u)
         {
@@ -601,18 +656,33 @@ namespace kickos::init
         {
             p.caps = caps;
         }
+        if (build_.translating)
+        {
+            p.block = r.block;
+            p.size = t.stack;
+        }
+        driver_path::host(*this, s.task, caps, &p);
         // Where SP is masked the kernel gives the thread one whole stride, and the composition's
         // figure is never handed over.
         if (not build_.sp_masked)
         {
-            p.stack_base = r.block;
+            p.stack = r.block;
             p.stack_size = t.stack;
         }
-        p.core_mask = t.core_mask;
-        p.authority = t.authority;
-        p.task = s.handle;
-        kos_thread_t thread = KOS_THREAD_NONE;
-        return kos_thread_create(&p, &thread);
+        // A program task runs the program its record names, found for this create alone.
+        if (t.program == KOS_TABLE_NO_STRING)
+        {
+            return kos_task_create(program_, &p, &s.handle);
+        }
+        kos_program_t program = KOS_CAP_NONE;
+        int rc = kos_program_find(strings_ + t.program, &program);
+        if (rc != 0)
+        {
+            return rc;
+        }
+        rc = kos_task_create(program, &p, &s.handle);
+        (void)kos_handle_close(program);
+        return rc;
     }
 
     void Walk::release(Start& s)
@@ -620,6 +690,10 @@ namespace kickos::init
         for (uint16_t k = 0; k < s.line_count; k++)
         {
             close(s.lines[k], "kos_handle_close of a line", s.task);
+        }
+        for (uint16_t k = 0; k < s.badged_count; k++)
+        {
+            close(s.badged[k], "kos_handle_close of a badged endpoint copy", s.task);
         }
         if (s.pinned)
         {
@@ -765,7 +839,7 @@ namespace kickos::init
         for (uint16_t w = 0; w < header_->task_count; w++)
         {
             kos_table_task const& t = tasks_[w];
-            for (uint16_t k = 0; k < t.watch_count; k++)
+            for (uint16_t k = 0; k < watches_of(t); k++)
             {
                 if (refs_[t.first_watch + k].task == i)
                 {
@@ -818,7 +892,7 @@ namespace kickos::init
         for (uint16_t w = 0; w < header_->task_count; w++)
         {
             kos_table_task const& t = tasks_[w];
-            for (uint16_t k = 0; k < t.watch_count; k++)
+            for (uint16_t k = 0; k < watches_of(t); k++)
             {
                 if (refs_[t.first_watch + k].task != i)
                 {

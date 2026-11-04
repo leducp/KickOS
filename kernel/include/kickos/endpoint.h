@@ -7,7 +7,7 @@
 #include <stdint.h>
 
 #include <kickos/arch/arch.h> // KICKOS_AMP_NODE
-#include <kickos/config.h> // KICKOS_MAX_ENDPOINTS bounds the served-chain ref below
+#include <kickos/config.h>
 #include <kickos/list.h>
 #include <kickos/sys/errno.h> // KOS_EAGAIN, KOS_ECONNREFUSED
 #include <kickos/held.h>
@@ -33,8 +33,6 @@ namespace kickos
     // own. One testing both pays a frame on a chain that reaches kpanic, and that descent is
     // measured (tests/static/check_trap_redzone.sh).
     constexpr uint16_t EP_SERVED_NONE = 0;
-    static_assert(KICKOS_MAX_ENDPOINTS < UINT16_MAX,
-                  "an endpoint's served-chain ref would collide with EP_SERVED_NONE");
 
     constexpr uint16_t ep_served_ref(int index)
     {
@@ -46,7 +44,7 @@ namespace kickos
     }
 
     static_assert(ep_served_index(EP_SERVED_NONE) < 0,
-                  "EP_SERVED_NONE must decode outside [0, KICKOS_MAX_ENDPOINTS): the "
+                  "EP_SERVED_NONE must decode outside the endpoint pool's indices: the "
                   "served-chain walks in kernel/sync/sync.cc end on SlotPool::at's refusal "
                   "and carry no sentinel test of their own");
 
@@ -75,6 +73,8 @@ namespace kickos
         uint8_t vacated = 0;
         // EP_CONSOLE_*: whether this is the published console, and whether its task lives.
         uint8_t console = 0;
+        // The holdings epoch that last counted this slot (cap.cc).
+        uint16_t hold_mark = 0;
 #if KICKOS_AMP_NODE
         // The node whose kernel holds the receiver, PLUS ONE: 0 is local, so a zeroed slot
         // is already local and nothing has to be seated. THE WHOLE ANSWER to "is this
@@ -114,7 +114,7 @@ namespace kickos
     // payload out of that slot in its own receive (endpoint_reply_recv), never in the masked
     // service that runs this.
     bool endpoint_far_call_deliver(uint32_t from, uint32_t port, amp::ReplyTag const& tag,
-                                   uint32_t len, uint32_t slot, Held held);
+                                   uint32_t badge, uint32_t len, uint32_t slot, Held held);
 
     // Hand one far reply to whatever local thread `tag` names, and answer whether one took it.
     // `tag` is another node's writing: nothing in it may be spent before this validates it.
@@ -181,9 +181,13 @@ namespace kickos
         return -KOS_ECONNREFUSED;
     }
 
-    // The span the narrow fields take ahead of `server` on every posture: one pointer on a
-    // 64-bit build, two words on a 32-bit one.
+    // The span the narrow fields take ahead of `server`: one pointer on a 64-bit build, two
+    // words on a 32-bit one, and a pointer more on an AMP node.
+#if KICKOS_AMP_NODE
+    constexpr unsigned EP_NARROW_SPAN = 8 + sizeof(void*);
+#else
     constexpr unsigned EP_NARROW_SPAN = 8;
+#endif
 
     // A field added under the AMP guard costs its size in .bss on every AMP board, times the
     // endpoint pool. Widen this deliberately or not at all.

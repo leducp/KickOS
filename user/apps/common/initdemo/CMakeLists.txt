@@ -2,5 +2,5 @@
 # Copyright (c) 2026 Philippe Leduc
 
 add_executable(initdemo main.cc)
-kickos_app_system(initdemo COMPOSITION system.yaml)
+kickos_app_system(initdemo COMPOSITION system.yaml LOCAL_DRIVERS)
 kickos_emit_image(initdemo)

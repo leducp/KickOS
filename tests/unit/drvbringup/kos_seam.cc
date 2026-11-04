@@ -16,25 +16,15 @@ struct kos_seam_control g_seam = {};
 
 namespace
 {
-    // A power-of-two, naturally aligned block: bring_up asks kos_ram_alloc for one, and the
-    // RAM arm of the grant predicate demands it of root on silicon.
-    alignas(1024) unsigned char g_arena[1024];
-
     char g_trace[KOS_SEAM_TRACE_MAX];
     uint32_t g_trace_len;
     char g_msg[KOS_SEAM_MSG_MAX];
     uint32_t g_msg_len;
 
-    uint32_t g_next_cap;
     uint32_t g_next_thread;
-    uint32_t g_next_task;
-    uint32_t g_irq_claims;
     uint32_t g_spawns;
     void* g_spawn_args[8];
-    int g_claim_lines[8];
-
-    // Run of consecutive kos_sleep_ns calls not yet rendered.
-    uint32_t g_pending_sleeps;
+    uint64_t g_now_ns;
 
     // snprintf returns the length it WOULD have written, so advancing a cursor by it walks
     // past the buffer on the first truncation and makes the next `cap - len` underflow.
@@ -58,31 +48,13 @@ namespace
         *len += written;
     }
 
-    void raw(char const* token)
+    void note(char const* token)
     {
         if (g_trace_len != 0u)
         {
             append(g_trace, KOS_SEAM_TRACE_MAX, &g_trace_len, " ");
         }
         append(g_trace, KOS_SEAM_TRACE_MAX, &g_trace_len, token);
-    }
-
-    void flush_sleeps()
-    {
-        if (g_pending_sleeps == 0u)
-        {
-            return;
-        }
-        char buf[32];
-        snprintf(buf, sizeof(buf), "sleep*%u", g_pending_sleeps);
-        g_pending_sleeps = 0;
-        raw(buf);
-    }
-
-    void note(char const* token)
-    {
-        flush_sleeps();
-        raw(token);
     }
 
     void note_id(char const* verb, uint32_t id)
@@ -96,43 +68,24 @@ namespace
 void kos_seam_reset()
 {
     g_seam = kos_seam_control{};
-    g_seam.latch_on_spawn = true;
-    memset(g_arena, 0, sizeof(g_arena));
     g_trace[0] = '\0';
     g_trace_len = 0;
     g_msg[0] = '\0';
     g_msg_len = 0;
-    g_next_cap = KOS_SEAM_CAP_BASE;
     g_next_thread = KOS_SEAM_THREAD_BASE;
-    g_next_task = KOS_SEAM_TASK_BASE;
-    g_irq_claims = 0;
     g_spawns = 0;
     memset(g_spawn_args, 0, sizeof(g_spawn_args));
-    for (int& line : g_claim_lines)
-    {
-        line = -1;
-    }
-    g_pending_sleeps = 0;
+    g_now_ns = 0;
 }
 
 char const* kos_seam_trace()
 {
-    flush_sleeps();
     return g_trace;
 }
 
 char const* kos_seam_msg()
 {
     return g_msg;
-}
-
-int kos_seam_claimed_line(uint32_t i)
-{
-    if (i >= sizeof(g_claim_lines) / sizeof(g_claim_lines[0]))
-    {
-        return -1;
-    }
-    return g_claim_lines[i];
 }
 
 void* kos_seam_spawn_arg(uint32_t i)
@@ -142,6 +95,11 @@ void* kos_seam_spawn_arg(uint32_t i)
         return nullptr;
     }
     return g_spawn_args[i];
+}
+
+void kos_seam_note(char const* token)
+{
+    note(token);
 }
 
 extern "C"
@@ -157,13 +115,9 @@ extern "C"
         append(g_msg, KOS_SEAM_MSG_MAX, &g_msg_len, s);
     }
 
-    int32_t kos_kconsole_write(void const* buf, size_t len)
+    int32_t kos_kconsole_write(void const* buf, size_t len, uint32_t)
     {
         note("kprint");
-        if (g_seam.kconsole_dark)
-        {
-            note("dark");
-        }
         char line[KOS_SEAM_MSG_MAX];
         size_t n = len;
         if (n > sizeof(line) - 1u)
@@ -176,100 +130,22 @@ extern "C"
         return static_cast<int32_t>(len);
     }
 
-    void kos_sleep_ns(uint64_t)
+    void kos_sleep_ns(uint64_t ns)
     {
-        g_pending_sleeps++;
+        g_now_ns += ns;
     }
 
-    void* kos_ram_alloc(size_t size)
+    uint64_t kos_clock_now(void)
     {
-        note("alloc");
-        if (g_seam.ram_alloc_fails or size > sizeof(g_arena))
-        {
-            return nullptr;
-        }
-        return g_arena;
+        return g_now_ns;
     }
 
-    int kos_mem_self_grant(void*, size_t, uint32_t flags)
-    {
-        // The flag goes in the TOKEN: an arm reads which of the block's two grants carried it.
-        if (flags == KOS_MEM_NOCACHE)
-        {
-            note("grantnc");
-        }
-        else
-        {
-            note("grant");
-        }
-        if (g_seam.self_grant_fails)
-        {
-            return -KOS_EINVAL;
-        }
-        return 0;
-    }
-
-    int kos_endpoint_create(kos_cap_t* out_cap)
-    {
-        if (g_seam.endpoint_create_fails)
-        {
-            note("ep!");
-            return -KOS_ENOMEM;
-        }
-        *out_cap = g_next_cap;
-        g_next_cap++;
-        note_id("ep", *out_cap);
-        return 0;
-    }
-
-    int kos_console_publish(kos_cap_t ep, kos_task_t)
-    {
-        if (g_seam.console_publish_fails)
-        {
-            note("pub!");
-            return -KOS_EBUSY;
-        }
-        note_id("pub", ep);
-        return 0;
-    }
-
-    int kos_irq_claim(int line, unsigned int, kos_cap_t* out_cap)
-    {
-        if (g_seam.irq_claim_retiring != 0u)
-        {
-            g_seam.irq_claim_retiring--;
-            note("claim?");
-            return -KOS_EAGAIN;
-        }
-        g_irq_claims++;
-        if (g_irq_claims <= sizeof(g_claim_lines) / sizeof(g_claim_lines[0]))
-        {
-            g_claim_lines[g_irq_claims - 1u] = line;
-        }
-        if (g_irq_claims == g_seam.irq_claim_fail_at)
-        {
-            // The out-param is left UNTOUCHED, as the real syscall leaves it on a refusal:
-            // bring_up's line[] pre-fill with KOS_CAP_NONE is the only thing that keeps the
-            // slot readable, and a fake that helpfully wrote one would hide a regression
-            // that dropped it.
-            note("claim!");
-            return -KOS_EBUSY;
-        }
-        *out_cap = g_next_cap;
-        g_next_cap++;
-        note_id("claim", *out_cap);
-        return 0;
-    }
-
+    // The thread, its priority, its core where one is named, then each delegated capability as
+    // the spawner's index it comes from and the rights it carries.
     int kos_thread_create(struct kos_thread_params const* params, kos_thread_t* out_thread)
     {
         g_spawns++;
-        if (params == nullptr)
-        {
-            note("spawn!");
-            return -KOS_EINVAL;
-        }
-        if (g_spawns == g_seam.spawn_fail_at)
+        if (params == nullptr or g_spawns == g_seam.spawn_fail_at)
         {
             *out_thread = KOS_THREAD_NONE;
             note("spawn!");
@@ -277,82 +153,33 @@ extern "C"
         }
         *out_thread = g_next_thread;
         g_next_thread++;
-        note_id("spawn", *out_thread);
-        if (g_spawns <= sizeof(g_spawn_args) / sizeof(g_spawn_args[0]))
+        char buf[64];
+        snprintf(buf, sizeof(buf), "spawn%u/p%u", *out_thread, params->prio);
+        note(buf);
+        if ((params->flags & KOS_THREAD_ESSENTIAL) != 0u)
         {
-            g_spawn_args[g_spawns - 1u] = params->arg;
+            note("essential");
         }
-        // The core a placed thread runs on, 0 being its task's default set.
+        if (params->window_count != 0u)
+        {
+            note("foreign!");
+        }
         if (params->core_mask != 0u)
         {
             note_id("core", params->core_mask);
         }
-        // The child does not run here, so its ONE observable effect on the parent, reaching
-        // its loop and setting the latch, is modelled at the spawn instead.
-        if (g_seam.latch_on_spawn and g_seam.latch != nullptr)
+        for (uint8_t i = 0; i < params->cap_count; i++)
         {
-            *g_seam.latch = 1u;
+            snprintf(buf, sizeof(buf), "g%u/%u", params->caps[i].source_cap, params->caps[i].rights_mask);
+            note(buf);
         }
-        return 0;
-    }
-
-    int kos_thread_cancel(kos_thread_t thread, enum kos_cancel, uint32_t)
-    {
-        note_id("cancel", thread);
-        return 0;
-    }
-
-    int kos_task_create(void* mem_base, uint32_t mem_size, uint32_t mem_flags,
-                        kos_task_t* out_task)
-    {
-        *out_task = KOS_TASK_NONE;
-        if (g_seam.task_create_fails)
+        if (g_spawns <= sizeof(g_spawn_args) / sizeof(g_spawn_args[0]))
         {
-            note("task!");
-            return -KOS_ENOMEM;
+            g_spawn_args[g_spawns - 1u] = params->arg;
         }
-        *out_task = g_next_task;
-        g_next_task++;
-        // The SHARED grant is recorded, not just the handle: whether the ring block reaches
-        // the group is the whole of what moved from the spawn to the task.
-        if (mem_base != nullptr and mem_size != 0)
+        if (g_seam.run_on_spawn)
         {
-            if (mem_flags == KOS_MEM_NOCACHE)
-            {
-                note_id("taskmemnc", *out_task);
-            }
-            else
-            {
-                note_id("taskmem", *out_task);
-            }
-        }
-        else
-        {
-            note_id("task", *out_task);
-        }
-        return 0;
-    }
-
-    int kos_task_sched_grant(kos_task_t task, uint8_t prio_ceiling, uint32_t core_mask)
-    {
-        char buf[48];
-        snprintf(buf, sizeof(buf), "grant%u/%u/%u", task, prio_ceiling, core_mask);
-        note(buf);
-        if (g_seam.sched_grant_fails)
-        {
-            return -KOS_EPERM;
-        }
-        return 0;
-    }
-
-    int kos_task_watch(kos_task_t task, kos_cap_t notify_cap, kos_cap_t ready_ep)
-    {
-        char buf[48];
-        snprintf(buf, sizeof(buf), "watch%u/%u/%u", task, notify_cap, ready_ep);
-        note(buf);
-        if (g_seam.watch_fails)
-        {
-            return -KOS_EACCES;
+            params->entry(params->arg);
         }
         return 0;
     }
@@ -365,82 +192,58 @@ extern "C"
         return 0;
     }
 
-    kos_thread_t kos_thread_self(void)
-    {
-        return 1u;
-    }
-
-    int kos_thread_affinity(kos_thread_t, uint32_t core_mask)
-    {
-        if (g_seam.pin_fails)
-        {
-            note("pin!");
-            return -KOS_EPERM;
-        }
-        note_id("pin", core_mask);
-        return static_cast<int>(core_mask);
-    }
-
-    int kos_task_slay(kos_task_t task, uint32_t timeout_us)
-    {
-        if (timeout_us == 0u)
-        {
-            note_id("tkill", task);
-            return 0;
-        }
-        note_id("tslay", task);
-        return g_seam.slay_rc;
-    }
-
     int kos_handle_close(kos_cap_t cap)
     {
         note_id("close", cap);
         return 0;
     }
 
+    int kos_thread_set_priority(uint8_t priority)
+    {
+        note_id("prio", priority);
+        return g_seam.set_priority_rc;
+    }
+
+    void kos_exit(int code)
+    {
+        note_id("exit", static_cast<uint32_t>(code));
+        throw kos_seam_exit{code};
+    }
+
+    int kos_word_wait(uint32_t* word, uint32_t expected, uint32_t timeout_us)
+    {
+        if (*word != expected)
+        {
+            note("park?");
+            return -KOS_EAGAIN;
+        }
+        note_id("park", timeout_us);
+        if (g_seam.publish_on_park)
+        {
+            *word = 1u;
+            return 0;
+        }
+        g_now_ns += uint64_t{timeout_us} * 1000u;
+        return -KOS_ETIMEDOUT;
+    }
+
+    int kos_word_wake(uint32_t*, uint32_t n, uint32_t units)
+    {
+        char buf[48];
+        snprintf(buf, sizeof(buf), "wake%u/%u", n, units);
+        note(buf);
+        return 0;
+    }
+
     int32_t kos_send(kos_cap_t, void const*, size_t, uint32_t)
     {
-        note("probe");
-        return g_seam.send_rc;
-    }
-
-    // The notification bring_up creates for the whole driver, and the badged copies it mints
-    // per signaller. Both are handles this seam hands out, so the trace can tell the mint
-    // from the create and a leaked copy shows as a "close" that never comes.
-    int kos_notify_create(kos_cap_t* out_cap)
-    {
-        if (g_seam.notify_create_fails)
-        {
-            note("note!");
-            return -KOS_ENOMEM;
-        }
-        *out_cap = g_next_cap;
-        g_next_cap++;
-        note_id("note", *out_cap);
+        note("send");
         return 0;
     }
 
-    int kos_notify_badge(kos_cap_t, uint32_t bit, kos_cap_t* out_cap)
+    int kos_notify_badge(kos_cap_t, uint32_t, kos_cap_t*)
     {
-        if (g_seam.notify_badge_fails)
-        {
-            note("badge!");
-            return -KOS_EMFILE;
-        }
-        *out_cap = g_next_cap;
-        g_next_cap++;
-        note_id("badge", bit);
-        return 0;
-    }
-
-    int kos_irq_bind_notify(kos_cap_t, kos_cap_t)
-    {
-        if (g_seam.irq_bind_notify_fails)
-        {
-            note("bind!");
-            return -KOS_EBUSY;
-        }
-        note("bind");
-        return 0;
+        note("badge");
+        return -KOS_EINVAL;
     }
 }

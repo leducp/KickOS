@@ -62,13 +62,18 @@ other chip, so their emitted sequence is byte-identical to the pre-seam behavior
 DECIDED: the rows carry a raw PMSAv7 `base + RASR` pair. The portable R/W/X/DEV attr vocabulary
 cannot express the AP and type values this needs (no-access, priv-RO, Device).
 
-The imxrt fixed table, three rows:
+The imxrt fixed table, five rows:
 
 | Base | Size | Type / AP |
 |---|---|---|
 | `0x6000_0000` | 512 MiB | Device + XN + no-access -- FlexSPI aperture wrap |
 | `0x6000_0000` | 8 MiB | Normal WB cacheable, priv-RO + X -- populated-flash overlay |
 | `0x8000_0000` | 512 MiB | Device + XN + no-access -- SEMC aperture wrap |
+| `0x0800_0000` | 128 MiB | Device + XN + no-access -- FlexSPI alias wrap, in the Code region |
+| `0x1000_0000` | 256 MiB | Device + XN + no-access -- SEMC alias wrap, in the Code region |
+
+The default map types the whole Code region Normal executable, so the two aliases of the bands it
+holds (IMXRT1060RM Table 3-1, p.36) are wrapped too.
 
 The 8 MiB Normal overlay sits in a higher slot than the 512 MiB wrap, so the real image is
 executable and readable while the unbacked remainder is Device (never speculated) and no-access
@@ -104,10 +109,9 @@ clean. No-MPU Teensy (unchanged) and the four other enforcing backends stand.
 - **Option B (M8 fleet-wide hardening).** The shipped fix keeps `PRIVDEFENA`, so privileged
   code still runs on a permissive background. The stronger posture (drop `PRIVDEFENA`, program an
   explicit whole-map, confine the kernel to its own regions) is recorded for M8. TODO.md.
-- **The MPU-disabled per-switch window (ACCEPTED).** `kickos_arm_mpu_program` writes
-  `MPU_CTRL = 0` to reprogram, reverting to the Normal-typed default map for those instructions. It
-  is bracketed by `cpsid i` in the commit and runs from already-cached fetches, so no new
-  speculation into the unbacked window is armed within it. Accepted residual.
-- **HFNMIENA bypass (ACCEPTED).** `MPU_CTRL` is enabled without `HFNMIENA`, so the MPU, and with it
-  the anti-speculation wrap, is bypassed inside HardFault and NMI handlers. The fault path is short
-  and runs cached. Accepted residual.
+- **The per-switch reprogram keeps the MPU on.** `kickos_arm_mpu_program` never writes
+  `MPU_CTRL = 0`: it disables and rewrites one per-thread descriptor at a time above the fixed rows,
+  so the wrap holds throughout (invariant `pmsa-reprogram-keeps-the-fixed-rows`). Only
+  `kickos_arm_mpu_fixed_init` zeroes `MPU_CTRL`, at boot, before the caches are on.
+- **HardFault and NMI keep the wrap.** Both PMSAv7 enables set `HFNMIENA`, so the MPU and the wrap
+  stay in force inside HardFault and NMI handlers (`reference/boards.md`, *Every PMSAv7 board*).

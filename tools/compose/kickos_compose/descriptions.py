@@ -18,6 +18,9 @@ UNITS = ("pmsav7", "pmsav8", "pmsav6", "pmp", "rxmpu", "sysmpu", "mprotect", "mm
 # The units a region descriptor programs, each stating its `granule`, and those whose region is a
 # power of two on its own alignment.
 REGION_UNITS = ("pmsav7", "pmsav8", "pmsav6", "pmp", "rxmpu", "sysmpu")
+# The units whose device windows a chip's `apertures` bound: every unit that protects memory and
+# does not translate.
+APERTURE_UNITS = REGION_UNITS + ("mprotect",)
 POW2_UNITS = ("pmsav7", "pmsav6", "pmp")
 # The smallest region a unit encodes, where it is above the 32 bytes every unit names.
 UNIT_FLOOR = {"pmsav6": 256}
@@ -28,7 +31,7 @@ CHIP_FIELDS = (
     "version", "chip", "manual", "arch", "protection", "cores", "clusters_coherent",
     "partition_gate", "data_cache", "interrupts", "cycle_counter", "timebase", "c", "reserved",
     "devices", "memory", "pins", "esptool_image", "family", "exits_on_fault", "cpu",
-    "stack_limit",
+    "stack_limit", "apertures", "one_task",
 )
 FAMILY_FIELDS = ("dir", "sources")
 # A path below arch/, one name per level and no level above it.
@@ -282,6 +285,12 @@ class Chip:
         self.cpu = None
         # Whether the core checks each stack pointer against a limit register.
         self.stack_limit = False
+        # Whether the flash holds the kernel and one task, so every packaged driver runs inside it.
+        self.one_task = False
+        # [(base, size, ref)] of the bus apertures a device window lies in, in the chip file's order,
+        # and each as a Window.
+        self.apertures = []
+        self.aperture_windows = []
 
 
 # A part with no clusters reaches its windows as one view, named by None.
@@ -319,6 +328,8 @@ def check_chip(path, text, report):
         chip.cpu = f.name(top["cpu"], "`cpu`", IDENTIFIER)
     if "stack_limit" in top:
         chip.stack_limit = f.boolean(top["stack_limit"], "`stack_limit`") is True
+    if "one_task" in top:
+        chip.one_task = f.boolean(top["one_task"], "`one_task`") is True
     if "family" in top:
         chip.family = check_family(f, top["family"])
     if "arch" in top:
@@ -370,6 +381,7 @@ def check_chip(path, text, report):
     if "pins" in top:
         check_chip_pins(f, top["pins"], chip, devices)
     check_overlaps(f, chip, windows)
+    check_apertures(f, top, root, chip, windows)
     check_gate_edges(f, chip, windows)
     chip.windows = windows
     if "interrupts" in top:
@@ -378,6 +390,70 @@ def check_chip(path, text, report):
     check_reserved(f, top, root, chip)
     check_address_width(f, chip, windows)
     return chip
+
+
+def aperture_views(chip):
+    """The views whose unit bounds a device window by the chip's `apertures`."""
+    return [view for view, protection in chip.protection.items() if protection.unit in APERTURE_UNITS]
+
+
+def check_apertures(f, top, root, chip, windows):
+    """The bus apertures a device window lies in: no memory entry inside one, and every window of a
+    device the kernel does not hold inside one."""
+    if any(view not in chip.protection for view in cluster_views(chip, None)):
+        return
+    views = aperture_views(chip)
+    if "apertures" not in top:
+        if views:
+            f.refuse(root, "form.missing",
+                     "the chip file needs `apertures`, the bus windows a device window lies in: its unit "
+                     "protects memory without translating")
+        return
+    if not views:
+        f.refuse(top["apertures"], "form.inapplicable",
+                 "`apertures` bound the device windows of a unit that protects memory without translating, "
+                 "and this part has none")
+        return
+    items = f.sequence(top["apertures"], "`apertures`")
+    if items is None:
+        return
+    if not items:
+        f.refuse(top["apertures"], "form.missing", "`apertures` lists none, so no device window would be admitted")
+    rows = []
+    for item in items:
+        values = f.fields(item, "aperture", ("window", "ref"), ("window",))
+        if values is None or "window" not in values:
+            continue
+        window = check_range(f, values["window"], "aperture window", "size")
+        if window is None:
+            continue
+        rows.append(Window("mem", "aperture [0x%X, 0x%X]" % window, window[0], window[1],
+                           cluster_views(chip, None), values["window"]))
+        chip.apertures.append((window[0], window[1], check_ref(f, values)))
+    check_address_width(f, chip, rows)
+    for row in rows:
+        for w in windows:
+            if w.space != "mem" or not w.label.startswith("memory ") or not set(w.reach) & set(row.reach):
+                continue
+            if overlap(w, row) is not None:
+                f.refuse(row.node, "chip.aperture-memory",
+                         "%s overlaps %s at 0x%X, and a device window over memory would hand a task what "
+                         "lies there" % (row.label, w.label, w.base))
+                break
+    for w in windows:
+        if w.space != "mem" or not w.label.startswith("/dev/") or not set(w.reach) & set(views):
+            continue
+        device = chip.devices.get(w.label.split("/")[2])
+        if device is None or device.owner == "kernel" or device.host:
+            continue
+        for k in range(w.count):
+            start = w.start(k)
+            if not any(base <= start and start + w.size <= base + size for base, size, ref in chip.apertures):
+                f.refuse(w.node, "chip.aperture-outside",
+                         "the window of %s at 0x%X lies in no `apertures` row, so no task could be granted it"
+                         % (w.name(k), start))
+                break
+    chip.aperture_windows = rows
 
 
 def check_partition_gate(f, node, chip, devices):
@@ -1707,7 +1783,7 @@ def check_board_memory(f, node, chip, board):
         names.add(symbol)
         layout.update(macro for macro, v, r in memory_layout(entry, 0))
         here = Window("mem", "board %s" % what, base, size, reach, values["base"])
-        hits = [(w, overlap(w, here)) for w in chip.windows + windows
+        hits = [(w, overlap(w, here)) for w in chip.windows + chip.aperture_windows + windows
                 if w.space == "mem" and set(w.reach) & set(reach)]
         hits = [(w, pair) for w, pair in hits if pair is not None]
         if hits:

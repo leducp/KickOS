@@ -23,6 +23,10 @@ family: none
 exits_on_fault: false
 interrupts: { count: { value: 160, ref: "Table 4-2 CM7 domain interrupt summary, p.52" } }
 
+apertures:
+  - { window: [0x40000000, 0x400000], ref: "Table 3-1 System memory map (CM7), AIPS-1 to AIPS-4, p.36" }
+  - { window: [0x42000000, 0x100000], ref: "Table 3-1 System memory map (CM7), AIPS-5, p.35" }
+
 devices:
   # A device on an AIPS bridge is its whole 16 KiB slot.
   lpuart6:
@@ -37,6 +41,17 @@ devices:
     bus_master: true
     ref: "42.7 USB Core Memory Map/Register Definition, p.2433"
     lines: { irq: { number: 113, symbol: USB_OTG1_IRQ, ref: "Table 4-2 CM7 domain interrupt summary, p.48" } }
+  # The masters beside the core: eDMA, DCP and the "others" sharing one index (Table 32-6 Master
+  # Index Allocation, p.1799).
+  edma: { window: [0x400E8000, 0x4000], bus_master: true, ref: "Table 3-2 AIPS-1 memory map, p.37" }
+  dcp: { window: [0x402FC000, 0x4000], bus_master: true, ref: "Table 3-4 AIPS-3 memory map, p.39" }
+  enet: { window: [0x402D8000, 0x4000], bus_master: true, ref: "Table 3-4 AIPS-3 memory map, p.39" }
+  enet2: { window: [0x402D4000, 0x4000], bus_master: true, ref: "Table 3-4 AIPS-3 memory map, p.39" }
+  usdhc1: { window: [0x402C0000, 0x4000], bus_master: true, ref: "Table 3-4 AIPS-3 memory map, p.39" }
+  usdhc2: { window: [0x402C4000, 0x4000], bus_master: true, ref: "Table 3-4 AIPS-3 memory map, p.39" }
+  csi: { window: [0x402BC000, 0x4000], bus_master: true, ref: "Table 3-4 AIPS-3 memory map, p.39" }
+  lcdif: { window: [0x402B8000, 0x4000], bus_master: true, ref: "Table 3-4 AIPS-3 memory map, p.39" }
+  pxp: { window: [0x402B4000, 0x4000], bus_master: true, ref: "Table 3-4 AIPS-3 memory map, p.39" }
   # Disabled at boot, then grantable.
   wdog1: { window: [0x400B8000, 0x4000], ref: "Table 3-2 AIPS-1 memory map, p.37" }
   wdog2: { window: [0x400D0000, 0x4000], ref: "Table 3-2 AIPS-1 memory map, p.37" }

@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The bring-up choreography of an unprivileged driver service, once for every class and
-// every chip: lay out the shared block, make the group, publish or retain the endpoint, claim
-// the IRQ lines, spawn the threads with their per-thread grants and cap roles, poll the
-// readiness latch strictly between two spawns, unwind on any failure, and finish a console
-// handover. The init holds the block and the endpoint and handles the task's failure
-// (docs/design-m10-target.md, section 2).
+// The bring-up of an unprivileged driver service, once for every class and every chip. In a driver
+// task it runs in the entry thread, which is descriptor thread 0: lay out the shared block, spawn
+// threads 1 to n-1 into the task with their cap roles, the ones past the barrier waiting on the
+// readiness latch, keep thread 0's own capabilities, and run thread 0's body. The kernel's create
+// has published the console, claimed the lines and seated the window; the init holds the block
+// and the endpoint, finishes a console handover and handles the task's end
+// (docs/design-m10-target.md, section 2). A driver listed under a task's `drivers` runs as threads
+// of that task: its entry thread stages the same layout and the bring-up spawns thread 0 too.
 //
 // A class enters only as a thread-entry pointer and as the per-chip block_init. No chip
 // header is included here: a descriptor is generated from the driver's kickos_add_driver
@@ -17,6 +19,7 @@
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
+#include <kickos/sys/atomic.h>
 #include <kickos/sys/cap_index.h> // KOS_CAP_STDOUT
 #include <kickos/sys/driver_geometry.h> // KICKOS_DRIVER_ENDPOINTS (generated)
 #include <kickos/sys/errno.h>
@@ -32,8 +35,8 @@ struct kos_driver_line
     uint16_t index;
 };
 
-// What the init keeps of a packaged driver task across its restarts, filled at each start from
-// its record and its table entry: START's only argument.
+// A packaged driver's instance, filled from its table entry and its ring block by the entry thread
+// of its task or of the task it runs in: START's only argument.
 struct kos_driver_instance
 {
     char const* name;     // the task's name, which a descriptor thread naming none takes
@@ -45,12 +48,15 @@ struct kos_driver_instance
     uint32_t block_flags; // its self-grant's kos_mem_flags, KOS_MEM_NOCACHE for an uncached one
     uint32_t core_mask;   // the declared core's bit, 0 for none
     uint8_t ceiling;      // the task's priority ceiling the table carries
-    kos_cap_t endpoint;   // the endpoint the init created at boot and keeps with HANDOUT
-    kos_cap_t watch;      // this start's badged copy of the init's notification
-    kos_task_t task;      // the task the bring-up created, written back; KOS_TASK_NONE before it
     struct kos_driver_line lines[2]; // the table's lines by role, KOS_DRV_LINES_MAX of them
     uint8_t line_count;
-    bool console;         // the table names it the console driver, which the init narrows at handover
+    bool console;         // the table names it the console driver
+    uint32_t authority;   // the KOS_AUTH_* bits its descriptor states
+    // Inside another task: the capability at each place of the entry thread's layout, from
+    // KOS_SPAWN_DELEGATED_CAP0, and thread 0's windows. Null in a driver task.
+    kos_cap_t const* hosted;
+    struct kos_window const* windows;
+    uint8_t window_count;
 };
 
 namespace kickos::driver
@@ -66,8 +72,8 @@ enum
 // What a per-thread cap entry NAMES. A thread's caps[] index IS its child cap index offset
 // from KOS_SPAWN_DELEGATED_CAP0: caps[0] lands there, caps[1] one above.
 //
-// KOS_DRV_RES_NOTIFY is the one notification this bring-up creates. Every claimed line
-// signals it, line i on bit i, so a driver's badge space starts at bit line_count and the
+// KOS_DRV_RES_NOTIFY is the one notification the init creates for each start. Every declared
+// line signals it, line i on bit i, so a driver's badge space starts at bit line_count and the
 // validator refuses a doorbell badge below that.
 enum
 {
@@ -101,7 +107,7 @@ struct Line
     uint8_t trigger; // KOS_IRQ_EDGE or KOS_IRQ_LEVEL
 };
 
-// Which pointer the entry receives, and nothing about reach: the block is the group's
+// Which pointer the entry receives, and nothing about reach: the block is the task's
 // region (Descriptor::block_size), so ARG_NONE buys a thread no isolation from it.
 enum kos_drv_arg
 {
@@ -128,16 +134,15 @@ struct Thread
     char const* name; // null takes the instance's name
     int8_t prio_delta;
     uint8_t arg;       // enum kos_drv_arg
-    bool window_grant; // the instance's window; a DEV window has one holder
+    bool window_grant; // the instance's window, which the kernel seats on thread 0 alone
     uint8_t cap_count;
     struct Cap caps[KOS_DRV_CAPS_MAX];
 };
 
 enum kos_drv_ep
 {
-    // kos_console_publish, then the handover tail. From the publish on the console is
-    // USER_OWNED and a kernel-console write is DROPPED until recv_holders reaches 0, so every
-    // diagnostic below drops the caller's WAIT on E before it prints.
+    // The create publishes the console, and the init probes it. From the publish on the console
+    // is USER_OWNED and a kernel-console write from the driver's task is DROPPED.
     KOS_DRV_EP_HANDOVER = 0,
     // No publish. The init keeps SIGNAL, TRANSFER and HANDOUT on the endpoint and never
     // receives, so a caller is answered -KOS_EAGAIN while no server receives. A failing driver
@@ -148,28 +153,48 @@ enum kos_drv_ep
 // No readiness latch in the block, so no barrier.
 constexpr uint16_t KOS_DRV_READY_NONE = 0xFFFFu;
 
+// The readiness latch: 0 until the device half is up, then KOS_DRV_READY_DEVICE, then
+// KOS_DRV_READY_SERVICE once the service thread has reached its first receive.
+using Latch = Atomic<uint32_t, Order::ACQUIRE | Order::RELEASE>;
+
+constexpr uint32_t KOS_DRV_READY_DEVICE = 1u;
+constexpr uint32_t KOS_DRV_READY_SERVICE = 2u;
+
+// What a thread past the barrier starts with: the body it runs once the latch is set, and its
+// arg.
+struct Launch
+{
+    void (*entry)(void*);
+    void* arg;
+    Latch* latch;
+};
+
 struct Descriptor
 {
     char const* tag;         // "[c6uart] ", prefixed to every diagnostic this bring-up prints
     uintptr_t expected_base; // 0 = no guard; no granted window has base 0
-    // 0 = no ring block, no arena allocation, no self-grant. The block is the group's shared
+    // 0 = no ring block, no arena allocation, no self-grant. The block is the task's shared
     // region and every thread of this driver sees all of it, whatever its arg: a task owns
     // exactly one Domain and a member may bring no grant of its own. Keep here only state the
     // whole driver may touch; a DEV window, which has one holder, is per-thread instead.
     uint32_t block_size;
-    // kos_mem_flags passed identically to the bring-up's own self-grant AND to the task
-    // grant, so no cacheable mapping of a KOS_MEM_NOCACHE block ever exists. 0 for ordinary
-    // memory; a driver whose controller is a bus master over this block sets KOS_MEM_NOCACHE.
+    // kos_mem_flags passed identically to the init's own self-grant AND to the task grant, so no
+    // cacheable mapping of a KOS_MEM_NOCACHE block ever exists. 0 for ordinary memory; a driver
+    // whose controller is a bus master over this block sets KOS_MEM_NOCACHE.
     uint32_t block_flags;
     uint16_t ready_offset;   // byte offset of the readiness latch inside the block
     uint8_t ep_posture;      // enum kos_drv_ep
     uint8_t line_count;
     uint8_t thread_count;
-    uint8_t barrier_after; // threads spawned BEFORE the readiness poll
+    uint8_t barrier_after; // the first thread that waits on the readiness latch before its body
     struct Line lines[KOS_DRV_LINES_MAX];
     struct Thread threads[KOS_DRV_THREADS_MAX];
     // Lays out the block and fills the class config from the instance. Null iff block_size == 0.
     int (*block_init)(void* blk, struct kos_driver_instance const* in);
+    // KOS_DRV_THREADS_MAX records in static storage, which every thread of the task reads and a
+    // sibling's stack is not; one per thread past the barrier. Null iff ready_offset is
+    // KOS_DRV_READY_NONE.
+    Launch* launch;
 };
 
 // ---------------------------------------------------------------------------------
@@ -342,15 +367,22 @@ constexpr bool valid_l2(Descriptor const& d)
     return true;
 }
 
-// L3. A DEV window has exactly one holder: a second spawn asking for it is refused -KOS_EBUSY.
+// L3. A DEV window has exactly one holder, thread 0, the entry thread the kernel seats it on.
 //
-// Second arm: spawn_one hands the window's base to an ARG_WINDOW thread whether or not that
-// thread was granted the window, so one without the grant faults on its first register touch.
+// Second arm: a spawn hands the window's base to an ARG_WINDOW thread whether or not that thread
+// was granted the window, so one without the grant faults on its first register touch.
 constexpr bool valid_l3(Descriptor const& d)
 {
     if (window_holder_count(d) > 1u)
     {
         return false;
+    }
+    for (uint8_t i = 1; i < d.thread_count; i++)
+    {
+        if (d.threads[i].window_grant)
+        {
+            return false;
+        }
     }
     for (uint8_t i = 0; i < d.thread_count; i++)
     {
@@ -431,10 +463,10 @@ constexpr bool valid_l6(Descriptor const& d)
     return ep_holder_count(d) == 1u;
 }
 
-// L7. A multi-thread console handover needs a readiness latch, which L8 puts strictly BEFORE
-// the endpoint's receiver exists. A one-thread driver has no device half to wait for, its only
-// thread being that receiver, so L7 and L8 would be jointly unsatisfiable: there the handover
-// probe is the witness instead.
+// L7. A multi-thread console handover needs a readiness latch, which L8 has the endpoint's
+// receiver wait on. A one-thread driver has no device half to wait for, its only thread being
+// that receiver, so L7 and L8 would be jointly unsatisfiable: there the handover probe is the
+// witness instead.
 constexpr bool valid_l7(Descriptor const& d)
 {
     return d.ep_posture != KOS_DRV_EP_HANDOVER or d.thread_count == 1u
@@ -443,19 +475,19 @@ constexpr bool valid_l7(Descriptor const& d)
 
 // L8, THE BARRIER RULE, and the latch's own arithmetic.
 //
-// POSTURELESS arms: barrier_after == 0 would poll before any thread could have latched, and
-// barrier_after > thread_count names no barrier position at all. An unaligned 32-bit load is
-// tolerated on ARMv7-M and FAULTS on RX and Xtensa.
+// Threads from barrier_after on wait on the latch before their body, threads before it set it:
+// barrier_after == 0 would leave nobody to set it, and barrier_after >= thread_count nobody to
+// wait. An unaligned 32-bit load is tolerated on ARMv7-M and FAULTS on RX and Xtensa.
 //
-// HANDOVER-ONLY arms: the poll must sit STRICTLY between the spawns, because the receiver takes
-// the handover's probe, and a probe taken before the device half is ready would prove a console
-// that cannot write yet, with clients sending to it. Under RETAIN there is no handover and no
-// probe, so a one-thread RETAIN bus may latch after its only spawn and its receiver may be
-// thread 0.
-//
-// The ep_holder arm is the SOLE rejecter of a receiver spawned before the barrier.
+// HANDOVER-ONLY arm: the receiver must wait, because it takes the handover's probe, and a probe
+// taken before the device half is ready would prove a console that cannot write yet, with
+// clients sending to it. The ep_holder arm is the SOLE rejecter of a receiver that does not wait.
 constexpr bool valid_l8(Descriptor const& d)
 {
+    if ((d.ready_offset == KOS_DRV_READY_NONE) != (d.launch == nullptr))
+    {
+        return false;
+    }
     if (d.ready_offset == KOS_DRV_READY_NONE)
     {
         return true;
@@ -468,17 +500,13 @@ constexpr bool valid_l8(Descriptor const& d)
     {
         return false;
     }
-    if (d.barrier_after < 1u or d.barrier_after > d.thread_count)
+    if (d.barrier_after < 1u or d.barrier_after >= d.thread_count)
     {
         return false;
     }
     if (d.ep_posture != KOS_DRV_EP_HANDOVER)
     {
         return true;
-    }
-    if (d.barrier_after >= d.thread_count)
-    {
-        return false;
     }
     return ep_holder(d) >= d.barrier_after;
 }
@@ -566,13 +594,133 @@ constexpr bool valid_l13(Descriptor const& d)
     return true;
 }
 
+// ---------------------------------------------------------------------------------
+// The entry thread's capability layout. A token is what a capability of the layout names: the
+// endpoint, the unbadged notification, the badged doorbell copy of it, or line k.
+enum
+{
+    KOS_DRV_TOK_EP = 0,
+    KOS_DRV_TOK_NOTIFY = 1,
+    KOS_DRV_TOK_DOORBELL = 2,
+    KOS_DRV_TOK_LINE0 = 3,
+    KOS_DRV_TOK_COUNT = KOS_DRV_TOK_LINE0 + KOS_DRV_LINES_MAX,
+    KOS_DRV_TOK_NONE = 0xFF
+};
+
+constexpr uint8_t token_of(Cap const& c)
+{
+    if (c.resource == KOS_DRV_RES_NOTIFY and c.badge != 0u)
+    {
+        return KOS_DRV_TOK_DOORBELL;
+    }
+    if (c.resource >= KOS_DRV_RES_LINE0)
+    {
+        return static_cast<uint8_t>(KOS_DRV_TOK_LINE0 + (c.resource - KOS_DRV_RES_LINE0));
+    }
+    return c.resource;
+}
+
+// Whether the entry thread's table holds `tok`: the endpoint and every line always, the
+// notification and the doorbell where a thread names one.
+constexpr bool token_held(Descriptor const& d, uint8_t tok)
+{
+    if (tok == KOS_DRV_TOK_EP)
+    {
+        return true;
+    }
+    if (tok >= KOS_DRV_TOK_LINE0)
+    {
+        return tok < KOS_DRV_TOK_LINE0 + d.line_count;
+    }
+    for (uint8_t i = 0; i < d.thread_count; i++)
+    {
+        for (uint8_t j = 0; j < d.threads[i].cap_count; j++)
+        {
+            if (token_of(d.threads[i].caps[j]) == tok)
+            {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+// Where the entry thread's table holds each token, as an offset from KOS_SPAWN_DELEGATED_CAP0:
+// thread 0's capabilities first, in their order, so that its body reads them where every thread
+// reads its own, then the other tokens it holds in token order. KOS_DRV_TOK_NONE for a token it
+// does not hold. kickos_add_driver states the same layout to the init (cmake/driver_metadata.cmake).
+struct Layout
+{
+    uint8_t at[KOS_DRV_TOK_COUNT];
+    uint8_t count;
+};
+
+constexpr Layout layout_of(Descriptor const& d)
+{
+    Layout l = {};
+    for (uint8_t t = 0; t < KOS_DRV_TOK_COUNT; t++)
+    {
+        l.at[t] = KOS_DRV_TOK_NONE;
+    }
+    if (d.thread_count != 0u)
+    {
+        for (uint8_t j = 0; j < d.threads[0].cap_count; j++)
+        {
+            l.at[token_of(d.threads[0].caps[j])] = l.count;
+            l.count++;
+        }
+    }
+    for (uint8_t t = 0; t < KOS_DRV_TOK_COUNT; t++)
+    {
+        if (l.at[t] == KOS_DRV_TOK_NONE and token_held(d, t))
+        {
+            l.at[t] = l.count;
+            l.count++;
+        }
+    }
+    return l;
+}
+
+// L14, THE LAYOUT RULE. Thread 0 names no token twice, so each of its capabilities has a place
+// of its own, and every doorbell carries the one badge the init mints, the first bit above the
+// lines.
+constexpr bool valid_l14(Descriptor const& d)
+{
+    if (d.thread_count == 0u)
+    {
+        return true;
+    }
+    for (uint8_t j = 0; j < d.threads[0].cap_count; j++)
+    {
+        for (uint8_t k = 0; k < j; k++)
+        {
+            if (token_of(d.threads[0].caps[j]) == token_of(d.threads[0].caps[k]))
+            {
+                return false;
+            }
+        }
+    }
+    for (uint8_t i = 0; i < d.thread_count; i++)
+    {
+        for (uint8_t j = 0; j < d.threads[i].cap_count; j++)
+        {
+            if (token_of(d.threads[i].caps[j]) == KOS_DRV_TOK_DOORBELL
+                and d.threads[i].caps[j].badge != doorbell_badge(d.line_count))
+            {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 // The legs are ordered, not just conjoined: L1 bounds the counts L2 walks, and L2 bounds the
-// resource ids L5, L12 and L13 use to index lines[] and caps[].
+// resource ids L5, L12, L13 and L14 use to index lines[] and caps[].
 constexpr bool valid(Descriptor const& d)
 {
     return valid_l1(d) and valid_l2(d) and valid_l3(d) and valid_l4(d) and valid_l5(d)
            and valid_l6(d) and valid_l7(d) and valid_l8(d) and valid_l10(d) and valid_l12(d)
-           and valid_l13(d);
+           and valid_l13(d) and valid_l14(d);
 }
 
 // ---------------------------------------------------------------------------------
@@ -644,18 +792,27 @@ constexpr bool ring_doorbell_shape_ok(Descriptor const& d, uint16_t ready_offset
     return true;
 }
 
+// A thread that waits on one of its roles, the endpoint, the notification or a line: a service or
+// IRQ worker, whose end leaves that role unserved.
+constexpr bool essential(Thread const& t)
+{
+    for (uint8_t i = 0; i < t.cap_count; i++)
+    {
+        if ((t.caps[i].rights & KOS_CAP_WAIT) != 0u)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
 // ---------------------------------------------------------------------------------
 // Print `tag` then `msg` and return -1, the bring-up failure code.
 int fail(char const* tag, char const* msg);
 
-// Print `s`, a report about a console whose task this init has ended, on the kernel console alone:
-// it never waits on that console's endpoint. Where a slain member of that task still holds the
-// console's window, the reclaim waits for that member, and the report waits in the dark window
-// until the member exits, then lands.
+// Print `s` on the kernel console alone, never waiting on a console endpoint. From the task
+// serving the published console it is dropped until that task has ended.
 void report(char const* s);
-
-// report() `tag` then `msg` and return -1.
-int fail_console(char const* tag, char const* msg);
 
 // Ends the calling thread's task by a synchronous fault, which a driver thread whose call failed
 // takes so that its task's death reaches the init. The kernel's fault path cancels the group,
@@ -667,57 +824,88 @@ constexpr uint32_t KOS_DRV_HANDOVER_PROBE_US = 1000000;
 // What the init keeps of a console's endpoint once its handover ends: SIGNAL, TRANSFER, HANDOUT.
 constexpr uint32_t KOS_DRV_HANDOVER_KEPT = KOS_CAP_SIGNAL | KOS_CAP_TRANSFER | KOS_CAP_HANDOUT;
 
-// A console start that failed: NARROW the caller's capability on E as a handover's end does,
-// then end the driver's task, whose end is what gives the kernel its console back, so a failure
-// printed after it reaches the wire. `in.task` is cleared once the task is gone; one that
-// outlives the bound is left for the init to slay.
-void console_start_failed(struct kos_driver_instance& in);
-
-// The last two steps of a console handover: NARROW the caller's capability on E to SIGNAL,
-// TRANSFER and HANDOUT, dropping the WAIT it created the endpoint with, or the one a restart's
-// publish through HANDOUT seated, then probe with a zero-length rendezvous on cap 0. Returns 0,
-// or the probe's negative rc. The init keeps the endpoint across the driver's death, so once the
-// driver's task has ended its writers are answered -KOS_EAGAIN until the next start publishes it
-// again, and -KOS_ECONNREFUSED once the init, its restarts spent, closes it. A probe that fails
-// is a failed start (console_start_failed).
-int console_handover_finish(struct kos_driver_instance& in, char const* tag);
-
+// The readiness wait's whole budget, about a second.
 constexpr uint32_t KOS_DRV_READY_WAIT_NS = 1000000u; // 1 ms
-constexpr uint32_t KOS_DRV_READY_WAIT_MAX = 1000u;   // ~1 s total
+constexpr uint32_t KOS_DRV_READY_WAIT_MAX = 1000u;
 
-// How often, and how far apart, a claim answered -KOS_EAGAIN, a line retiring from the
-// instance before, is tried again.
-constexpr uint32_t KOS_DRV_CLAIM_RETRIES = 100u;
-constexpr uint64_t KOS_DRV_CLAIM_RETRY_NS = 1000000ull;
+// The latch at `off` inside `blk`, which MUST come from a class-substrate constant and never
+// from a descriptor literal.
+inline Latch* ready_latch(void* blk, uint16_t off)
+{
+    return reinterpret_cast<Latch*>(static_cast<unsigned char*>(blk) + off);
+}
 
-// Poll the readiness latch at `off` inside `blk` until it is set or the budget runs out. The
-// latch MUST be an Atomic<uint32_t, Order::RELAXED>, so `off` comes from a class-substrate
-// constant and never from a descriptor literal.
-bool wait_ready(void const* blk, uint16_t off);
+// The producer's side: a release store of `state`, so everything written before it is seen by a
+// waiter that reads it, then a wake of every waiter parked on it. Returns the waiters woken, or
+// the wake's refusal.
+inline int ready_set(Latch* latch, uint32_t state)
+{
+    latch->store(state);
+    return kos_word_wake(reinterpret_cast<uint32_t*>(latch), 0xFFFFFFFFu, 0u);
+}
 
-// Spawn one descriptor thread into `task` with its per-thread grants and cap roles. A
-// KOS_DRV_RES_NOTIFY cap with a badge is MINTED from `note` for the spawn and closed after
-// it; an unbadged one takes `note` itself. KOS_CAP_NONE where the descriptor names none. The
-// block, the endpoint, the window, the name, the priority and line 0's index are the instance's.
-// `core_mask` places the thread, 0 for its task's default set.
-kos::thread::Handle spawn_one(Thread const& t, struct kos_driver_instance const& in,
-                              kos_cap_t const* line, kos_cap_t note, kos_task_t task,
-                              uint32_t core_mask);
+// The device half is up: the IRQ thread's publish.
+inline int ready_publish(Latch* latch)
+{
+    return ready_set(latch, KOS_DRV_READY_DEVICE);
+}
 
-// The catalogue states what bring_up creates from the build's declaration of it.
+// The service thread is at its first receive. It MUST already have read the device half up,
+// or the device's later publish takes the latch back below this state.
+inline int service_publish(Latch* latch)
+{
+    return ready_set(latch, KOS_DRV_READY_SERVICE);
+}
+
+// The waiter's side: an acquire load, and while it reads below `state` a park on the word for
+// what is left of the budget, read again after every return. True once it reads `state` or
+// above, false past the budget.
+inline bool ready_wait_for(Latch* latch, uint32_t state)
+{
+    uint64_t const budget_ns = uint64_t{KOS_DRV_READY_WAIT_MAX} * KOS_DRV_READY_WAIT_NS;
+    uint64_t const deadline = kos_clock_now() + budget_ns;
+    while (true)
+    {
+        uint32_t const seen = latch->load();
+        if (seen >= state)
+        {
+            return true;
+        }
+        uint64_t const now = kos_clock_now();
+        if (now >= deadline)
+        {
+            return false;
+        }
+        uint64_t const left_us = (deadline - now + 999u) / 1000u;
+        (void)kos_word_wait(reinterpret_cast<uint32_t*>(latch), seen, static_cast<uint32_t>(left_us));
+    }
+}
+
+// The device half is up, as a thread past the barrier waits for it.
+inline bool ready_wait(Latch* latch)
+{
+    return ready_wait_for(latch, KOS_DRV_READY_DEVICE);
+}
+
+// The catalogue states what the init creates for a start from the build's declaration of it.
 static_assert(KICKOS_DRIVER_ENDPOINTS == 1 and KICKOS_DRIVER_NOTIFICATIONS == 1,
-              "bring_up creates one endpoint, and one notification for a driver that uses one");
+              "a start takes one endpoint, and one notification for a driver that uses one");
 
-// The whole choreography. Returns 0, or a negative failure code: a bad descriptor or a failed
-// step prints its own diagnostic; a handover probe refusal is returned unchanged.
+// The bring-up, run by the driver task's entry thread, which is thread 0 and holds the layout
+// layout_of(d) states. Returns a negative failure code having spawned nothing, after printing its
+// own diagnostic; once a thread is spawned it never returns: a failed step traps, ending the
+// task, and thread 0's body returning exits the entry thread, which ends the task too.
 //
-// The ring block, the endpoint and the lines are the instance's; every thread runs on the
-// declared core, where the lines are claimed at the descriptor's trigger, and the task's
-// priority ceiling and core grant are narrowed to the declaration. The task is written back as
-// soon as it exists; a step that fails closes what this call made, narrows a console endpoint
-// before it prints, leaves the task and the endpoint to the init, and returns its code. Above one
-// kernel core a descriptor with lines pins the CALLING thread to the declared core for the
-// claims and then resets it to its task's default mask, whatever mask it held before.
+// Threads 1 to n-1 are spawned into the task on the declared core, each delegated its roles from
+// the entry thread's table; a thread from barrier_after on waits on the readiness latch before
+// its body and traps past the budget. Thread 0 then keeps its own capabilities, narrowed to its
+// rights, closes the rest, raises itself to its descriptor priority and runs its body.
+//
+// With in->hosted, threads 0 to n-1 are all spawned, from in->hosted, thread 0 with the windows
+// and the authority, each essential() thread KOS_THREAD_ESSENTIAL, so that its end by any cause
+// fails the task it runs in, and it returns 0 once the latch reads KOS_DRV_READY_SERVICE, or at once for a
+// driver with no latch; a failed step past the first spawn still traps, ending the task the
+// driver runs in. The caller then probes the endpoint before anything calls it.
 int bring_up(Descriptor const& d, struct kos_driver_instance* in);
 
 }

@@ -99,8 +99,13 @@ namespace kickos
         VirtualState state = VirtualState::Free;
         // A VR_WINDOW range's holder, as a thread slot index plus one, and the domain whose
         // reservation a memory window maps, as a domain slot index plus one, which the
-        // mapping holds a reference on. Zero for none, as `run` is.
-        uint16_t holder = 0;
+        // mapping holds a reference on. Zero for none, as `run` is. A reservation keeps in
+        // `lends` the handoffs and memory windows of other spaces mapping its frames.
+        union
+        {
+            uint16_t holder = 0;
+            uint16_t lends;
+        };
         uint16_t donor = 0;
     };
 
@@ -118,12 +123,6 @@ namespace kickos
     {
         return e != nullptr and e->state == VirtualState::Granted and (e->rights & rights) == rights;
     }
-
-    // The stored value is the slot plus one, hence the strict inequality.
-    static_assert(static_cast<unsigned long long>(KICKOS_MAX_FRAME_RUNS) + 1ull
-                      < 0x100000000ull,
-                  "a frame-run slot index plus one must fit VirtualRange::run, so the pool "
-                  "cannot hold more runs than that field can name");
 
     // A narrow field must hold the widest value its setter can be handed, so a refused value
     // cannot be stored as a smaller accepted one.
@@ -145,19 +144,6 @@ namespace kickos
 
     // The range root's space spends on the partition's user share (kickos/ampshare.h).
     constexpr size_t VR_SHARE_SLOTS = KICKOS_AMP_SHARE;
-
-#if KICKOS_HAVE_ASPACE
-    // A thread's stack takes a slot and a task's siblings share its space, so the worst case
-    // is every thread slot's stack in one list. VR_APP_HEADROOM may not fall to zero: the
-    // self-grant arm reads the free-slot count live and takes one more.
-    static_assert(KICKOS_ASPACE_RANGES
-                      >= VR_IMAGE_SLOTS + KICKOS_THREAD_SLOTS + VR_APP_HEADROOM + VR_SHARE_SLOTS,
-                  "KICKOS_ASPACE_RANGES is below 2 + (KICKOS_MAX_THREADS + 1) + 4, plus 1 where "
-                  "root holds an AMP partition's user share: the image spends two slots, every "
-                  "live thread's stack spends one and returns it at thread exit, the share one "
-                  "in root's space, and the app needs the rest. Raise KICKOS_ASPACE_RANGES or "
-                  "lower KICKOS_MAX_THREADS");
-#endif
 
     class VirtualRanges
     {
@@ -192,9 +178,15 @@ namespace kickos
 
         // Drop the entry starting at `base`, whatever its state.
         bool release(uintptr_t base);
+        // Drop the entry in slot `i`, whatever its state.
+        bool release_at(size_t i);
 
         // Set or clear VR_SYNC_OWED on the entry starting at `base`; false when there is none.
         bool set_sync_owed(uintptr_t base, bool owed);
+
+        // One more, or one fewer, mapping of another space over the reservation at `base`: its
+        // lends after the change, or 0 when there is none.
+        uint16_t lend(uintptr_t base, bool more);
 
         // The entry-path question: does [addr, addr + len) lie inside one granted range that
         // carries every right in `rights`? A range spanning two entries is refused even when
@@ -213,9 +205,10 @@ namespace kickos
         size_t count() const;
         static size_t capacity() { return KICKOS_ASPACE_RANGES; }
         VirtualRange const* at(size_t i) const;
+        // The slot of the live entry starting at `base`, or capacity() for none.
+        size_t index_at(uintptr_t base) const;
 
     private:
-        size_t index_at(uintptr_t base) const;
         uintptr_t end_of(VirtualRange const& r) const;
 
         VirtualRange ranges_[KICKOS_ASPACE_RANGES];

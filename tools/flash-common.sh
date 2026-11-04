@@ -90,7 +90,7 @@ flash_resolve() {
     fi
 
     # Build dir defaults to build/<board>; override with FLASH_BUILD to flash a
-    # variant preset's output (e.g. FLASH_BUILD=build/bluepill-c8-st for the selftest's own
+    # variant preset's output (e.g. FLASH_BUILD=build/f302nucleo-st for the selftest's own
     # provisioning on a board whose base cannot seat it).
     local bd="${FLASH_BUILD:-$FL_ROOT/build/$FL_BOARD}"
     # kickos_emit_image outputs: ELF, .hex, .bin, and .app.bin for Espressif.

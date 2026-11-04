@@ -165,8 +165,8 @@ namespace kickos
             Thread* const second = member_of(SLOT_PEER, PRIO_MID, group);
             own_stack(first);
             own_stack(second);
-            attach_caps(first, KICKOS_CAP_CHILD_WIDTH);
-            attach_caps(second, KICKOS_CAP_CHILD_WIDTH);
+            attach_caps(first, KICKOS_SEAM_CAP_WIDTH);
+            attach_caps(second, KICKOS_SEAM_CAP_WIDTH);
 
             struct arch_aspace* const space = space_of(task_domain(group));
             g_watch_space = space;
@@ -226,7 +226,7 @@ namespace kickos
             ASSERT_NE(group, nullptr);
             Thread* const dying = member_of(SLOT_DYING, PRIO_MID, group);
             own_stack(dying);
-            attach_caps(dying, KICKOS_CAP_CHILD_WIDTH);
+            attach_caps(dying, KICKOS_SEAM_CAP_WIDTH);
 
             run_as(0, dying);
             trace_reset();

@@ -153,9 +153,9 @@ namespace
     }
 }
 
-extern "C" void uartloop_main(kos_self_t const* self)
+int main(int, char**)
 {
-    g_ep = kos_grant_endpoint(self, "/svc/simuart");
+    g_ep = kos_grant_endpoint("/svc/simuart");
     if (g_ep == KOS_CAP_NONE)
     {
         kos_print("[uartloop] ERROR: no UART service endpoint in this task's grants\n");

@@ -7,26 +7,49 @@
 import os
 import re
 
-from ruamel.yaml.nodes import ScalarNode
+from ruamel.yaml.nodes import ScalarNode, SequenceNode
 
 from .descriptions import check_platform
-from .manifest_fields import DRIVER_FIELDS, WINDOWS_KNOB, is_pool
+from .manifest_fields import DRIVER_FIELDS, DRIVER_OPTIONAL, WINDOWS_KNOB, is_pool
 from .subset import C_IDENTIFIER, FILE_NAME, IDENTIFIER, File, Report, line_of, read_utf8
 
 MANIFEST_VERSIONS = (1,)
-MANIFEST_FIELDS = ("version", "abi", "target", "protection", "pools", "threads", "init", "descriptions", "default",
-                   "drivers")
+# The authority bits a driver's entry may run with, by name (<kickos/sys/cap_rights.h>).
+DRIVER_AUTHORITIES = ("memory", "pinmux", "pstate", "irq", "system", "console", "tasks", "bus_master",
+                      "bootloader")
+MANIFEST_FIELDS = ("version", "abi", "target", "protection", "pools", "budgets", "ceilings", "threads", "init",
+                   "descriptions", "default", "drivers")
+BUDGET_FIELDS = ("default", "pool")
+# The pools a system's pools TU sizes, each a ceiling the manifest states (<kickos/config/pool_abi.h>).
+CEILING_POOLS = ("threads", "tasks", "domains", "endpoints", "notifies", "irq_bindings", "frame_runs",
+                 "ram_owners")
 TARGET_FIELDS = ("board", "chip", "arch", "cores", "kernel_cores", "isolated_cores", "amp")
 PROTECTION_FIELDS = ("enforced", "window_rule", "smallest_window", "thread_windows", "fault_isolation")
-ABI_FIELDS = ("table", "cap_reserved", "symbol_prefix")
+ABI_FIELDS = ("table", "cap_reserved", "cap_chunk", "cap_width_max", "symbol_prefix")
 # What the C ABI puts before a C name in the link: none, or rx-elf's one underscore.
 SYMBOL_PREFIX = re.compile(r"_*")
 THREAD_FIELDS = ("priority", "min_stack", "user_stack", "idle_stack", "root_stack", "stack_align", "stack_stride")
 INIT_FIELDS = ("status_record_size", "private_record_size", "free_regions")
 THREAD_ENTRY_FIELDS = ("name", "priority", "stack", "caps", "badged")
 CORES = 32
+# The bits of an endpoint badge, which carries a bus client's slot mask.
+BADGE_BITS = 32
 # The layouts of the emitted table emit.py writes.
 TABLE_LAYOUTS = (6,)
+
+
+class BudgetKind:
+    """One kind of budget, as the manifest exports it from <kickos/sys/budget.h>."""
+
+    def __init__(self, key):
+        self.key = key
+        # This build's default, and the pool the kind sizes or "none"; both None where the build
+        # charges no such kind.
+        self.default = None
+        self.pool = None
+
+    def charged(self):
+        return self.default is not None
 
 
 class Manifest:
@@ -58,6 +81,9 @@ class Manifest:
         # partition's only one.
         self.amp_image = "own"
         self.cap_reserved = None
+        # A capability table's chunk, which every width rounds up to, and the widest table.
+        self.cap_chunk = None
+        self.cap_width_max = None
         self.symbol_prefix = None
         self.table = None
         self.enforced = None
@@ -67,6 +93,10 @@ class Manifest:
         self.smallest_window = None
         self.thread_windows = None
         self.pools = {}
+        # Every budget kind, in the order a declaration's budgets name them.
+        self.budgets = []
+        # Each pool's type ceiling by pool name.
+        self.ceilings = {}
         self.priority = None
         self.min_stack = None
         self.user_stack = None
@@ -92,6 +122,11 @@ class Driver:
     def __init__(self):
         self.windows = []
         self.lines = []
+        # Each line's trigger, "edge" or "level", in the order of `lines`.
+        self.triggers = []
+        # The entry thread's capability layout from its first delegated index: "ep", "notify",
+        # "doorbell" or "line:<k>" (<kickos/sys/driver_service.h>, layout_of).
+        self.entry = []
         # In thread order: each thread as (name, priority offset, stack or "default"), the
         # capabilities its spawn delegates, and the badged copies of the driver's notification
         # among them.
@@ -112,6 +147,11 @@ class Driver:
         self.start = None
         # The libraries a task using the driver links, by target name.
         self.client = []
+        # The device slots its service keys on each client's badge, the badge a slot mask; 0 for
+        # a service keying nothing on one.
+        self.slots = 0
+        # The authority its entry thread runs START with, by name; its other threads take none.
+        self.authority = []
 
 
 def check_manifests(paths):
@@ -142,7 +182,8 @@ def check_manifest(path, text, report):
     if root is None:
         return None
     top = f.fields(root, "the manifest", MANIFEST_FIELDS,
-                   ("version", "abi", "target", "protection", "pools", "threads", "init", "drivers"))
+                   ("version", "abi", "target", "protection", "pools", "budgets", "ceilings", "threads", "init",
+                    "drivers"))
     if top is None or not f.version(top, "the manifest", MANIFEST_VERSIONS):
         return None
     manifest = Manifest()
@@ -156,6 +197,10 @@ def check_manifest(path, text, report):
                      % (manifest.table, ", ".join(str(v) for v in TABLE_LAYOUTS)))
         if abi is not None and "cap_reserved" in abi:
             manifest.cap_reserved = f.integer(abi["cap_reserved"], "`abi` cap_reserved", 8)
+        if abi is not None and "cap_chunk" in abi:
+            manifest.cap_chunk = f.integer(abi["cap_chunk"], "`abi` cap_chunk", 8)
+        if abi is not None and "cap_width_max" in abi:
+            manifest.cap_width_max = f.integer(abi["cap_width_max"], "`abi` cap_width_max", 16)
         if abi is not None and "symbol_prefix" in abi:
             manifest.symbol_prefix = f.name(abi["symbol_prefix"], "`abi` symbol_prefix", SYMBOL_PREFIX)
     target = None
@@ -171,11 +216,16 @@ def check_manifest(path, text, report):
         for name, (key, value) in (pools or {}).items():
             if not is_pool(name):
                 f.refuse(key, "form.unknown-field",
-                         "`pools` has no field `%s`; it holds every KICKOS_MAX_* but %s, every "
-                         "KICKOS_TASK_*_BUDGET, KICKOS_CAP_TABLE_SUPPLY, KICKOS_RAM_OWNER_SLOTS and "
+                         "`pools` has no field `%s`; it holds every KICKOS_MAX_* but %s, and "
                          "KICKOS_ASPACE_RANGES" % (name, WINDOWS_KNOB))
                 continue
             manifest.pools[name] = f.integer(value, "pool `%s`" % name, 32)
+    if "budgets" in top:
+        check_budgets(f, top["budgets"], manifest)
+    if "ceilings" in top:
+        ceilings = f.fields(top["ceilings"], "`ceilings`", CEILING_POOLS, CEILING_POOLS)
+        for name, value in (ceilings or {}).items():
+            manifest.ceilings[name] = f.integer(value, "ceiling `%s`" % name, 32)
     if "threads" in top:
         check_threads(f, top["threads"], manifest)
     if "init" in top:
@@ -190,6 +240,23 @@ def check_manifest(path, text, report):
             f.name(key, "driver", IDENTIFIER)
             manifest.drivers[name] = check_driver(f, value, "driver `%s`" % name)
     return manifest
+
+
+def check_budgets(f, node, manifest):
+    """Each kind of the manifest's `budgets`, in its order: its default and pool, or `none`."""
+    kinds = f.mapping(node, "`budgets`")
+    for name, (key, value) in (kinds or {}).items():
+        if f.name(key, "budget kind", IDENTIFIER) is None:
+            continue
+        kind = BudgetKind(name)
+        manifest.budgets.append(kind)
+        if isinstance(value, ScalarNode) and value.style is None and value.value == "none":
+            continue
+        values = f.fields(value, "budget `%s`" % name, BUDGET_FIELDS, BUDGET_FIELDS)
+        if values is None or len(values) != len(BUDGET_FIELDS):
+            continue
+        kind.default = f.integer(values["default"], "budget `%s` default" % name, 32)
+        kind.pool = f.name(values["pool"], "budget `%s` pool" % name, IDENTIFIER)
 
 
 def check_target(f, node, manifest):
@@ -450,12 +517,43 @@ def roles(f, node, what, pattern=IDENTIFIER, kind="a role"):
 
 def check_driver(f, node, what):
     driver = Driver()
-    values = f.fields(node, what, DRIVER_FIELDS, DRIVER_FIELDS)
+    values = f.fields(node, what, DRIVER_FIELDS,
+                      tuple(field for field in DRIVER_FIELDS if field not in DRIVER_OPTIONAL))
     if values is None:
         return driver
+    if "authority" in values:
+        items = f.sequence(values["authority"], "%s authority" % what) or ()
+        driver.authority = [f.enum(item, "%s authority" % what, DRIVER_AUTHORITIES) for item in items]
     for field in ("windows", "lines"):
         if field in values:
             setattr(driver, field, roles(f, values[field], "%s %s" % (what, field)))
+    # As many as the lines it lists, which a refused role leaves out of `lines`.
+    listed = 0
+    if "lines" in values and isinstance(values["lines"], SequenceNode):
+        listed = len(values["lines"].value)
+    if "triggers" in values:
+        items = f.sequence(values["triggers"], "%s triggers" % what) or ()
+        driver.triggers = [f.enum(item, "%s trigger" % what, ("edge", "level")) for item in items]
+        if len(driver.triggers) != listed:
+            f.refuse(values["triggers"], "manifest.bound",
+                     "%s states %d triggers for its %d lines" % (what, len(driver.triggers), listed))
+    if "entry" in values:
+        items = f.sequence(values["entry"], "%s entry" % what)
+        tokens = ["ep", "notify", "doorbell"] + ["line:%d" % k for k in range(listed)]
+        complete = items is not None
+        for item in items or ():
+            token = f.enum(item, "%s entry" % what, tokens)
+            if token is None:
+                complete = False
+            elif token in driver.entry:
+                f.refuse(item, "form.duplicate-entry", "%s entry places `%s` twice" % (what, token))
+            else:
+                driver.entry.append(token)
+        # The entry thread holds the endpoint and every line whatever its threads delegate.
+        for token in ["ep"] + ["line:%d" % k for k in range(len(driver.lines))]:
+            if complete and token not in driver.entry:
+                f.refuse(values["entry"], "manifest.bound",
+                         "%s entry places no `%s`, which its entry thread holds" % (what, token))
     threads = None
     if "threads" in values:
         threads = f.sequence(values["threads"], "%s threads" % what)
@@ -522,6 +620,14 @@ def check_driver(f, node, what):
         driver.start = f.name(values["start"], "%s start" % what, C_IDENTIFIER)
     if "client" in values:
         driver.client = roles(f, values["client"], "%s client" % what, C_IDENTIFIER, "a library")
+    if "slots" in values:
+        slots = f.integer(values["slots"], "%s slots" % what, 8)
+        if slots is not None and slots > BADGE_BITS:
+            f.refuse(values["slots"], "manifest.bound",
+                     "%s keys %d device slots on a client's badge, which carries a mask of %d"
+                     % (what, slots, BADGE_BITS))
+        elif slots is not None:
+            driver.slots = slots
     if "receiver" in values:
         receiver = f.name(values["receiver"], "%s receiver" % what, IDENTIFIER)
         names = [name for name, offset, stack in driver.threads]
@@ -543,8 +649,8 @@ def check_driver(f, node, what):
             f.refuse(values["barrier"], "manifest.barrier",
                      "%s polls a readiness latch after %d thread(s), and the latch lives in the ring "
                      "block it has none of" % (what, barrier))
-        elif isinstance(barrier, int) and threads is not None and (barrier == 0 or barrier > len(threads)):
+        elif isinstance(barrier, int) and threads is not None and (barrier == 0 or barrier >= len(threads)):
             f.refuse(values["barrier"], "manifest.barrier",
-                     "%s polls its readiness after %d of its %d threads, which is no point between "
-                     "two spawns or after the last" % (what, barrier, len(threads)))
+                     "%s has threads from %d of its %d wait on its readiness, which leaves none to "
+                     "set it or none to wait" % (what, barrier, len(threads)))
     return driver

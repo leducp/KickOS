@@ -36,11 +36,11 @@ _Static_assert(sizeof(struct ampbook_row) == 64u, "a row is its own 64 bytes");
 // The port of this task's first crossing of `right` (KOS_CAP_WAIT to serve, KOS_CAP_SIGNAL to
 // use) whose server is `node`, any node for KOS_AMP_NO_ENTRY, and its capability, looked up by its
 // /amp name; KOS_AMP_NO_ENTRY where it holds none.
-uint32_t ampping_crossing(kos_self_t const* self, uint8_t right, uint32_t node, kos_cap_t* cap);
+uint32_t ampping_crossing(uint8_t right, uint32_t node, kos_cap_t* cap);
 
 // The board's gate witness: the serving node's reads, made before it serves, and node 0's report
 // of them. Each is empty on a board whose partition states no gate.
-void ampping_gate_serve(kos_self_t const* self, struct ampbook_row* row);
-void ampping_gate_report(kos_self_t const* self, struct ampbook_row* book);
+void ampping_gate_serve(struct ampbook_row* row);
+void ampping_gate_report(struct ampbook_row* book);
 
 #endif

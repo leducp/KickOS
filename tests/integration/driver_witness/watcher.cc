@@ -16,13 +16,13 @@ namespace
     constexpr uint32_t WATCH_BITS = 32u;
 }
 
-extern "C" void watcher_main(kos_self_t const* self)
+int main(int, char**)
 {
-    kos_cap_t const events = kos_grant_notify(self, "/init/events");
+    kos_cap_t const events = kos_grant_notify("/init/events");
     if (kos_notify_bind(events) != 0)
     {
         printf("watch: no events\n");
-        return;
+        return 0;
     }
     while (true)
     {
@@ -34,7 +34,7 @@ extern "C" void watcher_main(kos_self_t const* self)
         for (uint32_t i = 0; i < WATCH_BITS; i++)
         {
             struct kos_task_status st;
-            if ((bits & (1u << i)) == 0u or kos_task_status(self, i, &st) != 0)
+            if ((bits & (1u << i)) == 0u or kos_task_status(i, &st) != 0)
             {
                 continue;
             }

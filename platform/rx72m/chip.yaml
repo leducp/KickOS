@@ -23,6 +23,12 @@ interrupts:
   count: { value: 416, ref: "15.3.1 Interrupt Vector Table, p.520; Table 15.6 Types of Group Interrupts, p.529" }
   vectors: { value: 256, ref: "15.3.1 Interrupt Vector Table, p.520" }
 
+# The peripheral I/O registers, the standby RAM between the first two excluded.
+apertures:
+  - { window: [0x00080000, 0x24000], ref: "Figure 4.1 Memory Map in Each Operating Mode, p.208" }
+  - { window: [0x000A6000, 0x5A000], ref: "Figure 4.1 Memory Map in Each Operating Mode, p.208" }
+  - { window: [0x007FC000, 0x4000], ref: "Figure 4.1 Memory Map in Each Operating Mode, p.208" }
+
 devices:
   sci6:
     window: [0x0008A0C0, 0x20]
@@ -41,6 +47,15 @@ devices:
   # PWPR and every pin's PFS: a holder would route any pin, the console's included, past
   # arch_pinmux_set.
   mpc: { window: [0x0008C100, 0x100], owner: kernel, symbol: MPC, ref: "Table 5.1 List of I/O Registers (Address Order), p.246" }
+
+  # The bus masters but the CPU (Table 16.3 Order of Priority for Bus Masters, p.556): EDMAC0,
+  # EDMAC1 and PTPEDMAC are one repeat.
+  dmac: { window: [0x00082000, 0x210], ref: "Table 5.1 List of I/O Registers (Address Order), pp.214-216", bus_master: true }
+  dtc: { window: [0x00082400, 0x20], ref: "Table 5.1 List of I/O Registers (Address Order), p.216", bus_master: true }
+  exdmac: { window: [0x00082800, 0x400], ref: "Table 5.1 List of I/O Registers (Address Order), pp.216-217", bus_master: true }
+  edmac: { window: [0x000C0000, 0x100], count: 3, stride: 0x200, ref: "Table 5.1 List of I/O Registers (Address Order), pp.257-260", bus_master: true }
+  glcdc: { window: [0x000E0000, 0x1460], ref: "Table 5.1 List of I/O Registers (Address Order), pp.282-285", bus_master: true }
+  drw2d: { window: [0x000E3000, 0xF0], ref: "Table 5.1 List of I/O Registers (Address Order), pp.285-286", bus_master: true }
 
   # CMTW0, the next-event timer, and CMTW1, the free-running clock.
   cmtw:

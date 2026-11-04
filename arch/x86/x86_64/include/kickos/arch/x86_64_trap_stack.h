@@ -51,41 +51,41 @@
 #define KICKOS_X86_64_TRAP_ENTRY_FRAME 0
 #define KICKOS_X86_64_TRAP_NEED_USER 0
 
-/* IRQ, IRQK and the frame term of every class an interrupt lands under. The deepest chain is a
- * timer expiry's wake re-arming the slice through pick_and_seat, which primes the incoming
- * thread's libc state: reent_prime copies into its space through arch_aspace_acquire
- * (docs/design-m10-toolchain.md section 5.5). qemu-x86_64's measures 544 and the bench
- * preset's, whose brackets widen pick_and_seat's frame, 592. */
-#define KICKOS_X86_64_TRAP_DEPTH_IRQ 640
+/* IRQ, IRQK and the frame term of every class an interrupt lands under. The deepest chain is an
+ * interrupt's wake seating a thread through pick_and_seat, which primes the incoming thread's
+ * libc state from its image: reent_prime copies into its space through arch_aspace_acquire
+ * (docs/design-m10-toolchain.md section 5.5). qemu-x86_64's measures 616 and the bench
+ * preset's, whose brackets widen pick_and_seat's frame, 632. */
+#define KICKOS_X86_64_TRAP_DEPTH_IRQ 704
 
 /* A ring 0 interrupt's whole extent below the rsp it interrupts, FRAME_IRQ + DEPTH_IRQ, which
  * arch_x86_64.cc asserts. */
-#define KICKOS_X86_64_TRAP_NEST 824
+#define KICKOS_X86_64_TRAP_NEST 888
 
-/* The ring 3 syscall on the block, reserved at 2048. 1880 on qemu-x86_64, a spawn staging 9
- * grants and seeding the new task's space, and 1896 on qemu-x86_64-bench, whose 32-slot root
- * table widens spawn_masked to 528; arch_x86_64.cc refuses more than 9 grants:
- *   syscall_dispatch[144] -> thread_create_call[32] -> spawn_masked[512] -> thread_create[128]
- *   -> task_for[32] -> domain_for[80] -> claim_slot[48] -> aspace_image_seed[144]
- *   -> arch_aspace_map[112] -> map_into[112] x5 -> kickos_frame_alloc[32] -> ... */
+/* The ring 3 syscall on the block, reserved at 2048. 1944 on qemu-x86_64, a task create seeding
+ * the new task's space, and 1976 on qemu-x86_64-bench, whose 32-slot root table widens
+ * spawn_locked to 432; arch_x86_64.cc refuses more than 9 grants:
+ *   syscall_dispatch[144] -> task_create_call[192] -> spawn_locked[416] -> thread_create[128]
+ *   -> task_for[32] -> domain_for[80] -> claim_slot[48] -> aspace_image_seed[112]
+ *   -> arch_aspace_map[144] -> map_into[112] x5 -> kickos_frame_alloc[32] -> ... */
 #define KICKOS_X86_64_TRAP_DEPTH_SYSK 2048
 
 /* An interrupt nested below arch_irq_window, the one place a ring 3 syscall opens interrupts on
  * the block: the syscall entry's frame and a ring 0 interrupt's whole extent, FRAME + NEST, which
  * arch_x86_64.cc asserts. */
-#define KICKOS_X86_64_TRAP_WINDOW 1000
+#define KICKOS_X86_64_TRAP_WINDOW 1064
 
 /* The syscall's descent to arch_irq_window, above SYSWIN's frame. 376 on qemu-x86_64-bench and
  * the multicore presets, 360 on qemu-x86_64:
  *   syscall_dispatch[144] -> presync_prepare[16] -> presync_run[176]
  *   -> GranuleWindows::granule[32] -> arch_irq_window[8]
- * WINDOW + 512 = 1512 against 4092 above the canary, and 1128 + 512 = 1640 on the multicore
+ * WINDOW + 512 = 1576 against 4092 above the canary, and 1128 + 512 = 1640 on the multicore
  * presets. */
 #define KICKOS_X86_64_TRAP_DEPTH_SYSWIN 512
 
 /* The double-fault, NMI and machine-check slots: kickos_x86_64_trap on a static array, bounded
  * by IRQ's chain, which bounds the reporter those vectors actually take. */
-#define KICKOS_X86_64_TRAP_DEPTH_IST 640
+#define KICKOS_X86_64_TRAP_DEPTH_IST 704
 
 /* The fault and slay stubs on the block with an interrupt nested below: 816 on both presets, a
  * dying task's teardown releasing its address space down the map editor's walks. */
@@ -99,10 +99,10 @@
 #define KICKOS_X86_64_TRAP_DEPTH_IDLE 64
 
 /* The panic reporter on its own array, below the null return word kickos_panic_stack_enter
- * pushes. 296 on qemu-x86_64 and 320 on qemu-x86_64-bench:
- *   kickos_panic_report[32] -> kputs[32] -> kconsole_write[8] -> console_emit[80]
- *   -> console_tx_insert_line[64] -> console_write_line_sync[48] -> arch_console_write_sync[48]
- *   -> com1_slot_free[8] */
+ * pushes. 320 on qemu-x86_64 and 368 on qemu-x86_64-bench:
+ *   kickos_panic_report[32] -> kputs[32] -> kconsole_write[8] -> console_emit[48]
+ *   -> console_tx_insert_line[32] -> console_write_line_owned[64] -> give_way's byte[48]
+ *   -> arch_console_write_sync[48] -> com1_slot_free[8] */
 #define KICKOS_X86_64_PANIC_FRAME 8
 #define KICKOS_X86_64_PANIC_DEPTH 384
 

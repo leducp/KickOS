@@ -10,7 +10,7 @@ accepts: [no_protection]
 
 tasks:
   - name: main
-    entry: kickos_main
+    program: main
     stack: 4096
     priority: 2
     ceiling: 31

@@ -11,9 +11,9 @@
 
 #include <stdlib.h>
 
-extern "C" void conrestart_main(kos_self_t const* self)
+int main(int, char**)
 {
-    kos_cap_t const events = kos_grant_notify(self, "/init/events");
+    kos_cap_t const events = kos_grant_notify("/init/events");
     if (kos_notify_bind(events) != 0)
     {
         kos::print("[conrestart] ERROR: no /init/events to wait the driver's death on\n");

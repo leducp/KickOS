@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# main, which outlives the refusal, and the wild thread's program, which main creates on a core
+# with a stack limit so that its fault ends that task alone.
+
+version: 1
+stdout: kernel
+ends: main
+
+tasks:
+  - name: main
+    program: @PG_APP@
+    priority: 2
+    ceiling: 31
+    authority: [memory, system, tasks]
+
+  - name: wild
+    program: @PG_APP@_peer
+    priority: 10
+    ceiling: 20
+    start: on_request
+    budgets: { threads: 2 }

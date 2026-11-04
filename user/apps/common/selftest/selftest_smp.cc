@@ -38,21 +38,6 @@ namespace selftest
     constexpr unsigned PL_SAMPLES = 64;
     constexpr uint32_t PL_ALL = ~0u >> (32 - KICKOS_KERNEL_CORES);
 
-    // Keeps its task non-empty until main posts xsem(0), reached through its first window.
-    void pl_gate_worker(void*)
-    {
-        kos_sem_wait(xsem_child(0), KOS_TIMEOUT_NONE);
-    }
-
-    // pl_gate_worker spawned into `t` at `prio`.
-    kos::thread::Handle pl_gate_spawn(char const* name, uint8_t prio, kos_task_t t)
-    {
-        kos_window const xw = xsem_window();
-        return kos::thread::create(pl_gate_worker, nullptr, name, prio, KOS_POLICY_FIFO, 0,
-                                   nullptr, 0, nullptr, 0, &xw, xsem_windows(), nullptr, 0, 0,
-                                   nullptr, t);
-    }
-
     Atomic<uint32_t, Order::RELAXED> g_pl_go{0};
     Atomic<uint32_t, Order::RELAXED> g_pl_stop{0};
     Atomic<uint32_t, Order::RELAXED> g_pl_core{0xffu};
@@ -141,8 +126,7 @@ namespace selftest
         ArmHold hold;
         TAP_HOLD(hold.thread(&w));
         w = kos::thread::create_caps(pl_sample_worker, nullptr, "plsmp", 12, nullptr, 0,
-                                     KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr,
-                                     KOS_TASK_NONE, nullptr, 0, mask);
+                                     KOS_POLICY_FIFO, 0, 0, nullptr, nullptr, 0, mask);
         TAP_CHECK(w.valid());
         if (place)
         {
@@ -186,29 +170,20 @@ namespace selftest
         return 0;
     }
 
-    // Seats `entry` with g_pl_ep's `rights` at child_cap(0) and takes the report it sends there: in
-    // a
-    // fresh task granted `cores`, the grant's answer in *granted, or in main's own when `cores` is
-    // 0.
-    void pl_member_report(void (*entry)(void*), uint32_t cores, uint8_t rights,
-                          uint32_t authority, void* rep, size_t len, int* granted)
+    // Starts peer3, the instance declared on core 0 alone, running `role` with g_pl_ep at
+    // child_cap(0), and takes the report it sends there.
+    void pl_member_report(char const* role, void* rep, size_t len)
     {
         kos_task_t t = KOS_TASK_NONE;
-        kos::thread::Handle m;
         ArmHold hold;
-        TAP_HOLD(hold.cap(&g_pl_ep) and hold.task(&t) and hold.thread(&m));
+        TAP_HOLD(hold.cap(&g_pl_ep) and hold.task(&t));
         TAP_CHECK(kos_endpoint_create(&g_pl_ep) == 0);
-        if (cores != 0)
-        {
-            TAP_CHECK(kos_task_create(nullptr, 0, 0, &t) == 0);
-            *granted = kos_task_sched_grant(t, 0, cores);
-        }
-        kos_cap_grant caps[] = {{g_pl_ep, rights}};
-        m = kos::thread::create_caps(entry, nullptr, "plmem", 11, caps, 1, KOS_POLICY_FIFO, 0,
-                                     nullptr, 0, authority, nullptr, t);
-        TAP_CHECK(m.valid());
+        kos_cap_grant caps[] = {{g_pl_ep, KOS_CAP_SIGNAL}};
+        PeerRun run(role);
+        run.p.instance = "peer3";
+        TAP_CHECK(run.caps(caps, 1).start(&t) == 0);
         TAP_CHECK(report_await(g_pl_ep, rep, len));
-        TAP_CHECK(hold.joined());
+        TAP_CHECK(peer_dead_status(t) == 0);
     }
 
     // Every core: a pinned worker's core read, user and kernel alike, names it.
@@ -263,9 +238,11 @@ namespace selftest
         XS_ZERO = 3,  // ... and on core 0
         XS_WORDS = 4
     };
-    // Pins a SIBLING in its own task: the task's single grant bounds the placement.
-    void sib_pin_worker(void*) // caps: E(SIGNAL)@0
+#if KICKOS_SELFTEST_PEER
+    // Pins a SIBLING in its own task: the task's declared core bounds the placement.
+    int sib_pin_worker() // caps: E(SIGNAL)@0
     {
+        peer_seat(11);
         int32_t rep[XS_WORDS] = {0, 0, -99, -99};
         rep[XS_CORES] = static_cast<int32_t>(kos_task_cores(KOS_TASK_NONE));
         g_pl_stop = 0;
@@ -279,18 +256,19 @@ namespace selftest
             (void)s.join(STALL_TOLERANT_US);
         }
         (void)kos_send(child_cap(0), rep, sizeof(rep), KOS_TIMEOUT_NONE);
+        return 0;
     }
+#endif
 
     void t_pin_beyond_grant_refused()
     {
-        TAP_ASK(.workers = 2, .tasks = 1, .endpoints = 1);
+        // peer3, the fourth instance.
+        TAP_ASK(.tasks = 4, .endpoints = 1, .peer_workers = 1);
         pl_reset();
         // The authority refusal: the task holds core 0 alone, so a pin to core 1, a core the
         // image drives, is refused.
-        int granted = -99;
         int32_t rep[XS_WORDS] = {0, 0, 0, 0};
-        pl_member_report(sib_pin_worker, 0x1, KOS_CAP_SIGNAL, 0, rep, sizeof(rep), &granted);
-        TAP_CHECK(granted == 0);
+        pl_member_report("sibpin", rep, sizeof(rep));
         TAP_CHECK(rep[XS_CORES] == 0x1);
         TAP_CHECK(rep[XS_MADE] == 1);
         TAP_CHECK(rep[XS_ONE] == -KOS_EPERM);
@@ -373,8 +351,7 @@ namespace selftest
         ArmHold hold(2u * STALL_TOLERANT_US);
         TAP_HOLD(hold.thread(&w) and hold.thread(&d));
         w = kos::thread::create_caps(pl_spin_worker, nullptr, "migr", 12, nullptr, 0,
-                                     KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr,
-                                     KOS_TASK_NONE, nullptr, 0, 1u << away);
+                                     KOS_POLICY_FIFO, 0, 0, nullptr, nullptr, 0, 1u << away);
         TAP_CHECK(w.valid());
         // Set before the driver exists, so the relaxed cell needs no publication order.
         g_pl_victim = w.id();
@@ -400,20 +377,34 @@ namespace selftest
         TAP_CHECK(g_pl_mig_arrived.load() == 1u);
     }
 
+#if KICKOS_SELFTEST_PEER
+    // Reports its own thread, then parks until main raises its release.
+    int pl_gate_worker() // caps: E(SIGNAL)@0, its release N(WAIT)@1
+    {
+        peer_seat(9);
+        kos_thread_t const self = kos_thread_self();
+        (void)kos_send(child_cap(0), &self, sizeof(self), KOS_TIMEOUT_NONE);
+        peer_park(child_cap(1));
+        return 0;
+    }
+#endif
+
     void t_pin_cross_task_refused()
     {
-        TAP_ASK(.workers = 1, .tasks = 1);
+        TAP_ASK(.workers = 1, .tasks = 1, .endpoints = 1, .notifies = 1);
+        kos_cap_t ep = KOS_CAP_NONE;
+        kos_cap_t release = KOS_CAP_NONE;
         kos_task_t t = KOS_TASK_NONE;
-        kos::thread::Handle m;
         ArmHold hold;
-        TAP_HOLD(hold.task(&t) and hold.thread(&m));
-        TAP_CHECK(kos_sem_init(xsem(0), 0) == 0);
-        TAP_CHECK(kos_task_create(nullptr, 0, 0, &t) == 0);
-        m = pl_gate_spawn("xtask", 9, t);
-        TAP_CHECK(m.valid());
-        int const rc = kos_thread_affinity(m.id(), 0x1u);
-        kos_sem_post(xsem(0));
-        TAP_CHECK(hold.joined());
+        TAP_HOLD(hold.cap(&ep) and hold.cap(&release) and hold.task(&t));
+        TAP_CHECK(kos_endpoint_create(&ep) == 0 and kos_notify_create(&release) == 0);
+        kos_cap_grant caps[] = {{ep, KOS_CAP_SIGNAL}, {release, KOS_CAP_WAIT}};
+        TAP_CHECK(PeerRun("plgate").caps(caps, 2).start(&t) == 0);
+        kos_thread_t m = KOS_THREAD_NONE;
+        TAP_CHECK(report_await(ep, &m, sizeof(m)));
+        int const rc = kos_thread_affinity(m, 0x1u);
+        (void)kos_notify(release);
+        TAP_CHECK(peer_dead_status(t) == 0);
         // main is unprivileged: a core its OWN grant holds does not make another task's thread
         // its to place.
         TAP_CHECK(rc == -KOS_EPERM);
@@ -426,150 +417,32 @@ namespace selftest
         GN_CORE = 2,  // the core it was reading this on
         GN_WORDS = 3
     };
-    void gn_worker(void*) // caps: E(SIGNAL)@0
+#if KICKOS_SELFTEST_PEER
+    int gn_worker() // caps: E(SIGNAL)@0
     {
+        peer_seat(11);
         int32_t rep[GN_WORDS];
         rep[GN_CORES] = static_cast<int32_t>(kos_task_cores(KOS_TASK_NONE));
         rep[GN_AFF] =
             static_cast<int32_t>(kos_thread_affinity(kos_thread_self(), KOS_AFFINITY_QUERY));
         rep[GN_CORE] = static_cast<int32_t>(kos_core_current());
         (void)kos_send(child_cap(0), rep, sizeof(rep), KOS_TIMEOUT_NONE);
+        return 0;
     }
+#endif
 
+    // A task declared on one core: its set, and its entry's affinity seated from it.
     void t_grant_narrows()
     {
-        TAP_ASK(.workers = 1, .tasks = 1, .endpoints = 1);
-        int granted = -99;
+        // peer3, the fourth instance.
+        TAP_ASK(.workers = 1, .tasks = 4, .endpoints = 1);
         int32_t rep[GN_WORDS] = {0, 0, 0};
-        pl_member_report(gn_worker, 0x3, KOS_CAP_SIGNAL, 0, rep, sizeof(rep), &granted);
-        TAP_CHECK(granted == 0);
-        TAP_CHECK(rep[GN_CORES] == 0x3);
-        // Affinity is seated FROM the set, so a grant nothing re-derived shows as a thread wider
+        pl_member_report("gn", rep, sizeof(rep));
+        TAP_CHECK(rep[GN_CORES] == 0x1);
+        // Affinity is seated FROM the set, so a set nothing re-derived shows as a thread wider
         // than its own task.
-        TAP_CHECK(rep[GN_AFF] == 0x3);
-        TAP_CHECK((0x3 & (1 << rep[GN_CORE])) != 0);
-    }
-
-    // --- A second grant narrows again and never re-widens -------------------------------
-    // task_sched_grant weighs a request against the CALLER's grant, which main holds whole, so
-    // only task_sched_narrow's check against the TASK's current set can refuse this.
-    void t_grant_second_narrow_only()
-    {
-        TAP_SKIP_UNLESS(PL_ALL != 0x1u, "re-widening needs a set wider than core 0 to ask for");
-        TAP_ASK(.tasks = 1);
-        kos_task_t t = KOS_TASK_NONE;
-        ArmHold hold;
-        TAP_HOLD(hold.task(&t));
-        TAP_CHECK(kos_task_create(nullptr, 0, 0, &t) == 0);
-        int const first = kos_task_sched_grant(t, 0, 0x1);
-        int const rewiden = kos_task_sched_grant(t, 0, PL_ALL);
-        int const again = kos_task_sched_grant(t, 0, 0x1);
-        TAP_CHECK(first == 0);
-        TAP_CHECK(rewiden == -KOS_EPERM);
-        TAP_CHECK(again == 0);
-    }
-
-    // --- A task inherits its creator's grant --------------------------------------------
-    // Only a member of the created task can show this: every refusal path weighs the caller's
-    // grant, so a task wrongly defaulted to the whole machine is invisible from outside.
-    enum
-    {
-        GI_MADE = 0,   // the nested task was created
-        GI_SEATED = 1, // a member of it was seated
-        GI_CORES = 2,  // and the set that member reports
-        GI_WORDS = 3
-    };
-    void gi_child(void*) // caps: E(SIGNAL)@0
-    {
-        int32_t rep[GI_WORDS] = {1, 1,
-                                 static_cast<int32_t>(kos_task_cores(KOS_TASK_NONE))};
-        (void)kos_send(child_cap(0), rep, sizeof(rep), KOS_TIMEOUT_NONE);
-    }
-    void gi_worker(void*) // caps: E(SIGNAL)@0
-    {
-        int32_t rep[GI_WORDS] = {0, 0, -1};
-        kos_task_t u = KOS_TASK_NONE;
-        if (kos_task_create(nullptr, 0, 0, &u) != 0)
-        {
-            (void)kos_send(child_cap(0), rep, sizeof(rep), KOS_TIMEOUT_NONE);
-            return;
-        }
-        rep[GI_MADE] = 1;
-        kos_cap_grant caps[] = {{child_cap(0), KOS_CAP_SIGNAL}};
-        auto c = kos::thread::create_caps(gi_child, nullptr, "ginh", 11, caps, 1,
-                                          KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr, u);
-        if (not c.valid())
-        {
-            (void)kos_task_slay(u, 0);
-            (void)kos_send(child_cap(0), rep, sizeof(rep), KOS_TIMEOUT_NONE);
-            return;
-        }
-        // The CHILD answers on the same endpoint, so this thread sends nothing more.
-        (void)c.join(STALL_TOLERANT_US);
-        (void)kos_task_slay(u, 0);
-    }
-    void t_grant_inherited_by_child_task()
-    {
-        TAP_SKIP_UNLESS(PL_ALL != 0x1u,
-                        "inheritance needs a set narrower than the whole machine to inherit");
-        TAP_ASK(.workers = 2, .tasks = 2, .endpoints = 1);
-        int granted = -99;
-        int32_t rep[GI_WORDS] = {0, 0, -1};
-        // TRANSFER as well as SIGNAL: the worker hands this endpoint on to the member it seats
-        // into the nested task, and that member is what reports the inherited set. The member
-        // creates that task, so it holds the task authority.
-        pl_member_report(gi_worker, 0x1, KOS_CAP_SIGNAL | KOS_CAP_TRANSFER, KOS_AUTH_TASKS, rep,
-                         sizeof(rep), &granted);
-        tap::diag("nested task made %d, member seated %d, cores/err %d",
-                  static_cast<int>(rep[GI_MADE]), static_cast<int>(rep[GI_SEATED]),
-                  static_cast<int>(rep[GI_CORES]));
-        TAP_CHECK(granted == 0);
-        TAP_CHECK(rep[GI_MADE] == 1);
-        TAP_CHECK(rep[GI_SEATED] == 1);
-        // 0x1 and not PL_ALL: a task that did not inherit reads as the whole machine.
-        TAP_CHECK(rep[GI_CORES] == 0x1);
-    }
-
-    void t_grant_after_member_refused()
-    {
-        TAP_ASK(.workers = 1, .tasks = 1);
-        kos_task_t t = KOS_TASK_NONE;
-        kos::thread::Handle m;
-        ArmHold hold;
-        TAP_HOLD(hold.task(&t) and hold.thread(&m));
-        TAP_CHECK(kos_sem_init(xsem(0), 0) == 0);
-        TAP_CHECK(kos_task_create(nullptr, 0, 0, &t) == 0);
-        int const empty_ok = kos_task_sched_grant(t, 0, 0x3);
-        m = pl_gate_spawn("gbusy", 9, t);
-        TAP_CHECK(m.valid());
-        int const busy = kos_task_sched_grant(t, 0, 0x1);
-        kos_sem_post(xsem(0));
-        TAP_CHECK(hold.joined());
-        TAP_CHECK(empty_ok == 0);
-        // Thread::affinity is a subset of the set and nothing re-derives it, so narrowing under
-        // a live member would strand it.
-        TAP_CHECK(busy == -KOS_EBUSY);
-    }
-
-    // A grant of exactly one isolated core and nothing else: the default set is then the grant,
-    // so an unpinned member runs on the isolated core.
-    void t_isolated_single_grant_ok()
-    {
-        uint32_t const iso = KOS_ISOLATED_CORES;
-        TAP_SKIP_UNLESS(iso != 0, "this image isolates no core");
-        TAP_ASK(.workers = 1, .tasks = 1, .endpoints = 1);
-        uint32_t const core = pl_lowest(iso);
-        uint32_t const bit = 1u << core;
-        int granted = -99;
-        int32_t rep[GN_WORDS] = {0, 0, 0};
-        pl_member_report(gn_worker, bit, KOS_CAP_SIGNAL, 0, rep, sizeof(rep), &granted);
-        tap::diag("granted isolated core %u alone: task cores 0x%x, affinity 0x%x, ran on %d",
-                  static_cast<unsigned>(core), static_cast<unsigned>(rep[GN_CORES]),
-                  static_cast<unsigned>(rep[GN_AFF]), static_cast<int>(rep[GN_CORE]));
-        TAP_CHECK(granted == 0);
-        TAP_CHECK(rep[GN_CORES] == static_cast<int32_t>(bit));
-        TAP_CHECK(rep[GN_AFF] == static_cast<int32_t>(bit));
-        TAP_CHECK(rep[GN_CORE] == static_cast<int32_t>(core));
+        TAP_CHECK(rep[GN_AFF] == 0x1);
+        TAP_CHECK(rep[GN_CORE] == 0);
     }
 
     void pl_exit_worker(void*)
@@ -675,6 +548,7 @@ namespace selftest
     // each other core. Neither of the pair yields or blocks, so while one runs the other's count
     // can move only once that core's own slice expiry has taken the runner off it.
     constexpr unsigned PL_CROWD = KICKOS_KERNEL_CORES + 1u;
+    constexpr uint8_t PL_CROWD_PRIO = 12;
     constexpr uint32_t PL_CROWD_JOIN_US = 3u * STALL_TOLERANT_US;
 
     // How a pair member's spin ended.
@@ -836,6 +710,8 @@ namespace selftest
             {
                 TAP_HOLD(hold.thread(&w[i]));
             }
+            // Above the crowd until the release: a crowd on every core can starve main of it.
+            TAP_CHECK(main_above(PL_CROWD_PRIO + 1));
             for (unsigned i = 0; i < PL_CROWD; i++)
             {
                 void (*entry)(void*) = pl_pair_worker;
@@ -849,12 +725,16 @@ namespace selftest
                 // pair is runnable anywhere, and one sample there makes it look strayed.
                 w[i] = kos::thread::create_caps(entry,
                                                 reinterpret_cast<void*>(static_cast<uintptr_t>(i)),
-                                                "burn", 12, nullptr, 0, KOS_POLICY_RR,
-                                                static_cast<uint32_t>(quantum), nullptr, 0,
-                                                0, nullptr, KOS_TASK_NONE, nullptr, 0, pin);
-                TAP_CHECK(w[i].valid());
+                                                "burn", PL_CROWD_PRIO, nullptr, 0,
+                                                KOS_POLICY_RR, static_cast<uint32_t>(quantum), 0,
+                                                nullptr, nullptr, 0, pin);
             }
             g_pl_go = 1;
+            TAP_CHECK(main_back());
+            for (unsigned i = 0; i < PL_CROWD; i++)
+            {
+                TAP_CHECK(w[i].valid());
+            }
             TAP_CHECK(hold.joined());
             uint32_t const pair_seen = g_pl_pair_seen[0].load() | g_pl_pair_seen[1].load();
             if ((pair_seen & ~(1u << k)) != 0u)
@@ -979,16 +859,22 @@ namespace selftest
         {
             TAP_HOLD(hold.thread(&w[i]));
         }
+        // Above the crowd until the release: a crowd on every core can starve main of it.
+        TAP_CHECK(main_above(PL_CROWD_PRIO + 1));
         for (unsigned i = 0; i < PL_CROWD; i++)
         {
             w[i] = kos::thread::create(pl_spread_worker,
                                        reinterpret_cast<void*>(static_cast<uintptr_t>(i)),
-                                       "spread", 12);
-            TAP_CHECK(w[i].valid());
+                                       "spread", PL_CROWD_PRIO);
         }
         // Last, once every worker exists: released one at a time, the first could finish its
         // samples before anyone could crowd it off a core.
         g_pl_go = 1;
+        TAP_CHECK(main_back());
+        for (unsigned i = 0; i < PL_CROWD; i++)
+        {
+            TAP_CHECK(w[i].valid());
+        }
         TAP_CHECK(hold.joined());
 
         uint32_t reached = 0;
@@ -1117,17 +1003,14 @@ namespace selftest
         kos_cap_grant vcaps[] = {{g_xc_ep, KOS_CAP_WAIT}};
         kos_cap_grant ccaps[] = {{g_xc_ep, KOS_CAP_SIGNAL}};
         sv = kos::thread::create_caps(xc_server, nullptr, "xcS", XC_SERVER_PRIO, vcaps, 1,
-                                      KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr,
-                                      KOS_TASK_NONE, nullptr, 0, 1u << PL_HOME);
+                                      KOS_POLICY_FIFO, 0, 0, nullptr, nullptr, 0, 1u << PL_HOME);
         TAP_CHECK(sv.valid());
         // The spinner shares the caller's core below it, so it runs only once the caller parks.
         cl = kos::thread::create_caps(xc_caller, nullptr, "xcC", XC_CALLER_PRIO, ccaps, 1,
-                                      KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr,
-                                      KOS_TASK_NONE, nullptr, 0, 1u << away);
+                                      KOS_POLICY_FIFO, 0, 0, nullptr, nullptr, 0, 1u << away);
         TAP_CHECK(cl.valid());
         sp = kos::thread::create_caps(xc_spinner, nullptr, "xcP", XC_SPIN_PRIO, nullptr, 0,
-                                      KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr,
-                                      KOS_TASK_NONE, nullptr, 0, 1u << away);
+                                      KOS_POLICY_FIFO, 0, 0, nullptr, nullptr, 0, 1u << away);
         TAP_CHECK(sp.valid());
         // Bounded so a missing reschedule request fails instead of hanging.
         int const cjoined = cl.join(STALL_TOLERANT_US);
@@ -1152,8 +1035,9 @@ namespace selftest
     // compare-and-swaps on the other core move it.
     constexpr uint32_t TC_ROUNDS = 200000;
     constexpr uint8_t TC_PRIO = 10;
-    // Rounds enough for the race to land under emulation take seconds there.
-    constexpr uint32_t TC_BOUND_US = 12u * STALL_TOLERANT_US;
+    // Rounds enough for the race to land under emulation take seconds there, and past a minute
+    // on a loaded host.
+    constexpr uint32_t TC_BOUND_US = 24u * STALL_TOLERANT_US;
     kos_sem_t g_tc_sem = KOS_SEM_INIT(0);
     // Each thread's own count, by the index its spawn names: [0..1] the takers, [2..3] the
     // posters, whose rounds are TC_ROUNDS plus their index less 2.
@@ -1237,8 +1121,7 @@ namespace selftest
         TAP_HOLD(hold.thread(&w) and hold.thread(&t[0]) and hold.thread(&t[1])
                  and hold.thread(&p[0]) and hold.thread(&p[1]));
         w = kos::thread::create_caps(tc_waiter, nullptr, "tcW", TC_PRIO + 1, nullptr, 0,
-                                     KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr, KOS_TASK_NONE,
-                                     nullptr, 0, peer);
+                                     KOS_POLICY_FIFO, 0, 0, nullptr, nullptr, 0, peer);
         TAP_CHECK(w.valid());
         uint64_t const until = kos_clock_now() + uint64_t{STALL_TOLERANT_US} * 1000u;
         while (g_tc_sem.word != KOS_WORD_WAITERS and kos_clock_now() < until)
@@ -1250,16 +1133,15 @@ namespace selftest
         {
             void* const me = reinterpret_cast<void*>(static_cast<uintptr_t>(i));
             t[i] = kos::thread::create_caps(tc_taker, me, "tcT", TC_PRIO, nullptr, 0,
-                                            KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr,
-                                            KOS_TASK_NONE, nullptr, 0, peer);
+                                            KOS_POLICY_FIFO, 0, 0, nullptr, nullptr, 0, peer);
             TAP_CHECK(t[i].valid());
         }
         for (int i = 0; i < 2; i++)
         {
             uintptr_t const me = 2u + static_cast<uintptr_t>(i);
             p[i] = kos::thread::create_caps(tc_poster, reinterpret_cast<void*>(me), "tcP",
-                                            TC_PRIO, nullptr, 0, KOS_POLICY_FIFO, 0, nullptr, 0,
-                                            0, nullptr, KOS_TASK_NONE, nullptr, 0, home);
+                                            TC_PRIO, nullptr, 0, KOS_POLICY_FIFO, 0, 0, nullptr,
+                                            nullptr, 0, home);
             TAP_CHECK(p[i].valid());
         }
         uint64_t const t0 = kos_clock_now();
@@ -1358,14 +1240,12 @@ namespace selftest
         if (away != home)
         {
             x = kos::thread::create(pd_spinner, nullptr, "pdX", PD_EQUAL, KOS_POLICY_FIFO, 0,
-                                    nullptr, 0, nullptr, 0, nullptr, 0, nullptr, 0, 0,
-                                    nullptr, KOS_TASK_NONE, 1u << away);
+                                    nullptr, 0, nullptr, 0, nullptr, 0, 0, nullptr, 1u << away);
         }
         if (x.valid())
         {
             w = kos::thread::create(pd_waiter, nullptr, "pdW", PD_EQUAL, KOS_POLICY_FIFO, 0,
-                                    nullptr, 0, nullptr, 0, nullptr, 0, nullptr, 0, 0,
-                                    nullptr, KOS_TASK_NONE, 1u << away);
+                                    nullptr, 0, nullptr, 0, nullptr, 0, 0, nullptr, 1u << away);
         }
         int widened = -99;
         uint32_t early = 0xFFFFFFFFu;
@@ -1437,8 +1317,7 @@ namespace selftest
     kos::thread::Handle xirq_spawn(void (*entry)(void*), void* arg, char const* name, uint32_t core)
     {
         return kos::thread::create_caps(entry, arg, name, XIRQ_PRIO, nullptr, 0, KOS_POLICY_FIFO,
-                                        0, nullptr, 0, KOS_AUTH_IRQ, nullptr,
-                                        KOS_TASK_NONE, nullptr, 0, 1u << core);
+                                        0, KOS_AUTH_IRQ, nullptr, nullptr, 0, 1u << core);
     }
 
     Atomic<int32_t, Order::RELAXED> g_xr_rc{XIRQ_UNSET};
@@ -1458,8 +1337,7 @@ namespace selftest
         g_xr_core = 0xffu;
         kos_cap_grant const caps[] = {{irq, KOS_CAP_SIGNAL}};
         auto r = kos::thread::create_caps(xirq_raiser, nullptr, "xirqR", XIRQ_PRIO, caps, 1,
-                                          KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr,
-                                          KOS_TASK_NONE, nullptr, 0, 1u << core);
+                                          KOS_POLICY_FIFO, 0, 0, nullptr, nullptr, 0, 1u << core);
         if (not r.valid())
         {
             g_xr_unmade = 1;
@@ -1925,6 +1803,24 @@ namespace selftest
             }
         }
         TAP_CHECK(enabled == PL_ALL);
+    }
+#endif
+#if KICKOS_SELFTEST_PEER
+    int peer_roles_smp(int argc, char** argv)
+    {
+        if (argc == 2 and peer_is(argv[1], "sibpin"))
+        {
+            return sib_pin_worker();
+        }
+        if (argc == 2 and peer_is(argv[1], "plgate"))
+        {
+            return pl_gate_worker();
+        }
+        if (argc == 2 and peer_is(argv[1], "gn"))
+        {
+            return gn_worker();
+        }
+        return PEER_WHAT;
     }
 #endif
 #endif

@@ -22,6 +22,8 @@ extern "C"
 
 #define KOS_TABLE_MAGIC 0x54534F4Bu
 #define KOS_TABLE_NONE 0xFFFFu
+// A string offset standing for none.
+#define KOS_TABLE_NO_STRING 0xFFFFFFFFu
 
 // kos_table_header.flags
 enum kos_table_flags
@@ -36,7 +38,14 @@ enum kos_table_task_flags
     // handover rather than at boot, and drains it before the system ends.
     KOS_TABLE_TASK_CONSOLE = 1 << 0,
     // A packaged driver whose ring block is uncached: the init self-grants it KOS_MEM_NOCACHE.
-    KOS_TABLE_TASK_BLOCK_UNCACHED = 1 << 1
+    KOS_TABLE_TASK_BLOCK_UNCACHED = 1 << 1,
+    // Started by a creator with kos_task_create, never by the init.
+    KOS_TABLE_TASK_ON_REQUEST = 1 << 2,
+    // A packaged driver that runs as threads of task `host`, whose entry brings it up before the
+    // task's own; the init never starts it and the image declares no task for it.
+    KOS_TABLE_TASK_HOSTED = 1 << 3,
+    // A program's task: its entry is the program's main, entry.program.
+    KOS_TABLE_TASK_PROGRAM = 1 << 4
 };
 
 // kos_table_grant.kind
@@ -52,7 +61,9 @@ enum kos_grant_kind
     KOS_GRANT_STATUS = 7, // /init/status: the init's status block, read-only, for a watcher
     // An /amp crossing: `flags` is KOS_CAP_WAIT to serve it or KOS_CAP_SIGNAL to use it, `base` its
     // port and `target` the node the partition list names its server.
-    KOS_GRANT_PORT = 8
+    KOS_GRANT_PORT = 8,
+    // The endpoint the hosted driver `target` serves, delegated to its host at `cap_slot`.
+    KOS_GRANT_ENDPOINT_HOSTED = 9
 };
 
 // kos_table_region.flags, beside KOS_MEM_NOCACHE
@@ -68,11 +79,11 @@ struct kos_table_task;
 // The entry the init passes each task, which its lookups take.
 typedef struct kos_table_task kos_self_t;
 
-// A user task's entry or a packaged driver's start, as `driver` says.
+// A task's entry, a program's main or a packaged driver's start, as `driver` says.
 union kos_table_entry
 {
-    void (*task)(kos_self_t const* self);
     int (*driver)(struct kos_driver_instance* instance);
+    int (*program)(int argc, char** argv);
     uint64_t width;
 };
 
@@ -101,7 +112,7 @@ struct kos_table_task
     union kos_table_entry entry;
     uint16_t driver; // catalogue index, or KOS_TABLE_NONE for user code
     uint8_t ceiling; // the highest priority the task's threads may take, at least `priority`
-    uint8_t rsv1;
+    uint8_t cap_width; // its declaration's capability-table width, 0 for a hosted driver
     uint32_t stack;
     uint8_t priority;
     uint8_t restart_max;
@@ -115,7 +126,9 @@ struct kos_table_task
     uint16_t use_count;
     uint16_t first_watch; // ref[]: the tasks it watches
     uint16_t watch_count;
-    uint16_t rsv3[3];
+    uint16_t host; // a hosted driver's host task, or KOS_TABLE_NONE
+    // The program a program task runs, a string, or KOS_TABLE_NO_STRING for the executable's.
+    uint32_t program;
 };
 
 struct kos_table_grant
@@ -133,7 +146,7 @@ struct kos_table_grant
     uint16_t line;
     uint16_t priv_first;
     uint16_t priv_count;
-    uint32_t rsv1;
+    uint32_t badge; // an endpoint use's badge, which the init mints its copy with, or KOS_BADGE_NONE
 };
 
 struct kos_table_ref
@@ -197,7 +210,7 @@ KOS_STATIC_ASSERT(offsetof(struct kos_table_task, block) == 4, "task.block (tabl
 KOS_STATIC_ASSERT(offsetof(struct kos_table_task, entry) == 8, "task.entry (table layout)");
 KOS_STATIC_ASSERT(offsetof(struct kos_table_task, driver) == 16, "task.driver (table layout)");
 KOS_STATIC_ASSERT(offsetof(struct kos_table_task, ceiling) == 18, "task.ceiling (table layout)");
-KOS_STATIC_ASSERT(offsetof(struct kos_table_task, rsv1) == 19, "task.rsv1 (table layout)");
+KOS_STATIC_ASSERT(offsetof(struct kos_table_task, cap_width) == 19, "task.cap_width (table layout)");
 KOS_STATIC_ASSERT(offsetof(struct kos_table_task, stack) == 20, "task.stack (table layout)");
 KOS_STATIC_ASSERT(offsetof(struct kos_table_task, priority) == 24, "task.priority (table layout)");
 KOS_STATIC_ASSERT(offsetof(struct kos_table_task, restart_max) == 25,
@@ -221,7 +234,8 @@ KOS_STATIC_ASSERT(offsetof(struct kos_table_task, first_watch) == 46,
                   "task.first_watch (table layout)");
 KOS_STATIC_ASSERT(offsetof(struct kos_table_task, watch_count) == 48,
                   "task.watch_count (table layout)");
-KOS_STATIC_ASSERT(offsetof(struct kos_table_task, rsv3) == 50, "task.rsv3 (table layout)");
+KOS_STATIC_ASSERT(offsetof(struct kos_table_task, host) == 50, "task.host (table layout)");
+KOS_STATIC_ASSERT(offsetof(struct kos_table_task, program) == 52, "task.program (table layout)");
 
 KOS_STATIC_ASSERT(sizeof(struct kos_table_grant) == 40, "a grant is 40 bytes (table layout)");
 KOS_STATIC_ASSERT(offsetof(struct kos_table_grant, kind) == 0, "grant.kind (table layout)");
@@ -240,7 +254,7 @@ KOS_STATIC_ASSERT(offsetof(struct kos_table_grant, priv_first) == 32,
                   "grant.priv_first (table layout)");
 KOS_STATIC_ASSERT(offsetof(struct kos_table_grant, priv_count) == 34,
                   "grant.priv_count (table layout)");
-KOS_STATIC_ASSERT(offsetof(struct kos_table_grant, rsv1) == 36, "grant.rsv1 (table layout)");
+KOS_STATIC_ASSERT(offsetof(struct kos_table_grant, badge) == 36, "grant.badge (table layout)");
 
 KOS_STATIC_ASSERT(sizeof(struct kos_table_ref) == 4, "a ref is 4 bytes (table layout)");
 KOS_STATIC_ASSERT(offsetof(struct kos_table_ref, task) == 0, "ref.task (table layout)");

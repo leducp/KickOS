@@ -3,20 +3,25 @@
 
 #include <kickos/sys.h>
 #include <kickos/sys/cap_index.h>
+#include <kickos/sys/errno.h>
+#include <kickos/sys/uart.h>
 
-// A plain send is released when the driver takes it, so the first only starts the drain and the
-// second is taken once the driver is back in its receive, past that drain.
 int32_t kos_console_flush(uint32_t timeout_us)
 {
-    int32_t const first = kos_send(KOS_CAP_STDOUT, "", 0, timeout_us);
-    if (first < 0)
+    union
     {
-        return first;
-    }
-    int32_t const second = kos_send(KOS_CAP_STDOUT, "", 0, timeout_us);
-    if (second < 0)
+        struct kos_uart_req req;
+        struct kos_uart_rsp rsp;
+    } msg = {};
+    msg.req.op = KOS_UART_DRAIN;
+    int32_t const n = kos_call(KOS_CAP_STDOUT, &msg, sizeof(msg.req), sizeof(msg.rsp), timeout_us);
+    if (n < 0)
     {
-        return second;
+        return n;
     }
-    return 0;
+    if (static_cast<size_t>(n) < sizeof(msg.rsp))
+    {
+        return -KOS_EIO;
+    }
+    return msg.rsp.status;
 }

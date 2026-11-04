@@ -147,7 +147,7 @@ namespace kickos
         int const minted = cap_install_reply(w, c, &rcap);
         KICKOS_ASSERT(minted == 0); // cap_can_take_reply probed w above
         (void)minted;
-        (void)write_recv_info(user_space_of(w), w->ipc.badge_out, KOS_BADGE_NONE, rcap);
+        (void)write_recv_info(user_space_of(w), w->ipc.badge_out, sender_badge(c, args[1]), rcap);
         w->wait_result = static_cast<intptr_t>(n);
 
         // The reply target is the caller's own saved frame, so endpoint_reply's ep_copy lands

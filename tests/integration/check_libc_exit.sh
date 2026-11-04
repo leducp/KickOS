@@ -5,8 +5,8 @@
 # The C library's own exit() on one boot of libc_exit (natively for the sim, on QEMU when
 # QEMU_MACHINE is set).
 #
-#   check_libc_exit.sh <libc_exit image> [--atexit]
-#   KOS_CAPTURE=<log> check_libc_exit.sh <board-build> <kickos-source> <cmake> [--atexit]
+#   check_libc_exit.sh <libc_exit image> [--atexit | --image]
+#   KOS_CAPTURE=<log> check_libc_exit.sh <board-build> <kickos-source> <cmake> [--atexit | --image]
 #
 # A capture carries no exit status, so main's exit() ending the system is the emulator's claim.
 #
@@ -20,6 +20,11 @@
 # --atexit, where the libc's own exit() runs the image's handlers, which the sim's routing onto
 # KOS_SYS_EXIT does not: main registers one only after the worker exited, so its line after
 # main's own is main's exit() running it, and not the worker's, which would have consumed it.
+#
+# --image, on a chip that holds one task, where the init shares the image's libc: the worker's
+# exit() ends the whole image with its status, running no exit handler and flushing no stream, so
+# main's handler registered before the spawn never runs, the worker's unflushed text never
+# reaches the wire and main never prints again.
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
@@ -30,12 +35,14 @@ if judging_capture; then
     shift 3
     judge_capture libc_exit
 else
-    elf="${1:?usage: check_libc_exit.sh <libc_exit.elf> [--atexit]}"
+    elf="${1:?usage: check_libc_exit.sh <libc_exit.elf> [--atexit | --image]}"
     shift
     run_image "$elf"
 fi
 atexit=0
 [ "${1:-}" = "--atexit" ] && atexit=1
+image=0
+[ "${1:-}" = "--image" ] && image=1
 
 assert_no_panic "panic on the exit() path"
 if has "worker spawn refused"; then
@@ -43,6 +50,20 @@ if has "worker spawn refused"; then
 fi
 if ! has "worker: exit()"; then
     cfail worker "the worker never reached its exit()"
+fi
+if [ "$image" -eq 1 ]; then
+    if has "main: survived worker exit()"; then
+        cfail image "the worker's exit() ended only the worker, where the init shares the image's libc"
+    fi
+    if has "main: early atexit handler"; then
+        cfail handlers "the worker's exit() ran the image's exit handlers"
+    fi
+    if has "worker: unflushed"; then
+        cfail flushed "the worker's exit() flushed the image's streams"
+    fi
+    status_clause "the worker's exit() ended the image with status 3" 3
+    echo "PASS: a worker's exit() ended the whole image, with no exit handler and no flush"
+    exit 0
 fi
 if ! has "main: survived worker exit()"; then
     cfail survived "the worker's exit() did not reach KOS_SYS_EXIT (it ended the image, or main died)"

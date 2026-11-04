@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+
+  ==============================================
+   KickOS 0.5.1  -  microkernel RTOS
+  ==============================================
+   board   xmc4800-relax
+   arch    armv7m
+   cpu     cortex-m4
+   mpu     enforce
+   sched   tickless
+   build   2026-10-04 12:00:00 +0200
+   app     Oct  4 2026 12:00:01 +0200
+   commit  65fa3473
+   heap    15 KiB available
+   kstack  1008 B x 9 = 9072 B
+
+[xmcslots] bus open: PASS (rc=0)
+[xmcslots] holder opens its slot 0: PASS (rc=57599)
+[xmcslots] holder transfers on its slot 0: PASS (rc=1)
+[xmcslots] bus open: PASS (rc=0)
+[xmcslots] intruder opens its slot 1: PASS (rc=57599)
+[xmcslots] intruder is refused the holder's slot 0: PASS (rc=-13)
+[xmcslots] intruder is refused a transfer on slot 0: PASS (rc=-13)
+[xmcslots] PASS

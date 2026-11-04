@@ -1,0 +1,35 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# The DSPI0 slot witness: `holder` owns DSPI0's window on the local engine, `main` waits for its
+# end on the init's report and then probes the slot from a task of its own.
+
+version: 1
+stdout: kernel
+ends: main
+
+tasks:
+  - name: holder
+    program: k64dspi_close_holder
+    budgets: { threads: 2 }
+    priority: 9
+    ceiling: 9
+    devices: [/dev/dspi0]
+    accepts: [coarse_gate, device_not_isolated]
+    authority: [pinmux]
+
+  - name: main
+    program: main
+    budgets: { threads: 1 }
+    priority: 5
+    ceiling: 5
+    watches: [holder]
+    authority: [tasks]
+
+  # Started by main once the holder has ended; it holds no window.
+  - name: k64dprb
+    program: k64dspi_probe
+    budgets: { threads: 1 }
+    priority: 4
+    ceiling: 4
+    start: on_request

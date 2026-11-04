@@ -9,6 +9,7 @@
 namespace
 {
     int g_mask_depth = 0;
+    uint32_t g_mask_spans = 0;
     int g_slot_free = 1;
     bool g_tx_irq_on = false;
     bool g_tx_event = false;
@@ -70,6 +71,16 @@ namespace
 
 namespace consoleline
 {
+    int mask_depth()
+    {
+        return g_mask_depth;
+    }
+
+    uint32_t mask_spans()
+    {
+        return g_mask_spans;
+    }
+
     void reset(uint32_t ring_size, int irq_line)
     {
         g_mask_depth = 0;
@@ -171,6 +182,12 @@ extern "C"
         (void)arch_console_write_sync(buf, n);
     }
 
+    int console_write_line_owned(char const* buf, size_t n)
+    {
+        console_write_line_sync(buf, n);
+        return static_cast<int>(n);
+    }
+
     // Disarmed before the seated call so a line inserted from inside the copy reaches the
     // hook without seating itself again.
     void kickos_line_step(void)
@@ -188,6 +205,10 @@ extern "C"
     arch_irq_state_t arch_irq_save(void)
     {
         arch_irq_state_t const prior = static_cast<arch_irq_state_t>(g_mask_depth);
+        if (g_mask_depth == 0)
+        {
+            g_mask_spans++;
+        }
         g_mask_depth++;
         return prior;
     }

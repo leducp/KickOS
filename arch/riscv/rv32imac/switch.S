@@ -489,6 +489,13 @@ svc_trampoline:
     la      t1, g_bench_sw_rstart
     sw      t0, 0(t1)
 #endif
+    /* mstatus (saved with MIE=0) BEFORE gp, tp and mepc. svc_trampoline arrives here with
+       MIE=1, and a trap's own restore rewrites gp and tp, which no frame saves: one taken
+       inside either sequence below would resume it on the wrong partial value. A trap between
+       the mepc write and mret would overwrite mepc, so the final mret would jump back into
+       this epilogue at the caller's privilege with the frame half-popped. */
+    lw      t0, F_MSTATUS(sp)
+    csrw    mstatus, t0
     /* Force gp to its link-time value on every resume. __global_pointer$ is anchored inside
        the LIVE app small-data window and U-mode can write gp, so the next thread's
        gp-relative loads would otherwise resolve at addresses the last one chose. */
@@ -500,11 +507,6 @@ svc_trampoline:
     lw      tp, 0(tp)
     lw      tp, F_CTX_TLS_BASE(tp)
 #endif
-    /* mstatus (saved with MIE=0) BEFORE mepc. svc_trampoline arrives here with MIE=1, and a
-       trap between the two writes would overwrite mepc, so the final mret would jump back
-       into this epilogue at the caller's privilege with the frame half-popped. */
-    lw      t0, F_MSTATUS(sp)
-    csrw    mstatus, t0
     lw      t0, F_MEPC(sp)
     csrw    mepc, t0
     /* Breaks any reservation the resumed thread's LR left, so its SC fails: mret need not
@@ -651,37 +653,6 @@ arch_start:
        mstatus enables it on the mret. */
     call    kickos_arch_mpu_commit
     j       .Lrestore
-
-/* arch_syscall(nr, a0, a1, a2, a3). ra survives the trap in the frame. arch_syscall64 is the
-   SAME trap: a0:a1 is the psABI's 64-bit pair. */
-    .global arch_syscall
-    .global arch_syscall64
-arch_syscall:
-arch_syscall64:
-    ecall
-    ret
-
-/* int32_t arch_syscall_reg(uint32_t* io): the register-carrying IPC trap. io[0..7] load
-   a0-a7; on return io[1..5] take back a1-a5 and a0 is the result. t0 holds `io` across the
-   ecall because the trap frame saves and restores it. */
-    .global arch_syscall_reg
-arch_syscall_reg:
-    mv      t0, a0
-    lw      a0,  0(t0)
-    lw      a1,  4(t0)
-    lw      a2,  8(t0)
-    lw      a3, 12(t0)
-    lw      a4, 16(t0)
-    lw      a5, 20(t0)
-    lw      a6, 24(t0)
-    lw      a7, 28(t0)
-    ecall
-    sw      a1,  4(t0)
-    sw      a2,  8(t0)
-    sw      a3, 12(t0)
-    sw      a4, 16(t0)
-    sw      a5, 20(t0)
-    ret
 
 /* kickos_panic_stack_enter(msg, file, line, top): leave the interrupted stack for the
    reporter's own (arch.h). a0-a2 pass through untouched; a3 is the seat.

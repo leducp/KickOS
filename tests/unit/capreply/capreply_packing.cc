@@ -43,7 +43,7 @@ TEST(CapReply, entry_footprint)
 {
     printf("# sizeof(CapEntry)=%u alignof(CapEntry)=%u\n",
            static_cast<unsigned>(sizeof(CapEntry)), static_cast<unsigned>(alignof(CapEntry)));
-    EXPECT_EQ(sizeof(CapEntry), 8u) << "CapEntry is still 8 bytes with the sequence relocated";
+    EXPECT_EQ(sizeof(CapEntry), 16u) << "CapEntry is 16 bytes with the badge beside the sequence";
     EXPECT_EQ(alignof(CapEntry), 8u) << "and still 8-aligned";
 }
 
@@ -170,33 +170,37 @@ TEST(CapReply, every_kind_and_every_sequence_are_independent)
     printf("# %u kind(s) x 256 sequence values are mutually independent\n", kinds);
 }
 
-// A CAP_NOTIFY's BADGE spends the same two spare halves the call sequence does, through the
-// same accessors, so it inherits that independence exactly. Stored as bit + 1, which is what
-// leaves 0 meaning UNBADGED with no sentinel beside it.
-TEST(CapReply, the_badge_is_the_same_field_and_the_unbadged_zero_is_reachable)
+// THE BADGE HAS A FIELD OF ITS OWN, at the 32 bits the receive delivers, so no badge value can
+// reach the call sequence, the type or the rights, and no sequence can reach the badge. Both
+// writers are driven in both orders over the edges of either field.
+TEST(CapReply, the_badge_and_the_sequence_are_independent)
 {
-    for (uint32_t bit = 0; bit < kickos::KCAP_BADGE_BITS; bit++)
+    uint32_t const badges[] = {0u, 1u, 0x20u, 0xFFu, 0x100u, 0xFFFFu, 0x10000u, 0x7FFFFFFFu,
+                               0x80000000u, 0xFFFFFFFEu, 0xFFFFFFFFu};
+    for (uint32_t b : badges)
     {
-        CapEntry e = {};
-        e.obj = 0x7FFFFFFF;
-        e.type = static_cast<uint8_t>(CapType::CAP_NOTIFY);
-        e.rights = CapRights::CAP_SIGNAL;
-        kickos::cap_badge_seat(&e, static_cast<uint8_t>(bit + 1u));
-        ASSERT_EQ(static_cast<uint32_t>(kickos::cap_badge(e)), bit + 1u)
-            << "badge for bit " << bit << " did not round-trip";
-        ASSERT_NE(static_cast<uint32_t>(kickos::cap_badge(e)),
-                  static_cast<uint32_t>(kickos::KCAP_BADGE_NONE))
-            << "bit " << bit << " stored as itself would read as UNBADGED";
-        ASSERT_EQ(static_cast<uint32_t>(e.type), static_cast<uint32_t>(CapType::CAP_NOTIFY));
-        ASSERT_EQ(static_cast<uint32_t>(e.rights),
-                  static_cast<uint32_t>(CapRights::CAP_SIGNAL));
-        ASSERT_EQ(cap_reply_handle(e), 0x7FFFFFFFu);
+        for (uint32_t s = 0; s < 256u; s++)
+        {
+            CapEntry e = {};
+            e.obj = 0x7FFFFFFF;
+            e.type = static_cast<uint8_t>(CapType::CAP_ENDPOINT);
+            e.rights = CapRights::CAP_SIGNAL;
+            kickos::cap_badge_seat(&e, b);
+            cap_reply_seq_seat(&e, static_cast<uint8_t>(s));
+            ASSERT_EQ(kickos::cap_badge(e), b)
+                << std::hex << "sequence 0x" << s << " overwrote badge 0x" << b;
+            kickos::cap_badge_seat(&e, ~b);
+            ASSERT_EQ(cap_reply_seq(e), static_cast<uint8_t>(s))
+                << std::hex << "badge 0x" << ~b << " overwrote sequence 0x" << s;
+            ASSERT_EQ(static_cast<uint32_t>(e.type), static_cast<uint32_t>(CapType::CAP_ENDPOINT));
+            ASSERT_EQ(static_cast<uint32_t>(e.rights),
+                      static_cast<uint32_t>(CapRights::CAP_SIGNAL));
+            ASSERT_EQ(cap_reply_handle(e), 0x7FFFFFFFu);
+        }
     }
     CapEntry unbadged = {};
     unbadged.type = static_cast<uint8_t>(CapType::CAP_NOTIFY);
     kickos::cap_badge_seat(&unbadged, kickos::KCAP_BADGE_NONE);
-    EXPECT_EQ(static_cast<uint32_t>(kickos::cap_badge(unbadged)),
-              static_cast<uint32_t>(kickos::KCAP_BADGE_NONE));
-    printf("# %u badge bit(s) round-trip beside the type and the rights, and 0 stays free\n",
-           static_cast<unsigned>(kickos::KCAP_BADGE_BITS));
+    EXPECT_EQ(kickos::cap_badge(unbadged), kickos::KCAP_BADGE_NONE);
+    printf("# every badge edge and every sequence value leave each other untouched\n");
 }

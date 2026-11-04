@@ -96,6 +96,8 @@ namespace kickos::x86_64
                       "switch.S timestamps the swap in this core's block");
         static_assert(offsetof(cpu_block, core_id) == KICKOS_X86_64_CPU_CORE_ID,
                       "arch_cpu_id reads the core ID from this GS offset");
+        static_assert(offsetof(cpu_block, current) == KICKOS_X86_64_CPU_CURRENT,
+                      "arch_current_load reads the running thread from this GS offset");
         static_assert(KICKOS_X86_64_SEL_USER_CODE == sel_user_code,
                       "switch.S stamps the user code selector as an immediate");
         static_assert(KICKOS_X86_64_SEL_USER_DATA == sel_user_data,

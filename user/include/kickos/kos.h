@@ -331,23 +331,6 @@ namespace kos
     };
 }
 
-// Define a caller-owned thread stack buffer for kos::thread::create's `stack` argument.
-// Leave it off and the kernel demand-allocates a KICKOS_USER_STACK_SIZE default.
-// Under MPU enforcement the stack is granted as ONE region. Power-of-two size and
-// natural alignment is a conservative compile-time superset: PMSAv7/NAPOT require it,
-// while the base+limit backends (PMSAv8, SYSMPU, RX) would accept any
-// arch_mpu_min_region() multiple. The granule is a runtime seam value, so that looser
-// rule is not expressible here and those parts pay a padding gap.
-// Without enforcement the stack is never a region: a 16-byte ABI alignment suffices.
-#if KICKOS_HAVE_MPU
-#define KOS_STACK_DEFINE(name, size)                                              \
-    static_assert(((size) & ((size) - 1)) == 0,                                   \
-                  "KOS_STACK_DEFINE: size must be a power of two under MPU");      \
-    alignas(size) unsigned char name[size]
-#else
-#define KOS_STACK_DEFINE(name, size) alignas(16) unsigned char name[size]
-#endif
-
 namespace kos::thread
 {
     // What create hands back: the handle and the code kos_thread_create returned. `valid()` is
@@ -395,22 +378,22 @@ namespace kos::thread
         int err_ = -KOS_EBADF;
     };
 
-    // Create an unprivileged thread. Creation does not preempt the caller; the new thread runs
-    // after it blocks or yields.
-    // mem/mem_size grants domain data; stack/stack_size optionally supplies a
-    // caller-owned stack, otherwise KICKOS_USER_STACK_SIZE is used.
+    // Create an unprivileged thread. One that outranks the caller runs before this returns; one
+    // that does not runs once the caller blocks or yields, or at once on another core running
+    // below it.
+    // stack/stack_size optionally supplies a caller-owned stack, otherwise
+    // KICKOS_USER_STACK_SIZE is used.
     // windows/window_count is this thread's window list (kos_window); a device window
     // requires AUTH_MEMORY.
-    // By default the thread joins the caller's task. Supply a separate task for
-    // independent fault containment: a fault terminates the whole task.
+    // The thread joins the caller's task: a fault terminates the whole task.
     inline Handle create(void (*entry)(void*), void* arg, char const* name,
                         uint8_t prio, uint8_t policy = KOS_POLICY_FIFO,
-                        uint32_t quantum_ns = 0, void* mem = nullptr, uint32_t mem_size = 0,
+                        uint32_t quantum_ns = 0,
                         void* stack = nullptr, uint32_t stack_size = 0,
                         kos_window const* windows = nullptr, uint16_t window_count = 0,
                         kos_cap_grant const* caps = nullptr, uint8_t cap_count = 0,
                         uint32_t authority = 0, uint16_t const* cap_dest = nullptr,
-                        kos_task_t task = KOS_TASK_NONE, uint32_t core_mask = 0)
+                        uint32_t core_mask = 0)
     {
         kos_thread_params p{};
         p.entry = entry;
@@ -419,8 +402,6 @@ namespace kos::thread
         p.prio = prio;
         p.policy = policy;
         p.quantum_ns = quantum_ns;
-        p.mem_base = mem;
-        p.mem_size = mem_size;
         p.windows = windows;
         p.window_count = window_count;
         p.stack_base = stack;
@@ -429,7 +410,6 @@ namespace kos::thread
         p.cap_count = cap_count;
         p.authority = authority;
         p.cap_dest = cap_dest;
-        p.task = task;
         p.core_mask = core_mask;
         kos_thread_t h = KOS_THREAD_NONE;
         int const rc = kos_thread_create(&p, &h);
@@ -469,13 +449,12 @@ namespace kos::thread
     inline Handle create_caps(void (*entry)(void*), void* arg, char const* name, uint8_t prio,
                              kos_cap_grant const* caps, uint8_t cap_count,
                              uint8_t policy = KOS_POLICY_FIFO, uint32_t quantum_ns = 0,
-                             void* mem = nullptr, uint32_t mem_size = 0,
                              uint32_t authority = 0, uint16_t const* cap_dest = nullptr,
-                             kos_task_t task = KOS_TASK_NONE, void* stack = nullptr,
+                             void* stack = nullptr,
                              uint32_t stack_size = 0, uint32_t core_mask = 0)
     {
-        return create(entry, arg, name, prio, policy, quantum_ns, mem, mem_size, stack,
-                     stack_size, nullptr, 0, caps, cap_count, authority, cap_dest, task, core_mask);
+        return create(entry, arg, name, prio, policy, quantum_ns, stack,
+                     stack_size, nullptr, 0, caps, cap_count, authority, cap_dest, core_mask);
     }
 }
 

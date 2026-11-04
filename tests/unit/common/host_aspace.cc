@@ -77,7 +77,7 @@ struct arch_aspace
         return nullptr;
     }
 
-    bool table(unsigned shift, uintptr_t va)
+    bool has_table(unsigned shift, uintptr_t va) const
     {
         uintptr_t const index = va >> shift;
         for (Table const& t : tables)
@@ -87,11 +87,36 @@ struct arch_aspace
                 return true;
             }
         }
+        return false;
+    }
+
+    // The tables a map of [va, va + pages) adds at `shift`.
+    size_t missing_tables(unsigned shift, uintptr_t va, size_t pages) const
+    {
+        size_t n = 0;
+        uintptr_t const span = static_cast<uintptr_t>(1) << shift;
+        uintptr_t const end = va + pages * G;
+        for (uintptr_t at = va & ~(span - 1u); at < end; at += span)
+        {
+            if (not has_table(shift, at))
+            {
+                n++;
+            }
+        }
+        return n;
+    }
+
+    bool table(unsigned shift, uintptr_t va)
+    {
+        if (has_table(shift, va))
+        {
+            return true;
+        }
         for (Table& t : tables)
         {
             if (t.frame == 0)
             {
-                t = {shift, index, kickos_frame_alloc()};
+                t = {shift, va >> shift, kickos_frame_alloc()};
                 return t.frame != 0;
             }
         }
@@ -193,6 +218,47 @@ extern "C"
             return &s;
         }
         return nullptr;
+    }
+
+    // Zero unless host_aspace_tables_from_pool took the space's tables from the pool.
+    size_t arch_aspace_table_pages(struct arch_aspace* space)
+    {
+        if (space == nullptr or space == &g_boot)
+        {
+            return 0;
+        }
+        size_t n = 0;
+        if (space->root != 0)
+        {
+            n++;
+        }
+        for (arch_aspace::Table const& t : space->tables)
+        {
+            if (t.frame != 0)
+            {
+                n++;
+            }
+        }
+        return n;
+    }
+
+    size_t arch_aspace_create_pages(void)
+    {
+        if (g_tables_from_pool)
+        {
+            return 1;
+        }
+        return 0;
+    }
+
+    size_t arch_aspace_map_tables(struct arch_aspace* space, uintptr_t va, size_t pages)
+    {
+        if (space == nullptr or space == &g_boot or not g_tables_from_pool or pages == 0)
+        {
+            return 0;
+        }
+        return space->missing_tables(L1_SHIFT, va, pages)
+               + space->missing_tables(L2_SHIFT, va, pages);
     }
 
     // A backend's walk frees every frame a leaf still names, and its tables.

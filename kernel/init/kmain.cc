@@ -9,10 +9,12 @@
 #include <kickos/endpoint.h>
 #include <kickos/frame_pool.h>
 #include <kickos/grant.h>
+#include <kickos/image.h>
 #include <kickos/instance.h>
 #include <kickos/irqlock.h>
 #include <kickos/klock.h>
 #include <kickos/klink.h>
+#include <kickos/pool_storage.h>
 #include <kickos/reent.h>
 #include <kickos/time.h>
 #include <kickos/irq.h>
@@ -34,16 +36,13 @@ extern "C"
     // Generated per build by cmake/build_stamp.cmake.
     extern char const kickos_build_time[];
     extern char const kickos_build_commit[];
-    // NOT a linker bound: kickos/app.h emits this definition in every TU of the image's
-    // executable, so weak is the vague linkage that merges the duplicates, and an image whose
-    // executable compiled no TU supplies none. Null then, which kbanner tests for.
-    extern char const kickos_app_stamp[] KICKOS_LINK_OPTIONAL;
-
+#if not KICKOS_HAVE_ASPACE
     // Userspace heap window bounds (chip .ld): [_kickos_heap_start, _kickos_heap_limit), equal
     // where no window is carved, and the banner then reports "none". RX prepends one
     // underscore, matching its .ld symbol.
     extern char _kickos_heap_start[] KICKOS_LINK_BOUND;
     extern char _kickos_heap_limit[] KICKOS_LINK_BOUND;
+#endif
 }
 
 #include <kickos/sys/witness.h>
@@ -75,12 +74,18 @@ namespace kickos
             return p;
         }
 
-        // At namespace scope and volatile. Both name app-half storage, which kernel text
-        // cannot materialise on a split image: the address names whichever process is on the
-        // core (tests/static/check_riscv_kernel_apphalf.sh). A local volatile stops the value
-        // folding but not the address being materialised inline.
-        char const* const volatile g_app_stamp = kickos_app_stamp;
-        struct kos_init_args* const volatile g_init_args_home = &kickos_init_args;
+        // The kernel's own view of an address image `image` states in its own view: where the
+        // image is split, this runs before any address space is activated, so the app's half may
+        // have no mapping yet.
+        void* image_view(size_t image, uintptr_t app)
+        {
+            void* const alias = aspace_image_alias(image, reinterpret_cast<void const*>(app));
+            if (alias != nullptr)
+            {
+                return alias;
+            }
+            return reinterpret_cast<void*>(app);
+        }
 
         void kbanner()
         {
@@ -118,23 +123,19 @@ namespace kickos
 #endif
             kprintf(KDIAG_F_BANNER_SCHED, sched);
             kprintf(KDIAG_F_BANNER_BUILD, kickos_build_time);
-            // Read through the link-time word above and, where the image is split, through
-            // the kernel's own alias of those bytes: this runs before any address space is
-            // activated, so the app's half may have no mapping yet.
-            char const* app_stamp = g_app_stamp;
-            if (app_stamp != nullptr)
-            {
-                char const* const alias
-                    = static_cast<char const*>(aspace_image_alias(app_stamp));
-                if (alias != nullptr)
-                {
-                    app_stamp = alias;
-                }
-                kprintf(KDIAG_F_BANNER_APP, app_stamp);
-            }
+            // Image 0's, the executable's own: a later image may be another program's.
+            char const* const app_stamp
+                = static_cast<char const*>(image_view(0u, image_record(0u).stamp));
+            kprintf(KDIAG_F_BANNER_APP, app_stamp);
             kprintf(KDIAG_F_BANNER_COMMIT, kickos_build_commit);
+#if KICKOS_HAVE_ASPACE
+            // A program's own link states its heap, and only its header carries it here.
+            uintptr_t const heap_lo = image_record(0).heap_start;
+            uintptr_t const heap_hi = image_record(0).heap_end;
+#else
             uintptr_t const heap_lo = reinterpret_cast<uintptr_t>(_kickos_heap_start);
             uintptr_t const heap_hi = reinterpret_cast<uintptr_t>(_kickos_heap_limit);
+#endif
             if (heap_hi > heap_lo)
             {
                 kprintf(KDIAG_F_BANNER_HEAP,
@@ -145,9 +146,9 @@ namespace kickos
                 kprintf(KDIAG_F_BANNER_NOHEAP);
             }
 #if KICKOS_KERNEL_STACKS
+            unsigned const slots = static_cast<unsigned>(kickos_kernel_pools.thread_slots);
             kprintf(KDIAG_F_BANNER_KSTACK, static_cast<unsigned>(KICKOS_KERNEL_STACK_SIZE),
-                    static_cast<unsigned>(KICKOS_THREAD_SLOTS),
-                    static_cast<unsigned>(KICKOS_THREAD_SLOTS * KICKOS_KERNEL_STACK_SIZE));
+                    slots, slots * static_cast<unsigned>(KICKOS_KERNEL_STACK_SIZE));
 #endif
             kputs("\n");
         }
@@ -167,7 +168,6 @@ namespace kickos
             idle_attr.prio = KICKOS_PRIO_IDLE;
             idle_attr.policy = Policy::FIFO;
             idle_attr.privileged = true;
-            idle_attr.cap_run = CapRun{};
 #if KICKOS_MEMORY_ENFORCED and KICKOS_HAVE_MPU and not KICKOS_HAVE_ASPACE
             thread_regions_boot(idle_attr, stack, KICKOS_IDLE_STACK_SIZE);
 #endif
@@ -245,20 +245,19 @@ namespace kickos
 
     int kmain(int argc, char** argv)
     {
-        // Published into app-side storage before anything can read it: kickos_root_entry
+        // The link refuses a system whose pools TU was built to another layout than this
+        // kernel's: only the tag of its own layout is defined.
+        asm volatile("" : : "r"(&PoolLayout<POOL_LAYOUT>::tag));
+        image_records_publish();
+        // Published into each image's storage before anything can read it: kickos_root_entry
         // reads it unprivileged, and the boot stack this frame sits on is outside the arena.
-        // Reached through the kernel's own alias where a translating backend splits the
-        // image, the app window not being linked where it loads until the first space is
-        // seeded.
-        struct kos_init_args* args = g_init_args_home;
-        struct kos_init_args* const alias
-            = static_cast<struct kos_init_args*>(aspace_image_alias(g_init_args_home));
-        if (alias != nullptr)
+        for (size_t i = 0; i < image_count(); i++)
         {
-            args = alias;
+            struct kos_init_args* const args
+                = static_cast<struct kos_init_args*>(image_view(i, image_record(i).init_args));
+            args->argc = argc;
+            args->argv = argv;
         }
-        args->argc = argc;
-        args->argv = argv;
 
         kdiag_led_init();
         kbanner();
@@ -308,7 +307,7 @@ namespace kickos
 #if KICKOS_KERNEL_STACKS
         // Nothing re-arms on slot reuse, so a slot's high-water and canary read since boot
         // and not per thread.
-        for (int slot = 0; slot < KICKOS_THREAD_SLOTS; slot++)
+        for (int slot = 0; slot < kickos_kernel_pools.thread_slots; slot++)
         {
             kstack_arm(slot);
         }
@@ -316,7 +315,10 @@ namespace kickos
 
 #if KICKOS_LIBC_REENT
         // Must precede idle's and root's creation below, which acquire out of it.
-        reent_seam_read();
+        for (size_t i = 0; i < image_count(); i++)
+        {
+            reent_seam_read(i, image_record(i));
+        }
 #endif
 
         // Must precede the cap_slab_attach below: this rebuilds the free-chunk list from
@@ -351,7 +353,7 @@ namespace kickos
         // task slot is still free and idle's own resolve would take root's.
         int root_derr = 0;
         Task* const root_task =
-            task_for(DOM_CALLER_UNPRIVILEGED, nullptr, 0, nullptr, &root_derr);
+            task_for(DOM_CALLER_UNPRIVILEGED, &root_derr);
         if (root_task == nullptr)
         {
             kpanic(diag::kBootRootStack);
@@ -371,8 +373,9 @@ namespace kickos
         // reclaim-point harvest cannot push this block onto the KICKOS_USER_STACK_SIZE list.
         root_attr.kstack_owned = true;
 #endif
-        if (not cap_slab_attach(&root_attr.cap_run, KICKOS_MAX_HANDLES,
-                                &root_attr.cap_free_head, &root_attr.cap_width))
+        root_attr.cap_dir = cap_directory(ThreadPool::ROOT_INDEX);
+        if (not cap_slab_attach(root_attr.cap_dir, cap_root_width(), &root_attr.cap_free_head,
+                                &root_attr.cap_width))
         {
             kpanic(diag::kBootRootRun);
         }
@@ -382,22 +385,17 @@ namespace kickos
         int root_slot = -1;
         {
             IrqLock lock;
-            root_slot = kernel().threads.alloc();
+            root_slot = kernel().threads.claim_boot();
         }
         // Exact, not merely non-negative: ThreadPool::is_root names that one slot and
         // KOS_SYS_EXIT reads it to decide whether an exit ends the system, so an allocation
         // slipped in ahead of root would silently redirect that thread's exit.
         KICKOS_ASSERT(root_slot == ThreadPool::ROOT_INDEX);
-        Thread* const root_tcb = &kernel().threads.slots[root_slot];
-        // The entry must be app-half text: root is unprivileged from its first instruction,
-        // and the kernel's half grants EL0 nothing (<kickos/sys/init.h>).
-        void (*root_entry)(void*) = kickos_root_entry;
-#if KICKOS_HAVE_ASPACE
-        // Where the linker states the app window where the loader put it, root reaches it at
-        // that address plus the user offset.
-        root_entry = reinterpret_cast<void (*)(void*)>(
-            reinterpret_cast<uintptr_t>(kickos_root_entry) + arch_aspace_user_offset());
-#endif
+        Thread* const root_tcb = &kernel().threads.slots()[root_slot];
+        // Image 0's entry, in its own view: root is unprivileged from its first instruction, and
+        // the kernel's half grants EL0 nothing (<kickos/sys/init.h>).
+        void (*const root_entry)(void*)
+            = reinterpret_cast<void (*)(void*)>(image_record(0).start);
 #if KICKOS_MEMORY_ENFORCED and KICKOS_HAVE_MPU and not KICKOS_HAVE_ASPACE
         thread_regions_boot(root_attr, root_stack, root_stack_size);
 #endif
@@ -419,6 +417,7 @@ namespace kickos
         {
             IrqLock lock;
             cap_seat_authority(root_tcb, CAP_AUTH_ALL);
+            task_run_join(root_tcb->task, root_slot);
         }
 #if KICKOS_AMP_NODE
         // THE FIRST DYNAMIC INSTALL INTO ROOT'S RUN: <kickos/amp.h> derives a capability index
@@ -449,43 +448,29 @@ namespace kickos
     }
 }
 
-#if KICKOS_TLS
-#if !KICKOS_TLS_FROM_SP
-#include <kickos/arch/idle_floor.h>
-#endif
-
+#if KICKOS_LIBC_REENT
 namespace kickos
 {
     namespace
     {
-        // What a default stack pays above its floor with no thread_local declared: the control
-        // block alone, a constant. The template's share is the link's (KICKOS_TLS_CARVE_ASSERT
-        // in arch/common/sections.ld.h).
-        constexpr size_t TCB_CARVE = KICKOS_REENT_IN_TCB
-            * ((KICKOS_ARCH_TLS_TCB + (KICKOS_STACK_ALIGN - 1u))
-               & ~static_cast<size_t>(KICKOS_STACK_ALIGN - 1u));
-        // A spawned thread's floor unless the stack names its own.
-        constexpr bool carves(size_t stack, size_t floor = KICKOS_MIN_STACK_SIZE)
+        // What a default stack pays above its floor with no thread_local declared: its libc
+        // state, a constant. The template's share is the link's (KICKOS_TLS_CARVE_ASSERT in
+        // arch/common/sections.ld.h).
+        constexpr bool carves(size_t stack)
         {
-            return stack >= floor + TCB_CARVE;
+            return stack >= KICKOS_MIN_STACK_SIZE + KICKOS_REENT_CARVE;
         }
-        static_assert(TCB_CARVE == 0 or not carves(KICKOS_MIN_STACK_SIZE),
+        static_assert(not carves(KICKOS_MIN_STACK_SIZE),
                       "carves() admits a stack at its floor, so no assert below can fire");
         static_assert(carves(KICKOS_USER_STACK_SIZE),
-                      "KICKOS_USER_STACK_SIZE cannot hold a thread's TLS control block above "
+                      "KICKOS_USER_STACK_SIZE cannot hold a thread's libc state above "
                       "KICKOS_MIN_STACK_SIZE, so a thread on the default stack runs below the "
                       "arch's syscall stack floor. Raise it in "
                       "boards/<board>/configs/<variant>/defconfig.");
         static_assert(carves(KICKOS_ROOT_STACK_SIZE),
-                      "KICKOS_ROOT_STACK_SIZE cannot hold root's TLS control block above "
+                      "KICKOS_ROOT_STACK_SIZE cannot hold root's libc state above "
                       "KICKOS_MIN_STACK_SIZE, so root runs below the arch's syscall stack "
                       "floor. Raise it in boards/<board>/configs/<variant>/defconfig.");
-#if !KICKOS_TLS_FROM_SP
-        static_assert(carves(KICKOS_IDLE_STACK_SIZE, KICKOS_ARCH_IDLE_FLOOR),
-                      "KICKOS_IDLE_STACK_SIZE cannot hold idle's TLS control block above "
-                      "KICKOS_ARCH_IDLE_FLOOR, so idle would overrun its stack on its first "
-                      "interrupt. Raise it in boards/<board>/configs/<variant>/defconfig.");
-#endif
     }
 }
 #endif

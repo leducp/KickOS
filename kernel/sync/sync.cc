@@ -223,22 +223,22 @@ namespace kickos
         ep->vacated = 0;
     }
 
-    int endpoint_slot_claim(Endpoint** out)
+    int endpoint_slot_claim(Task const* charged, Endpoint** out)
     {
-        int const i = kernel().endpoints.alloc();
-        Endpoint* const ep = kernel().endpoints.at(i); // at(-1) returns null.
+        int const i = kernel().endpoints.alloc(charged);
+        Endpoint* const ep = kernel().endpoints.at(i); // null at either refusal
         if (ep == nullptr)
         {
-            return -1;
+            return i;
         }
         *ep = Endpoint{};
         *out = ep;
         return i;
     }
 
-    int endpoint_claim_created(Endpoint** out)
+    int endpoint_claim_created(Task const* charged, Endpoint** out)
     {
-        int const i = endpoint_slot_claim(out);
+        int const i = endpoint_slot_claim(charged, out);
         if (i >= 0)
         {
             (*out)->recv_holders = 1;
@@ -310,7 +310,7 @@ namespace kickos
         WordRecord* record_take(arch_phys_addr_t key, WordKind kind, Thread* owner)
         {
             Kernel& k = kernel();
-            for (WordRecord& m : k.word_records)
+            for (WordRecord& m : k.word_records())
             {
                 if (m.kind == WordKind::FREE)
                 {
@@ -363,11 +363,11 @@ namespace kickos
         Thread* owner_resolve(uint32_t id, WordRef const& w)
         {
             uint32_t const slot = id & LOCK_ID_SLOT_MASK;
-            if (slot == 0 or slot > static_cast<uint32_t>(KICKOS_THREAD_SLOTS))
+            if (slot == 0 or slot > static_cast<uint32_t>(kernel().threads.count()))
             {
                 return nullptr;
             }
-            Thread* const t = &kernel().threads.slots[slot - 1u];
+            Thread* const t = &kernel().threads.slots()[slot - 1u];
             // INACTIVE is a slot never used or still being built, which has held nothing.
             if (t->state == ThreadState::EXITED or t->state == ThreadState::INACTIVE or t->dying
                 or t->lock_id != id or not word_could_hold(t, w))
@@ -491,7 +491,7 @@ namespace kickos
                         }
                         o = o->wait_mutex()->owner;
                         depth++;
-                        if (depth > KICKOS_THREAD_SLOTS)
+                        if (depth > kernel().threads.count())
                         {
                             break;
                         }
@@ -527,7 +527,7 @@ namespace kickos
                     }
                     o = o->wait_mutex()->owner;
                     depth++;
-                    if (depth > KICKOS_THREAD_SLOTS)
+                    if (depth > kernel().threads.count())
                     {
                         break;
                     }

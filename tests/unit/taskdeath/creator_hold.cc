@@ -19,6 +19,7 @@
 
 #include <kickos/domain.h>
 #include <kickos/instance.h>
+#include <kickos/irqlock.h>
 #include <kickos/kernel.h>
 #include <kickos/sched.h>
 #include <kickos/task.h>
@@ -54,8 +55,8 @@ namespace kickos
             Task* create_for(Thread* creator)
             {
                 int err = 0;
-                return task_create(kernel().threads.kill_tag_of(creator), nullptr, 0, 0u,
-                                   /*donor=*/nullptr, &err);
+                IrqLock lock;
+                return task_held(kernel().threads.kill_tag_of(creator), &err, lock);
             }
         }
 

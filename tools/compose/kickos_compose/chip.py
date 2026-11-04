@@ -11,7 +11,7 @@ import subprocess
 import tempfile
 
 from .descriptions import (
-    POW2_UNITS, check_board, check_chip, device_layout, device_symbols, line_macro, line_symbols, memory_layout,
+    APERTURE_UNITS, POW2_UNITS, check_board, check_chip, device_layout, device_symbols, line_macro, line_symbols, memory_layout,
     memory_symbol, reaches, unit_views,
 )
 from .subset import Report, read_utf8
@@ -191,6 +191,7 @@ def limit_values(view):
     if chip.timebase_hz is not None:
         values.append(("KICKOS_CHIP_TIMEBASE_HZ", chip.timebase_hz, chip.refs.get("timebase_hz")))
     values.append(("KICKOS_CHIP_DCACHE", int(chip.data_cache), None))
+    values.append(("KICKOS_CHIP_ONE_TASK", int(chip.one_task), None))
     rule = region_rule(view)
     if rule is not None:
         values.append(("KICKOS_CHIP_REGION_GRANULE", rule[0], None))
@@ -288,11 +289,14 @@ def window_rows(device):
 
 
 def table_rows(view):
-    """{table: [(base, size, ref)]} of chip_tables.h."""
+    """{table: [(base, size, ref)]} of chip_tables.h. A device window lies in a window aperture: on a
+    translating build a grantable device's own window, on any other the chip's `apertures`."""
     units = view.units()
     translating = any(unit.unit == "mmu" for unit in units)
     ports = any(unit.io_ports for unit in units)
     tables = {"reserved_blocks": [], "window_apertures": [], "bus_master_apertures": [], "port_apertures": []}
+    if not translating and any(unit.unit in APERTURE_UNITS for unit in units):
+        tables["window_apertures"].extend(view.chip.apertures)
     for device in view.devices():
         kernel = device.owner == "kernel"
         rows = [(base, size, device.ref) for base, size in window_rows(device)]
@@ -425,6 +429,10 @@ def emit_cmake(view):
              "set(KICKOS_CHIP_RESERVED_BLOCKS %d)\n" % len(reserved)]
     if reserved:
         facts.append("set(KICKOS_CHIP_RESERVED_BLOCK0 0x%X 0x%X)\n" % (reserved[0][0], reserved[0][1]))
+    tables = table_rows(view)
+    for table, name in (("window_apertures", "APERTURE0"), ("bus_master_apertures", "BUS_MASTER0")):
+        if tables[table]:
+            facts.append("set(KICKOS_CHIP_%s 0x%X 0x%X)\n" % (name, tables[table][0][0], tables[table][0][1]))
     facts.append("set(KICKOS_CHIP_KERNEL_LINES \"%s\")\n" % ";".join(kernel_lines(view, None)))
     facts.append("set(KICKOS_CHIP_DOORBELL_KERNEL_LINES \"%s\")\n"
                  % ";".join(kernel_lines(view, "doorbell")))
@@ -438,6 +446,10 @@ def emit_cmake(view):
     if view.chip.stack_limit:
         stack_limit = "ON"
     facts.append("set(KICKOS_CHIP_STACK_LIMIT %s)\n" % stack_limit)
+    one_task = "OFF"
+    if view.chip.one_task:
+        one_task = "ON"
+    facts.append("set(KICKOS_CHIP_ONE_TASK %s)\n" % one_task)
     if view.chip.family is not None:
         facts.append("set(KICKOS_CHIP_FAMILY_DIR \"%s\")\nset(KICKOS_CHIP_FAMILY_SOURCES \"%s\")\n"
                      % (view.chip.family[0], ";".join(view.chip.family[1])))

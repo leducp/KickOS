@@ -1,0 +1,52 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# The probe and its peer as in system.yaml, beside four more declarations of the peer's program,
+# each an image of its own that nothing starts.
+
+version: 1
+stdout: kernel
+ends: main
+heap: 0
+
+tasks:
+  - name: main
+    program: main
+    priority: 2
+    ceiling: 31
+    authority: [memory, system, tasks]
+
+  - name: peer
+    program: tlsprobe_peer
+    priority: 3
+    ceiling: 9
+    start: on_request
+    budgets: { threads: 1 }
+
+  - name: peer2
+    program: tlsprobe_peer
+    priority: 3
+    ceiling: 9
+    start: on_request
+    budgets: { threads: 1 }
+
+  - name: peer3
+    program: tlsprobe_peer
+    priority: 3
+    ceiling: 9
+    start: on_request
+    budgets: { threads: 1 }
+
+  - name: peer4
+    program: tlsprobe_peer
+    priority: 3
+    ceiling: 9
+    start: on_request
+    budgets: { threads: 1 }
+
+  - name: peer5
+    program: tlsprobe_peer
+    priority: 3
+    ceiling: 9
+    start: on_request
+    budgets: { threads: 1 }

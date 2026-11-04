@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# main, and the peer, a program of its own, which main creates for each arm that needs a task of
+# its own. The ceiling is the highest priority, which the arms' victims run at.
+
+version: 1
+stdout: kernel
+ends: main
+
+tasks:
+  - name: main
+    program: @LIBCRACE_APP@
+    priority: 2
+    ceiling: 31
+    authority: [memory, system, tasks]
+    budgets: { threads: 3 }
+
+  - name: peer
+    program: @LIBCRACE_APP@_peer
+    priority: 2
+    ceiling: 31
+    start: on_request
+    budgets: { threads: @LIBCRACE_PEER_THREADS@ }

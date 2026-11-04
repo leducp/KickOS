@@ -276,7 +276,7 @@ bind refusing a line claimed elsewhere.
 `CAP_SIGNAL` is outside it: `irq_notify` reaches no controller, so its holder serves nothing.
 
 A caller that merely PASSES a line on its way to something else, such as the console handover
-masking the kernel's own TX line inside `kos_console_publish`, asked for none of that. Its affinity
+masking the kernel's own TX line inside the console publish call, asked for none of that. Its affinity
 is its own and narrowing-only, and re-placing it as a side effect of an unrelated syscall would be a
 yank. So the discipline for a passer-by is not a pin: the TOUCH is routed to the owning core rather
 than the thread being routed to the line. Measured on esp32-wroom, where the debug guard named line
@@ -1124,7 +1124,7 @@ a case that exists on an AMP part alone, which is the same tax N6f refuses for t
 
 **THREE BUILD-TIME FACTS RIDE ON THAT, AND EACH IS CHECKED RATHER THAN TRUSTED.** The seating is
 the FIRST dynamic install into root's run; it runs in list order, the derivation being positional;
-and root's run carries a slot per entry, which `cmake/cap_table.cmake` sums as a term the
+and root's run carries a slot per entry, which the configure-time cap-table script summed as a term the
 PARTITION declares, beside the ones the kernel, the service list and the app declare. The seating
 asserts the node it seats for against `amp::self()`, which under the shared image is a core
 register and not a build constant, and it panics by name on a handle that is not the derived one.
@@ -1421,7 +1421,7 @@ limits remain obligations when a real i.MX8MP or another suitable partition is a
 A task carries a SCHEDULING GRANT: a priority ceiling and a core set, both members of `struct Task`
 (`kernel/include/kickos/task.h`). It is made at task creation and it only ever narrows.
 `task_create_call` seats both halves from the CREATOR's own task, inherited whole, and
-`kos_task_sched_grant` narrows them afterwards; a request wider than the grant it is narrowing is
+the task grant call narrows them afterwards; a request wider than the grant it is narrowing is
 refused with `-KOS_EPERM` and never clamped. The narrowing is checked against the CALLER's grant as
 well as the target's, because **a creator cannot give what it does not hold**, and a task that
 defaulted to the whole machine would make creating a group a way to widen a grant.
@@ -1439,7 +1439,7 @@ task answer without an initialiser, and it is what keeps every `Task` member zer
 is a hard requirement of its own (a non-zero initialiser anywhere in `Kernel` moves the whole
 constinit instance out of `.bss`).
 
-A grant may not narrow under a live member: `kos_task_sched_grant` answers `-KOS_EBUSY` once the
+A grant may not narrow under a live member: the task grant call answers `-KOS_EBUSY` once the
 task has one. `Thread::affinity` is a subset of the task's core set and nothing re-derives it, so a
 narrowing under a member would strand that member where it already runs. Refusing while the group is
 empty is what makes the thread-side invariant hold with no re-scan and no fixup pass.
@@ -1677,12 +1677,12 @@ what the operator asked for by granting that set.
 
 `sched_admit_mask` (`kernel/include/kickos/sched.h`) is the single gate every core mask passes
 through before it is stored anywhere: a spawn's `kos_thread_params::core_mask`, an
-affinity setter call (formerly `kos_thread_set_affinity`), and both halves of `kos_task_sched_grant` (the caller's grant in
+affinity setter call (formerly `kos_thread_set_affinity`), and both halves of the task grant call (the caller's grant in
 `syscall_thread.cc`, the task's own in `task_sched_narrow`). It applies two clauses in order.
 
 It takes a REAL mask, empty being malformed, and a zero word means something different at each ABI
 that carries one, so each entry resolves its own before calling: the spawn boundary and
-the affinity setter (formerly `kos_thread_set_affinity`) both resolve 0 to `task_default_cores`, and `kos_task_sched_grant` reads
+the affinity setter (formerly `kos_thread_set_affinity`) both resolve 0 to `task_default_cores`, and the task grant call reads
 it as "leave this half alone".
 
 **The machine, then the grant.** A request is intersected with
@@ -1745,7 +1745,7 @@ Under one code a too-narrow grant becomes indistinguishable from a typo in a mas
 reader debugging it widens the wrong thing: adds a core to a grant to fix a shifted constant, or
 edits a constant to fix an access decision. The split costs one comparison at the syscall boundary,
 and it is made at every entry that takes a mask: the spawn boundary, the affinity setter (formerly `kos_thread_set_affinity`) and
-`kos_task_sched_grant` all range-check before they authority-check.
+the task grant call all range-check before they authority-check.
 
 ### What folds and what does not
 

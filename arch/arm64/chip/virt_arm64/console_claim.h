@@ -133,20 +133,31 @@ namespace kickos::virt_arm64::console
             return false;
         }
 
-        // A kernel line: renews an ended grant no peer took.
+        // A kernel line: renews an ended grant no peer took. Each byte is its own masked span.
         size_t kernel_write(char const* buf, size_t n, uint32_t budget)
         {
-            return kickos::console_retry::write(buf, n, nullptr, [this, budget](char c) {
+            return kickos::console_retry::write_masked(buf, n, nullptr, [this, budget](char c) {
                 return put(c, budget, Take::TRY, Renew::KERNEL_LINE) == Put::STORED;
             });
         }
 
-        // A syscall writer's chunk: stops at the first byte its grant no longer covers.
+        // A syscall writer's chunk: stops at the first byte its grant no longer covers. Each byte
+        // is its own masked span.
         size_t user_write(char const* buf, size_t n, bool* cr_pending, uint32_t budget)
         {
-            return kickos::console_retry::write(buf, n, cr_pending, [this, budget](char c) {
+            return kickos::console_retry::write_masked(buf, n, cr_pending, [this, budget](char c) {
                 return put(c, budget, Take::TRY, Renew::NEVER) == Put::STORED;
             });
+        }
+
+        // The ticks left on this node's own live grant, 0 where it holds none.
+        uint32_t left_ticks(uint32_t budget) const
+        {
+            if (not holding(budget))
+            {
+                return 0;
+            }
+            return left(token_, budget);
         }
 
         // Panic, fault and ISR output, already masked: waits for the claim. False once the

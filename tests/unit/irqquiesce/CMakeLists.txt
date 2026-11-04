@@ -11,6 +11,7 @@
 # preset drives one core, where the mechanism under test compiles to nothing.
 set(_irq_sources irq_seam.cc "${PROJECT_SOURCE_DIR}/tests/unit/common/kpanic_seam.cc"
     "${PROJECT_SOURCE_DIR}/kernel/irq/irq.cc"
+    "${PROJECT_SOURCE_DIR}/kernel/klib/slotpool.cc"
     "${PROJECT_SOURCE_DIR}/kernel/irq/irq_route.cc"
     "${PROJECT_SOURCE_DIR}/arch/common/arch_irq_line_core_default.cc"
     "${PROJECT_SOURCE_DIR}/kernel/init/instance.cc"

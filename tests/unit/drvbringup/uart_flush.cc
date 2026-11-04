@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// A zero-length plain send to a buffered UART console is a flush (docs/design-m10-target.md,
-// section 1.5): the service thread reaches its receive again only once the ring AND the
-// device's transmit path have drained, and never waits unbounded for it. The service loop of
-// <kickos/sys/console_service.h> and the IRQ loop of <kickos/sys/uart_service.h> run here on two
-// host threads over a fake device whose FIFO empties only through kos_uart_flush, so a byte
-// still in the FIFO when the receive comes back is a flush that did not wait.
+// KOS_UART_DRAIN on a buffered UART console (docs/reference/console.md): the service thread
+// answers only once the ring AND the device's transmit path have drained, or its bound expired,
+// and the reply carries which. The service loop of <kickos/sys/console_service.h> and the IRQ
+// loop of <kickos/sys/uart_service.h> run here on two host threads over a fake device whose FIFO
+// empties only through kos_uart_flush, so a byte still in the FIFO when the reply goes is a drain
+// that did not wait.
 
 #include <kickos/sys/driver_service.h>
 #include <kickos/sys/uart_service.h>
@@ -49,13 +49,19 @@ namespace
     std::atomic<uint32_t> g_sleeps{0u};
     std::atomic<bool> g_real_sleep{true};
 
-    // The service thread's script: what each receive delivers, and what the device held when
-    // the receive after the last message was reached.
+    // The service thread's script: what each receive delivers, a plain send or a KOS_UART_DRAIN
+    // call, and what the device held when the receive after the last message was reached.
+    constexpr kos_cap_t REPLY_CAP = 40;
+    char const* const DRAIN = "drain";
     char const* g_script[4] = {};
     uint32_t g_script_len = 0u;
     uint32_t g_receives = 0u;
     uint32_t g_fifo_at_return = 0u;
     std::string g_wire_at_return;
+    // The status of the reply the service sent with its last receive, and the FIFO then.
+    bool g_replied = false;
+    int32_t g_reply_status = 1;
+    uint32_t g_fifo_at_reply = 0u;
 
     void arm_reset()
     {
@@ -71,6 +77,9 @@ namespace
         g_receives = 0u;
         g_fifo_at_return = 0u;
         g_wire_at_return.clear();
+        g_replied = false;
+        g_reply_status = 1;
+        g_fifo_at_reply = 0u;
     }
 
     void retire_irq_thread()
@@ -100,10 +109,27 @@ namespace
 
 extern "C"
 {
-    int kos_reply_recv(kos_cap_t, void* buf, uintptr_t, struct kos_reply_recv_opts*)
+    int kos_reply_recv(kos_cap_t reply_cap, void* buf, uintptr_t, struct kos_reply_recv_opts* opts)
     {
+        if (reply_cap == REPLY_CAP)
+        {
+            struct kos_uart_rsp rsp;
+            memcpy(&rsp, buf, sizeof(rsp));
+            std::lock_guard<std::mutex> lk(g_lock);
+            g_replied = true;
+            g_reply_status = rsp.status;
+            g_fifo_at_reply = g_fifo_used;
+        }
         uint32_t const i = g_receives;
         g_receives++;
+        if (i < g_script_len and g_script[i] == DRAIN)
+        {
+            struct kos_uart_req req = {};
+            req.op = KOS_UART_DRAIN;
+            memcpy(buf, &req, sizeof(req));
+            opts->info.reply_cap = REPLY_CAP;
+            return static_cast<int>(sizeof(req));
+        }
         if (i < g_script_len)
         {
             size_t const n = strlen(g_script[i]);
@@ -122,6 +148,12 @@ extern "C"
         std::lock_guard<std::mutex> lk(g_lock);
         g_pending = true;
         g_raised.notify_all();
+        return 0;
+    }
+
+    // The readiness latch's wake: no thread here waits on it.
+    int kos_word_wake(uint32_t*, uint32_t, uint32_t)
+    {
         return 0;
     }
 
@@ -201,20 +233,47 @@ namespace
 {
     alignas(16) uart::Shared g_sh;
 
-    TEST(UartFlush, a_zero_length_send_returns_to_the_receive_only_once_the_device_drained)
+    TEST(UartFlush, a_drain_is_answered_only_once_the_device_drained)
     {
         arm_reset();
         uart::shared_init(&g_sh);
         std::thread irq = start_irq_thread(&g_sh);
         g_script[0] = "hello\n";
-        g_script[1] = "";
+        g_script[1] = DRAIN;
         g_script_len = 2u;
         EXPECT_EQ(kickos::console::console_serve_loop<uart::Transport>(&g_sh), -KOS_EBADF);
-        EXPECT_EQ(g_fifo_at_return, 0u)
-            << "the receive came back with bytes still in the device's FIFO";
+        EXPECT_TRUE(g_replied);
+        EXPECT_EQ(g_reply_status, 0);
+        EXPECT_EQ(g_fifo_at_reply, 0u) << "the reply went with bytes still in the device's FIFO";
         EXPECT_EQ(g_wire_at_return.find("hello"), 0u) << "wire: " << g_wire_at_return;
         retire_irq_thread();
         irq.detach();
+    }
+
+    TEST(UartFlush, a_drain_whose_bound_expires_is_answered_as_a_failure)
+    {
+        arm_reset();
+        uart::shared_init(&g_sh);
+        g_real_sleep = false;
+        g_script[0] = "hello\n";
+        g_script[1] = DRAIN;
+        g_script_len = 2u;
+        // No IRQ thread: the ring never empties, so the drain's bound expires.
+        EXPECT_EQ(kickos::console::console_serve_loop<uart::Transport>(&g_sh), -KOS_EBADF);
+        EXPECT_TRUE(g_replied);
+        EXPECT_EQ(g_reply_status, -KOS_EBUSY);
+    }
+
+    TEST(UartFlush, a_zero_length_send_is_taken_and_carries_nothing)
+    {
+        arm_reset();
+        uart::shared_init(&g_sh);
+        g_script[0] = "";
+        g_script_len = 1u;
+        EXPECT_EQ(kickos::console::console_serve_loop<uart::Transport>(&g_sh), -KOS_EBADF);
+        EXPECT_FALSE(g_replied);
+        EXPECT_EQ(kos_byte_ring_used(&g_sh.tx), 0u);
+        EXPECT_EQ(g_sleeps, 0u) << "a probe started a drain";
     }
 
     TEST(UartFlush, a_request_raised_before_the_irq_thread_first_waits_is_answered)

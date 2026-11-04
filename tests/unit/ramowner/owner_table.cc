@@ -6,6 +6,8 @@
 // on a board would need the arena to outlast the record count, and a task slot RECYCLED
 // under a bumped generation.
 
+#include "../common/seam_pools.h"
+
 #include <kickos/ramown.h>
 #include <kickos/task.h>
 
@@ -15,6 +17,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include "ram_seam.h"
 
 namespace
 {
@@ -240,6 +243,29 @@ namespace
         EXPECT_FALSE(ram_owner_nameable(slot, b, 128));
     }
 
+    // A claim takes the record past the last one taken, never searching below it: a record
+    // below emptied for the claim is not reused.
+    TEST_F(OwnerTable, AClaimTakesTheRecordPastTheLastTaken)
+    {
+        void* const first = ram_owner_alloc(task_a(), MIN_REGION);
+        ASSERT_NE(first, nullptr);
+        kickos::RamBlock* const table = kickos::pool_local(kickos::kickos_kernel_pools.ram_owners);
+        int at = 0;
+        while (at < kickos::kickos_kernel_pools.ram_owner_count
+               and table[at].base != reinterpret_cast<uintptr_t>(first))
+        {
+            at++;
+        }
+        ASSERT_LT(at, kickos::kickos_kernel_pools.ram_owner_count);
+        uint32_t const size = table[at].size;
+        table[at].size = 0;
+        void* const second = ram_owner_alloc(task_a(), MIN_REGION);
+        bool const reused = table[at].size != 0;
+        table[at].size = size;
+        ASSERT_NE(second, nullptr);
+        EXPECT_FALSE(reused) << "the claim searched the table from its start";
+    }
+
     // THE TABLE'S OWN EXHAUSTION AND NOT THE ARENA'S. Both refuse with NULL, both must
     // spend no arena doing it (the allocator never takes a block back), and kos_ram_alloc
     // has no route out for an errno, so the only thing that tells them apart is a RAW
@@ -250,11 +276,11 @@ namespace
     // whole-binary run arrives with slots already taken, ctest's per-case entries with none.
     TEST_F(OwnerTable, AFullTableAnswersNullAndSpendsNoArena)
     {
-        ASSERT_GE(ARENA_SIZE / MIN_REGION, KICKOS_RAM_OWNER_SLOTS + 1u)
+        ASSERT_GE(ARENA_SIZE / MIN_REGION, KICKOS_SEAM_RAM_OWNERS + 1u)
             << "this fixture's arena cannot outlast the table plus one probe block, so the "
                "refusal below would be the ARENA's and this case would witness nothing";
         size_t seated = 0;
-        while (seated < KICKOS_RAM_OWNER_SLOTS + 1u)
+        while (seated < KICKOS_SEAM_RAM_OWNERS + 1u)
         {
             if (ram_owner_alloc(task_a(), MIN_REGION) == nullptr)
             {
@@ -263,7 +289,7 @@ namespace
             seated++;
         }
         ASSERT_GT(seated, 0u) << "the FIRST call refused, so no full table was reached here";
-        ASSERT_LT(seated, KICKOS_RAM_OWNER_SLOTS + 1u)
+        ASSERT_LT(seated, KICKOS_SEAM_RAM_OWNERS + 1u)
             << "no refusal within the ceiling: the table seated more records than it has slots";
         size_t const before = g_arena_used;
         EXPECT_EQ(ram_owner_alloc(task_a(), MIN_REGION), nullptr);

@@ -35,6 +35,11 @@ _appdata_size = KICKOS_APPDATA_SIZE;
 KICKOS_KERNEL_DATA_RESERVE_DECL(ORIGIN(RAM))
 #endif
 
+#ifdef KICKOS_BOOT2_FORCE_SYMBOL
+/* The .boot2 blob is referenced by nothing. */
+EXTERN(KICKOS_BOOT2_FORCE_SYMBOL)
+#endif
+
 SECTIONS
 {
     /* boot2: exactly 256 bytes at flash start (the ROM loads + CRC-checks it). */

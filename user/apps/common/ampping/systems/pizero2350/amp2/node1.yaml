@@ -15,7 +15,7 @@ shared:
 
 tasks:
   - name: serve
-    entry: ampserve_main
+    program: main
     stack: 8192
     priority: 5
     ceiling: 5

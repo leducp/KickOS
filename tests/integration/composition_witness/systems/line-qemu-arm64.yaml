@@ -14,7 +14,7 @@ heap: 65536
 
 tasks:
   - name: alarm
-    entry: alarm_main
+    program: main
     stack: 8192
     priority: 9
     ceiling: 9

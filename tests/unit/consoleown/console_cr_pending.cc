@@ -43,6 +43,7 @@ extern "C"
         }
         return static_cast<int>(n);
     }
+    uint32_t arch_console_claim_left(void) { return 0; }
     bool arch_console_write_sync(char const*, size_t)
     {
         g_pokes = g_pokes + 1;
@@ -51,6 +52,7 @@ extern "C"
     void arch_console_reclaim(void) { g_reclaims = g_reclaims + 1; }
 
     int console_tx_armed(void) { return 0; }
+    int console_tx_insert_line(char const*, size_t n, int) { return static_cast<int>(n); }
     void console_tx_deinit(void) {}
 }
 

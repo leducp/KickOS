@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // XMC4800 IRQ-driven buffered UART console driver on USIC0 CH0 (U0C0), taken at the
-// console handover (kos_console_publish).
+// console handover.
 //
 // TX-ONLY: kos_uart_read() has no receive path, so KOS_UART_READ always returns 0 bytes.
 // Adding RX needs CCR |= RIEN|AIEN plus a PSCR W1C of the receive flags before every

@@ -9,6 +9,7 @@ kickos_add_unit_test(NAME amp_share_admission
           "${PROJECT_SOURCE_DIR}/kernel/grant/grant.cc"
           "${PROJECT_SOURCE_DIR}/kernel/mem/ramown.cc"
           "${PROJECT_SOURCE_DIR}/tests/unit/common/region_seam.cc"
+          "${PROJECT_SOURCE_DIR}/tests/unit/common/pools_seam.cc"
   INCLUDES "${PROJECT_SOURCE_DIR}/tests/unit/common"
   POSTURE KICKOS_AMP_OWN_IMAGE=1
           KICKOS_AMP_USER_SHARE_ADDR=0x2007C000

@@ -76,8 +76,8 @@ TEST(TlsCarveSpan, block_size_spans_the_linker_pad)
 {
     assert_fabricated_layout();
     ASSERT_NE(k_block_from_span, k_block_from_sum);
-    EXPECT_EQ(kickos::tls_block_size(), k_block_from_span);
-    EXPECT_NE(kickos::tls_block_size(), k_block_from_sum);
+    EXPECT_EQ(kickos::tls_block_size(0), k_block_from_span);
+    EXPECT_NE(kickos::tls_block_size(0), k_block_from_sum);
 }
 
 TEST(TlsCarveSpan, seat_zeroes_the_pad_as_well_as_tbss)
@@ -89,7 +89,7 @@ TEST(TlsCarveSpan, seat_zeroes_the_pad_as_well_as_tbss)
         block[i] = 0xAA;
     }
 
-    kickos::tls_seat(block);
+    kickos::tls_seat(block, 0);
 
     unsigned char const* const p = block + TLSCARVE_TCB;
     for (size_t i = 0; i < k_tdata; ++i)
@@ -109,18 +109,18 @@ TEST(TlsCarveSpan, half_stride_stack_is_refused)
 {
     uintptr_t const strided = 0x20010000u;
     ASSERT_EQ(strided & (TLSCARVE_STRIDE - 1u), 0u);
-    ASSERT_GT(TLSCARVE_STRIDE, kickos::tls_block_size());
+    ASSERT_GT(TLSCARVE_STRIDE, kickos::tls_block_size(0));
 
     // Two half-stride stacks inside one stride mask to the SAME thread pointer, so both
     // threads would seat their block on one another's and share every thread_local. A
     // half-stride stack is refused at a strided base and at the midpoint alike.
-    EXPECT_FALSE(kickos::tls_stack_admissible(strided, TLSCARVE_STRIDE / 2u));
+    EXPECT_FALSE(kickos::tls_stack_admissible(strided, TLSCARVE_STRIDE / 2u, 0));
     EXPECT_FALSE(kickos::tls_stack_admissible(strided + TLSCARVE_STRIDE / 2u,
-                                              TLSCARVE_STRIDE / 2u));
+                                              TLSCARVE_STRIDE / 2u, 0));
 }
 
 TEST(TlsCarveSpan, one_strided_stride_is_admitted)
 {
     uintptr_t const strided = 0x20010000u;
-    EXPECT_TRUE(kickos::tls_stack_admissible(strided, TLSCARVE_STRIDE));
+    EXPECT_TRUE(kickos::tls_stack_admissible(strided, TLSCARVE_STRIDE, 0));
 }

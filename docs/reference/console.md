@@ -30,13 +30,13 @@ flowchart TD
     kw -->|"chip (CONSOLE=chip or both)"| chip["RAW bytes, the CRLF expansion happening at the device end"]
     chip --> emit{"console_emit, THE ownership guard: g_console_state? (the ownership axis, checked FIRST)"}
     emit -->|USER_OWNED| drop["DROP: a userspace driver owns the UART, and RTT still carries it. A fault record goes to the driver, see 'A fault record while a driver owns the console'"]
-    emit -->|RECLAIMED| sync["console_write_line_sync (a driver death took it back)"]
+    emit -->|RECLAIMED| sync["console_write_line_owned (a driver death took it back)"]
     emit -->|PANICKED| polled["the polled writer, no lock (a panic took it back, uncounted)"]
     emit -->|KERNEL_OWNED| ins{"console_tx_insert_line(buf, n, CRLF)"}
     emit -->|"KERNEL_OWNED, on an own-image AMP node sharing its UART"| retry["arch_console_write_retry"]
     ins -->|"!= 0"| ring["the line is in the ring, return"]
-    ins -->|unarmed ring| unarmed["console_write_line_sync, no drain to race (before the ring is armed, and once a publish or a panic disarmed it)"]
-    ins -->|refused| refused["the line does not go out and the answer is 0, unless it is a fault record's line, which makes room (console_tx_insert_record_line)"]
+    ins -->|unarmed ring| unarmed["console_write_line_owned, no drain to race (before the ring is armed, and once a publish or a panic disarmed it)"]
+    ins -->|refused| refused["the line does not go out and the answer is 0 (a fault record's line then waits for room in its thread's own fault stub: kconsole_record_wait)"]
     ring --> leave(("then the bytes leave"))
     leave -->|on a backend with a TX interrupt| isr["drain ISR: console_tx_isr"]
     leave -->|on a backend with none, a negative irq_line| prod["producer drain: drain_in_producer, by each producer until its own line has left"]
@@ -72,7 +72,7 @@ because in the middle value the kernel must touch the device on *no* path at all
 
 ```
 USER_OWNED    ->  DROP: the kernel touches nothing (RTT still carries the bytes)
-RECLAIMED     ->  console_write_line_sync (a driver death reclaimed the UART -> polled only)
+RECLAIMED     ->  console_write_line_owned (a driver death reclaimed the UART -> polled only)
 PANICKED      ->  the polled writer, without the lock (a panic reclaimed it for good; the
                   writer is not counted, since no publish leaves PANICKED)
 KERNEL_OWNED  ->  console_tx_insert_line  (the ring's insert)
@@ -83,7 +83,7 @@ true of the burst producer the ring once had and is not a rule about buffering:
 `console_tx_insert_line` never waits under its lock.
 
 `g_console_state` starts `KERNEL_OWNED` (every board that never hands over stays here
-until a panic); `kos_console_publish` moves it to
+until a panic); a publish moves it to
 `HANDING_OFF` from any state, drains the in-flight chip writers, and only then flips `USER_OWNED`; and a
 panic flips it to `PANICKED` **from any prior state, `KERNEL_OWNED` included** -- the axis records a publish, never whether the device is garbled, and a
 thread granted the console window can wreck the channel without ever publishing. See
@@ -104,24 +104,26 @@ the device no longer the kernel's, and drop the rest of its message with nothing
 The load-bearing invariant of the whole design is **line atomicity**: a reader parses lines,
 so bytes from two producers inside one line destroy it while whole lines in any order stay
 legible. `console_tx_insert_line` copies a whole line under one `IrqLock` or refuses it, and a
-refused line DOES NOT GO OUT, so nothing writes at the device beside a running drain. A fault
-record's refused line writes queued bytes itself, under the mask that holds every drain off (see
-below). A panic still takes the polled path: the system stops afterwards, so a line left queued
-is a line nobody reads.
+refused line DOES NOT GO OUT, so nothing writes at the device beside a running drain. A panic
+still takes the polled path: the system stops afterwards, so a line left queued is a line nobody
+reads.
 
 **Across cores, the speaker is the device owner, not the CPU.** SMP cores in one kernel
 insert normal lines into one ring; one drain sends its bytes. Own-image AMP kernels have
 separate rings, so they cannot use them to arbitrate one UART. RP2350 and QEMU ARM64 instead
 claim that UART in partition-shared state and keep the claim through the newline, including
 user writes that reach the chip in several chunks. A kernel line waits for a peer's claim with
-interrupts open between attempts; only the transmission is masked. The claim and wait are bounded:
+interrupts open between attempts, and each byte of the transmission is a masked span of its own,
+the wait for the UART's room, the claim check and the store: a line keeps an interrupt waiting
+for one byte's wire time at most, whatever task's bytes it carries. The claim and wait are bounded:
 after a stalled holder's deadline another node may speak. A write stops at the first input byte its
 claim no longer covers and reports how many completed, so a user write's remainder is offered
 again under a fresh claim. A newline spends CR and LF on the UART; if the claim dies after CR,
 the thread remembers it and its next offer sends only LF, without repeating CR. A user write
 with no complete input byte does not spin: it parks until the claim's release rings its node, or
-at most until the deadline of the grant that refused it, then offers the line again, and a task
-that set O_NONBLOCK is answered `-KOS_ETIMEDOUT` instead. Beside each claim sits one waiting word
+at most until the deadline of the grant that refused it, then offers the line again, and a write
+with `KOS_KCONSOLE_NOWAIT`, which a task that set O_NONBLOCK sends, is answered `-KOS_ETIMEDOUT`
+instead. Beside each claim sits one waiting word
 per node. The refused writer marks its node's word, then offers once more, and the mark, the
 offer and the park are one masked span, so a ring landing inside it is taken once the writer has
 parked. A release frees the claim, then reads every node's word, clears each one set and rings
@@ -129,11 +131,21 @@ that node's doorbell, whose service wakes the writers parked on the console. Eac
 and later load sit across a full barrier, so either the release reads the mark or the writer
 reads the claim free. A holder that dies rings nobody, and its waiters wake at its deadline. An
 own-image node that writes its own ring rather than a shared UART, the ESP32-C6 HP node, waits
-for room in that ring like any ring writer. Panic, fault and ISR output, already masked
-and with no caller to offer the rest again, waits the bounded claim masked and drops the rest
-of a line it loses, uncounted. The holder rechecks its claim before each byte's store and
-stops a margin short of the deadline: only a stall longer than that margin between check and
-store writes into an expired grant.
+for room in that ring like any ring writer. Panic and CPU fault output, already masked and with
+no caller to offer the rest again, waits the bounded claim masked and drops the rest of a line it
+loses, uncounted. The holder rechecks its claim before each byte's store and stops a margin short
+of the deadline: only a stall longer than that margin between check and store writes into an
+expired grant.
+
+**Inside one node, a line is one context's until it ends.** Every console written polled keeps
+one context's line whole this way, the reclaimed console and an unarmed ring included (clause
+2); on an own-image node the line also outlives a write. The node's claim is the node's, so
+the kernel keeps the rest of the node out of a line: the thread writing, and the thread whose
+write left its line open under a live grant. Another thread's write waits for that line, parked
+until the writer's call returns, the line ends or its grant does, and a task that set O_NONBLOCK
+is answered `-KOS_ETIMEDOUT`. A kernel line that finds the line taken, an interrupt's included, is
+dropped, as a line the ring refuses is. A holder slain mid-line gives the line up at its exit. A
+panic writes regardless.
 
 **Only the ARM64 own-image claim renews.** There a KERNEL line (`arch_console_write_retry`
 called for a kernel line, and the polled writer) renews a grant that has ended, or reached its margin, while no peer has taken
@@ -154,7 +166,8 @@ message channel.
 The ring is therefore MULTI-producer, and the exclusion is the lock rather than a structural
 claim about callers. What the ring buys over the locked writer is the SHAPE of the masked
 window: a copy instead of a transmission. That is why the ring's size is derived from the line
-bound (below) and never set.
+bound (below) and never set. No path writes a line at the device under that lock while the ring
+is armed.
 
 ## The buffered path (multi-producer ring)
 
@@ -184,8 +197,7 @@ to empty + disable IRQ": either the ISR's empty-check happened before the publis
 (then the producer's enable re-arms it) or after (then the ISR sees the new bytes
 and keeps draining). **No lost wakeup.** For an insert the lock is held
 for the copy plus a pointer store and one bit -- microseconds bounded by the ring
-size, not the ~22 ms a 256-byte transmission used to hold; a fault record's line is the one
-insert that transmits under it. The copy is inside the
+size, not the ~22 ms a 256-byte transmission used to hold. The copy is inside the
 lock, not outside it: that also serialises concurrent *thread* producers, which the
 single-producer argument alone would not cover: the ring takes a line from any
 context, so its producers are many and only the lock orders them.
@@ -196,24 +208,29 @@ The reason is that the alternative is unavailable rather than merely slower: the
 is already a writer at the device, so a producer writing the refused line there itself
 puts a SECOND writer on the wire and the two interleave mid-line. No locking discipline
 around the fallback fixes that, because the interleaving is between the fallback and a
-drain that is not holding the lock. A kernel line is lost to it; a user writer waits for
-room instead (`kconsole_write_user`), as below.
+drain that is not holding the lock. A kernel line is lost to it; a user writer and a fault
+record's line wait for room instead, as below.
 
-**A fault record's line is the exception.** A thread-fault record (`kprintf_fault`) on the kernel's
-own console is not dropped by a full ring: under the mask, the oldest queued bytes go out through
-`arch_console_write_sync`, in ring order, until the line fits, and the line then queues
-(`console_tx_insert_record_line`). The drain ISR and every producer are held off for that span, so
-the device still has one writer and the lines queued first go out first and whole. The span is per
-LINE, each line its own masked span: it sends at most the line's own length of queued bytes, CRs
-included, in at most two runs, the second only where the ring wraps. On a live channel a line, at
-most `KDIAG_FAULT_LINE_MAX - 1` characters, masks for at most twice that many bytes of wire time, the
-time scaling with the console's baud. On a wedged channel it masks for at most one stall window of
-the polled writer: once a run reports a stall, the rest of the room is taken unsent. On a backend
-with no TX interrupt the drain that sends the rest runs after the mask is dropped. A record line is
-still refused by a line wider than the ring, and by an insert, a record line or a producer drain's
-push it interrupted. Each run is taken before it is written, so a synchronous fault in the polled writer whose
-handler records again or flushes for a panic sends no byte twice; that flush loses the unsent rest
-of the run.
+**A fault record's line waits for room, bounded.** A thread-fault record (`kprintf_record`) on the
+kernel's own console is refused by a full ring like any line, and nothing of it, or of the lines
+queued ahead of it, is written at the device by the refusal. The dying thread waits instead, in
+its own fault stub, with interrupts open and no lock held (`kconsole_record_wait`): on a backend
+with no TX interrupt it drains the ring itself until the line fits, and on one whose TX interrupt
+drains it, it sleeps on the console until that drain has freed the line's room. It then offers the
+line again (`kprintf_record`), which RTT, where the build has it, carried on the first offer
+only. Each line's wait is bounded: once 50 ms pass with no byte leaving the ring, the channel is
+wedged and the line is dropped, so a dead UART costs a dying thread one stall window per line and
+never keeps its task alive. The line is also dropped where waiting would wait on the dying
+thread's own task, a thread of that task holding the console's registers or, on an own-image AMP
+node, the node's open line; and where the thread is cancelled while it waits.
+
+**This is a trade against "always works, even while dying".** A record line no longer forces its
+way past a full ring, so it can now be lost where it used to reach the wire: behind a wedged
+channel, under a cancel, or behind its own task. The dying thread's task also lives on while it
+waits, at most one stall window per line on a wedged channel. In exchange no task's output can
+make the kernel mask interrupts for the wire time of a record line, which it used to for up to
+twice a record line's length at the console's baud. Panic output keeps its guarantee:
+`kpanic_enter` still masks, flushes the ring in order and writes polled.
 
 **The one kernel caller that WAITS is the bench report** (`kprintf_paced`, in `console.cc`, under
 `KICKOS_BENCH`). Forty phase rows at about 45 bytes each is roughly 156 ms of wire time at 115200,
@@ -287,22 +304,22 @@ own device path.
 ### Non-blocking stdout
 
 A client sets stdout or stderr non-blocking with `fcntl(fd, F_SETFL, O_NONBLOCK)`, and `F_GETFL`
-reads the flag back (`user/src/newlib_fcntl.cc`); either answers -1 with `errno` where the kernel
-refuses, `EINVAL` for a thread in no task. Blocking is the default. Fds 0 to 2 share one
+reads the flag back (`user/src/newlib_fcntl.cc`). Blocking is the default. Fds 0 to 2 share one
 description, the console, and its O_NONBLOCK is ONE flag per task, shared by all the task's
-threads as a process's threads share an open file description, and no other task's: the kernel
-keeps it in the task (`kos_task_nonblock`, `KOS_SYS_TASK_NONBLOCK`), so `fcntl` is a syscall and a
-write is not. A thread spawned naming no task and no memory of its own joins its spawner's task,
-so threads never placed in tasks share their spawner's flag. The kernel reads the flag on the
-paths that would wait:
+threads as a process's threads share an open file description, and no other task's: libc keeps
+it in one word of the task's image (`kickos::stdout_nonblock`, `<kickos/sys/emit.h>`), so `fcntl`
+is no syscall and the kernel keeps no flag. A thread spawned naming no task and no memory of its
+own joins its spawner's task, so threads never placed in tasks share their spawner's flag.
+`kickos::stdout_write` reads the flag and asks the kernel not to wait:
 
-- A send of no timeout on the published console that would park, a `kos_send` with
-  `KOS_TIMEOUT_NONE`, is answered `-KOS_ETIMEDOUT` at once: a console whose task lives with no
-  receiver taking a message now. A send with a finite timeout keeps it, `kos_console_flush`'s
-  included, and a send on any other endpoint parks as before.
-- A kernel console write that would wait or have to try again is answered `-KOS_ETIMEDOUT`: the
-  dark window, a full ring, a peer node's claim on a shared UART.
-- `kickos::stdout_write` stops at that answer and reports it with the bytes that went, so a write
+- Its send on the published console takes the timeout 0 in place of `KOS_TIMEOUT_NONE`, so a
+  console whose task lives with no receiver taking a message now is answered `-KOS_ETIMEDOUT` at
+  once. A call, `kos_console_flush`'s included, and a send on any other endpoint are not touched.
+- Its kernel console write passes `KOS_KCONSOLE_NOWAIT`, and one that would wait or have to try
+  again is answered `-KOS_ETIMEDOUT`: the dark window, a full ring, a peer node's claim on a
+  shared UART, another thread's open line on the same node. Any other flag is refused
+  `-KOS_EINVAL`.
+- It stops at that answer and reports it with the bytes that went, so a write
   that would block writes nothing and returns -1 with `errno` `EAGAIN`, and the task carries on.
   A partial accept returns the short count: a receiver taking part of a message, or a kernel
   console taking part of a write.
@@ -433,10 +450,12 @@ names the section above or below that carries its mechanism.
 2. **One line is one indivisible insert.** `console_tx_insert_line` copies a whole line under one
    `IrqLock` or refuses it, and a refused line does not go out: the drain is already a writer at
    the device, and a second writer beside it interleaves mid-line. The unarmed ring, before
-   `console_tx_init` and after a publish or a panic disarmed it, writes the line with
-   `console_write_line_sync`, which holds `IrqLock` across the transmission. A path that splits a
-   line across two inserts, or writes a line's bytes outside one `IrqLock` span, puts one
-   producer's bytes inside another's line ("The buffered path").
+   `console_tx_init` and after a publish or a panic disarmed it, and a reclaimed console write
+   the line polled with `console_write_line_owned`: each wire byte is a masked span of its own,
+   and the line is the writing context's until it is written, another thread's write waiting for
+   it and a kernel line that finds it taken, an interrupt's included, dropped. A path that splits
+   a line across two inserts, or writes a line's bytes outside one `IrqLock` span or that
+   ownership, puts one producer's bytes inside another's line ("The buffered path").
 3. **The ring drains.** Its consumer is the TX-empty ISR on a backend that has one, and every
    producer until its own line has left on a backend that does not (`irq_line < 0`). The TX ISR
    sits in the `IrqLock`-maskable device band (`PRIO_DEVICE`), so the producer's publish and prime
@@ -444,9 +463,11 @@ names the section above or below that carries its mechanism.
    disables it only on drain-to-empty, and the producer always re-enables it after publishing.
    It is stated of ONE ring over one gate bit, so **a chip whose kernels are several and share
    one UART supplies no backend at all** ("Per-chip backend").
-4. **A fault record's line makes its own room.** Under the mask, the oldest queued bytes go out
-   through the polled writer, in ring order, until the line fits: at most the line's own length,
-   and at most one stall of a wedged channel ("A fault record's line is the exception").
+4. **A fault record's line waits for room with interrupts open.** Refused by a full ring, it
+   writes nothing at the device; its thread drains the ring itself or sleeps until the drain
+   frees the room, then offers the line again. One stall window with no byte leaving the ring
+   drops the line, and so does a wait that would wait on the thread's own task ("A fault record's
+   line waits for room, bounded").
 5. **A publish hands over every line the ring accepted.** It refuses new chip writers
    (`HANDING_OFF`), flushes and disarms the ring under one `IrqLock`, drains the writers already
    counted, and stores `USER_OWNED` last ("Capability handover").
@@ -482,8 +503,9 @@ names the section above or below that carries its mechanism.
     took, until renewing writers have put `KICKOS_DIAG_LINE_MAX` bytes under it. A write stops at
     the first byte its claim does not cover and counts only what went out; a release that frees
     the claim rings every node marked waiting, and a writer marks itself and parks inside one
-    masked span. An expired holder can still leave a split line on the wire ("The routing
-    guard").
+    masked span. Each wire byte is a masked span of its own, and inside a node a line is one
+    context's until it ends. An expired holder can still leave a split line on the wire ("The
+    routing guard").
 11. **The bench report waits for the drain, bounded per line** (`kprintf_paced`), so a dead or
     unread console costs one bounded poll window per line and never a hang ("The buffered
     path").
@@ -497,11 +519,12 @@ names the section above or below that carries its mechanism.
 
 `console_tx_deinit` (flush -> disable
 TX IRQ -> `irq_detach`/NVIC-mask -> disarm the ring, all under one `IrqLock`) relinquishes
-the buffered path, and the syscall `kos_console_publish` (29), gated on `AUTH_CONSOLE`,
-calls it, takes a kernel ref on the stdout endpoint, and flips `g_console_state` to
-`USER_OWNED` last. A
+the buffered path. A console driver's `kos_task_create`, gated on `AUTH_CONSOLE`, calls it, as
+the syscall the console publish call (29) does for an empty task an app fills, takes a kernel ref on
+the stdout endpoint, and flips `g_console_state` to `USER_OWNED` last. A
 stale in-flight chip writer that raced the flip is drained via the `g_chip_writers` count
-before publish returns: the publisher parks on the console (`console_publish_drain`) and the
+before the publish returns, and before the driver's entry thread first runs, so no driver code
+touches the device under it: the publisher parks on the console (`console_publish_drain`) and the
 last counted writer's leave wakes it, so a writer below its priority runs to that leave. Those
 writers never block, so a kill standing against the publisher does not end the wait, and a
 writer slain inside the bracket leaves it with its exit (`kconsole_slain`). A publisher slain
@@ -514,10 +537,11 @@ landing during the drain keeps the device, and the publish's last step hands not
 **Who may publish, and what HANDOUT allows.** The caller holds `AUTH_CONSOLE` (`-KOS_EPERM`
 otherwise) and names an endpoint through a capability holding HANDOUT: `-KOS_EBADF` for a bad,
 stale or non-endpoint capability, `-KOS_EACCES` for one without HANDOUT, a WAIT-only capability
-included. It also names the TASK the driver runs in, whose end is the driver's death:
+included. A console driver's create names it as the delegated capability at its declaration's
+ready position, and the task it creates is the one the console is published for. the console publish call
+also names the TASK the driver runs in, whose end is the driver's death:
 `KOS_TASK_NONE` for the caller's own, or a task the caller created (`-KOS_EBADF` for a handle naming
-nothing, `-KOS_EPERM` for another creator's, `-KOS_EBUSY` for one already ended). The init publishes
-for the task it has just created for the driver. `-KOS_EBUSY` also answers a publish while another
+nothing, `-KOS_EPERM` for another creator's, `-KOS_EBUSY` for one already ended). `-KOS_EBUSY` also answers a publish while another
 is still handing the console over, and any publish after a panic. It also answers a task a thread outside
 of which holds the console's registers (below). The publish seats WAIT on that capability when it
 does not hold it already, counted in `recv_holders`, and the endpoint receives as a fresh one does
@@ -603,7 +627,7 @@ witnessed by `conreclaim` (`c5d9b0d`). See
 A thread-fault record (`kickos_thread_fault_exit`, and the selftest trap witness) is the one
 kernel print that still reaches the wire while a userspace driver owns the UART, and it reaches
 it THROUGH THAT DRIVER: the kernel writes none of it at a device it handed away. Each
-`kprintf_fault` line the reporter prints goes to the kernel console as before; from `HANDING_OFF`
+`kprintf_record` line the reporter prints goes to the kernel console as before; from `HANDING_OFF`
 on, the chip path refuses it and the same masked read holds it in the record of the thread
 printing it instead, opening that record on its first such line. `krecord_end` ends the record.
 
@@ -624,7 +648,7 @@ printing it instead, opening that record on its first such line. `krecord_end` e
   between. The record therefore lands between two messages of the driver's input, and a line one
   send carries is never split by it. A line a writer splits across sends can be; the banner opens
   with a newline of its own, so a record never shares a line with user bytes.
-- **The faulting thread never parks**, and nothing waits on time.
+- **A held line never makes the faulting thread park**, and nothing waits on time.
 - **Each line reaches the wire once.** The reclaim flips the state, writes every held record and
   empties the store under the lock the hold takes, so a line printed before it is held and
   written by it, and a line printed after it reaches the device directly: a record the console's
@@ -652,52 +676,46 @@ printing it instead, opening that record on its first such line. `krecord_end` e
 
 ## The publisher's obligations
 
-`kos_console_publish` hands the device away but cannot police what the publishing task does
-next. Three properties of the published console are therefore contracts on the PUBLISHER, not
-things the kernel enforces. No driver honours them in its own `*_console_start`: nine of the
-eleven are a one-line delegation to `drv::bring_up`, `simcon_console_start`
-(`system/driver/sim/simcon`) is one too but under its two window-thread knobs, and the eleventh,
-`rtusb_console_start` (`system/driver/imxrt1062/rt1062usb`), wraps that same call in a
-failure-path print of the IRQ thread's stage. All three obligations live in `drv::bring_up`, in `user/src/driver_service.cc`.
-`user/apps/common/initdemo` open-codes the same sequence instead, being the handover demo
-rather than a driver.
+A publish hands the device away but cannot police what the publisher does next. Three properties
+of the published console are therefore contracts on the PUBLISHER, not things the kernel
+enforces. For a packaged console driver the publisher is the init, and its driver path keeps
+them (`system/init/compose/driver_path.cc`); `user/apps/common/initdemo` open-codes the same
+sequence with the console publish call instead, being the handover demo rather than a driver.
 
-**Publish and driver-spawn are ONE atomic act.** Nothing may be spawned that depends on the
-console between the two. `kos_console_publish` returning has already flipped the state to
-`USER_OWNED` and pointed `g_stdout_target` at the endpoint, so a driver spawn that FAILS after
-it leaves the target naming an endpoint with no receiver while the task it was published for
-lives. Every task spawned afterwards then parks on its first `printf` forever, as on any live
-console with no receiver, and the `_write` fallback never gets the `-1` it needs to route around
-it. The kernel cannot tell "published" from "published and served", so the publisher must not
-spawn console-dependent tasks when the driver spawn did not succeed, and a failed start ends the
-driver's task before it says why (`console_start_failed`), that end being the console's death.
+**Publish and driver start are ONE atomic act.** A console driver's create refuses, before it
+publishes, everything it can know: the endpoint, the window, the lines. A publish leaves
+`g_stdout_target` naming an endpoint with no receiver while the task it was published for lives,
+and every task started afterwards then parks on its first `printf` until a receiver comes. The
+kernel cannot tell "published" from "published and served", so the publisher starts no
+console-dependent task before the probe below returns. A create that fails past the publish ends
+the task it made, that end being the console's death.
 
 **The publisher MUST drop its own WAIT right when the handover ends.** Once the driver's task has
 ended, a sender is answered only by an endpoint nobody holds WAIT on, `recv_holders` at **0**. The
 publish takes a capability holding HANDOUT and leaves it holding WAIT too, so the drop is owed
 after every publish. `kos_endpoint_create` sets `recv_holders = 1` for the creator, a publish
 through a capability without WAIT seats the same one, and delegating a `CAP_WAIT` copy to the
-driver at spawn bumps it to **2**. If the publisher keeps its WAIT, the endpoint still receives
+driver at its create bumps it to **2**. If the publisher keeps its WAIT, the endpoint still receives
 after the driver's task ends: no answer is delivered, parked senders are never woken, and every
 client hangs for the life of the system. That is strictly WORSE than a dark console, which is why
 the drop is a hard rule and not a tidiness convention.
-`console_handover_finish` narrows it to SIGNAL, TRANSFER and HANDOUT (`HANDOVER_KEPT`), the rights
+The init narrows it to SIGNAL, TRANSFER and HANDOUT (`KOS_DRV_HANDOVER_KEPT`), the rights
 the init's walk (`system/init/compose/walk.cc`) keeps of every endpoint it creates for a server.
 Its task's end then gives the kernel its console back, and with no receiver left a send answers
 `-KOS_EAGAIN` while the init's HANDOUT remains, until the endpoint next receives
 (`endpoint_unserved` in `kernel/include/kickos/endpoint.h`). The endpoint outlives the instances
-of its driver: a restart publishes the SAME endpoint again through that HANDOUT, which seats the
-init's WAIT and hands the console over, then seats the new driver on it and narrows, as the
-first start did. A send answers `-KOS_ECONNREFUSED` only once the init drops the endpoint, its
+of its driver: a restart's create publishes the SAME endpoint again through that HANDOUT, which
+seats the init's WAIT and hands the console over and the new driver on it, and the init narrows,
+as the first start did. A send answers `-KOS_ECONNREFUSED` only once the init drops the endpoint, its
 driver out of restarts; the seats still name it, so the next publish moves them. Neither drop tears
 the endpoint down, because the kernel holds its own
 `g_stdout_target` reference.
 
-**The handover ends only once the driver is proven to receive.** After the drop,
-`console_handover_finish` probes capability 0 with a zero-length rendezvous, which returns only
-once a receiver has taken it, and no client runs before it returns. A driver that hangs in its
-bring-up never takes the probe, so the probe parks and the boot stops there, visibly, instead of
-going on with a console that no receiver serves.
+**The handover ends only once the driver is proven to receive.** After the drop, the init probes
+capability 0 with a zero-length rendezvous, which returns only once a receiver has taken it, and
+no client runs before it returns. Its bound covers the driver's readiness wait as well as the
+probe's own. A driver that hangs in its bring-up never takes the probe: past its bound the init
+slays the task, whose end gives the kernel its console back, and reports the failed start on it.
 
 **Two windows are dark on the wire, and output is lost in neither.** The first runs from the
 publish flip to the driver serving capability 0: `console_emit`'s chip path already drops (RTT
@@ -713,8 +731,8 @@ wait that the reclaim and a publish both wake (`console_dark_wait`, `console_dar
 writes it: polled after the reclaim, or handed back on `-KOS_EBUSY` after a publish, which
 `kickos::stdout_write` (`<kickos/sys/emit.h>`) then sends to the endpoint. The wait ends otherwise
 only on the writer's own kill or slay. A task that set O_NONBLOCK is answered `-KOS_ETIMEDOUT`
-there instead. The init's report of a console driver's failed start (`kickos::driver::report`)
-is such a writer: where a slain member of the ended task still holds the console's window, the
+there instead. The init's report of a console driver's failed start is such a writer: where a
+slain member of the ended task still holds the console's window, the
 report waits for that member to exit and the reclaim to write it. The line lands exactly once: on the wire, and on RTT where the build also carries
 it, a writer offering a line again putting on RTT only the bytes the chip took. So RTT shows a
 line waiting in the window only once the reclaim writes it, and never one that leaves through
@@ -727,8 +745,7 @@ is the case the atomicity rule above exists to forbid.
 A published console endpoint carries **two** protocols on one capability, told apart by
 whether the message arrived with a reply capability:
 
-- a **plain send** is raw console bytes (this is the route `kos_console_publish` puts libc
-  stdout on), and
+- a **plain send** is raw console bytes (this is the route a publish puts libc stdout on), and
 - a **`kos_call`** is a `struct kos_uart_req` frame from `<kickos/sys/uart.h>`.
 
 A driver must therefore receive with `kos_reply_recv` asking for a `struct kos_recv_info`,
@@ -744,12 +761,16 @@ refusing costs the caller an error, ignoring costs it the system.
 | `KOS_UART_STATS` | the driver's `struct kos_uart_stats` counters |
 | `KOS_UART_SET_MODE` | the write policy below |
 | `KOS_UART_CONFIGURE` | refused `-KOS_ENOSYS` where the device belongs to another thread |
+| `KOS_UART_DRAIN` | `status` 0 once the TX ring and the device's transmit path have drained, `-KOS_EBUSY` where the driver's bound expired first |
 
-**A zero-length plain send is a flush.** The driver goes back to its receive only once its TX
-ring and the device's transmit path have drained, so a sender knows its earlier bytes have left
-when its next send on the endpoint is taken. `kos_console_flush(timeout_us)` (`<kickos/sys.h>`)
-is those two zero-length sends on a thread's stdout, each bounded by the timeout, and the init
-ends the system on exactly that ([design-m10-target.md](../design-m10-target.md), section 1.5).
+**`KOS_UART_DRAIN` answers the drain's real result.** The driver replies only once its TX ring
+and the device's transmit path have drained or its bound has expired, and the reply's `status`
+says which. Every byte a sender's earlier sends delivered was taken before the request, so a
+status of 0 covers them. `kos_console_flush(timeout_us)` (`<kickos/sys.h>`) is that call on a
+thread's stdout, the whole call bounded by the timeout, and answers the status, so a drain that
+failed or timed out is reported as a failure. The init ends the system after exactly that
+([design-m10-target.md](../design-m10-target.md), section 1.5). A zero-length plain send carries
+nothing: it is the readiness probe, and the driver takes it and receives again.
 Bytes stdio still buffers were never sent, so an app flushing its output calls
 `fflush(stdout)` first. Drained is as
 strong as the device allows: the last stop bit on every UART, and the host's acknowledgement of

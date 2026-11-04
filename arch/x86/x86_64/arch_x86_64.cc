@@ -47,8 +47,8 @@ extern "C" KICKOS_X86_64_LOCAL void kickos_x86_64_bench_open(void);
 #endif
 
 // The app's own return path (user/src/syscall_stubs.cc), which reaches the kernel exit through
-// the syscall trap.
-extern "C" KICKOS_X86_64_LOCAL void kickos_user_thread_return(void);
+// the syscall trap, at the address the thread reaches it at.
+extern "C" KICKOS_X86_64_LOCAL void (*kickos_image_thread_return)(void);
 
 namespace
 {
@@ -101,11 +101,6 @@ namespace
                   "the members before the area fit its first 64 bytes");
     // MXCSR's place in the legacy region, which XRSTOR reads whenever it restores SSE or AVX.
     constexpr size_t XSAVE_MXCSR = 24;
-    // The cell at the top of an unprivileged thread's stack, aligned top minus 16, whose first
-    // word is the thread's struct _reent pointer, whose second is its lock id and whose address
-    // is its FS base.
-    constexpr uintptr_t REENT_CELL = 16;
-
     // With no block seated every ring 3 entry would load a zero stack pointer. This fires if
     // the ARCH_KERNEL_STACKS_MANDATORY select is ever dropped.
     static_assert(KICKOS_KERNEL_STACKS != 0,
@@ -290,17 +285,18 @@ void arch_context_init(struct arch_context* ctx,
 
     // SysV wants the stack 16-byte aligned at a call site, so the entry's first instruction
     // must see rsp 8 modulo 16, which the return-address slot below produces. It sits at the
-    // top of the thread's OWN stack at either level, where the entry function's `ret` looks,
-    // and below the 16-byte reentrancy cell an unprivileged thread keeps above it
-    // (arch_context_seat_reent). A privileged thread's slot stays unwritten: its entry must not
-    // return.
+    // top of the thread's OWN stack at either level, where the entry function's `ret` looks. A
+    // privileged thread's slot stays unwritten: its entry must not return.
     uintptr_t const top = ctx->stack_hi & ~static_cast<uintptr_t>(15);
-    uintptr_t return_slot = top - 8;
+    uintptr_t const return_slot = top - 8;
+    // An unprivileged thread's FS base is the top of its libc state carve, whose cell libc
+    // reads at %fs:-16 and libkickos_user at %fs:-8. A privileged context keeps 0: the kernel
+    // calls no libc.
+    ctx->fs_base = 0;
     if (privileged == 0)
     {
-        return_slot = top - REENT_CELL - 8;
+        ctx->fs_base = ctx->stack_lo;
     }
-    ctx->fs_base = 0;
 
     // Where this frame sits IS the privilege boundary: it carries cs, ss and rflags, so whoever
     // can write it chooses the privilege level of the one iretq that starts the thread. An
@@ -319,12 +315,10 @@ void arch_context_init(struct arch_context* ctx,
         frame_top = ctx->kernel_sp;
         code_selector = kickos::x86_64::sel_user_code;
         stack_selector = kickos::x86_64::sel_user_data;
-        // App text, which the thread reaches at its alias. The thread's stack is where ITS space
-        // maps it, not the space running this; the kernel writes the slot through its own view
-        // of the same frame.
-        uint64_t const returns_to = reinterpret_cast<uint64_t>(&kickos_user_thread_return)
-                                    + kickos::x86_64::user_alias_offset();
-        uintptr_t const slot_view = return_slot - kickos::x86_64::user_alias_offset();
+        // The thread's stack is where ITS space maps it, not the space running this; the kernel
+        // writes the slot through its own view of the same frame.
+        uint64_t const returns_to = reinterpret_cast<uint64_t>(kickos_image_thread_return);
+        uintptr_t const slot_view = return_slot - arch_aspace_user_offset();
         *reinterpret_cast<uint64_t*>(slot_view) = returns_to;
     }
 
@@ -369,27 +363,6 @@ void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),
     arch_ctx_redirect_to_block(ctx, entry, stack_base, stack_size);
     ctx->fs_base = fs_base;
 }
-
-#if KICKOS_REENT_PER_THREAD
-// The cell arch_context_init left above an unprivileged thread's return slot: its first word
-// becomes `state` and its second the lock id `self`, written through the kernel's view of the
-// stack as the return slot is, and its user address the FS base, where libc's __getreent reads
-// %fs:0 and libkickos_user %fs:8. A privileged context has no cell and keeps fs_base 0: the
-// kernel calls no libc.
-void arch_context_seat_reent(struct arch_context* ctx, void* state, uint32_t self)
-{
-    trap_frame const* const f = reinterpret_cast<trap_frame const*>(ctx->sp);
-    if (f->cs != kickos::x86_64::sel_user_code)
-    {
-        return;
-    }
-    uintptr_t const cell = (ctx->stack_hi & ~static_cast<uintptr_t>(15)) - REENT_CELL;
-    uint64_t* const word = reinterpret_cast<uint64_t*>(cell - kickos::x86_64::user_alias_offset());
-    word[0] = reinterpret_cast<uint64_t>(state);
-    word[1] = self;
-    ctx->fs_base = cell;
-}
-#endif
 
 void arch_switch(struct arch_context* from, struct arch_context* to)
 {

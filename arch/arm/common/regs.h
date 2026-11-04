@@ -99,6 +99,8 @@ namespace kickos
         constexpr uintptr_t MPU_RBAR = 0xE000ED9C;
         constexpr uintptr_t MPU_RASR = 0xE000EDA0;
         constexpr uint32_t MPU_CTRL_ENABLE = 1u << 0;
+        // HardFault and NMI use the MPU; UNPREDICTABLE without ENABLE (DDI0403E B3.5.6).
+        constexpr uint32_t MPU_CTRL_HFNMIENA = 1u << 1;
         constexpr uint32_t MPU_CTRL_PRIVDEFENA = 1u << 2; // priv uses the default map
         constexpr uint32_t MPU_RASR_ENABLE = 1u << 0;
         constexpr uint32_t MPU_RASR_XN = 1u << 28;

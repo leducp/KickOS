@@ -13,6 +13,7 @@ extern "C"
     int arch_mpu_region_pow2(void) { return g_region_seam.pow2; }
     int arch_mpu_nocache_support(void) { return g_region_seam.nocache; }
     struct arch_reserved_span arch_reserved_blocks(void) { return g_region_seam.reserved; }
+    struct arch_reserved_span arch_window_apertures(void) { return g_region_seam.apertures; }
     struct arch_reserved_span arch_bus_master_apertures(void) { return g_region_seam.bus_masters; }
     int arch_bitband_present(void) { return g_region_seam.bitband; }
 

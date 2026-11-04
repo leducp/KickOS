@@ -27,28 +27,28 @@ tasks:
     restart: { max: 1 }
 
   - name: exits_client
-    entry: exits_client_main
+    program: exits_client
     stack: 4096
     priority: 8
     ceiling: 8
     uses: [/svc/exits]
 
   - name: traps_client
-    entry: traps_client_main
+    program: traps_client
     stack: 4096
     priority: 8
     ceiling: 8
     uses: [/svc/traps]
 
   - name: fails_client
-    entry: fails_client_main
+    program: fails_client
     stack: 4096
     priority: 8
     ceiling: 8
     uses: [/svc/fails]
 
   - name: watcher
-    entry: watcher_main
+    program: main
     stack: 4096
     priority: 9
     ceiling: 9

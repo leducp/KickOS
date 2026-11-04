@@ -59,6 +59,14 @@
 
 namespace kickos
 {
+    // Per thread-pool slot, the start of a push or a RESEAT toward the slot's thread
+    // (kernel/bench/bench.cc), in the pools' storage.
+    struct BenchMoveStamp
+    {
+        uint64_t t0 = 0;
+        uint32_t kind = 0;
+    };
+
     // Each distribution uses an accumulator and optionally a 672-byte histogram
     // per kernel core. LOCK_HOLD measures the outermost IrqLock interval, including
     // interrupt masking and, on SMP, kernel-lock acquisition and hold time.

@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+
+  ==============================================
+   KickOS 0.5.1  -  microkernel RTOS
+  ==============================================
+   board   esp32c6-wroom
+   arch    rv32imac
+   cpu     rv32imac_zicsr
+   mpu     enforce
+   sched   tickless
+
+[codewindow] window 0x40810270..0x40813dc0
+[codewindow] first and last words read
+[codewindow] fetching 0x4081026c
+
+=== THREAD FAULT === thread 'main' killed, system continues
+  PC=0x4081026c mcause=0x1
+  ADDR=0x4081026c

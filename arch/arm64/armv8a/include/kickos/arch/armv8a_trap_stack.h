@@ -58,14 +58,13 @@
  * arch_armv8a.cc asserts: the frame term of every class an interrupt can land under. */
 #define KICKOS_ARMV8A_TRAP_NEST 1568
 
-/* The EL0 synchronous entry on the block, the syscall and the fault it contains. 2032 on
- * qemu-arm64-benchgicv3 and benchsmp12 under the KickOS toolchain's GCC 16.2, a refused spawn
- * discarding the task it built, which serves the console, and switching to the writer the death
- * wakes:
- *   syscall_dispatch[144] -> thread_create_call[32] -> spawn_masked[544] -> spawn_unwind[64]
- *   -> task_discard -> free_task[32] -> cap_console_task_ended[32] -> console_on_driver_death[48]
- *   -> console_dark_wake[48] -> sched::wake[32] -> ... -> kickos_armv8a_switch_now[800]
- *   -> ... -> kickos_armv8a_gic_doorbell_send[96]
+/* The EL0 synchronous entry on the block, the syscall and the fault it contains. 2208 on
+ * qemu-arm64-benchgicv3 under the KickOS toolchain's GCC 16.2, a bench print whose console
+ * writer wakes the writer parked on the line and switches to it; 1712 on qemu-arm64:
+ *   syscall_dispatch[144] -> bench_irq_sweep[128] -> dist_print_fmt[112] -> ...[560]
+ *   -> console_emit[80] -> console_chip_writer_leave[48] -> console_dark_wake[48]
+ *   -> sched::wake[32] -> ... -> kickos_armv8a_switch_now[800] -> ...
+ *   -> kickos_armv8a_gic_doorbell_send[80]
  * arch_armv8a.cc refuses more than 13 grants. Reserved at 2304, above the measurement. */
 #define KICKOS_ARMV8A_TRAP_DEPTH_SYSK 2304
 
@@ -81,18 +80,21 @@
  * WINDOW + 1024 = 3392 against 4092 above the canary. */
 #define KICKOS_ARMV8A_TRAP_DEPTH_SYSWIN 1024
 
-/* The fault and slay stubs on the block with an interrupt nested below. 1056 on
+/* The fault and slay stubs on the block with an interrupt nested below. 1264 on
  * qemu-arm64-benchgicv3 and benchsmp12, the fault report's line waking the publisher it raced:
- *   kickos_thread_fault_exit[48] -> kprintf_fault[368] -> console_emit[80]
- *   -> console_chip_writer_leave[48] -> console_dark_wake[48] -> ... -> klock_attach[48]
- *   -> arch_kernel_lock -> ... -> wait_gicd_rwp[48] -> kpanic_refuse_unlocked[32]
+ *   kickos_thread_fault_exit[32] -> fault_record_print[96] -> kprintf_record[320]
+ *   -> kvprintf_fault[176] -> console_emit[80] -> console_chip_writer_leave[48]
+ *   -> console_dark_wake[48] -> ...
+ *   -> klock_attach[48] -> arch_kernel_lock -> ... -> wait_gicd_rwp[48]
+ *   -> kpanic_refuse_unlocked[32]
  * NEST + 2048 = 3616 is the block's deepest need, against 4092 above the canary. */
 #define KICKOS_ARMV8A_TRAP_DEPTH_EXITK 2048
 
-/* The same stubs through the switch. 1472 on qemu-arm64-smp:
- *   kickos_thread_fault_exit -> exit_current[112] -> cap_teardown[80] -> teardown_entry[80]
- *   -> obj_close_protocol -> endpoint_rights_dropped -> refuse_senders -> sched::wake
- *   -> pick_and_seat -> arch_switch -> kickos_armv8a_switch_now[800] -> kickos_switch_unlock
+/* The same stubs through the switch. 1792 on qemu-arm64-smp, 1888 on benchgicv3:
+ *   kickos_thread_fault_exit -> fault_record_print[96] -> kprintf_record[320]
+ *   -> kvprintf_fault[176] -> console_emit
+ *   -> console_chip_writer_leave -> console_dark_wake -> sched::wake -> pick_and_seat
+ *   -> arch_switch -> kickos_armv8a_switch_now[800] -> kickos_switch_unlock
  *   -> sched_flush_owed -> klock_resched_ask -> resched_owe */
 #define KICKOS_ARMV8A_TRAP_DEPTH_EXITKSW 2048
 

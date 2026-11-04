@@ -46,7 +46,8 @@ kbanner_arg() {
 [ "$(kbanner_arg KDIAG_F_BANNER_BUILD)" = kickos_build_time ] \
     || bad "kbanner no longer prints its build row from kickos_build_time"
 [ "$(kbanner_arg KDIAG_F_BANNER_APP)" = app_stamp ] \
-    && grep -qE 'app_stamp = g_app_stamp;' <<< "$KBANNER" \
+    && grep -qE 'image_view\(0u, image_record\(0u\)\.stamp\)\);' \
+        <<< "$KBANNER" \
     || bad "kbanner no longer prints its app row from the app's stamp"
 [ "$(kbanner_arg KDIAG_F_BANNER_COMMIT)" = kickos_build_commit ] \
     || bad "kbanner no longer prints its commit row from kickos_build_commit"
@@ -75,7 +76,7 @@ EPOCH=1791264192
 stamp_of() {
     printf 'int kickos_stamp_tu;\n' > "$TMP/stamp_$1.cc"
     SOURCE_DATE_EPOCH=$EPOCH "$CXX" -std=c++17 -include user/include/kickos/app.h \
-        -Dmain=kickos_app_main "-DKICKOS_APP_IMAGE=\"$1\"" -DKICKOS_APP_TZ=+0200 \
+        "-DKICKOS_APP_IMAGE=\"$1\"" -DKICKOS_APP_TZ=+0200 \
         -c "$TMP/stamp_$1.cc" -o "$TMP/stamp_$1.o" 2> "$TMP/cc.err" \
         || fail "kickos/app.h does not compile on this host: $(head -n 5 "$TMP/cc.err")"
     printf '%s\n' 'extern "C" char const kickos_app_stamp[];' \

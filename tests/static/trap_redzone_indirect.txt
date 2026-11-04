@@ -871,18 +871,6 @@ site armv7m bluepill-c8 console_tx.cc:insert_locked@3/3 chip_stm32f1f3.cc:stm32_
 site armv7m bluepill-c8 console_tx.cc:drain_in_producer@1/2 chip_stm32f1f3.cc:stm32_tx_slot_free
 site armv7m bluepill-c8 console_tx.cc:drain_in_producer@2/2 chip_stm32f1f3.cc:stm32_tx_push
 
-site armv7m bluepill-c8-st console_tx.cc:wait_slot@1/1  chip_stm32f1f3.cc:stm32_tx_slot_free
-site armv7m bluepill-c8-st console_tx_flush_sync@2/2 chip_stm32f1f3.cc:stm32_tx_push
-site armv7m bluepill-c8-st console_tx_isr@1/3           chip_stm32f1f3.cc:stm32_tx_slot_free
-site armv7m bluepill-c8-st console_tx_isr@2/3           chip_stm32f1f3.cc:stm32_tx_push
-site armv7m bluepill-c8-st console_tx_isr@3/3           chip_stm32f1f3.cc:stm32_tx_irq_disable
-site armv7m bluepill-c8-st console_tx_flush_sync@1/2    chip_stm32f1f3.cc:stm32_tx_irq_disable
-site armv7m bluepill-c8-st console_tx_deinit@1/1        chip_stm32f1f3.cc:stm32_tx_irq_disable
-site armv7m bluepill-c8-st console_tx.cc:insert_locked@1/3 chip_stm32f1f3.cc:stm32_tx_irq_enable
-site armv7m bluepill-c8-st console_tx.cc:insert_locked@2/3 chip_stm32f1f3.cc:stm32_tx_slot_free
-site armv7m bluepill-c8-st console_tx.cc:insert_locked@3/3 chip_stm32f1f3.cc:stm32_tx_push
-site armv7m bluepill-c8-st console_tx.cc:drain_in_producer@1/2 chip_stm32f1f3.cc:stm32_tx_slot_free
-site armv7m bluepill-c8-st console_tx.cc:drain_in_producer@2/2 chip_stm32f1f3.cc:stm32_tx_push
 
 
 # --- armv6m: the IRQ table ------------------------------------------------------
@@ -1062,17 +1050,20 @@ site lx6 * console_tx.cc:drain_in_producer@2/2 kickos::espuart::console::tx_push
 # pointer above.
 site lx6 * console_tx_deinit@1/1                 kickos::espuart::console::tx_irq_disable
 # Unlocated edges with no indirect call behind them, read off the reclaimwit image each
-# esp32-wroom preset links: no callx or jx up to each body's last retw.
-# task_object_admit_grants' one jx is its switch's jump table, eight .rodata words that all
-# land inside the body. On the two-core presets the callx12 objdump shows past domain_for's
-# last retw.n decodes the padding and the l32r pool of arch_domain_static_regions, which
-# follows it.
+# esp32-wroom preset links: no callx or jx up to each body's last retw. On the two-core presets
+# the callx12 objdump shows past domain_for's last retw.n decodes the padding and the l32r pool
+# of arch_domain_static_regions, which follows it.
+# cap_console_publish calls cap_obj_generation and obj_ref_drop through their ipa clones
+# (.part.0, .isra.0), which gcc's callgraph reports as unlocated indirect calls.
+site lx6 * kickos::cap_console_publish@indirect kickos::cap_obj_generation cap.cc:obj_ref_drop
 site lx6 * kickos::domain_for@indirect           NONE reason: no indirect call in the emitted body
 site lx6 * kickos::endpoint_reply_recv@indirect  NONE reason: no indirect call in the emitted body
 site lx6 * kickos::endpoint_slot_claim@indirect  NONE reason: no indirect call in the emitted body
-site lx6 * task.cc:task_seat@indirect           NONE reason: no indirect call in the emitted body
-site lx6 * kickos::task_object_admit_grants@indirect NONE reason: its one jx is a jump table inside the body
-site lx6 * syscall_thread.cc:spawn_masked@indirect NONE reason: no indirect call in the emitted body
+site lx6 * kickos::task_for@indirect              NONE reason: no indirect call in the emitted body
+site lx6 * kickos::task_create_call@indirect NONE reason: no indirect call in the emitted body
+site lx6 * kickos::task_create_declared@indirect NONE reason: no indirect call in the emitted body
+site lx6 * syscall_thread.cc:spawn_locked@indirect NONE reason: no indirect call in the emitted body
+site lx6 * syscall_thread.cc:driver_admit@indirect NONE reason: no indirect call in the emitted body
 site lx6 esp32-wroom-bench bench.cc:dist_reset_one@indirect NONE reason: no indirect call in the emitted body
 site lx6 esp32-wroom-bench bench.cc:dist_total@indirect     NONE reason: no indirect call in the emitted body
 site lx6 esp32-wroom-bench kickos::bench_reset@indirect     NONE reason: no indirect call in the emitted body
@@ -1080,3 +1071,32 @@ site lx6 esp32-wroom-benchsmp bench.cc:dist_reset_one@indirect NONE reason: no i
 site lx6 esp32-wroom-benchsmp bench.cc:dist_total@indirect     NONE reason: no indirect call in the emitted body
 site lx6 esp32-wroom-benchsmp kickos::bench_reset@indirect     NONE reason: no indirect call in the emitted body
 site lx6 esp32-wroom-benchsmp kickos::dist_print_fmt@indirect  NONE reason: no indirect call in the emitted body
+
+# --- The task entry of a driver an app creates (user/apps/common/sinkdrv) ----------------------
+# A `?` before a caller binds its site where a graph links it and nothing where it does not.
+site armv7m * ?kickos_driver_task@1/1 ?appsink_start reason: the driver's start, which t->entry.driver names in the table the composition emits
+site armv7m * ?kickos::driver::bring_up@1/2 NONE reason: appsink declares no ring block, so block_init is never called
+site armv7m * ?kickos::driver::bring_up@2/2 ?appsink.cc:service reason: the descriptor's thread 0 entry
+site armv6m * ?kickos_driver_task@1/1 ?appsink_start reason: the driver's start, which t->entry.driver names in the table the composition emits
+site armv6m * ?kickos::driver::bring_up@1/2 NONE reason: appsink declares no ring block, so block_init is never called
+site armv6m * ?kickos::driver::bring_up@2/2 ?appsink.cc:service reason: the descriptor's thread 0 entry
+site rv32imac * ?kickos_driver_task@1/1 ?appsink_start reason: the driver's start, which t->entry.driver names in the table the composition emits
+site rv32imac * ?kickos::driver::bring_up@1/2 NONE reason: appsink declares no ring block, so block_init is never called
+site rv32imac * ?kickos::driver::bring_up@2/2 ?appsink.cc:service reason: the descriptor's thread 0 entry
+site rxv3 * ?kickos_driver_task@1/1 ?appsink_start reason: the driver's start, which t->entry.driver names in the table the composition emits
+site rxv3 * ?kickos::driver::bring_up@1/2 NONE reason: appsink declares no ring block, so block_init is never called
+site rxv3 * ?kickos::driver::bring_up@2/2 ?appsink.cc:service reason: the descriptor's thread 0 entry
+site lx6 * ?kickos_driver_task@1/1 ?appsink_start reason: the driver's start, which t->entry.driver names in the table the composition emits
+site lx6 * ?kickos::driver::bring_up@1/2 NONE reason: appsink declares no ring block, so block_init is never called
+site lx6 * ?kickos::driver::bring_up@2/2 ?appsink.cc:service reason: the descriptor's thread 0 entry
+site lx6 * ?kickos::driver::bring_up@indirect NONE reason: no indirect call in the emitted body
+site lx6 * ?driver_task.cc:instance_of@indirect NONE reason: no indirect call in the emitted body
+site rv64imac * ?kickos_driver_task@1/1 ?appsink_start reason: the driver's start, which t->entry.driver names in the table the composition emits
+site rv64imac * ?kickos::driver::bring_up@1/2 NONE reason: appsink declares no ring block, so block_init is never called
+site rv64imac * ?kickos::driver::bring_up@2/2 ?appsink.cc:service reason: the descriptor's thread 0 entry
+site armv8a * ?kickos_driver_task@1/1 ?appsink_start reason: the driver's start, which t->entry.driver names in the table the composition emits
+site armv8a * ?kickos::driver::bring_up@1/2 NONE reason: appsink declares no ring block, so block_init is never called
+site armv8a * ?kickos::driver::bring_up@2/2 ?appsink.cc:service reason: the descriptor's thread 0 entry
+site x86_64 * ?kickos_driver_task@1/1 ?appsink_start reason: the driver's start, which t->entry.driver names in the table the composition emits
+site x86_64 * ?kickos::driver::bring_up@1/2 NONE reason: appsink declares no ring block, so block_init is never called
+site x86_64 * ?kickos::driver::bring_up@2/2 ?appsink.cc:service reason: the descriptor's thread 0 entry

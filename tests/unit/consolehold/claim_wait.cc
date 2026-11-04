@@ -34,6 +34,7 @@ namespace
 
     constexpr uint8_t PRIO_WRITER = 8;
     constexpr uint8_t PRIO_SECOND = 9;
+    constexpr uint8_t PRIO_PREEMPT = 10;
     constexpr uint32_t BUDGET = 6400u; // ticks, read as microseconds
     constexpr uint32_t NODES = 2u;
     constexpr uint32_t SELF_NODE = 1u;
@@ -136,7 +137,7 @@ namespace
         g_deadline_hit = false;
         g_park_kind = WAIT_NONE;
         Thread* const writer = seat_pool(0, PRIO_WRITER);
-        attach_caps(writer, KICKOS_CAP_CHILD_WIDTH);
+        attach_caps(writer, KICKOS_SEAM_CAP_WIDTH);
         {
             IrqLock lock;
             sched::reschedule(nullptr, lock);
@@ -244,8 +245,16 @@ extern "C"
         {
             return 0;
         }
-        IrqLock lock;
+        if (cr_pending == nullptr)
+        {
+            return static_cast<int>(g_self.kernel_write(buf, n, BUDGET));
+        }
         return static_cast<int>(g_self.user_write(buf, n, cr_pending, BUDGET));
+    }
+
+    uint32_t arch_console_claim_left(void)
+    {
+        return g_self.left_ticks(BUDGET);
     }
 
     uint32_t arch_console_claim_wait(void)
@@ -340,7 +349,7 @@ TEST_F(ConsoleClaim, a_take_inside_a_release_still_wakes_the_nodes_other_writer)
         ASSERT_NO_FATAL_FAILURE(peer_holds());
         g_writers[0] = sched::current();
         g_writers[1] = seat_pool(1, PRIO_SECOND);
-        attach_caps(g_writers[1], KICKOS_CAP_CHILD_WIDTH);
+        attach_caps(g_writers[1], KICKOS_SEAM_CAP_WIDTH);
         g_parks = 0;
         wake_next_park(park_to_arm);
         start(0, []() { (void)kconsole_write_user(kLine.data(), kLine.size(), true); });
@@ -387,5 +396,141 @@ TEST_F(ConsoleClaim, both_writers_return_by_the_deadline_of_a_peer_that_never_re
         EXPECT_TRUE(g_returned[0]) << "the first writer did not return at its deadline";
         EXPECT_TRUE(g_returned[1]) << "the second writer did not return at its deadline";
         EXPECT_EQ(g_parks, 2) << "a writer parked again past its deadline";
+    });
+}
+
+namespace
+{
+    std::string const kRecordLine = "rec\n";
+    Thread* g_open_writer = nullptr;
+    Thread* g_recorder = nullptr;
+
+    // The writer leaves its line open, then a thread above it preempts it there.
+    Thread* preempt_an_open_line(void)
+    {
+        g_open_writer = sched::current();
+        EXPECT_EQ(kconsole_write_user("abc", 3, true), 3);
+        Thread* const high = seat_pool(1, PRIO_PREEMPT);
+        attach_caps(high, KICKOS_SEAM_CAP_WIDTH);
+        {
+            IrqLock lock;
+            sched::reschedule(nullptr, lock);
+        }
+        EXPECT_EQ(sched::current(), high);
+        return high;
+    }
+
+    // The preempted writer runs while the other parks, and ends its line.
+    void open_writer_ends_its_line(Thread* parked)
+    {
+        g_park_kind = parked->wait_kind;
+        EXPECT_EQ(darkseam::g_wire, "abc") << "a byte went out inside another thread's line";
+        EXPECT_EQ(sched::current(), g_open_writer);
+        EXPECT_EQ(kconsole_write_user("\n", 1, true), 1);
+    }
+}
+
+// A thread faults while this node's line is a preempted writer's: its record goes ahead of that
+// line, at once, and the writer's line goes on after the record ends.
+TEST_F(ConsoleClaim, a_record_goes_ahead_of_another_threads_open_line)
+{
+    run_isolated([]() {
+        stage();
+        Thread* const high = preempt_an_open_line();
+        EXPECT_EQ(kprintf_fault("\nrec\n"), 0u) << "the record waited for the open line";
+        EXPECT_EQ(darkseam::g_wire, "abc\nrec\n");
+        krecord_end();
+        EXPECT_EQ(sched::current(), high);
+        kernel().current(kickos_kernel_core()) = g_open_writer;
+        EXPECT_EQ(kconsole_write_user("de\n", 3, true), 3);
+        EXPECT_EQ(darkseam::g_wire, "abc\nrec\nde\n");
+    });
+}
+
+// The open line is a thread of the faulting thread's own task: the record goes ahead of it all the
+// same.
+TEST_F(ConsoleClaim, a_record_goes_ahead_of_its_own_tasks_open_line)
+{
+    run_isolated([]() {
+        stage();
+        Task* const tk = task(0);
+        join_task(sched::current(), tk);
+        Thread* const high = preempt_an_open_line();
+        join_task(high, tk);
+        EXPECT_EQ(kprintf_fault("\nrec\n"), 0u);
+        krecord_end();
+        EXPECT_EQ(darkseam::g_wire, "abc\nrec\n");
+    });
+}
+
+// Another thread's write waits out a record that is still open, then follows it.
+TEST_F(ConsoleClaim, a_writer_waits_for_an_open_record_to_end)
+{
+    run_isolated([]() {
+        stage();
+        g_recorder = preempt_an_open_line();
+        EXPECT_EQ(kprintf_fault("\nrec\n"), 0u);
+        wake_next_park([](Thread* parked) {
+            g_park_kind = parked->wait_kind;
+            Thread* const was = sched::current();
+            kernel().current(kickos_kernel_core()) = g_recorder;
+            krecord_end();
+            kernel().current(kickos_kernel_core()) = was;
+        });
+        kernel().current(kickos_kernel_core()) = g_open_writer;
+        EXPECT_EQ(kconsole_write_user("\n", 1, true), 1);
+        EXPECT_EQ(g_park_kind, WAIT_CONSOLE) << "the writer spoke inside an open record";
+        EXPECT_EQ(darkseam::g_wire, "abc\nrec\n\n");
+    });
+}
+
+// Another thread's user write waits for the open line to end rather than land inside it.
+TEST_F(ConsoleClaim, a_writer_waits_for_another_threads_open_line_to_end)
+{
+    run_isolated([]() {
+        stage();
+        (void)preempt_an_open_line();
+        wake_next_park(open_writer_ends_its_line);
+        EXPECT_EQ(kconsole_write_user("two\n", 4, true), 4);
+        EXPECT_EQ(g_park_kind, WAIT_CONSOLE);
+        EXPECT_EQ(darkseam::g_wire, "abc\ntwo\n");
+    });
+}
+
+// An open line whose holder never ends it holds the node only until its grant does.
+TEST_F(ConsoleClaim, an_open_line_holds_the_node_only_until_its_grant_ends)
+{
+    run_isolated([]() {
+        stage();
+        (void)preempt_an_open_line();
+        wake_next_park([](Thread* parked) {
+            g_park_kind = parked->wait_kind;
+            EXPECT_TRUE(parked->on_timer) << "the writer parked past the open line's grant";
+            g_now = g_now + BUDGET + 1u;
+            IrqLock lock;
+            thread_abort_park(parked, -KOS_ETIMEDOUT, lock);
+        });
+        EXPECT_EQ(kconsole_write_user("two\n", 4, true), 4);
+        EXPECT_EQ(g_park_kind, WAIT_CONSOLE);
+        EXPECT_EQ(darkseam::g_wire, "abctwo\n");
+    });
+}
+
+// An interrupt's kernel line finds a thread of its node mid-line: it is dropped, as a line the
+// ring refuses is, rather than written inside that line.
+TEST_F(ConsoleClaim, an_isr_kernel_line_inside_an_open_line_is_dropped)
+{
+    run_isolated([]() {
+        stage();
+        EXPECT_EQ(kconsole_write_user("abc", 3, true), 3);
+        g_in_isr = true;
+        kprintf("isr\n");
+        g_in_isr = false;
+        EXPECT_EQ(darkseam::g_wire, "abc");
+        EXPECT_EQ(kconsole_write_user("\n", 1, true), 1);
+        g_in_isr = true;
+        kprintf("isr\n");
+        g_in_isr = false;
+        EXPECT_EQ(darkseam::g_wire, "abc\nisr\n");
     });
 }

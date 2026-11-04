@@ -311,7 +311,50 @@ by ruling and sits in `roadmap.md`'s `Later`.
       of the wider range. Read beside the pluggable EDF and rate-monotonic policies in
       `roadmap.md`'s Later section.
 
+## Later, from the M10.6.10 rulings (maintainer, 2026-10-29)
+
+- [ ] **ONE CALL TIES ANY EVENT SOURCE TO A NOTIFICATION.** Each source has its own call today:
+      `kos_task_watch` for a task's end, death and readiness, `kos_irq_bind_notify` for a line. One
+      generic watch, its parameters naming the source and the events, would replace them, so a new
+      source adds a kind and no new call.
+
+- [ ] **SHARED LIBRARIES ON MMU BOARDS, WITH DYNAMIC LOADING.** M10.6.10 stores libc once in flash for
+      the region and flat boards only; an MMU program keeps libc linked into its own image, since RAM
+      does not bind there. Sharing on an MMU board is a shared library mapped into each space, which
+      belongs with loading programs from storage; a fixed-address runtime in the boot image would not
+      survive dynamic loading.
+- [ ] **THE SIM RUNS ON THE KICKOS TOOLCHAIN, NOT GLIBC.** KickOS does not need a sim for itself: the sim
+      exists to run a user's payload as on a real board (an emulated EtherCAT network of many slaves
+      over shared memory, for one), and it is the simplest way in for a user. Today its user side
+      builds with the host compiler on glibc and the host's libstdc++, whose pthread calls block the
+      one host thread every KickOS thread runs on, so M10.6.10 declares its threaded C++ arms
+      inapplicable there. Move the sim's user side to newlib and the KickOS threads model, so it runs
+      the runtime the boards ship; until then every gap against a board is a defect, not a difference.
+
 ## M10.6 -- the cleanup pass (maintainer, 2026-10-06)
+
+- [ ] **END OF M10.6.10: AUDIT THE KERNEL'S FLASH (maintainer, 2026-10-29).** Before the 64 KiB tier
+      ruling below, which it feeds, and before M10.6.11's bench pass, so the bench captures whatever it
+      slims. The baseline, `f302nucleo-st` libcrace at the end of M10.6.9: the kernel's own objects
+      take 36.7 KB of flash (31.9 KB on master before M10.6.9), arch and chip 4.9 KB. The largest are
+      the thread syscalls 4.7 KB, capabilities 4.3 KB, the console and its transmit path 4.6 KB
+      together, IPC 2.7 KB, sync 2.6 KB, task records 2.6 KB. M10.6.9's growth: the thread syscalls
+      +1.5 KB, task records +1.1 KB, the boot image check +0.5 KB (new), the flat boards' shared RAM
+      owner path +0.4 KB, capabilities +0.3 KB. Measure per object, then cut at the same features:
+      the console first (what must stay in the kernel, what moves to user space), then each large
+      object. No LTO (maintainer, 2026-10-28).
+- [ ] **AFTER M10.6.10: IS THE 64 KIB TIER USABLE FOR A REAL APPLICATION? (maintainer, 2026-10-28).**
+      `f302nucleo` and `bluepill-c8` carry flash fights in every step, one-task special cases in the
+      kernel, the composer and the judges, declared skips and stack tuning. If they cannot host a real
+      application, that cost buys nothing. Test, once shared libc and the program model are settled: a
+      realistic small app on `f302nucleo` (a UART driver, a sensor read over SPI or I2C, a control loop,
+      a log line) with its real margins. If 16 KiB RAM / 64 KiB flash is not enough, the same app's
+      measured need sets the low tier: the smallest common RAM/flash pairing that holds it with room
+      to grow (the 32 KiB tier `microbit` stands for is the first candidate), and the boards below it
+      go, with the one-task model if no board left needs it. Until this ruling the bench fleet allows
+      the `f302nucleo` selftest parts, mutexbench, chaincheck, libcrace, libc_death and fp_switch to
+      fail, as the kernel's SVC depth on the caller's stack exceeds the threads' room (760 B at the
+      end of M10.6.9, 696 on master); the ruling removes that declaration either way.
 
 M10.6 cleans up before the exit record; its steps are in `roadmap.md`. The entries below, and the
 ones elsewhere in this file tagged `M10.6.<n>`, are its work. M10's tail (maintainer, 2026-10-03)
@@ -805,14 +848,46 @@ tests, tools and apps, with no ratio (maintainer, 2026-10-09); no gate is writte
       made: each image's arena reserves the sum of its arms' asks, and bluepill-c8's ninth and
       tenth images already leave arms out, so merging them would leave out more.
 
-- [ ] **M10.6.11: WIDEN THE ESP32'S CODE SPACE BEYOND 128 KIB OF IRAM (maintainer, 2026-10-03; ASSIGNED TO
-      M10'S TAIL).** `arch/xtensa/chip/esp32/esp32.ld` links all code into the upper 128 KiB of
+- [x] **M10.6.9: WIDEN THE ESP32'S CODE SPACE BEYOND 128 KIB OF IRAM (maintainer, 2026-10-03; MOVED INTO
+      M10.6.9 BY THE MAINTAINER 2026-10-27, since one image per task copies libc into every image and
+      `esp32-wroom-benchsmp` no longer links).** `arch/xtensa/chip/esp32/esp32.ld` links all code into the upper 128 KiB of
       internal SRAM0 (`0x4008_0000`) and all data into 192 KiB of SRAM2, executing nothing from
       flash. Two levers to verify against the ESP32 TRM (1.3.2, "Embedded Memory") and on silicon
       before relying on either: the low 64 KiB of SRAM0, the flash-cache region, which KickOS never
       enables, as further code space; and SRAM1, 128 KiB reachable as both data and instruction
       memory, which the linker map does not use and part of which the ROM loader uses during boot.
       Found when the selftest outgrew one image's IRAM.
+      **LANDED:** the kernel's vectors and text run from SRAM1's instruction alias, 96 KiB from
+      `0x400A_0000` up to the words the ROM keeps its data and stacks in, and every image's text
+      from the 128 KiB of SRAM0, which the SRAM0 MMU can map per PID; SRAM1 admits PID 0 and 1
+      only. The selftest is one image on every `esp32-wroom` build.
+
+- [x] **M10.6.9: ON TWO CORES THE `lx6uart` CONSOLE DRIVER STOPS, BY LAYOUT (2026-10-27).** Two
+      `esp32-wroom` runs fail on silicon at the SRAM1 layout, each with the console driver dying
+      while the selftest moves between cores, and both shift with the link. As one image,
+      `selftest_lx6uart` on `-smp` stops in two boots of three at the same byte, mid-line after
+      `ok 65 - authority_cap`, about 0.6 s in and with no dump, which places it in
+      `task_authority`; the same arms in the two-image cut pass three of three, at this layout and
+      at the old one. At the two-image cut, `selftest_lx6uart_p2` on `-benchsmp` dies four of four
+      in `pin_places` (arm 44, main pinned to core 1) on the driver's own `driver::trap`
+      (`EPC1` in `kickos::driver::trap`); with a print added before each of the driver's trap
+      sites it passes. That part could not link before this layout, so it has no older witness.
+      Every other ESP32 selftest and `chaincheck_float` image passes, on both core counts.
+      **LANDED:** the kernel read the calling thread as the core's index and then that core's
+      cell, with interrupts on. An LX6 system call is a plain call, so a thread preempted between
+      the two reads and moved to the other core took that core's thread as itself: an exiting
+      probe tore down the console service thread's capabilities, and its next receive failed
+      `-KOS_EBADF` into the driver's trap. The LX6 and x86_64 now read the running thread from a
+      per-core register in one instruction, the other ports with interrupts masked, and the
+      selftest is one image on every `esp32-wroom` build.
+
+- [ ] **M10.6.11: ESP32 CODE PAST SRAM0 AND SRAM1 (2026-10-27).** The next code space after SRAM1
+      is the low 64 KiB of SRAM0, free while the flash cache is off, and behind a static MPU
+      that admits PID 0 and 1 only, so kernel code only (TRM v5.8 Table 4.3-1). Past it,
+      executing from flash through the cache, which KickOS never enables: the cache MMU maps per
+      PID and core in 64 KiB flash pages (4.3.2.2), so task code can live there, at the cost of cache misses and the flash and
+      cache setup the boot skips today. `esptool elf2image` refuses more than 16 segments; a boot
+      image holds one per memory it loads, three today, however many task images it carries.
 
 - [x] **M10.6.2: RUN THE BENCH FLEET ACROSS BOARDS IN PARALLEL (maintainer, 2026-10-06).** `bench-fleet.sh`
       builds, flashes and captures one image at a time across every board, so a full pass takes
@@ -1079,7 +1154,8 @@ tests, tools and apps, with no ratio (maintainer, 2026-10-09); no gate is writte
       silicon boards on the bench passes.
       **LANDED:**
       - `chaincheck` replaces `fpclass`, a plain C app on standard stdio, built as one image per
-        half: `chaincheck` (integer, every board), `chaincheck_float` (compares, NaN and signed
+        half: `chaincheck` (integer, every board; on a chip with 64 KiB of flash or less its printf arms
+        run as `chaincheck_print`), `chaincheck_float` (compares, NaN and signed
         zero, classification, the defined conversions, libm with exact answers; Cortex-M0 soft
         float included) on every chip whose flash is over 64 KiB (bluepill-c8 and f302nucleo
         overflow it by 3 to 5 KiB), and `chaincheck_full` (float and C99 printf formats) where
@@ -1176,7 +1252,7 @@ tests, tools and apps, with no ratio (maintainer, 2026-10-09); no gate is writte
         report a "pool too small"-class skip when refused. None fires on any fleet posture, so no
         expectation reads them. The proposal: convert them to ask first through one helper, and
         add a static gate that refuses such a skip reason not preceded by its ask.
-      - **The IRQ handle budget.** `KICKOS_TASK_IRQ_HANDLE_BUDGET` is not modelled as a pool. The
+      - **The IRQ handle budget.** `KICKOS_BUDGET_IRQ_BINDINGS` is not modelled as a pool. The
         IRQ arms that claim a line before asking for their objects make the claim part of the ask
         instead.
       **LANDED:** the arena arms reserve their blocks at image start under a link assertion, so
@@ -1232,9 +1308,9 @@ tests, tools and apps, with no ratio (maintainer, 2026-10-09); no gate is writte
       **It is a lock on the console path INCLUDING the fault path, so it is a cost decision and
       not a bug fix.** Every panic, every fault dump and every dying write pays the claim, on a
       path whose whole contract is that it works when the system does not. The RP2350 body prices
-      that with a spin budget, a 50 ms hold bound and no interrupt masking (`console.cc` forbids
-      holding the chip transport under `IrqLock` across a transmission), and a caller that cannot
-      get the claim in budget still writes. Whether `qemu-arm64` should pay the same on every
+      that with a spin budget, a 50 ms hold bound and one masked span per wire byte (no console
+      path masks interrupts for a task's bytes past one byte, `docs/reference/console.md`, "The
+      routing guard"), and a caller that cannot get the claim in budget still writes. Whether `qemu-arm64` should pay the same on every
       record is the decision this item is asking for, not something to land quietly.
       **Not implemented on purpose.** Recorded with its precedent so the decision is taken on the
       cost, and so the next reader does not spend another pass looking for a gate-side answer that
@@ -1403,17 +1479,9 @@ did not answer.
 M4.7.2, .3, .5 and .6 closed most of the review backlog without the entries being updated. What
 survives is below; everything else was re-verified fixed against tree `82fa51f`.
 
-- [ ] **`KICKOS_CAP_RUN_OFF_POOL` reserves one run more than the true peak.** It is 1
-      (`cmake/cap_geometry.cmake:26`), the in-flight spawn run, where the peak of concurrently
-      ATTACHED runs is `KICKOS_THREAD_SLOTS`: `ThreadPool::alloc` returns the reclaimed slot's run
-      before the spawn's `cap_slab_attach` (`kernel/syscall/syscall_thread.cc`), and the slot a
-      spawn targets holds none either way, so the in-flight run REPLACES a pool one rather than
-      adding to it. Cutting to 0 saves one child-width run of `.bss` and must move
-      `cmake/cap_table.cmake`'s footprint arithmetic with it. Deliberately not folded in: it
-      spends the last margin on an allocation whose exhaustion is indistinguishable from a full
-      thread pool, both `-KOS_ENOMEM`, so it wants its own measurement. M4.7.7 moved the number
-      from 2 to 1 by seating root in the pool, which did not touch this margin: the total
-      `KCAP_RUN_COUNT` is unchanged.
+- [x] **The slab reserved one run more than the true peak.** Closed by M10.6.9 step 10e: the slab
+      is the sum of every declaration's capability slots, the init's width and the reserve's, with
+      no run beyond them.
 - [x] **M10.6.4: `grant_reserved` has three `tap::partial` exits the bench cannot tell apart.**
       `user/apps/common/selftest/main.cc:2014` partials at `:2037` (granule alloc failed), `:2064`
       (board reserves nothing) and `:2190` (board mints no DEV window), while
@@ -1462,7 +1530,7 @@ to all 20.
       writing (20 `base`, 14 `flat`, 13 `st`, 3 `bench`, 2 `telem`), each a
       COMPLETE statement rather than a delta on `base` -- which is the Kconfig model and what
       `savedefconfig` writes back. A board with `base`, `st` and `flat` states
-      `KICKOS_MAX_THREADS` three times and an edit to one is silent in the other two.
+      `KICKOS_BUDGET_THREADS` three times and an edit to one is silent in the other two.
       `tools/kconfig/test_genconfig.py` resolves every one of them and asserts only that; it never
       diffs a variant against its base, and `savedefconfig` regenerates one variant from the live
       `.config`, so it cannot catch a divergence either. Cheap first cut: a gate asserting every
@@ -1585,7 +1653,7 @@ still moving.
 rows below, not discovery. Every row was re-verified at `6f2eb55`.
 
 **Class 1 (tombstones) and class 2 (fallbacks reachable only from a broken build) are EMPTY.** The
-one instance of each was `KICKOS_MAX_HANDLES`, and both died with M4.7.3's generated header; the
+one instance of each was the root width macro, and both died with M4.7.3's generated header; the
 supply assert that commit orphaned was deleted in the same milestone. An enumeration of every
 `if(DEFINED)` (11), `message(FATAL_ERROR)` (50) and `#error`/`#warning` (17) site found no other
 instance -- each names something that still exists.
@@ -2515,7 +2583,7 @@ coalesced drain reproduces the intended order instead of inverting it.
       now reaches hop two; nothing reaches the bound. A third mutex and a fifth worker would do
       it, and the arm is already at the 4-worker pool ceiling, so this wants its own arm rather
       than an extension of that one.
-      **LANDED:** the bound is `KICKOS_THREAD_SLOTS` now, and a `mutex_timed` arm (an acyclic
+      **LANDED:** the bound is the thread slot count now, and a `mutex_timed` arm (an acyclic
       chain longer than the mutex pool) exercises pass 2 and the `park.cc` un-boost, red on each
       old bound.
 
@@ -3823,18 +3891,8 @@ Touches nearly every file, so it runs after M4.5.8 merges.
       against a pool that is 3 slots wide on three boards) reaches nobody at all. Cheapest first
       cut: one more `bench` variant on a board with a machine model plus an `add_test` matching
       the sweep's own output lines, since a bench that prints no measurement is the failure shape.
-- [ ] **`cmake/cap_table.cmake` hand-mirrors `KICKOS_THREAD_SLOTS`' `+1` with nothing
-      cross-checking it against the C macro.** `kickos_cap_table_resolve` computes
-      `math(EXPR _pool "${_threads} + 1")` and comments that it MIRRORS
-      `kernel/include/kickos/config/system.h`; if the C side ever changes shape the two silently
-      disagree. Bounded today: `_pool` reaches only the configure-time `message(STATUS)` text and
-      the `_kickos_cap_slab` arithmetic behind it, never `cap_width.h`, so a divergence yields a
-      wrong RAM diagnostic and not a wrong binary. The tree already has the fix shape: the
-      structural cap constants (`KCAP_RUN_OFF_POOL`, `KCAP_CHUNK_TARGET`,
-      `KICKOS_CAP_FIRST_DYNAMIC`) are declared in `cmake/cap_geometry.cmake` and forwarded to C
-      through the header generated from `kernel/include/kickos/config/cap_width.h.in`, so one side
-      owns each value. Forwarding the slot count the same way leaves `system.h` deriving the macro
-      from the generated header instead of restating `+ 1`.
+- [x] **The configure-time cap-table script hand-mirrored the thread slot count.** Closed by
+      M10.6.9 step 10e: the script is gone, and the composer sizes the slab.
 
 ## M4.8.1 -- every driver gets a class, per the driver-model ruling
 
@@ -4400,7 +4458,7 @@ same app, TAGs `m484rx*`:
 The parent is green and the creator-hold commit is red, so the regression is that commit. ISOLATED to
 one line by building it with the other line kept: removing `task_orphan_created_by` and keeping
 `c->task = nullptr` is green 3 of 3. So the cause is the creator-hold sweep, which is
-`KICKOS_MAX_TASKS` (= `KICKOS_MAX_THREADS` + 1, so 17 on rx72m) byte compares MASKED, on EVERY
+the task pool size (= `KICKOS_BUDGET_THREADS` + 1, so 17 on rx72m) byte compares MASKED, on EVERY
 thread exit.
 
 **THE CAP_IRQ PRE-PASS, the last code finding of the ten-angle review, FIXED AND WITNESSED.**
@@ -4479,7 +4537,7 @@ follows is what survived that.
       manifest, so f302nucleo and microbit are treated alike.
 - [ ] **The K-seam fixture only ever compiles the SIM posture.** It takes `kickos_kernel`'s
       `COMPILE_DEFINITIONS` verbatim and registers only under `KICKOS_ARCH STREQUAL "sim"`, so a
-      SEGMENTED capability table (`KCAP_RUN_CHUNKS > 1`, which `frdmk64f` runs), `KICKOS_DIAG_TERSE`,
+      SEGMENTED capability table (more than one chunk, which `frdmk64f` runs), `KICKOS_DIAG_TERSE`,
       and every non-sim cap geometry never reach a K-seam arm. That compounds with the chunk-boundary
       arm: flat-versus-segmented teardown IS a chunk-boundary property.
 - [ ] **Splitting `user/src/syscall_stubs.cc` per subsystem breaks the U-seam shadow protection
@@ -4730,8 +4788,8 @@ follows is what survived that.
       to 1131 ns on f411disco); the current-core read 6258 to 21 ns on qemu-arm64-smp. The
       contended semaphore is slower: after two cuts, the bench window's switch rate is 8 to 11%
       lower on qemu-x86_64-smp2 (23% before the cuts) and 12% lower on qemu-arm64-benchsmp, and
-      `sem-handoff` p50 6% higher on x86_64; whether that is accepted is the maintainer's decision,
-      pending. `thread_self`, `cpu_clock_hz`, `malloc+free` and `getenv` did not move beyond the
+      `sem-handoff` p50 6% higher on x86_64; accepted for now (maintainer, 2026-10-22), with the
+      open item on the contended semaphore below. `thread_self`, `cpu_clock_hz`, `malloc+free` and `getenv` did not move beyond the
       emulator's two-speed mode.
 
 
@@ -4781,6 +4839,16 @@ follows is what survived that.
       shows, a lock-free check returns at once when no peer is ready; a wake racing the check is
       corrected by the waker's own reschedule, at worst one yield skipped. A host case pins that
       race. A storm on other cheap syscalls stays a cost of the one-lock design.
+
+- [ ] **THE CONTENDED SEMAPHORE IS SLOWER THAN THE KERNEL SEMAPHORE WAS (accepted for now,
+      maintainer, 2026-10-22).** "A always contended sem is either a sync barrier or a bad design
+      so it is OK", and "it does not mean that it is a final state and any optimisation that can be
+      done is welcomed": fewer kernel objects and a far faster uncontended path are the better
+      shape, and anything that cuts the contended cost is wanted. Where the time goes (M10.6.8,
+      profiled under QEMU): a contended wait or post names the word by its memory, a write check
+      and a page walk, then finds, takes and frees a wait record; on arm64 QEMU each kernel entry
+      also empties the emulator's TLB. Measure before and after on the bench's switch rate and
+      `sem-handoff`, on QEMU and silicon.
 
 - [x] **A TRANSLATING SPAWN COPIES A LIVE HEAP (raised to the maintainer 2026-10-13).**
       `aspace_image_seed` and `data_copy` copy another space's live data pages, so a sibling
@@ -4878,21 +4946,64 @@ follows is what survived that.
         studied too: code two tasks share still writes one object, so newlib's globals cannot
         move without a newlib patch. The architecture's "no loader and no per-process image"
         line changes with it.
-      - Open for the milestone's start, each for the maintainer:
-        1. Dynamic tasks on a region board: refuse `kos_task_create` without an image, or let a
-           composition declare several instances of an entry.
-        2. The code region: the whole flash readable by every task, or a code region per image.
-        3. Flat boards and LX6: one image as today, or one image per task there too.
-        4. The sim: one host namespace per task (`dlmopen`), or the witness declared
-           inapplicable there.
-        5. The ABI: `kos_task_create` takes an image on every backend, or a separate spawn by
-           image.
-        6. Consent: whether a board may ever share statics between tasks by consent (the study
-           recommends never).
-        7. The ESP32-C6 code window: a PMP TOR pair, or user code run from flash, before that
-           board holds more than one large task.
-        8. Libc's per-thread state: in each thread's thread-local block, or an array per image
-           sized by the composition.
+      - RULED (maintainer, 2026-10-22), the study's eight open decisions:
+        1. A task runs a PROGRAM, and a program is an executable with its own plain `main`
+           (`add_executable` per program). A composed task names it (`program:`, replacing
+           `entry:`); a task init does not start says `start: on_request`; declaring a task twice
+           over one program gives two images of it, each linked at its own data address.
+           `kos_task_create(prog, argv, ...)` takes a program handle (found by name today; a future
+           load from storage on MMU boards gives the same handle) and starts that task's `main`; a
+           task already running answers `-KOS_EBUSY`.
+           Only a task's own threads add threads to it. Relocating code at spawn was weighed: an
+           offset needs a per-instance code copy in RAM or a base register, the declined shape.
+        2. Per-task images on EVERY backend, MMU boards included, so a space maps only its own
+           image's code and rodata ("task A could read task B rodata or code? that's a liability
+           no?"). On an MPU board the code region stays the whole flash, a trade-off stated in
+           `docs/reference/boards.md`.
+        3. Flat boards and LX6 also build one image per task: one model, and the same per-task
+           statics, heap, stdio and nonblocking flag everywhere, unenforced there.
+        4. The sim keeps one image and declares the cross-task statics witness inapplicable.
+        5. One `kos_task_create` on every backend, taking the program handle; no other spawn.
+        6. No consent ever shares statics between tasks: a board too small holds one task.
+        7. The ESP32-C6 code window becomes a PMP TOR pair sized to the images' code.
+        8. Libc's per-thread state lives in each thread's TLS block on every board.
+      - RULED (maintainer, 2026-10-22), after a review of the shape above:
+        - The handle names the PROGRAM (found by the name `filter`), not a task. On an MPU or flat
+          board its instances are the tasks declared over it, and with all of them running
+          `kos_task_create` answers `-KOS_ENOMEM`; on an MMU board one image backs any number of
+          spaces, bounded by memory only.
+        - Every kernel pool a task draws from is charged to a per-task budget the composition
+          declares, one mechanism for every object kind, replacing a separate thread quota and RAM
+          bound.
+        - Badged endpoints land now: IPC carries the caller's identity and the bus service keys a
+          client's slots on it.
+        - The design keeps libc out of each image's fixed layout, so M10.6.10's shared libc needs no
+          rework.
+        - The build emits one final merged ELF on MPU and flat boards for gdb, and a fault report
+          names the image.
+        - The isolation witnesses run on the region boards' silicon inside M10.6.9, through the bench.
+        - A capability entry grows to 16 bytes and an endpoint badge is 32 bits (about 120 B more
+          kernel RAM on f302nucleo, 690 B on f411disco, measured in the step).
+        - The ESP32 port takes the PID controller's memory split; `docs/reference/boards.md` states
+          the floor that remains (no privilege split).
+        - Every budget is a ceiling, and a pool's budgets sum to at most the pool, checked on the host.
+        - Kernel memory takes shape 2: every kernel pool is sized from the summed declarations in a
+          unit the composer generates, the kernel reading each base and count through a fixed ABI;
+          each thread's capability table is as wide as its declaration asks, and the slab is the
+          sum. A capability entry's spare word carries a 32-bit object generation checked for every
+          kind of capability; the user handle stays 32 bits.
+        - Shape 3, per-task kernel memory, is the recorded direction and is not built here: memory
+          records with generations, revocation immediate and lazy, physical reuse after a grace
+          period, mapped frames held by their mappings, the payer an instance identity with a
+          generation; no derivation tree and no sweep of holders. Shape 2 must not hard-wire
+          anything that would make it a rework.
+        - On the ESP32 placement follows the PID page size, each task holds one of the six user
+          PIDs, and a block shared by two tasks is open to every task: a hardware floor for
+          `docs/reference/boards.md`.
+        - A board whose capacity holds one task runs no driver task (maintainer, 2026-10-23: "no
+          drivers tasks, but they could be in the task for small parts"): a packaged driver runs as
+          threads inside that one task, which the composition states, and the kernel leaves out the
+          driver-task start because the board's capacity says so, not by a knob.
       - Removed from `docs/reference/invariants.md` as defects (2026-10-21): on a region board a
         forged mutex word boosts and probes a thread of another task, and closes a false cycle
         through the image's libc lock; region boards stood outside
@@ -4932,8 +5043,20 @@ follows is what survived that.
         only, rv32 and Xtensa have nothing, so it would split the region boards by ISA.
       - The nonblocking flag moves into libc with this work (maintainer, 2026-10-21); it stays in
         the kernel until then.
-      - Each FILE on a lock of its own, the fuller form the 2026-10-13 ruling names, has no other
-        entry.
+      - RULED (maintainer, 2026-10-23): owner death of ANY libc lock is fatal and ends the task, as
+        malloc's already is: a steal cannot repair a half-closed FILE, a half-written `environ`, a
+        half-grown atexit table or half-initialised stdio, and the restart from the image is the
+        repair. Splitting libc's one lock per subsystem and per FILE moves to M10.6.10.
+      - RULED (maintainer, 2026-10-23, after a third review): a one-task chip keeps the kernel
+        console and runs no console driver; its other drivers run inside the host task. A hosted
+        driver gets an explicit service-ready state on its existing latch, checked by the bounded
+        receive probe, instead of priority and a yield; the exit of an essential driver thread,
+        `kos_exit` included, fails the host; the composer counts the one task. On such a chip the
+        init shares the app's image and libc, so an app thread dying with a libc lock held, or the
+        app calling `exit()`, ends the whole image through the board's terminal outcome, with no
+        libc cleanup and no stdio report on the way.
+      - The console service discards its transport's flush result, so `kos_console_flush` can
+        answer a failed drain as success: a drain answers the transport's real result.
       - Witness: A exhausts its heap and holds its malloc lock forever, and B's `malloc` and
         `printf` still succeed.
 
@@ -4972,7 +5095,7 @@ follows is what survived that.
       ever freed either, so a driver restarted in a loop leaks its blocks every time (the general
       freeing allocator, under "Later").
 
-- [ ] **M10.6.9: A TASK CAN MAKE THE KERNEL MASK INTERRUPTS FOR MILLISECONDS (found 2026-10-21).**
+- [x] **M10.6.9: A TASK CAN MAKE THE KERNEL MASK INTERRUPTS FOR MILLISECONDS (found 2026-10-21).**
       Interrupt latency is bounded by the kernel paths that run masked, but two console paths
       write the wire masked for as long as a task asks:
       - On a board with no console driver published, a fault record goes through the console,
@@ -4981,8 +5104,12 @@ follows is what survived that.
         threads in a loop masks interrupts for several ms per record line at 115200 baud.
       - On an own-image AMP node every user stdout chunk is sent polled with interrupts masked
         (`arch/arm/chip/rp2xxx/chip_rp2xxx.cc`, `arch/arm64/chip/virt_arm64/chip_virt_arm64.cc`),
-        up to 256 wire bytes, about 22 ms a chunk on the `pizero2350` AMP configurations. The
-        RP2350 claim under "The console collision class" says that path masks nothing.
+        up to 256 wire bytes, about 22 ms a chunk on the `pizero2350` AMP configurations.
+      **LANDED:** a fault record's line the ring refuses waits for room in its own thread with
+      interrupts open, bounded by one stall window per line, and is dropped where the wait would
+      wait on its own task; an own-image AMP node, a reclaimed console and a console with no ring
+      armed mask one wire byte at a time and keep other contexts out of an open line
+      (`docs/reference/console.md`).
 
 - [ ] **M10.6.9: ON A REGION BOARD A SYSCALL OUT-BUFFER CAN POINT INTO A DEVICE WINDOW (found
       2026-10-21).** The pointer checks of `kernel/syscall/syscall_mem.cc` accept device regions
@@ -5023,6 +5150,18 @@ follows is what survived that.
       - the PMSAv8 commit runs with the MPU off, and no PMSAv8 chip may declare fixed rows; confirm
         no speculating core takes that backend.
       Record the answer in `docs/reference/boards.md`.
+- [ ] **NO PACKAGED DRIVER'S STACK IS BOUNDED BY THE APP-STACK GATE (found in M10.6.9 step 8b, 2026-10-27).**
+      `tests/static/app_stack_roots.txt` held a record for one app thread only; no packaged driver's
+      threads (service and IRQ workers, rooted at `kickos_driver_task`) are bounded against the stack
+      they run on. Step 8b gave the gate an `above=` key and bounded the app-local `appsink` from its
+      real entry; do the same for every packaged driver, against the stack its composition or
+      descriptor states.
+- [ ] **THE `appdata_no_kernel` GATE CANNOT COMPARE HIGH-HALF ADDRESSES (found in M10.6.9 step 8a5,
+      2026-10-27).** It parses addresses with awk doubles, which lose the low bits of a 64-bit kernel
+      high-half address, so a kernel record planted at the start of such a window goes unseen. The
+      MMU program images therefore got no window check for their kernel-placed section, which takes
+      only the image objects by exact name. Compare addresses exactly, then give that section its
+      window.
 
 ## M10.6.10: C++ and libc conformance (maintainer, 2026-10-21)
 
@@ -5032,6 +5171,39 @@ thread safety out while KickOS runs threads, SMP included. That breaks "Applicat
 C++" in the Book and "Userspace: full C++" in `docs/reference/architecture.md`. The fix is a
 toolchain release giving GCC a KickOS threads model. Found 2026-10-21 from the shipped 1.1.0-1
 archives (objdump, nm and readelf), nothing built.
+
+- [ ] **M10.6.10: LIBC CODE IS COPIED INTO EVERY TASK IMAGE (maintainer, 2026-10-22).** With one image
+      per task (M10.6.9), each image links its own newlib, about 20 KiB of flash for printf and more
+      for iostream, which bounds the task count on the smaller enforcing parts. The toolchain release
+      ships a newlib that reaches its globals through the per-task context the kernel seats
+      (`_impure_ptr`), so libc code is stored once in flash and shared by every image, each task's
+      libc data staying in its own window. Witness: two task images and one copy of libc's code in
+      the merged image, each task's heap, FILEs and locks still its own.
+
+- [ ] **M10.6.10: SPLIT LIBC'S ONE LOCK PER SUBSYSTEM AND PER FILE (maintainer, 2026-10-23).** newlib
+      already names a lock per subsystem (sfp, atexit, at_quick_exit, env, tz, dd_hash,
+      arc4random) and asks one per FILE (`__retarget_lock_init_recursive`); `user/src/newlib_lock.cc`
+      maps all but malloc's onto one lock. Before splitting (reviewed 2026-10-23, pinned newlib
+      4.5.0): atexit runs its callbacks under its lock; `fclose` and failing `freopen` take FILE then
+      sfp where `__fp_lock_all` takes sfp then FILE; the init hook returns `void`, so a per-FILE lock
+      needs its allocation failure, its retirement against `_fwalk`, and newlib's temporary stack
+      FILEs specified. So: audit every acquisition order in the full and nano libraries, change
+      atexit to drop its lock around callbacks, keep the standard streams' locks static, and witness
+      each opposite order.
+
+- [ ] **M10.6.10: REVISIT THE ONE-TASK 64 KIB PARTS ONCE LIBC IS SHARED (maintainer, 2026-10-23).**
+      bluepill-c8 and f302nucleo are one-task chips (`one_task: true` in their chip files): one task
+      beside the init sharing its image, drivers inside the task, the kernel console. Measured in
+      M10.6.9: the init as its own image and the app as a second one missed 64 KiB by about 1.3 to
+      1.5 KB, the init image being about 10 KB with its own libc. Once libc code is shared, measure
+      two and three images (init, one task, a driver task) for flash and RAM on both parts, and lift
+      `one_task` where they fit. Where they do not fit, the maintainer decides whether the 64 KiB tier
+      stays supported (maintainer, 2026-10-23: "I'm starting to wonder if we want to keep really
+      small parts in the future, let's see when libc will be optimized"). An in-task console driver is refused today: the kernel closes stdout
+      for every thread of the task serving the console, because the app and the driver share one
+      libc whose single lock a `printf` holds across its send to the driver. Running a console driver inside the task also needs the driver's whole
+      service chain kept off the libc lock and off the console, a truthful drain and an orderly
+      shutdown (reviewed 2026-10-23); revisit with the libc changes.
 
 - [ ] **M10.6.10: THE C++ RUNTIME IS BUILT FOR ONE THREAD (found 2026-10-21).** Each needs its red arm,
       one-core and SMP:
@@ -5047,7 +5219,7 @@ archives (objdump, nm and readelf), nothing built.
         two threads copying and dropping one pointer tear the count into a double free or a leak.
       - `thread_local` destructors never run at thread exit: `__cxa_thread_atexit` pushes onto one
         static list with no lock, run only from `atexit`, and the thread exit path
-        (`user/src/task_trampoline.cc`) never runs it. A thread_local string leaks at every thread
+        (user/src/task_enter.cc) never runs it. A thread_local string leaks at every thread
         end, and a later `exit()` runs dead threads' destructors over TLS blocks newer threads now
         use.
       - On RX the SjLj exception chain is one global head for every thread: libgcc's

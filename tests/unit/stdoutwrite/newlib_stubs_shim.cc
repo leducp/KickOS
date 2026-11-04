@@ -6,10 +6,12 @@
 // underscored names stay. The system headers come first, so the renames reach only the stubs.
 
 #include <errno.h>
+#include <signal.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <sys/stat.h>
 #include <sys/time.h>
+#include <unistd.h>
 
 #define _exit kos_ut_exit
 #define _fini kos_ut_fini

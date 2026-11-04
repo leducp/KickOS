@@ -31,8 +31,8 @@
 # its member anchored by nothing else, or a hard multiple-definition error. A seam that may
 # live in kickos_chip_<chip> beside a fallback in kickos_arch_<arch> may NOT live the other
 # way round. The order is read off the map's own LOAD lines, which are ld's record of the
-# inputs it processed, and never off the _kickos_group string in the root CMakeLists that
-# builds it: that string is not the sole determinant, a PUBLIC target_link_libraries and the
+# inputs it processed, and never off the link group strings the root CMakeLists builds:
+# those are not the sole determinant, a PUBLIC target_link_libraries and the
 # generator's closure flattening both put archives on the line, and the same map LOADs the
 # toolchain's own libc.a and libgcc.a twice from one mention of them.
 #
@@ -1030,7 +1030,7 @@ while IFS= read -r _o; do
     ORDER_BAD=1
     bad "scan order: ${_o#BAD }; the link did not scan kickos_kernel, then kickos_chip_<chip>,
       then kickos_arch_<arch>, which is the order the seam answers below are read against.
-      _kickos_group in the root CMakeLists sets it. LOAD order was:
+      The KICKOS_KERNEL link group in the root CMakeLists sets it. LOAD order was:
       $(tr '\n' ' ' < "$TMP/loaded")"
 done < "$TMP/order"
 
@@ -1072,12 +1072,23 @@ for a in $ARCHIVES; do
     collect "$TMP/leg4_out"
 done
 
-tool_out "$TMP/tool" "$NM_DEF_RE" "$NM" --defined-only "$ELF"
-elf_weak_defs "$TMP/tool" > "$TMP/weak_elf"
-# A fully linked image may legitimately carry no undefined symbol at all, so this one
-# gets no landmark beyond nm having succeeded.
-tool_out "$TMP/tool" '' "$NM" --undefined-only "$ELF"
-elf_weak_undefs "$TMP/tool" >> "$TMP/weak_elf"
+# Every ELF of the image: a program the kernel's link embeds carries its own symbols.
+image_elf_set "$ELF" "$MAP" "$TMP/elves"
+: > "$TMP/weak_elf"
+while IFS= read -r _elf; do
+    tool_out "$TMP/tool" "$NM_DEF_RE" "$NM" --defined-only "$_elf"
+    elf_weak_defs "$TMP/tool" >> "$TMP/weak_elf"
+    # A fully linked image may legitimately carry no undefined symbol at all, so this one
+    # gets no landmark beyond nm having succeeded.
+    tool_out "$TMP/tool" '' "$NM" --undefined-only "$_elf"
+    elf_weak_undefs "$TMP/tool" >> "$TMP/weak_elf"
+done < "$TMP/elves"
+# An image linked on its own first made its own definitions local, weak ones included.
+image_raw_set "$MAP" "$TMP/raws"
+while IFS= read -r _raw; do
+    tool_out "$TMP/tool" "$NM_DEF_RE" "$NM" --defined-only "$_raw"
+    elf_weak_defs "$TMP/tool" >> "$TMP/weak_elf"
+done < "$TMP/raws"
 sort -u "$TMP/weak_elf" -o "$TMP/weak_elf"
 leg4_elf_findings "$TMP/weak_elf" "$TMP/allow" "$ELF_WEAK_SKIP_RE" > "$TMP/leg4_elf_out"
 collect "$TMP/leg4_elf_out"

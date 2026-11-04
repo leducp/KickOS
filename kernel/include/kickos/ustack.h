@@ -36,10 +36,13 @@ namespace kickos
     {
         uintptr_t base = 0; // 0 means the allocation failed
         size_t bytes = 0;
+        // The failure was the PAGES budget of the record `d` is charged to.
+        bool over_budget = false;
     };
 
     // Stack frames mapped read-write into `d`'s space, plus one frame below them held
-    // allocated and left UNMAPPED. Total-or-fail.
+    // allocated and left UNMAPPED, each charged to `d`'s payer before it is taken.
+    // Total-or-fail. Caller holds IrqLock.
     //
     // The whole run is recorded as one VR_USTACK range BEFORE the map, so a reservation
     // landing on the stack or its guard is refused.

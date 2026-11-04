@@ -22,6 +22,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include "ram_seam.h"
 
 #if not KICKOS_ARCH_ARENA_DCACHE or KICKOS_HAVE_ASPACE
 #error "this gate compiles the region seats with a data cache over the arena"
@@ -107,7 +108,7 @@ extern "C"
     {
     }
 
-    size_t arch_domain_static_regions(struct arch_mpu_region*, size_t)
+    size_t arch_domain_static_regions(struct arch_mpu_region*, size_t, size_t)
     {
         return 0;
     }
@@ -126,14 +127,28 @@ namespace kickos
         return static_cast<kos_task_t>(reinterpret_cast<uintptr_t>(t) & 0xFFFFu);
     }
 
-    Task* task_for(uint32_t, void*, size_t, Domain*, int*)
+    Task* task_for(uint32_t, int*)
     {
         return nullptr;
     }
 
     void task_ref(Task*) {}
 
-    size_t tls_block_size()
+    void task_member_join(Task* t, Thread* th, int)
+    {
+        th->task = t;
+    }
+
+    size_t task_image(Task const*)
+    {
+        return 0;
+    }
+
+    void image_thread_return_select(size_t)
+    {
+    }
+
+    size_t tls_carve_size(Thread const*)
     {
         return 0;
     }

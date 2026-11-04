@@ -26,7 +26,7 @@ extern "C"
 
 // The byte-count returns are pinned at 4 bytes on every target (see sys.h). sizeof on a call
 // expression is unevaluated, so these pin the DECLARED return type without emitting a trap.
-static_assert(sizeof(kos_kconsole_write(nullptr, 0)) == 4, "must be exactly 4 bytes");
+static_assert(sizeof(kos_kconsole_write(nullptr, 0, 0)) == 4, "must be exactly 4 bytes");
 static_assert(sizeof(kos_send(0, nullptr, 0, 0)) == 4, "must be exactly 4 bytes");
 static_assert(sizeof(kos_call(0, nullptr, 0, 0, 0)) == 4, "must be exactly 4 bytes");
 static_assert(sizeof(kos_call_generic(0, nullptr, 0, 0, 0)) == 4, "must be exactly 4 bytes");
@@ -34,11 +34,12 @@ static_assert(sizeof(kos_call_generic(0, nullptr, 0, 0, 0)) == 4, "must be exact
 // arch_syscall returns at REGISTER width, so the narrowing casts below truncate. They are
 // exact: a transferred count is bounded by KOS_EP_MSG_MAX / the kernel's 4096-byte console
 // clamp, and a refusal is a small negated errno whose sign extension survives.
-int32_t kos_kconsole_write(void const* buf, size_t len)
+int32_t kos_kconsole_write(void const* buf, size_t len, uint32_t flags)
 {
     return static_cast<int32_t>(arch_syscall(KOS_SYS_KCONSOLE_WRITE,
                                              reinterpret_cast<uintptr_t>(buf),
-                                             static_cast<uintptr_t>(len), 0, 0));
+                                             static_cast<uintptr_t>(len),
+                                             static_cast<uintptr_t>(flags), 0));
 }
 
 void kos_yield(void)
@@ -146,12 +147,6 @@ int kos_reply(kos_cap_t reply_cap, void const* buf, size_t len)
                                          kos_call_lens_pack(len, 0), 0));
 }
 
-int kos_console_publish(kos_cap_t ep, kos_task_t task)
-{
-    return static_cast<int>(arch_syscall(KOS_SYS_CONSOLE_PUBLISH, static_cast<uintptr_t>(ep),
-                                         static_cast<uintptr_t>(task), 0, 0));
-}
-
 int kos_thread_cancel(kos_thread_t thread, enum kos_cancel kind, uint32_t timeout_us)
 {
     return static_cast<int>(arch_syscall(KOS_SYS_THREAD_CANCEL,
@@ -216,40 +211,29 @@ kos_thread_t kos_thread_self(void)
     return kickos::lock_id_handle(kickos_self_lock_id());
 }
 
-int kos_task_nonblock(int op)
-{
-    return static_cast<int>(arch_syscall(KOS_SYS_TASK_NONBLOCK, static_cast<uintptr_t>(op), 0,
-                                         0, 0));
-}
-
 int kos_thread_set_priority(uint8_t priority)
 {
     return static_cast<int>(arch_syscall(KOS_SYS_THREAD_SET_PRIORITY,
                                          static_cast<uintptr_t>(priority), 0, 0, 0));
 }
 
-int kos_task_sched_grant(kos_task_t task, uint8_t prio_ceiling, uint32_t core_mask)
-{
-    return static_cast<int>(arch_syscall(KOS_SYS_TASK_SCHED_GRANT,
-                                         static_cast<uintptr_t>(task),
-                                         static_cast<uintptr_t>(prio_ceiling),
-                                         static_cast<uintptr_t>(core_mask), 0));
-}
-
-int kos_task_create(void* mem_base, uint32_t mem_size, uint32_t mem_flags,
+int kos_task_create(kos_program_t prog, struct kos_task_params const* params,
                     kos_task_t* out_task)
 {
-    // Seated BEFORE the trap, so the "always written" guarantee holds even for a refusal the
-    // kernel answers without touching the out-pointer.
     if (out_task != NULL)
     {
         *out_task = KOS_TASK_NONE;
     }
-    return static_cast<int>(arch_syscall(KOS_SYS_TASK_CREATE,
-                                         reinterpret_cast<uintptr_t>(mem_base),
-                                         static_cast<uintptr_t>(mem_size),
-                                         reinterpret_cast<uintptr_t>(out_task),
-                                         static_cast<uintptr_t>(mem_flags)));
+    return static_cast<int>(arch_syscall(KOS_SYS_TASK_CREATE, static_cast<uintptr_t>(prog),
+                                         reinterpret_cast<uintptr_t>(params),
+                                         reinterpret_cast<uintptr_t>(out_task), 0));
+}
+
+int kos_program_find(char const* name, kos_program_t* out_prog)
+{
+    cap_out_clear(out_prog);
+    return static_cast<int>(arch_syscall(KOS_SYS_PROGRAM_FIND, reinterpret_cast<uintptr_t>(name),
+                                         reinterpret_cast<uintptr_t>(out_prog), 0, 0));
 }
 
 int kos_task_watch(kos_task_t task, kos_cap_t notify_cap, kos_cap_t ready_ep)
@@ -380,6 +364,14 @@ int kos_notify_create(kos_cap_t* out_cap)
     cap_out_clear(out_cap);
     return static_cast<int>(
         arch_syscall(KOS_SYS_NOTIFY_CREATE, reinterpret_cast<uintptr_t>(out_cap), 0, 0, 0));
+}
+
+int kos_endpoint_badge(kos_cap_t source_cap, uint32_t badge, kos_cap_t* out_cap)
+{
+    cap_out_clear(out_cap);
+    return static_cast<int>(
+        arch_syscall(KOS_SYS_ENDPOINT_BADGE, static_cast<uintptr_t>(source_cap),
+                     static_cast<uintptr_t>(badge), reinterpret_cast<uintptr_t>(out_cap), 0));
 }
 
 int kos_notify_badge(kos_cap_t source_cap, uint32_t bit, kos_cap_t* out_cap)

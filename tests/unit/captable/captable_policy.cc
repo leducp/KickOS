@@ -4,6 +4,8 @@
 // Test capability chunk reservation and free-slot allocation through the
 // real inline functions in cap.h.
 
+#include "../common/seam_pools.h"
+
 #include <stdint.h>
 #include <stdio.h>
 
@@ -11,32 +13,12 @@
 
 #include <kickos/config/system.h>
 
-// The tree compiles one geometry, summed at configure; this gate needs all of them, so it
-// restates the width, the child width and the grant list a child width is built from, from its
-// target's CAPTABLE_GATE_* before cap.h reads them. The generated header is included FIRST so
-// that cap.h's own include of it is a no-op and cannot put the configured values back.
-#include <kickos/config/cap_width.h>
-#undef KICKOS_MAX_HANDLES
-#define KICKOS_MAX_HANDLES CAPTABLE_GATE_WIDTH
-#undef KICKOS_CAP_CHILD_WIDTH
-#define KICKOS_CAP_CHILD_WIDTH CAPTABLE_GATE_CHILD
-#undef KICKOS_CAP_REPLY_MAX
-#define KICKOS_CAP_REPLY_MAX 1
-#undef KICKOS_MAX_SPAWN_GRANTS
-#define KICKOS_MAX_SPAWN_GRANTS (CAPTABLE_GATE_CHILD - 1 - KICKOS_CAP_REPLY_MAX)
-
 #include <kickos/cap.h>
 #include <kickos/sys/abi.h>
 
-using kickos::cap_run_free_build;
-using kickos::cap_run_free_release;
-using kickos::cap_run_free_unlink;
-using kickos::cap_run_held;
 using kickos::cap_run_peek_free;
-using kickos::cap_slot;
 using kickos::CapChunkList;
 using kickos::CapEntry;
-using kickos::CapRun;
 using kickos::CapType;
 using kickos::kcap_free_index;
 using kickos::kcap_free_next;
@@ -44,23 +26,56 @@ using kickos::KCAP_FREE_NONE;
 using kickos::kcap_free_prev;
 using kickos::kcap_free_ref;
 using kickos::KCAP_NO_SLOT;
-using kickos::KCAP_CHILD_CHUNKS;
 using kickos::kcap_chunks_for;
-using kickos::KCAP_ROOT_CHUNKS;
-using kickos::KCAP_RUN_COUNT;
-using kickos::KCAP_SLAB_CHUNKS;
+using kickos::kcap_width_for;
 
 namespace
 {
-    constexpr uint32_t WIDTH = KICKOS_MAX_HANDLES;
-    constexpr uint32_t CHILD = KICKOS_CAP_CHILD_WIDTH;
+    constexpr uint32_t WIDTH = CAPTABLE_GATE_WIDTH;
+    // A narrower run, as a thread asking a smaller width seats.
+    constexpr uint32_t CHILD = CAPTABLE_GATE_CHILD;
+    constexpr uint32_t KCAP_CHILD_CHUNKS = kcap_chunks_for(CHILD);
     constexpr uint32_t FIRST = KICKOS_CAP_FIRST_DYNAMIC;
     constexpr uint32_t SPAN = WIDTH - FIRST;
-    // Unsigned aliases for the two geometry macros: the gtest comparison helpers bind by
-    // reference, so a macro expanding to a signed literal reaches -Wsign-compare as a
-    // non-constant.
-    constexpr uint32_t RUN_CHUNKS = KCAP_RUN_CHUNKS;
-    constexpr uint32_t CHUNK_SLOTS = KCAP_CHUNK_SLOTS;
+    // The widest run's directory, as long as a system whose init's table is WIDTH wide makes
+    // every directory row.
+    constexpr uint32_t RUN_CHUNKS = kcap_chunks_for(WIDTH);
+    constexpr uint32_t KCAP_ROOT_CHUNKS = RUN_CHUNKS;
+    constexpr uint32_t CHUNK_SLOTS = kickos::KCAP_CHUNK_SLOTS;
+
+    struct CapRun
+    {
+        CapEntry* chunk[RUN_CHUNKS];
+    };
+
+    CapEntry* cap_slot(CapRun const& run, uint32_t index)
+    {
+        return kickos::cap_slot(run.chunk, index);
+    }
+    bool cap_run_held(CapRun const& run)
+    {
+        return kickos::cap_run_held(run.chunk);
+    }
+    uint16_t cap_run_free_build(CapRun const& run, uint32_t capacity)
+    {
+        return kickos::cap_run_free_build(run.chunk, capacity);
+    }
+    void cap_run_free_unlink(CapRun const& run, uint32_t index, uint16_t* head)
+    {
+        kickos::cap_run_free_unlink(run.chunk, index, head);
+    }
+    void cap_run_free_release(CapRun const& run, uint32_t index, CapEntry* e, uint16_t* head)
+    {
+        kickos::cap_run_free_release(run.chunk, index, e, head);
+    }
+    bool take(CapChunkList* list, CapRun* run, uint32_t chunks)
+    {
+        return list->take(run->chunk, chunks, RUN_CHUNKS);
+    }
+    void give(CapChunkList* list, CapRun* run)
+    {
+        list->give(run->chunk, RUN_CHUNKS);
+    }
     // What the widest run reserves. Not a capacity: the last chunk's tail is paid for and
     // unaddressable.
     constexpr uint32_t RUN_SLOTS = KCAP_ROOT_CHUNKS * CHUNK_SLOTS;
@@ -160,7 +175,7 @@ namespace
         {
             return 0;
         }
-        bool seen[KICKOS_MAX_HANDLES] = {};
+        bool seen[WIDTH] = {};
         uint32_t n = 0;
         uint16_t ref = head;
         while (n <= SPAN)
@@ -209,7 +224,7 @@ namespace
     void fresh(CapChunkList* list, CapRun* run, uint16_t* head)
     {
         list_of(list, KCAP_ROOT_CHUNKS);
-        ASSERT_TRUE(list->take(run, KCAP_ROOT_CHUNKS)) << "the policy cases get their run";
+        ASSERT_TRUE(take(list, run, KCAP_ROOT_CHUNKS)) << "the policy cases get their run";
         *head = clear(*run);
     }
 
@@ -229,7 +244,7 @@ namespace
                 << "the resident set fits the dynamic window";
         }
 
-        uint32_t counts[KICKOS_MAX_HANDLES] = {};
+        uint32_t counts[WIDTH] = {};
         uint32_t const cycles = 300;
         for (uint32_t c = 0; c < cycles; c++)
         {
@@ -264,35 +279,26 @@ namespace
     }
 }
 
-// --- the geometry the #if selected -------------------------------------------------
+// --- the geometry the width gives -------------------------------------------------
 
-// Which geometry this binary compiled: without this, a regression that collapsed the #if
-// to one path would still pass every other case here.
+// Which geometry this binary exercises: without this, a regression that collapsed every width
+// to one chunk count would still pass every other case here.
 TEST(CapTable, geometry)
 {
     printf("# width %u (child %u): %u chunk(s) of %u = %u slot(s) reserved\n", WIDTH, CHILD,
            RUN_CHUNKS, CHUNK_SLOTS, RUN_SLOTS);
     EXPECT_EQ(RUN_CHUNKS, uint32_t{CAPTABLE_GATE_CHUNKS})
-        << "the #if selected the chunk count this target was built to exercise";
+        << "the width gives the chunk count this target was built to exercise";
     EXPECT_GE(RUN_SLOTS, WIDTH) << "a run reserves at least the addressable width";
     EXPECT_LT(RUN_SLOTS - WIDTH, CHUNK_SLOTS) << "a run rounds up by under one chunk";
-    if (RUN_CHUNKS == 1)
+    EXPECT_LE(KCAP_CHILD_CHUNKS, KCAP_ROOT_CHUNKS) << "the narrower class is never the wider one";
+    // The capacity a run seats is whole chunks: what CAP_SLOTS charges and the composer sums.
+    for (uint32_t w = 1; w <= 3 * CHUNK_SLOTS; w++)
     {
-        EXPECT_EQ(RUN_SLOTS, WIDTH) << "the flat run rounds nothing up";
+        EXPECT_EQ(kcap_width_for(w) % CHUNK_SLOTS, 0u) << w;
+        EXPECT_TRUE(kcap_width_for(w) >= w and kcap_width_for(w) - w < CHUNK_SLOTS) << w;
+        EXPECT_EQ(kcap_width_for(w), kcap_chunks_for(w) * CHUNK_SLOTS) << w;
     }
-    EXPECT_EQ(kcap_chunks_for(WIDTH), KCAP_ROOT_CHUNKS)
-        << "the widest run's chunk count is what kcap_chunks_for says of the width";
-    // KCAP_CHILD_CHUNKS IS kcap_chunks_for(CHILD), so comparing the two proves nothing.
-    // The ceiling property it has to have is an independent fact.
-    EXPECT_TRUE(KCAP_CHILD_CHUNKS * CHUNK_SLOTS >= CHILD
-                and KCAP_CHILD_CHUNKS * CHUNK_SLOTS - CHILD < CHUNK_SLOTS)
-        << "the child run reserves the child width and rounds up by under one chunk";
-    EXPECT_LE(KCAP_CHILD_CHUNKS, KCAP_ROOT_CHUNKS) << "the child class is never the wider one";
-    // EXACT, never a lower bound: a `>=` here would let a surplus term reappear in the
-    // formula with nothing failing.
-    EXPECT_EQ(KCAP_SLAB_CHUNKS,
-              KCAP_RUN_COUNT * KCAP_CHILD_CHUNKS + KCAP_ROOT_CHUNKS - KCAP_CHILD_CHUNKS)
-        << "the slab is one child-width run per holder plus root's widening, exactly";
 }
 
 // A run NARROWER than the widest: exactly its own chunks come off the list, and the
@@ -314,7 +320,7 @@ TEST(CapTable, partial_take_clears_the_tail)
     {
         run.chunk[c] = &g_slab[0];
     }
-    EXPECT_TRUE(list.take(&run, KCAP_CHILD_CHUNKS)) << "a narrow run comes off the list";
+    EXPECT_TRUE(take(&list, &run, KCAP_CHILD_CHUNKS)) << "a narrow run comes off the list";
     EXPECT_EQ(list_len(list), KCAP_ROOT_CHUNKS - KCAP_CHILD_CHUNKS)
         << "a narrow run takes exactly its own chunks";
     bool tail_clear = true;
@@ -330,7 +336,7 @@ TEST(CapTable, partial_take_clears_the_tail)
     // failure just recorded.
     ASSERT_TRUE(tail_clear) << "the directory above a narrow run is cleared";
     EXPECT_TRUE(cap_run_held(run)) << "a narrow run still reads as held";
-    list.give(&run);
+    give(&list, &run);
     EXPECT_EQ(list_len(list), KCAP_ROOT_CHUNKS) << "give() returns exactly what was taken";
     EXPECT_FALSE(cap_run_held(run)) << "give() clears a narrow run's directory too";
 }
@@ -394,7 +400,7 @@ TEST(CapTable, short_take_is_all_or_nothing)
     {
         run.chunk[c] = &g_slab[0];
     }
-    EXPECT_FALSE(list.take(&run, KCAP_ROOT_CHUNKS))
+    EXPECT_FALSE(take(&list, &run, KCAP_ROOT_CHUNKS))
         << "a list short of one chunk refuses the run";
     EXPECT_FALSE(cap_run_held(run)) << "a refused run holds nothing";
     bool cleared = true;
@@ -421,7 +427,7 @@ TEST(CapTable, short_take_is_all_or_nothing)
     {
         return; // the give() below would push the seed pointer and cycle the list
     }
-    list.give(&run);
+    give(&list, &run);
     EXPECT_EQ(list_len(list), len) << "and give() on a refused run adds nothing to the list";
 }
 
@@ -438,7 +444,7 @@ TEST(CapTable, refused_take_clears_the_directory)
     {
         stale.chunk[c] = &g_slab[0];
     }
-    EXPECT_FALSE(empty.take(&stale, KCAP_ROOT_CHUNKS)) << "an empty list refuses at chunk 0";
+    EXPECT_FALSE(take(&empty, &stale, KCAP_ROOT_CHUNKS)) << "an empty list refuses at chunk 0";
     bool cleared = true;
     for (uint32_t c = 0; c < RUN_CHUNKS; c++)
     {
@@ -454,7 +460,7 @@ TEST(CapTable, refused_take_clears_the_directory)
     {
         return; // give() would push the seed pointer, and the walk below would not end
     }
-    empty.give(&stale);
+    give(&empty, &stale);
     EXPECT_EQ(empty.head, nullptr) << "and give() on it returns nothing to the free list";
 }
 
@@ -467,25 +473,25 @@ TEST(CapTable, reservation_is_exact_and_reversible)
     CapRun held[RUNS] = {};
     for (uint32_t r = 0; r < RUNS; r++)
     {
-        ASSERT_TRUE(list.take(&held[r], KCAP_ROOT_CHUNKS))
+        ASSERT_TRUE(take(&list, &held[r], KCAP_ROOT_CHUNKS))
             << "the list serves a whole run while chunks remain";
     }
     EXPECT_EQ(list.head, nullptr) << "RUNS runs consume the list exactly";
     CapRun over = {};
-    EXPECT_FALSE(list.take(&over, KCAP_ROOT_CHUNKS)) << "an empty list refuses a run";
-    EXPECT_FALSE(list.take(&over, KCAP_ROOT_CHUNKS)) << "the refusal is idempotent";
+    EXPECT_FALSE(take(&list, &over, KCAP_ROOT_CHUNKS)) << "an empty list refuses a run";
+    EXPECT_FALSE(take(&list, &over, KCAP_ROOT_CHUNKS)) << "the refusal is idempotent";
 
-    list.give(&held[1]);
+    give(&list, &held[1]);
     EXPECT_EQ(list_len(list), KCAP_ROOT_CHUNKS) << "give() returns every chunk of a run";
     EXPECT_FALSE(cap_run_held(held[1])) << "give() clears the directory it returned";
     CapRun again = {};
-    EXPECT_TRUE(list.take(&again, KCAP_ROOT_CHUNKS)) << "one returned run buys exactly one more";
-    EXPECT_FALSE(list.take(&over, KCAP_ROOT_CHUNKS)) << "and no more than one";
+    EXPECT_TRUE(take(&list, &again, KCAP_ROOT_CHUNKS)) << "one returned run buys exactly one more";
+    EXPECT_FALSE(take(&list, &over, KCAP_ROOT_CHUNKS)) << "and no more than one";
 
-    list.give(&again);
+    give(&list, &again);
     for (uint32_t r = 0; r < RUNS; r++)
     {
-        list.give(&held[r]); // a run that was already given is a no-op
+        give(&list, &held[r]); // a run that was already given is a no-op
     }
     EXPECT_EQ(list_len(list), KCAP_ROOT_CHUNKS * RUNS) << "every chunk comes back";
 }
@@ -616,7 +622,8 @@ TEST(CapTable, default_delegation_fills_the_first_dynamic_slots)
     uint16_t head = KCAP_FREE_NONE;
     ASSERT_NO_FATAL_FAILURE(fresh(&list, &run, &head));
 
-    constexpr uint32_t GRANTS = KICKOS_MAX_SPAWN_GRANTS;
+    // A full grant list of the narrower run, beside its inbound reply bound.
+    constexpr uint32_t GRANTS = CHILD - FIRST - KICKOS_CAP_REPLY_MAX;
     constexpr uint32_t CAP0 = KOS_SPAWN_DELEGATED_CAP0;
     for (uint32_t i = 0; i < GRANTS; i++)
     {
@@ -735,7 +742,7 @@ TEST(CapTable, no_list_is_refused)
     CapChunkList list;
     CapRun run = {};
     list_of(&list, KCAP_ROOT_CHUNKS);
-    ASSERT_TRUE(list.take(&run, KCAP_ROOT_CHUNKS)) << "the unthreaded case gets its run";
+    ASSERT_TRUE(take(&list, &run, KCAP_ROOT_CHUNKS)) << "the unthreaded case gets its run";
     for (uint32_t i = 0; i < RUN_SLOTS; i++)
     {
         CapEntry* e = cap_slot(run, i);

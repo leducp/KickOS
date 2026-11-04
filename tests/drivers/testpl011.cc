@@ -34,16 +34,17 @@ namespace
     }
 
     // BUSY stays set until the last stop bit has left the shift register.
-    void drain(uintptr_t base)
+    int32_t drain(uintptr_t base)
     {
         volatile uint32_t* const fr = reinterpret_cast<volatile uint32_t*>(base + UART_FR);
         for (uint32_t i = 0; i < FLUSH_POLL_MAX; i++)
         {
             if ((*fr & UART_FR_BUSY) == 0u)
             {
-                return;
+                return 0;
             }
         }
+        return -KOS_EBUSY;
     }
 
     // The kernel console's line ending on this board, so a reader sees one wire either way.
@@ -102,7 +103,12 @@ namespace
             }
             if (opts.info.reply_cap != KOS_CAP_NONE)
             {
-                msg.rsp.status = -KOS_ENOSYS;
+                int32_t status = -KOS_ENOSYS;
+                if (static_cast<size_t>(n) >= sizeof(struct kos_uart_req) and msg.bytes[0] == KOS_UART_DRAIN)
+                {
+                    status = drain(base);
+                }
+                msg.rsp.status = status;
                 msg.rsp.len = 0;
                 msg.rsp.rsv = 0;
                 reply_len = sizeof(msg.rsp);
@@ -111,7 +117,6 @@ namespace
             }
             if (n == 0)
             {
-                drain(base);
                 continue;
             }
             write(base, msg.bytes, static_cast<size_t>(n));

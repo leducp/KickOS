@@ -24,6 +24,7 @@
 #include <kickos/irq.h>
 #include <kickos/list.h>
 #include <kickos/notify.h>
+#include <kickos/pools.h>
 #include <kickos/presync.h>
 #include <kickos/slotpool.h>
 #include <kickos/task.h>
@@ -129,6 +130,9 @@ namespace kickos
     };
 
 #if KICKOS_KERNEL_CORES > 1
+    // A ring's depth for a pool of `slots` thread slots. A pool slot is named by at most one
+    // HANDOFF, while HANDED, and one RESEAT, while its reseat_owed is set, machine-wide, so a
+    // ring this deep cannot fill and a producer never reads the consumer's tail to publish.
     constexpr uint32_t sched_ring_depth_for(uint32_t entries)
     {
         uint32_t depth = 1u;
@@ -139,17 +143,12 @@ namespace kickos
         return depth;
     }
 
-    // A pool slot is named by at most one HANDOFF, while HANDED, and one RESEAT, while its
-    // reseat_owed is set, machine-wide, so a ring this deep cannot fill and a producer never reads
-    // the consumer's tail to publish.
-    constexpr uint32_t SCHED_RING_DEPTH = sched_ring_depth_for(2u * KICKOS_THREAD_SLOTS);
-
     // One dispatch applies at most this many entries, so its masked work is a build constant.
     constexpr uint32_t SCHED_DRAIN_BUDGET = 8u;
 
     // An entry names a pool slot, as a HANDOFF, or with this bit as a RESEAT.
     constexpr uint16_t SCHED_ENTRY_RESEAT = 0x8000u;
-    static_assert(KICKOS_THREAD_SLOTS <= SCHED_ENTRY_RESEAT,
+    static_assert(KICKOS_THREAD_SLOT_CEILING <= SCHED_ENTRY_RESEAT,
                   "a pool slot index would reach the RESEAT bit of a ring entry");
 
     // A line per writer, as the kernel lock's rows are (kernel/sync/klock.cc).
@@ -177,6 +176,35 @@ namespace kickos
         SchedSeq tail[KICKOS_KERNEL_CORES] = {};      // how far c has drained each producer's ring
         SchedSeq drop_took[KICKOS_KERNEL_CORES] = {}; // how far c has answered each asker's drops
         uint8_t cursor = 0;                           // the producer c's next drain starts at
+    };
+#endif
+
+    // An object pool's storage, the running instance's (<kickos/pools.h>), and the budget its
+    // claims are charged to.
+    template <class T, SlotStore<T> KernelPools::*Field, BudgetKind Kind>
+    struct PoolStore
+    {
+        static constexpr BudgetKind KIND = Kind;
+
+        static T* slots()
+        {
+            return pool_local((kickos_kernel_pools.*Field).slots);
+        }
+        static SlotArrays const* arrays()
+        {
+            return &(kickos_kernel_pools.*Field).arrays;
+        }
+        static int count()
+        {
+            return (kickos_kernel_pools.*Field).arrays.count;
+        }
+    };
+
+#if not KICKOS_PRESYNC
+    struct CreateStage
+    {
+        kos_task_params task_params = {};
+        kos_thread_params params = {};
     };
 #endif
 
@@ -250,20 +278,25 @@ namespace kickos
         // whatever a bring-up probe left in the hardware.
         uint64_t timer_armed_ns[KICKOS_KERNEL_CORES] = {};
 
-        // --- object pools ---
+        // --- object pools, their storage the system's (<kickos/pools.h>) ---
         // The records of the user words threads wait on, one per thread slot since each waiter
         // parks on one, and the live ones listed for the keyed lookup.
-        WordRecord word_records[KICKOS_THREAD_SLOTS];
+        PoolSpan<WordRecord> word_records() const
+        {
+            return pool_span(kickos_kernel_pools.word_records, kickos_kernel_pools.thread_slots);
+        }
         WordRecord* word_active = nullptr;
         // Endpoint (IPC rendezvous) pool and its object-side refcount, owned by the cap layer:
         // how many caps name slot i. alloc sets 1, delegate bumps, close decrements, and 0
         // frees the slot; obj_ref_inc refuses with -KOS_EOVERFLOW at the uint8_t ceiling rather
         // than wrapping. recv_holders lives solely in the Endpoint struct, and shares that
         // ceiling because one obj_ref_inc moves both counters or neither.
-        SlotPool<Endpoint, KICKOS_MAX_ENDPOINTS> endpoints;
-        uint8_t endpoint_refs[KICKOS_MAX_ENDPOINTS] = {};
-        // Idle's TCB; the thread pool below never seats it. Placed against an 8-aligned
-        // member so it introduces no fill of its own; its stack comes from the arena
+        SlotPool<Endpoint, PoolStore<Endpoint, &KernelPools::endpoints, BudgetKind::ENDPOINTS>> endpoints;
+        // How many domain slots past the immortal two were ever claimed (domain.cc); the charged
+        // pools' slot the next holdings epoch clears (cap.cc).
+        uint16_t domain_fresh = 0;
+        uint16_t hold_sweep = 0;
+        // Idle's TCB; the thread pool below never seats it. Its stack comes from the arena
         // (boot_stack_alloc).
         Thread idle_tcb;
 #if KICKOS_KERNEL_CORES > 1
@@ -274,6 +307,11 @@ namespace kickos
         // is one of each thread's kernel block on the trap red zone. Read only within the
         // IrqLock hold that wrote it, which is the cross-core kernel lock above one core.
         kos_window window_stage[KICKOS_MAX_THREAD_WINDOWS] = {};
+#if not KICKOS_PRESYNC
+        // A create's parameter copies, under the same rule as window_stage. The presync record
+        // holds them where there is one.
+        CreateStage create_stage;
+#endif
 #if KICKOS_MEMORY_ENFORCED and KICKOS_HAVE_MPU and not KICKOS_HAVE_ASPACE
         // A spawn's region set, under the same rule as window_stage.
         MpuSet spawn_regions;
@@ -281,7 +319,10 @@ namespace kickos
 #if KICKOS_PRESYNC
         // Per thread slot (aspace.h, presync_begin), and how many are live. Under IrqLock, but
         // for the owner's own reads and its staged run's bytes outside it.
-        PresyncRecord presync[KICKOS_THREAD_SLOTS] = {};
+        PoolSpan<PresyncRecord> presync() const
+        {
+            return pool_span(kickos_kernel_pools.presync, kickos_kernel_pools.thread_slots);
+        }
         uint32_t presync_live = 0;
 #endif
         // Thread pool (see ThreadPool in thread.h): the TCBs + their kernel stacks,
@@ -289,16 +330,29 @@ namespace kickos
         // reclaim (ABA). All allocation goes through thread_create_call().
         ThreadPool threads;
         // Memory-domain pool (see domain.h): shared region sets threads reference.
-        // domains[0] = kernel domain, domains[1] = default-user (both immortal);
+        // domains()[0] = kernel domain, domains()[1] = default-user (both immortal);
         // the rest are refcounted mem_base domains. All access via domain_*().
-        Domain domains[KICKOS_MAX_DOMAINS];
+        PoolSpan<Domain> domains() const
+        {
+            return pool_span(kickos_kernel_pools.domains, kickos_kernel_pools.domain_count);
+        }
+        // The domain pool's free list, the slot freed last first (domain.cc).
+        HeadList domain_free;
         // Task pool (see task.h): the groups that hold those domains. A slot is free iff its
-        // refcount is 0 and it has no creator. All access via task_*().
-        Task tasks[KICKOS_MAX_TASKS];
+        // refcount is 0, it has no creator and no member still sweeps under it. All access via
+        // task_*().
+        PoolSpan<Task> tasks() const
+        {
+            return pool_span(kickos_kernel_pools.tasks, kickos_kernel_pools.task_count);
+        }
+        // The task pool's free list, the slot freed last first, the epoch the last holdings
+        // derivation marked with (cap.cc), and how many of its slots were ever claimed.
+        HeadList task_free;
+        uint16_t hold_epoch = 0;
+        uint8_t task_fresh = 0;
 #if KICKOS_HAVE_ASPACE
         // Frame-run pool and its object-side refcount, same shape as the pools above.
-        SlotPool<FrameRun, KICKOS_MAX_FRAME_RUNS> frame_runs;
-        uint8_t frame_run_refs[KICKOS_MAX_FRAME_RUNS] = {};
+        SlotPool<FrameRun, PoolStore<FrameRun, &KernelPools::frame_runs, BudgetKind::FRAME_RUNS>> frame_runs;
 #endif
 
         // --- interrupt dispatch + IRQ-as-event bindings (irq.cc) ---
@@ -306,25 +360,34 @@ namespace kickos
         // Tier-1 bindings and their object-side refcount, same shape as the pools above.
         // Pooled, not bump-allocated, so a dead driver's line and slot come back:
         // irq_ref_drop detaches before it frees.
-        SlotPool<IrqBinding, KICKOS_MAX_IRQ_HANDLES> irq_bindings;
-        uint8_t irq_refs[KICKOS_MAX_IRQ_HANDLES] = {};
+        SlotPool<IrqBinding, PoolStore<IrqBinding, &KernelPools::irq_bindings, BudgetKind::IRQ_BINDINGS>>
+            irq_bindings;
         uint32_t irq_spurious_count = 0; // IRQs on a line with no driver (masked)
 
         // --- notification objects (notify.cc) ---
         // The object a driver waits on, and the object an IRQ binding signals. Same shape as
         // the pools above; the refcount counts every capability naming a slot, the bind, and
         // each attached IRQ binding.
-        SlotPool<Notification, KICKOS_MAX_NOTIFY> notifies;
-        uint8_t notify_refs[KICKOS_MAX_NOTIFY] = {};
+        SlotPool<Notification, PoolStore<Notification, &KernelPools::notifies, BudgetKind::NOTIFICATIONS>>
+            notifies;
 
 #if KICKOS_KERNEL_CORES > 1
         // --- the per-pair rings (sched.cc) ---
-        // sched_slot[p][c]: the ring core p writes toward core c, one pool slot index per entry.
-        // Staged under the kernel lock, published by p at the end of its span and drained by c
-        // alone. The diagonal is never written.
+        // sched_ring(p, c): the ring core p writes toward core c, one pool slot index per entry,
+        // in the pools' storage. Staged under the kernel lock, published by p at the end of its
+        // span and drained by c alone. The diagonal is never written.
         SchedOut sched_out[KICKOS_KERNEL_CORES] = {};
         SchedIn sched_in[KICKOS_KERNEL_CORES] = {};
-        uint16_t sched_slot[KICKOS_KERNEL_CORES][KICKOS_KERNEL_CORES][SCHED_RING_DEPTH] = {};
+        uint16_t* sched_ring(uint32_t from, uint32_t to) const
+        {
+            return pool_local(kickos_kernel_pools.sched_rings)
+                   + (from * KICKOS_KERNEL_CORES + to) * kickos_kernel_pools.sched_ring_depth;
+        }
+        // A ring's depth, a power of two, less one.
+        uint32_t sched_ring_mask() const
+        {
+            return kickos_kernel_pools.sched_ring_depth - 1u;
+        }
 #endif
     };
 
@@ -366,27 +429,6 @@ namespace kickos
         return true;
     }
 #endif
-
-    // A hold set is 32 bits of pool slots (TaskObjectHolds, cap.h), so a wider pool would
-    // carry slots no ceiling can see. The Kconfig ranges are narrowed to match; this is the
-    // backstop for a board_config.h that defines a width directly.
-    static_assert(KICKOS_MAX_ENDPOINTS <= 32 and KICKOS_MAX_IRQ_HANDLES <= 32
-                      and KICKOS_MAX_NOTIFY <= 32,
-                  "a charged object pool is wider than a hold set's 32 bits: narrow the pool, "
-                  "or widen TaskObjectHolds in cap.h and this assert together");
-
-    // How many pool slots a hold set names. Costs one iteration per set bit, so a task
-    // holding nothing pays nothing.
-    inline int task_object_count(uint32_t held)
-    {
-        int n = 0;
-        while (held != 0)
-        {
-            held = held & (held - 1u);
-            n++;
-        }
-        return n;
-    }
 }
 
 #endif

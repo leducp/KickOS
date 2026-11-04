@@ -28,6 +28,8 @@ namespace systems
         uint32_t domains;
         uint32_t reservations;
         uint32_t self_grants;
+        // The threads drivers' entry threads spawn themselves, which the scripted kernel never runs.
+        uint32_t driver_threads;
     };
 
     // The kernel build's ceilings and stack rules, 0 for none.

@@ -5,7 +5,8 @@
 # No image's link discards a constructor or destructor table entry. A table section the linker
 # script names no selector for is an orphan, and --gc-sections drops it with the function it
 # points at: the constructor never runs and nothing says so. Read off the `Discarded input
-# sections` heading of each link map, matched in English as check_no_libnosys.sh's is.
+# sections` heading of each link map, matched in English as check_no_libnosys.sh's is, the maps
+# of the images a final link places included (image_map_set).
 #
 #   check_ctors_kept.sh <map>...
 #   check_ctors_kept.sh --images <list>
@@ -77,8 +78,19 @@ if [ "${1:-}" = --self-test ]; then
     fi
     grep -qF 'discard a constructor or destructor table' "$TMP/run.out" \
         || fail "--images refuses a discarded constructor for another reason: $(cat "$TMP/run.out")"
+    # A final map placing image 0, whose own map is the one discarding.
+    { echo 'Discarded input sections'; echo; echo 'Memory Configuration'; echo
+      echo "LOAD $TMP/app.kimg/kickos_image0.o"; } > "$TMP/app.map"
+    mkdir -p "$TMP/app.kimg"
+    cp "$TMP/ctors.map" "$TMP/app.kimg/image0.map"
+    if sh "$0" "$TMP/app.map" > "$TMP/run.out" 2>&1; then
+        fail "a final map whose image 0 discards a constructor passes"
+    fi
+    grep -qF 'image0.map' "$TMP/run.out" \
+        || fail "image 0's discarded constructor is refused for another reason: $(cat "$TMP/run.out")"
     echo "PASS: a discarded .ctors, .dtors or .init_array entry is read, a wrapped name included,"
-    echo "  and none out of a map discarding only code; --images refuses the first"
+    echo "  and none out of a map discarding only code; --images refuses the first, and so does"
+    echo "  a final map whose image's own map discards one"
     exit 0
 fi
 
@@ -93,16 +105,23 @@ else
 fi
 COUNT=0
 BAD=0
-while IFS= read -r MAP; do
-    [ -f "$MAP" ] || fail "no link map at $MAP"
-    discarded_tables "$MAP" "$TMP/tables" \
-        || fail "$MAP carries no 'Discarded input sections' list, so it was not read"
+while IFS= read -r FINAL; do
+    [ -f "$FINAL" ] || fail "no link map at $FINAL"
+    image_map_set "$FINAL" "$TMP/set"
+    # A final map always carries the list; an image's own link may discard nothing, and then
+    # carries none.
+    while IFS= read -r MAP; do
+        discarded_tables "$MAP" "$TMP/tables"
+        if [ "$?" -eq 2 ] && [ "$MAP" = "$FINAL" ]; then
+            fail "$MAP carries no 'Discarded input sections' list, so it was not read"
+        fi
+        if [ -s "$TMP/tables" ]; then
+            echo "$(basename "$MAP"):" >&2
+            sed 's/^/  /' "$TMP/tables" >&2
+            BAD=$((BAD + 1))
+        fi
+    done < "$TMP/set"
     COUNT=$((COUNT + 1))
-    if [ -s "$TMP/tables" ]; then
-        echo "$(basename "$MAP"):" >&2
-        sed 's/^/  /' "$TMP/tables" >&2
-        BAD=$((BAD + 1))
-    fi
 done < "$TMP/maps"
 if [ "$BAD" -ne 0 ]; then
     fail "$BAD of $COUNT image(s) discard a constructor or destructor table: the linker script

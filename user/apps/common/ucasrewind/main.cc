@@ -25,11 +25,14 @@
 namespace
 {
     constexpr uint64_t RUN_NS = 100000000ull;
+    // A run goes on past its length until a switch has landed in the window, up to this many.
+    constexpr uint64_t RUN_LIMIT = 8u;
     // Below main, so neither adder runs before both are spawned.
     constexpr uint8_t ADDER_PRIO = 1;
 
     uint32_t g_word = 0;
     volatile uint64_t g_run_ns = 0;
+    volatile int64_t g_before = 0;
     volatile uint32_t g_adds[2] = {0, 0};
     volatile uint32_t g_misses[2] = {0, 0};
 
@@ -78,9 +81,17 @@ namespace
             }
             i = i + 1u;
             // The clock rarely: a read is a kernel entry, and the switches must land in the CAS.
-            if ((i & 1023u) == 0u and kos_clock_now() - start >= g_run_ns)
+            if ((i & 1023u) == 0u)
             {
-                break;
+                uint64_t const ran = kos_clock_now() - start;
+                if (ran >= g_run_ns * RUN_LIMIT)
+                {
+                    break;
+                }
+                if (ran >= g_run_ns and rewinds() != g_before)
+                {
+                    break;
+                }
             }
         }
         g_adds[me] = adds;
@@ -106,6 +117,7 @@ int main(int, char**)
         kos_print(msg);
         return 1;
     }
+    g_before = before;
     kos::thread::Handle a =
         kos::thread::create(adder, reinterpret_cast<void*>(uintptr_t{0}), "rwA", ADDER_PRIO,
                             KOS_POLICY_RR, static_cast<uint32_t>(quantum));

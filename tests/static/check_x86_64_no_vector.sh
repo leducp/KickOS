@@ -20,13 +20,15 @@
 #
 # The corpus is the LINKED IMAGES, because what -mgeneral-regs-only cannot reach is there and
 # nowhere else: assembly, inline assembly, toolchain archive members and the text the linker
-# synthesises. Every application image is read outside its app window, .apptext, and every
-# probe image whole, those having no app half of their own. An application image is one whose
-# link wrote its map beside it (tools/x86_64-link.sh); a probe image carries none.
+# synthesises. Every application image is read outside the program it embeds, .kimg0t, and
+# every probe image whole, those embedding none. An application image is one whose link wrote
+# its map beside it (tools/x86_64-link.sh); a probe image carries none. A program's own link,
+# with its record beside it (tools/image-link.py), is application text and not read.
 #
-# The split is a control of its own: the app half of the selftest image must decode at least
-# one vector instruction outside the arms' own assembly, selftest_vec_* and bench_vec_*, or the
-# applications are not compiled with vectors and this gate reads nothing it did not read before.
+# The split is a control of its own: the selftest program's text, in its own ELF beside the
+# image, must decode at least one vector instruction outside the arms' own assembly,
+# selftest_vec_* and bench_vec_*, or the applications are not compiled with vectors and this
+# gate reads nothing it did not read before.
 #
 # An image carrying an executable section of nonzero size must decode at least one
 # instruction, or objdump could not read it and its silence is not clean.
@@ -202,8 +204,13 @@ find "$BUILD" -name '*.efi' -type f | sort > "$TMP/images" \
 : > "$TMP/appimages"
 : > "$TMP/probeimages"
 while IFS= read -r img; do
-    if [ -f "$img.map" ]; then
+    if [ -f "$img.kprog" ]; then
+        # A program's own link, application text the image embedding it carries.
+        continue
+    elif [ -f "$img.map" ]; then
         echo "$img" >> "$TMP/appimages"
+    elif [ -f "$img.kprog" ]; then
+        : # a program of its own, compiled as the applications are
     else
         echo "$img" >> "$TMP/probeimages"
     fi
@@ -217,24 +224,32 @@ N_IMG="$(lines "$TMP/images")"
       application image's kernel half is in the corpus"
 
 # --- the split -----------------------------------------------------------------
-# The selftest image's app window, where the compiler's own vector code must be by now.
+# The selftest programs' text, where the compiler's own vector code must be by now.
 SPLIT_IMG="$(grep '/selftest\.efi$' "$TMP/appimages" | sed -n 1p)"
 [ -n "$SPLIT_IMG" ] || fail "no selftest image under $BUILD, so the split control reads nothing"
+[ -f "$SPLIT_IMG.kimg/image0.elf" ] || fail "no program ELF beside $SPLIT_IMG, so the split control
+      reads nothing"
 : > "$TMP/insn"
 : > "$TMP/armhits"
-census "$SPLIT_IMG" "$TMP/split.hits" .apptext
+: > "$TMP/split.hits"
+N=0
+while [ -f "$SPLIT_IMG.kimg/image$N.elf" ]; do
+    census "$SPLIT_IMG.kimg/image$N.elf" "$TMP/split$N.hits" .apptext
+    cat "$TMP/split$N.hits" >> "$TMP/split.hits"
+    N=$((N + 1))
+done
 N_SPLIT_ALL="$(lines "$TMP/split.hits")"
 N_SPLIT_ARM="$(awk '{ n += $1 } END { print n + 0 }' "$TMP/armhits")"
 N_SPLIT=$((N_SPLIT_ALL - N_SPLIT_ARM))
 [ "$N_SPLIT" -gt 0 ] \
-    || fail "the app window of $SPLIT_IMG decodes $N_SPLIT_ALL vector or x87 instruction(s), all
+    || fail "the programs of $SPLIT_IMG decode $N_SPLIT_ALL vector or x87 instruction(s), all
       of them the arms' own assembly, so the applications are not compiled with vectors: the
       split of cmake/toolchain-x86_64-uefi.cmake did not happen and this gate reads nothing new"
-echo "== control: the app window of ${SPLIT_IMG#"$BUILD"/} decodes $N_SPLIT vector or x87 instruction(s) the compiler chose, beside $N_SPLIT_ARM in the arms =="
+echo "== control: the programs of ${SPLIT_IMG#"$BUILD"/} decode $N_SPLIT vector or x87 instruction(s) the compiler chose, beside $N_SPLIT_ARM in the arms =="
 
 # --- the scan -----------------------------------------------------------------
-# One line per input: the input, then `whole`, or `kernel` for an application image, whose app
-# window is left out.
+# One line per input: the input, then `whole`, or `kernel` for an application image, whose
+# embedded program is left out.
 {
     sed 's/$/ whole/' "$TMP/probeimages"
     sed 's/$/ kernel/' "$TMP/appimages"
@@ -254,7 +269,7 @@ while read -r input scope; do
         || fail "$OBJDUMP reports no i386:x86-64 architecture for $input, so the scan of that
       input read a dead tool, or a file of another machine, as clean"
     if [ "$scope" = kernel ]; then
-        N_CS="$(code_sections "$input" "$TMP/secs" .apptext)"
+        N_CS="$(code_sections "$input" "$TMP/secs" .kimg0t)"
         require_number "$N_CS" "the code-section count for $input"
         # shellcheck disable=SC2046
         census "$input" "$TMP/hits" $(cat "$TMP/secs")
@@ -280,7 +295,7 @@ while read -r input scope; do
 done < "$TMP/corpus"
 
 N_INSN="$(awk '{ n += $1 } END { print n + 0 }' "$TMP/insn")"
-echo "== $N_IMG image(s) under $BUILD, $(lines "$TMP/appimages") read outside their app window; $N_INSN instruction(s) decoded =="
+echo "== $N_IMG image(s) under $BUILD, $(lines "$TMP/appimages") read outside their program; $N_INSN instruction(s) decoded =="
 
 # A site no input carries was never counted, which reads exactly like a site at its count, and a
 # function that lost every one of its sites is counted nowhere.

@@ -2,10 +2,10 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // A packaged console driver over an XMC4800 USIC channel's window, polled: a plain send is
-// console bytes, and a zero-length one a flush answered once the channel has drained. A
-// zero-length kos_call asks it to scramble the channel it holds, answered 0 once the clock is
-// gated, so nothing reaches the wire after it unless the kernel reclaims the console. Any other
-// call is answered -KOS_ENOSYS.
+// console bytes, and KOS_UART_DRAIN is answered with the channel's flush. A zero-length kos_call
+// asks it to scramble the channel it holds, answered 0 once the clock is gated, so nothing
+// reaches the wire after it unless the kernel reclaims the console. Any other call is answered
+// -KOS_ENOSYS.
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
@@ -120,6 +120,10 @@ namespace
                     scramble(base);
                     msg.rsp.status = 0;
                 }
+                else if (static_cast<size_t>(n) >= sizeof(struct kos_uart_req) and msg.bytes[0] == KOS_UART_DRAIN)
+                {
+                    msg.rsp.status = kos_uart_flush(&dev);
+                }
                 msg.rsp.len = 0;
                 msg.rsp.rsv = 0;
                 reply_len = sizeof(msg.rsp);
@@ -128,7 +132,6 @@ namespace
             }
             if (n == 0)
             {
-                (void)kos_uart_flush(&dev);
                 continue;
             }
             put_bytes(&dev, msg.bytes, static_cast<size_t>(n));

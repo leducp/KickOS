@@ -28,6 +28,10 @@
 
 #include "syscall_internal.h"
 
+#if defined(ARCH_MPU_CODE_WINDOW_FIXED) and KICKOS_HAVE_MPU
+extern "C" bool arch_mpu_code_window_holds(uintptr_t ptr, size_t len);
+#endif
+
 namespace kickos
 {
 #if KICKOS_HAVE_ASPACE
@@ -58,16 +62,12 @@ namespace kickos
 
     namespace
     {
-        // A device region on a translating backend records the window's PHYSICAL base, which is
-        // not where its holder reaches it: the range list answers for that address.
+        // A device region answers no kernel copy: the copy is a privileged access, which would
+        // read or write registers past what the holder itself may, and on a translating backend
+        // the region records the window's physical base, not where its holder reaches it.
         bool region_answers_pointers(arch_mpu_region const& r)
         {
-#if KICKOS_HAVE_ASPACE
             return (r.attr & ARCH_MPU_DEV) == 0;
-#else
-            (void)r;
-            return true;
-#endif
         }
 
         // Whether a region of c's set without W overlaps [ptr, end), so the set answers no
@@ -127,6 +127,12 @@ namespace kickos
                     return true;
                 }
             }
+#if defined(ARCH_MPU_CODE_WINDOW_FIXED) and KICKOS_HAVE_MPU
+            if ((need & ~(ARCH_MPU_R | ARCH_MPU_X)) == 0 and arch_mpu_code_window_holds(ptr, len))
+            {
+                return true;
+            }
+#endif
 #if KICKOS_HAVE_ASPACE
             VirtualRange const* e = nullptr;
             if (found != nullptr)
@@ -802,11 +808,13 @@ namespace kickos
             {
                 return -KOS_EINVAL;
             }
-            if (not frame_run_admit(c->task))
+            uint32_t const pages = static_cast<uint32_t>((bytes + g - 1u) / g);
+            if (not task_admit(c->task, BudgetKind::FRAME_RUNS, 1)
+                or not task_admit(c->task, BudgetKind::PAGES, pages))
             {
                 return -KOS_EAGAIN;
             }
-            *obj = frame_run_create_empty(task_handle(c->task));
+            *obj = frame_run_create_empty(c->task);
             if (*obj == FRAME_RUN_NONE)
             {
                 return -KOS_ENOMEM;
@@ -817,7 +825,7 @@ namespace kickos
                 frame_run_release(*obj); // empty: frees the slot and no frame
                 return rc;
             }
-            if (aspace_reserve_stage(ranges, bytes) == 0)
+            if (aspace_reserve_stage(ranges, bytes, PresyncStage::CLEAR) == 0)
             {
                 (void)handle_close(c, *cap, held);
                 return -KOS_ENOMEM;

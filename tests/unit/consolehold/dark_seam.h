@@ -21,6 +21,8 @@ namespace darkseam
 {
     // Bytes the device took, in order.
     extern std::string g_wire;
+    // arch_console_write_sync calls.
+    extern uint32_t g_sync_calls;
     // arch_console_reclaim calls.
     extern uint32_t g_reclaims;
     // Whether the console's register window is free.
@@ -28,7 +30,7 @@ namespace darkseam
 
     void reset();
 
-    // KOS_SYS_CONSOLE_PUBLISH's console sequence, with no writer in flight to drain: `publisher`
+    // A console driver create's console sequence, with no writer in flight to drain: `publisher`
     // publishes `ep` for `served`. False, with nothing handed over, where the publish is refused.
     bool publish(kickos::Thread* publisher, kickos::Endpoint* ep, kickos::Task* served);
 }

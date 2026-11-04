@@ -26,10 +26,10 @@ namespace
     constexpr uint32_t WAIT_US = 10000000u;
 }
 
-extern "C" void alarm_main(kos_self_t const* self)
+int main(int, char**)
 {
-    kos_window_t const rtc_window = kos_grant_mmio(self, "/dev/rtc");
-    kos_line_t const line = kos_grant_irq(self, "alarm");
+    kos_window_t const rtc_window = kos_grant_mmio("/dev/rtc");
+    kos_line_t const line = kos_grant_irq("alarm");
     auto const rtc = static_cast<uint32_t volatile*>(kos_window_addr(rtc_window));
     if (rtc == nullptr or kos_window_size(rtc_window) < WINDOW_BYTES or line.cap == KOS_CAP_NONE)
     {

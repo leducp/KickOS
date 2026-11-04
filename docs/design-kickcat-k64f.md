@@ -133,14 +133,14 @@ libstdc++ ships WITH the pinned vendor toolchain (no apt package, no separate in
 
 **Boundary discipline (why the mixed link is sound).** A full-C++ app is `-fexceptions`; the
 kernel/lib/arch/libc are `-fno-exceptions` (no unwind tables). This is safe by *how it fails*, not
-by luck: the only kernel->app entries are `kickos_app_main` and the thread trampoline, and the IRQ
+by luck: the only kernel->app entries are the renamed app main and the thread trampoline, and the IRQ
 model is wait-on-semaphore (no kernel-invoked app callbacks), so there is no throw path through an
 ISR. An exception that escapes an app entry (or an uncaught `bad_alloc`, or a throwing global ctor)
 reaches a frame with no FDE/`.exidx` entry; both the DWARF and ARM-EHABI unwinders fail in *phase
 1* -- before any frame is popped -- so `__cxa_throw` calls `std::terminate` -> `abort` ->
 `kos_exit`, with no half-unwound kernel state. Consequences to document for app authors: catch your
 own exceptions; an escape from a *worker* thread terminates the whole image (not just the thread);
-static dtors / `atexit` handlers never run (returning from `kickos_app_main` goes
+static dtors / `atexit` handlers never run (returning from the renamed app main goes
 `root_entry -> arch_shutdown`, never `exit()`); a throwing ctor before the scheduler may wedge
 rather than exit. On RISC-V the `.eh_frame` table is registered at boot via a *weak*
 `__register_frame` (freestanding images never pull the FDE machinery + heap; linking

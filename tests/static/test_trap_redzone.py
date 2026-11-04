@@ -8,11 +8,21 @@
 #   - a dense strongly connected component is walked in a bounded number of expansions, so a
 #     mutual recursion is reported as a cycle instead of hanging the gate;
 #   - chain_to names a cycle once and leaves it by its deepest edge, ending at the target;
-#   - a ladder of twelve diamonds, too deep for the random graphs, equals the oracle.
+#   - a ladder of twelve diamonds, too deep for the random graphs, equals the oracle;
+#   - a site key's caller written `?<caller>` binds where the graph has it, is skipped where it
+#     has not, and an absent caller without the `?` is refused;
+#   - a link glob reads only the maps beside a file the build graph links, and a target names
+#     the one file the graph builds for it;
+#   - the corpus is the .ci of every compile command: a .ci beside no object the build graph
+#     builds is not read, one beside a built object no command names is refused, and a command
+#     whose .ci is missing is refused.
 
+import json
 import os
 import random
+import shutil
 import sys
+import tempfile
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -150,6 +160,111 @@ class Walk(unittest.TestCase):
             self.fail('a %d-node strongly connected component took more than %d expansions; a '
                       'mutual recursion would hang the gate' % (dense, EXPANSION_BOUND))
         self.assertEqual(got, 3 + 5 + sum(size[n] for n in names))
+
+
+class SiteGraph(object):
+    """A graph whose one node, `f`, makes one indirect call."""
+
+    def match(self, spec):
+        if spec in ('f', 'g'):
+            return ['f']
+        return []
+
+    def caller_spec(self, src):
+        return src
+
+    def located(self, src):
+        return ['f.cc:1:1']
+
+
+class Sites(unittest.TestCase):
+    def test_optional_caller_binds_where_the_graph_has_it(self):
+        raw = {'?f@1/1': ([('g', False)], 'where')}
+        self.assertEqual(trap_redzone.resolve_bindings(SiteGraph(), raw), {'f@1/1': [('g', False)]})
+
+    def test_optional_caller_is_skipped_where_the_graph_lacks_it(self):
+        raw = {'?absent@1/1': ([('g', False)], 'where')}
+        self.assertEqual(trap_redzone.resolve_bindings(SiteGraph(), raw), {})
+
+    def test_optional_caller_with_only_absent_optional_callees_is_skipped(self):
+        raw = {'?f@1/1': ([('?absent', True)], 'where')}
+        self.assertEqual(trap_redzone.resolve_bindings(SiteGraph(), raw), {})
+
+    def test_absent_caller_without_the_mark_is_refused(self):
+        raw = {'absent@1/1': ([('g', False)], 'where')}
+        with self.assertRaises(trap_redzone.Bad):
+            trap_redzone.resolve_bindings(SiteGraph(), raw)
+
+
+class LinkMaps(unittest.TestCase):
+    def setUp(self):
+        ninja = shutil.which('ninja')
+        self.assertIsNotNone(ninja, 'no ninja on PATH, and the gate asks the build graph')
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp)
+        self.write('CMakeCache.txt', 'CMAKE_MAKE_PROGRAM:FILEPATH=%s\n' % ninja)
+        self.write('build.ninja', 'rule link\n  command = true\n'
+                   'build app/app.efi: link\nbuild app: phony app/app.efi\nbuild top: link\n')
+        self.write('app/app.efi.map', 'LOAD /linked.o\n')
+
+    def write(self, rel, text):
+        path = os.path.join(self.tmp, rel)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, 'w') as f:
+            f.write(text)
+
+    def test_a_map_beside_no_linked_file_is_not_read(self):
+        self.write('gone/gone.efi.map', 'LOAD /stale.o\n')
+        self.assertEqual(trap_redzone.Graph.load_set(self.tmp, '**/*.efi.map'),
+                         {os.path.realpath('/linked.o')})
+
+    def test_only_unlinked_maps_are_refused(self):
+        os.remove(os.path.join(self.tmp, 'app/app.efi.map'))
+        self.write('gone/gone.efi.map', 'LOAD /stale.o\n')
+        with self.assertRaises(trap_redzone.Bad):
+            trap_redzone.Graph.load_set(self.tmp, '**/*.efi.map')
+
+    def test_a_target_names_its_file(self):
+        self.assertEqual(trap_redzone.target_file(self.tmp, 'app'),
+                         os.path.join(self.tmp, 'app/app.efi'))
+        self.assertEqual(trap_redzone.target_file(self.tmp, 'top'), os.path.join(self.tmp, 'top'))
+        self.assertIsNone(trap_redzone.target_file(self.tmp, 'gone'))
+
+
+class Corpus(unittest.TestCase):
+    def setUp(self):
+        ninja = shutil.which('ninja')
+        self.assertIsNotNone(ninja, 'no ninja on PATH, and the gate asks the build graph')
+        self.tmp = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp)
+        self.write('CMakeCache.txt', 'CMAKE_MAKE_PROGRAM:FILEPATH=%s\n' % ninja)
+        self.write('build.ninja', 'rule cc\n  command = true\n'
+                   'build a.cc.o: cc\nbuild b.cc.o: cc\n')
+        self.write('compile_commands.json', json.dumps(
+            [{'directory': self.tmp, 'file': '/src/a.cc', 'output': 'a.cc.o',
+              'command': 'g++ -c /src/a.cc -o a.cc.o'}]))
+        self.write('a.cc.ci', 'graph: { title: "/src/a.cc"\n')
+
+    def write(self, rel, text):
+        path = os.path.join(self.tmp, rel)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, 'w') as f:
+            f.write(text)
+
+    def test_a_ci_beside_no_built_object_is_not_read(self):
+        self.write('gone.cc.ci', 'graph: { title: "/src/gone.cc"\n')
+        self.write('CMakeFiles/4.3.4/CompilerIdCXX/CMakeCXXCompilerId.ci', '')
+        self.assertEqual(trap_redzone.corpus(self.tmp), [os.path.join(self.tmp, 'a.cc.ci')])
+
+    def test_a_ci_beside_a_built_object_no_command_names_is_refused(self):
+        self.write('b.cc.ci', 'graph: { title: "/src/b.cc"\n')
+        with self.assertRaises(trap_redzone.Bad):
+            trap_redzone.corpus(self.tmp)
+
+    def test_a_command_with_no_ci_is_refused(self):
+        os.remove(os.path.join(self.tmp, 'a.cc.ci'))
+        with self.assertRaises(trap_redzone.Bad):
+            trap_redzone.corpus(self.tmp)
 
 
 if __name__ == "__main__":

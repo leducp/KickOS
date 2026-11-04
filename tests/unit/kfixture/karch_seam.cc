@@ -18,6 +18,9 @@
 #include <kickos/task.h>
 #include <kickos/time.h>
 
+#include <kickos/sys/abi.h>
+#include <kickos/sys/errno.h>
+
 #include "kfixture.h"
 
 // Set where the real kernel/init/console.cc is linked, which defines what these stub.
@@ -33,6 +36,17 @@
 
 extern "C"
 {
+#if defined(KICKOS_ARCH_CURRENT_ONE_READ)
+    void* arch_current_load(void)
+    {
+        return kickos::kernel().current(kickos_kernel_core());
+    }
+
+    void arch_current_store(void*)
+    {
+    }
+#endif
+
     // A zero lock count marks a capability-sweep gap for injected actions.
     arch_irq_state_t arch_irq_save(void)
     {
@@ -239,12 +253,17 @@ extern "C"
     }
 
     // No ring: a refused writer offers its line again at once.
-    int console_tx_make_room(char const*, size_t, int)
+    int console_tx_make_room(uint32_t)
     {
         return 0;
     }
 
-    int console_tx_room_want(char const*, size_t, int)
+    int console_tx_room_want(uint32_t)
+    {
+        return 0;
+    }
+
+    uint32_t console_tx_sent(void)
     {
         return 0;
     }
@@ -310,17 +329,37 @@ namespace kickos
     {
     }
 
+    uint32_t console_line_wait(Thread const*, Held)
+    {
+        return 0;
+    }
+
     void kconsole_slain(void)
     {
     }
 
-    void kprintf_fault(char const* fmt, ...)
+    uint32_t kprintf_fault(char const* fmt, ...)
     {
         if (testfix::g_fault_fmts < testfix::FAULT_FMT_MAX)
         {
             testfix::g_fault_fmt[testfix::g_fault_fmts] = fmt;
             testfix::g_fault_fmts = testfix::g_fault_fmts + 1;
         }
+        return 0;
+    }
+
+    void kprintf_record(char const* fmt, ...)
+    {
+        if (testfix::g_fault_fmts < testfix::FAULT_FMT_MAX)
+        {
+            testfix::g_fault_fmt[testfix::g_fault_fmts] = fmt;
+            testfix::g_fault_fmts = testfix::g_fault_fmts + 1;
+        }
+    }
+
+    bool kconsole_record_wait(uint32_t)
+    {
+        return false;
     }
 
     bool console_window_held_outside(Task const*)
@@ -343,8 +382,8 @@ namespace kickos
                 return &testfix::g_domains[i];
             }
         }
-        printf("FIXTURE FAIL: fake domain pool exhausted\n");
-        exit(1);
+        *err = KOS_ENOMEM;
+        return nullptr;
     }
 
     void domain_ref(Domain* d)
@@ -398,6 +437,8 @@ namespace kickos
 
     // No fake domain holds a space.
     void domain_retire_space(Domain*) {}
+    Domain* domain_retire_handoff(Domain*) { return nullptr; }
+    void domain_shed(Domain*) {}
 #endif
 #endif
 
@@ -417,9 +458,12 @@ namespace kickos
     }
 
     // No clock runs here. Tests trigger expiry with thread_abort_park.
-    void ktime_deadline_arm(Thread* t, uint32_t, Held)
+    void ktime_deadline_arm(Thread* t, uint32_t timeout_us, Held)
     {
-        t->on_timer = true;
+        if (timeout_us != KOS_TIMEOUT_NONE)
+        {
+            t->on_timer = true;
+        }
     }
 #endif
 }

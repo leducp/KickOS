@@ -140,9 +140,10 @@
 /* Worst-case bytes the kernel's C dispatch descends BELOW all of that, per class.
  *
  *   _PENDSV   0  handler mode uses SP_main.
- *   _SVC    512  KICKOS_KERNEL_STACKS 0 ONLY: the whole dispatch tree runs on the caller's
- *                PSP. The spawn stages its grant list on this stack: 9 grants measure 496,
- *                6 measure 440; arch_armv7m.cc refuses more than 9. Not zeroed at
+ *   _SVC    576  KICKOS_KERNEL_STACKS 0 ONLY: the whole dispatch tree runs on the caller's
+ *                PSP. The spawn stages its grant list on this stack and its parameter copies
+ *                in the kernel instance: 9 grants measure 548 through kos_task_create on due;
+ *                arch_armv7m.cc refuses more than 9. Not zeroed at
  *                KICKOS_KERNEL_STACKS 1: the gate scrapes it on every preset.
  *   _SVCK        the same dispatch on the kernel block, posture-dependent, below.
  *
@@ -152,11 +153,11 @@
  * tests/static/trap_redzone_indirect.txt binds every reachable indirect site to the one slot
  * that call reaches, and the gate refuses to answer while a reachable site is unbound. */
 #define KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_PENDSV 0
-#define KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_SVC 512
+#define KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_SVC 576
 
 /* KICKOS_TELEMETRY is the knob: the trace emitters and arch_shutdown's ring drain are compiled
  * by nothing else, and one fleet-wide figure would make every non-telemetry board reserve
- * KICKOS_THREAD_SLOTS blocks of a tail its image does not contain. bluepill-c8 has 3 slots
+ * a block per thread slot of a tail its image does not contain. bluepill-c8 has 3 slots
  * and 224 spare bytes per slot, so the telemetry figure fails to link it.
  *
  * KICKOS_BENCH is a smaller knob of the same kind, its arm printing from inside the dispatch:
@@ -194,11 +195,11 @@
 
 /* The measured descent of the two stubs a dying thread runs PRIVILEGED on its own stack:
  * kickos_thread_fault_exit and kickos_thread_slay_exit. The fault stub is the deeper at every
- * posture, reaching the console through kprintf_fault, which formats
+ * posture, reaching the console through kvprintf_fault, which formats
  * into KDIAG_FAULT_LINE_MAX bytes and not the 256 an ordinary kprintf gets.
  *
  * The kstacks=0 fallback, with no posture ladder: its presets have neither a telemetry nor a
- * bench variant and all measure 296. Where a block IS seated they are EXITK below. */
+ * bench variant and measure 360. Where a block IS seated they are EXITK below. */
 #define KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_EXIT 448
 
 /* THE SAME TWO STUBS ON THE KERNEL BLOCK. kickos_fault_stack_top answers with ctx.kernel_sp,
@@ -207,7 +208,7 @@
  * rather than their sum.
  *
  * It never binds: SVCK wins the block on every registered preset. Off telemetry it measures
- * 296 (328 on bench) under an enforced 448; on telemetry 952 stands over 800, down
+ * 360 to 440 (400 on bench) under an enforced 448; on telemetry 952 stands over 800, down
  * arch_shutdown's drain. */
 #if KICKOS_TELEMETRY
 #define KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_EXITK 952

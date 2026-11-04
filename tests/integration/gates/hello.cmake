@@ -32,6 +32,20 @@ endif()
 kickos_add_qemu_test(TARGET hello SCRIPT "${_hello_qemu}")
 kickos_add_qemu_test(TARGET hello_c SCRIPT "${_hello_qemu}")
 
+# tools/gdb/kickos.py against the emulator's gdb stub: a stop in the root task loads image 0's
+# program ELF, which is where its symbols are on a board whose images the kernel's link embeds.
+if(KICKOS_IMAGE_EMBED)
+  find_program(KICKOS_GDB NAMES gdb-multiarch)
+  set(_hello_gdb gdb-multiarch)
+  if(KICKOS_GDB)
+    set(_hello_gdb "${KICKOS_GDB}")
+  endif()
+  kickos_add_qemu_test(NAME ${_tag}_gdb_space TARGET hello
+    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_gdb_space.sh"
+    ARGS "${_hello_gdb}" "${CMAKE_NM}" "${PROJECT_SOURCE_DIR}"
+    BOOTS 2)
+endif()
+
 # The secondary-arrival gate, on the smallest image that boots the chip: every core comes up
 # in arch_init, so the app itself is only what carries the release there. The expected count is
 # the configured one, and the script boots the image a second time on a machine one core short.

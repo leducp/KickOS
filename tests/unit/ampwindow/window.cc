@@ -36,19 +36,27 @@ namespace
     // What the arms whose subject is not the tag publish. NON-ZERO on both fields, so a slot
     // reset leaves neither of them by accident.
     constexpr amp::ReplyTag TAG_CARRIED = {0x11112222u, 0x33334444u};
+    // The badge every send of those arms carries, non-zero for the same reason.
+    constexpr uint32_t BADGE_CARRIED = 0x5A5A0001u;
 
     // What publish_raw leaves in a malformed slot, distinct from the poison above: a refusal
     // that wrote the tag through would show up as this.
     constexpr amp::ReplyTag TAG_FORGED = {0x0BADF00Du, 0x0BADBEEFu};
 
-    amp::Sent send_tagged_as(uint32_t me, uint32_t to, uint32_t port, amp::ReplyTag const& tag,
-                             void const* payload, uint32_t len)
+    amp::Sent send_badged_as(uint32_t me, uint32_t to, uint32_t port, amp::ReplyTag const& tag,
+                             uint32_t badge, void const* payload, uint32_t len)
     {
         uint32_t const was = fix::g_node;
         fix::g_node = me;
-        amp::Sent const s = amp::send(to, port, tag, payload, len);
+        amp::Sent const s = amp::send(to, port, tag, badge, payload, len);
         fix::g_node = was;
         return s;
+    }
+
+    amp::Sent send_tagged_as(uint32_t me, uint32_t to, uint32_t port, amp::ReplyTag const& tag,
+                             void const* payload, uint32_t len)
+    {
+        return send_badged_as(me, to, port, tag, BADGE_CARRIED, payload, len);
     }
 
     amp::Sent send_as(uint32_t me, uint32_t to, uint32_t port, void const* payload, uint32_t len)
@@ -57,6 +65,7 @@ namespace
     }
 
     uint32_t g_last_slot = 0;
+    uint32_t g_last_badge = 0;
 
     // What a receiver's landing reads: the held call slot itself, which take_call no longer
     // copies out of.
@@ -74,7 +83,8 @@ namespace
     {
         uint32_t const was = fix::g_node;
         fix::g_node = me;
-        amp::Verdict const v = amp::take_call(from, out_len, out_port, out_tag, &g_last_slot);
+        amp::Verdict const v =
+            amp::take_call(from, out_len, out_port, out_tag, &g_last_badge, &g_last_slot);
         if (v == amp::Verdict::TOOK)
         {
             land_call(me, from, g_last_slot, *out_len, out);
@@ -90,9 +100,23 @@ namespace
         uint32_t len = 0;
         uint32_t port = amp::PORT_MAX;
         amp::ReplyTag tag = {};
+        uint32_t badge = 0;
         uint32_t const was = fix::g_node;
         fix::g_node = me;
-        amp::Verdict const v = amp::take_call(from, &len, &port, &tag, out_slot);
+        amp::Verdict const v = amp::take_call(from, &len, &port, &tag, &badge, out_slot);
+        fix::g_node = was;
+        return v;
+    }
+
+    amp::Verdict take_held_badged_as(uint32_t me, uint32_t from, uint32_t* out_slot,
+                                     uint32_t* out_badge)
+    {
+        uint32_t len = 0;
+        uint32_t port = amp::PORT_MAX;
+        amp::ReplyTag tag = {};
+        uint32_t const was = fix::g_node;
+        fix::g_node = me;
+        amp::Verdict const v = amp::take_call(from, &len, &port, &tag, out_badge, out_slot);
         fix::g_node = was;
         return v;
     }
@@ -372,7 +396,7 @@ namespace
         uint32_t held = 0;
         ASSERT_EQ(amp::Verdict::TOOK, take_held_as(NODE_A, NODE_B, &held));
         fix::g_node = NODE_A;
-        uint32_t const token = amp::inbound_seat(NODE_B, held, TAG_CARRIED);
+        uint32_t const token = amp::inbound_seat(NODE_B, held, TAG_CARRIED, BADGE_CARRIED);
         fix::g_node = 0;
         ASSERT_NE(amp::FAR_RECORD_NONE, token);
 
@@ -661,6 +685,33 @@ namespace
         EXPECT_EQ(sent.seq, t.tag.seq);
         EXPECT_EQ(3u, t.len);
         EXPECT_EQ(amp::PORT_ECHO, t.port);
+    }
+
+    // THE BADGE CROSSES WITH ITS CALL AND THE RECORD KEEPS IT, which is what a far receiver is
+    // handed; an answer carries none, the badge being the sender's and not the replier's.
+    TEST_F(AmpWindow, a_call_badge_crosses_into_its_record_and_an_answer_carries_none)
+    {
+        uint32_t const sent = 0xCAFEF00Du;
+        uint8_t const payload[2] = {0x41u, 0x42u};
+        ASSERT_EQ(amp::Sent::OK,
+                  send_badged_as(NODE_B, NODE_A, amp::PORT_ECHO, TAG_CARRIED, sent, payload, 2u));
+        uint32_t slot = 0;
+        ASSERT_EQ(amp::Verdict::TOOK, take_held_badged_as(NODE_A, NODE_B, &slot, &g_last_badge));
+        EXPECT_EQ(sent, g_last_badge) << "the take handed back another badge than the sender's";
+
+        fix::g_node = NODE_A;
+        uint32_t const token = amp::inbound_seat(NODE_B, slot, TAG_CARRIED, g_last_badge);
+        ASSERT_NE(amp::FAR_RECORD_NONE, token);
+        amp::Inbound const* const in = amp::inbound_at(token);
+        ASSERT_NE(nullptr, in);
+        EXPECT_EQ(sent, in->badge) << "the record lost the badge its slot carried";
+        amp::inbound_reply(token, payload, 1u);
+        fix::g_node = 0;
+
+        amp::Ring const& back = amp::ring_for(amp::Class::REPLY, NODE_B, NODE_A);
+        ASSERT_EQ(1u, back.head.v.load()) << "the record was not answered";
+        EXPECT_EQ(KOS_BADGE_NONE, back.slot[0].badge) << "the answer carried the caller's badge";
+        EXPECT_EQ(TAG_CARRIED.seq, back.slot[0].tag.seq);
     }
 
     TEST_F(AmpWindow, a_verdict_other_than_took_leaves_the_tag_with_the_other_three)
@@ -1130,8 +1181,9 @@ namespace
         uint32_t len = 0;
         uint32_t port = amp::PORT_MAX;
         amp::ReplyTag tag = {};
+        uint32_t badge = 0;
         fix::g_node = NODE_A;
-        ASSERT_EQ(amp::Verdict::TOOK, amp::take_call(NODE_B, &len, &port, &tag, &got));
+        ASSERT_EQ(amp::Verdict::TOOK, amp::take_call(NODE_B, &len, &port, &tag, &badge, &got));
         land_call(NODE_A, NODE_B, got, len, buf);
         fix::g_node = 0;
         EXPECT_EQ(2u % amp::RING_SLOTS, got);
@@ -1153,7 +1205,7 @@ namespace
             uint32_t slot = 0;
             ASSERT_EQ(amp::Verdict::TOOK, take_held_as(NODE_A, NODE_B, &slot));
             fix::g_node = NODE_A;
-            token[i] = amp::inbound_seat(NODE_B, slot, TAG_CARRIED);
+            token[i] = amp::inbound_seat(NODE_B, slot, TAG_CARRIED, BADGE_CARRIED);
             fix::g_node = 0;
             ASSERT_NE(amp::FAR_RECORD_NONE, token[i]);
         }
@@ -1200,7 +1252,7 @@ namespace
         ASSERT_EQ(amp::Verdict::TOOK, take_held_as(NODE_A, NODE_B, &fresh_slot));
         EXPECT_EQ(1u % amp::RING_SLOTS, fresh_slot);
         fix::g_node = NODE_A;
-        uint32_t const fresh = amp::inbound_seat(NODE_B, fresh_slot, TAG_CARRIED);
+        uint32_t const fresh = amp::inbound_seat(NODE_B, fresh_slot, TAG_CARRIED, BADGE_CARRIED);
         fix::g_node = 0;
         ASSERT_NE(amp::FAR_RECORD_NONE, fresh);
         // The same masked slot, so the same table row: only the generation tells them apart.
@@ -1453,7 +1505,7 @@ namespace
         uint32_t slot = 0;
         ASSERT_EQ(amp::Verdict::TOOK, take_held_as(NODE_A, NODE_B, &slot));
         fix::g_node = NODE_A;
-        uint32_t const token = amp::inbound_seat(NODE_B, slot, TAG_CARRIED);
+        uint32_t const token = amp::inbound_seat(NODE_B, slot, TAG_CARRIED, BADGE_CARRIED);
         fix::g_node = 0;
         ASSERT_NE(amp::FAR_RECORD_NONE, token);
 
@@ -1489,7 +1541,7 @@ namespace
         uint32_t slot = 0;
         ASSERT_EQ(amp::Verdict::TOOK, take_held_as(NODE_A, NODE_B, &slot));
         fix::g_node = NODE_A;
-        uint32_t const token = amp::inbound_seat(NODE_B, slot, TAG_CARRIED);
+        uint32_t const token = amp::inbound_seat(NODE_B, slot, TAG_CARRIED, BADGE_CARRIED);
         fix::g_node = 0;
         ASSERT_NE(amp::FAR_RECORD_NONE, token);
 
@@ -1583,7 +1635,7 @@ namespace
         uint32_t slot = 0;
         ASSERT_EQ(amp::Verdict::TOOK, take_held_as(NODE_A, NODE_B, &slot));
         fix::g_node = NODE_A;
-        uint32_t const token = amp::inbound_seat(NODE_B, slot, TAG_CARRIED);
+        uint32_t const token = amp::inbound_seat(NODE_B, slot, TAG_CARRIED, BADGE_CARRIED);
         fix::g_node = 0;
         ASSERT_NE(amp::FAR_RECORD_NONE, token);
 
@@ -1656,7 +1708,7 @@ namespace
         uint32_t slot = 0;
         ASSERT_EQ(amp::Verdict::TOOK, take_held_as(NODE_A, NODE_B, &slot));
         fix::g_node = NODE_A;
-        uint32_t const token = amp::inbound_seat(NODE_B, slot, TAG_CARRIED);
+        uint32_t const token = amp::inbound_seat(NODE_B, slot, TAG_CARRIED, BADGE_CARRIED);
         fix::g_node = 0;
         ASSERT_NE(amp::FAR_RECORD_NONE, token);
 
@@ -1747,7 +1799,7 @@ namespace
         uint32_t slot = 0;
         ASSERT_EQ(amp::Verdict::TOOK, take_held_as(NODE_A, NODE_B, &slot));
         fix::g_node = NODE_A;
-        uint32_t const token = amp::inbound_seat(NODE_B, slot, TAG_CARRIED);
+        uint32_t const token = amp::inbound_seat(NODE_B, slot, TAG_CARRIED, BADGE_CARRIED);
         fix::g_node = 0;
         ASSERT_NE(amp::FAR_RECORD_NONE, token);
 
@@ -2006,21 +2058,24 @@ namespace
         uint32_t port = amp::PORT_MAX;
         uint32_t slot = 0;
         amp::ReplyTag tag = {};
+        uint32_t badge = 0;
         fix::g_node = NODE_A;
-        ASSERT_EQ(amp::Verdict::TOOK, amp::take_call(NODE_B, &len, &port, &tag, &slot));
+        ASSERT_EQ(amp::Verdict::TOOK, amp::take_call(NODE_B, &len, &port, &tag, &badge, &slot));
         fix::g_node = 0;
 
-        // The malformed producer, on the slot this node is holding: a length no slot can hold
-        // and a port nothing minted.
+        // The malformed producer, on the slot this node is holding: a length no slot can hold,
+        // a port nothing minted and another badge.
         amp::Slot& s = amp::ring_for(amp::Class::CALL, NODE_A, NODE_B).slot[slot];
         s.len.store(amp::SLOT_BYTES * 4u);
         s.port.store(PORT_UNMINTED);
+        s.badge = ~BADGE_CARRIED;
         land_call(NODE_A, NODE_B, slot, len, buf);
 
         EXPECT_EQ(3u, len);
         EXPECT_EQ(amp::PORT_ECHO, port);
         EXPECT_EQ(TAG_CARRIED.thread, tag.thread);
         EXPECT_EQ(TAG_CARRIED.seq, tag.seq);
+        EXPECT_EQ(BADGE_CARRIED, badge);
         for (uint32_t i = 0; i < 3u; i++)
         {
             EXPECT_EQ(call[i], buf[i]) << "payload byte " << i;

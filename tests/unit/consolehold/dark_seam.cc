@@ -20,12 +20,14 @@
 namespace darkseam
 {
     std::string g_wire;
+    uint32_t g_sync_calls = 0;
     uint32_t g_reclaims = 0;
     bool g_window_free = true;
 
     void reset()
     {
         g_wire.clear();
+        g_sync_calls = 0;
         g_reclaims = 0;
         g_window_free = true;
     }
@@ -52,6 +54,7 @@ extern "C"
 {
     bool arch_console_write_sync(char const* buf, size_t n)
     {
+        darkseam::g_sync_calls = darkseam::g_sync_calls + 1;
         darkseam::g_wire.append(buf, n);
         return true;
     }

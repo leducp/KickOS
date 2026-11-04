@@ -5,15 +5,17 @@
 // heap's owner, so each address space has its own. malloc's is its own; every other static lock
 // and every FILE lock is the libc lock, so nesting two of those is recursion on one. newlib takes
 // malloc's inside the libc lock and never the reverse, and a thread taking the libc lock while it
-// holds malloc's traps. A holder that died inside malloc leaves the heap torn, so its lock's next
-// taker traps; a holder that died inside stdio hands the libc lock over held. NOT compiled for
-// the sim, where host glibc locks its own stdio and malloc.
+// holds malloc's traps. A holder that died holding either lock left what it guards torn, so the
+// lock's next taker traps, or on a chip that holds one task ends the image. NOT compiled for the
+// sim, where host glibc locks its own stdio and malloc.
 
+#include <kickos/chip_limits.h> // KICKOS_CHIP_ONE_TASK
 #include <kickos/sys.h>
 #include <kickos/sys/trap.h>
 
 #include <newlib.h>
 #include <sys/lock.h>
+#include <unistd.h>
 
 #if not defined(_RETARGETABLE_LOCKING)
 #error "this newlib has no retargetable locking, so stdio and malloc would run unlocked: build with KickOS toolchain 1.1 or later (tools/kickos-toolchain.sh)"
@@ -39,9 +41,20 @@ namespace
         return __atomic_load_n(&l.m.word, __ATOMIC_RELAXED) & ~KOS_WORD_WAITERS;
     }
 
-    // False only for a try that found the mutex held; any other refusal traps, and so does a
-    // dead owner of malloc's lock. A wait cancelled by a kill asks again at the kernel's entry,
-    // which ends the thread there, where a trap would end its task.
+    // On a chip that holds one task the init shares this libc, and the whole image ends.
+    [[noreturn]] void libc_lock_owner_died()
+    {
+#if KICKOS_CHIP_ONE_TASK
+        _exit(KOS_EXIT_FAULT);
+#else
+        KOS_TRAP_ILLEGAL();
+        __builtin_unreachable();
+#endif
+    }
+
+    // False only for a try that found the mutex held; any other refusal traps, a dead owner's
+    // included. A wait cancelled by a kill asks again at the kernel's entry, which ends the
+    // thread there, where a trap would end its task.
     bool libc_lock_take(LibcLock& l, uint32_t timeout_us)
     {
         int rc = kos_mutex_lock(&l.m, timeout_us);
@@ -53,11 +66,11 @@ namespace
         {
             return false;
         }
-        if (rc == -KOS_EOWNERDEAD and &l == &s_malloc)
+        if (rc == -KOS_EOWNERDEAD)
         {
-            KOS_TRAP_ILLEGAL();
+            libc_lock_owner_died();
         }
-        if (rc != 0 and rc != -KOS_EOWNERDEAD)
+        if (rc != 0)
         {
             KOS_TRAP_ILLEGAL();
         }
@@ -183,6 +196,25 @@ void __retarget_lock_release(_LOCK_T lock)
 void __retarget_lock_release_recursive(_LOCK_T lock)
 {
     libc_lock_release(lock_of(lock));
+}
+
+// The heap seat (newlib_sbrk.cc), which an image that allocates links; this no-op stands in where
+// none does.
+__attribute__((weak)) void kickos_heap_seat(void)
+{
+}
+
+// libc's own, with the heap seated at the first take: before the image's first allocation, from
+// whichever path makes it. libc's copy would collide with these.
+void __malloc_lock(struct _reent*)
+{
+    __retarget_lock_acquire_recursive(&__lock___malloc_recursive_mutex);
+    kickos_heap_seat();
+}
+
+void __malloc_unlock(struct _reent*)
+{
+    __retarget_lock_release_recursive(&__lock___malloc_recursive_mutex);
 }
 }
 

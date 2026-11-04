@@ -9,12 +9,14 @@
 // The init runs in an UNPRIVILEGED root holding a full authority word, and grants each task the
 // authority its composition declares.
 //
-// App and libstdc++ global constructors run in the kernel root thread BEFORE
-// kickos_init_entry is entered, so a constructor cannot depend on anything init
-// brings up. Where a backend translates, every other space starts from the image's pristine data
-// and runs them again, once, in whichever of its threads enters first (kickos_task_start), with
-// that thread's authority, priority and stack, before its entry. So a constructor must need no
-// authority a task lacks and must not wait on another thread of its space, which waits for it.
+// An image's global constructors run once, in whichever of its threads enters it first, with
+// that thread's authority, priority and stack, before its entry: the init's in the kernel root
+// thread BEFORE kickos_init_entry is entered, and where the init is an image of its own the
+// app's in the entry thread of the first task the init starts (kickos_image_start_once). Where a
+// backend translates, every other space starts from the image's pristine data and runs them
+// again, once, in whichever of its threads enters first (kickos_task_start). So a constructor
+// cannot depend on anything init brings up, must need no authority a task lacks and must not
+// wait on another thread of its image or space, which waits for it.
 // KICKOS_MIN_STACK_SIZE holds the toolchain runtime's startup (each translating arch's
 // <arch>_trap_stack.h TASK_START); an app whose own constructors go deeper sizes its stacks for
 // them.
@@ -31,12 +33,6 @@ extern "C"
 
 // The symbol the kernel boot path calls after kernel init.
 int kickos_init_entry(int argc, char** argv);
-
-struct kos_table_task;
-
-// KickOS::main's entry, a composition's `entry: kickos_main`: runs kickos_app_main with root's
-// kickos_init_args below as the task's entry thread and passes its status to exit().
-void kickos_main(struct kos_table_task const* self);
 
 // The root thread's own entry, which kmain hands to thread_create. It walks the app's ctor window
 // at KICKOS_PRIO_MAX, the priority the kernel creates root at (where a backend translates,
@@ -59,6 +55,15 @@ void kickos_root_entry(void* arg) __attribute__((visibility("hidden")));
 // rules as above.
 void kickos_task_start(void* arg, void (*entry)(void*)) __attribute__((visibility("hidden")));
 
+// The image's startup, once (above): a declared task's entry runs it, and so do root's and
+// kickos_task_start. Same placement and visibility rules as above.
+void kickos_image_start_once(void) __attribute__((visibility("hidden")));
+
+// Where each declared task runs an image of its own and no backend translates, the image's .data
+// copied from its template and its .bss zeroed, which its entry thread runs first at every start
+// of the task.
+void kickos_image_crt0(void) __attribute__((visibility("hidden")));
+
 // Where the user clock scales a counter by a rate only the kernel knows (x86_64), seats that
 // rate in the caller's space. kickos_task_start runs it before the image's startup, so no app
 // code reads the clock unseated.
@@ -68,9 +73,9 @@ void kickos_clock_seat(void) __attribute__((visibility("hidden")));
 // calling kickos_init_entry above.
 //
 // MUST stay defined app-side (libkickos_user.a), so the enforcement linker scripts route it into
-// the .appdata/.appbss grant every unprivileged thread holds (arch_domain_static_regions).
-// Kernel-side storage, or a kmain stack local outside the arena, faults an unprivileged root
-// before its first statement on every enforcing board.
+// each image's own window, which its threads hold (arch_domain_static_regions); kmain fills
+// every image's copy. Kernel-side storage, or a kmain stack local outside the arena, faults an
+// unprivileged root before its first statement on every enforcing board.
 //
 // argv is null (argc 0) on MCU. On the hosted sim it points into the host process's own argv,
 // which no grant covers.

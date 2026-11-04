@@ -19,7 +19,7 @@ set -u
 # them; status 2 when the member list was not read.
 eh_members() {
     awk '/^Archive member included/ { on = 1; next }
-         on && /^(Discarded input sections|Memory Configuration|Allocating common symbols)/ { exit }
+         on && /^(Discarded input sections|Memory Configuration|Allocating common symbols)/ { on = 0 }
          on && /^[^ \t]/ { print $1 }' "$1" > "$2"
     # An image takes kickos_user and the kernel from archives, so an empty list is a map this read
     # no longer understands.
@@ -93,7 +93,11 @@ fi
 [ "$#" -eq 1 ] || fail "usage: check_no_eh_runtime.sh [--control] <map>"
 MAP="$1"
 [ -f "$MAP" ] || fail "no link map at $MAP"
-eh_members "$MAP" "$TMP/members" "$TMP/eh" \
+image_map_set "$MAP" "$TMP/maps"
+while IFS= read -r _m; do
+    cat "$_m"
+done < "$TMP/maps" > "$TMP/all.map"
+eh_members "$TMP/all.map" "$TMP/members" "$TMP/eh" \
     || fail "$MAP lists no member of the kernel archive taken, so the member list was not read"
 if [ "$CONTROL" -eq 1 ]; then
     grep -q 'eh_personality' "$TMP/eh" \

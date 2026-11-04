@@ -17,11 +17,11 @@
 #define AMPPING_RECV_US (2u * 1000u * 1000u)
 #define AMPPING_IDLE_NS (100ull * 1000ull * 1000ull)
 
-void ampserve_main(kos_self_t const* self)
+int main(void)
 {
     kos_cap_t ep = KOS_CAP_NONE;
-    uint32_t const port = ampping_crossing(self, KOS_CAP_WAIT, KOS_AMP_NO_ENTRY, &ep);
-    kos_window_t const region = kos_grant_mem(self, AMPBOOK_NAME);
+    uint32_t const port = ampping_crossing(KOS_CAP_WAIT, KOS_AMP_NO_ENTRY, &ep);
+    kos_window_t const region = kos_grant_mem(AMPBOOK_NAME);
     struct ampbook_row* const book = (struct ampbook_row*)kos_window_addr(region);
     if (port == KOS_AMP_NO_ENTRY or ep == KOS_CAP_NONE or book == NULL
         or kos_window_size(region) < KICKOS_AMP_NODES * sizeof(struct ampbook_row))
@@ -31,7 +31,7 @@ void ampserve_main(kos_self_t const* self)
     }
     printf("ampping: node %u serves port %u\n", (unsigned)KOS_AMP_SELF_NODE, (unsigned)port);
     struct ampbook_row* const row = &book[KOS_AMP_SELF_NODE];
-    ampping_gate_serve(self, row);
+    ampping_gate_serve(row);
     // After the announcement is queued: node 0 prints nothing a gate reads before every row is set.
     atomic_store_explicit(&row->alive, port + 1u, memory_order_release);
 

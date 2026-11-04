@@ -13,7 +13,6 @@
 #include <kickos/sys/driver_service.h>
 #include <kickos/sys/errno.h>
 #include <kickos/sys/init_status.h>
-#include <kickos/sys/task_trampoline.h>
 
 #include <gtest/gtest.h>
 
@@ -83,6 +82,12 @@ namespace
         {
             system_ = &patched.system();
             fake::reset(harness::config(*system_));
+        }
+
+        void use(char const* name, fake::Config const& config)
+        {
+            system_ = &systems::find(name);
+            fake::reset(config);
         }
 
         Outcome run()
@@ -322,7 +327,7 @@ namespace
         });
         expect_idle(run());
         EXPECT_EQ(starts("late"), 1u);
-        EXPECT_EQ(fake::spawned("late").at(0)->params.task, fake::tasks().back().handle);
+        EXPECT_EQ(fake::spawned("late").at(0)->task, fake::tasks().back().handle);
     }
 
     TEST_F(Walk, a_task_without_a_live_handle_is_skipped_by_the_wait)
@@ -542,7 +547,7 @@ namespace
     TEST_F(Walk, an_ends_task_whose_start_fails_ends_the_system_cancelled)
     {
         use("default_xmc4800_relax");
-        fake::refuse("kos_thread_create", -KOS_ENOMEM);
+        fake::refuse("kos_task_create", -KOS_ENOMEM);
         Outcome const outcome = run();
         ASSERT_EQ(outcome.kind, Outcome::Kind::SHUTDOWN) << outcome.message;
         EXPECT_EQ(outcome.status, KOS_EXIT_CANCELLED);
@@ -554,7 +559,7 @@ namespace
     {
         char const* fn;
         int result;
-        // The calls between kos_task_create and the slay, in order.
+        // The start's calls, in order, from its first.
         std::vector<std::string> unwind;
     };
 
@@ -562,7 +567,7 @@ namespace
     {
     };
 
-    TEST_P(FailedStart, unwinds_its_step_then_is_slain_and_counted_as_a_death)
+    TEST_P(FailedStart, unwinds_its_step_and_is_counted_as_a_death)
     {
         FailedStep const& step = GetParam();
         use("alarm");
@@ -570,30 +575,22 @@ namespace
         expect_idle(run());
 
         std::vector<std::string> const relevant = {
-            "kos_task_create", "kos_task_sched_grant", "kos_task_watch", "kos_thread_affinity", "kos_irq_claim",
-            "kos_thread_create", "kos_handle_close", "kos_task_slay"};
+            "kos_task_create", "kos_task_watch", "kos_thread_affinity", "kos_irq_claim", "kos_handle_close",
+            "kos_task_slay"};
         std::vector<std::string> const seen = fake::sequence(relevant);
-        // The sensor is the first task the walk creates.
-        std::vector<std::string> expected = {"kos_task_create"};
-        expected.insert(expected.end(), step.unwind.begin(), step.unwind.end());
-        expected.push_back("kos_task_slay");
-        ASSERT_GE(seen.size(), expected.size());
-        EXPECT_EQ(std::vector<std::string>(seen.begin(), seen.begin() + static_cast<ptrdiff_t>(expected.size())),
-                  expected);
-        std::vector<fake::Call> const slays = fake::slays();
-        ASSERT_FALSE(slays.empty());
-        EXPECT_EQ(slays[0].args[0], fake::tasks()[0].handle);
-        EXPECT_EQ(slays[0].args[1], kickos::init::SLAY_TIMEOUT_US);
-        EXPECT_TRUE(fake::tasks()[0].released);
+        // The sensor is the first task the walk starts.
+        ASSERT_GE(seen.size(), step.unwind.size());
+        EXPECT_EQ(std::vector<std::string>(seen.begin(), seen.begin() + static_cast<ptrdiff_t>(step.unwind.size())),
+                  step.unwind);
+        EXPECT_TRUE(fake::slays().empty()) << "a start refused before its task exists slays nothing";
 
         // The restart that follows starts it.
         StatusFields const s = status("sensor");
         EXPECT_EQ(s.deaths, 1u);
         EXPECT_EQ(s.restarts_left, 2u);
-        EXPECT_EQ(starts("sensor"), 1u);
-        EXPECT_NE(fake::instance("sensor")->handle, fake::tasks()[0].handle) << "a new task";
+        EXPECT_EQ(fake::instance("sensor")->state & KOS_TASK_LIVE, static_cast<uint32_t>(KOS_TASK_LIVE));
 
-        // Reported once slain, naming its step and the answer.
+        // Reported, naming its step and the answer.
         std::string const line = std::string{"init: `sensor` failed to start: "} + step.fn + " answered "
                                  + std::to_string(step.result) + "\n";
         EXPECT_NE(fake::console().find(line), std::string::npos) << fake::console();
@@ -602,16 +599,12 @@ namespace
     INSTANTIATE_TEST_SUITE_P(
         Step, FailedStart,
         ::testing::Values(
-            FailedStep{"kos_task_sched_grant", -KOS_EPERM, {"kos_task_sched_grant", "kos_handle_close"}},
-            FailedStep{"kos_task_watch", -KOS_EACCES, {"kos_task_sched_grant", "kos_task_watch", "kos_handle_close"}},
-            FailedStep{"kos_thread_affinity", -KOS_EPERM,
-                       {"kos_task_sched_grant", "kos_task_watch", "kos_thread_affinity", "kos_handle_close"}},
+            FailedStep{"kos_thread_affinity", -KOS_EPERM, {"kos_thread_affinity", "kos_handle_close"}},
             FailedStep{"kos_irq_claim", -KOS_EBUSY,
-                       {"kos_task_sched_grant", "kos_task_watch", "kos_thread_affinity", "kos_irq_claim",
-                        "kos_thread_affinity", "kos_handle_close"}},
-            FailedStep{"kos_thread_create", -KOS_ENOMEM,
-                       {"kos_task_sched_grant", "kos_task_watch", "kos_thread_affinity", "kos_irq_claim",
-                        "kos_thread_create", "kos_handle_close", "kos_thread_affinity", "kos_handle_close"}}),
+                       {"kos_thread_affinity", "kos_irq_claim", "kos_thread_affinity", "kos_handle_close"}},
+            FailedStep{"kos_task_create", -KOS_ENOMEM,
+                       {"kos_thread_affinity", "kos_irq_claim", "kos_task_create", "kos_handle_close",
+                        "kos_handle_close", "kos_thread_affinity", "kos_handle_close"}}),
         [](::testing::TestParamInfo<FailedStep> const& p)
         {
             return std::string{p.param.fn};
@@ -620,11 +613,10 @@ namespace
     TEST_F(Walk, a_task_failing_every_start_is_restarted_while_its_count_lasts_then_dead_for_good)
     {
         use("golden_arm64");
-        // The sensor's watches, the only ones with a ready endpoint.
-        fake::refuse_if("kos_task_watch", -KOS_EACCES, 4,
+        fake::refuse_if("kos_task_create", -KOS_ENOMEM, 4,
                         [](fake::Call const& c)
                         {
-                            return c.args[2] != KOS_CAP_NONE;
+                            return c.text == "sensor";
                         });
         expect_idle(run());
         StatusFields const s = status("sensor");
@@ -667,7 +659,7 @@ namespace
         fake::refuse("kos_irq_claim", -KOS_EAGAIN, kickos::init::CLAIM_RETRIES + 1u);
         expect_idle(run());
         EXPECT_EQ(fake::calls_of("kos_sleep_ns").size(), kickos::init::CLAIM_RETRIES);
-        EXPECT_EQ(fake::slays().size(), 1u);
+        EXPECT_TRUE(fake::slays().empty()) << "the claim comes before the task";
         EXPECT_EQ(status("sensor").deaths, 1u);
         EXPECT_EQ(starts("sensor"), 1u) << "its restart claims at once";
     }
@@ -703,8 +695,9 @@ namespace
             Refusal{"kos_endpoint_create", -KOS_ENOMEM, 0, "init: kos_endpoint_create for `sensor` answered -12"},
             Refusal{"kos_notify_create", -KOS_EAGAIN, 1, "init: kos_notify_create for `health` answered -11"},
             Refusal{"kos_notify_badge", -KOS_EMFILE, 0, "init: kos_notify_badge for `sensor` answered -24"},
-            Refusal{"kos_task_create", -KOS_ENOMEM, 1, "init: kos_task_create for `health` answered -12"},
-            Refusal{"kos_handle_close", -KOS_EBADF, 0, "init: kos_handle_close of the badged copy for `sensor`"},
+            Refusal{"kos_program_find", -KOS_EMFILE, 0, "init: kos_program_find answered -24"},
+            Refusal{"kos_task_watch", -KOS_EACCES, 0, "init: kos_task_watch for `sensor` answered -13"},
+            Refusal{"kos_handle_close", -KOS_EBADF, 1, "init: kos_handle_close of the badged copy for `sensor`"},
             Refusal{"kos_notify_wait", -KOS_EINVAL, 0, "init: kos_notify_wait answered -22"},
             Refusal{"kos_task_state", -KOS_EBADF, 0, "init: kos_task_state for `sensor` answered -9"},
             Refusal{"kos_task_slay", -KOS_EPERM, 0, "init: kos_task_slay for `sensor` answered -1"},
@@ -723,12 +716,13 @@ namespace
         uint16_t const i = harness::index_of(system, task);
         kos_table_task const& t = v.tasks[i];
         fake::Thread const* const thread = fake::spawned(task).at(0);
-        EXPECT_EQ(thread->params.entry, &kickos::init::task_trampoline);
-        EXPECT_EQ(thread->params.arg, &t);
         EXPECT_EQ(thread->params.prio, t.priority);
-        EXPECT_EQ(thread->params.core_mask, t.core_mask);
+        if (t.core_mask != 0u)
+        {
+            EXPECT_EQ(fake::instance(task)->core_mask, t.core_mask);
+        }
         EXPECT_EQ(thread->params.authority, t.authority);
-        EXPECT_EQ(thread->params.task, fake::instance(task)->handle);
+        EXPECT_EQ(thread->task, fake::instance(task)->handle);
         EXPECT_EQ(thread->caps.size(), t.cap_grant_count);
         uint16_t windows = 0;
         for (uint16_t k = 0; k < t.grant_count; k++)
@@ -787,6 +781,12 @@ namespace
                 char const* const server_name = reinterpret_cast<char const*>(
                     v.regions + v.header->region_count) + v.tasks[server].name;
                 EXPECT_EQ(static_cast<int64_t>(c.object), fake::instance(server_name)->ready_object);
+                int64_t badge = -1;
+                if (g.badge != KOS_BADGE_NONE)
+                {
+                    badge = g.badge;
+                }
+                EXPECT_EQ(c.badge, badge) << "the copy does not carry the use's badge";
             }
             else if (g.kind == KOS_GRANT_NOTIFICATION)
             {
@@ -827,6 +827,68 @@ namespace
         EXPECT_EQ(health->windows[0].base, reinterpret_cast<uintptr_t>(fake::reservations()[1].base));
         EXPECT_EQ(health->windows[0].flags, KOS_WINDOW_RO);
         EXPECT_EQ(health->windows[1].base, reinterpret_cast<uintptr_t>(fake::reservations()[2].base));
+    }
+
+    // A BUS CLIENT is delegated a copy of the bus endpoint badged with its slot mask, which the init
+    // mints for the spawn and closes after it, so the init holds no client's badge.
+    // The capability a spawn of `task` was handed for its use of `path`.
+    fake::Cap const* use_cap(systems::System const& system, char const* task, char const* path)
+    {
+        TableView const v = view(system);
+        kos_table_task const& t = v.tasks[harness::index_of(system, task)];
+        char const* const strings = reinterpret_cast<char const*>(v.regions + v.header->region_count);
+        for (uint16_t k = 0; k < t.grant_count; k++)
+        {
+            kos_table_grant const& g = v.grants[t.first_grant + k];
+            if (g.kind == KOS_GRANT_ENDPOINT_USE and std::string{strings + g.path} == path)
+            {
+                return &fake::spawned(task).at(0)->caps.at(g.cap_slot - CAP0);
+            }
+        }
+        return nullptr;
+    }
+
+    // A BUS CLIENT is delegated a copy of the bus endpoint badged with its slot mask, which the init
+    // mints for the spawn and closes after it, so the init holds no client's badge.
+    TEST_F(Walk, a_bus_client_is_handed_a_copy_badged_with_its_slots_and_the_init_keeps_none)
+    {
+        use("golden_xmc");
+        fake::script({step::ready_all(), step::ready_all()});
+        expect_idle(run());
+        kos_cap_t const bus = harness::record(index("spi0")).endpoint;
+        std::vector<fake::Call> const mints = fake::calls_of("kos_endpoint_badge");
+        ASSERT_EQ(mints.size(), 1u) << "one badged use, minted once";
+        EXPECT_EQ(mints[0].args[0], bus) << "minted from another endpoint than the bus's";
+        EXPECT_EQ(mints[0].args[1], 1u) << "slot 0 is bit 0 of the mask";
+
+        fake::Cap const* const sensor = use_cap(*system_, "sensor", "/svc/spi0");
+        ASSERT_NE(sensor, nullptr);
+        EXPECT_EQ(static_cast<int64_t>(sensor->object), fake::object_of(bus));
+        EXPECT_EQ(sensor->rights, KOS_CAP_SIGNAL);
+        EXPECT_EQ(sensor->badge, 1) << "the sensor holds no copy badged with its slot";
+        fake::Cap const* const app = use_cap(*system_, "app", "/svc/sensor");
+        ASSERT_NE(app, nullptr);
+        EXPECT_EQ(app->badge, -1) << "a use naming no slots was handed a badge";
+        for (fake::Cap const& c : fake::table())
+        {
+            EXPECT_FALSE(fake::objects()[c.object].kind == fake::Kind::ENDPOINT and c.badge >= 0)
+                << "the init kept a client's badged copy";
+        }
+    }
+
+    TEST_F(Walk, a_refused_mint_is_a_failed_start_that_holds_nothing)
+    {
+        use("golden_xmc");
+        fake::refuse("kos_endpoint_badge", -KOS_EMFILE);
+        fake::script({step::ready_all(), step::ready_all(), step::ready_all()});
+        expect_idle(run());
+        EXPECT_EQ(fake::calls_of("kos_endpoint_badge").size(), 2u) << "its restart mints again";
+        EXPECT_EQ(status("sensor").deaths, 1u);
+        EXPECT_EQ(starts("sensor"), 1u) << "the refused start spawned a thread";
+        for (fake::Cap const& c : fake::table())
+        {
+            EXPECT_FALSE(fake::objects()[c.object].kind == fake::Kind::ENDPOINT and c.badge >= 0);
+        }
     }
 
     TEST_F(Walk, where_sp_is_masked_no_stack_is_reserved_or_handed_over)
@@ -879,11 +941,11 @@ namespace
         use("alarm");
         expect_idle(run());
         std::vector<std::string> const seen = fake::sequence(
-            {"kos_task_watch", "kos_thread_self", "kos_thread_affinity", "kos_irq_claim", "kos_thread_create",
+            {"kos_task_watch", "kos_thread_self", "kos_thread_affinity", "kos_irq_claim", "kos_task_create",
              "kos_handle_close"});
         std::vector<std::string> const expected = {
-            "kos_task_watch", "kos_thread_self", "kos_thread_affinity", "kos_irq_claim", "kos_thread_create",
-            "kos_handle_close", "kos_thread_self", "kos_thread_affinity", "kos_handle_close"};
+            "kos_thread_self", "kos_thread_affinity", "kos_irq_claim", "kos_task_create", "kos_handle_close",
+            "kos_task_watch", "kos_handle_close", "kos_thread_self", "kos_thread_affinity", "kos_handle_close"};
         ASSERT_GE(seen.size(), expected.size());
         EXPECT_EQ(std::vector<std::string>(seen.begin(), seen.begin() + static_cast<ptrdiff_t>(expected.size())),
                   expected);
@@ -913,24 +975,23 @@ namespace
 
     TEST_F(Walk, a_failed_start_whose_slay_does_not_empty_waits_for_its_death)
     {
-        use("alarm");
-        fake::refuse("kos_task_slay", -KOS_ETIMEDOUT);
-        fake::refuse("kos_thread_create", -KOS_ENOMEM);
+        // A console driver's handover fails after its task exists; a user task's start never does.
+        fake::Config c = harness::config(systems::find("golden_xmc"));
+        c.console_receives = false;
+        use("golden_xmc", c);
+        fake::refuse("kos_task_slay", -KOS_ETIMEDOUT, 2);
         fake::script({
             [this]
             {
                 // Held, not yet counted, and not started again.
-                EXPECT_EQ(status("sensor").deaths, 0u);
-                EXPECT_TRUE(fake::spawned("sensor").empty());
-                EXPECT_EQ(fake::calls_of("kos_task_create").size(), 2u) << "the sensor once, and health";
-                fake::die_task(fake::tasks()[0].handle);
+                EXPECT_EQ(status("console").deaths, 0u);
+                ASSERT_EQ(fake::slays().size(), 2u) << "the handover's, then the failed start's";
+                fake::die_task(static_cast<kos_task_t>(fake::slays()[1].args[0]));
             },
         });
         expect_idle(run());
-        EXPECT_EQ(status("sensor").deaths, 1u);
-        EXPECT_EQ(starts("sensor"), 1u);
+        EXPECT_EQ(status("console").deaths, 1u) << "counted once, at its death";
         EXPECT_EQ(fake::releases().size(), 1u);
-        EXPECT_NE(fake::console().find("init: `sensor` keeps members past its slay\n"), std::string::npos);
     }
 
     // --- the generation ----------------------------------------------------------------------
@@ -1047,24 +1108,18 @@ namespace
         expect_idle(run());
         fake::Thread const* const app = fake::spawned("app").at(0);
         EXPECT_EQ(app->params.prio, 8u);
-        bool granted = false;
-        for (fake::Call const& c : fake::calls_of("kos_task_sched_grant"))
-        {
-            if (c.args[0] == app->task)
-            {
-                EXPECT_EQ(c.args[1], 20u);
-                granted = true;
-            }
-        }
-        EXPECT_TRUE(granted);
+        ASSERT_NE(fake::instance("app"), nullptr);
+        EXPECT_EQ(fake::instance("app")->ceiling, 20u) << "the declaration's ceiling, which the create takes";
+        EXPECT_EQ(fake::instance("app")->decl, harness::index_of(patched.system(), "app") + 1u)
+            << "app is created from its own declaration";
 
         // The board default: main at 2 under the build's top priority.
         use("default_qemu_arm64");
         expect_idle(run());
         fake::Thread const* const main = fake::spawned("main").at(0);
         EXPECT_EQ(main->params.prio, 2u);
-        ASSERT_EQ(fake::calls_of("kos_task_sched_grant").size(), 1u);
-        EXPECT_EQ(fake::calls_of("kos_task_sched_grant")[0].args[1], 31u);
+        ASSERT_NE(fake::instance("main"), nullptr);
+        EXPECT_EQ(fake::instance("main")->ceiling, 31u);
     }
 
     TEST_F(Walk, a_ceiling_below_the_task_s_priority_is_refused_at_boot)
@@ -1163,7 +1218,7 @@ namespace
         size_t spawns = 0;
         for (size_t k = 0; k < calls.size(); k++)
         {
-            if (calls[k].fn == "kos_thread_create" and calls[k].text == "sensor")
+            if (calls[k].fn == "kos_task_create" and calls[k].text == "sensor")
             {
                 spawns++;
                 if (spawns == 2u)

@@ -4,9 +4,8 @@
 // SPI endpoint service over the linked driver class. CONFIG calls
 // kos_spi_device_open; XFER calls kos_spi_transfer. The driver owns bus
 // setup and teardown outside this protocol.
-// Device slots are indexed by the client's byte, so only one trusted client
-// is supported. Its SIGNAL-only cap cannot be delegated. Sharing among
-// untrusted clients would require badged endpoints.
+// A client reaches the device slots its badge names, bit d for slot d; the
+// composition gives each slot to one client.
 
 #ifndef KICKOS_SYS_SPI_SERVICE_H
 #define KICKOS_SYS_SPI_SERVICE_H
@@ -57,6 +56,14 @@ inline size_t reply_error(unsigned char* buf, int16_t status)
     return sizeof(rsp);
 }
 
+// Whether the client whose capability carries `badge` may name device slot `device`: bit
+// `device` of its badge. An unbadged client reaches no slot.
+inline bool slot_granted(uint32_t badge, uint8_t device)
+{
+    return ((badge >> device) & 1u) != 0u;
+}
+static_assert(KOS_BUS_DEV_MAX <= 32, "a client's slot mask is its 32-bit badge");
+
 // One device handle per kos_bus_req.device. A slot with no CONFIG yet holds no handle, and a
 // transfer naming it is refused rather than run against a zeroed profile.
 struct SlotTable
@@ -80,7 +87,8 @@ static_assert(sizeof(struct kos_bus_req) + sizeof(struct kos_bus_seg) > sizeof(s
               "the reply header is wider than the framing the gather skips, so the in-place "
               "move would be an ASCENDING overlapping copy and would read bytes it has "
               "already overwritten");
-inline size_t serve_one(struct kos_spi_bus* bus, SlotTable& slots, unsigned char* buf, size_t n)
+inline size_t serve_one(struct kos_spi_bus* bus, SlotTable& slots, uint32_t badge, unsigned char* buf,
+                        size_t n)
 {
     if (n < sizeof(struct kos_bus_req))
     {
@@ -105,6 +113,10 @@ inline size_t serve_one(struct kos_spi_bus* bus, SlotTable& slots, unsigned char
     {
         return reply_error(buf, -KOS_EINVAL);
     }
+    if (not slot_granted(badge, req.device))
+    {
+        return reply_error(buf, -KOS_EACCES); // another client's slot, or none of this one's
+    }
 
     if (req.op == KOS_BUS_OP_CONFIG)
     {
@@ -122,8 +134,8 @@ inline size_t serve_one(struct kos_spi_bus* bus, SlotTable& slots, unsigned char
             return reply_error(buf, -KOS_EINVAL);
         }
 
-        // The device slot is the caller's own request byte; cfg.addr is I2C's and has no
-        // class field to land in.
+        // The device slot is the caller's request byte, which its badge granted above; cfg.addr
+        // is I2C's and has no class field to land in.
         struct kos_spi_device_config dcfg;
         dcfg.hz = cfg.hz;
         dcfg.slot = req.device;
@@ -221,6 +233,8 @@ inline int32_t serve_loop(struct kos_spi_bus* bus)
     while (true)
     {
         opts.info.reply_cap = KOS_CAP_NONE;
+        // Never the previous client's: a receive that wrote no info grants no slot.
+        opts.info.badge = KOS_BADGE_NONE;
         long const n = kos_reply_recv(reply_cap, msg,
                                       kos_call_lens_pack(reply_len, sizeof(msg)), &opts);
         reply_cap = KOS_CAP_NONE;
@@ -238,7 +252,7 @@ inline int32_t serve_loop(struct kos_spi_bus* bus)
         {
             continue; // plain send: not part of the bus call/reply protocol
         }
-        reply_len = serve_one(bus, slots, msg, static_cast<size_t>(n));
+        reply_len = serve_one(bus, slots, opts.info.badge, msg, static_cast<size_t>(n));
         reply_cap = opts.info.reply_cap;
     }
 }

@@ -81,9 +81,9 @@ SECTIONS
     __kickos_code_start = ORIGIN(FLASH);
     __kickos_code_end = ORIGIN(FLASH) + LENGTH(FLASH);
 
-    /* Boot Data.length: the on-flash image extent, from flash base to the end of the loaded
-       .data (highest LMA). */
-    __boot_image_length = LOADADDR(.data) + SIZEOF(.data) - ORIGIN(FLASH);
+    /* Boot Data.length: the on-flash image extent, from flash base to the end of image 0's
+       code span, placed last, whose .data load image is the highest LMA. */
+    __boot_image_length = __kickos_image0_code_end - ORIGIN(FLASH);
 
     KICKOS_CORTEXM_DISCARD
 }

@@ -14,7 +14,7 @@
 // Pool use scales to the board: the soak first PROBES the concurrent thread budget
 // (spawn parked threads until one is refused), then sizes the ping-pong pairs and
 // sleepers to fit it, so it runs a real soak on ANY pool instead of SKIPping the small
-// boards. The probed budget is KICKOS_MAX_THREADS less main's own slot at most. The printed
+// boards. The probed budget is main's THREADS budget less its own slot at most. The printed
 // counts are NOT fixed: they shrink from
 // MAX_PAIRS/MAX_SLEEPERS with the probed budget, so any knob that moves the thread pool
 // moves them. Every create/spawn is still checked: a board too small even for one pair
@@ -32,15 +32,16 @@ namespace
 {
     constexpr int MAX_PAIRS = 3;      // ping-pong pairs on a large pool (array sizing)
     constexpr int MAX_SLEEPERS = 6;   // concurrent sleepers on a large pool
-    constexpr int PROBE_MAX = 64;     // cap on the budget probe (any real pool <= this)
+    constexpr int PROBE_MAX = STRESS_THREADS; // main's THREADS budget; main holds one of its slots
     constexpr int ROUNDS = 3000;      // handoffs per ping-pong thread
     constexpr int NAPS = 100;         // sleeps per sleeper
     constexpr int CHURN_GENERATIONS = 170; // ~2000 spawn/exit cycles total
     // pairs/sleepers/churn-batch are sized at runtime from the probed budget (main).
     constexpr uint64_t NAP_MIN_NS = 80000ull;    // 80 us
     constexpr uint64_t NAP_SPAN_NS = 400000ull;  // + up to 400 us
+    constexpr uint64_t LINGER_NS = 20000000ull;  // 20 ms between a worker's g_done post and its exit
 
-    kos_sem_t g_done = KOS_SEM_INIT(0);  // completion counter: each worker posts once at exit
+    kos_sem_t g_done = KOS_SEM_INIT(0);  // completion counter: each worker posts once as it finishes
     kos_sem_t g_mtx = KOS_SEM_INIT(1);   // binary semaphore guarding the shared counters
     kos_sem_t g_gate = KOS_SEM_INIT(0);  // budget-probe gate: probers park here until released
     kos_sem_t g_start = KOS_SEM_INIT(0); // posted once per pair once every worker exists
@@ -55,6 +56,14 @@ namespace
 
     void lock() { kos_sem_wait(&g_mtx, KOS_TIMEOUT_NONE); }
     void unlock() { kos_sem_post(&g_mtx); }
+
+    // The linger keeps the slot held past the post, so a spawn on the post alone finds the budget
+    // short on every board.
+    void done()
+    {
+        kos_sem_post(&g_done);
+        kos_sleep_ns(LINGER_NS);
+    }
 
     // Per-thread LCG (seeded off the thread index): deterministic, no shared state.
     uint32_t lcg(uint32_t* s)
@@ -86,7 +95,7 @@ namespace
             g_handoffs++;
             unlock();
         }
-        kos_sem_post(&g_done);
+        done();
     }
 
     void pong(void* arg)
@@ -102,7 +111,7 @@ namespace
             g_handoffs++;
             unlock();
         }
-        kos_sem_post(&g_done);
+        done();
     }
 
     void sleeper(void* arg)
@@ -116,20 +125,25 @@ namespace
             g_naps_done++;
             unlock();
         }
-        kos_sem_post(&g_done);
+        done();
     }
 
     // Spawn/exit churn worker: bump the counter, signal done, return (the arch
-    // trampoline routes the return through exit_current -> EXITED). MUST run above
-    // the driver's priority (root = KICKOS_PRIO_MIN+1): that is the guarantee it
-    // reaches EXITED before the driver is rescheduled to spawn the next batch, so its
-    // slot is reclaimable in time. Below root, reclaim can miss it -> spurious FAIL.
-    void churner(void*)
+    // trampoline routes the return through exit_current -> EXITED). A non-null arg lingers as
+    // done() does.
+    void churner(void* arg)
     {
         lock();
         g_churn_runs++;
         unlock();
-        kos_sem_post(&g_done);
+        if (arg != nullptr)
+        {
+            done();
+        }
+        else
+        {
+            kos_sem_post(&g_done);
+        }
     }
 
     // Budget probe: park on the gate until main releases it, then exit. Spawned
@@ -137,13 +151,25 @@ namespace
     void prober(void*)
     {
         kos_sem_wait(&g_gate, KOS_TIMEOUT_NONE);
-        kos_sem_post(&g_done);
+        done();
     }
 
-    // Concurrent thread budget = how many prober threads can be live at once. Root holds a
-    // pool slot the whole run and the pool is sized one above KICKOS_MAX_THREADS, so this
-    // still reaches KICKOS_MAX_THREADS minus whatever driver tasks hold. Spawn until
-    // refused, then release + join them all, leaving the pool empty again.
+    // The threads of one phase: the probers, the conservation set or a churn batch.
+    kos::thread::Handle g_spawned[PROBE_MAX];
+
+    // A g_done post comes before the poster's exit frees its slot, so each thread is also joined
+    // by handle before its slot is needed again.
+    void join_spawned(int n)
+    {
+        for (int i = 0; i < n; i++)
+        {
+            (void)g_spawned[i].join();
+        }
+    }
+
+    // Concurrent thread budget = how many prober threads can be live at once: main's THREADS
+    // budget less main itself, whatever other tasks hold. Spawn until refused, then release +
+    // join them all, leaving the budget whole again.
     int probe_budget()
     {
         int n = 0;
@@ -154,6 +180,7 @@ namespace
             {
                 break;
             }
+            g_spawned[n] = t;
             n++;
         }
         for (int i = 0; i < n; i++)
@@ -162,8 +189,9 @@ namespace
         }
         for (int i = 0; i < n; i++)
         {
-            kos_sem_wait(&g_done, KOS_TIMEOUT_NONE); // join (also reclaims their slots)
+            kos_sem_wait(&g_done, KOS_TIMEOUT_NONE);
         }
+        join_spawned(n);
         return n;
     }
 }
@@ -204,6 +232,8 @@ int run_stress_round(int pairs, int sleepers, int live)
             ok = false;
             break;
         }
+        g_spawned[spawned] = a;
+        g_spawned[spawned + 1] = b;
         spawned += 2;
     }
     for (int i = 0; ok and i < sleepers; i++)
@@ -216,6 +246,7 @@ int run_stress_round(int pairs, int sleepers, int live)
             ok = false;
             break;
         }
+        g_spawned[spawned] = t;
         spawned++;
     }
 
@@ -241,6 +272,7 @@ int run_stress_round(int pairs, int sleepers, int live)
     {
         kos_sem_wait(&g_done, KOS_TIMEOUT_NONE);
     }
+    join_spawned(spawned);
 
     // Churn phase: the conservation workers above are all EXITED now, so their pool
     // slots must be reclaimed here: live*CHURN_GENERATIONS >> the pool. A spawn
@@ -253,17 +285,26 @@ int run_stress_round(int pairs, int sleepers, int live)
         int batch = 0;
         for (int b = 0; b < live; b++)
         {
-            auto t = kos::thread::create(churner, nullptr, "churn", 10);
+            // Two batches: after a lone one, a churner that preempts main to its exit frees a
+            // slot for each spawn.
+            void* linger = nullptr;
+            if (g < 2)
+            {
+                linger = &g_done;
+            }
+            auto t = kos::thread::create(churner, linger, "churn", 10);
             if (not t.valid())
             {
                 break;
             }
+            g_spawned[batch] = t;
             batch++;
         }
         for (int b = 0; b < batch; b++)
         {
             kos_sem_wait(&g_done, KOS_TIMEOUT_NONE); // join only what this batch actually spawned
         }
+        join_spawned(batch);
         if (batch != live)
         {
             churn_ok = false; // a spawn failed mid-batch: reclamation did not free a slot

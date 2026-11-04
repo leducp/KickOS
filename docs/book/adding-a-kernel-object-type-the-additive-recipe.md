@@ -20,7 +20,7 @@ array, one resolve case, and one arm in each lifecycle step.** Nothing existing 
 shape; each step merely gains a case.
 
 The capability table delivers half of this for free ([Chapter 8.1](handles-and-the-resolve-chokepoint.md)): `CapEntry` is a
-fixed 8 bytes, and `cap_lookup` / `cap_install` / `handle_close` are type-agnostic. But
+fixed 16 bytes, and `cap_lookup` / `cap_install` / `handle_close` are type-agnostic. But
 a capability only *names* an object; something must own the object's storage and its
 lifetime. That is the object side, and left naive it is exactly where additivity leaks.
 
@@ -223,7 +223,7 @@ Two guardrails are worth writing down because they bite silently otherwise:
 
 - **The refcount is `uint8_t`, and the bound is enforced at RUNTIME, not by an assert.**
   The most references an object can accrue is one per possible holder, so the naive bound
-  is `KICKOS_MAX_THREADS * KICKOS_MAX_HANDLES`. Do **not** weld that product into a
+  is `KICKOS_BUDGET_THREADS` times a table width. Do **not** weld that product into a
   `static_assert`: it is a worst case nothing approaches, it omits the boot TCBs and the
   kernel's own console reference, and stating it correctly ties two provisioning knobs
   together tighter than the runtime needs. Instead the ONE increment site refuses:

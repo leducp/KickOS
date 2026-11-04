@@ -6,3 +6,5 @@ set(KICKOS_BOARD_ID "bluepill-c8")
 set(KICKOS_ARCH "armv7m")
 set(KICKOS_CHIP "stm32f103")
 set(KICKOS_BOARD_NEWLIB "nano")
+# 64 KiB of flash: the kernel keeps sharing image 0's runtime, linked in one link with it.
+set(KICKOS_BOARD_IMAGE_SPLIT OFF)

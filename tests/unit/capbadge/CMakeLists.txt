@@ -6,3 +6,7 @@
 # entry. The packing itself is tests/unit/capreply's, which drives the header standalone.
 kickos_add_unit_test(NAME cap_badge SOURCES cap_badge.cc
   LIBRARIES kickos_kseam)
+
+# A task watch kept across a generation wrap of its notification's slot, refused at the raise.
+kickos_add_unit_test(NAME task_stale_watch SOURCES stale_watch.cc
+  LIBRARIES kickos_kseam)

@@ -54,11 +54,8 @@ namespace kickos
         seated = r != nullptr and aspace_user_va(AMP_SHARE_BASE) == AMP_SHARE_BASE
                  and (AMP_SHARE_BASE % g) == 0 and (AMP_SHARE_SIZE % g) == 0
                  and r->reserve(AMP_SHARE_BASE, AMP_SHARE_SIZE / g, VR_SHARE);
-#elif KICKOS_HAVE_MPU
-        seated = ram_owner_seat(root->task, AMP_SHARE_BASE, AMP_SHARE_SIZE);
 #else
-        (void)root;
-        seated = true;
+        seated = ram_owner_seat(root->task, AMP_SHARE_BASE, AMP_SHARE_SIZE);
 #endif
         if (not seated)
         {

@@ -1,30 +1,19 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The packaged drivers the xmc4800-relax golden runs, as descriptors of the shapes their
-// catalogue entries declare, started through the real bring-up over the scripted kernel.
+// The packaged drivers' STARTs the goldens' tables name. The init creates a driver's task and its
+// entry thread runs the START, which the scripted kernel never runs: each START here refuses.
 
 #ifndef KICKOS_TESTS_UNIT_INITWALK_DRIVERS_H
 #define KICKOS_TESTS_UNIT_INITWALK_DRIVERS_H
 
-#include "fake_kernel.h"
+struct kos_driver_instance;
 
-namespace drivers
+extern "C"
 {
-    // What a spawned driver thread does that the init sees: the console's IRQ thread sets its
-    // ring block's readiness latch unless `latch` is false. With `uncached_console` the console's
-    // descriptor types its ring block KOS_MEM_NOCACHE.
-    struct Behaviour
-    {
-        bool latch = true;
-        bool uncached_console = false;
-    };
-
-    // Reset with each run of the walk.
-    extern Behaviour behaviour;
-
-    // The fake's spawn hook.
-    void spawned(fake::Thread const& thread);
+    int xmcuartirq_console_start(struct kos_driver_instance* instance);
+    int testdrv_start(struct kos_driver_instance* instance);
+    int xmc_spi0_start(struct kos_driver_instance* instance);
 }
 
 #endif

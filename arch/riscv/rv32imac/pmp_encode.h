@@ -40,6 +40,28 @@ namespace kickos
             return static_cast<uint8_t>(c);
         }
 
+        // The user code window: entry 8 (OFF) holds the base, entry 9 (TOR, R and X) the top.
+        // pmpaddr8/9 and the byte pair of pmpcfg2 that carries both entries.
+        struct PmpCodeWindow
+        {
+            uint32_t base_addr;
+            uint32_t top_addr;
+            uint32_t cfg2;
+        };
+
+        constexpr unsigned PMP_CODE_BASE_ENTRY = 8u;
+        constexpr unsigned PMP_CODE_TOP_ENTRY = 9u;
+
+        // base and top are word aligned, and top is the first byte past the last image's code.
+        inline PmpCodeWindow pmp_code_window(uintptr_t base, uintptr_t top)
+        {
+            PmpCodeWindow w;
+            w.base_addr = static_cast<uint32_t>(base) >> 2;
+            w.top_addr = static_cast<uint32_t>(top) >> 2;
+            w.cfg2 = (0x08u | 0x04u | 0x01u) << 8; // entry 9: TOR | X | R
+            return w;
+        }
+
         // A region PMP cannot name is left cfg 0, which grants no access: the encoding fails
         // closed.
         inline uint32_t pmp_encode(struct arch_mpu_region const* regions, size_t n,

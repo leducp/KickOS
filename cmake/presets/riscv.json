@@ -85,7 +85,7 @@
       "name": "esp32c6-wroom-bench",
       "displayName": "ESP32-C6-WROOM-1 + KICKOS_BENCH - the call/reply phase decomposition, enforcing",
       "inherits": "esp32c6-wroom",
-      "cacheVariables": { "KICKOS_CONFIG_VARIANT": "bench", "KICKOS_CODE_SIZE": "256K" }
+      "cacheVariables": { "KICKOS_CONFIG_VARIANT": "bench" }
     },
     {
       "name": "esp32c6-wroom-amp2-n0",

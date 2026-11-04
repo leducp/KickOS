@@ -60,24 +60,29 @@ The entry a table holds carries the four properties above:
 struct CapEntry
 {
     int32_t obj;                    // the GLOBAL generational object handle this cap names
+    uint32_t obj_gen;               // the pool slot's whole generation, checked at resolve
     uint8_t type   : KCAP_TYPE_BITS;   // CapType -- checked at resolve
     uint8_t seq_lo : KCAP_REPLY_SEQ_LO_BITS;
     uint8_t rights : KCAP_RIGHTS_BITS; // WAIT / SIGNAL at resolve; TRANSFER at the delegate site
     uint8_t seq_hi : KCAP_REPLY_SEQ_HI_BITS;
     uint16_t gen;                   // per-slot cap generation, bumped on close
+    uint32_t badge;                 // what this copy's holder is known by, or 0 for none
 };
 ```
 
-Read the four properties, then read the two fields that are not any of them. Type and
-rights each need three bits and are given a byte each, and the five and three bits left
-over are not padding: one capability type, the one-shot reply capability of [Chapter 8.5](synchronous-call-and-reply.md),
+Read the four properties, then read the fields that are not any of them. Type and
+rights each need four bits and share a byte with the four bits left over beside each, which
+are not padding: one capability type, the one-shot reply capability of [Chapter 8.5](synchronous-call-and-reply.md),
 needs somewhere to keep the call sequence that tells a late reply from a live one, and
 its `obj` field is already full to the last bit with a thread handle. Those spare bits
 are where that sequence goes. [Chapter 8.7](stale-handles-generation-width-and-allocation-policy.md) works the case through, because the general
 move is worth having: when a field is exactly full, look for unspent bits in its
 neighbours before concluding that the width is the constraint. For every other capability
-type the two are simply unused, which is why the entry still reads as the four properties
-and eight bytes total.
+type those bits are simply unused. The badge is a value the party handing a copy out chooses,
+which every message sent through an endpoint copy delivers to the receiver, or the one bit a
+signal through a notification copy raises. It is what lets a server tell its clients apart. The
+object generation beside the handle is the slot's whole generation, of which the handle carries
+only 16 bits. The entry is sixteen bytes.
 
 ### The handle a thread holds, and how it gets there
 
@@ -307,8 +312,8 @@ state, never the word "safe".
 ## The width choice, concretely
 
 The cap generation is **16 bits**, at parity with the object pool's `uint16_t` guard
-(`kernel/include/kickos/slotpool.h`), and it costs **zero extra bytes** -- it occupies what
-would otherwise be padding in the 8-byte `CapEntry`. Sixteen bits means one erroneous use in
+(`kernel/include/kickos/slotpool.h`), and it costs **zero extra bytes** -- it occupies the two
+bytes the handle, the type and the rights leave in the first eight of the `CapEntry`. Sixteen bits means one erroneous use in
 65536 aliases instead of failing; bar (2) holds by construction regardless of that number.
 The field width and the storage width are deliberately equal, because the two sites that
 bump the counter do so *unmasked*: one bit narrower and the counter would overflow past what

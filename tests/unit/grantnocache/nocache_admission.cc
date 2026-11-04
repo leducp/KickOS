@@ -7,6 +7,8 @@
 // handle codec and its memory-type refusal; and kernel/thread/thread.cc's ram_region_admit,
 // the order and the answers of every path's RAM admission.
 
+#include "../common/seam_pools.h"
+
 #include <kickos/domain.h>
 #include <kickos/grant.h>
 #include <kickos/instance.h>
@@ -33,6 +35,7 @@ RegionSeam g_region_seam = {.ram_base = ARENA_BASE,
                             .ram_size = ARENA_SIZE,
                             .min_region = ARENA_REGION,
                             .pow2 = 1,
+                            .apertures = arch_reserved_span(APERTURES),
                             .bus_masters = arch_reserved_span(BUS_MASTERS)};
 
 namespace
@@ -102,11 +105,11 @@ namespace kickos
 
     namespace
     {
-        constexpr int SLOT = KICKOS_MAX_DOMAINS - 1;
+        constexpr int SLOT = KICKOS_SEAM_DOMAINS - 1;
 
         Domain* live_slot(uint16_t generation)
         {
-            Domain* const d = &kernel().domains[SLOT];
+            Domain* const d = &kernel().domains()[SLOT];
             *d = Domain{};
             d->generation = generation;
             d->refcount = 1;
@@ -198,7 +201,8 @@ namespace kickos
         g_region_seam.nocache = ARCH_MPU_NOCACHE_PROGRAMMED;
         int err = 0;
 
-        EXPECT_NE(domain_for(0u, ARENA_RAM, 64u, ARCH_MPU_NOCACHE, nullptr, &err), nullptr);
+        held_ = domain_for(0u, ARENA_RAM, 64u, ARCH_MPU_NOCACHE, nullptr, &err);
+        EXPECT_NE(held_, nullptr);
         EXPECT_EQ(err, 0);
     }
 

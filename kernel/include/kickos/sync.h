@@ -104,16 +104,24 @@ namespace kickos
     // writers never block, so the wait is theirs alone. Caller holds no lock.
     void console_publish_drain(void);
 
-    // The ring refused the calling writer's line: on a backend with no TX interrupt the writer
-    // drains it itself until the line fits, and on one whose TX interrupt drains it the writer
-    // parks with no deadline until that drain frees the room (console_tx_room_freed), a publish
-    // or a reclaim. 0 to offer the line again, or -KOS_ECANCELED where the caller is cancelled,
-    // before or during it. Caller holds no lock.
-    int console_room_wait(char const* buf, size_t n, int crlf);
+    // The console refused the calling writer's line of `needed` ring bytes. Where another context
+    // is mid-line outside the ring the writer parks until that line ends. Otherwise, on a backend
+    // with no TX interrupt the writer drains the ring itself until the line fits, and on one whose
+    // TX interrupt drains it the writer parks until that drain frees the room
+    // (console_tx_room_freed), a publish or a reclaim. 0 to offer the line again, -KOS_ECANCELED where the caller is
+    // cancelled, before or during it, and -KOS_ETIMEDOUT once `stall_us` passed with no byte
+    // leaving the ring; KOS_TIMEOUT_NONE waits with no bound. Caller holds no lock.
+    int console_room_wait(uint32_t needed, uint32_t stall_us);
+    // What holds `t` off a console written outside the ring, marking it waiting where something
+    // does: 0 for nothing, KOS_TIMEOUT_NONE while another context is inside its write, else the
+    // microseconds left on the grant of another thread's open line on an own-image AMP node.
+    // Caller holds IrqLock.
+    uint32_t console_line_wait(Thread const* t, Held held);
 
 #if KICKOS_AMP_CONSOLE_CLAIM
     // Park the calling writer while a node's claim on a shared UART refuses its line, until that
-    // claim's release rings this node (console_claim_rung) or the grant's deadline. 0 to offer the
+    // claim's release rings this node (console_claim_rung) or the grant's deadline, or while
+    // another thread of this node speaks, until its line ends or its grant does. 0 to offer the
     // line again, or -KOS_ECANCELED where the caller is cancelled, before or during it. Caller
     // holds no lock.
     int console_claim_wait(void);
@@ -198,12 +206,13 @@ namespace kickos
     // longer vacated. Caller holds IrqLock.
     void endpoint_receiver_waits(Endpoint* ep, Thread* t);
 
-    // A pool slot reset to a fresh endpoint, its index, or -1 with *out unchanged when the pool
-    // is full. Caller holds IrqLock.
-    [[nodiscard]] int endpoint_slot_claim(Endpoint** out);
+    // A pool slot reset to a fresh endpoint charged to `charged`'s ENDPOINTS budget, its index,
+    // or with *out unchanged -1 when the pool is full and SLOT_OVER_BUDGET when the budget
+    // refuses. Caller holds IrqLock.
+    [[nodiscard]] int endpoint_slot_claim(Task const* charged, Endpoint** out);
     // The same, seated for its creator, whose cap carries every right: a receiver and a
     // handout holder from the start, so the endpoint is never vacated before its first close.
-    [[nodiscard]] int endpoint_claim_created(Endpoint** out);
+    [[nodiscard]] int endpoint_claim_created(Task const* charged, Endpoint** out);
 
     // The single effective-priority recompute funnel. t's effective prio is the max of its
     // base_prio, the highest waiter across every mutex it holds, the prio of every caller

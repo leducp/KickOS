@@ -56,6 +56,7 @@ namespace kickos
                         r.slot[i].len.store(0u);
                         r.slot[i].port.store(amp::PORT_MAX);
                         r.slot[i].tag = amp::ReplyTag{};
+                        r.slot[i].badge = 0u;
                         for (uint32_t b = 0; b < amp::SLOT_BYTES; b++)
                         {
                             r.slot[i].payload[b] = 0u;
@@ -87,7 +88,7 @@ namespace kickos
 
     // No endpoint layer here: the window's own arms bind no port, so this answers as an
     // unbound one.
-    bool endpoint_far_call_deliver(uint32_t, uint32_t, amp::ReplyTag const&, uint32_t,
+    bool endpoint_far_call_deliver(uint32_t, uint32_t, amp::ReplyTag const&, uint32_t, uint32_t,
                                    uint32_t, Held)
     {
         return false;

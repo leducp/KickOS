@@ -65,8 +65,16 @@ qemu-system-aarch64 -M virt -cpu cortex-a53 -nic none -display none -serial stdi
     -semihosting -kernel build/qemu-arm64/user/apps/common/hello/hello \
     -gdb tcp::1234 -S &
 gdb-multiarch build/qemu-arm64/user/apps/common/hello/hello \
+    -ex 'add-symbol-file build/qemu-arm64/user/apps/common/hello/hello.image1.elf' \
     -ex 'target remote :1234'
 ```
+
+The first file is the kernel's. Each task runs a program linked on its own beside it: the
+init's is `hello.image0.elf`, and main's, the app, is `hello.image1.elf`. The kernel's image
+only carries their bytes, so the app's symbols come from that second file. For `selftest`, load
+`selftest` and `selftest.image1.elf` the same way.
+`tools/gdb/kickos.py` does the loading for you once a task runs: `source tools/gdb/kickos.py`,
+and every stop loads the program of the task on that core (`kos-space` prints which).
 
 Both `-cpu cortex-a53` and `-nic none` are needed; [boards.md](../reference/boards.md) says why.
 QEMU's gdb stub shows the system registers by name, so `info registers TTBR0_EL1 SCTLR_EL1` works.
@@ -326,9 +334,9 @@ build `claim_slot` does three things:
    from the kernel is copied in: the kernel lives in TTBR1, so a user root starts empty.
 2. `aspace_image_seed` maps the app's code and data. The app text is mapped read and execute,
    pointing at the frames the loader put it in, so every task shares one physical copy. The app
-   data is mapped read and write. The first space, root's, maps the image's own data frames,
-   after copying them into a pristine image no space ever writes; every later space gets a
-   private copy of that image, never of a running space's data.
+   data is mapped read and write. Every space, root's included, gets a private copy of the
+   frames the loader put the image's data in, which no space maps, never of a running space's
+   data. Each space maps the image its task runs: root's the init's.
 3. Back in `kmain`, `ustack_alloc` takes a run of frames for root's stack and maps all but the
    lowest one. That lowest frame is the **guard page**: it is never mapped, so a store just
    below the stack has no translation and faults.
@@ -360,7 +368,7 @@ The space handle `0xffffff8040325000` is the root frame `0x40325000` seen throug
 `ARCH_MAP_R | ARCH_MAP_W` (app data at `0x40200000`, then the stack at `0x4033d000`).
 
 **Why, and the contract:** [Reference: Memory domains](../reference/architecture.md#memory-domains-the-isolation-unit),
-[Reference: invariants.md](../reference/invariants.md) (`space-data-starts-from-the-image`)
+[Reference: invariants.md](../reference/invariants.md) (`task-data-starts-from-its-image`)
 
 ### Stop 6: the page-table walker
 **Where:** `arch/common/aspace_walk.h`, `walk_map`, `map_into`, `walk_leaf`;
@@ -640,7 +648,7 @@ so it can block like any kernel code. The result goes back into the saved `x0` a
 `RESTORE_FRAME_AND_ERET` returns to EL0. A class other than 0x15 goes to `.Lel0_fault` and
 `kickos_fault_kill_thread` ([chapter 9](09-fault-and-kill.md)).
 
-**Try it:** `break kickos_app_main` (the hello app's `main`, [01, Stop 17](01-power-on.md#stop-17-the-first-instruction-of-main)), `continue`,
+**Try it:** `break main` (the hello app's `main`, [01, Stop 17](01-power-on.md#stop-17-the-first-instruction-of-main)), `continue`,
 `delete`, `break arch_syscall`, `continue`, `info registers x0`, `x/2i $pc`. Then
 `break kickos_armv8a_el0_sync_entry`, `continue`,
 `info registers pc sp cpsr ELR_EL1 SPSR_EL1 ESR_EL1`, `p/x $ESR_EL1 >> 26`. Then

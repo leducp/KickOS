@@ -48,11 +48,8 @@ _scratch_ci_fresh() {
     _scratch_ci_configure --fresh
 }
 
-# A tree that held another checkout, or another ISA, is DELETED rather than reconfigured.
-# --fresh leaves every object and every .ci beside it, and every reader of it globs '**/*.ci'
-# recursively, so a translation unit that exists only in the other checkout stays in the
-# merged callgraph: it lands as AMBIGUOUS DEFINITION where the surviving tree also defines
-# the symbol, and as a silently wider graph where it does not.
+# A tree that held another checkout, or another ISA, is DELETED rather than reconfigured:
+# --fresh leaves every object and every .ci beside it.
 _scratch_ci_wipe() {
     rm -rf "$_KOS_CI_BUILD"
     _scratch_ci_configure

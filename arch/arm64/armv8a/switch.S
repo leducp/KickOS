@@ -292,21 +292,6 @@ kickos_armv8a_el0_irq_entry:
 .Lel0_irq_resume:
     RESTORE_FRAME_AND_ERET
 
-/* --- The user side of the trap --------------------------------------------
- * arch_syscall(nr, a0, a1, a2, a3); arch_syscall64 is the same entry. It links into the app's
- * low text, which an EL0 thread executes and which therefore carries privileged-execute-never.
- *
- * The section is .apptrap, not .text.*: the linker script selects the kernel half by archive,
- * and this archive is kernel-side.
- */
-    .section .apptrap, "ax"
-    .global arch_syscall
-    .global arch_syscall64
-arch_syscall:
-arch_syscall64:
-    svc     #0
-    ret
-
     .section .text.switch, "ax"
 
 /* --- arch_switch's immediate half -----------------------------------------

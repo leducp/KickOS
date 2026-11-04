@@ -35,7 +35,7 @@ namespace
     Thread& holder(int slot, Task* t, uintptr_t base, ThreadState state)
     {
         kickos::Kernel& k = kickos::kernel();
-        Thread& th = k.threads.slots[slot];
+        Thread& th = k.threads.slots()[slot];
         // Any state, BLOCKED included, on a thread no park ran for.
         *reinterpret_cast<ThreadState*>(&th.state) = state;
         th.task = t;
@@ -54,7 +54,7 @@ namespace
         void SetUp() override
         {
             kickos::Kernel& k = kickos::kernel();
-            for (Thread& th : k.threads.slots)
+            for (Thread& th : k.threads.all())
             {
                 th.state.to<ThreadState::INACTIVE>();
                 th.mpu.clear();

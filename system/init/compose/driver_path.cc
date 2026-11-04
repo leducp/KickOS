@@ -4,18 +4,80 @@
 #include "driver_path.h"
 
 #include <kickos/sys/driver_service.h>
+#include <kickos/sys/emit.h> // kconsole_offer
+#include <kickos/sys/image.h>
+
+#include <string.h>
+
+KOS_IMAGE_INIT_OBJECT()
 
 namespace kickos::init::driver_path
 {
     namespace
     {
-        uint32_t block_flags(kos_table_task const& t)
+        // What a start passes beside the endpoint, closed once the task holds its own copies.
+        struct Passed
         {
-            if ((t.flags & KOS_TABLE_TASK_BLOCK_UNCACHED) != 0u)
+            kos_cap_t note = KOS_CAP_NONE;
+            kos_cap_t bell = KOS_CAP_NONE;
+        };
+
+        void drop(Walk& walk, Passed const& passed, uint16_t task)
+        {
+            if (passed.bell != KOS_CAP_NONE)
             {
-                return KOS_MEM_NOCACHE;
+                walk.check(kos_handle_close(passed.bell), "kos_handle_close of the doorbell", task);
             }
-            return 0u;
+            if (passed.note != KOS_CAP_NONE)
+            {
+                walk.check(kos_handle_close(passed.note), "kos_handle_close of the notification", task);
+            }
+        }
+
+        int create(Walk& walk, kos_task_params const& p, kos_task_t* out)
+        {
+            uint32_t retries = 0;
+            while (true)
+            {
+                int const rc = kos_task_create(walk.program(), &p, out);
+                if (rc != -KOS_EAGAIN or retries == CLAIM_RETRIES)
+                {
+                    return rc;
+                }
+                // A declared line is retiring from the instance before.
+                retries++;
+                kos_sleep_ns(CLAIM_RETRY_NS);
+            }
+        }
+
+        void say(char const* s)
+        {
+            (void)kickos::kconsole_offer(s, strlen(s));
+        }
+
+        // The end of a console's handover: the WAIT the publish seated goes, then a zero-length
+        // rendezvous through stdout, bounded by the readiness wait its receiver may sit in first.
+        int handover(Walk& walk, uint16_t task, kos_task_t* handle)
+        {
+            TaskRecord& r = walk.record(task);
+            (void)kos_cap_narrow(r.endpoint, kickos::driver::KOS_DRV_HANDOVER_KEPT);
+            uint32_t const ready_us = kickos::driver::KOS_DRV_READY_WAIT_MAX
+                                      * (kickos::driver::KOS_DRV_READY_WAIT_NS / 1000u);
+            int const probe = kos_send(KOS_CAP_STDOUT, "", 0,
+                                       kickos::driver::KOS_DRV_HANDOVER_PROBE_US + ready_us);
+            if (probe >= 0)
+            {
+                return 0;
+            }
+            // Its end is what gives the kernel its console back, so the report reaches the wire.
+            if (kos_task_slay(*handle, kickos::driver::KOS_DRV_HANDOVER_PROBE_US) == 0)
+            {
+                *handle = KOS_TASK_NONE;
+            }
+            say("[");
+            say(walk.name(task));
+            say("] ERROR: the console handover probe was not taken\n");
+            return probe;
         }
     }
 
@@ -36,57 +98,107 @@ namespace kickos::init::driver_path
     {
         kos_table_task const& t = walk.task(task);
         TaskRecord& r = walk.record(task);
+        *out = KOS_TASK_NONE;
 
-        kos_driver_instance instance = {};
-        instance.name = walk.name(task);
-        instance.priority = t.priority;
-        instance.block = r.block;
-        instance.block_size = t.block;
-        instance.block_flags = block_flags(t);
-        instance.core_mask = t.core_mask;
-        instance.ceiling = t.ceiling;
-        instance.endpoint = r.endpoint;
-        instance.watch = badged;
-        instance.task = KOS_TASK_NONE;
-        instance.console = narrows_at_handover(walk, task);
+        // At the places the table states, which are the entry thread's layout of them.
+        kos_cap_grant caps[KICKOS_MAX_SPAWN_GRANTS] = {};
+        uint16_t dest[KICKOS_MAX_SPAWN_GRANTS] = {};
+        uint8_t n = 0;
+        Passed passed;
+        int rc = 0;
+        for (uint16_t k = 0; k < t.grant_count and rc == 0; k++)
+        {
+            kos_table_grant const& g = walk.grant(task, k);
+            if (g.cap_slot == KOS_TABLE_NONE or n == KICKOS_MAX_SPAWN_GRANTS)
+            {
+                continue;
+            }
+            if (g.kind == KOS_GRANT_ENDPOINT_SERVE)
+            {
+                caps[n].source_cap = r.endpoint;
+                caps[n].rights_mask = KOS_CAP_WAIT | KOS_CAP_TRANSFER;
+            }
+            else if (g.kind == KOS_GRANT_NOTIFICATION)
+            {
+                if (passed.note == KOS_CAP_NONE)
+                {
+                    rc = kos_notify_create(&passed.note);
+                }
+                caps[n].source_cap = passed.note;
+                caps[n].rights_mask = KOS_CAP_WAIT | KOS_CAP_SIGNAL | KOS_CAP_TRANSFER;
+                if (rc == 0 and g.badge != 0u)
+                {
+                    rc = kos_notify_badge(passed.note, g.badge - 1u, &passed.bell);
+                    caps[n].source_cap = passed.bell;
+                    caps[n].rights_mask = KOS_CAP_SIGNAL | KOS_CAP_TRANSFER;
+                }
+            }
+            else
+            {
+                continue;
+            }
+            dest[n] = g.cap_slot;
+            n++;
+        }
+        kos_task_t handle = KOS_TASK_NONE;
+        if (rc == 0)
+        {
+            kos_task_params p = {};
+            p.instance = walk.name(task);
+            p.block = r.block;
+            p.size = t.block;
+            p.flags = block_flags(t);
+            p.caps = caps;
+            p.cap_dest = dest;
+            p.cap_count = n;
+            rc = create(walk, p, &handle);
+        }
+        drop(walk, passed, task);
+        if (rc == 0)
+        {
+            // The task runs already: a watch armed after its end or its readiness reports it.
+            walk.check(kos_task_watch(handle, badged, KOS_CAP_NONE), "kos_task_watch", task);
+            if (narrows_at_handover(walk, task))
+            {
+                rc = handover(walk, task, &handle);
+            }
+        }
+        else if (narrows_at_handover(walk, task))
+        {
+            (void)kos_cap_narrow(r.endpoint, kickos::driver::KOS_DRV_HANDOVER_KEPT);
+        }
+        *out = handle;
+        return rc;
+    }
 
-        bool window = false;
-        uint16_t lines = 0;
+    void host(Walk& walk, uint16_t task, kos_cap_grant* caps, kos_task_params* p)
+    {
+        kos_table_task const& t = walk.task(task);
         for (uint16_t k = 0; k < t.grant_count; k++)
         {
             kos_table_grant const& g = walk.grant(task, k);
-            if (g.kind == KOS_GRANT_WINDOW and not window)
+            if (g.kind != KOS_GRANT_ENDPOINT_HOSTED)
             {
-                instance.mmio_base = static_cast<uintptr_t>(g.base);
-                instance.mmio_window = g.size;
-                window = true;
+                continue;
             }
-            if (g.kind == KOS_GRANT_LINE)
+            // The driver's threads take theirs from it, and the host probes it before its entry.
+            kos_cap_grant& c = caps[g.cap_slot - KOS_SPAWN_DELEGATED_CAP0];
+            c.source_cap = walk.record(g.target).endpoint;
+            c.rights_mask = KOS_CAP_WAIT | KOS_CAP_TRANSFER | KOS_CAP_SIGNAL;
+            kos_table_task const& h = walk.task(g.target);
+            if (h.block != 0u)
             {
-                // In the order of the driver's line roles; a count past the descriptor's is
-                // refused by the bring-up.
-                if (lines < kickos::driver::KOS_DRV_LINES_MAX)
-                {
-                    instance.lines[lines].number = g.line;
-                    instance.lines[lines].index = g.line_index;
-                }
-                lines++;
+                p->block = walk.record(g.target).block;
+                p->size = h.block;
+                p->flags = block_flags(h);
             }
         }
-        instance.line_count = static_cast<uint8_t>(lines);
-        if (lines > 0xFFu)
-        {
-            instance.line_count = 0xFFu;
-        }
-
-        int const rc = t.entry.driver(&instance);
-        *out = instance.task;
-        return rc;
     }
 
     bool narrows_at_handover(Walk const& walk, uint16_t task)
     {
-        return (walk.task(task).flags & KOS_TABLE_TASK_CONSOLE) != 0u;
+        uint16_t const flags = walk.task(task).flags;
+        return (flags & KOS_TABLE_TASK_CONSOLE) != 0u and (flags & KOS_TABLE_TASK_HOSTED) == 0u;
     }
 
     void drain(Walk const& walk)
@@ -94,7 +206,8 @@ namespace kickos::init::driver_path
         bool console = false;
         for (uint16_t i = 0; i < walk.task_count(); i++)
         {
-            if (narrows_at_handover(walk, i))
+            uint16_t const flags = walk.task(i).flags;
+            if ((flags & KOS_TABLE_TASK_CONSOLE) != 0u and (flags & KOS_TABLE_TASK_ON_REQUEST) == 0u)
             {
                 console = true;
             }

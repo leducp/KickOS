@@ -11,6 +11,7 @@
 #define KICKOS_FRAME_POOL_H
 
 #include <kickos/arch/arch.h>
+#include <kickos/list.h>
 
 #include <kickos/sys/abi.h> // kos_task_t
 
@@ -27,31 +28,28 @@ namespace kickos
     {
         arch_phys_addr_t base = 0;
         uint32_t pages = 0;
-        // The task charged for the run, for its whole life, wherever it is mapped and whoever
-        // holds it. KOS_TASK_NONE charges no task.
-        kos_task_t minter = KOS_TASK_NONE;
+        // The task record that pays for the run, its index plus one, 0 for none: the minter's,
+        // for the run's whole life, wherever it is mapped and whoever holds it. A declaration's
+        // record outlives its incarnations, so a run that outlives its minter still charges
+        // the declaration. On that record's list of runs while `payer` names it.
+        uint8_t payer = 0;
+        ListNode payer_node;
         // A mapping of another type than cacheable has been installed since the last sync of
         // these frames, so a cacheable one owes them one (aspace_cap_map).
         bool sync_owed = false;
     };
 
-    // What frame_run_create answers when it could not make one, and what a caller holding no
-    // run stores. A handle, so compare against it and never test the sign (slotpool.h).
+    // What frame_run_create_empty answers when it could not make one, and what a caller holding
+    // no run stores. A handle, so compare against it and never test the sign (slotpool.h).
     constexpr int FRAME_RUN_NONE = -1;
 
-    // Seat a frame run and take the creator's reference over frames the caller already holds.
-    // -1 when the pool is full. Not in cap.h: the base is an arch_phys_addr_t and that header
-    // must not learn an address width.
-    [[nodiscard]] int frame_run_create(arch_phys_addr_t base, uint32_t pages);
-
-    // Seat a run naming no frame yet, charged to `minter`, with the creator's reference. No
-    // capability resolves it until frame_run_fill. FRAME_RUN_NONE when the pool is full.
-    [[nodiscard]] int frame_run_create_empty(kos_task_t minter);
+    // Seat a run naming no frame yet, paid for by `minter`'s record from its FRAME_RUNS budget,
+    // with the creator's reference. No capability resolves it until frame_run_fill.
+    // FRAME_RUN_NONE when the pool is full or the budget refuses. Not in cap.h: frame_run_fill
+    // takes an arch_phys_addr_t and that header must not learn an address width.
+    [[nodiscard]] int frame_run_create_empty(Task const* minter);
     // Hand an empty run its frames. False, changing nothing, unless the run is live and empty.
     bool frame_run_fill(int obj_handle, arch_phys_addr_t base, uint32_t pages);
-    // Whether `t` may mint one more run: fewer than KICKOS_TASK_FRAME_RUN_BUDGET live runs
-    // charged to it. Caller holds IrqLock.
-    bool frame_run_admit(Task const* t);
 
     // One reference on a frame run for a holder that is not a capability. A mapping is one:
     // without it the last capability's drop frees frames a live leaf still points at. False at

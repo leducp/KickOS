@@ -133,6 +133,53 @@ require_nonempty() {
     fi
 }
 
+# An image's link maps, one per line to <outfile>: its final link's <map>, then the map of each
+# image that link placed, image<n>.map beside the kickos_image<n>.o it loads, in the output's
+# per-image folder (tools/image-link.py). An image object with no map beside it is refused: the
+# inputs it was linked from would go unread.
+image_map_set() { # <map> <outfile>
+    printf '%s\n' "$1" > "$2"
+    grep -E '^LOAD .*/kickos_image[0-9]+\.o$' "$1" | sed 's|^LOAD ||' > "$2.o" || true
+    while IFS= read -r _ims_o; do
+        _ims_n="$(printf '%s\n' "$_ims_o" | sed 's|.*/kickos_image\([0-9]*\)\.o$|\1|')"
+        _ims_map="$(dirname "$_ims_o")/image$_ims_n.map"
+        [ -f "$_ims_map" ] || fail "$1 loads image $_ims_n and no map of it is beside it: $_ims_map"
+        printf '%s\n' "$_ims_map" >> "$2"
+    done < "$2.o"
+    rm -f "$2.o"
+}
+
+# The object each image's own link wrote before it made its symbols local, one per line to
+# <outfile>: image<n>.raw.o beside the kickos_image<n>.o the final link's <map> loads
+# (tools/image-link.py). A loaded image object with none beside it is refused.
+image_raw_set() { # <map> <outfile>
+    : > "$2"
+    grep -E '^LOAD .*/kickos_image[0-9]+\.o$' "$1" | sed 's|^LOAD ||' > "$2.o" || true
+    while IFS= read -r _irs_o; do
+        _irs_n="$(printf '%s\n' "$_irs_o" | sed 's|.*/kickos_image\([0-9]*\)\.o$|\1|')"
+        _irs_raw="$(dirname "$_irs_o")/image$_irs_n.raw.o"
+        [ -f "$_irs_raw" ] || fail "$1 loads $_irs_o and the object its link wrote is not beside it: $_irs_raw"
+        printf '%s\n' "$_irs_raw" >> "$2"
+    done < "$2.o"
+    rm -f "$2.o"
+}
+
+# An image's ELF files, one per line to <outfile>: <elf>, then image<n>.elf beside each
+# kickos_image<n>.o <map>'s link loads, for an image that is a program of its own link
+# (tools/image-link.py --embed), whose symbols are in that file alone.
+image_elf_set() { # <elf> <map> <outfile>
+    printf '%s\n' "$1" > "$3"
+    grep -E '^LOAD .*/kickos_image[0-9]+\.o$' "$2" | sed 's|^LOAD ||' > "$3.o" || true
+    while IFS= read -r _ies_o; do
+        _ies_n="$(printf '%s\n' "$_ies_o" | sed 's|.*/kickos_image\([0-9]*\)\.o$|\1|')"
+        _ies_elf="$(dirname "$_ies_o")/image$_ies_n.elf"
+        if [ -f "$_ies_elf" ]; then
+            printf '%s\n' "$_ies_elf" >> "$3"
+        fi
+    done < "$3.o"
+    rm -f "$3.o"
+}
+
 # The working directory a source-tree gate needs, which ctest sets through WORKING_DIRECTORY
 # and a hand run does not. <prose> names the directory in the refusal for a gate that was
 # handed one rather than run in it.

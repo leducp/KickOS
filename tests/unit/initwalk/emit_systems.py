@@ -38,7 +38,7 @@ heap: 0
 
 tasks:
   - name: sensor
-    entry: sensor_main
+    program: sensor
     stack: 4096
     priority: 9
     ceiling: 9
@@ -46,14 +46,14 @@ tasks:
     restart: { max: 2 }
 
   - name: slow
-    entry: slow_main
+    program: slow
     stack: 4096
     priority: 9
     ceiling: 9
     serves: /svc/slow
 
   - name: mid
-    entry: mid_main
+    program: mid
     stack: 4096
     priority: 8
     ceiling: 8
@@ -62,21 +62,21 @@ tasks:
     restart: { max: 1 }
 
   - name: late
-    entry: late_main
+    program: late
     stack: 4096
     priority: 8
     ceiling: 8
     uses: [/svc/sensor, /svc/slow]
 
   - name: top
-    entry: top_main
+    program: top
     stack: 4096
     priority: 7
     ceiling: 7
     uses: [/svc/mid]
 
   - name: watcher
-    entry: watcher_main
+    program: watcher
     stack: 4096
     priority: 10
     ceiling: 10
@@ -87,11 +87,12 @@ tasks:
 # A client of one server more than the host build the tests compile the walk for delegates at a
 # spawn, on a kernel build that delegates one more still.
 def wide(grants):
-    servers = "".join("  - name: s%d\n    entry: sensor_main\n    stack: 4096\n    priority: 9\n    ceiling: 9\n"
+    servers = "".join("  - name: s%d\n    program: sensor\n    stack: 4096\n    priority: 9\n    ceiling: 9\n"
                       "    serves: /svc/s%d\n\n" % (n, n) for n in range(grants + 1))
-    text = (CHAIN[:CHAIN.index("tasks:\n")] + "tasks:\n" + servers + "  - name: wide\n    entry: app_main\n"
-            "    stack: 4096\n    priority: 8\n    ceiling: 8\n    uses: [%s]\n"
-            % ", ".join("/svc/s%d" % n for n in range(grants + 1)))
+    text = (CHAIN[:CHAIN.index("tasks:\n")] + "budgets: { threads: 1 }\n\ntasks:\n" + servers
+            + "  - name: wide\n    program: app\n"
+            "    stack: 4096\n    priority: 8\n    ceiling: 8\n    uses: [%s]\n    caps: { width: %d }\n"
+            % (", ".join("/svc/s%d" % n for n in range(grants + 1)), grants + 2))
     manifest = MANIFESTS["qemu-x86_64.yaml"].replace("  KICKOS_MAX_SPAWN_GRANTS: 6\n",
                                                      "  KICKOS_MAX_SPAWN_GRANTS: %d\n" % (grants + 2))
     refusal = ("init: `wide` is spawned with %d capabilities and 0 windows, and a spawn takes at most %d and 4"
@@ -104,6 +105,8 @@ def wide(grants):
 TESTDRV = """  testdrv:
     windows: []
     lines: []
+    triggers: []
+    entry: [ep]
     threads:
       - { name: entry, priority: 0, stack: default, caps: 0, badged: 0 }
       - { name: worker, priority: 0, stack: default, caps: 1, badged: 0 }
@@ -118,6 +121,7 @@ TESTDRV = """  testdrv:
     start: testdrv_start
     receiver: worker
     client: []
+    slots: 0
 """
 DRIVER_RESTART_MANIFEST = MANIFESTS["xmc4800-relax.yaml"].replace("drivers:\n", "drivers:\n" + TESTDRV)
 DRIVER_RESTART = """version: 1
@@ -134,14 +138,14 @@ tasks:
     restart: { max: 1 }
 
   - name: client
-    entry: app_main
+    program: app
     stack: 2048
     priority: 8
     ceiling: 8
     uses: [/svc/test]
 
   - name: watcher
-    entry: health_main
+    program: health
     stack: 2048
     priority: 10
     ceiling: 10
@@ -182,24 +186,22 @@ def flag(value):
 
 
 def limits(admitted):
-    """The kernel build's ceilings the scripted kernel holds the walk to, 0 for none."""
+    """The kernel's figures the scripted kernel holds the walk to, 0 for none: the pools the
+    composition's budgets size, and the init's own budgets."""
     manifest = admitted.manifest
-    pools = manifest.pools
-    tasks = 0
-    if "KICKOS_MAX_TASKS" in pools:
-        tasks = pools["KICKOS_MAX_TASKS"] - (manifest.kernel_cores or 1) - 1
+    pools = admitted.sizing.pools
+    init = admitted.sizing.init
+    tasks = pools["tasks"] - (manifest.kernel_cores or 1) - 1
     owners = 0
     if manifest.enforced and not admitted.translating:
-        owners = pools.get("KICKOS_RAM_OWNER_SLOTS", 0)
+        owners = pools.get("ram_owners", 0)
     regions = 0
     if not admitted.translating:
         regions = manifest.free_regions or 0
-    return (pools.get("KICKOS_CAP_TABLE_SUPPLY", 0), tasks, pools.get("KICKOS_MAX_THREADS", 0),
-            pools.get("KICKOS_MAX_ENDPOINTS", 0), pools.get("KICKOS_MAX_NOTIFY", 0),
-            pools.get("KICKOS_MAX_IRQ_HANDLES", 0), pools.get("KICKOS_MAX_DOMAINS", 0), regions, owners,
-            pools.get("KICKOS_TASK_ENDPOINT_BUDGET", 0), pools.get("KICKOS_TASK_NOTIFY_BUDGET", 0),
-            pools.get("KICKOS_TASK_IRQ_HANDLE_BUDGET", 0), manifest.min_stack or 0, manifest.stack_stride or 0,
-            manifest.kernel_cores or 1)
+    return (init.get("cap_slots", 0), tasks, pools["threads"] - 1,
+            pools["endpoints"], pools["notifies"], pools["irq_bindings"], pools["domains"], regions, owners,
+            init.get("endpoints", 0), init.get("notifications", 0), init.get("irq_bindings", 0),
+            manifest.min_stack or 0, manifest.stack_stride or 0, manifest.kernel_cores or 1)
 
 
 def describe(name, admitted, refusal):
@@ -208,14 +210,15 @@ def describe(name, admitted, refusal):
     quoted = "nullptr"
     if refusal is not None:
         quoted = "\"%s\"" % refusal
-    return ("    {\"%s\", &kickos_table_%s, {%s, %s, %s}, %d, %d, %s,\n"
-            "     {%d, %d, %d, %d, %d, %d, %d, %d, %d},\n"
+    spawned = sum(len(task.catalogue.threads) - 1 for task in admitted.tasks if task.catalogue is not None)
+    return ("    {\"%s\", &kickos_table_%s, {%s, %s, %s, \"app\"}, %d, %d, %s,\n"
+            "     {%d, %d, %d, %d, %d, %d, %d, %d, %d, %d},\n"
             "     {%d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d}},"
             % ((name, name, flag(admitted.translating), flag(manifest.stack_stride is not None),
                flag((manifest.kernel_cores or 1) > 1), manifest.cap_reserved, manifest.amp_ports, quoted,
                figures["cap_slots"], figures["endpoints"], figures["notifications"],
                figures["threads"], figures["tasks"], figures["irq_handles"], figures["domains"],
-               figures["reservations"], figures["self_grants"]) + limits(admitted)))
+               figures["reservations"], figures["self_grants"], spawned) + limits(admitted)))
 
 
 def main(argv):

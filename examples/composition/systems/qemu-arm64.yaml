@@ -34,7 +34,7 @@ shared:
 
 tasks:
   - name: sensor
-    entry: sensor_main
+    program: sensor
     stack: 4096
     priority: 9
     ceiling: 9
@@ -47,7 +47,7 @@ tasks:
   # Another core than its server: a call crosses cores, and the task declaring it does not
   # have to know.
   - name: app
-    entry: app_main
+    program: main
     stack: 8192
     priority: 8
     ceiling: 8
@@ -56,7 +56,7 @@ tasks:
 
   # No core: it runs on whichever core the kernel places it.
   - name: health
-    entry: health_main
+    program: health
     stack: 4096
     priority: 10
     ceiling: 10

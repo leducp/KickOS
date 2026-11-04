@@ -6,6 +6,7 @@
 #if KICKOS_HAVE_ASPACE
 
 #include <kickos/aspace.h>
+#include <kickos/budget.h>
 #include <kickos/domain.h>
 #include <kickos/frame_pool.h>
 #include <kickos/vrange.h>
@@ -32,6 +33,13 @@ namespace kickos
         // The stack's frames plus the guard's: the page below a stack belongs to that stack,
         // so no later allocation can map it.
         size_t const run_pages = pages + 1u;
+        Task const* const payer = domain_payer(d);
+        if (run_pages > UINT32_MAX
+            or not task_admit(payer, BudgetKind::PAGES, static_cast<uint32_t>(run_pages)))
+        {
+            out.over_budget = true;
+            return out;
+        }
         // Cleared frames: nothing writes a fresh stack before the thread runs on it.
         arch_phys_addr_t const run = frame_pool_alloc_user_run(run_pages);
         if (run == 0)
@@ -48,6 +56,13 @@ namespace kickos
         if (not ranges->reserve(aspace_user_va(run), run_pages, VR_USTACK))
         {
             frame_pool_free_run(run, run_pages, g);
+            return out;
+        }
+        if (not aspace_tables_admit(payer, space, va, pages))
+        {
+            (void)ranges->release(aspace_user_va(run));
+            frame_pool_free_run(run, run_pages, g);
+            out.over_budget = true;
             return out;
         }
         if (arch_aspace_map(space, va, stack, pages, ARCH_MAP_R | ARCH_MAP_W,

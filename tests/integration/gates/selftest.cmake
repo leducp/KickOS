@@ -44,15 +44,9 @@ if(KICKOS_KERNEL_CORES GREATER 1)
     call_donation_hold call_donation_slow call_donation_pending
     reply_recv_notify reply_recv_notify_park
     cap_reply_bound_fast cap_reply_bound_slow thread_slay_timeout
-    mutex_owner_died_nowaiter)
+    mutex_owner_died_nowaiter image_preempts_creator)
 endif()
 
-# The refusal arm caps its parked children at 24 (LR_PARK_CAP, selftest_aspace.cc), so a
-# thread pool wider than that can reach the cap before the refusal it measures. DERIVED and not
-# a posture list: qemu-arm64's benchsmp12 image and qemu-x86_64's bench and SMP images carry one.
-if(KICKOS_MAX_THREADS GREATER 24)
-  list(APPEND KICKOS_EXPECT_SKIPS spawn_refusal_frees_task)
-endif()
 
 # The isolated-core mask, normalised: the knob is hex text, which `if(... EQUAL 0)` does not
 # read as a number.
@@ -60,11 +54,11 @@ set(_selftest_isolated 0)
 if(DEFINED KICKOS_ISOLATED_CORES AND NOT KICKOS_ISOLATED_CORES STREQUAL "")
   math(EXPR _selftest_isolated "${KICKOS_ISOLATED_CORES} | 0")
 endif()
-# Five placement arms assert something about an ISOLATED core, and a posture that isolates
+# Four placement arms assert something about an ISOLATED core, and a posture that isolates
 # none has no such core to assert it of. They run on qemu-arm64's smpiso variant.
 if(KICKOS_KERNEL_CORES GREATER 1 AND _selftest_isolated EQUAL 0)
   list(APPEND KICKOS_EXPECT_SKIPS
-    isolated_single_grant_ok isolated_unpinned_never isolated_unpin_excludes
+    isolated_unpinned_never isolated_unpin_excludes
     isolated_takes_pinned isolated_mixed_mask_ok)
 endif()
 
@@ -86,25 +80,25 @@ if(KICKOS_KERNEL_CORES GREATER 1 AND _selftest_movable LESS 1)
   list(APPEND KICKOS_EXPECT_SKIPS migrate_running)
 endif()
 
-# The capability slots main's table holds before any arm runs: the reserved ones and the
-# crossings its composition names, delegated from the first dynamic index and at most one per
-# partition port.
-math(EXPR _selftest_cap_seated "${KICKOS_CAP_FIRST_DYNAMIC} + ${KICKOS_AMP_PORT_COUNT}")
+# The instances of stpeer the whole suite's composition declares, the tasks an arm may create.
+# A cut suite's image declares its own (KICKOS_SELFTEST_PEERS on each image).
+get_target_property(_selftest_peers selftest KICKOS_SELFTEST_PEERS)
+get_target_property(_selftest_workers selftest KICKOS_SELFTEST_WORKERS)
+get_target_property(_selftest_peer_workers selftest KICKOS_SELFTEST_PEER_WORKERS)
 
 # Every arm that asks a pool for more than this posture provisions, by what the arm itself asks
-# for (tests/static/selftest_demands.py): the workers beside main, the tasks beside main's own and
-# the image's driver tasks, the IRQ lines main's task may bind, the capability slots beside the
-# seated ones, and the objects of each kind main's task budget leaves.
-foreach(_selftest_knob KICKOS_MAX_THREADS KICKOS_MAX_TASKS KICKOS_TASK_IRQ_HANDLE_BUDGET
-        KICKOS_MAX_SPAWN_GRANTS KICKOS_TASK_ENDPOINT_BUDGET KICKOS_TASK_NOTIFY_BUDGET)
+# for (tests/static/selftest_demands.py): the workers beside main, the peers, the IRQ lines main's
+# task may bind, the capability slots beside the seated ones, and the objects of each kind main's
+# task budget leaves.
+foreach(_selftest_knob KICKOS_BUDGET_IRQ_BINDINGS
+        KICKOS_MAX_SPAWN_GRANTS KICKOS_BUDGET_ENDPOINTS KICKOS_BUDGET_NOTIFICATIONS)
   if(NOT "${${_selftest_knob}}" MATCHES "^[0-9]+$")
     message(FATAL_ERROR "selftest: the generated configuration states no ${_selftest_knob}")
   endif()
 endforeach()
-math(EXPR _selftest_workers "${KICKOS_MAX_THREADS} - 1")
-_selftest_main_caps("${KICKOS_MAX_SPAWN_GRANTS}" "${_selftest_cap_seated}" _selftest_caps)
 # The guards an arm's registration sits under, as the compiler sees them.
-set(_selftest_guards --config "KICKOS_KERNEL_CORES=${KICKOS_KERNEL_CORES}")
+set(_selftest_guards --config "KICKOS_KERNEL_CORES=${KICKOS_KERNEL_CORES}"
+                     --config KICKOS_SELFTEST_PEER=0)
 foreach(_selftest_knob KICKOS_HAVE_ASPACE KICKOS_HAVE_MPU KICKOS_MEMORY_ENFORCED
         KICKOS_FAULT_ISOLATION KICKOS_AMP_NODE KICKOS_AMP_OWN_IMAGE)
   set(_selftest_on 0)
@@ -114,16 +108,25 @@ foreach(_selftest_knob KICKOS_HAVE_ASPACE KICKOS_HAVE_MPU KICKOS_MEMORY_ENFORCED
   list(APPEND _selftest_guards --config "${_selftest_knob}=${_selftest_on}")
 endforeach()
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
-# <driver tasks> <out>: the arms short of this posture with that many driver tasks composed.
-function(_selftest_pool_short driver_tasks out)
-  _selftest_main_tasks(${KICKOS_MAX_TASKS} ${KICKOS_KERNEL_CORES} ${driver_tasks} _tasks)
+# <peers> <workers> <peer_workers> <out>: the arms short of this posture in an image declaring
+# <peers>, whose main seats <workers> beside its entry and each peer <peer_workers>. main's table
+# holds before any arm runs the reserved slots and the crossings its composition names,
+# delegated from the first dynamic index and at most one per partition port, and its handle on
+# stpeer where it declares a peer.
+function(_selftest_pool_short peers workers peer_workers out)
+  math(EXPR _seated "${KICKOS_CAP_FIRST_DYNAMIC} + ${KICKOS_AMP_PORT_COUNT}")
+  if(peers GREATER 0)
+    math(EXPR _seated "${_seated} + 1")
+  endif()
+  _selftest_main_caps("${KICKOS_MAX_SPAWN_GRANTS}" "${_seated}" _selftest_caps)
   execute_process(
     COMMAND "${Python3_EXECUTABLE}" -B "${PROJECT_SOURCE_DIR}/tests/static/selftest_demands.py"
             "${PROJECT_SOURCE_DIR}/user/apps/common/selftest" ${_selftest_guards} --supply
-            "workers=${_selftest_workers}" "tasks=${_tasks}"
-            "irqs=${KICKOS_TASK_IRQ_HANDLE_BUDGET}" "caps=${_selftest_caps}"
-            "endpoints=${KICKOS_TASK_ENDPOINT_BUDGET}"
-            "notifies=${KICKOS_TASK_NOTIFY_BUDGET}"
+            "workers=${workers}" "tasks=${peers}"
+            "irqs=${KICKOS_BUDGET_IRQ_BINDINGS}" "caps=${_selftest_caps}"
+            "endpoints=${KICKOS_BUDGET_ENDPOINTS}"
+            "notifies=${KICKOS_BUDGET_NOTIFICATIONS}"
+            "peer_workers=${peer_workers}"
     OUTPUT_VARIABLE _short
     ERROR_VARIABLE _err
     RESULT_VARIABLE _rc)
@@ -133,17 +136,13 @@ function(_selftest_pool_short driver_tasks out)
   string(REPLACE "\n" ";" _short "${_short}")
   set(${out} "${_short}" PARENT_SCOPE)
 endfunction()
-_selftest_pool_short(0 _selftest_short)
+_selftest_pool_short(${_selftest_peers} ${_selftest_workers} ${_selftest_peer_workers} _selftest_short)
 set_property(DIRECTORY "${PROJECT_SOURCE_DIR}" APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
              "${PROJECT_SOURCE_DIR}/tests/static/selftest_demands.py")
 file(GLOB _selftest_sources "${PROJECT_SOURCE_DIR}/user/apps/common/selftest/*.cc")
 set_property(DIRECTORY "${PROJECT_SOURCE_DIR}" APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
              ${_selftest_sources})
 list(APPEND KICKOS_EXPECT_SKIPS ${_selftest_short})
-# console_publish_narrow narrows what console_publish_handout published.
-if("console_publish_handout" IN_LIST KICKOS_EXPECT_SKIPS)
-  list(APPEND KICKOS_EXPECT_SKIPS console_publish_narrow)
-endif()
 
 if(KICKOS_KERNEL_CORES GREATER 1 AND NOT KICKOS_LIBC_REENT)
   list(APPEND KICKOS_EXPECT_SKIPS reent_per_thread_cores)
@@ -157,10 +156,6 @@ if(KICKOS_AMP_NODE AND KICKOS_AMP_OWN_IMAGE)
     list(APPEND KICKOS_EXPECT_SKIPS amp_far_reply_unmapped)
   endif()
 endif()
-
-# The two console_publish arms publish the console themselves, which they refuse to do in an
-# image whose composition names a console driver as `stdout`.
-set(_selftest_driver_skips console_publish_handout console_publish_narrow)
 
 # Every name a permission set states must be an arm main.cc registers, or the set permits
 # nothing and reads as if it did.
@@ -188,37 +183,25 @@ function(_selftest_cut names keep out)
 endfunction()
 
 # <img>'s skip and partial sets: <skips> and <partials> cut to the arms its own regions
-# register, with the image's console taken into account. The cut is by name, off the same
+# register, with the partials its peers imply. The cut is by name, off the same
 # region bounds that split the suite, so moving an arm across a boundary moves its permission
 # with it.
 function(_selftest_image_sets img skips partials out_skips out_partials)
-  get_target_property(_console ${img} KICKOS_SELFTEST_CONSOLE)
   get_target_property(_names ${img} KICKOS_SELFTEST_ARM_NAMES)
   if(NOT _names)
     message(FATAL_ERROR "selftest: the image ${img} records no KICKOS_SELFTEST_ARM_NAMES")
   endif()
   set(_skips ${skips})
-  if(NOT _console STREQUAL "kernel")
-    list(APPEND _skips ${_selftest_driver_skips})
-  endif()
   set(_partials ${partials})
-  get_target_property(_system ${img} KICKOS_APP_SYSTEM)
-  get_property(_composition GLOBAL PROPERTY KICKOS_APP_SYSTEM_${_system})
-  list(GET _composition 0 _first)
-  if(_first STREQUAL "PARTITION")
-    math(EXPR _at "${KICKOS_AMP_NODE_ID} + 1")
-    list(GET _composition ${_at} _composition)
+  get_target_property(_peers ${img} KICKOS_SELFTEST_PEERS)
+  get_target_property(_workers ${img} KICKOS_SELFTEST_WORKERS)
+  get_target_property(_peer_workers ${img} KICKOS_SELFTEST_PEER_WORKERS)
+  if(_selftest_short)
+    list(REMOVE_ITEM _skips ${_selftest_short})
   endif()
-  if(NOT EXISTS "${_composition}")
-    message(FATAL_ERROR "selftest: the image ${img} names no composition of its own (${_composition})")
-  endif()
-  _selftest_driver_tasks("${_composition}" _driver_tasks)
-  if(_driver_tasks GREATER 0)
-    _selftest_pool_short(${_driver_tasks} _short)
-    list(APPEND _skips ${_short})
-    list(REMOVE_DUPLICATES _skips)
-  endif()
-  _selftest_derived_partials(${_driver_tasks} ${KICKOS_MAX_TASKS} ${KICKOS_KERNEL_CORES} _derived)
+  _selftest_pool_short(${_peers} ${_workers} ${_peer_workers} _short)
+  list(APPEND _skips ${_short})
+  _selftest_derived_partials(${_peers} _derived)
   list(APPEND _partials ${_derived})
   _selftest_cut("${_skips}" "${_names}" _skips)
   _selftest_cut("${_partials}" "${_names}" _partials)
@@ -259,6 +242,10 @@ if(KICKOS_HAVE_MPU)
   if(KICKOS_CHIP_RESERVED_BLOCKS EQUAL 0)
     list(APPEND KICKOS_EXPECT_PARTIALS grant_reserved)
   endif()
+  # dev_window_aperture's bus master half needs a bus master the chip file marks.
+  if(NOT KICKOS_ARCH STREQUAL "sim" AND NOT DEFINED KICKOS_CHIP_BUS_MASTER0)
+    list(APPEND KICKOS_EXPECT_PARTIALS dev_window_aperture)
+  endif()
   if(KICKOS_ARCH STREQUAL "sim")
     list(APPEND KICKOS_EXPECT_PARTIALS dev_window_exclusive)
     # The sim's pointer checks admit its whole host image, so no kernel word is refused there.
@@ -271,9 +258,9 @@ endif()
 # set is the only thing that can tell the two apart (tests/integration/check_tap_stream.sh).
 set(KICKOS_EXPECT_FAULTS "")
 if(KICKOS_HAVE_ASPACE AND KICKOS_FAULT_ISOLATION)
-  # kernel_state_unreachable's readers, the stack arms' threads reading the guard below
-  # their own stacks, and task_start_dead_starter's thread finding its space half constructed.
-  list(APPEND KICKOS_EXPECT_FAULTS kvic pstk dsA)
+  # kernel_state_unreachable's readers and the stack arms' threads reading the guard below
+  # their own stacks.
+  list(APPEND KICKOS_EXPECT_FAULTS kvic pstk)
   # window_addr's sibling, reading the window its holder took with it at exit.
   if(KICKOS_CHIP STREQUAL "virt_arm64" OR KICKOS_CHIP STREQUAL "virt_rv64"
      OR KICKOS_CHIP STREQUAL "q35")
@@ -285,10 +272,15 @@ if(KICKOS_HAVE_ASPACE AND KICKOS_FAULT_ISOLATION)
     list(APPEND KICKOS_EXPECT_FAULTS pwb pwi vfmf vfxm)
   endif()
 endif()
-# window_memory_ro's child, writing through its read-only window, and the task_exit arms'
-# sibling, writing a reservation of main's.
+# peer0, writing through window_memory_ro's read-only window and, killed, a reservation of
+# main's in task_exit_cancelled_fault, and task_exit_member_fault's sibling, writing one too.
 if(KICKOS_MEMORY_ENFORCED AND KICKOS_FAULT_ISOLATION)
-  list(APPEND KICKOS_EXPECT_FAULTS wro txf)
+  list(APPEND KICKOS_EXPECT_FAULTS peer0 txf)
+endif()
+# image_statics' peer, writing a static of main's image, on a region board.
+if(KICKOS_MEMORY_ENFORCED AND KICKOS_FAULT_ISOLATION AND KICKOS_HAVE_MPU AND NOT KICKOS_HAVE_ASPACE
+   AND NOT KICKOS_ARCH STREQUAL "sim")
+  list(APPEND KICKOS_EXPECT_FAULTS peer0)
 endif()
 # task_exit_driver_trap's thread, trapping as a failing packaged driver thread does.
 if(KICKOS_FAULT_ISOLATION)
@@ -298,9 +290,10 @@ endif()
 # Comma-separated, never semicolons: ENVIRONMENT is itself a CMake list, so a raw list
 # deref would split the value into further bogus environment entries.
 list(REMOVE_DUPLICATES KICKOS_EXPECT_SKIPS)
+list(REMOVE_DUPLICATES KICKOS_EXPECT_FAULTS)
 set(_selftest_skips_list ${KICKOS_EXPECT_SKIPS})
 set(_selftest_partials_list ${KICKOS_EXPECT_PARTIALS})
-_selftest_names_known("the expected-skip set" ${_selftest_skips_list} ${_selftest_driver_skips})
+_selftest_names_known("the expected-skip set" ${_selftest_skips_list})
 _selftest_names_known("the expected-partial set" ${_selftest_partials_list})
 list(JOIN KICKOS_EXPECT_SKIPS "," KICKOS_EXPECT_SKIPS)
 list(JOIN KICKOS_EXPECT_PARTIALS "," KICKOS_EXPECT_PARTIALS)
@@ -384,6 +377,24 @@ if(_selftest_rebased AND TEST ${_tag}_selftest)
   set_tests_properties(${_tag}_selftest_rebased PROPERTIES SKIP_RETURN_CODE 77)
   kickos_boot_timeout(${_tag}_selftest_rebased
     "${PROJECT_SOURCE_DIR}/tests/integration/check_x86_64_rebased.sh")
+endif()
+# Five-level paging, which the emulated processor offers and firmware leaves off: the image's
+# kernel enters it before adopting the regime.
+get_target_property(_selftest_la57 selftest KICKOS_LA57_IMAGE_FILE)
+if(_selftest_la57 AND TEST ${_tag}_selftest)
+  kickos_qemu_machine("${KICKOS_BOARD}" _la_env _la_machine)
+  list(TRANSFORM _la_env APPEND ",+la57" REGEX "^KICKOS_X86_64_CPU=")
+  if(NOT _la_env MATCHES "KICKOS_X86_64_CPU=[^;]*,[+]la57")
+    message(FATAL_ERROR "KickOS: the board's emulator states no KICKOS_X86_64_CPU to add la57 to")
+  endif()
+  add_test(NAME ${_tag}_selftest_la57
+    COMMAND "${CMAKE_COMMAND}" -E env ${_la_env} QEMU_MACHINE=${_la_machine}
+            ${_selftest_env}
+            "${PROJECT_SOURCE_DIR}/tests/integration/check_x86_64_la57.sh"
+            "${_selftest_la57}" ${_selftest_arms})
+  set_tests_properties(${_tag}_selftest_la57 PROPERTIES SKIP_RETURN_CODE 77)
+  kickos_boot_timeout(${_tag}_selftest_la57
+    "${PROJECT_SOURCE_DIR}/tests/integration/check_x86_64_la57.sh")
 endif()
 
 if(_selftest_parts GREATER 1)
@@ -513,7 +524,23 @@ if(_oot_board AND KICKOS_BOARD STREQUAL _oot_board)
                                                           FIXTURES_REQUIRED kickos_build)
       kickos_boot_timeout(${_tag}_oot_mcu_app
         "${PROJECT_SOURCE_DIR}/tests/integration/check_oot_mcu_run.sh" WORK 300)
+      # Two systems of different pool sizes over the package's one set of kernel archives.
+      add_test(
+        NAME    ${_tag}_pool_abi_two
+        COMMAND "${CMAKE_COMMAND}" -E env ${_oot_qemu_env} QEMU_MACHINE=${_oot_qemu_machine}
+                "${PROJECT_SOURCE_DIR}/tests/integration/check_pool_abi.sh"
+                "${PROJECT_BINARY_DIR}" "${PROJECT_SOURCE_DIR}" "${CMAKE_COMMAND}" two)
+      set_tests_properties(${_tag}_pool_abi_two PROPERTIES SKIP_RETURN_CODE 77
+                                                           FIXTURES_REQUIRED kickos_build)
+      kickos_boot_timeout(${_tag}_pool_abi_two
+        "${PROJECT_SOURCE_DIR}/tests/integration/check_pool_abi.sh" BOOTS 2 WORK 400)
     endif()
+    add_test(
+      NAME    ${_tag}_pool_abi_skew
+      COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_pool_abi.sh"
+              "${PROJECT_BINARY_DIR}" "${PROJECT_SOURCE_DIR}" "${CMAKE_COMMAND}" skew)
+    kickos_host_gate(${_tag}_pool_abi_skew TIMEOUT 400)
+    set_tests_properties(${_tag}_pool_abi_skew PROPERTIES FIXTURES_REQUIRED kickos_build)
   endif()
 endif()
 
@@ -579,6 +606,7 @@ if(KICKOS_HAVE_ASPACE AND KICKOS_ARCH STREQUAL "rv64imac")
     COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_riscv_kernel_apphalf.sh"
             "${CMAKE_READELF}"
             "${PROJECT_SOURCE_DIR}/tests/static/riscv_apphalf_allowlist.txt"
+            # With each program its link embeds, whose symbols are its ELF's alone.
             "$<TARGET_FILE:selftest>"
             "$<TARGET_FILE:hello>"
             "$<TARGET_FILE:cxxtest>"
@@ -603,8 +631,17 @@ endif()
 # own ASSERT(_ebss > _sbss) still true.
 #
 # The window bounds and the privileged set both differ by board shape, so both are arguments.
-# MPU boards carve one writable window and select kernel/arch/chip/lib kernel-side.
+# MPU boards carve one writable window and select kernel/arch/chip/lib kernel-side. Where images
+# are linked on their own first, each image links its own lib and none of the other three.
 if(KICKOS_HAVE_MPU AND NOT KICKOS_ARCH STREQUAL "sim")
+  set(_appdata_image_archives "")
+  if(KICKOS_IMAGE_SPLIT)
+    set(_appdata_image_archives
+        "--"
+        "$<TARGET_FILE:kickos_kernel>"
+        "$<TARGET_FILE:kickos_arch_${KICKOS_ARCH}>"
+        "$<TARGET_FILE:kickos_chip_${KICKOS_CHIP}>")
+  endif()
   add_test(
     NAME    appdata_no_kernel
     COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_appdata_no_kernel.sh"
@@ -616,7 +653,8 @@ if(KICKOS_HAVE_MPU AND NOT KICKOS_ARCH STREQUAL "sim")
             "$<TARGET_FILE:kickos_kernel>"
             "$<TARGET_FILE:kickos_arch_${KICKOS_ARCH}>"
             "$<TARGET_FILE:kickos_chip_${KICKOS_CHIP}>"
-            "$<TARGET_FILE:kickos_lib>")
+            "$<TARGET_FILE:kickos_lib>"
+            ${_appdata_image_archives})
   kickos_host_gate(appdata_no_kernel TIMEOUT 60)
 endif()
 
@@ -627,8 +665,13 @@ endif()
 if(KICKOS_HAVE_ASPACE)
   set(_appdata_image "$<TARGET_FILE:selftest>")
   set(_appdata_map "${_selftest_map}")
+  set(_appdata_windows "__kickos_app_sram_start:__kickos_app_sram_end"
+                       "__kickos_app_rom_start:__kickos_app_rom_end")
   set(_appdata_kernel_objects "")
   if(KICKOS_ARCH STREQUAL "x86_64")
+    # The PE32+ image holds the programs at an address firmware chooses, every byte of which a
+    # space maps.
+    set(_appdata_windows "__kickos_image0_load_start:__kickos_images_load_end")
     set(_appdata_kernel_objects $<TARGET_OBJECTS:kickos_x86_64_landed_kernel>)
     if(KICKOS_KERNEL_CORES GREATER 1)
       list(APPEND _appdata_kernel_objects $<TARGET_OBJECTS:kickos_x86_64_boot_ap>)
@@ -636,19 +679,28 @@ if(KICKOS_HAVE_ASPACE)
       list(APPEND _appdata_kernel_objects $<TARGET_OBJECTS:kickos_x86_64_boot>)
     endif()
   endif()
+  # A program the kernel's link embeds links none of the kernel's archives either.
+  set(_appdata_program_archives "")
+  if(KICKOS_IMAGE_EMBED)
+    set(_appdata_program_archives
+        "--"
+        "$<TARGET_FILE:kickos_kernel>"
+        "$<TARGET_FILE:kickos_arch_${KICKOS_ARCH}>"
+        "$<TARGET_FILE:kickos_chip_${KICKOS_CHIP}>")
+  endif()
   add_test(
     NAME    appdata_no_kernel
     COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_appdata_no_kernel.sh"
             "${CMAKE_NM}"
             "${_appdata_image}"
             "${_appdata_map}"
-            "__kickos_app_sram_start:__kickos_app_sram_end"
-            "__kickos_app_rom_start:__kickos_app_rom_end"
+            ${_appdata_windows}
             "--"
             "$<TARGET_FILE:kickos_kernel>"
             "$<TARGET_FILE:kickos_arch_${KICKOS_ARCH}>"
             "$<TARGET_FILE:kickos_chip_${KICKOS_CHIP}>"
             ${_appdata_kernel_objects}
+            ${_appdata_program_archives}
     COMMAND_EXPAND_LISTS)
   kickos_host_gate(appdata_no_kernel TIMEOUT 60)
 endif()

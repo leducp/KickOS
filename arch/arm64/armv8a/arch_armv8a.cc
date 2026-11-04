@@ -297,11 +297,6 @@ namespace
 #endif
 
 #if KICKOS_TLS
-namespace kickos
-{
-    size_t tls_block_size();
-}
-
 // Safe ahead of the physical swap: no privileged code reads this register
 // (check_no_privileged_tls.sh).
 static void armv8a_seat_thread_pointer(struct arch_context const* to)
@@ -312,7 +307,7 @@ static void armv8a_seat_thread_pointer(struct arch_context const* to)
 
 // An unprivileged thread returns through the user-side stub; the privileged one is a kernel
 // symbol EL0 cannot call.
-extern "C" void kickos_user_thread_return(void);
+extern "C" void (*kickos_image_thread_return)(void);
 static_assert(offsetof(struct arch_context, sp) == 0, "switch.S uses CTX_SP 0");
 static_assert(ARMV8A_FRAME_SIZE % 16 == 0, "SP must stay 16-byte aligned");
 
@@ -440,10 +435,6 @@ void arch_context_init(struct arch_context* ctx,
     ctx->stack_lo = reinterpret_cast<uintptr_t>(stack_base);
     ctx->stack_hi = ctx->stack_lo + stack_size;
     // ctx->kernel_sp is read here, not written: thread_create seats it before this call.
-#if KICKOS_TLS
-    // stack_lo owes no alignment past the ABI's 16.
-    ctx->tls_base = ctx->stack_lo - ::kickos::tls_block_size();
-#endif
 
     // Where this frame sits is the privilege boundary: it carries SPSR and ELR, so whoever can
     // write it chooses the exception level and PC of the first eret. An EL0 thread's stack is
@@ -477,7 +468,7 @@ void arch_context_init(struct arch_context* ctx,
     }
     else
     {
-        f[ARMV8A_F_X30 / 8] = reinterpret_cast<uint64_t>(&kickos_user_thread_return);
+        f[ARMV8A_F_X30 / 8] = reinterpret_cast<uint64_t>(kickos_image_thread_return);
         f[ARMV8A_F_SPSR / 8] = SPSR_EL0T_IRQ_ON;
         f[ARMV8A_F_SP_EL0 / 8] = user_top; // its own stack, whole: no frame stands on it
     }
@@ -488,6 +479,13 @@ void arch_context_second_arg(struct arch_context* ctx, uintptr_t value)
 {
     reinterpret_cast<uint64_t*>(ctx->sp)[ARMV8A_F_X1 / 8] = value;
 }
+
+#if KICKOS_TLS
+void arch_context_tls(struct arch_context* ctx, uintptr_t thread_pointer)
+{
+    ctx->tls_base = thread_pointer;
+}
+#endif
 
 // Resumes the thread at `entry`, privileged, on its own KERNEL block: the death path must
 // not run on memory an unprivileged thread can write.

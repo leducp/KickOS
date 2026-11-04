@@ -86,7 +86,7 @@ namespace kickos
                 t->wait_queue->unlink(&t->link);
                 Thread* owner = m->owner;
                 word_waiter_left(m);
-                for (int depth = 0; owner != nullptr and depth <= KICKOS_THREAD_SLOTS; depth++)
+                for (int depth = 0; owner != nullptr and depth <= kernel().threads.count(); depth++)
                 {
                     uint8_t const p = thread_effective_prio(owner);
                     if (p == owner->prio)
@@ -202,12 +202,16 @@ namespace kickos
 #if KICKOS_AMP_CONSOLE_CLAIM
             HOLD_CLAIM,
 #endif
+            HOLD_LINE,
             HOLD_DARK,
             HOLD_ROOM,
             HOLD_WRITERS,
         };
 
-        int console_park(ConsoleHold hold, char const* buf, size_t n, int crlf)
+        // console_park's answer where nothing held the writer, outside the 0 and -KOS_E* range.
+        constexpr int UNHELD = 1;
+
+        int console_park(ConsoleHold hold, uint32_t needed, uint32_t timeout_us)
         {
             Thread* const c = sched::current();
             uint32_t epoch = 0;
@@ -219,12 +223,19 @@ namespace kickos
                     return -KOS_ECANCELED;
                 }
                 if ((hold == HOLD_DARK and console_dark() == 0)
-                    or (hold == HOLD_ROOM and console_tx_room_want(buf, n, crlf) == 0)
+                    or (hold == HOLD_ROOM and console_tx_room_want(needed) == 0)
                     or (hold == HOLD_WRITERS and console_chip_writers() == 0))
                 {
-                    return 0;
+                    return UNHELD;
                 }
-                uint32_t timeout_us = KOS_TIMEOUT_NONE;
+                if (hold == HOLD_LINE)
+                {
+                    timeout_us = console_line_wait(c, lock);
+                    if (timeout_us == 0)
+                    {
+                        return UNHELD;
+                    }
+                }
 #if KICKOS_AMP_CONSOLE_CLAIM
                 // Masked from the mark to the park: a release in between rings a doorbell that
                 // is taken once this thread is parked.
@@ -236,7 +247,7 @@ namespace kickos
                         // The take cleared this node's mark, which a release already reading the
                         // marks may now miss: a writer still parked here offers again instead.
                         console_claim_rung(lock);
-                        return 0;
+                        return UNHELD;
                     }
                     g_claim_waiting = true;
                 }
@@ -248,26 +259,66 @@ namespace kickos
             wq_confirm_resume(c, epoch);
             return static_cast<int>(c->wait_result);
         }
+
+        int held_or_zero(int rc)
+        {
+            if (rc == UNHELD)
+            {
+                return 0;
+            }
+            return rc;
+        }
     }
 
     int console_dark_wait(void)
     {
-        return console_park(HOLD_DARK, nullptr, 0, 0);
+        return held_or_zero(console_park(HOLD_DARK, 0, KOS_TIMEOUT_NONE));
     }
 
-    int console_room_wait(char const* buf, size_t n, int crlf)
+    namespace
     {
-        if (console_tx_make_room(buf, n, crlf) == 0)
+        // Another context mid-line: UNHELD where none is, else the park's answer, the end of
+        // that line's grant read as 0.
+        int console_line_park(void)
+        {
+            int const rc = console_park(HOLD_LINE, 0, 0);
+            if (rc == -KOS_ETIMEDOUT)
+            {
+                return 0;
+            }
+            return rc;
+        }
+    }
+
+    int console_room_wait(uint32_t needed, uint32_t stall_us)
+    {
+        int const line = console_line_park();
+        if (line != UNHELD)
+        {
+            return line;
+        }
+        if (console_tx_make_room(needed) == 0)
         {
             return 0;
         }
-        return console_park(HOLD_ROOM, buf, n, crlf);
+        uint32_t const sent = console_tx_sent();
+        int const rc = held_or_zero(console_park(HOLD_ROOM, needed, stall_us));
+        if (rc == -KOS_ETIMEDOUT and console_tx_sent() != sent)
+        {
+            return 0;
+        }
+        return rc;
     }
 
 #if KICKOS_AMP_CONSOLE_CLAIM
     int console_claim_wait(void)
     {
-        int const rc = console_park(HOLD_CLAIM, nullptr, 0, 0);
+        int const line = console_line_park();
+        if (line != UNHELD)
+        {
+            return line;
+        }
+        int const rc = held_or_zero(console_park(HOLD_CLAIM, 0, 0));
         if (rc != -KOS_ETIMEDOUT)
         {
             return rc;
@@ -297,7 +348,7 @@ namespace kickos
     {
         while (console_chip_writers() != 0)
         {
-            (void)console_park(HOLD_WRITERS, nullptr, 0, 0);
+            (void)console_park(HOLD_WRITERS, 0, KOS_TIMEOUT_NONE);
         }
     }
 
@@ -306,7 +357,7 @@ namespace kickos
         Kernel& k = kernel();
         for (int s = 0; s < k.threads.next; s++)
         {
-            Thread* const t = &k.threads.slots[s];
+            Thread* const t = &k.threads.slots()[s];
             if (t->wait_kind != WAIT_CONSOLE)
             {
                 continue;
@@ -328,7 +379,7 @@ namespace kickos
         // only itself.
         for (int s = 0; s < k.threads.next; s++)
         {
-            Thread* const p = &k.threads.slots[s];
+            Thread* const p = &k.threads.slots()[s];
             if (p->task != t)
             {
                 continue;

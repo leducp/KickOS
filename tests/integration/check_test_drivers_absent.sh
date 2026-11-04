@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# A build that leaves KICKOS_TEST_DRIVERS off ships none of tests/drivers: its manifest's
-# catalogue names none of them, and its install carries none of their archives or exports.
+# A build that leaves KICKOS_TEST_DRIVERS off ships none of tests/drivers, nor any driver an app
+# of this tree declares LOCAL: its manifest's catalogue names none of them, and its install carries none of their archives or exports.
 # The same three matchers must first hit the build's first catalogue driver, or, in a build
 # whose catalogue is empty, the kernel's archive and export.
 #
@@ -19,6 +19,10 @@ CMAKE="${3:?$USAGE}"
 
 NAMES="$(sed -n 's/^ *kickos_add_driver(\([a-z0-9_]*\) .*/\1/p' "$KICKOS_SRC/tests/drivers/CMakeLists.txt")"
 [ -n "$NAMES" ] || fail "tests/drivers/CMakeLists.txt declares no driver"
+LOCALS="$(find "$KICKOS_SRC/user/apps" -name CMakeLists.txt -exec sed -n 's/^ *kickos_add_driver(\([a-z0-9_]*\) LOCAL .*/\1/p' {} +)"
+[ -n "$LOCALS" ] || fail "no app of the tree declares a LOCAL driver, so the gate reads none"
+NAMES="$NAMES
+$LOCALS"
 MANIFEST="$KICKOS_BUILD/export/manifest.yaml"
 [ -f "$MANIFEST" ] || fail "no manifest at $MANIFEST"
 
@@ -45,6 +49,9 @@ fi
 archived "$CONTROL" || fail "the archive matcher misses libkickos_$CONTROL.a"
 exported "$CONTROL" || fail "the export matcher misses kickos_$CONTROL"
 
+if find "$TMP/prefix" -name 'manifest_local*' -print | grep -q .; then
+    fail "the install carries the local manifest"
+fi
 for _n in $NAMES; do
     if catalogued "$_n"; then
         fail "the manifest's catalogue names test driver $_n"

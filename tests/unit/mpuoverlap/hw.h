@@ -28,6 +28,8 @@ HwAccess hw_armv7m_pmsav7(arch_mpu_region const*, size_t, uintptr_t, uint32_t*);
 HwAccess hw_armv7m_pmsav8(arch_mpu_region const*, size_t, uintptr_t, uint32_t*);
 HwAccess hw_armv7m_sysmpu(arch_mpu_region const*, size_t, uintptr_t, uint32_t*);
 HwAccess hw_rv32imac(arch_mpu_region const*, size_t, uintptr_t, uint32_t*);
+HwAccess hw_rv32imac_code_window(arch_mpu_region const*, size_t, uintptr_t base, uintptr_t top,
+                                 uintptr_t at, bool* exec);
 HwAccess hw_rxv3(arch_mpu_region const*, size_t, uintptr_t, uint32_t*);
 HwAccess hw_sim(arch_mpu_region const*, size_t, uintptr_t, uint32_t*);
 

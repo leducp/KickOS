@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# The packaged k64dspi serving the SPI bus over DSPI0, and two clients of it on a device slot each.
+
+version: 1
+stdout: kernel
+ends: intruder
+
+tasks:
+  - name: k64dspi
+    driver: k64dspi
+    devices: [/dev/dspi0]
+    accepts: [coarse_gate, device_not_isolated]
+    serves: /svc/spi0
+    priority: 12
+
+  - name: holder
+    program: main
+    priority: 10
+    ceiling: 10
+    uses: [{ path: /svc/spi0, slots: [0] }]
+
+  - name: intruder
+    program: k64dspi_slots_intruder
+    priority: 9
+    ceiling: 9
+    uses: [{ path: /svc/spi0, slots: [1] }]

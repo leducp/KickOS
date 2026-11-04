@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# main, the survivor, and the faulter, a program of its own, which main creates.
+
+version: 1
+stdout: kernel
+ends: main
+
+tasks:
+  - name: main
+    program: @FS_APP@
+    priority: 2
+    ceiling: 31
+    authority: [memory, system, tasks]
+
+  - name: faulter
+    program: @FS_APP@_peer
+    priority: 10
+    ceiling: 10
+    start: on_request
+    budgets: { threads: 1 }

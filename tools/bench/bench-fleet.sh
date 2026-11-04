@@ -11,9 +11,11 @@
 #   TAG=<tag> tools/bench/bench-fleet.sh rx72m xmc4800-relax
 #
 # Exit status: 0 when every image is captured and nothing is owed; 1 on a failed capture, an absent
-# board, an image not run or one no judge names; 3 when every capture passed and the pass still
-# owes a witness: an emulator-judged image on a board with no emulator, a human-judged one, or a
-# clause a capture judge could not evaluate.
+# board, an image not run or one no judge names, or a capture passing that its board declares
+# allowed to fail (board_allowed_failure in board-rows.sh); 3 when every capture passed or failed
+# as its board allows and the pass still owes a witness: an allowed failure, an emulator-judged
+# image on a board with no emulator, a human-judged one, or a clause a capture judge could not
+# evaluate.
 #
 # REMOTE MODE, when the bench is not on this box:
 #   BENCH_HOST=<bench-host> BENCH_PORT=<port> TAG=<tag> tools/bench/bench-fleet.sh
@@ -286,13 +288,16 @@ join_worker() { # <board> <probe-serial>
 # One worker's captures, in the order they were queued. Its findings go to $WORK/<worker>.<name>,
 # since a background worker's variables die with it.
 worker() { # <worker>
-  local board img label judge variant amp sn
+  local board img label judge variant amp sn why
   RESULTS=""
   COVERED=""
   PARTLY=""
+  ALLOWED=""
+  UNEXPECTED=""
   FAILED=0
   while IFS='|' read -r board img label judge variant amp sn <&4; do
     [ -n "$board" ] && [ "${WORKER_OF[$board]}" = "$1" ] || continue
+    why=$(board_allowed_failure "$board" "$img")
     if bench_one "$board" "$img" "$sn" "$board/$label" "$judge" "$variant" "$amp"; then
       COVERED="$COVERED$board $label
 "
@@ -300,6 +305,15 @@ worker() { # <worker>
         PARTLY="$PARTLY$board|$label|$NOT_EVALUATED
 "
       fi
+      if [ -n "$why" ]; then
+        record "$board/$label" "UNEXPECTED PASS: its board declares it allowed to fail: $why"
+        UNEXPECTED="$UNEXPECTED$board|$label|$why
+"
+      fi
+    elif [ -n "$why" ]; then
+      record "$board/$label" "ALLOWED TO FAIL: $why"
+      ALLOWED="$ALLOWED$board|$label|$why
+"
     else
       FAILED=1
     fi
@@ -309,6 +323,8 @@ JOBS
   printf '%s' "$RESULTS" > "$WORK/$1.RESULTS"
   printf '%s' "$COVERED" > "$WORK/$1.COVERED"
   printf '%s' "$PARTLY" > "$WORK/$1.PARTLY"
+  printf '%s' "$ALLOWED" > "$WORK/$1.ALLOWED"
+  printf '%s' "$UNEXPECTED" > "$WORK/$1.UNEXPECTED"
   printf '%s' "$FAILED" > "$WORK/$1.FAILED"
 }
 
@@ -322,6 +338,8 @@ EMULATOR_OWED=""
 HUMAN_OWED=""
 VOID=""
 PARTLY=""
+ALLOWED=""
+UNEXPECTED=""
 MEASURED=""
 JOBS=""
 for board in $WANT; do
@@ -473,7 +491,7 @@ for w in $WORKERS; do
   done
   echo "=== worker:$members"
   cat "$WORK/$w.out"
-  for part in RESULTS COVERED PARTLY; do
+  for part in RESULTS COVERED PARTLY ALLOWED UNEXPECTED; do
     if [ -s "$WORK/$w.$part" ]; then
       printf -v "$part" '%s%s\n' "${!part}" "$(cat "$WORK/$w.$part")"
     fi
@@ -495,17 +513,28 @@ fi
 # board.
 echo
 echo "=== image coverage"
-UNCOVERED=0
-CLAUSES=0
-while read -r board img; do
-  [ -n "$board" ] || continue
-  partly=$(printf '%s' "$PARTLY" | KOS_BOARD="$board" KOS_LABEL="$img" awk -F '|' '
+# The rest of the first `<board>|<label>|<rest>` row of <rows>.
+row_rest() { # <rows> <board> <label>
+  printf '%s' "$1" | KOS_BOARD="$2" KOS_LABEL="$3" awk -F '|' '
     $1 == ENVIRON["KOS_BOARD"] && $2 == ENVIRON["KOS_LABEL"] {
       sub(/^[^|]*[|][^|]*[|]/, "")
       print
       exit
-    }')
-  if [ -n "$partly" ]; then
+    }'
+}
+UNCOVERED=0
+CLAUSES=0
+ALLOWED_FAILS=0
+UNEXPECTED_PASSES=0
+while read -r board img; do
+  [ -n "$board" ] || continue
+  partly=$(row_rest "$PARTLY" "$board" "$img")
+  allowed=$(row_rest "$ALLOWED" "$board" "$img")
+  unexpected=$(row_rest "$UNEXPECTED" "$board" "$img")
+  if [ -n "$allowed" ]; then
+    printf '  %-16s %-38s failed, allowed to fail: %s\n' "$board" "$img" "$allowed"
+    ALLOWED_FAILS=$((ALLOWED_FAILS + 1))
+  elif [ -n "$partly" ]; then
     printf '  %-16s %-38s captured, partly owed: %s\n' "$board" "$img" "$partly"
     CLAUSES=$((CLAUSES + $(printf '%s\n' "$partly" | tr ';' '\n' | grep -c .)))
   elif printf '%s' "$COVERED" | grep -qxF "$board $img"; then
@@ -513,6 +542,11 @@ while read -r board img; do
   else
     printf '  %-16s %-38s NOT RUN\n' "$board" "$img"
     UNCOVERED=$((UNCOVERED + 1))
+  fi
+  if [ -n "$unexpected" ]; then
+    printf '  %-16s %-38s UNEXPECTED PASS: its board declares it allowed to fail: %s\n' \
+      "$board" "$img" "$unexpected"
+    UNEXPECTED_PASSES=$((UNEXPECTED_PASSES + 1))
   fi
 done <<OWED
 $OWED
@@ -568,6 +602,11 @@ if [ "$HUMANS" -ne 0 ]; then
   echo "OWED: $HUMANS human-judged image(s) carry a verdict only a person reads, which this pass"
   echo "  cannot see and covers none of."
 fi
+if [ "$ALLOWED_FAILS" -ne 0 ]; then
+  echo
+  echo "OWED: $ALLOWED_FAILS image(s) failed as their board allows, each until the TODO.md item its"
+  echo "  reason names is ruled."
+fi
 if [ "$CLAUSES" -ne 0 ]; then
   echo
   echo "OWED: $CLAUSES clause(s) of captured images' verdicts: an exit status or the system ending,"
@@ -583,15 +622,21 @@ if [ "$UNCOVERED" -ne 0 ]; then
   echo "INCOMPLETE: $UNCOVERED image(s) a board ships were not captured, or no judge names them, so"
   echo "  this pass does not cover those boards."
 fi
-if [ $((ABSENT + UNCOVERED)) -ne 0 ]; then
+if [ "$UNEXPECTED_PASSES" -ne 0 ]; then
+  echo
+  echo "UNEXPECTED PASS: $UNEXPECTED_PASSES image(s) passed that their board declares allowed to fail:"
+  echo "  remove each from board_allowed_failure in tools/bench/board-rows.sh."
+fi
+if [ $((ABSENT + UNCOVERED + UNEXPECTED_PASSES)) -ne 0 ]; then
   exit 1
 fi
 if [ "$FAILED" -ne 0 ]; then
   exit 1
 fi
-if [ $((NOWITNESS + HUMANS + CLAUSES)) -ne 0 ]; then
+if [ $((NOWITNESS + HUMANS + CLAUSES + ALLOWED_FAILS)) -ne 0 ]; then
   echo
-  echo "OWED: every capture passed, and the pass still owes the witnesses above."
+  echo "OWED: every capture passed or failed as its board allows, and the pass still owes the"
+  echo "  witnesses above."
   exit 3
 fi
 exit 0

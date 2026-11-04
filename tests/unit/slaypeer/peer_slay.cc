@@ -572,6 +572,38 @@ namespace kickos
                    "taking two passes per exception books it in and out forever";
         }
 
+        // Two victims on one core. The exit enters the frame the first pass rebuilt, and the pass
+        // that switch owed is taken there, before the death stub's first instruction. Declining
+        // that frame hands the core to the other victim and owes the next pass, which declines
+        // that one in turn: the two swap the core forever and neither dies.
+        TEST_F(SlayPeer, a_rebuilt_victim_interrupted_before_its_first_instruction_keeps_the_core)
+        {
+            Placed p = place();
+            Thread* const second = seat_hog();
+            p.victim->affinity = 1u << CORE_PEER;
+            second->affinity = 1u << CORE_PEER;
+            {
+                IrqLock lock;
+                thread_cancel_kind(p.victim, CANCEL_SLAY, lock);
+                thread_cancel_kind(second, CANCEL_SLAY, lock);
+            }
+            Thread* const seated = exception_as_peer(dispatch_here, +[] {});
+            ASSERT_EQ(seated, second)
+                << "fixture: the first pass took the core off the victim and claimed the other";
+            ASSERT_EQ(kernel().on_cpu[CORE_PEER], second)
+                << "fixture: the exit entered the rebuilt frame";
+            ASSERT_EQ(g_redirects, 1u) << "fixture: one claim fired";
+            ASSERT_NE(owed_at(CORE_PEER), 0) << "fixture: the displaced victim owes a pass";
+
+            (void)exception_as_peer(dispatch_here, +[] {});
+
+            EXPECT_EQ(kernel().current(CORE_PEER), second)
+                << "the pass declined a victim whose frame is already its death stub, so two "
+                   "victims on one core swap it at every pass and neither runs its teardown";
+            EXPECT_EQ(g_redirects, 1u) << "a claim fired again on the swap";
+            EXPECT_EQ(owed_at(CORE_PEER), 0) << "the swap owed the next pass of the cycle";
+        }
+
         // The slay lands while the victim's core is already switching it out for a reason of
         // its own, so the pass that ask names is spent on somebody else. What keeps the claim
         // alive is the switch itself owing one: the booking is about the victim losing the

@@ -40,6 +40,13 @@ _kickos_c6_lp_probe_boot
 kickos_c6_txidle_probe
 _kickos_c6_txidle_probe
 
+# --- a no-op the image's allocator replaces -----------------------------------
+# user/src/newlib_lock.cc defines it empty; user/src/newlib_sbrk.cc, which only an image that
+# allocates links, defines the real one. A weak reference would serve, but a PE32+ image holds
+# none.
+kickos_heap_seat
+_kickos_heap_seat
+
 # --- toolchain-owned, present only in the final image -------------------------
 # Emitted by libgcc / newlib / libstdc++ or by the host glibc CRT.
 __aeabi_idiv0

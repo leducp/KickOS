@@ -171,6 +171,11 @@ extern "C" uint32_t arch_console_claim_wait(void)
 {
     return g_claim.wait();
 }
+
+extern "C" uint32_t arch_console_claim_left(void)
+{
+    return g_claim.left_us();
+}
 #endif
 
 extern "C"

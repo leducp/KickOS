@@ -15,6 +15,8 @@ namespace
 {
     struct kos_spi_bus g_bus;
     spi::SlotTable* g_slots = nullptr;
+    // The badge the calling client's capability carries, a slot mask.
+    uint32_t g_badge = 0u;
     uint32_t g_opens = 0u;
     uint32_t g_transfers = 0u;
 }
@@ -68,7 +70,7 @@ extern "C"
     int32_t kos_call(kos_cap_t, void* buf, size_t send_len, size_t, uint32_t)
     {
         return static_cast<int32_t>(
-            spi::serve_one(&g_bus, *g_slots, static_cast<unsigned char*>(buf), send_len));
+            spi::serve_one(&g_bus, *g_slots, g_badge, static_cast<unsigned char*>(buf), send_len));
     }
 }
 
@@ -136,6 +138,7 @@ namespace
             struct kos_spi_bus_config bcfg = {0u, KOS_CAP_NONE, KOS_CAP_NONE, KOS_CAP_NONE, 0u, 0u};
             ASSERT_EQ(kos_spi_bus_open(&g_bus, &bcfg), 0);
             g_slots = &slots;
+            g_badge = (1u << KOS_BUS_DEV_MAX) - 1u;
             g_opens = 0u;
             g_transfers = 0u;
         }
@@ -172,5 +175,36 @@ namespace
         EXPECT_EQ(xfer(KOS_BUS_DEV_MAX, sizeof(sink), sink), -KOS_EINVAL);
         EXPECT_EQ(g_opens, 0u) << "a slot past the table reached the backend";
         EXPECT_EQ(g_transfers, 0u) << "a slot past the table reached the backend";
+    }
+
+    // TWO CLIENTS OF ONE BUS: B's badge grants slot 1, A's slot 0. B naming A's slot is refused on
+    // both ops before the backend, and A's slot keeps A's profile.
+    TEST_F(SpiServe, a_client_naming_a_slot_outside_its_badge_is_refused)
+    {
+        g_badge = 1u << 0;
+        ASSERT_EQ(config(0, 8), 0);
+        g_badge = 1u << 1;
+        ASSERT_EQ(config(1, 16), 0) << "the control: B's own slot opens";
+        uint32_t const opens = g_opens;
+        EXPECT_EQ(config(0, 16), -KOS_EACCES) << "B reconfigured A's slot";
+        unsigned char sink[2] = {0, 0};
+        EXPECT_EQ(xfer(0, sizeof(sink), sink), -KOS_EACCES) << "B clocked A's device";
+        EXPECT_EQ(g_opens, opens) << "a refused slot reached the backend";
+        EXPECT_EQ(g_transfers, 0u) << "a refused slot reached the backend";
+
+        g_badge = 1u << 0;
+        unsigned char a[2] = {0, 0};
+        EXPECT_EQ(xfer(0, sizeof(a), a), 2);
+        EXPECT_EQ(a[0], 8) << "A's slot carries B's profile";
+    }
+
+    TEST_F(SpiServe, an_unbadged_client_reaches_no_slot)
+    {
+        g_badge = KOS_BADGE_NONE;
+        unsigned char sink[2] = {0, 0};
+        EXPECT_EQ(config(0, 8), -KOS_EACCES);
+        EXPECT_EQ(xfer(0, sizeof(sink), sink), -KOS_EACCES);
+        EXPECT_EQ(g_opens, 0u);
+        EXPECT_EQ(g_transfers, 0u);
     }
 }

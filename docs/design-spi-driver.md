@@ -86,4 +86,4 @@ FIFO/LIMIT burst mode is a later optimization; start single-word.
   the driver thread and blocks on a semaphore. The app never touches MMIO, grants or IRQs.
 - The driver thread is the spawned unprivileged owner of the MMIO grant and the IRQ handle, started
   by a small privileged bring-up shim that does the boot config and issues the grant. Its stack
-  comes from `KOS_STACK_DEFINE` (pow2-aligned for PMSA).
+  comes from `kos_ram_alloc`.

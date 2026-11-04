@@ -24,29 +24,87 @@
 
 #include <kickos/slotpool.h>
 
+// The policy under test is the pool's own: every claim is admitted.
+bool kickos::task_admit(Task const*, BudgetKind, uint32_t)
+{
+    return true;
+}
+
 namespace
 {
     struct Obj
     {
         int v;
+        uint16_t hold_mark;
+    };
+
+    // A pool of N slots over zeroed storage of its own, as a system's pools TU gives one. One
+    // pool per N and Tag is alive at a time, and its storage is the one `live` names.
+    template <int N, int Tag>
+    struct Storage
+    {
+        Obj slots[N];
+        uint32_t gen[N];
+        uint8_t refs[N];
+        kickos::ListNode nodes[N];
+
+        static inline Storage* live = nullptr;
+
+        static inline kickos::SlotArrays arrays_of = {};
+
+        struct Store
+        {
+            static constexpr kickos::BudgetKind KIND = kickos::BudgetKind::ENDPOINTS;
+            static Obj* slots()
+            {
+                return live->slots;
+            }
+            static kickos::SlotArrays const* arrays()
+            {
+                return &arrays_of;
+            }
+            static int count()
+            {
+                return N;
+            }
+        };
+    };
+
+    template <int N, int Tag = 0>
+    struct TestPool : kickos::SlotPool<Obj, typename Storage<N, Tag>::Store>
+    {
+        Storage<N, Tag>* storage = new Storage<N, Tag>();
+
+        TestPool()
+        {
+            Storage<N, Tag>::live = storage;
+            Storage<N, Tag>::arrays_of =
+                kickos::SlotArrays{storage->gen, storage->refs, storage->nodes, N};
+        }
+        ~TestPool()
+        {
+            delete storage;
+        }
+        TestPool(TestPool const&) = delete;
+        TestPool& operator=(TestPool const&) = delete;
     };
 
     // Churn one transient object `cycles` times over a pool holding `resident` slots live,
-    // and return the busiest slot's share. Under next-fit the transient walks the free
-    // slots, so the busiest takes cycles/(N-resident); under first-fit it takes all of them.
+    // and return the busiest slot's share. Under the FIFO free list the transient walks the free
+    // slots, so the busiest takes cycles/(N-resident); under a LIFO one it takes all of them.
     template <int N>
     void busiest_slot(int cycles, int resident, int* busiest_out, int* distinct_out)
     {
-        kickos::SlotPool<Obj, N> pool;
+        TestPool<N> pool;
         for (int i = 0; i < resident; i++)
         {
-            ASSERT_GE(pool.alloc(), 0) << "resident set fits the pool";
+            ASSERT_GE(pool.alloc(nullptr), 0) << "resident set fits the pool";
         }
 
         int counts[N] = {};
         for (int c = 0; c < cycles; c++)
         {
-            int const index = pool.alloc();
+            int const index = pool.alloc(nullptr);
             ASSERT_TRUE(index >= 0 and index < N) << "churn alloc returned " << index << " at cycle "
                                                  << c;
             counts[index]++;
@@ -72,7 +130,7 @@ namespace
 
     // The headline property, run at each pool size the fleet actually configures.
     // With nothing else live, a perfect spread puts ceil(cycles/N) on the busiest slot;
-    // first-fit puts all `cycles` on slot 0.
+    // a LIFO free list puts all `cycles` on slot 0.
     template <int N>
     void spread_pure_churn(char const* label)
     {
@@ -90,55 +148,50 @@ namespace
         EXPECT_EQ(cycles / busiest, N) << "wrap distance improves by the full factor N";
     }
 
-    // Completeness: a free slot must be found wherever the cursor rests, which is what a
-    // scan running cursor..N-1 without wrapping fails.
-    //
-    // The lone free slot walks BACKWARD on purpose. Each reclaim parks the cursor just past
-    // the slot it returned, so a forward walk keeps the cursor sitting on the next target and
-    // never needs the wrap at all: it passes under a non-wrapping scan. Walking backward puts
-    // the target below the cursor every time, so only a scan that wraps reaches it.
+    // Completeness: a full pool's one free slot is the next claim wherever it lies, in either
+    // direction of walk.
     template <int N>
-    void lone_free_slot_found_from_any_cursor(char const* label)
+    void lone_free_slot_is_the_next_claim(char const* label)
     {
-        kickos::SlotPool<Obj, N> pool;
+        TestPool<N> pool;
         for (int i = 0; i < N; i++)
         {
-            ASSERT_GE(pool.alloc(), 0) << "fill: every slot claimable";
+            ASSERT_GE(pool.alloc(nullptr), 0) << "fill: every slot claimable";
         }
-        ASSERT_EQ(pool.alloc(), -1) << "a full pool reports -1";
+        ASSERT_EQ(pool.alloc(nullptr), -1) << "a full pool reports -1";
 
         for (int round = 0; round < 2; round++)
         {
             for (int target = N - 1; target >= 0; target--)
             {
                 pool.free(pool.handle_for(target));
-                ASSERT_EQ(pool.alloc(), target) << label << ": lone free slot " << target
+                ASSERT_EQ(pool.alloc(nullptr), target) << label << ": lone free slot " << target
                                                 << " not found";
             }
         }
-        printf("# %s N=%d: lone free slot reachable from every cursor position\n", label, N);
+        printf("# %s N=%d: lone free slot reachable wherever it lies\n", label, N);
     }
 
     // At file scope: the widest pool is far too large for a stack frame.
     constexpr int WIDE = 1024;
     constexpr int WIDEST = (1 << 16) - 1; // SlotPool refuses an N that would seat all-ones
-    kickos::SlotPool<Obj, WIDE> g_wide;
-    kickos::SlotPool<Obj, WIDEST> g_widest;
+    TestPool<WIDE, 1> g_wide;
+    TestPool<WIDEST, 1> g_widest;
 
     // Every slot of a wide pool is claimable, distinct, and resolves; the top slot is the one
     // an index field one bit too narrow would alias onto another.
-    template <int N>
-    void pool_past_the_old_wall(kickos::SlotPool<Obj, N>& pool, char const* label)
+    template <int N, class Pool>
+    void pool_past_the_old_wall(Pool& pool, char const* label)
     {
         int top = -1;
         for (int i = 0; i < N; i++)
         {
-            int const index = pool.alloc();
+            int const index = pool.alloc(nullptr);
             ASSERT_TRUE(index >= 0 and index < N) << label << ": claim " << i << " returned "
                                                   << index;
             top = index;
         }
-        EXPECT_EQ(pool.alloc(), -1) << "a full wide pool reports -1";
+        EXPECT_EQ(pool.alloc(nullptr), -1) << "a full wide pool reports -1";
         EXPECT_EQ(top, N - 1) << "the last claim is the top slot";
         int const handle = pool.handle_for(N - 1);
         EXPECT_EQ(pool.resolve(handle), pool.at(N - 1)) << "the top slot's handle resolves to it";
@@ -161,7 +214,7 @@ TEST(SlotPool, spread_pure_churn_mid_pool)
     spread_pure_churn<8>("mid pool");
 }
 
-// N=32: the widest pool any charged pool's knob allows (Kconfig).
+// N=32: a wide charged pool.
 TEST(SlotPool, spread_pure_churn_widest_pool)
 {
     spread_pure_churn<32>("widest pool");
@@ -185,34 +238,34 @@ TEST(SlotPool, spread_with_resident_set)
     EXPECT_EQ(distinct, free_slots) << "churn touches exactly the free slots";
 }
 
-// Two sizes: N=4 is the tiny-board pool, N=5 breaks any stride coincidence with N=4.
-TEST(SlotPool, lone_free_slot_found_from_any_cursor_n4)
+// Two sizes: N=4 is the tiny-board pool, N=5 one past it.
+TEST(SlotPool, lone_free_slot_is_the_next_claim_n4)
 {
-    lone_free_slot_found_from_any_cursor<4>("wrap");
+    lone_free_slot_is_the_next_claim<4>("wrap");
 }
 
-TEST(SlotPool, lone_free_slot_found_from_any_cursor_n5)
+TEST(SlotPool, lone_free_slot_is_the_next_claim_n5)
 {
-    lone_free_slot_found_from_any_cursor<5>("wrap");
+    lone_free_slot_is_the_next_claim<5>("wrap");
 }
 
 // Exhaustion is exact and reversible: N distinct slots, then -1, then all N again.
 TEST(SlotPool, exhaustion_is_exact)
 {
-    kickos::SlotPool<Obj, 4> pool;
+    TestPool<4> pool;
     for (int round = 0; round < 3; round++)
     {
         bool seen[4] = {};
         int handles[4] = {};
         for (int i = 0; i < 4; i++)
         {
-            int const index = pool.alloc();
+            int const index = pool.alloc(nullptr);
             ASSERT_TRUE(index >= 0 and index < 4 and not seen[index])
                 << "round " << round << " claim " << i << " returned " << index;
             seen[index] = true;
             handles[i] = pool.handle_for(index);
         }
-        ASSERT_EQ(pool.alloc(), -1) << "pool full after N claims";
+        ASSERT_EQ(pool.alloc(nullptr), -1) << "pool full after N claims";
         for (int i = 0; i < 4; i++)
         {
             pool.free(handles[i]);
@@ -220,11 +273,45 @@ TEST(SlotPool, exhaustion_is_exact)
     }
 }
 
+// The free list: never-used slots first, then the one freed longest ago.
+TEST(SlotPool, freed_slots_come_back_oldest_first)
+{
+    TestPool<4> pool;
+    int handles[4] = {};
+    for (int i = 0; i < 4; i++)
+    {
+        ASSERT_EQ(pool.alloc(nullptr), i) << "a fresh pool hands its slots out in order";
+        handles[i] = pool.handle_for(i);
+    }
+    pool.free(handles[2]);
+    pool.free(handles[0]);
+    pool.free(handles[3]);
+    EXPECT_EQ(pool.alloc(nullptr), 2);
+    EXPECT_EQ(pool.alloc(nullptr), 0);
+    EXPECT_EQ(pool.alloc(nullptr), 3);
+    EXPECT_EQ(pool.alloc(nullptr), -1);
+}
+
+// A second free of a free slot, or a free through a stale handle of one, lists nothing twice.
+TEST(SlotPool, a_free_slot_freed_again_is_listed_once)
+{
+    TestPool<4> pool;
+    for (int i = 0; i < 4; i++)
+    {
+        ASSERT_EQ(pool.alloc(nullptr), i);
+    }
+    int const handle = pool.handle_for(1);
+    pool.free(handle);
+    pool.free(handle);
+    EXPECT_EQ(pool.alloc(nullptr), 1);
+    EXPECT_EQ(pool.alloc(nullptr), -1) << "the slot was listed once";
+}
+
 // resolve()/free() semantics, which the allocation policy does not bear on.
 TEST(SlotPool, resolve_semantics)
 {
-    kickos::SlotPool<Obj, 4> pool;
-    int const index = pool.alloc();
+    TestPool<4> pool;
+    int const index = pool.alloc(nullptr);
     ASSERT_GE(index, 0) << "claim for the resolve check";
     int const handle = pool.handle_for(index);
 
@@ -237,7 +324,7 @@ TEST(SlotPool, resolve_semantics)
     pool.free(handle);
     EXPECT_EQ(pool.resolve(handle), nullptr) << "a freed handle stops resolving";
 
-    int const index2 = pool.alloc();
+    int const index2 = pool.alloc(nullptr);
     EXPECT_GE(index2, 0) << "reclaim after free";
     EXPECT_EQ(pool.resolve(handle), nullptr) << "the stale handle stays dead after the reclaim";
     EXPECT_NE(pool.resolve(pool.handle_for(index2)), nullptr) << "the fresh handle resolves";
@@ -248,19 +335,19 @@ TEST(SlotPool, resolve_semantics)
 // else, since no in-tree workload recycles one slot that many times.
 TEST(SlotPool, aged_generation_handle_is_negative_and_live)
 {
-    kickos::SlotPool<Obj, 4> pool;
-    // free() bumps the slot's generation; alloc() next-fit walks the ring, so 4 slots per
-    // lap. Drive slot 0's generation past the sign bit.
+    TestPool<4> pool;
+    // free() bumps the slot's generation; alloc() takes the slot freed longest ago, so 4 slots
+    // per lap. Drive slot 0's generation past the sign bit.
     for (uint32_t g = 0; g < 0x8000u; g++)
     {
         for (int s = 0; s < 4; s++)
         {
-            int const index = pool.alloc();
+            int const index = pool.alloc(nullptr);
             ASSERT_GE(index, 0) << "aged churn keeps finding a slot";
             pool.free(pool.handle_for(index));
         }
     }
-    int const index = pool.alloc();
+    int const index = pool.alloc(nullptr);
     ASSERT_GE(index, 0) << "a claim after the aged churn";
     int const handle = pool.handle_for(index);
     printf("# aged handle for slot %d = 0x%08x (negative=%d)\n", index,
@@ -303,7 +390,7 @@ namespace
 TEST(SlotPool, at_bounds_its_index)
 {
     constexpr int N = 4;
-    kickos::SlotPool<Obj, N> pool;
+    TestPool<N> pool;
 
     EXPECT_EQ(pool.at(opaque(N)), nullptr) << "one past the last slot";
     EXPECT_EQ(pool.at(opaque(N + 1)), nullptr) << "past the array";
@@ -322,14 +409,14 @@ TEST(SlotPool, at_bounds_its_index)
 TEST(SlotPool, at_bounds_the_index_and_not_liveness)
 {
     constexpr int N = 4;
-    kickos::SlotPool<Obj, N> pool;
+    TestPool<N> pool;
 
     for (int i = 0; i < N; i++)
     {
         EXPECT_NE(pool.at(i), nullptr) << "slot " << i << " is in range";
     }
 
-    int const index = pool.alloc();
+    int const index = pool.alloc(nullptr);
     ASSERT_GE(index, 0);
     Obj* const seated = pool.at(index);
     EXPECT_NE(seated, nullptr) << "at(alloc()) is the claim's own slot";
@@ -350,9 +437,9 @@ TEST(SlotPool, at_bounds_the_index_and_not_liveness)
 TEST(SlotPool, an_index_spent_as_a_handle_stops_resolving_after_one_recycle)
 {
     constexpr int N = 4;
-    kickos::SlotPool<Obj, N> pool;
+    TestPool<N> pool;
 
-    int const first = pool.alloc();
+    int const first = pool.alloc(nullptr);
     ASSERT_EQ(first, 0) << "a fresh pool's first claim is slot 0";
     // At generation 0 the index and the handle ARE the same word, so resolve(index) answers
     // and the mistake is invisible.
@@ -364,7 +451,7 @@ TEST(SlotPool, an_index_spent_as_a_handle_stops_resolving_after_one_recycle)
     int second = -1;
     for (int i = 0; i < N; i++)
     {
-        int const k = pool.alloc();
+        int const k = pool.alloc(nullptr);
         ASSERT_GE(k, 0);
         if (k == first)
         {
@@ -386,8 +473,8 @@ TEST(SlotPool, an_index_spent_as_a_handle_stops_resolving_after_one_recycle)
 TEST(SlotPool, handle_for_bounds_its_index)
 {
     constexpr int N = 4;
-    kickos::SlotPool<Obj, N> pool;
-    ASSERT_GE(pool.alloc(), 0);
+    TestPool<N> pool;
+    ASSERT_GE(pool.alloc(nullptr), 0);
 
     EXPECT_EQ(pool.handle_for(opaque(N)), -1) << "one past the last slot";
     EXPECT_EQ(pool.handle_for(opaque(-1)), -1) << "alloc()'s pool-full answer";
@@ -399,21 +486,21 @@ TEST(SlotPool, handle_for_bounds_its_index)
 TEST(SlotPool, at_of_a_full_pools_alloc_is_the_pool_full_answer)
 {
     constexpr int N = 4;
-    kickos::SlotPool<Obj, N> pool;
+    TestPool<N> pool;
     for (int i = 0; i < N; i++)
     {
-        ASSERT_GE(pool.alloc(), 0);
+        ASSERT_GE(pool.alloc(nullptr), 0);
     }
     // THE COLLAPSE THIS BUYS: a caller that claims and then wants the slot asks ONE question.
     // A full pool answers it with the null and needs no `index < 0` beside it.
-    EXPECT_EQ(pool.at(pool.alloc()), nullptr) << "at(alloc()) on a full pool";
+    EXPECT_EQ(pool.at(pool.alloc(nullptr)), nullptr) << "at(alloc()) on a full pool";
 }
 
 TEST(SlotPool, index_of_is_total_over_a_null_object)
 {
     constexpr int N = 4;
-    kickos::SlotPool<Obj, N> pool;
-    int const index = pool.alloc();
+    TestPool<N> pool;
+    int const index = pool.alloc(nullptr);
     ASSERT_GE(index, 0);
 
     EXPECT_EQ(pool.index_of(pool.at(index)), index) << "a slot base answers its own index";

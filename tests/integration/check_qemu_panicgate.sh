@@ -7,8 +7,9 @@
 # assertion, where check_app_arms.sh's absence one passes trivially when the panic path is never
 # taken.
 #
-# $2 is the literal line expected after the kernel's trusted banner; $3, when non-empty,
-# is a literal that must NOT appear (the tail a truncation drops). A FAULT banner is a
+# $2 is the literal line expected after the app's case line; $3, when non-empty, is a literal
+# that must NOT appear (the tail a truncation drops, or a system panic where only a task may
+# end); $4, when non-empty, is a second literal the wire must carry. A FAULT banner is a
 # failure even when the expected line is also present: the panic must come from the
 # syscall, not from the kernel dereferencing the caller's pointer.
 #
@@ -31,8 +32,8 @@
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
 
-_usage="usage: check_qemu_panicgate.sh <panicgate.elf> <expected-line> [absent]
-       KOS_CAPTURE=<log> check_qemu_panicgate.sh <board-build> <kickos-source> <cmake> <expected-line> [absent]"
+_usage="usage: check_qemu_panicgate.sh <panicgate.elf> <expected-line> [absent] [also]
+       KOS_CAPTURE=<log> check_qemu_panicgate.sh <board-build> <kickos-source> <cmake> <expected-line> [absent] [also]"
 if judging_capture; then
     shift 3
     judge_capture panicgate
@@ -42,6 +43,7 @@ else
 fi
 expect="${1:?$_usage}"
 absent="${2:-}"
+also="${3:-}"
 
 if ! judging_capture; then
     need_qemu_machine
@@ -66,6 +68,9 @@ if [ -n "$_case" ] && [ -n "$_said" ] && [ "$_said" -le "$_case" ]; then
 fi
 if [ -n "$absent" ] && printf '%s\n' "$OUT" | grep -qF -- "$absent"; then
     cfail absent "text that must not reach the wire is present: $absent"
+fi
+if [ -n "$also" ]; then
+    require_on_wire "$also" "expected line missing: $also" also
 fi
 
 echo "PASS: $expect"

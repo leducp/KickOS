@@ -85,7 +85,7 @@ namespace
     {
         Bound b{};
         b.server = seat_pool(0, PRIO_SERVER);
-        attach_caps(b.server, KICKOS_CAP_CHILD_WIDTH);
+        attach_caps(b.server, KICKOS_SEAM_CAP_WIDTH);
         {
             IrqLock lock;
             sched::reschedule(nullptr, lock);
@@ -143,7 +143,7 @@ TEST_F(IrqBindOwn, a_bound_thread_s_death_clears_the_binding_and_leaves_the_pend
     // A second holder, so the object survives the dying thread's own capability sweep and
     // the arm can read what that sweep left.
     Thread* const keeper = seat_pool(1, PRIO_SERVER);
-    attach_caps(keeper, KICKOS_CAP_CHILD_WIDTH);
+    attach_caps(keeper, KICKOS_SEAM_CAP_WIDTH);
     (void)alias(keeper, b.obj, CapType::CAP_NOTIFY, CAP_WAIT);
 
     ASSERT_EQ(notify_signal(b.server, b.note), 0);
@@ -209,7 +209,7 @@ TEST_F(IrqBindOwn, a_bind_is_refused_both_ways_round)
 {
     Bound const b = bind_server();
     Thread* const other = seat_pool(1, PRIO_SERVER);
-    attach_caps(other, KICKOS_CAP_CHILD_WIDTH);
+    attach_caps(other, KICKOS_SEAM_CAP_WIDTH);
     uint32_t const theirs = alias(other, b.obj, CapType::CAP_NOTIFY, CAP_WAIT);
     EXPECT_EQ(notify_bind(other, theirs), -KOS_EBUSY);
 

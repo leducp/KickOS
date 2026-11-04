@@ -15,6 +15,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include "ram_seam.h"
 
 static_assert(KICKOS_AMP_SHARE, "this gate's posture states a share");
 
@@ -31,7 +32,7 @@ namespace
 extern "C"
 {
     void* arch_ram_alloc(size_t) { return nullptr; }
-    size_t arch_domain_static_regions(struct arch_mpu_region*, size_t) { return 0; }
+    size_t arch_domain_static_regions(struct arch_mpu_region*, size_t, size_t) { return 0; }
 }
 
 RegionSeam g_region_seam = {
@@ -39,6 +40,11 @@ RegionSeam g_region_seam = {
 
 namespace kickos
 {
+    size_t image_count(void)
+    {
+        return 1;
+    }
+
     namespace
     {
         Task g_tasks[2];

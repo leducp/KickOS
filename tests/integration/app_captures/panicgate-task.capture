@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+
+  ==============================================
+   KickOS 0.5.1  -  microkernel RTOS
+  ==============================================
+   board   f411disco
+   arch    armv7m
+   cpu     cortex-m4
+   mpu     enforce
+   sched   tickless
+
+[panicgate] case 6: a task without the system authority panics
+
+=== TASK PANIC === thread 'pgtask' ended its task
+  [panicgate] task message
+[panicgate] the task ended with KOS_EXIT_PANIC, the system runs on

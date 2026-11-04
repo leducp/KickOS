@@ -33,22 +33,12 @@ namespace kickos::x86_64
     // only.
     uint64_t aspace_leaf_desc(struct arch_aspace* space, uintptr_t va);
 
-    // Records [lo, hi) as identity run `run` (0 the arena, 1 the app window) where the boot root
+    // Records [lo, hi) as identity run `run` (0 the arena, 1 image 0's frames) where the boot root
     // maps all of it at its own address, and an empty run where it does not. The boot root must
     // not change afterwards: a frame inside a run is answered without a walk.
     void aspace_identity_record(size_t run, arch_phys_addr_t lo, arch_phys_addr_t hi);
     // Whether the boot root maps the frame at `pa` at its own address. Below the seam only.
     bool aspace_identity_maps(arch_phys_addr_t pa);
-
-    // Relocate the app window a second time, for the user offset: every absolute word stored in
-    // it and aimed into it gains arch_aspace_user_offset. Once, from the kernel's landing,
-    // after aspace_init and before the first space is seeded; refuses the boot on a record it
-    // cannot place (apprel_x86_64.cc).
-    void app_relocate(void);
-    // Where a task reaches memory, minus the kernel's view of it: the user offset once
-    // app_relocate has run in the kernel image, zero in a bring-up image, whose ring-3 probes
-    // run where the loader put them and whose stacks are the kernel's view itself.
-    uintptr_t user_alias_offset(void);
 }
 
 #endif

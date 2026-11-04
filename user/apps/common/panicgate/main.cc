@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// kos_panic wire gate. One source, five images selected by KICKOS_PANICGATE_CASE, because
+// kos_panic wire gate. One source, six images selected by KICKOS_PANICGATE_CASE, because
 // only one panic can be observed per run:
 //   1  a readable message must reach the wire after the kernel's trusted banner
 //   2  a null pointer must reach the documented fallback text
@@ -12,15 +12,18 @@
 //      marker, and with the tail absent
 //   5  control bytes in the message must be replaced in place, so the panic cannot
 //      continue onto lines that read as kernel output
+//   6  a thread holding no authority panics: its task ends with KOS_EXIT_PANIC, its
+//      message reaches the wire as a record, and main runs on to read that status
 //
 // Case 3 discriminates only while main is UNPRIVILEGED: a privileged caller passes
 // user_readable_ok wholesale.
 
+#include <kickos/chip_limits.h> // KICKOS_CHIP_ONE_TASK
 #include <kickos/kos.h>
 #include <kickos/sys.h>
 
 #ifndef KICKOS_PANICGATE_CASE
-#error "KICKOS_PANICGATE_CASE must be 1, 2, 3, 4 or 5"
+#error "KICKOS_PANICGATE_CASE must be 1, 2, 3, 4, 5 or 6"
 #endif
 
 namespace
@@ -43,6 +46,59 @@ namespace
     // LF, TAB, CR and DEL inside an otherwise printable message. Split from the
     // neighbouring literals so the \x7f escape cannot absorb a following hex digit.
     constexpr char const* CTL_MSG = "[panicgate] ctl" "\n\t\r\x7f" " end";
+
+#if KICKOS_PANICGATE_CASE == 6
+    // Main's own end status: 0 once the panic ended the task alone, and the system with it.
+    int task_case()
+    {
+        kos::print("[panicgate] case 6: a task without the system authority panics\n");
+#if KICKOS_CHIP_ONE_TASK
+        kos::print("[panicgate] skip - the panicking task needs a task of its own and this board "
+                   "holds one task\n");
+        return 0;
+#else
+        kos_program_t prog = KOS_CAP_NONE;
+        if (kos_program_find("panicgate_peer", &prog) != 0)
+        {
+            kos::print("[panicgate] ERROR: no peer program\n");
+            return 1;
+        }
+        kos_task_params params = {};
+        kos_task_t t = KOS_TASK_NONE;
+        int const rc = kos_task_create(prog, &params, &t);
+        (void)kos_handle_close(prog);
+        if (rc != 0)
+        {
+            kos::print("[panicgate] ERROR: kos_task_create refused\n");
+            return 1;
+        }
+        int status = -1;
+        int state = 0;
+        for (int i = 0; i < 2000; i++)
+        {
+            state = kos_task_state(t, &status);
+            if (state >= 0 and (state & KOS_TASK_DEAD) != 0)
+            {
+                break;
+            }
+            kos_sleep_ns(1000000u);
+        }
+        if (state < 0 or (state & KOS_TASK_DEAD) == 0)
+        {
+            kos::print("[panicgate] ERROR: the task never died\n");
+            return 1;
+        }
+        if (status != KOS_EXIT_PANIC)
+        {
+            kos::print("[panicgate] ERROR: the task ended with another status\n");
+            return 1;
+        }
+        (void)kos_task_slay(t, 0);
+        kos::print("[panicgate] the task ended with KOS_EXIT_PANIC, the system runs on\n");
+        return 0;
+#endif
+    }
+#endif
 }
 
 int main(int, char**)
@@ -59,9 +115,11 @@ int main(int, char**)
 #elif KICKOS_PANICGATE_CASE == 4
     kos::print("[panicgate] case 4: oversized message\n");
     kos_panic(LONG_MSG);
-#else
+#elif KICKOS_PANICGATE_CASE == 5
     kos::print("[panicgate] case 5: control bytes in the message\n");
     kos_panic(CTL_MSG);
+#else
+    return task_case();
 #endif
     kos::print("[panicgate] ERROR: kos_panic returned\n");
     return 1;

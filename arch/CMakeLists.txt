@@ -276,16 +276,16 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
       COMMENT "boot2: CRC-checksumming ${KICKOS_CHIP} second stage"
       VERBATIM)
     list(APPEND _chip_src "${_boot2_gen}")
-    # Nothing references the .boot2 blob, so the app link must force it in from the chip
+    # Nothing references the .boot2 blob, so the chip script forces it in from the chip
     # archive: KEEP only protects an object already included.
-    set(KICKOS_BOOT2_FORCE_SYMBOL "${_boot2_sym}" PARENT_SCOPE)
+    set(KICKOS_BOOT2_FORCE_SYMBOL "${_boot2_sym}")
   endif()
 
-  # node_vectors.S is referenced by nothing until the launch writes VTOR, so the app link must
-  # force its object in from the chip archive: KEEP only protects an object already included.
+  # node_vectors.S is referenced by nothing until the launch writes VTOR, so the chip script
+  # forces its object in from the chip archive: KEEP only protects an object already included.
   # The table is compiled out below two cores, where forcing it leaves an unresolvable symbol.
   if(_chip_src MATCHES "/node_vectors\\.S" AND KICKOS_NUM_CORES GREATER 1)
-    set(KICKOS_NODE_VECTOR_FORCE_SYMBOL "g_node_isr_vector" PARENT_SCOPE)
+    set(KICKOS_NODE_VECTOR_FORCE_SYMBOL "g_node_isr_vector")
   endif()
 
   add_library(kickos_chip_${KICKOS_CHIP} STATIC ${_chip_src})
@@ -378,6 +378,36 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
     set(_ld_gen "${CMAKE_CURRENT_BINARY_DIR}/${KICKOS_CHIP}.ld")
     set(_ld_defs -DKICKOS_HAVE_MPU=${KICKOS_HAVE_MPU})
     list(APPEND _ld_defs "-I${PROJECT_BINARY_DIR}/generated/chip")
+    # Objects nothing references that the chip's script KEEPs, so it forces them in.
+    if(KICKOS_BOOT2_FORCE_SYMBOL)
+      list(APPEND _ld_defs -DKICKOS_BOOT2_FORCE_SYMBOL=${KICKOS_BOOT2_FORCE_SYMBOL})
+    endif()
+    if(KICKOS_NODE_VECTOR_FORCE_SYMBOL)
+      list(APPEND _ld_defs -DKICKOS_NODE_VECTOR_FORCE_SYMBOL=${KICKOS_NODE_VECTOR_FORCE_SYMBOL})
+    endif()
+    # Whether every image is linked on its own first (tools/image-link.py).
+    if(KICKOS_IMAGE_SPLIT)
+      list(APPEND _ld_defs -DKICKOS_IMAGE_SPLIT=1)
+    else()
+      list(APPEND _ld_defs -DKICKOS_IMAGE_SPLIT=0)
+    endif()
+    if(KICKOS_IMAGE_EMBED)
+      list(APPEND _ld_defs -DKICKOS_IMAGE_EMBED=1)
+    else()
+      list(APPEND _ld_defs -DKICKOS_IMAGE_EMBED=0)
+    endif()
+    # Whether the final link places the init's image and each declared task's beside the kernel,
+    # and the protection unit's region rule an image's window is shaped to. An embedded image is
+    # a program the kernel's link holds, which no script of the chip places.
+    if(KICKOS_INIT_IMAGE AND NOT KICKOS_IMAGE_EMBED)
+      list(APPEND _ld_defs -DKICKOS_IMAGES_PLACED=1)
+    else()
+      list(APPEND _ld_defs -DKICKOS_IMAGES_PLACED=0)
+    endif()
+    if(DEFINED KICKOS_CHIP_REGION_GRANULE)
+      list(APPEND _ld_defs -DKICKOS_CHIP_REGION_GRANULE=${KICKOS_CHIP_REGION_GRANULE}
+                           -DKICKOS_CHIP_REGION_POW2=${KICKOS_CHIP_REGION_POW2})
+    endif()
     # The kernel-side archives a script's closed-set selectors name.
     list(APPEND _ld_defs -DKICKOS_LD_ARCH_LIB=libkickos_arch_${KICKOS_ARCH}.a
                          -DKICKOS_LD_CHIP_LIB=libkickos_chip_${KICKOS_CHIP}.a)
@@ -420,7 +450,6 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
       # KICKOS_TLS_CARVE_ASSERT's stacks and floors, and what the arch's
       # <kickos/arch/idle_floor.h> reads.
       list(APPEND _ld_defs -DKICKOS_TLS_FROM_SP=${KICKOS_TLS_FROM_SP}
-                           -DKICKOS_REENT_IN_TCB=${KICKOS_REENT_IN_TCB}
                            -DKICKOS_IDLE_STACK_SIZE=${KICKOS_IDLE_STACK_SIZE}
                            -DKICKOS_USER_STACK_SIZE=${KICKOS_USER_STACK_SIZE}
                            -DKICKOS_ROOT_STACK_SIZE=${KICKOS_ROOT_STACK_SIZE}
@@ -429,11 +458,8 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
     else()
       list(APPEND _ld_defs -DKICKOS_TLS=0)
     endif()
-    # Unset keeps the chip script's default code window, which a script reads only where it
-    # offers the knob.
-    if(DEFINED KICKOS_CODE_SIZE)
-      list(APPEND _ld_defs -DKICKOS_CODE_SIZE=${KICKOS_CODE_SIZE})
-    endif()
+    # What a pool thread's stack gives its libc state below the TLS block (__kickos_tls_carve).
+    list(APPEND _ld_defs -DKICKOS_REENT_CARVE=${KICKOS_REENT_CARVE})
     # Unset keeps the chip script's freestanding default; a full-C++ build needs a larger
     # window for the heap and libstdc++/unwind state.
     if(DEFINED KICKOS_APPDATA_SIZE)
@@ -464,22 +490,74 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
                 # An arch may state a geometry both its own code and a chip's script read.
                 "-I${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/${KICKOS_ARCH}/include"
                 -include "${_ld}" "${CMAKE_CURRENT_SOURCE_DIR}/common/app_window.ld.h")
-    execute_process(COMMAND ${_ld_cpp} -MD -MF "${_ld_gen}.d" -MQ "${_ld_gen}" -o "${_ld_gen}.new"
+    execute_process(COMMAND ${_ld_cpp} -DKICKOS_IMAGE_PROGRAM=0
+                            -MD -MF "${_ld_gen}.d" -MQ "${_ld_gen}" -o "${_ld_gen}.new"
                     RESULT_VARIABLE _rc ERROR_VARIABLE _err)
     if(_rc EQUAL 0)
       # -dU lists each macro expanded, nested ones included, or tested by #ifdef/defined().
-      execute_process(COMMAND ${_ld_cpp} -dU -o "${_ld_gen}.macros"
+      execute_process(COMMAND ${_ld_cpp} -DKICKOS_IMAGE_PROGRAM=0 -dU -o "${_ld_gen}.macros"
                       RESULT_VARIABLE _rc ERROR_VARIABLE _err)
+    endif()
+    # Where images are embedded, the same script in its program form links each image at the
+    # fixed user base, and the required macros are those of both forms.
+    set(_ld_program "${CMAKE_CURRENT_BINARY_DIR}/${KICKOS_CHIP}.program.ld")
+    if(_rc EQUAL 0 AND KICKOS_IMAGE_EMBED)
+      execute_process(COMMAND ${_ld_cpp} -DKICKOS_IMAGE_PROGRAM=1 -o "${_ld_program}.new"
+                      RESULT_VARIABLE _rc ERROR_VARIABLE _err)
+      if(_rc EQUAL 0)
+        execute_process(COMMAND ${_ld_cpp} -DKICKOS_IMAGE_PROGRAM=1 -dU
+                                -o "${_ld_program}.macros"
+                        RESULT_VARIABLE _rc ERROR_VARIABLE _err)
+      endif()
+    endif()
+    # Where the final link places the init's image and each task's, the image template
+    # tools/image-link.py instantiates per image of each link: the chip's own beside its script,
+    # or its family's.
+    set(_ld_template "")
+    if(_rc EQUAL 0 AND KICKOS_INIT_IMAGE AND NOT KICKOS_IMAGE_EMBED)
+      set(_ld_dir "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chip/${KICKOS_CHIP}")
+      set(_ld_template_src "${_ld_dir}/${KICKOS_CHIP}.image.ld")
+      if(NOT EXISTS "${_ld_template_src}")
+        set(_ld_template_src "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/common/image.ld")
+      endif()
+      if(NOT EXISTS "${_ld_template_src}")
+        message(FATAL_ERROR "KickOS: ${KICKOS_CHIP} links an image per declared task and has no "
+          "image template: neither ${_ld_dir}/${KICKOS_CHIP}.image.ld nor ${_ld_template_src}")
+      endif()
+      set(_ld_template "${CMAKE_CURRENT_BINARY_DIR}/${KICKOS_CHIP}.image.ld")
+      execute_process(COMMAND ${CMAKE_C_COMPILER} -E -P -x c ${_ld_defs} -DKICKOS_LD_TEMPLATE=1
+                              -DKICKOS_IMAGE_PROGRAM=0
+                              "-I${CMAKE_CURRENT_SOURCE_DIR}/common"
+                              "-I${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/common"
+                              "-I${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/${KICKOS_ARCH}/include"
+                              "-I${_ld_dir}"
+                              -MD -MF "${_ld_template}.d" -MQ "${_ld_template}"
+                              "${_ld_template_src}" -o "${_ld_template}.new"
+                      RESULT_VARIABLE _rc ERROR_VARIABLE _err)
+      if(_rc EQUAL 0)
+        file(COPY_FILE "${_ld_template}.new" "${_ld_template}" ONLY_IF_DIFFERENT)
+        file(REMOVE "${_ld_template}.new")
+        file(READ "${_ld_template}.d" _ld_template_deps)
+        string(APPEND _ld_template_deps "\n")
+      endif()
     endif()
     if(NOT _rc EQUAL 0)
       message(FATAL_ERROR "KickOS: preprocessing ${_ld} failed:\n${_err}")
     endif()
     file(COPY_FILE "${_ld_gen}.new" "${_ld_gen}" ONLY_IF_DIFFERENT)
     file(REMOVE "${_ld_gen}.new")
+    if(KICKOS_IMAGE_EMBED)
+      file(COPY_FILE "${_ld_program}.new" "${_ld_program}" ONLY_IF_DIFFERENT)
+      file(REMOVE "${_ld_program}.new")
+    endif()
     # The depfile is make syntax: `\ ` is a space in a path, `$$` a dollar, `\#` a hash, and a
     # backslash before a newline continues the line. Configure outputs are regenerated with the
     # configure, so only sources re-run it.
     file(READ "${_ld_gen}.d" _ld_deps)
+    if(_ld_template)
+      string(REGEX REPLACE "^[^ ]*: *" " " _ld_template_deps "${_ld_template_deps}")
+      string(APPEND _ld_deps " ${_ld_template_deps}")
+    endif()
     string(REPLACE "\\\n" " " _ld_deps "${_ld_deps}")
     string(REPLACE "\\ " "<kickos-space>" _ld_deps "${_ld_deps}")
     string(REPLACE "$$" "$" _ld_deps "${_ld_deps}")
@@ -498,12 +576,20 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
     endforeach()
 
     file(READ "${_ld_gen}.macros" _ld_macros)
+    if(KICKOS_IMAGE_EMBED)
+      file(READ "${_ld_program}.macros" _ld_program_macros)
+      string(APPEND _ld_macros "\n${_ld_program_macros}")
+    endif()
     set(_ld_required KICKOS_CODE_DEBRIS_SECTIONS KICKOS_NONALLOC_SECTIONS
                      KICKOS_STATIC_RELOC_ASSERT KICKOS_TLS_TEMPLATE KICKOS_TLS_FIT_ASSERT)
     # rxv3 alone has no TLS sections for the fit assert to read: its thread_local is an emutls
     # control block, and only its own script can name the span they are gathered into.
     if(KICKOS_ARCH STREQUAL "rxv3")
       list(APPEND _ld_required KICKOS_TLS_EMUTLS_ASSERT)
+    endif()
+    # Idle's thread-local carve, where the thread pointer is seated.
+    if(KICKOS_TLS AND NOT KICKOS_TLS_FROM_SP)
+      list(APPEND _ld_required KICKOS_TLS_IDLE_ASSERT)
     endif()
     if(KICKOS_ARCH STREQUAL "armv7m")
       list(APPEND _ld_required KICKOS_KERNEL_CTORS_NONE_ASSERT)
@@ -536,5 +622,37 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
     # The `kickos` INTERFACE's INSTALL_INTERFACE -T points at this copy.
     install(FILES "${_ld_gen}" DESTINATION "${CMAKE_INSTALL_LIBDIR}/kickos")
     set(KICKOS_LINKER_SCRIPT "${_ld_gen}" PARENT_SCOPE)
+    if(_ld_template)
+      install(FILES "${_ld_template}" DESTINATION "${CMAKE_INSTALL_LIBDIR}/kickos")
+      set(KICKOS_IMAGE_TEMPLATE "${_ld_template}" PARENT_SCOPE)
+    endif()
+    if(KICKOS_IMAGE_EMBED)
+      install(FILES "${_ld_program}" DESTINATION "${CMAKE_INSTALL_LIBDIR}/kickos")
+      set(KICKOS_PROGRAM_SCRIPT "${_ld_program}" PARENT_SCOPE)
+    endif()
+  elseif(KICKOS_ARCH STREQUAL "x86_64" AND KICKOS_IMAGE_EMBED)
+    # The kernel's PE32+ script is not preprocessed; a program's ELF script is, and ships as
+    # that script's program form beside it.
+    set(_ld "${CMAKE_CURRENT_SOURCE_DIR}/x86/x86_64/program.ld")
+    set(_ld_program "${CMAKE_CURRENT_BINARY_DIR}/pe_image.program.ld")
+    set(_ld_defs -DKICKOS_TLS=0 -DKICKOS_REENT_CARVE=${KICKOS_REENT_CARVE})
+    if(DEFINED KICKOS_HEAP_MIN)
+      list(APPEND _ld_defs -DKICKOS_HEAP_MIN=${KICKOS_HEAP_MIN})
+    endif()
+    execute_process(COMMAND ${CMAKE_C_COMPILER} -E -P -x c ${_ld_defs}
+                            "-I${CMAKE_CURRENT_SOURCE_DIR}/common"
+                            "-I${CMAKE_CURRENT_SOURCE_DIR}/x86/x86_64/include"
+                            "${_ld}" -o "${_ld_program}.new"
+                    RESULT_VARIABLE _rc ERROR_VARIABLE _err)
+    if(NOT _rc EQUAL 0)
+      message(FATAL_ERROR "KickOS: preprocessing ${_ld} failed:\n${_err}")
+    endif()
+    file(COPY_FILE "${_ld_program}.new" "${_ld_program}" ONLY_IF_DIFFERENT)
+    file(REMOVE "${_ld_program}.new")
+    set_property(DIRECTORY "${PROJECT_SOURCE_DIR}" APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+      "${_ld}" "${CMAKE_CURRENT_SOURCE_DIR}/common/sections.ld.h"
+      "${CMAKE_CURRENT_SOURCE_DIR}/x86/x86_64/include/kickos/arch/program_base.h")
+    install(FILES "${_ld_program}" DESTINATION "${KICKOS_CMAKE_DIR}")
+    set(KICKOS_PROGRAM_SCRIPT "${_ld_program}" PARENT_SCOPE)
   endif()
 endif()

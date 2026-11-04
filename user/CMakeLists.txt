@@ -4,10 +4,12 @@
 # uart_service_dev.cc stays its own TU: merged into uart_service.cc it would make the ring side
 # undefined on a board with no UART class backend.
 # grant_lookup.cc stays its own TU: it names kickos_table, which only a system target defines.
+# image_start.cc stays its own TU: the app's image links it, and root's entry names the init's.
 set(KICKOS_USER_SOURCES src/syscall_stubs.cc src/mutex.cc src/sem.cc src/print.cc src/init_args.cc
-                        src/root_entry.cc src/console_ring.cc src/driver_service.cc
+                        src/root_entry.cc src/image_start.cc src/console_ring.cc src/driver_service.cc
                         src/uart_service.cc src/uart_service_dev.cc src/usb_cdc_service.cc
-                        src/grant_lookup.cc src/init_status.cc src/task_trampoline.cc
+                        src/grant_lookup.cc src/init_status.cc src/task_enter.cc
+                        src/program_entry.cc
                         src/console_flush.cc)
 
 # newlib_sbrk.cc stays its own TU: merging it into newlib_stubs.cc disables the heapless-board
@@ -17,6 +19,16 @@ if(KICKOS_ARCH STREQUAL "sim")
   list(APPEND KICKOS_USER_SOURCES src/sim_exit.cc src/arch/sim/user_cas.cc)
 else()
   list(APPEND KICKOS_USER_SOURCES src/arch/${KICKOS_ARCH}/user_cas.S)
+  # The syscall trap's user side; on lx6 the arch's entry is a call, and the arch defines it.
+  if(NOT KICKOS_ARCH STREQUAL "lx6")
+    list(APPEND KICKOS_USER_SOURCES src/arch/${KICKOS_ARCH}/syscall.S)
+  endif()
+  # The thread-local access helpers a compiler calls in the thread's own image.
+  if(KICKOS_ARCH MATCHES "^armv[67]m$")
+    list(APPEND KICKOS_USER_SOURCES src/arch/arm/read_tp.S)
+  elseif(KICKOS_ARCH STREQUAL "rxv3")
+    list(APPEND KICKOS_USER_SOURCES src/arch/rxv3/emutls.cc)
+  endif()
   list(APPEND KICKOS_USER_SOURCES src/newlib_stubs.cc src/newlib_sbrk.cc src/newlib_fcntl.cc)
   list(APPEND KICKOS_USER_SOURCES src/newlib_reent.cc src/newlib_lock.cc)
 endif()
@@ -33,8 +45,7 @@ kickos_apply_freestanding(kickos_user)
 target_include_directories(kickos_user PUBLIC
   "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
   "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>")
-# kernel/include is here for config/system.h alone: the reent array is indexed by thread slot,
-# and KICKOS_THREAD_SLOTS is stated there.
+# kernel/include is here for config/system.h alone.
 target_include_directories(kickos_user PRIVATE
   "${PROJECT_SOURCE_DIR}/system/include"
   "${PROJECT_SOURCE_DIR}/kernel/include")

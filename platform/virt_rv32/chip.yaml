@@ -24,6 +24,15 @@ timebase: { hz: { value: 10000000, ref: "RISCV_ACLINT_DEFAULT_TIMEBASE_FREQ" } }
 
 interrupts: { count: 32 }
 
+apertures:
+  - { window: [0x00100000, 0x2000], ref: "virt_memmap[VIRT_TEST], [VIRT_RTC]" }
+  - { window: [0x02000000, 0x10000], ref: "virt_memmap[VIRT_CLINT]" }
+  - { window: [0x03000000, 0x10000], ref: "virt_memmap[VIRT_PCIE_PIO]" }
+  - { window: [0x0C000000, 0x600000], ref: "virt_memmap[VIRT_PLIC]" }
+  - { window: [0x10000000, 0x9000], ref: "virt_memmap[VIRT_UART0], [VIRT_VIRTIO]" }
+  - { window: [0x30000000, 0x10000000], ref: "virt_memmap[VIRT_PCIE_ECAM]" }
+  - { window: [0x40000000, 0x40000000], ref: "virt_memmap[VIRT_PCIE_MMIO]" }
+
 devices:
   # No device names a line: the kernel drives no PLIC, its lines being software-injected on
   # the supervisor software interrupt.
@@ -31,6 +40,8 @@ devices:
   clint: { window: [0x02000000, 0x10000], owner: kernel, ref: "virt_memmap[VIRT_CLINT]" }
   # SiFive test device: its reset word restarts the machine.
   test_finisher: { window: [0x00100000, 0x1000], owner: kernel, ref: "virt_memmap[VIRT_TEST]" }
+  # The virtio-mmio transports, each a DMA master when a device sits behind it.
+  virtio: { window: [0x10001000, 0x1000], count: 8, stride: 0x1000, bus_master: true, ref: "virt_memmap[VIRT_VIRTIO]" }
 
 memory:
   dram: { base: 0x80000000, size: 0x800000, arena: true, link: { region: RAM, access: rwx } }

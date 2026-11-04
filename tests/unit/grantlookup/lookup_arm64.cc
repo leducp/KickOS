@@ -12,7 +12,7 @@
 #include <kickos/sys.h>
 #include <kickos/sys/errno.h>
 #include <kickos/sys/init_status.h>
-#include <kickos/sys/task_trampoline.h>
+#include <kickos/sys/task_enter.h>
 
 #include <gtest/gtest.h>
 
@@ -70,20 +70,20 @@ namespace
 
     TEST_F(Lookup, an_endpoint_is_found_served_and_used_at_its_slot)
     {
-        EXPECT_EQ(kos_grant_endpoint(seam::task("sensor"), "/svc/sensor"), CAP0 + 1u);
-        EXPECT_EQ(kos_grant_endpoint(seam::task("app"), "/svc/sensor"), CAP0 + 0u);
+        EXPECT_EQ(seam::grant_endpoint(seam::task("sensor"), "/svc/sensor"), CAP0 + 1u);
+        EXPECT_EQ(seam::grant_endpoint(seam::task("app"), "/svc/sensor"), CAP0 + 0u);
         EXPECT_TRUE(seam::asked.empty());
     }
 
     TEST_F(Lookup, a_notification_is_found_at_its_slot)
     {
-        EXPECT_EQ(kos_grant_notify(seam::task("health"), "/init/events"), CAP0 + 0u);
+        EXPECT_EQ(seam::grant_notify(seam::task("health"), "/init/events"), CAP0 + 0u);
     }
 
     TEST_F(Lookup, a_device_window_is_where_the_kernel_answers_it)
     {
         as_sensor();
-        kos_window_t const rtc = kos_grant_mmio(seam::task("sensor"), "/dev/rtc");
+        kos_window_t const rtc = seam::grant_mmio(seam::task("sensor"), "/dev/rtc");
         EXPECT_EQ(kos_window_addr(rtc), reinterpret_cast<void*>(RTC_MAPPED));
         EXPECT_EQ(kos_window_size(rtc), PAGE);
         EXPECT_EQ(seam::asked, std::vector<uint32_t>{0u});
@@ -92,7 +92,7 @@ namespace
     TEST_F(Lookup, a_region_is_asked_at_its_window_place)
     {
         as_sensor();
-        kos_window_t const mine = kos_grant_mem(seam::task("sensor"), "/shm/history");
+        kos_window_t const mine = seam::grant_mem(seam::task("sensor"), "/shm/history");
         EXPECT_EQ(kos_window_addr(mine), g_history);
         EXPECT_EQ(kos_window_size(mine), PAGE);
         EXPECT_EQ(seam::asked, std::vector<uint32_t>{1u});
@@ -101,10 +101,10 @@ namespace
     TEST_F(Lookup, each_region_is_its_own_size)
     {
         as_sensor();
-        kos_window_t const log = kos_grant_mem(seam::task("sensor"), "/shm/log");
+        kos_window_t const log = seam::grant_mem(seam::task("sensor"), "/shm/log");
         EXPECT_EQ(kos_window_addr(log), g_log);
         EXPECT_EQ(kos_window_size(log), 2u * PAGE);
-        EXPECT_EQ(kos_window_size(kos_grant_mem(seam::task("sensor"), "/shm/history")), PAGE);
+        EXPECT_EQ(kos_window_size(seam::grant_mem(seam::task("sensor"), "/shm/history")), PAGE);
         EXPECT_EQ(seam::asked, (std::vector<uint32_t>{2u, 1u}));
     }
 
@@ -112,17 +112,17 @@ namespace
     {
         seam::StatusBlock block(PAGE);
         as_health(block);
-        kos_window_t const theirs = kos_grant_mem(seam::task("health"), "/shm/history");
+        kos_window_t const theirs = seam::grant_mem(seam::task("health"), "/shm/history");
         EXPECT_EQ(kos_window_addr(theirs), g_history);
         EXPECT_EQ(seam::asked, std::vector<uint32_t>{1u});
     }
 
     TEST_F(Lookup, a_line_is_found_by_the_role_its_entry_renamed_it_to)
     {
-        kos_line_t const alarm = kos_grant_irq(seam::task("sensor"), "alarm");
+        kos_line_t const alarm = seam::grant_irq(seam::task("sensor"), "alarm");
         EXPECT_EQ(alarm.cap, CAP0 + 0u);
         EXPECT_EQ(alarm.index, 0u);
-        kos_line_t const by_path = kos_grant_irq(seam::task("sensor"), "/dev/rtc/alarm");
+        kos_line_t const by_path = seam::grant_irq(seam::task("sensor"), "/dev/rtc/alarm");
         EXPECT_EQ(by_path.cap, KOS_CAP_NONE);
         EXPECT_EQ(by_path.index, KOS_TABLE_NONE);
     }
@@ -131,49 +131,49 @@ namespace
     {
         as_sensor();
         kos_self_t const* const sensor = seam::task("sensor");
-        EXPECT_EQ(kos_grant_endpoint(sensor, "/shm/history"), KOS_CAP_NONE);
-        EXPECT_EQ(kos_grant_endpoint(sensor, "alarm"), KOS_CAP_NONE);
-        EXPECT_EQ(kos_grant_notify(sensor, "/svc/sensor"), KOS_CAP_NONE);
-        expect_no_window(kos_grant_mmio(sensor, "/shm/history"));
-        expect_no_window(kos_grant_mem(sensor, "/dev/rtc"));
-        expect_no_window(kos_grant_ports(sensor, "/dev/rtc"));
-        EXPECT_EQ(kos_grant_irq(sensor, "/svc/sensor").cap, KOS_CAP_NONE);
-        EXPECT_EQ(kos_grant_irq(sensor, "/svc/sensor").index, KOS_TABLE_NONE);
+        EXPECT_EQ(seam::grant_endpoint(sensor, "/shm/history"), KOS_CAP_NONE);
+        EXPECT_EQ(seam::grant_endpoint(sensor, "alarm"), KOS_CAP_NONE);
+        EXPECT_EQ(seam::grant_notify(sensor, "/svc/sensor"), KOS_CAP_NONE);
+        expect_no_window(seam::grant_mmio(sensor, "/shm/history"));
+        expect_no_window(seam::grant_mem(sensor, "/dev/rtc"));
+        expect_no_window(seam::grant_ports(sensor, "/dev/rtc"));
+        EXPECT_EQ(seam::grant_irq(sensor, "/svc/sensor").cap, KOS_CAP_NONE);
+        EXPECT_EQ(seam::grant_irq(sensor, "/svc/sensor").index, KOS_TABLE_NONE);
 
         seam::StatusBlock block(PAGE);
         as_health(block);
-        expect_no_window(kos_grant_mem(seam::task("health"), "/init/status"));
-        EXPECT_EQ(kos_grant_endpoint(seam::task("health"), "/init/events"), KOS_CAP_NONE);
+        expect_no_window(seam::grant_mem(seam::task("health"), "/init/status"));
+        EXPECT_EQ(seam::grant_endpoint(seam::task("health"), "/init/events"), KOS_CAP_NONE);
     }
 
     TEST_F(Lookup, an_absent_name_answers_invalid)
     {
         as_sensor();
         kos_self_t const* const app = seam::task("app");
-        EXPECT_EQ(kos_grant_endpoint(app, "/svc/sensors"), KOS_CAP_NONE);
-        EXPECT_EQ(kos_grant_endpoint(app, "/svc/sens"), KOS_CAP_NONE);
-        EXPECT_EQ(kos_grant_endpoint(app, ""), KOS_CAP_NONE);
-        EXPECT_EQ(kos_grant_endpoint(app, nullptr), KOS_CAP_NONE);
-        EXPECT_EQ(kos_grant_notify(app, "/init/events"), KOS_CAP_NONE);
-        expect_no_window(kos_grant_mmio(app, "/dev/rtc"));
-        expect_no_window(kos_grant_mem(app, "/shm/history"));
-        EXPECT_EQ(kos_grant_irq(app, "alarm").cap, KOS_CAP_NONE);
+        EXPECT_EQ(seam::grant_endpoint(app, "/svc/sensors"), KOS_CAP_NONE);
+        EXPECT_EQ(seam::grant_endpoint(app, "/svc/sens"), KOS_CAP_NONE);
+        EXPECT_EQ(seam::grant_endpoint(app, ""), KOS_CAP_NONE);
+        EXPECT_EQ(seam::grant_endpoint(app, nullptr), KOS_CAP_NONE);
+        EXPECT_EQ(seam::grant_notify(app, "/init/events"), KOS_CAP_NONE);
+        expect_no_window(seam::grant_mmio(app, "/dev/rtc"));
+        expect_no_window(seam::grant_mem(app, "/shm/history"));
+        EXPECT_EQ(seam::grant_irq(app, "alarm").cap, KOS_CAP_NONE);
         EXPECT_TRUE(seam::asked.empty());
     }
 
     TEST_F(Lookup, a_null_self_answers_invalid)
     {
         as_sensor();
-        EXPECT_EQ(kos_grant_endpoint(nullptr, "/svc/sensor"), KOS_CAP_NONE);
-        EXPECT_EQ(kos_grant_notify(nullptr, "/init/events"), KOS_CAP_NONE);
-        expect_no_window(kos_grant_mmio(nullptr, "/dev/rtc"));
-        expect_no_window(kos_grant_mem(nullptr, "/shm/history"));
-        expect_no_window(kos_grant_ports(nullptr, "/dev/rtc"));
-        kos_line_t const line = kos_grant_irq(nullptr, "alarm");
+        EXPECT_EQ(seam::grant_endpoint(nullptr, "/svc/sensor"), KOS_CAP_NONE);
+        EXPECT_EQ(seam::grant_notify(nullptr, "/init/events"), KOS_CAP_NONE);
+        expect_no_window(seam::grant_mmio(nullptr, "/dev/rtc"));
+        expect_no_window(seam::grant_mem(nullptr, "/shm/history"));
+        expect_no_window(seam::grant_ports(nullptr, "/dev/rtc"));
+        kos_line_t const line = seam::grant_irq(nullptr, "alarm");
         EXPECT_EQ(line.cap, KOS_CAP_NONE);
         EXPECT_EQ(line.index, KOS_TABLE_NONE);
         struct kos_task_status st;
-        EXPECT_EQ(kos_task_status(nullptr, 0, &st), -KOS_EINVAL);
+        EXPECT_EQ(seam::task_status(nullptr, 0, &st), -KOS_EINVAL);
         EXPECT_TRUE(seam::asked.empty());
     }
 
@@ -181,10 +181,10 @@ namespace
     {
         seam::windows = {seam::window(RTC_MAPPED, PAGE, KOS_WINDOW_DEVICE, 0)};
         seam::stale = seam::window(history(), PAGE, KOS_WINDOW_MEMORY, 0);
-        expect_no_window(kos_grant_mem(seam::task("sensor"), "/shm/history"));
+        expect_no_window(seam::grant_mem(seam::task("sensor"), "/shm/history"));
         seam::windows.clear();
         seam::stale = seam::window(RTC_MAPPED, PAGE, KOS_WINDOW_DEVICE, 0);
-        expect_no_window(kos_grant_mmio(seam::task("sensor"), "/dev/rtc"));
+        expect_no_window(seam::grant_mmio(seam::task("sensor"), "/dev/rtc"));
     }
 
     TEST_F(Lookup, a_window_of_another_kind_answers_invalid)
@@ -192,26 +192,26 @@ namespace
         as_sensor();
         seam::windows[0].kind = KOS_WINDOW_MEMORY;
         seam::windows[1].kind = KOS_WINDOW_DEVICE;
-        expect_no_window(kos_grant_mmio(seam::task("sensor"), "/dev/rtc"));
-        expect_no_window(kos_grant_mem(seam::task("sensor"), "/shm/history"));
+        expect_no_window(seam::grant_mmio(seam::task("sensor"), "/dev/rtc"));
+        expect_no_window(seam::grant_mem(seam::task("sensor"), "/shm/history"));
     }
 
     TEST_F(Lookup, a_window_with_other_flags_answers_invalid)
     {
         as_sensor();
         seam::windows[1].flags = KOS_WINDOW_RO;
-        expect_no_window(kos_grant_mem(seam::task("sensor"), "/shm/history"));
+        expect_no_window(seam::grant_mem(seam::task("sensor"), "/shm/history"));
         seam::windows[0].flags = KOS_WINDOW_UNCACHED;
-        expect_no_window(kos_grant_mmio(seam::task("sensor"), "/dev/rtc"));
+        expect_no_window(seam::grant_mmio(seam::task("sensor"), "/dev/rtc"));
 
         seam::StatusBlock block(PAGE);
         as_health(block);
         seam::windows[1].flags = 0;
-        expect_no_window(kos_grant_mem(seam::task("health"), "/shm/history"));
+        expect_no_window(seam::grant_mem(seam::task("health"), "/shm/history"));
         as_health(block);
         seam::windows[0].flags = 0;
         struct kos_task_status st;
-        EXPECT_EQ(kos_task_status(seam::task("health"), 0, &st), -KOS_EINVAL);
+        EXPECT_EQ(seam::task_status(seam::task("health"), 0, &st), -KOS_EINVAL);
     }
 
     TEST_F(Lookup, a_window_of_another_size_answers_invalid)
@@ -219,8 +219,8 @@ namespace
         as_sensor();
         seam::windows[0].size = 2u * PAGE;
         seam::windows[1].size = PAGE / 2u;
-        expect_no_window(kos_grant_mmio(seam::task("sensor"), "/dev/rtc"));
-        expect_no_window(kos_grant_mem(seam::task("sensor"), "/shm/history"));
+        expect_no_window(seam::grant_mmio(seam::task("sensor"), "/dev/rtc"));
+        expect_no_window(seam::grant_mem(seam::task("sensor"), "/shm/history"));
     }
 
     // ---------------------------------------------------------------------------------------
@@ -241,14 +241,14 @@ namespace
         write(block, "app", 4, 0, kickos::init::STATUS_DEPENDENCY_DOWN);
 
         struct kos_task_status st;
-        ASSERT_EQ(kos_task_status(seam::task("health"), 0, &st), 0);
+        ASSERT_EQ(seam::task_status(seam::task("health"), 0, &st), 0);
         EXPECT_STREQ(st.name, "app");
         EXPECT_FALSE(st.alive);
         EXPECT_EQ(st.deaths, 4u);
         EXPECT_EQ(st.restarts_left, 0u);
         EXPECT_TRUE(st.dependency_down);
 
-        ASSERT_EQ(kos_task_status(seam::task("health"), 1, &st), 0);
+        ASSERT_EQ(seam::task_status(seam::task("health"), 1, &st), 0);
         EXPECT_STREQ(st.name, "sensor");
         EXPECT_TRUE(st.alive);
         EXPECT_EQ(st.deaths, 1u);
@@ -264,22 +264,22 @@ namespace
         seam::StatusBlock block(PAGE);
         as_health(block);
         struct kos_task_status st;
-        EXPECT_EQ(kos_task_status(seam::task("health"), 2, &st), -KOS_EINVAL);
-        EXPECT_EQ(kos_task_status(seam::task("sensor"), 0, &st), -KOS_EINVAL);
-        EXPECT_EQ(kos_task_status(seam::task("health"), 0, nullptr), -KOS_EINVAL);
+        EXPECT_EQ(seam::task_status(seam::task("health"), 2, &st), -KOS_EINVAL);
+        EXPECT_EQ(seam::task_status(seam::task("sensor"), 0, &st), -KOS_EINVAL);
+        EXPECT_EQ(seam::task_status(seam::task("health"), 0, nullptr), -KOS_EINVAL);
     }
 
     TEST_F(Lookup, a_status_block_not_held_as_granted_answers_einval)
     {
         seam::StatusBlock block(PAGE);
         struct kos_task_status st;
-        EXPECT_EQ(kos_task_status(seam::task("health"), 0, &st), -KOS_EINVAL);
+        EXPECT_EQ(seam::task_status(seam::task("health"), 0, &st), -KOS_EINVAL);
         as_health(block);
         seam::windows[0].size = 2u * PAGE;
-        EXPECT_EQ(kos_task_status(seam::task("health"), 0, &st), -KOS_EINVAL);
+        EXPECT_EQ(seam::task_status(seam::task("health"), 0, &st), -KOS_EINVAL);
         as_health(block);
         seam::windows[0].kind = KOS_WINDOW_DEVICE;
-        EXPECT_EQ(kos_task_status(seam::task("health"), 0, &st), -KOS_EINVAL);
+        EXPECT_EQ(seam::task_status(seam::task("health"), 0, &st), -KOS_EINVAL);
     }
 
     TEST_F(Lookup, a_record_held_odd_answers_eagain_after_a_hundred_sleeps)
@@ -292,7 +292,7 @@ namespace
         memset(&st, 0xA5, sizeof(st));
         struct kos_task_status untouched;
         memcpy(&untouched, &st, sizeof(st));
-        EXPECT_EQ(kos_task_status(seam::task("health"), 1, &st), -KOS_EAGAIN);
+        EXPECT_EQ(seam::task_status(seam::task("health"), 1, &st), -KOS_EAGAIN);
         EXPECT_EQ(memcmp(&st, &untouched, sizeof(st)), 0);
         EXPECT_EQ(seam::sleeps, std::vector<uint64_t>(100u, 1000000u));
     }
@@ -314,7 +314,7 @@ namespace
             }
         };
         struct kos_task_status st;
-        ASSERT_EQ(kos_task_status(seam::task("health"), 1, &st), 0);
+        ASSERT_EQ(seam::task_status(seam::task("health"), 1, &st), 0);
         EXPECT_EQ(st.deaths, 3u);
         EXPECT_EQ(st.restarts_left, 7u);
         EXPECT_TRUE(st.alive);
@@ -371,7 +371,7 @@ namespace
         ASSERT_EQ(mprotect(reinterpret_cast<void*>(block.base()), block.size(), PROT_NONE), 0);
 
         struct kos_task_status st;
-        int const rc = kos_task_status(seam::task("health"), 1, &st);
+        int const rc = seam::task_status(seam::task("health"), 1, &st);
 
         sigaction(SIGSEGV, &old_fault, nullptr);
         sigaction(SIGTRAP, &old_step, nullptr);
@@ -385,25 +385,86 @@ namespace
     }
 
     // ---------------------------------------------------------------------------------------
-    // The trampoline
+    // The entry of a task kos_task_create started
 
-    TEST_F(Lookup, the_trampoline_exits_zero_when_the_entry_returns)
+    // The block the kernel writes at the top of the entry thread's stack: struct kos_task_args
+    // and a vector of two.
+    struct Args
     {
-        kos_self_t const* const app = seam::task("app");
+        uintptr_t words[6];
+        kos_task_args* head()
+        {
+            return reinterpret_cast<kos_task_args*>(words);
+        }
+    };
+
+    Args args_of(char const* name, char* arg1)
+    {
+        kos_table_task const* const tasks = reinterpret_cast<kos_table_task const*>(kickos_table + 1);
+        Args a = {};
+        a.words[0] = 2;
+        a.words[1] = static_cast<uintptr_t>(seam::task(name) - tasks);
+        a.words[2] = 0;
+        a.words[3] = reinterpret_cast<uintptr_t>(name);
+        a.words[4] = reinterpret_cast<uintptr_t>(arg1);
+        a.words[5] = 0;
+        return a;
+    }
+
+    TEST_F(Lookup, the_entry_takes_its_declaration_s_record_and_exits_zero_when_it_returns)
+    {
+        char arg1[] = "role";
+        Args a = args_of("app", arg1);
+        int argc = -1;
+        char** argv = nullptr;
+        seam::entry_seen = [&](kos_self_t const* self)
+        {
+            auto const own = reinterpret_cast<seam::TaskSelf const*>(self);
+            argc = own->argc;
+            argv = own->argv;
+        };
         int code = -1;
         try
         {
-            kickos::init::task_trampoline(const_cast<kos_self_t*>(app));
+            kickos_program_entry(a.head());
         }
         catch (seam::Exit const& exit)
         {
             code = exit.code;
         }
-        EXPECT_EQ(seam::entered, app);
+        EXPECT_EQ(seam::entered_record.name, seam::task("app")->name);
+        EXPECT_EQ(seam::entered_record.first_grant, seam::task("app")->first_grant);
+        EXPECT_EQ(argc, 2);
+        ASSERT_NE(argv, nullptr);
+        EXPECT_EQ(argv[1], arg1);
+        EXPECT_EQ(argv[2], nullptr);
         EXPECT_EQ(code, 0);
     }
 
-    TEST_F(Lookup, the_trampoline_flushes_what_a_returning_entry_printed)
+    TEST_F(Lookup, the_entry_makes_its_declaration_the_one_the_lookups_read)
+    {
+        char arg1[] = "role";
+        Args a = args_of("app", arg1);
+        kos_self_t const* seen = nullptr;
+        kos_cap_t cap = KOS_CAP_NONE;
+        seam::entry_seen = [&](kos_self_t const*)
+        {
+            seen = kos_self();
+            cap = kos_grant_endpoint("/svc/sensor");
+        };
+        try
+        {
+            kickos_program_entry(a.head());
+        }
+        catch (seam::Exit const&)
+        {
+        }
+        EXPECT_EQ(seen, seam::task("app"));
+        EXPECT_NE(cap, KOS_CAP_NONE);
+        EXPECT_EQ(cap, seam::grant_endpoint(seam::task("app"), "/svc/sensor"));
+    }
+
+    TEST_F(Lookup, the_entry_flushes_what_a_returning_entry_printed)
     {
         fflush(stdout);
         int const console = dup(STDOUT_FILENO);
@@ -411,9 +472,10 @@ namespace
         ASSERT_NE(sink, nullptr);
         ASSERT_GE(dup2(fileno(sink), STDOUT_FILENO), 0);
         seam::entry_print = "unterminated";
+        Args a = args_of("app", nullptr);
         try
         {
-            kickos::init::task_trampoline(const_cast<kos_self_t*>(seam::task("app")));
+            kickos_program_entry(a.head());
         }
         catch (seam::Exit const&)
         {
@@ -427,19 +489,20 @@ namespace
         EXPECT_STREQ(got, "unterminated");
     }
 
-    TEST_F(Lookup, the_trampoline_keeps_the_code_the_entry_exits_with)
+    TEST_F(Lookup, the_entry_keeps_the_code_it_exits_with)
     {
         seam::entry_exit = 5;
+        Args a = args_of("sensor", nullptr);
         int code = -1;
         try
         {
-            kickos::init::task_trampoline(const_cast<kos_self_t*>(seam::task("sensor")));
+            kickos_program_entry(a.head());
         }
         catch (seam::Exit const& exit)
         {
             code = exit.code;
         }
-        EXPECT_EQ(seam::entered, seam::task("sensor"));
+        EXPECT_EQ(seam::entered_record.name, seam::task("sensor")->name);
         EXPECT_EQ(code, 5);
     }
 }

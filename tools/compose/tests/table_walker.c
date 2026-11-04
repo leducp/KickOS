@@ -41,11 +41,14 @@ static struct bit_name const region_flag_names[] = {
     {KOS_MEM_NOCACHE, "uncached"}, {KOS_TABLE_REGION_PARTITION, "partition"}, {0, NULL}};
 static struct bit_name const header_flag_names[] = {{KOS_TABLE_ENDS_TASK, "ends_task"}, {0, NULL}};
 static struct bit_name const task_flag_names[] = {
-    {KOS_TABLE_TASK_CONSOLE, "console"}, {KOS_TABLE_TASK_BLOCK_UNCACHED, "block_uncached"}, {0, NULL}};
+    {KOS_TABLE_TASK_CONSOLE, "console"}, {KOS_TABLE_TASK_BLOCK_UNCACHED, "block_uncached"},
+    {KOS_TABLE_TASK_ON_REQUEST, "on_request"}, {KOS_TABLE_TASK_HOSTED, "hosted"},
+    {KOS_TABLE_TASK_PROGRAM, "program"}, {0, NULL}};
+static struct bit_name const line_flag_names[] = {{KOS_IRQ_LEVEL, "level"}, {0, NULL}};
 
 static char const* const kind_names[] = {"endpoint_serve", "endpoint_use", "notification", "window",
                                          "ports",          "region",       "line",         "status",
-                                         "port"};
+                                         "port",           "endpoint_hosted"};
 
 static int faults = 0;
 
@@ -148,7 +151,7 @@ int main(void)
     for (unsigned n = 0; n < h->task_count; ++n)
     {
         struct kos_table_task const* t = &tasks[n];
-        uintptr_t entry = (uintptr_t)t->entry.task;
+        uintptr_t entry = (uintptr_t)t->entry.program;
         if (t->driver != KOS_TABLE_NONE)
         {
             entry = (uintptr_t)t->entry.driver;
@@ -160,13 +163,26 @@ int main(void)
         print_bits("flags", t->flags, task_flag_names);
         printf(" core_mask=0x%" PRIX32, t->core_mask);
         print_bits("authority", t->authority, authority_names);
-        printf(" grants=%u+%u cap_grants=%u uses=%u+%u watches=%u+%u\n", (unsigned)t->first_grant,
+        printf(" grants=%u+%u cap_grants=%u uses=%u+%u watches=%u+%u", (unsigned)t->first_grant,
                (unsigned)t->grant_count, (unsigned)t->cap_grant_count, (unsigned)t->first_use,
                (unsigned)t->use_count, (unsigned)t->first_watch, (unsigned)t->watch_count);
-        if (t->rsv1 != 0 or t->rsv3[0] != 0 or t->rsv3[1] != 0 or t->rsv3[2] != 0
-            or (t->flags & ~(uint16_t)(KOS_TABLE_TASK_CONSOLE | KOS_TABLE_TASK_BLOCK_UNCACHED)) != 0
+        print_index("host", t->host);
+        if (t->program == KOS_TABLE_NO_STRING)
+        {
+            printf(" program=-");
+        }
+        else
+        {
+            printf(" program=%s", text_at(strings, h->strings_size, t->program));
+        }
+        printf("\n");
+        uint16_t const known = KOS_TABLE_TASK_CONSOLE | KOS_TABLE_TASK_BLOCK_UNCACHED | KOS_TABLE_TASK_ON_REQUEST
+                               | KOS_TABLE_TASK_HOSTED | KOS_TABLE_TASK_PROGRAM;
+        if ((t->flags & ~known) != 0
+            or (((t->flags & KOS_TABLE_TASK_PROGRAM) == 0) and t->program != KOS_TABLE_NO_STRING)
             or ((t->flags & KOS_TABLE_TASK_BLOCK_UNCACHED) != 0 and t->block == 0)
-            or (t->driver == KOS_TABLE_NONE and t->block != 0))
+            or (t->driver == KOS_TABLE_NONE and t->block != 0)
+            or (((t->flags & KOS_TABLE_TASK_HOSTED) != 0) != (t->host != KOS_TABLE_NONE)))
         {
             ++faults;
         }
@@ -188,6 +204,10 @@ int main(void)
         {
             print_bits("flags", g->flags, port_flag_names);
         }
+        else if (g->kind == KOS_GRANT_LINE)
+        {
+            print_bits("flags", g->flags, line_flag_names);
+        }
         else
         {
             print_bits("flags", g->flags, grant_flag_names);
@@ -207,11 +227,8 @@ int main(void)
         printf(" base=0x%" PRIX64 " size=0x%" PRIX32, g->base, g->size);
         print_index("line_index", g->line_index);
         print_index("line", g->line);
-        printf(" privs=%u+%u\n", (unsigned)g->priv_first, (unsigned)g->priv_count);
-        if (g->rsv1 != 0)
-        {
-            ++faults;
-        }
+        printf(" privs=%u+%u badge=0x%" PRIX32 "\n", (unsigned)g->priv_first, (unsigned)g->priv_count,
+               g->badge);
     }
 
     for (unsigned n = 0; n < h->ref_count; ++n)

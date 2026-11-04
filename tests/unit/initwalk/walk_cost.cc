@@ -142,11 +142,11 @@ namespace
         }
         if (c.scenario == Scenario::DRIVER_FAILED)
         {
-            // Its watch, the one naming the endpoint the init created for it.
-            fake::refuse_if("kos_task_watch", -KOS_EACCES, 1,
-                            [index](fake::Call const& call)
+            std::string const name = task;
+            fake::refuse_if("kos_task_create", -KOS_ENOMEM, 1,
+                            [name](fake::Call const& call)
                             {
-                                return call.args[2] == harness::record(index).endpoint;
+                                return call.text == name;
                             });
         }
         if (c.scenario == Scenario::RESTART)
@@ -156,7 +156,7 @@ namespace
         if (c.scenario == Scenario::FAILED)
         {
             std::string const name = task;
-            fake::refuse_if("kos_thread_create", -KOS_ENOMEM, 1,
+            fake::refuse_if("kos_task_create", -KOS_ENOMEM, 1,
                             [name](fake::Call const& call)
                             {
                                 return call.text == name;
@@ -185,7 +185,7 @@ namespace
                 live++;
             }
         }
-        EXPECT_EQ(live, system.figures.threads) << "every task running";
+        EXPECT_EQ(live + system.figures.driver_threads, system.figures.threads) << "every task running";
         if (c.scenario == Scenario::RESTART)
         {
             EXPECT_EQ(fake::spawned(task).size(), 2u) << "started again";
@@ -201,10 +201,14 @@ namespace
             // endpoint it creates.
             EXPECT_EQ(fake::calls_of("kos_cap_narrow").size(), fake::calls_of("kos_endpoint_create").size());
         }
+        if (c.scenario == Scenario::DRIVER_RESTART)
+        {
+            EXPECT_EQ(fake::calls_of("kos_task_watch").size(), header->task_count + 1u) << "started again";
+        }
         if (driver)
         {
             EXPECT_EQ(harness::status(index).deaths, 1u);
-            EXPECT_EQ(fake::calls_of("kos_task_watch").size(), header->task_count + 1u) << "started again";
+            EXPECT_EQ(fake::spawned(task).size(), 1u + (c.scenario == Scenario::DRIVER_RESTART));
         }
 
         fake::Peaks const& peak = fake::peaks();
@@ -212,7 +216,7 @@ namespace
         EXPECT_EQ(peak.cap_slots, counted.cap_slots);
         EXPECT_EQ(peak.endpoints, counted.endpoints);
         EXPECT_EQ(peak.notifications, counted.notifications);
-        EXPECT_EQ(peak.threads, counted.threads);
+        EXPECT_EQ(peak.threads + counted.driver_threads, counted.threads);
         EXPECT_EQ(peak.tasks, counted.tasks);
         EXPECT_EQ(peak.irq_handles, counted.irq_handles);
         EXPECT_EQ(peak.domains, counted.domains);

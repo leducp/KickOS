@@ -16,7 +16,7 @@ extern "C"
 
     void arch_console_flush_sync(void) {}
 
-    int console_tx_insert_record_line(char const*, size_t, int) { return 0; }
+    uint32_t console_tx_line_needed(char const*, size_t n, int) { return static_cast<uint32_t>(n); }
     void console_tx_flush_sync(void) {}
     void console_tx_disarm(void) {}
     int console_held_append(uint32_t, char const*, uint32_t, uint32_t) { return 0; }
@@ -34,7 +34,7 @@ namespace kickos
     bool task_serves_console(Task const*) { return false; }
 
     // No ring to wait on: the write ends.
-    int console_room_wait(char const*, size_t, int) { return -KOS_ECANCELED; }
+    int console_room_wait(uint32_t, uint32_t) { return -KOS_ECANCELED; }
 
     void cap_console_deliver(Held) {}
 }

@@ -14,7 +14,7 @@ check precedes every kernel chip write.
 
 ## Handover
 
-`kos_console_publish` requires `AUTH_CONSOLE`. Under one `IrqLock`,
+the console publish call requires `AUTH_CONSOLE`. Under one `IrqLock`,
 `console_tx_deinit` flushes to shift idle, disables the TX interrupt, detaches and masks
 the line, and disarms the ring. Publish retains a kernel reference on the endpoint,
 updates the stdout target, drains writers that sampled the old state, then completes

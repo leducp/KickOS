@@ -54,9 +54,9 @@ namespace
     constexpr uint32_t SPIN_MAX = 200000u;
     constexpr uint32_t SUTW_TRIES = 16u;
 
-    // How far the IRQ thread got, read back by ROOT after drv::bring_up gives up. The thread
-    // cannot report anything itself: kos_console_publish runs before it is spawned, so its
-    // console has no receiver until the unwind. stage_reason() spells each value out.
+    // How far the IRQ thread got, which it reports before it traps (report_stage). Its task
+    // serves the published console, so that report reaches the wire only where the kernel
+    // console is live. stage_reason() spells each value out.
     enum stage
     {
         STAGE_NONE = 0,
@@ -724,6 +724,8 @@ namespace
         uint32_t pending_complete_ = 0;
     };
 
+    void report_stage();
+
     void rtusb_irq_thread(void* arg)
     {
         Block* blk = static_cast<Block*>(arg);
@@ -744,8 +746,8 @@ namespace
         usb::Cdc<RtUsb> cdc(dev, &blk->sh);
         if (cdc.bring_up() != 0)
         {
-            // Leaving the ready latch clear is the report: drv::bring_up gives up on it, and
-            // rtusb_console_start prints the stage this thread left behind.
+            // Leaving the ready latch clear ends the task: the service thread's wait expires.
+            report_stage();
             drv::trap();
         }
         usb::irq_loop(cdc, &blk->sh); // parks in irq_wait; never returns
@@ -908,14 +910,19 @@ extern "C"
 
 int rtusb_console_start(struct kos_driver_instance* instance)
 {
-    int const rc = drv::bring_up(k_desc, instance);
-    if (rc == 0)
+    return drv::bring_up(k_desc, instance);
+}
+
+}
+
+namespace
+{
+    void report_stage()
     {
-        return 0;
-    }
-    // How far the IRQ thread got is only in the block: what it printed went nowhere.
-    if (g_blk != nullptr)
-    {
+        if (g_blk == nullptr)
+        {
+            return;
+        }
         uint32_t const stage = g_blk->stage;
         uint32_t const stalls = g_blk->stalls;
         drv::report(k_desc.tag);
@@ -940,7 +947,4 @@ int rtusb_console_start(struct kos_driver_instance* instance)
             drv::report(stall);
         }
     }
-    return rc;
-}
-
 }

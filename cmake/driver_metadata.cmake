@@ -6,11 +6,13 @@
 # its descriptor. Script-safe: it creates no target, so tests/static/check_driver_metadata.cmake
 # drives it under cmake -P.
 
-set(KICKOS_DRIVER_OPTIONS CONSOLE USB_DEVICE)
-set(KICKOS_DRIVER_SINGLE CLASS REGDIR TAG BASE BLOCK BLOCK_CACHE INIT POSTURE BARRIER READY START)
-set(KICKOS_DRIVER_MULTI SOURCES WINDOWS LINES CLIENT THREAD)
+set(KICKOS_DRIVER_OPTIONS CONSOLE USB_DEVICE LOCAL)
+set(KICKOS_DRIVER_SINGLE CLASS REGDIR TAG BASE BLOCK BLOCK_CACHE INIT POSTURE BARRIER READY START SLOTS)
+set(KICKOS_DRIVER_MULTI SOURCES WINDOWS LINES CLIENT THREAD AUTHORITY)
 set(KICKOS_DRIVER_METADATA TAG BASE WINDOWS LINES BLOCK BLOCK_CACHE INIT POSTURE BARRIER READY START CONSOLE
-    USB_DEVICE CLIENT)
+    USB_DEVICE CLIENT SLOTS AUTHORITY)
+# The authority a driver's entry thread may run START with (<kickos/sys/cap_rights.h>).
+set(KICKOS_DRIVER_AUTHORITIES memory pinmux pstate irq system console tasks bus_master bootloader)
 
 # Writes `content` to `path` unless it already holds it, so nothing that depends on the file is
 # rebuilt for an identical configure. No @-reference or ${} in `content` is expanded again.
@@ -108,6 +110,13 @@ function(kickos_driver_metadata name out_packaged out_json out_header)
   if(NOT DEFINED M_BASE)
     set(M_BASE 0)
   endif()
+  # The device slots the service keys on each client's badge, a slot mask of 32 bits.
+  if(NOT DEFINED M_SLOTS)
+    set(M_SLOTS 0)
+  elseif(NOT M_SLOTS MATCHES "^([1-9]|[12][0-9]|3[0-2])$")
+    message(FATAL_ERROR "kickos_add_driver(${name}): SLOTS ${M_SLOTS} is not a count from 1 to 32, "
+      "the bits of the badge a client's slot mask rides")
+  endif()
   set(_barrier_count FALSE)
   if(M_BARRIER MATCHES "^[0-9]+$")
     set(_barrier_count TRUE)
@@ -119,11 +128,14 @@ function(kickos_driver_metadata name out_packaged out_json out_header)
 
   set(_line_roles "")
   set(_line_init "")
+  set(_line_triggers "")
   foreach(_l IN LISTS M_LINES)
     if(NOT _l MATCHES "^([^:]+):(edge|level)$")
       message(FATAL_ERROR "kickos_add_driver(${name}): LINES entry '${_l}' is not <role>:edge or <role>:level")
     endif()
     list(APPEND _line_roles "${CMAKE_MATCH_1}")
+    _kickos_json_quote("${CMAKE_MATCH_2}" _qtrigger)
+    list(APPEND _line_triggers "${_qtrigger}")
     string(TOUPPER "${CMAKE_MATCH_2}" _trigger)
     list(APPEND _line_init "{KOS_IRQ_${_trigger}}")
   endforeach()
@@ -138,6 +150,11 @@ function(kickos_driver_metadata name out_packaged out_json out_header)
   set(_thread_init "")
   set(_receivers "")
   set(_notify FALSE)
+  # The entry thread's layout (<kickos/sys/driver_service.h>, layout_of): the first THREAD's
+  # grants in their order, then every other token the task holds in token order.
+  set(_entry "")
+  set(_unbadged FALSE)
+  set(_doorbell_held FALSE)
   foreach(_i RANGE 1 ${_thread_count})
     set(_t ${_thread_${_i}})
     list(LENGTH _t _n)
@@ -162,6 +179,10 @@ function(kickos_driver_metadata name out_packaged out_json out_header)
         message(FATAL_ERROR "kickos_add_driver(${name}): THREAD ${_role} holds window '${T_WINDOW}', "
           "which WINDOWS does not declare")
       endif()
+      if(NOT _i EQUAL 1)
+        message(FATAL_ERROR "kickos_add_driver(${name}): THREAD ${_role} holds window '${T_WINDOW}'; "
+          "a window is seated on the task's entry thread, the first THREAD, and cannot move")
+      endif()
       math(EXPR _held_${T_WINDOW} "${_held_${T_WINDOW}} + 1")
       set(_window true)
     endif()
@@ -178,12 +199,20 @@ function(kickos_driver_metadata name out_packaged out_json out_header)
       set(_badge 0)
       if(_res STREQUAL "ep")
         set(_resource "${_drv}KOS_DRV_RES_EP")
+        set(_token "ep")
         if(_rights STREQUAL "WAIT")
           list(APPEND _receivers "${_role}")
         endif()
       elseif(_res STREQUAL "notify")
         set(_resource "${_drv}KOS_DRV_RES_NOTIFY")
         set(_notify TRUE)
+        set(_token "notify")
+        if(NOT _doorbell STREQUAL "")
+          set(_token "doorbell")
+          set(_doorbell_held TRUE)
+        else()
+          set(_unbadged TRUE)
+        endif()
       else()
         list(FIND _line_roles "${_res}" _k)
         if(_k EQUAL -1)
@@ -191,10 +220,18 @@ function(kickos_driver_metadata name out_packaged out_json out_header)
             "neither ep, notify nor a role LINES declares")
         endif()
         set(_resource "${_drv}KOS_DRV_RES_LINE${_k}")
+        set(_token "line:${_k}")
       endif()
       if(NOT _doorbell STREQUAL "")
         set(_badge "${_drv}doorbell_badge(${_line_count})")
         math(EXPR _badged "${_badged} + 1")
+      endif()
+      if(_i EQUAL 1)
+        if("${_token}" IN_LIST _entry)
+          message(FATAL_ERROR "kickos_add_driver(${name}): THREAD ${_role} is granted ${_token} twice; "
+            "the entry thread holds each of its grants in one place")
+        endif()
+        list(APPEND _entry "${_token}")
       endif()
       list(APPEND _caps "{${_resource}, KOS_CAP_${_rights}, ${_badge}}")
     endforeach()
@@ -217,6 +254,29 @@ function(kickos_driver_metadata name out_packaged out_json out_header)
     _kickos_json_count("${T_PRIORITY}" _qprio)
     list(APPEND _threads "{\"name\": ${_qrole}, \"priority\": ${_qprio}, \"stack\": \"default\", \
 \"caps\": ${_cap_count}, \"badged\": ${_badged}}")
+  endforeach()
+  set(_rest ep)
+  if(_unbadged)
+    list(APPEND _rest notify)
+  endif()
+  if(_doorbell_held)
+    list(APPEND _rest doorbell)
+  endif()
+  if(_line_count GREATER 0)
+    math(EXPR _last_line "${_line_count} - 1")
+    foreach(_k RANGE ${_last_line})
+      list(APPEND _rest "line:${_k}")
+    endforeach()
+  endif()
+  foreach(_token IN LISTS _rest)
+    if(NOT "${_token}" IN_LIST _entry)
+      list(APPEND _entry "${_token}")
+    endif()
+  endforeach()
+  set(_jentry "")
+  foreach(_token IN LISTS _entry)
+    _kickos_json_quote("${_token}" _qtoken)
+    list(APPEND _jentry "${_qtoken}")
   endforeach()
   list(LENGTH _receivers _receiver_count)
   if(NOT _receiver_count EQUAL 1)
@@ -252,6 +312,10 @@ function(kickos_driver_metadata name out_packaged out_json out_header)
   if(NOT _barrier_count)
     set(_barrier_after ${_thread_count})
     set(_ready "${_drv}KOS_DRV_READY_NONE")
+  elseif(M_BARRIER LESS 1 OR NOT M_BARRIER LESS _thread_count)
+    message(FATAL_ERROR "kickos_add_driver(${name}): BARRIER ${M_BARRIER} with ${_thread_count} THREADs; "
+      "the threads before it set the READY latch and the ones from it on wait for it, so it is "
+      "at least 1 and below the THREAD count")
   endif()
   set(_notifications 0)
   if(_notify)
@@ -265,6 +329,14 @@ function(kickos_driver_metadata name out_packaged out_json out_header)
   if(M_USB_DEVICE)
     set(_usb_device true)
   endif()
+  set(_authority "")
+  foreach(_a IN LISTS M_AUTHORITY)
+    if(NOT _a IN_LIST KICKOS_DRIVER_AUTHORITIES)
+      message(FATAL_ERROR "kickos_add_driver(${name}): AUTHORITY '${_a}' is none of ${KICKOS_DRIVER_AUTHORITIES}")
+    endif()
+    _kickos_json_quote("${_a}" _qa)
+    list(APPEND _authority "${_qa}")
+  endforeach()
   # The libraries a task using the driver links, which kickos_compose links in a system naming it.
   set(_clients "")
   foreach(_c IN LISTS M_CLIENT)
@@ -275,8 +347,11 @@ function(kickos_driver_metadata name out_packaged out_json out_header)
 
   _kickos_json_array(_jwindows ${_windows})
   _kickos_json_array(_jlines ${_lines})
+  _kickos_json_array(_jtriggers ${_line_triggers})
+  _kickos_json_array(_jentry ${_jentry})
   _kickos_json_array(_jthreads ${_threads})
   _kickos_json_array(_jclients ${_clients})
+  _kickos_json_array(_jauthority ${_authority})
   _kickos_json_quote("${M_POSTURE}" _qposture)
   _kickos_json_quote("${M_BLOCK_CACHE}" _qblock_cache)
   set(_block_flags 0u)
@@ -285,15 +360,20 @@ function(kickos_driver_metadata name out_packaged out_json out_header)
   endif()
   _kickos_json_quote("${M_START}" _qstart)
   _kickos_json_quote("${_receivers}" _qreceiver)
-  set(${out_json} "{\"windows\": ${_jwindows}, \"lines\": ${_jlines}, \"threads\": ${_jthreads}, \
+  set(${out_json} "{\"windows\": ${_jwindows}, \"lines\": ${_jlines}, \"triggers\": ${_jtriggers}, \
+\"entry\": ${_jentry}, \"threads\": ${_jthreads}, \
 \"endpoints\": ${KICKOS_DRIVER_ENDPOINTS}, \"notifications\": ${_notifications}, \
 \"block\": ${_qblock}, \"block_cache\": ${_qblock_cache}, \"posture\": ${_qposture}, \"barrier\": ${_qbarrier}, \"console\": ${_console}, \
-\"usb_device\": ${_usb_device}, \"start\": ${_qstart}, \"receiver\": ${_qreceiver}, \"client\": ${_jclients}}"
+\"usb_device\": ${_usb_device}, \"start\": ${_qstart}, \"receiver\": ${_qreceiver}, \"client\": ${_jclients}, \
+\"slots\": ${M_SLOTS}, \"authority\": ${_jauthority}}"
       PARENT_SCOPE)
 
   set(_block_macro "")
   if(M_BLOCK MATCHES "^[0-9]+$")
     set(_block_macro "#define KICKOS_DRIVER_BLOCK_SIZE ${M_BLOCK}u\n\n")
+  endif()
+  if(NOT M_SLOTS EQUAL 0)
+    string(APPEND _block_macro "#define KICKOS_DRIVER_SLOTS ${M_SLOTS}u\n\n")
   endif()
   set(_init nullptr)
   if(DEFINED M_INIT)
@@ -301,6 +381,16 @@ function(kickos_driver_metadata name out_packaged out_json out_header)
   endif()
   list(JOIN _line_init ", " _line_init)
   string(TOUPPER "${name}" _guard)
+  string(MAKE_C_IDENTIFIER "${name}" _cname)
+  set(_launch nullptr)
+  set(_launch_store "")
+  if(_barrier_count)
+    set(_launch "kickos_driver_launch_${_cname}")
+    set(_launch_store "// What each thread past the barrier starts with, which every thread of the task reads.
+[[maybe_unused]] static ${_drv}Launch ${_launch}[${_drv}KOS_DRV_THREADS_MAX];
+
+")
+  endif()
   set(${out_header}
 "// SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
@@ -316,7 +406,7 @@ function(kickos_driver_metadata name out_packaged out_json out_header)
 
 extern \"C\" int ${M_START}(struct kos_driver_instance* instance);
 
-${_block_macro}#define KICKOS_DRIVER_DESCRIPTOR \\
+${_block_macro}${_launch_store}#define KICKOS_DRIVER_DESCRIPTOR \\
     { \\
         .tag = \"[${M_TAG}] \", \\
         .expected_base = ${M_BASE}, \\
@@ -330,7 +420,8 @@ ${_block_macro}#define KICKOS_DRIVER_DESCRIPTOR \\
         .lines = {${_line_init}}, \\
         .threads = { \\
 ${_thread_init}        }, \\
-        .block_init = ${_init} \\
+        .block_init = ${_init}, \\
+        .launch = ${_launch} \\
     }
 
 #endif

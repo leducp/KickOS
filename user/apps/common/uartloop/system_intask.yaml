@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# main, the client of the packaged simuart, which runs as threads of main itself over the sim's
+# loopback line.
+
+version: 1
+stdout: kernel
+ends: main
+
+tasks:
+  - name: main
+    program: uartloop_intask
+    priority: 10
+    ceiling: 13
+    core: 0
+    uses: [/svc/simuart]
+    authority: [memory, system]
+    drivers:
+      - driver: simuart
+        lines: { irq: /dev/uart/irq }
+        serves: /svc/simuart
+        priority: 12

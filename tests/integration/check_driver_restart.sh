@@ -44,7 +44,7 @@ CORES="$(knob KICKOS_KERNEL_CORES)"
 
 scratch_dir
 
-set -- -DKICKOS_WITNESS_SYSTEM="$SYSTEM"
+set -- -DKICKOS_WITNESS_SYSTEM="$SYSTEM" -DKICKOS_WITNESS_MAIN=watcher
 if [ "$DEPTH" = depth ]; then
     set -- "$@" -DKICKOS_WITNESS_ROOT_DEPTH=ON
 elif [ -n "$DEPTH" ]; then

@@ -100,8 +100,9 @@ struct Shared
     struct kos_byte_ring tx;
     struct kos_byte_ring rx;
     struct kos_uart_stats stats;
-    // One-way latch: the IRQ thread reached its loop. Written once by one thread.
-    Atomic<uint32_t, Order::RELAXED> ready;
+    // One-way latch: the IRQ thread reached its loop (driver::ready_publish), which the service
+    // thread waits on before its first receive (driver::ready_wait).
+    driver::Latch ready;
     // NOT a latch: a bus reset clears it. It does NOT catch a bare unplug, because no
     // backend arms a disconnect or suspend source and the RP backend forces
     // VBUS-detected, so a host that goes away without a later reset leaves this at 1.
@@ -710,7 +711,7 @@ void irq_loop(Cdc<UsbDev>& cdc, Shared* sh)
     {
         driver::trap();
     }
-    sh->ready = 1;
+    (void)driver::ready_publish(&sh->ready);
     while (true)
     {
         // The FIRST wait is also what arms the line: a claim leaves it masked so no

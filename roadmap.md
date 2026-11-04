@@ -183,7 +183,7 @@ subsystem are single-core.
 **The three M4.7 numbers are one arc, and M4.7.3 is what the other two were for.** M4.7.1 fixes
 the handle codec, the errno and the storage, and sizes the table at configure from declared demand
 -- but under **one fleet-wide width**, which is the assumption M4.7.3 removed: root keeps the
-summed width, and every spawned child gets `KICKOS_CAP_CHILD_WIDTH`. At one width the chunk
+summed width, and every spawned child gets the child width. At one width the chunk
 directory M4.7.1 introduces was provably inert: `CapChunkList::take` is all-or-nothing, so the
 chunk free list was isomorphic to a free list of whole runs and segmentation could never succeed
 where a contiguous run would have failed. It landed anyway, deliberately, because per-task width is
@@ -191,7 +191,7 @@ the only thing that makes it load-bearing, and a narrow child run is now what it
 alternative -- flat runs then, chunks again here -- would have churned the layout and burnt a bench
 pass to save forty lines. The cost of carrying it meanwhile was 440 to 936 bytes on the mid-range
 boards and nothing at all on the 16 KiB parts, which take the flat path at
-`KICKOS_MAX_HANDLES <= KCAP_CHUNK_TARGET` and where every run is still the full width.
+the root width at most `KCAP_CHUNK_TARGET` and where every run is still the full width.
 
 **Inbound replies got a per-task CAP, and not the reserved sub-range this entry planned.** A client
 mints a reply capability into the SERVER's table through plain `cap_install`, so inbound reply caps
@@ -208,9 +208,9 @@ before the fastpath pops a receiver (`cap_can_take_reply`: a free dynamic slot A
 A count is all it needs, so the scan it does pay is the cheap one: `cap_reply_live` walks the run on
 the flat path, bounded by `KCAP_CHUNK_TARGET` and not by the codec's ceiling, and reads a stored
 counter on the segmented one, where the chunk directory's tail padding gives the field away free.
-The bound is ONE-WAY because the reply term is charged to `KICKOS_CAP_CHILD_WIDTH` as well as to
+The bound is ONE-WAY because the reply term is charged to the child width as well as to
 root's summed width: reply traffic can never crowd out a task's own creates, and
-`cmake/cap_table.cmake` refuses a configure where a default-width child would keep no slot of its
+the configure-time cap-table script refused a configure where a default-width child would keep no slot of its
 own once the bound is spent.
 
 **THE ABI-FREEZE MILESTONE CARRIES NO NUMBER, AND THAT IS THE RULING RATHER THAN AN OMISSION.** It
@@ -227,10 +227,10 @@ pure cost: it has to be kept in sync, it is read as a supported path, and it mak
 look alive. The class, with the instances found so far:
 
 - **tombstones for deleted knobs.** A guard whose only job is to refuse something that no longer
-  exists. `KICKOS_MAX_HANDLES` had one, and M4.7.2 caught itself UPDATING its message text to match a
+  exists. The root width macro had one, and M4.7.2 caught itself UPDATING its message text to match a
   new term, which is the whole failure in one line. Deleted; the sweep looks for the rest.
 - **fallbacks that only fire when the build is already wrong.** `kernel/include/kickos/config/system.h`
-  defaults `KICKOS_MAX_HANDLES` and then asserts against its own default, because two CMake probes
+  defaults the root width and then asserts against its own default, because two CMake probes
   read the header before the value exists. That is a workaround for configuration living in two
   places, and the generated header in M4.7.3 removes the need for it rather than tuning it.
 - **inert grants and parameters kept "for signature parity"** with a path that no longer needs them.
@@ -297,12 +297,12 @@ developer's local notes, which is why this entry exists at all.
 for devicetree, which is hardware description. It is close to irrelevant for Kconfig, which is knob
 management, validation and dependency expression. The pressure was not board count: configuration
 was split across C headers and CMake with leakage in both directions. That cost two `cc -E -P`
-probes reading headers back into CMake (`cmake/cap_table.cmake`, `cmake/boot_arena.cmake`), a
+probes reading headers back into CMake (the cap-table script, `cmake/boot_arena.cmake`), a
 `file(STRINGS)` scrape of a `static constexpr` that no preprocessor can hand over, and a
 hand-rolled C++ function-body parser in CMake regex (`_kickos_seam_int_in_file` in
 `cmake/boot_arena.cmake`), which also reimplements the linker's archive-member selection rule.
 M4.7.3's generated header removed two more of the same class: the directory-tree walk that carried
-the width to subdirectories, and the `KICKOS_MAX_HANDLES` fallback that existed only so a
+the width to subdirectories, and the root width fallback that existed only so a
 misconfigured build still preprocessed.
 
 **Both `cc -E -P` probes and the `constexpr` scrape are now GONE, and the rule they leave behind
@@ -1740,8 +1740,8 @@ acquiring a line was a path rather than a number:
 
 The golden example uses the same shape for everything a task is given: devices under `/dev` from
 the descriptions, endpoints under `/svc` and shared memory under `/shm` from the composition, and
-`kos_grant_endpoint(self, "/svc/sensor")` in user code, `self` being the task's own entry. The init has already delegated the capability or
-mapped the window; the lookup only finds it, and a name the task was not given answers nothing.
+`kos_grant_endpoint("/svc/sensor")` in user code, answered for the task's own declaration. The
+init has already delegated the capability or mapped the window; the lookup only finds it, and a name the task was not given answers nothing.
 **What the composition declares is never mapped by hand** (maintainer, 2026-09-28): a device
 window or a shared region is looked up, `kos_grant_mmio` or `kos_grant_mem`, answering an opaque
 handle to the address the init mapped it at and its size. Runtime mapping is for objects that do not exist at build
@@ -1840,9 +1840,9 @@ instance's threads held, and the init keeps its endpoint and ring block for the 
 | M10.6.6 | hardening, isolation as strong as the hardware permits: the kernel kept out of user pages by hardware, PAN on arm64 where the core has it, its software form on the A53 measured before it is chosen, an arm64 emulator core with PAN running the selftest, and SMEP and SMAP on x86_64; the ARMv8-M stack limit registers programmed; the K64F DSPI grant closed after its holder and `kos_spi_transfer`'s poll bounded; and the libc lock split, malloc at least on a lock of its own, so stdio never waits behind an allocation |
 | M10.6.7 | the uncontended mutex takes no syscall: a futex-style fast path, a lock word in user memory taken and released by compare-and-swap, the kernel entered only on contention, where it reads the owner from the word; priority inheritance, owner death reaching the next taker and `-KOS_EDEADLK` kept, the word treated as hostile input, a word in memory shared across address spaces keyed on the memory itself, so it works across spaces, misaligned, read-only, uncached and AMP-share words refused; no kernel object per mutex; a thread's own id seated in user memory, so `kos_thread_self` takes no syscall; the libc locks inherit it; the uncontended cost and the worst-case wait measured before and after |
 | M10.6.8 | the syscall pass: what can leave the kernel does. The clock read in user mode where the counter is user-readable (armv8a, x86_64, rv64, the sim, rv32 QEMU), region boards keeping the call; semaphores as words on M10.6.7's keyed wait and wake, with no create, pool or capability; the redundant calls merged (the timed and untimed send and call, thread kill and slay into one cancel, task kill into slay, the task state and exit status, the affinity read into its setter, the LED toggle into set, reply into reply-and-receive); the current-core read in user mode on armv8a and x86_64; the per-task nonblocking flag stays in the kernel; each move measured before and after |
-| M10.6.9 | MPU tasks as processes and the kernel isolation holes (maintainer, 2026-10-21): on a region board a task is the MPU equivalent of the MMU process, each task an image of its own whose static data, libc state and heap no other task reaches, started from the image's pristine data, and a board too small for that holds one task; libc's state per task, the nonblocking flag with it; kernel memory refused as a device window, `kos_panic` behind an authority, thread and RAM quotas per task, no console path that masks interrupts for a task's print or fault, no syscall out-buffer in a device window, and a bus service that does not take a client's slot on trust |
-| M10.6.10 | C++ and libc conformance: a toolchain release giving GCC a KickOS threads model, so function-local statics and `std::call_once` initialise once under contention, `shared_ptr` counts are atomic, `thread_local` destructors run at thread exit, and the RX SjLj unwind chain and the C++ exception state are per thread; and the semantics of `abort` and `std::terminate` in a worker, of `steady_clock` across a realtime set, and of `getentropy` with no entropy source |
-| M10.6.11 | the hardware tail and the bench: the interrupt stack bounded on ARMv7-M, ARMv6-M, RX and Xtensa LX6, the ESP32's code space beyond its 128 KiB of IRAM, and the ESP32-C6 PLL, with every silicon image M10.6.3 to M10.6.10 moved captured on the same bench passes, board by board |
+| M10.6.9 | MPU tasks as processes and the kernel isolation holes (maintainer, 2026-10-21): on a region board a task is the MPU equivalent of the MMU process, each task an image of its own whose static data, libc state and heap no other task reaches, started from the image's pristine data, and a board too small for that holds one task; libc's state per task, the nonblocking flag with it; kernel memory refused as a device window, `kos_panic` behind an authority, thread and RAM quotas per task, no console path that masks interrupts for a task's print or fault, no syscall out-buffer in a device window, a bus service that does not take a client's slot on trust, and the ESP32's code space beyond its 128 KiB of IRAM |
+| M10.6.10 | C++ and libc conformance: a toolchain release giving GCC a KickOS threads model, so function-local statics and `std::call_once` initialise once under contention, `shared_ptr` counts are atomic, `thread_local` destructors run at thread exit, and the RX SjLj unwind chain and the C++ exception state are per thread; and the semantics of `abort` and `std::terminate` in a worker, of `steady_clock` across a realtime set, and of `getentropy` with no entropy source; and a newlib that reaches its globals through the per-task context the kernel seats, so libc code is stored once in flash and shared by every task image (maintainer, 2026-10-22) |
+| M10.6.11 | the hardware tail and the bench: the interrupt stack bounded on ARMv7-M, ARMv6-M, RX and Xtensa LX6, and the ESP32-C6 PLL, with every silicon image M10.6.3 to M10.6.10 moved captured on the same bench passes, board by board |
 | M10.7 | the exit record, and the reference documents reconciled against what shipped |
 
 **THE TOOLCHAIN IS KICKOS'S OWN, BUILT FROM PINNED SOURCES ON ANY HOST** (maintainer,

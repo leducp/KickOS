@@ -74,6 +74,8 @@ namespace kickos
         uint32_t accept = 0;
         // Head of the signaller chain, a biased binding pool index, or NOTIFY_SIGNALLER_NONE.
         uint8_t signallers = NOTIFY_SIGNALLER_NONE;
+        // The holdings epoch that last counted this slot (cap.cc), in the tail padding.
+        uint16_t hold_mark = 0;
     };
 
     // Create a notification and install a full-rights CAP_NOTIFY naming it. 0 with the cap in

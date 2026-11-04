@@ -53,7 +53,26 @@ else()
   endforeach()
 endif()
 
+# Whether this package's images are linked on their own first, whether the init is an image of
+# its own, the kernel entries an image calls instead of trapping, and the objects only the
+# kernel's link takes.
+set(KICKOS_IMAGE_SPLIT @KICKOS_IMAGE_SPLIT@)
+set(KICKOS_IMAGE_EMBED @KICKOS_IMAGE_EMBED@)
+set(KICKOS_INIT_IMAGE @KICKOS_INIT_IMAGE@)
+set(KICKOS_IMAGE_KERNEL_ENTRIES "@KICKOS_IMAGE_KERNEL_ENTRIES@")
+set(KICKOS_IMAGE_KERNEL_OBJECT_TARGETS "@KICKOS_IMAGE_KERNEL_OBJECT_TARGETS@")
+
 include("${CMAKE_CURRENT_LIST_DIR}/kickos.cmake")
+kickos_image_link_features()
+# A sim consumer's plain executable linking KickOS::kernel is an image too.
+if(KICKOS_ARCH STREQUAL "sim")
+  kickos_image_host_launcher(_kickos_host_launcher)
+  foreach(_kickos_lang C CXX)
+    if(NOT DEFINED CMAKE_${_kickos_lang}_LINKER_LAUNCHER)
+      set(CMAKE_${_kickos_lang}_LINKER_LAUNCHER "${_kickos_host_launcher}")
+    endif()
+  endforeach()
+endif()
 
 include("${CMAKE_CURRENT_LIST_DIR}/KickOSTargets.cmake")
 

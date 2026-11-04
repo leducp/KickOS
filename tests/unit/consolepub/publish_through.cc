@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// cap_console_publish_through: HANDOUT is required, the console's registers may be held by no
-// thread outside the task named, a publisher not holding WAIT is seated as a receiver and the
+// cap_console_publish_through: the endpoint is still the one the capability was installed on,
+// HANDOUT is required, the console's registers may be held by no thread outside the task named, a publisher not holding WAIT is seated as a receiver and the
 // endpoint's vacated mark cleared, and a refusal changes nothing.
 
 #include <kickos/cap.h>
@@ -79,6 +79,19 @@ namespace kickos
             p.ep->vacated = 1;
 
             EXPECT_EQ(publish(p), -KOS_EACCES);
+            expect_unchanged(p, rights, 0, 1);
+        }
+
+        // A capability whose endpoint died since its install, as a second thread of the creator can
+        // leave its grant naming between the create's admission and its publish.
+        TEST_F(ConsolePublish, a_capability_whose_endpoint_is_gone_is_refused)
+        {
+            uint8_t const rights = CAP_SIGNAL | CAP_TRANSFER | CAP_HANDOUT;
+            Published const p = hold(rights);
+            p.ep->vacated = 1;
+            kernel().endpoints.free(p.handle);
+
+            EXPECT_EQ(publish(p), -KOS_EBADF);
             expect_unchanged(p, rights, 0, 1);
         }
 

@@ -27,6 +27,7 @@ if(KICKOS_ARCH STREQUAL "x86_64")
   # Without it the compiler stores the bytes inline and references no memset.
   target_compile_options(string_provider_libc_first PRIVATE -fno-builtin)
   target_link_libraries(string_provider_libc_first PRIVATE c KickOS::kernel KickOS::system_default)
+  kickos_image_link(string_provider_libc_first)
   set(_libc_first_maps "${PROJECT_BINARY_DIR}/kickos-libc-first-maps.txt")
   file(GENERATE OUTPUT "${_libc_first_maps}"
        CONTENT "$<TARGET_FILE:string_provider_libc_first>.map\n")

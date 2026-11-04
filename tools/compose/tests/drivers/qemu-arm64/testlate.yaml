@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# The board's default composition with packaged driver `testlate` serving a service.
+
+version: 1
+board: qemu-arm64
+stdout: kernel
+ends: main
+heap: 65536
+
+tasks:
+  - name: main
+    program: main
+    stack: 20480
+    priority: 2
+    ceiling: 2
+    authority: [memory, system, tasks]
+
+  - name: testlate
+    driver: testlate
+    serves: /svc/testlate
+    priority: 12

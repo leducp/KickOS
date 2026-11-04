@@ -5,7 +5,8 @@
 # Controls for tests/static/app_stack.py on a planted corpus: two images, a compile database,
 # hand-written .ci files and link maps. Each arm states what must hold:
 #   - a thread whose need equals its stack passes, and one byte less fails;
-#   - the image's thread-local carve comes off the stack;
+#   - the image's thread-local carve comes off the stack, read from the image's own map where
+#     the final map loads its object and from no other;
 #   - a reachable node with no frame and no unsized record fails, as does an indirect call no
 #     site record binds; a bound site is charged its callee, and the trap roots' unsized
 #     records size a node too, never one the declarations also size;
@@ -15,13 +16,19 @@
 #     compile command's -f flag predefines answers the wider one;
 #   - an image not linked is named and not bounded, a map named for an executable suffix is the
 #     image's, and an arch with no thread whose tree links an image another arch bounds fails;
+#   - a map is the image's only beside the file the build graph builds for the image's target: an
+#     earlier build's map is not read, and a target built with no map beside it fails;
+#   - an image linked on its own first is the inputs its own map loads, beside the final map, which
+#     names it by its object: read so it bounds as before, and refused when that map is missing or
+#     loads nothing;
 #   - a token after a record's fixed fields that is no key its kind takes, or a key stated twice,
 #     fails the parse naming the record, while the reason may say anything;
 #   - the real app_stack_roots.txt parses, every image it names is one an app CMakeLists.txt
 #     names, and every arch it declares threads for has a trap-stack header;
 #   - each arch's real need record, read through its own header, passes a planted thread at
 #     exactly its need and fails one a byte deeper;
-#   - a need's via= frame is charged below the root, and one no loaded unit sizes fails.
+#   - a need's via= frame is charged below the root, and one no loaded unit sizes fails;
+#   - a thread's above= frames are charged below the root the same way.
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
@@ -36,12 +43,18 @@ python3 -B - "$TOOL" "$1" "$TMP" <<'PYEOF'
 import glob
 import json
 import os
+import shutil
 import subprocess
 import sys
 
 tool, cxx, tmp = sys.argv[1], sys.argv[2], sys.argv[3]
 src = os.path.join(tmp, 'src')
 build = os.path.join(tmp, 'build')
+ninja = shutil.which('ninja')
+if ninja is None:
+    sys.stderr.write('FAIL: no ninja on PATH, and app_stack.py asks the build graph which file'
+                     ' an image is\n')
+    sys.exit(1)
 
 
 def die(msg):
@@ -69,7 +82,10 @@ def edge(a, b, loc):
 
 
 def plant(stack='(PLANT_BASE + 278)', carve=0, sys_sized=True, indirect=False, both=False,
-          fflag='', map1=True, bound=False, roots_sys=None, need=None, map_suffix='', via=None):
+          fflag='', map1=True, bound=False, roots_sys=None, need=None, map_suffix='', via=None, above=None,
+          split=None, linked=None, stale=False, carve_at='final'):
+    if linked is None:
+        linked = map1
     for d in (src, build):
         subprocess.run(['rm', '-rf', d])
     write(os.path.join(src, 'hdr.h'),
@@ -101,11 +117,37 @@ def plant(stack='(PLANT_BASE + 278)', carve=0, sys_sized=True, indirect=False, b
     write(os.path.join(build, 'c.cc.ci'),
           'graph: { title: "%s/c.cc"\n' % src + node('libfn', 'void libfn()', 900))
     carve_line = '                0x%08x                __kickos_tls_carve = 0x0\n' % carve
+    final_carve = carve_line
+    if carve_at == 'image':
+        final_carve = ''
     loads = 'LOAD a.cc.o\nLOAD b.cc.o\n'
     if both:
         loads += 'LOAD c.cc.o\n'
-    if map1:
-        write(os.path.join(build, 'app1', 'app1%s.map' % map_suffix), loads + carve_line)
+    if map1 and split is None:
+        write(os.path.join(build, 'app1', 'app1%s.map' % map_suffix), loads + final_carve)
+        if carve_at == 'image':
+            write(os.path.join(build, 'app1', 'app1%s.kimg' % map_suffix, 'image0.map'),
+                  loads + carve_line)
+    elif map1:
+        write(os.path.join(build, 'app1', 'app1%s.map' % map_suffix),
+              'LOAD app1/app1%s.kimg/kickos_image0.o\nLOAD libkernel.a\n' % map_suffix
+              + final_carve)
+        if split != 'missing':
+            image_loads = loads
+            if split == 'empty':
+                image_loads = ''
+            write(os.path.join(build, 'app1', 'app1%s.kimg' % map_suffix, 'image0.map'),
+                  image_loads + carve_line)
+    if stale:
+        write(os.path.join(build, 'app1', 'app1.image0.map'), 'LOAD c.cc.o\n' + carve_line)
+        if not map1:
+            write(os.path.join(build, 'app1', 'app1.map'), loads + carve_line)
+    write(os.path.join(build, 'CMakeCache.txt'), 'CMAKE_MAKE_PROGRAM:FILEPATH=%s\n' % ninja)
+    graph = 'rule link\n  command = true\nbuild app2/app2: link\nbuild app2: phony app2/app2\n'
+    if linked:
+        graph += ('build app1/app1%s: link\nbuild app1: phony app1/app1%s\n'
+                  % (map_suffix, map_suffix))
+    write(os.path.join(build, 'build.ninja'), graph)
     write(os.path.join(build, 'app2', 'app2.map'), 'LOAD a.cc.o\nLOAD c.cc.o\n' + carve_line)
     if need is None:
         need = ('hdr.h', 'PLANT_FRAME', 'PLANT_ZONE')
@@ -113,7 +155,10 @@ def plant(stack='(PLANT_BASE + 278)', carve=0, sys_sized=True, indirect=False, b
     if via is not None:
         decl += ' via=%s' % via
     decl += ' reason: planted\n'
-    decl += 'thread plant app1 t root=a.cc:entry stack=PLANT_STACK reason: planted\n'
+    thread_above = ''
+    if above is not None:
+        thread_above = ' above=%s' % above
+    decl += 'thread plant app1 t root=a.cc:entry stack=PLANT_STACK%s reason: planted\n' % thread_above
     decl += 'need other header=hdr.h frame=PLANT_FRAME zone=PLANT_ZONE reason: planted\n'
     decl += 'thread other app3 t root=a.cc:entry stack=PLANT_STACK reason: planted\n'
     if sys_sized:
@@ -178,9 +223,29 @@ expect('an arch with no thread whose tree links no bounded image passes', 0,
        ['no app thread for bare'], arch='bare', map1=False)
 expect('a map named for an executable suffix is the image\'s', 0, ['app_stack: OK'],
        map_suffix='.efi')
+expect('an earlier build\'s map beside the image\'s is not read', 0,
+       ['= 878 bytes', 'app_stack: OK'], stale=True)
+expect('a map no target of the build graph builds is not read', 0,
+       ['app1/t: not bounded on p1'], map1=False, stale=True)
+expect('a target the build graph builds with no map beside it fails', 2,
+       ['NO LINK MAP', 'no map of it is beside it'], map1=False, linked=True)
+expect('a carve the image\'s own link assigns is read from its map', 0,
+       ['tls carve 16', 'headroom 0'], stack='894', carve=16, split='loaded', carve_at='image')
+expect('a program map the final map does not load assigns no carve', 2,
+       ['assigns no __kickos_tls_carve'], carve=16, carve_at='image')
+expect('an image linked on its own first is the inputs its own map loads', 0,
+       ['= 878 bytes', 'headroom 0', 'app_stack: OK'], split='loaded')
+expect('an image object with no map of its own beside it fails', 2,
+       ['loads image 0 and no map of it is beside it'], split='missing')
+expect('an image map loading nothing fails', 2, ['app1.kimg/image0.map carries no LOAD line'],
+       split='empty')
 expect('the frame every entry is called from is charged below it', 1,
        ['via start 24', '= 902 bytes', 'STACK BELOW ITS THREAD'], via='start')
 expect('a via no loaded unit sizes fails', 2, ['via nosuch is no sized node'], via='nosuch')
+expect('the frames above the root are charged below it', 1,
+       ['above start 24', '= 902 bytes', 'STACK BELOW ITS THREAD'], above='start')
+expect('a frame above the root no loaded unit sizes fails', 2, ['above nosuch is no sized node'],
+       above='nosuch')
 
 # The real declarations parse, for every arch they name, on a host that builds none of them.
 sys.path.insert(0, os.path.dirname(os.path.abspath(tool)))

@@ -11,7 +11,7 @@ kickos_add_unit_test(NAME stdout_write
            "${PROJECT_SOURCE_DIR}/lib/include" "${PROJECT_BINARY_DIR}/generated/include"
   KERNEL)
 
-# user/src/newlib_fcntl.cc against a scripted kos_task_nonblock, renamed off the host libc's own.
+# user/src/newlib_fcntl.cc renamed off the host libc's own fcntl.
 kickos_add_unit_test(NAME fcntl_flags
   SOURCES fcntl_flags.cc "${PROJECT_SOURCE_DIR}/user/src/newlib_fcntl.cc"
   INCLUDES "${PROJECT_SOURCE_DIR}/user/include" "${PROJECT_SOURCE_DIR}/system/include"

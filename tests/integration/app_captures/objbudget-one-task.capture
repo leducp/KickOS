@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+
+  ==============================================
+   KickOS 0.5.1  -  microkernel RTOS
+  ==============================================
+   board   f302nucleo
+   arch    armv7m
+   cpu     cortex-m4
+   mpu     off
+   sched   tickless
+
+[objbudget]   endpoint_create at the ceiling rc=-11
+[objbudget] ok - a task at its endpoint ceiling is refused with the budget's own code, not ENOMEM
+[objbudget] ok - and the ceiling admitted at least one endpoint first
+[objbudget]   endpoint_create after closing one rc=0
+[objbudget] ok - releasing an endpoint gives its budget back to the task that created it
+[objbudget] skip - a task at its ceiling does not deny another task's endpoint_create: this board holds one task
+[objbudget] skip - a peer's statics start from its image at every create: this board holds one task
+[objbudget]   notify_create at the endpoint ceiling rc=0
+[objbudget] ok - the endpoint ceiling does not refuse a notification: the count is per pool
+[objbudget] PASS (4 arms)

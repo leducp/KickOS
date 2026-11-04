@@ -9,6 +9,8 @@
 // On target the interleaving comes from RR slice expiry; here arch_switch returns, so a gap
 // action stands in for that second thread.
 
+#include "../common/seam_pools.h"
+
 #include <kickos/cap.h>
 #include <kickos/endpoint.h>
 #include <kickos/instance.h>
@@ -467,7 +469,7 @@ namespace kickos
         TEST_F(CapSweep, a_fresh_endpoint_receives_through_its_creator)
         {
             Endpoint* ep = nullptr;
-            ASSERT_GE(endpoint_claim_created(&ep), 0);
+            ASSERT_GE(endpoint_claim_created(nullptr, &ep), 0);
 
             EXPECT_EQ(ep->recv_holders, 1u) << "the creator is a receiver";
             EXPECT_EQ(ep->handout_holders, 1u) << "and a handout holder";
@@ -543,9 +545,9 @@ namespace kickos
 
             Endpoint* again = nullptr;
             int claimed = -1;
-            for (int i = 0; i < KICKOS_MAX_ENDPOINTS and claimed != index; i++)
+            for (int i = 0; i < KICKOS_SEAM_ENDPOINTS and claimed != index; i++)
             {
-                claimed = endpoint_claim_created(&again);
+                claimed = endpoint_claim_created(nullptr, &again);
             }
             ASSERT_EQ(claimed, index) << "fixture: the freed slot came back";
             EXPECT_EQ(again->vacated, 0u) << "a reused slot starts as a fresh endpoint";

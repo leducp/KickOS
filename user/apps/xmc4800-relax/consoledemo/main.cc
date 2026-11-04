@@ -2,10 +2,9 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // Console bring-up demo: its composition names the packaged xmcuartirq as stdout, so the init
-// hands USIC0 channel 0 to that unprivileged driver before main runs, and main and a worker print
-// through it. The wire shows the kernel boot banner and the pre-publish constructor line from the
-// kernel-owned UART, then "[xmcuartirq] device up" and the numbered lines through the userspace
-// driver.
+// hands USIC0 channel 0 to that unprivileged driver, and main and a worker print through it. The
+// wire shows the kernel boot banner, "[xmcuartirq] device up" and a constructor's line in either
+// order, then the numbered lines through the userspace driver.
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
@@ -18,10 +17,9 @@
 
 namespace
 {
-    // A ctor runs before the init bring-up publishes, so cap 0 is still empty and this
-    // printf takes the kernel console path. The worker's later printfs still reach xmcuartirq
-    // because _write reclassifies per thread; a process-wide probe cached here would
-    // poison them.
+    // Runs in main's entry thread before main, with the driver's bring-up before or after it.
+    // _write classifies stdout per thread: a process-wide probe cached here would poison the
+    // worker's printfs.
     __attribute__((constructor)) void prepublish_ctor()
     {
         printf("[init] pre-publish ctor line\n");
@@ -45,8 +43,7 @@ namespace
 
 int main(int, char**)
 {
-    // The init published and spawned the driver before main, so main's own stdout is already the
-    // endpoint and this line reaches the wire through the userspace driver.
+    // main's stdout is the driver's endpoint, served once the driver is up.
     printf("[main] post-publish line via the userspace driver\n");
     fflush(stdout);
     auto const w = kos::thread::create(worker, nullptr, "worker", WORKER_PRIO);

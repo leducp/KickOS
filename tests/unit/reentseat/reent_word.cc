@@ -1,10 +1,14 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 
+#include "../common/seam_pools.h"
+
 #include <kickos/instance.h>
 #include <kickos/irqlock.h>
 #include <kickos/reent.h>
+#include <kickos/sys/image.h>
 #include <kickos/sched.h>
+#include <kickos/task.h>
 #include <kickos/thread.h>
 
 #include "kseam_test.h"
@@ -20,24 +24,34 @@ using namespace kickos::testfix;
 
 namespace
 {
-    constexpr size_t STATE_BYTES = 64;
-    unsigned char g_slots[KICKOS_MAX_INSTANCES * KICKOS_THREAD_SLOTS][STATE_BYTES];
+    // Exactly what the carve leaves below its cell, the widest state the descriptor read admits.
+    constexpr size_t STATE_BYTES = KICKOS_REENT_CARVE - 2 * sizeof(void*);
+    unsigned char g_states[KICKOS_SEAM_THREAD_SLOTS][KICKOS_REENT_CARVE];
     unsigned char g_shared[STATE_BYTES];
     void* g_seat = nullptr;
-    uintptr_t g_self = 0;
+    // The task every thread here belongs to, which caches its image's seat.
+    Task g_task;
 }
 
-extern "C"
+namespace
 {
-    KickosReentSeam const kickos_reent_seam = {
-        g_slots,
-        g_shared,
-        &g_seat,
-        &g_self,
-        STATE_BYTES,
-        STATE_BYTES,
-        KICKOS_MAX_INSTANCES * KICKOS_THREAD_SLOTS,
-    };
+    kos_image_header header_with_seam()
+    {
+        kos_image_header h{};
+        h.reent_template = reinterpret_cast<uintptr_t>(g_shared);
+        h.reent_seat = reinterpret_cast<uintptr_t>(&g_seat);
+        h.reent_width = STATE_BYTES;
+        return h;
+    }
+}
+
+namespace kickos
+{
+    kos_image_header const& image_record(size_t)
+    {
+        static kos_image_header const h = header_with_seam();
+        return h;
+    }
 }
 
 namespace
@@ -51,16 +65,18 @@ namespace
         void SetUp() override
         {
             // Before the reset's sched::start, which seats idle through the seam.
-            reent_seam_read();
+            reent_seam_read(0, header_with_seam());
             KSeam::SetUp();
             g_seat = nullptr;
-            g_self = 0;
+            g_task = Task{};
+            g_task.reent_seat = &g_seat;
         }
 
         static Thread* fresh(int slot, uint8_t prio)
         {
             Thread* const t = seat_pool(slot, prio);
-            t->reent = g_slots[slot];
+            t->task = &g_task;
+            t->reent = g_states[slot];
             t->reent_fresh = true;
             t->lock_id = kernel().threads.lock_id_for(slot);
             return t;
@@ -73,25 +89,21 @@ namespace
         }
     };
 
-    TEST_F(ReentWord, every_switch_in_seats_the_incoming_threads_state_and_id)
+    TEST_F(ReentWord, every_switch_in_seats_the_incoming_threads_state)
     {
         Thread* const a = fresh(0, PRIO_LOW);
         switch_now();
         ASSERT_EQ(sched::current(), a);
         EXPECT_EQ(g_seat, a->reent);
-        EXPECT_EQ(g_self, a->lock_id);
 
         Thread* const b = fresh(1, PRIO_HIGH);
         switch_now();
         ASSERT_EQ(sched::current(), b);
-        ASSERT_NE(b->lock_id, a->lock_id);
         EXPECT_EQ(g_seat, b->reent);
-        EXPECT_EQ(g_self, b->lock_id);
 
         run_exit(0);
         ASSERT_EQ(sched::current(), a);
         EXPECT_FALSE(a->reent_fresh);
-        EXPECT_EQ(g_seat, a->reent);
-        EXPECT_EQ(g_self, a->lock_id) << "a switch back left the outgoing thread's id seated";
+        EXPECT_EQ(g_seat, a->reent) << "a switch back left the outgoing thread's state seated";
     }
 }

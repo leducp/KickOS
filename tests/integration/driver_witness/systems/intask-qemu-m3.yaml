@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# testlate running as threads of the one task that uses it, as on a chip that holds one task,
+# below the task's priority.
+
+version: 1
+board: qemu-m3
+stdout: kernel
+ends: intask
+heap: 8192
+accepts: [no_protection] # a flat build
+
+tasks:
+  - name: intask
+    program: main
+    stack: 4096
+    priority: 8
+    ceiling: 10
+    uses: [/svc/late]
+    drivers:
+      - { driver: testlate, serves: /svc/late, priority: 7 }

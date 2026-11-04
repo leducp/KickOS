@@ -20,7 +20,6 @@ set(KICKOS_ARCH_SOURCES
   common/startup_ranges.cc
   ${KICKOS_SEAM_DEFAULTS_COMMON}
   ${KICKOS_SEAM_DEFAULTS_ARM}
-  arm/read_tp.S
   arm/armv6m/switch.S)
 
 # Resolves the <arm_isa.h> arm/common/arch_arm_common.cc includes. PRIVATE and a directory

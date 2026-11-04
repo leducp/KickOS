@@ -14,6 +14,7 @@
 #include <condition_variable>
 #include <csignal>
 #include <deque>
+#include <iterator>
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -21,6 +22,7 @@
 #include <unistd.h>
 
 #include <kickos/arch/arch.h>
+#include <kickos/chip_limits.h> // KICKOS_CHIP_ONE_TASK
 #include <kickos/sys.h>
 #include <kickos/sys/user_cas.h>
 
@@ -57,6 +59,8 @@ namespace
     // A thread whose cancelled wait asks again this often is taken as ended at its entry.
     constexpr int CANCEL_ENTRIES_BOUND = 1000;
     constexpr int ENDED_AT_ENTRY = 42;
+    // OTHER_ID's holder unlocks as soon as a thread waits, handing the word to that waiter.
+    std::atomic<bool> g_other_hands_over{false};
     // The unlocking thread is preempted on its way out, so a waiter runs before it returns.
     std::atomic<bool> g_preempt_after_unlock{false};
     uint32_t g_next_thread = 1;
@@ -156,6 +160,7 @@ namespace
             g_unlock_answer = 0;
             g_other_words = 0;
             g_cancels_before_grant = 0;
+            g_other_hands_over = false;
             g_lock_calls = 0;
             g_cas_calls = 0;
             *libc_word() = 0;
@@ -174,6 +179,15 @@ namespace
     Named const& malloc_lock()
     {
         return g_static[3];
+    }
+
+    uint32_t* waiters_word(Named const& n)
+    {
+        if (n.lock == malloc_lock().lock)
+        {
+            return malloc_word();
+        }
+        return libc_word();
     }
 
     // The kernel's contended lock: a dead holder's word is stolen with -KOS_EOWNERDEAD, a held
@@ -227,6 +241,12 @@ namespace
             if (owner == me)
             {
                 return -KOS_EDEADLK;
+            }
+            if (owner == OTHER_ID and g_other_hands_over.load()
+                and __real_kickos_user_cas(word, v, me) == v)
+            {
+                bump(g_locks);
+                return 0;
             }
             if (timeout_us == 0)
             {
@@ -467,26 +487,16 @@ TEST_F(LibcLock, a_releaser_preempted_after_its_unlock_leaves_the_next_owner_who
     EXPECT_TRUE(nested.load());
 }
 
-TEST_F(LibcLock, a_dead_owner_of_the_libc_lock_hands_it_over_held)
-{
-    *libc_word() = DEAD_ID;
-    int const locks = g_locks;
-    acquire(g_static[0]);
-    acquire(g_static[1]);
-    EXPECT_EQ(holder_of(libc_word()), self());
-    EXPECT_EQ(tally_of(g_locks), locks + 1);
-    release(g_static[1]);
-    release(g_static[0]);
-}
-
 // The re-ask enters the kernel with no compare-and-swap of its own, so a killed waiter ends at
 // that entry and never takes a lock freed meanwhile with no entry at all.
 TEST_F(LibcLock, a_cancelled_wait_asks_again_at_the_entry_and_takes_the_lock_once)
 {
-    *libc_word() = DEAD_ID;
+    *libc_word() = OTHER_ID;
     g_cancels_before_grant = 1;
+    g_other_hands_over = true;
     int const locks = g_locks;
     acquire(g_static[0]);
+    g_other_hands_over = false;
     EXPECT_EQ(tally_of(g_lock_calls), 2) << "the cancelled wait did not ask exactly once more";
     EXPECT_EQ(tally_of(g_cas_calls), 1) << "the re-ask went through the compare-and-swap";
     EXPECT_EQ(tally_of(g_locks), locks + 1);
@@ -567,11 +577,28 @@ TEST_F(LibcLockDeathTest, a_kernel_refusal_traps)
     *malloc_word() = 0;
 }
 
-TEST_F(LibcLockDeathTest, a_dead_owner_of_the_malloc_lock_traps)
+// Every lock newlib names, a FILE's and a try's included: what a dead holder guarded is torn. A
+// chip that holds one task ends the image through _exit, which the host's _exit stands for.
+TEST_F(LibcLockDeathTest, a_dead_owner_of_any_libc_lock_ends_its_taker)
 {
-    *malloc_word() = DEAD_ID;
-    EXPECT_EXIT(acquire(malloc_lock()), ::testing::KilledBySignal(SIGILL), "");
-    *malloc_word() = 0;
+#if KICKOS_CHIP_ONE_TASK
+    auto const ended = ::testing::ExitedWithCode(KOS_EXIT_FAULT & 0xFF);
+#else
+    auto const ended = ::testing::KilledBySignal(SIGILL);
+#endif
+    _LOCK_T file_lock = nullptr;
+    __retarget_lock_init_recursive(&file_lock);
+    std::vector<Named> all(std::begin(g_static), std::end(g_static));
+    all.push_back({file_lock, true});
+    for (Named const& n : all)
+    {
+        uint32_t* const word = waiters_word(n);
+        *word = DEAD_ID;
+        EXPECT_EXIT(acquire(n), ended, "");
+        EXPECT_EXIT((void)__retarget_lock_try_acquire_recursive(n.lock), ended, "");
+        *word = 0;
+    }
+    __retarget_lock_close_recursive(file_lock);
 }
 
 TEST_F(LibcLockDeathTest, the_libc_lock_taken_inside_mallocs_traps)

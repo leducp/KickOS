@@ -16,7 +16,7 @@ tasks:
     priority: 12
 
   - name: client
-    entry: k64dspi_main
+    program: main
     priority: 9
     ceiling: 9
-    uses: [/svc/spi0]
+    uses: [{ path: /svc/spi0, slots: [0] }]

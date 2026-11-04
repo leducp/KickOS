@@ -5,6 +5,8 @@
 // still have capacity. These tests call task_for/task_create directly;
 // they do not exercise the syscall return path.
 
+#include "../common/seam_pools.h"
+
 #include <kickos/domain.h>
 #include <kickos/instance.h>
 #include <kickos/irqlock.h>
@@ -42,10 +44,10 @@ namespace kickos
             {
                 Kernel& k = kernel();
                 int n = 0;
-                for (int i = 0; i < KICKOS_MAX_TASKS; i++)
+                for (int i = 0; i < KICKOS_SEAM_TASKS; i++)
                 {
-                    if (k.tasks[i].refcount == 0
-                        and k.tasks[i].creator_tag == ThreadPool::KILL_TAG_NONE)
+                    if (k.tasks()[i].refcount == 0
+                        and k.tasks()[i].creator_tag == ThreadPool::KILL_TAG_NONE)
                     {
                         n++;
                     }
@@ -56,7 +58,7 @@ namespace kickos
             // Reserve every slot with a creator hold and no live threads.
             void fill_task_pool()
             {
-                for (int i = 0; i < KICKOS_MAX_TASKS; i++)
+                for (int i = 0; i < KICKOS_SEAM_TASKS; i++)
                 {
                     task(i);
                 }
@@ -65,7 +67,7 @@ namespace kickos
             Task* spawn_task(int* err)
             {
                 *err = 0;
-                return task_for(0, nullptr, 0, nullptr, err);
+                return task_for(0, err);
             }
         }
 
@@ -89,7 +91,7 @@ namespace kickos
             ASSERT_EQ(spawn_task(&err), nullptr);
 
             EXPECT_EQ(kernel().threads.next, seated_before);
-            int const slot = kernel().threads.alloc();
+            int const slot = kernel().threads.alloc(nullptr);
             EXPECT_GE(slot, 0);
         }
 
@@ -98,28 +100,12 @@ namespace kickos
         {
             fill_task_pool();
             int const held = live_domains();
-            ASSERT_EQ(held, KICKOS_MAX_TASKS);
+            ASSERT_EQ(held, KICKOS_SEAM_TASKS);
 
             int err = 0;
             ASSERT_EQ(spawn_task(&err), nullptr);
 
             EXPECT_EQ(live_domains(), held);
-        }
-
-        TEST_F(TaskPool, a_full_pool_refuses_an_explicit_task_and_gives_its_domain_back)
-        {
-            fill_task_pool();
-            int const held = live_domains();
-            int const holds = kernel().task_holds;
-
-            int err = 0;
-            Task* const tk = task_create(FIXTURE_TASK_TAG, nullptr, 0,
-                                         /*mem_attr=*/0u, /*donor=*/nullptr, &err);
-
-            EXPECT_EQ(tk, nullptr);
-            EXPECT_EQ(err, KOS_ENOMEM);
-            EXPECT_EQ(live_domains(), held);
-            EXPECT_EQ(kernel().task_holds, holds);
         }
 
         // A released slot must be reusable. task_for leaves it unreferenced until task_ref.
@@ -129,7 +115,7 @@ namespace kickos
             int err = 0;
             ASSERT_EQ(spawn_task(&err), nullptr);
 
-            task_drop_hold(&kernel().tasks[KICKOS_MAX_TASKS - 1], kickos::IrqLock());
+            task_drop_hold(&kernel().tasks()[KICKOS_SEAM_TASKS - 1], kickos::IrqLock());
             ASSERT_EQ(free_task_slots(), 1);
 
             Task* const tk = spawn_task(&err);

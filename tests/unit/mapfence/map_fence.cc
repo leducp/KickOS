@@ -5,6 +5,8 @@
 // Build mappings through the backend. System operations are recorded;
 // these tests do not model a hardware TLB.
 
+#include "../common/seam_pools.h"
+
 #include <kickos/arch/arch.h>
 #include <kickos/arch/rv64_paging.h>
 
@@ -605,70 +607,6 @@ TEST_F(MapFence, LeavingTheBootRootFencesEveryAddressSpace)
 
     EXPECT_EQ(ops_with(OP_SFENCE_ALL), 1u);
     EXPECT_NE(last_identifier(), 0u);
-}
-
-TEST_F(MapFence, ASpaceBeyondTheRecordsRowsRunsUntaggedAndKeepsItsFence)
-{
-    // Fill all rows to test the untracked-root fallback. SetUp already uses two.
-    constexpr size_t ROWS_LEFT = KICKOS_MAX_DOMAINS - 2;
-    // Each root uses one of the 64 frame slots.
-    static_assert(KICKOS_MAX_DOMAINS + 4 < 60, "the seam's frame pool cannot fill this record");
-    struct arch_aspace* filler[ROWS_LEFT] = {};
-    for (size_t i = 0; i < ROWS_LEFT; i++)
-    {
-        filler[i] = arch_aspace_create();
-        ASSERT_NE(filler[i], nullptr);
-        arch_aspace_activate(filler[i]);
-        ASSERT_NE(last_identifier(), NO_WRITE);
-        EXPECT_NE(last_identifier(), 0u) << "row " << i << " of the record went unassigned";
-    }
-
-    struct arch_aspace* const rowless = arch_aspace_create();
-    ASSERT_NE(rowless, nullptr);
-    arch_aspace_activate(rowless);
-    EXPECT_EQ(last_identifier(), 0u);
-
-    ops_clear();
-    arch_aspace_activate(space);
-    EXPECT_EQ(ops_with(OP_SFENCE_ALL), 1u);
-
-    arch_aspace_destroy(rowless);
-    for (size_t i = 0; i < ROWS_LEFT; i++)
-    {
-        arch_aspace_destroy(filler[i]);
-    }
-}
-
-TEST_F(MapFence, ASpaceTheRecordCannotFollowIsPublishedOnEveryEntry)
-{
-    // Untracked roots must publish on every activation.
-    constexpr size_t ROWS_LEFT = KICKOS_MAX_DOMAINS - 2;
-    static_assert(KICKOS_MAX_DOMAINS + 4 < 60, "the seam's frame pool cannot fill this record");
-    struct arch_aspace* filler[ROWS_LEFT] = {};
-    for (size_t i = 0; i < ROWS_LEFT; i++)
-    {
-        filler[i] = arch_aspace_create();
-        ASSERT_NE(filler[i], nullptr);
-        arch_aspace_activate(filler[i]);
-    }
-    struct arch_aspace* const rowless = arch_aspace_create();
-    ASSERT_NE(rowless, nullptr);
-    arch_aspace_activate(rowless);
-    ASSERT_EQ(last_identifier(), 0u);
-
-    // Re-enter from a tagged root to exclude the ASID-0 exit fence.
-    arch_aspace_activate(space);
-    ops_clear();
-    arch_aspace_activate(rowless);
-
-    EXPECT_EQ(ops_with(OP_SFENCE_ALL), 1u);
-    EXPECT_EQ(last_identifier(), 0u);
-
-    arch_aspace_destroy(rowless);
-    for (size_t i = 0; i < ROWS_LEFT; i++)
-    {
-        arch_aspace_destroy(filler[i]);
-    }
 }
 
 TEST_F(MapFence, DestroyingTheBootRootIsRefusedBeforeItReachesThePool)

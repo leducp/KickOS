@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# The packaged xmcssc serving the SSC bus, and two clients of it on a device slot each.
+
+version: 1
+stdout: kernel
+ends: intruder
+
+tasks:
+  - name: xmcssc
+    driver: xmcssc
+    devices: [/dev/usic0/ch1]
+    accepts: [coarse_gate] # USIC0 is one gate, and the kernel's console is its channel 0
+    lines: { irq: /dev/usic0/sr1 }
+    core: 0
+    serves: /svc/spi0
+    priority: 12
+
+  - name: holder
+    program: main
+    priority: 10
+    ceiling: 10
+    uses: [{ path: /svc/spi0, slots: [0] }]
+
+  - name: intruder
+    program: xmcssc_slots_intruder
+    priority: 9
+    ceiling: 9
+    uses: [{ path: /svc/spi0, slots: [1] }]

@@ -93,6 +93,8 @@ tests/integration/check_k64drv.sh|k64drv.capture||panic|after|[k64drv] done|KERN
 tests/integration/check_k64console.sh|k64console.capture||ctor-line|drop|pre-publish ctor line|
 tests/integration/check_k64console.sh|k64console.capture||driver-up|drop|[k64uartirq] device up|
 tests/integration/check_k64console.sh|k64console.capture||main-line|drop|post-publish line|
+tests/integration/check_k64console.sh|k64console.capture||main-line|order|[k64uartirq] device up|post-publish line
+tests/integration/check_k64console.sh|k64console.capture||main-line|order|pre-publish ctor line|post-publish line
 tests/integration/check_k64console.sh|k64console.capture||worker-line|drop|[worker] line 3|
 tests/integration/check_k64console.sh|k64console.capture||worker-line|order|[worker] line 1|[worker] line 2
 tests/integration/check_k64console.sh|k64console.capture||worker-done|drop|[worker] done|
@@ -266,6 +268,7 @@ tests/integration/check_consoledemo.sh|consoledemo.capture||ctor-line|drop|pre-p
 tests/integration/check_consoledemo.sh|consoledemo.capture||driver-up|drop|[xmcuartirq] device up|
 tests/integration/check_consoledemo.sh|consoledemo.capture||main-line|drop|post-publish line|
 tests/integration/check_consoledemo.sh|consoledemo.capture||main-line|order|[xmcuartirq] device up|post-publish line
+tests/integration/check_consoledemo.sh|consoledemo.capture||main-line|order|pre-publish ctor line|post-publish line
 tests/integration/check_consoledemo.sh|consoledemo.capture||worker-line|drop|[worker] line 3|
 tests/integration/check_consoledemo.sh|consoledemo.capture||worker-done|drop|[worker] done|
 tests/integration/check_consoledemo.sh|consoledemo.capture||panic|after|[worker] done|KERNEL PANIC: planted
@@ -283,6 +286,24 @@ tests/integration/check_xmcssc.sh|xmcssc.capture||case|drop|multi-byte loopback:
 tests/integration/check_xmcssc.sh|xmcssc.capture||case|order|single-byte loopback: PASS|zero-tx loopback: PASS
 tests/integration/check_xmcssc.sh|xmcssc.capture||loopback|drop|loopback PASS (the SSC|
 tests/integration/check_xmcssc.sh|xmcssc.capture||panic|after|loopback PASS (the SSC|KERNEL PANIC: planted
+tests/integration/check_spi_slots.sh;xmcslots|xmcssc_slots.capture||case|drop|holder opens its slot 0|
+tests/integration/check_spi_slots.sh;xmcslots|xmcssc_slots.capture||case|drop|holder transfers on its slot 0|
+tests/integration/check_spi_slots.sh;xmcslots|xmcssc_slots.capture||case|drop|intruder opens its slot 1|
+tests/integration/check_spi_slots.sh;xmcslots|xmcssc_slots.capture||error|swap|intruder opens its slot 1: PASS|intruder opens its slot 1: FAIL
+tests/integration/check_spi_slots.sh;xmcslots|xmcssc_slots.capture||refused|swap|holder's slot 0: PASS (rc=-13)|holder's slot 0: PASS (rc=-22)
+tests/integration/check_spi_slots.sh;xmcslots|xmcssc_slots.capture||refused-xfer|drop|refused a transfer on slot 0|
+tests/integration/check_spi_slots.sh;xmcslots|xmcssc_slots.capture||refused-xfer|order|refused a transfer on slot 0|refused the holder's slot 0
+tests/integration/check_spi_slots.sh;xmcslots|xmcssc_slots.capture||verdict|drop|[xmcslots] PASS|
+tests/integration/check_spi_slots.sh;xmcslots|xmcssc_slots.capture||panic|after|[xmcslots] PASS|KERNEL PANIC: planted
+tests/integration/check_spi_slots.sh;k64slots|k64dspi_slots.capture||case|drop|holder opens its slot 0|
+tests/integration/check_spi_slots.sh;k64slots|k64dspi_slots.capture||case|drop|holder transfers on its slot 0|
+tests/integration/check_spi_slots.sh;k64slots|k64dspi_slots.capture||case|drop|intruder opens its slot 1|
+tests/integration/check_spi_slots.sh;k64slots|k64dspi_slots.capture||error|swap|intruder opens its slot 1: PASS|intruder opens its slot 1: FAIL
+tests/integration/check_spi_slots.sh;k64slots|k64dspi_slots.capture||refused|swap|holder's slot 0: PASS (rc=-13)|holder's slot 0: PASS (rc=-22)
+tests/integration/check_spi_slots.sh;k64slots|k64dspi_slots.capture||refused-xfer|drop|refused a transfer on slot 0|
+tests/integration/check_spi_slots.sh;k64slots|k64dspi_slots.capture||refused-xfer|order|refused a transfer on slot 0|refused the holder's slot 0
+tests/integration/check_spi_slots.sh;k64slots|k64dspi_slots.capture||verdict|drop|[k64slots] PASS|
+tests/integration/check_spi_slots.sh;k64slots|k64dspi_slots.capture||panic|after|[k64slots] PASS|KERNEL PANIC: planted
 tests/integration/check_inprstorm.sh|inprstorm.capture||root-up|drop|MARKER: root up|
 tests/integration/check_inprstorm.sh|inprstorm.capture||reroute|drop|rerouting INPR|
 tests/integration/check_inprstorm.sh|inprstorm.capture||reroute|order|rerouting INPR|MARKER: root up
@@ -334,11 +355,39 @@ tests/integration/check_stress.sh|stress.capture||error|after|stress: runnable|S
 tests/integration/check_stress.sh|stress.capture||verdict|drop|STRESS PASS|
 tests/integration/check_stress.sh|stress.capture||panic|after|STRESS PASS|KERNEL PANIC: planted
 tests/integration/check_qemu_tlsprobe.sh|tlsprobe.capture||error|after|[tlsprobe] w1 |[tlsprobe] FAIL w1 read its peer's value
+tests/integration/check_restartwit.sh|restartwit.capture||pristine|after|[restartwit] pristine start|[restartwit] FAIL a start read data its image does not hold
+tests/integration/check_restartwit.sh|restartwit.capture||starts|drop|[restartwit] pristine start|
+tests/integration/check_restartwit.sh|restartwit.capture||ended|drop|[restartwit] the witness ended twice|
+tests/integration/check_restartwit.sh|restartwit.capture||panic|after|[restartwit] the witness ended twice|KERNEL PANIC: planted
 tests/integration/check_qemu_tlsprobe.sh|tlsprobe.capture||verdict|drop|[tlsprobe] PASS|
 tests/integration/check_qemu_tlsprobe.sh|tlsprobe.capture||panic|after|[tlsprobe] PASS|KERNEL PANIC: planted
+tests/integration/check_qemu_tlsprobe.sh|tlsprobe.capture||peer|drop|[tlsprobe] peer PASS|
+tests/integration/check_qemu_tlsprobe.sh|tlsprobe.capture||peer|swap|peer PASS|peer FAIL: template missing in the peer's entry thread
+tests/integration/check_qemu_tlsprobe.sh;--alone|tlsprobe.capture||verdict|drop|[tlsprobe] PASS|
+tests/integration/check_qemu_tlsprobe.sh;--image=tlsprobe_wide|tlsprobe.capture||verdict|drop|[tlsprobe] PASS|
+tests/integration/check_qemu_tlsprobe.sh;--image=tlsprobe_wide|tlsprobe.capture||banner|after|   cpu     rxv3|   app     tlsprobe 0.5.1
 tests/integration/check_qemu_cxxtest.sh|cxxtest.capture||error|swap|PASS: typeid|FAIL: typeid
 tests/integration/check_qemu_cxxtest.sh|cxxtest.capture||verdict|drop|ALL PASS|
 tests/integration/check_qemu_cxxtest.sh|cxxtest.capture||panic|after|ALL PASS|KERNEL PANIC: planted
+tests/integration/check_mutexbench.sh|mutexbench.capture||load|drop|mutexbench: load:|
+tests/integration/check_mutexbench.sh|mutexbench.capture||done|drop|mutexbench: done|
+tests/integration/check_mutexbench.sh|mutexbench.capture||refused|after|  sem-handoff:|  sem-wake-crowd: FAIL (a thread main's budget seats was refused)
+tests/integration/check_mutexbench.sh|mutexbench.capture||panic|after|mutexbench: done|KERNEL PANIC: planted
+tests/integration/check_mutexbench.sh|mutexbench.capture||handoff|swap|load: 5 threads|load: 2 threads
+tests/integration/check_mutexbench.sh|mutexbench.capture||mutex-handoff|drop|  mutex-handoff-round:|
+tests/integration/check_mutexbench.sh|mutexbench.capture||sem-handoff|drop|  sem-handoff-round:|
+tests/integration/check_mutexbench.sh|mutexbench.capture||mutex-handoff-loaded|swap|1 pairs parked]|2 pairs parked]
+tests/integration/check_mutexbench.sh|mutexbench.capture||mutex-handoff-loaded|swap|1 load pairs|0 load pairs
+tests/integration/check_mutexbench.sh|mutexbench.capture||mutex-handoff-window|swap|SKIP (no address spaces)|SKIP (planted)
+tests/integration/check_mutexbench.sh|mutexbench.capture||mutex-handoff-window|swap|SKIP (no address spaces)|SKIP (no block or no peer program)
+tests/integration/check_mutexbench.sh;aspace|mutexbench-mmu.capture||mutex-handoff-window|swap|mutex-handoff-window-round: 100949 ns/round  (1000 rounds / 100 ms) [one core; 1 pairs parked; 95 of 96 ranges taken]|mutex-handoff-window: SKIP (no address spaces)
+tests/integration/check_mutexbench.sh;aspace|mutexbench-mmu.capture||mutex-handoff-window|swap|mutex-handoff-window-round: 100949 ns/round  (1000 rounds / 100 ms) [one core; 1 pairs parked; 95 of 96 ranges taken]|mutex-handoff-window: SKIP (no block or no peer program)
+tests/integration/check_mutexbench.sh;aspace|mutexbench-mmu.capture||mutex-handoff-window|swap|1 pairs parked; 95 of 96|2 pairs parked; 95 of 96
+tests/integration/check_mutexbench.sh;coarse-clock|mutexbench-coarse.capture||crowd|swap|sem-wake-crowd: SKIP (the clock steps 10000 us)|sem-wake-crowd: SKIP (no heap for the samples)
+tests/integration/check_mutexbench.sh|mutexbench.capture||crowd|swap|[2 waiters parked|[1 waiters parked
+tests/integration/check_mutexbench.sh|mutexbench.capture||crowd|swap|a crowd of 2|a crowd of 0
+tests/integration/check_mutexbench.sh|mutexbench.capture||crowd|swap|sem-wake-crowd: 1900/2300/4100 ns  (p50/p99/max, n=200) [2 waiters parked, one woken]|sem-wake-crowd: SKIP (the clock steps 1000 us)
+tests/integration/check_mutexbench.sh|mutexbench.capture||crowd|swap|sem-wake-crowd: 1900/2300/4100 ns  (p50/p99/max, n=200) [2 waiters parked, one woken]|sem-wake-crowd: SKIP (no heap for the samples)
 tests/integration/check_qemu_cxxterm.sh|cxxterm.capture||throw|drop|cxxterm: throwing|
 tests/integration/check_qemu_cxxterm.sh|cxxterm.capture||returned|after|cxxterm: throwing|cxxterm: returned
 tests/integration/check_qemu_cxxterm.sh|cxxterm.capture||terminate|swap|[St13runtime_error]|[St9exception]
@@ -357,12 +406,17 @@ tests/integration/check_libcrace.sh|libcrace.capture||malloc-dead|drop|dead mall
 tests/integration/check_libcrace.sh|libcrace.capture||malloc-dead|cache||KICKOS_LIBCRACE_DEAD_ARMS:INTERNAL=1
 tests/integration/check_libcrace.sh|libcrace.capture||malloc-wait|drop|a printf completed while malloc|
 tests/integration/check_libcrace.sh|libcrace.capture||malloc-wait|swap|a printf completed while malloc was held|a printf waited behind the malloc lock
+tests/integration/check_libcrace.sh|libcrace.capture||heap-end|drop|heap ran out at its end|
+tests/integration/check_libcrace.sh|libcrace.capture||heap-end|swap|ran out at its end|ran out 120 B short of its 4096 B
 tests/integration/check_libcrace.sh|libcrace.capture||torn|swap|w1 i1 iiii|w1 i1 iiij
 tests/integration/check_libcrace.sh|libcrace.capture||torn|swap|w2 i0 o|w2 i0libcrace w1 i0 o
 tests/integration/check_libcrace.sh|libcrace.capture||duplicated|after|libcrace w0 i1 |libcrace w0 i1 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 tests/integration/check_libcrace.sh|libcrace.capture||lost|drop|libcrace w3 i1 |
 tests/integration/check_libcrace.sh|libcrace.capture||lost|drop|libcrace w2 done|
 tests/integration/check_libcrace.sh|libcrace.capture||heap|swap|w3 done torn=0|w3 done torn=1
+tests/integration/check_libcrace.sh|libcrace.capture||raced|swap|w2 done torn=0 raced=1|w2 done torn=0 raced=0
+tests/integration/check_libcrace.sh|libcrace.capture||overlap|drop|libcrace w2 began|
+tests/integration/check_libcrace.sh|libcrace.capture||overlap|after|libcrace w0 done|libcrace w2 began
 tests/integration/check_libcrace.sh|libcrace.capture||done|drop|libcrace: all workers done|
 tests/integration/check_libcrace.sh|libcrace.capture||panic|after|libcrace w0 done|KERNEL PANIC: planted
 tests/integration/check_libcrace.sh|libcrace-dead.capture|KICKOS_LIBCRACE_DEAD_ARMS:INTERNAL=1|malloc-dead|drop|from a dead holder ended its task|
@@ -370,6 +424,31 @@ tests/integration/check_libcrace.sh|libcrace-dead.capture|KICKOS_LIBCRACE_DEAD_A
 tests/integration/check_libcrace.sh|libcrace-dead.capture|KICKOS_LIBCRACE_DEAD_ARMS:INTERNAL=1|malloc-unwatched|drop|died in unwatched ended the next taker|
 tests/integration/check_libcrace.sh|libcrace-dead.capture|KICKOS_LIBCRACE_DEAD_ARMS:INTERNAL=1|malloc-unwatched|swap|unwatched ended the next taker's task|unwatched let the next taker run
 tests/integration/check_libcrace.sh|libcrace-dead.capture|KICKOS_LIBCRACE_DEAD_ARMS:INTERNAL=1|malloc-dead|cache||KICKOS_LIBCRACE_DEAD_ARMS:INTERNAL=0
+tests/integration/check_libcrace.sh|libcrace-unbuffered.capture|KICKOS_LIBCRACE_UNBUFFERED:INTERNAL=1|heap|swap|w3 done torn=0|w3 done torn=1
+tests/integration/check_libcrace.sh|libcrace-unbuffered.capture|KICKOS_LIBCRACE_UNBUFFERED:INTERNAL=1|lost|drop|libcrace w2 done|
+tests/integration/check_libcrace.sh|libcrace-unbuffered.capture|KICKOS_LIBCRACE_UNBUFFERED:INTERNAL=1|raced|swap|w2 done torn=0 raced=1|w2 done torn=0 raced=0
+tests/integration/check_libcrace.sh|libcrace-unbuffered.capture|KICKOS_LIBCRACE_UNBUFFERED:INTERNAL=1|overlap|after|libcrace w0 done|libcrace w2 began
+tests/integration/check_libcrace.sh|libcrace-unbuffered.capture|KICKOS_LIBCRACE_UNBUFFERED:INTERNAL=1|lost|swap|w3 done torn=0|w3 done tolibcrace w1 i3 rn=0
+tests/integration/check_libcrace.sh|libcrace-unbuffered.capture|KICKOS_LIBCRACE_UNBUFFERED:INTERNAL=1|torn|cache||KICKOS_LIBCRACE_UNBUFFERED:INTERNAL=0
+tests/integration/check_libc_death.sh;thread-kill|libc_death.capture||start|drop|libc_death: start|
+tests/integration/check_libc_death.sh;thread-kill|libc_death.capture||spawn|after|libc_death: start|libc_death: the victim was refused
+tests/integration/check_libc_death.sh;thread-kill|libc_death.capture||printed|after|libc_death: start|libc_death: the victim printed
+tests/integration/check_libc_death.sh;thread-kill|libc_death.capture||parked|after|libc_death: start|libc_death: the victim never died inside printf
+tests/integration/check_libc_death.sh;thread-kill|libc_death.capture||victim|drop|holding the libc lock|
+tests/integration/check_libc_death.sh;thread-kill|libc_death.capture||steal|after|holding the libc lock|libc_death: the next taker of the libc lock went on
+tests/integration/check_libc_death.sh;thread-kill|libc_death.capture||killed|drop|=== THREAD FAULT|
+tests/integration/check_libc_death.sh;thread-kill|libc_death.capture||panic|after|holding the libc lock|KERNEL PANIC: planted
+tests/integration/check_libc_death.sh;panic|libc_death-panic.capture||victim|drop|holding the libc lock|
+tests/integration/check_libc_death.sh;panic|libc_death-panic.capture||steal|after|holding the libc lock|libc_death: the next taker of the libc lock went on
+tests/integration/check_libc_death.sh;panic|libc_death-panic.capture||killed|drop|=== XTENSA EXCEPTION|
+tests/integration/check_libc_death.sh;image|libc_death-image.capture||victim|drop|holding the libc lock|
+tests/integration/check_libc_death.sh;image|libc_death-image.capture||steal|after|holding the libc lock|libc_death: the next taker of the libc lock went on
+tests/integration/check_libc_death.sh;image|libc_death-image.capture||image|after|holding the libc lock|=== THREAD FAULT === thread 'main' killed, system continues
+tests/integration/check_libc_exit.sh;--image|libc_exit-image.capture||worker|drop|worker: exit()|
+tests/integration/check_libc_exit.sh;--image|libc_exit-image.capture||image|after|worker: exit()|main: survived worker exit()
+tests/integration/check_libc_exit.sh;--image|libc_exit-image.capture||handlers|after|worker: exit()|main: early atexit handler
+tests/integration/check_libc_exit.sh;--image|libc_exit-image.capture||flushed|after|worker: exit()|worker: unflushed
+tests/integration/check_libc_exit.sh;--image|libc_exit-image.capture||panic|after|worker: exit()|KERNEL PANIC: planted
 tests/integration/check_libc_exit.sh;--atexit|libc_exit.capture||spawn|after|regression|worker spawn refused
 tests/integration/check_libc_exit.sh;--atexit|libc_exit.capture||worker|drop|worker: exit()|
 tests/integration/check_libc_exit.sh;--atexit|libc_exit.capture||survived|drop|main: survived|
@@ -399,6 +478,14 @@ tests/integration/check_chaincheck.sh;int|chaincheck.capture||source|source:user
 tests/integration/check_chaincheck.sh;int|chaincheck.capture||source|source:user/apps/common/chaincheck/main.c|    ck_i64(\"i32 add to max\"|    ck_i64(name, 0, 0);
 tests/integration/check_chaincheck.sh;int|chaincheck.capture||source|source:user/apps/common/chaincheck/main.c|static void arith32(void)|#if PLANTED
 tests/integration/check_chaincheck.sh;int|chaincheck.capture||arm|source-swap:user/apps/common/chaincheck/main.c|\"i32 add to max\"|\"i32 add up to max\"
+tests/integration/check_chaincheck.sh;core|chaincheck-core.capture||arm|drop|[chaincheck] ok - strlen|
+tests/integration/check_chaincheck.sh;core|chaincheck-core.capture||arm|after|[chaincheck] ok - strlen|[chaincheck] ok - printf %d
+tests/integration/check_chaincheck.sh;core|chaincheck-core.capture||error|swap|ok - i32 sub to negative|FAIL - i32 sub to negative: got -0xb want -0xc
+tests/integration/check_chaincheck.sh;core|chaincheck-core.capture||verdict|swap|PASS (87 arms)|PASS (86 arms)
+tests/integration/check_chaincheck.sh;print|chaincheck-print.capture||arm|drop|[chaincheck] ok - printf %hd negative|
+tests/integration/check_chaincheck.sh;print|chaincheck-print.capture||arm|after|[chaincheck] ok - printf %lx|[chaincheck] ok - strlen
+tests/integration/check_chaincheck.sh;print|chaincheck-print.capture||error|swap|ok - printf %hd negative|FAIL - printf %hd negative: got [1] want [-1]
+tests/integration/check_chaincheck.sh;print|chaincheck-print.capture||verdict|swap|PASS (39 arms)|PASS (38 arms)
 tests/integration/check_chaincheck.sh;float|chaincheck-float.capture||arm|drop|[chaincheck] ok - u64 to f64 max|
 tests/integration/check_chaincheck.sh;float|chaincheck-float.capture||arm|after|[chaincheck] ok - copysign 1 -0|[chaincheck] ok - printf %f 1
 tests/integration/check_chaincheck.sh;float|chaincheck-float.capture||error|swap|ok - u64 to f64 max|FAIL - u64 to f64 max: got 0x43f0000000000000 want 0x43efffffffffffff
@@ -409,13 +496,19 @@ tests/integration/check_chaincheck.sh;full|chaincheck-full.capture||arm|after|[c
 tests/integration/check_chaincheck.sh;full|chaincheck-full.capture||error|swap|ok - printf %zu|FAIL - printf %zu: got [zu] want [12345]
 tests/integration/check_chaincheck.sh;full|chaincheck-full.capture||verdict|swap|PASS (49 arms)|PASS (48 arms)
 tests/integration/check_chaincheck.sh;full|chaincheck-full.capture||panic|after|[chaincheck] PASS|KERNEL PANIC: planted
-tests/integration/check_app_arms.sh;rootauth;5|rootauth.capture||error|after|[rootauth] ok - declared KOS_AUTH_MEMORY|[rootauth] ERROR: planted
-tests/integration/check_app_arms.sh;rootauth;5|rootauth.capture||arms|drop|[rootauth] ok - main narrowed|
-tests/integration/check_app_arms.sh;rootauth;5|rootauth.capture||verdict|swap|PASS (5 arms)|PASS (4 arms)
-tests/integration/check_app_arms.sh;rootauth;5|rootauth.capture||verdict|drop|[rootauth] PASS|
-tests/integration/check_app_arms.sh;rootauth;5|rootauth.capture||panic|after|[rootauth] PASS|KERNEL PANIC: planted
-tests/integration/check_app_arms.sh;objbudget;5;endpoint_create at the ceiling rc=-12|objbudget.capture||absent|swap|at the ceiling rc=-11|at the ceiling rc=-12
-tests/integration/check_app_arms.sh;objbudget;5;endpoint_create at the ceiling rc=-12|objbudget.capture||arms|after|[objbudget] ok - and the ceiling|[objbudget] ok - planted extra arm
+tests/integration/check_app_arms.sh;rootauth;4|rootauth.capture||error|after|[rootauth] ok - declared KOS_AUTH_MEMORY|[rootauth] ERROR: planted
+tests/integration/check_app_arms.sh;rootauth;4|rootauth.capture||arms|drop|[rootauth] ok - main narrowed|
+tests/integration/check_app_arms.sh;rootauth;4|rootauth.capture||verdict|swap|PASS (4 arms)|PASS (3 arms)
+tests/integration/check_app_arms.sh;rootauth;4|rootauth.capture||verdict|drop|[rootauth] PASS|
+tests/integration/check_app_arms.sh;rootauth;4|rootauth.capture||panic|after|[rootauth] PASS|KERNEL PANIC: planted
+tests/integration/check_app_arms.sh;objbudget;6;endpoint_create at the ceiling rc=-12|objbudget.capture||absent|swap|at the ceiling rc=-11|at the ceiling rc=-12
+tests/integration/check_app_arms.sh;objbudget;6;endpoint_create at the ceiling rc=-12|objbudget.capture||arms|after|[objbudget] ok - and the ceiling|[objbudget] ok - planted extra arm
+tests/integration/check_app_arms.sh;objbudget;5;endpoint_create at the ceiling rc=-12;+skip - a peer's statics start from its image at every create: the sim starts a program's statics once|objbudget-sim.capture||absent|swap|at the ceiling rc=-11|at the ceiling rc=-12
+tests/integration/check_app_arms.sh;objbudget;5;endpoint_create at the ceiling rc=-12;+skip - a peer's statics start from its image at every create: the sim starts a program's statics once|objbudget-sim.capture||skip|drop|[objbudget] skip - a peer's statics|
+tests/integration/check_app_arms.sh;objbudget;5;endpoint_create at the ceiling rc=-12;+skip - a peer's statics start from its image at every create: the sim starts a program's statics once|objbudget-sim.capture||arms|after|[objbudget] ok - and the ceiling|[objbudget] ok - planted extra arm
+tests/integration/check_app_arms.sh;objbudget;4;endpoint_create at the ceiling rc=-12;+skip - a task at its ceiling does not deny another task's endpoint_create: this board holds one task;+skip - a peer's statics start from its image at every create: this board holds one task|objbudget-one-task.capture||absent|swap|at the ceiling rc=-11|at the ceiling rc=-12
+tests/integration/check_app_arms.sh;objbudget;4;endpoint_create at the ceiling rc=-12;+skip - a task at its ceiling does not deny another task's endpoint_create: this board holds one task;+skip - a peer's statics start from its image at every create: this board holds one task|objbudget-one-task.capture||skip|drop|[objbudget] skip - a peer's statics|
+tests/integration/check_app_arms.sh;objbudget;4;endpoint_create at the ceiling rc=-12;+skip - a task at its ceiling does not deny another task's endpoint_create: this board holds one task;+skip - a peer's statics start from its image at every create: this board holds one task|objbudget-one-task.capture||arms|after|[objbudget] ok - and the ceiling|[objbudget] ok - planted extra arm
 tests/integration/check_qemu_fp.sh|fp_switch.capture||error|after|FP OK: 10 rounds|  FP FAIL: s20 = 7, expected 20 (round 11)
 tests/integration/check_qemu_fp.sh|fp_switch.capture||verdict|drop|FP OK:|
 tests/integration/check_qemu_fp.sh|fp_switch.capture||panic|after|FP OK: 20 rounds|KERNEL PANIC: planted
@@ -442,6 +535,24 @@ tests/integration/check_specfault.sh|specfault.capture||address|swap|ADDR=0x6080
 tests/integration/check_specfault.sh|specfault.capture||address|drop|ADDR=|
 tests/integration/check_specfault.sh|specfault.capture||address|swap|reading 0x60800000|reading 0x60800004
 tests/integration/check_specfault.sh|specfault.capture||order|order|[specfault] reading|=== THREAD FAULT
+tests/integration/check_codewindow.sh;below|codewindow-below.capture||error|after|[codewindow] fetching|[codewindow] ERROR: the fetch was permitted
+tests/integration/check_codewindow.sh;below|codewindow-below.capture||words|drop|first and last words read|
+tests/integration/check_codewindow.sh;below|codewindow-below.capture||announce|drop|[codewindow] fetching|
+tests/integration/check_codewindow.sh;below|codewindow-below.capture||announce|drop|[codewindow] window|
+tests/integration/check_codewindow.sh;below|codewindow-below.capture||fetch|swap|fetching 0x4081026c|fetching 0x40810268
+tests/integration/check_codewindow.sh;below|codewindow-below.capture||killed|drop|=== THREAD FAULT ===|
+tests/integration/check_codewindow.sh;below|codewindow-below.capture||kill-address|swap|ADDR=0x4081026c|ADDR=0x40810268
+tests/integration/check_codewindow.sh;below|codewindow-below.capture||kill-address|drop|ADDR=|
+tests/integration/check_codewindow.sh;below|codewindow-below.capture||panic|after|ADDR=0x4081026c|KERNEL PANIC: planted
+tests/integration/check_codewindow.sh;past|codewindow-past.capture||error|after|[codewindow] fetching|[codewindow] ERROR: the fetch was permitted
+tests/integration/check_codewindow.sh;past|codewindow-past.capture||words|drop|first and last words read|
+tests/integration/check_codewindow.sh;past|codewindow-past.capture||announce|drop|[codewindow] fetching|
+tests/integration/check_codewindow.sh;past|codewindow-past.capture||announce|drop|[codewindow] window|
+tests/integration/check_codewindow.sh;past|codewindow-past.capture||fetch|swap|fetching 0x40813dc0|fetching 0x40813dc4
+tests/integration/check_codewindow.sh;past|codewindow-past.capture||killed|drop|=== THREAD FAULT ===|
+tests/integration/check_codewindow.sh;past|codewindow-past.capture||kill-address|swap|ADDR=0x40813dc0|ADDR=0x40813dc4
+tests/integration/check_codewindow.sh;past|codewindow-past.capture||kill-address|drop|ADDR=|
+tests/integration/check_codewindow.sh;past|codewindow-past.capture||panic|after|ADDR=0x40813dc0|KERNEL PANIC: planted
 tests/integration/check_usbcdcwit.sh|usbcdcwit.capture||no-banner|drop|   KickOS 0.5.1  -  microkernel RTOS|
 tests/integration/check_usbcdcwit.sh|usbcdcwit.capture||no-banner|swap|   KickOS 0.5.1  -  microkernel RTOS|[usbcdcwit] commit 0123abcd
 tests/integration/check_usbcdcwit.sh|usbcdcwit.capture||accepted|swap|accepted=16384 of|accepted=16000 of
@@ -610,6 +721,13 @@ tests/integration/check_qemu_panicgate.sh;KERNEL PANIC: user panic (no readable 
 tests/integration/check_qemu_panicgate.sh;KERNEL PANIC: user panic (no readable message)|panicgate-null.capture||order|order|[panicgate] case|KERNEL PANIC:
 tests/integration/check_qemu_panicgate.sh;KERNEL PANIC: [panicgate] ctl???? end|panicgate-control.capture||line|swap|ctl???? end|ctl??? end
 tests/integration/check_qemu_panicgate.sh;KERNEL PANIC: [panicgate] ctl???? end|panicgate-control.capture||fault|after|[panicgate] case 5|=== HARD FAULT === planted
+tests/integration/check_qemu_panicgate.sh;[panicgate] the task ended with KOS_EXIT_PANIC, the system runs on;KERNEL PANIC:;[panicgate] task message|panicgate-task.capture||case|drop|[panicgate] case 6|
+tests/integration/check_qemu_panicgate.sh;[panicgate] the task ended with KOS_EXIT_PANIC, the system runs on;KERNEL PANIC:;[panicgate] task message|panicgate-task.capture||line|drop|the system runs on|
+tests/integration/check_qemu_panicgate.sh;[panicgate] the task ended with KOS_EXIT_PANIC, the system runs on;KERNEL PANIC:;[panicgate] task message|panicgate-task.capture||order|order|[panicgate] case 6|the system runs on
+tests/integration/check_qemu_panicgate.sh;[panicgate] the task ended with KOS_EXIT_PANIC, the system runs on;KERNEL PANIC:;[panicgate] task message|panicgate-task.capture||returned|after|[panicgate] case 6|[panicgate] ERROR: the task ended with another status
+tests/integration/check_qemu_panicgate.sh;[panicgate] the task ended with KOS_EXIT_PANIC, the system runs on;KERNEL PANIC:;[panicgate] task message|panicgate-task.capture||absent|after|  [panicgate] task message|KERNEL PANIC: [panicgate] task message
+tests/integration/check_qemu_panicgate.sh;[panicgate] the task ended with KOS_EXIT_PANIC, the system runs on;KERNEL PANIC:;[panicgate] task message|panicgate-task.capture||also|drop|[panicgate] task message|
+tests/integration/check_qemu_panicgate.sh;[panicgate] the task ended with KOS_EXIT_PANIC, the system runs on;KERNEL PANIC:;[panicgate] task message|panicgate-task.capture||fault|after|[panicgate] case 6|=== HARD FAULT === planted
 tests/integration/check_mpu_fault.sh;panic|mpu_fault-panic.capture||marker|drop|=== MPU FAULT|
 tests/integration/check_mpu_fault.sh;panic|mpu_fault-panic.capture||address|swap|MMFAR=0x20011000|MMFAR=0x20011004
 tests/integration/check_mpu_fault.sh;panic|mpu_fault-panic.capture||control|drop|A: my region ok|"
@@ -639,8 +757,14 @@ tests/integration/check_faultsurvive.sh;survive;armv7m;terminated|the system exi
 tests/integration/check_faultsurvive.sh;stkof;armv7m;contained|the system exited 0 once main returned
 tests/integration/check_faultsurvive.sh;survive;rv32imac;terminated|the system exited 0 once main returned
 tests/integration/check_faultsurvive.sh;survive;rxv3;terminated|the system exited 0 once main returned
+tests/integration/check_libc_death.sh;thread-kill|main's trap ended the system with KOS_EXIT_FAULT (139)
+tests/integration/check_libc_death.sh;image|the take ended the image with KOS_EXIT_FAULT (139)
 tests/integration/check_libc_exit.sh;--atexit|main's exit() ended the system with status 7
+tests/integration/check_libc_exit.sh;--image|the worker's exit() ended the image with status 3
 tests/integration/check_libcrace.sh|main returned 0
+tests/integration/check_mutexbench.sh|the bench ended
+tests/integration/check_mutexbench.sh;aspace|the bench ended
+tests/integration/check_mutexbench.sh;coarse-clock|the bench ended
 tests/integration/check_qemu_cxxterm.sh|terminate stopped the image
 tests/integration/check_reclaimwit.sh;drain|the drain arm shut the system down with status 0
 tests/integration/check_rootfault.sh;thread-kill|main's fault ended the system with KOS_EXIT_FAULT (139)

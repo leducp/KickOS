@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# The probe as main, and its peer, a program of its own, which main creates.
+
+version: 1
+stdout: kernel
+ends: main
+heap: 0
+
+tasks:
+  - name: main
+    program: tlsprobe
+    priority: 2
+    ceiling: 31
+    authority: [memory, system, tasks]
+    budgets: { threads: 4 }
+
+  - name: peer
+    program: tlsprobe_peer
+    priority: 3
+    ceiling: 9
+    start: on_request
+    budgets: { threads: 1 }

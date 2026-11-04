@@ -101,24 +101,25 @@
  *   _SYS          0  svc_trampoline moves R0 to ctx.kernel_sp before it calls anything.
  *   _SYS_FAST    44  the same epilogue and so the same chain as _PENDSW, kept a macro of its
  *                    own because it is a distinct SITE with its own guard.
- *   _SYSK       796  ENFORCED over 668 measured, as headroom. THE PANIC REPORTER IS NOT ON
+ *   _SYSK       796  ENFORCED over 764 measured, as headroom. THE PANIC REPORTER IS NOT ON
  *                    THIS CHAIN: kpanic leaves this stack before it prints
  *                    (kickos_panic_stack_enter, switch.S). kickos_ipc_fastpath is the other
  *                    root and is dominated. rx72m-bench sets the measurement, its bench arm
  *                    printing:
- *                    syscall_dispatch[56] -> bench_irq_sweep[96] -> dist_print_fmt[96]
+ *                    syscall_dispatch[48] -> bench_irq_sweep[104] -> dist_print_fmt[96]
  *                    -> kprintf_paced[284] -> console_emit[36]
- *                    -> console_tx_insert_record_line[44] -> drain_in_producer[32]
- *                    -> wait_slot[20] -> rx_tx_slot_free[4].
- *                    rx72m reads 552, a spawn of 9 grants seating its default
+ *                    -> console_chip_writer_leave[12] -> console_dark_wake[24] -> wake[8]
+ *                    -> resched_after_wake[4] -> pick_and_seat[32] -> ktime_rearm[28]
+ *                    -> arch_timer_arm[24] -> arch_clock_now[32] -> __divdi3[32].
+ *                    rx72m reads 544, a spawn of 9 grants seating its default
  *                    capabilities; arch_rxv3.cc refuses more than 9:
- *                    syscall_dispatch[52] -> thread_create_call[4] -> spawn_masked[300]
+ *                    syscall_dispatch[44] -> thread_create_call[4] -> spawn_masked[300]
  *                    -> cap_install_defaults[20] -> cap_seat_stdout[40] -> obj_ref_drop[20]
  *                    -> irq_ref_drop[24] -> irq_detach[12] -> irq_line_op[4]
  *                    -> arch_irq_mask[12] -> kickos_rx_group_arm[32]
  *                    -> kickos_rx_icu_line_arm[4] -> icu_ier_set[24] -> arch_irq_restore[4].
- *                    rx72m-flat reads 504, the exit path:
- *                    syscall_dispatch[52] -> endpoint_reply_recv[116] -> exit_current[40]
+ *                    rx72m-flat reads 496, the exit path:
+ *                    syscall_dispatch[44] -> endpoint_reply_recv[116] -> exit_current[40]
  *                    -> cap_teardown[40] -> teardown_entry[40] -> obj_close_protocol[24]
  *                    -> endpoint_rights_dropped[28] -> refuse_senders[20] -> wake[8]
  *                    -> resched_after_wake[4] -> pick_and_seat[20] -> ktime_rearm[24]
@@ -127,7 +128,7 @@
  *
  * ENFORCED figures are those measurements rounded up to 64, or above them as headroom where a
  * figure says so. _SYSK is NOT rounded, a kernel block being sized to it directly, so a byte of
- * slack there costs KICKOS_THREAD_SLOTS bytes.
+ * slack there costs a byte per thread slot.
  *
  * rx72m is the only chip that selects ARCH_RXV3 and the gate runs on all three of its presets,
  * so a figure here is the worst of three readings. No telemetry build is among
@@ -160,15 +161,17 @@
 
 /* The measured descent of the two stubs a dying thread runs PRIVILEGED on its own KERNEL
  * BLOCK, kickos_fault_stack_top answering with ctx.kernel_sp: kickos_thread_fault_exit and
- * kickos_thread_slay_exit. 388 on rx72m-bench and 376 on the other two presets: the fault
- * stub descends the timer rearm its teardown's wake performs. On rx72m-bench:
- *   kickos_thread_fault_exit[32] -> exit_current[48] -> cap_teardown[44] -> teardown_entry[48]
- *   -> obj_close_protocol[24] -> endpoint_rights_dropped[32] -> wake[8] -> resched_after_wake[4]
- *   -> pick_and_seat[32] -> ktime_rearm[28] -> arch_timer_arm[24] -> arch_clock_now[32]
- *   -> __divdi3[32]
+ * kickos_thread_slay_exit. 428 on rx72m-bench and 404 on the other two presets: the fault
+ * stub's record line descends the timer rearm of the wake that ends its console write. On
+ * rx72m-bench:
+ *   kickos_thread_fault_exit[8] -> fault_record_print[56] -> kprintf_record[24]
+ *   -> kvprintf_fault[108] -> console_emit[36] -> console_chip_writer_leave[12]
+ *   -> console_dark_wake[24] -> wake[8]
+ *   -> resched_after_wake[4] -> pick_and_seat[32] -> ktime_rearm[28] -> arch_timer_arm[24]
+ *   -> arch_clock_now[32] -> __divdi3[32]
  *
  * Rounded like a thread-stack figure because it never binds: 308 + 448 = 756 against 1116
- * usable, where SYSK asks 1104. 448 is enforced over the 388 measured. */
+ * usable, where SYSK asks 1104. 448 is enforced over the 428 measured. */
 #define KICKOS_RX_TRAP_KERNEL_DEPTH_EXITK 448
 
 /* What each guard enforces: room below the USP, in bytes.

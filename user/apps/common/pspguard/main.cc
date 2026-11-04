@@ -29,8 +29,8 @@
 //
 //   7  a core with a stack limit only: the SVC's own entry stacking violates the limit, and the
 //      SVCall that entry left pending must not run in the dying thread's place.
-// On such a core modes 0, 1, 4 and 6 die by STKOF instead, and the wild thread gets a task of
-// its own so that the fault ends it and not main.
+// On such a core modes 0, 1, 4 and 6 die by STKOF instead, and the wild thread is the entry of a
+// program of its own (the same file, KICKOS_PSPGUARD_PEER) so that the fault ends it and not main.
 //
 // Modes 0, 1, 3 and 4 provoke the switch with a HIGHER-priority ticker and not with a fault,
 // the store under test being the SWITCHER's; the ticker's counter advancing separates "PendSV
@@ -54,6 +54,7 @@
 #ifndef KICKOS_KERNEL_STACKS
 #define KICKOS_KERNEL_STACKS 0
 #endif
+#include <kickos/apps/peer_run.h>
 #include <kickos/kos.h>
 #include <kickos/sys.h>
 #include <kickos/libc/fmt.h>
@@ -63,6 +64,15 @@
 #else
 #define PG_SPLIM 0
 #endif
+// The wild thread is the entry thread of a program of its own on a core with a stack limit, which
+// KICKOS_PSPGUARD_PEER builds from this file, and a thread of main's task elsewhere.
+#ifndef KICKOS_PSPGUARD_PEER
+#define KICKOS_PSPGUARD_PEER 0
+#endif
+#ifndef KICKOS_PSPGUARD_PEER_NAME
+#error "KICKOS_PSPGUARD_PEER_NAME must be set by this app's CMakeLists"
+#endif
+#define PG_WILD_HERE (!PG_SPLIM || KICKOS_PSPGUARD_PEER)
 #if KICKOS_PSPGUARD_MODE == 7 && !PG_SPLIM
 #error "pspguard mode 7 needs a stack limit register for the SVC entry to violate"
 #endif
@@ -97,6 +107,9 @@
 // this arm runs on does not enforce, which is the same fact the arm exists to exploit.
 extern "C" uintptr_t kickos_fault_stack_top(void);
 #endif
+
+// What the kernel carves off the child's stack below its stack_lo (arch/common/sections.ld.h).
+extern "C" char const __kickos_tls_carve[];
 
 namespace
 {
@@ -233,6 +246,11 @@ namespace
     };
 #if KICKOS_PSPGUARD_MODE == 6
     Arm g_arm = {0, 0, 0, 0, 0};
+#if PG_SPLIM
+    // The wild program's arm: a block main reserves and grants it, and reads back once it is dead.
+    constexpr uint32_t ARM_BLOCK_BYTES = 32;
+    static_assert(sizeof(Arm) <= ARM_BLOCK_BYTES, "the arm must fit the block the peer is granted");
+#endif
 #else
     Arm g_arm = {0, 0, 0};
 #endif
@@ -241,7 +259,7 @@ namespace
     // own failure instead of hanging the runner out to the ctest timeout.
     constexpr uint32_t SPIN_LIMIT = 20000000u;
 
-#if KICKOS_PSPGUARD_MODE != 2 && KICKOS_PSPGUARD_MODE != 5 && KICKOS_PSPGUARD_MODE != 7
+#if PG_WILD_HERE && KICKOS_PSPGUARD_MODE != 2 && KICKOS_PSPGUARD_MODE != 5 && KICKOS_PSPGUARD_MODE != 7
     volatile uint32_t g_ticks = 0;
 
     void ticker(void*)
@@ -254,7 +272,7 @@ namespace
     }
 #endif
 
-#if KICKOS_PSPGUARD_MODE == 1
+#if KICKOS_PSPGUARD_MODE == 1 && !KICKOS_PSPGUARD_PEER
     // Runs AFTER containment, on a thread that had nothing to do with the refusal. The FP
     // instruction is the trigger: a lazy save the refused entry left armed fires on the first
     // FP instruction ANY context executes, into the address that entry reserved.
@@ -287,6 +305,7 @@ namespace
     }
 #endif
 
+#if PG_WILD_HERE
     void wild(void* arg)
     {
         Arm const* const a = static_cast<Arm const*>(arg);
@@ -479,8 +498,42 @@ namespace
         kos::print("[pspguard] ERROR: the switcher saved through a PSP it must refuse\n");
 #endif
     }
+#endif
 }
 
+#if KICKOS_PSPGUARD_PEER
+// The wild thread's program: the arm's addresses come as hex arguments, its own ticker beside it.
+int main(int argc, char** argv)
+{
+    if (argc < 4)
+    {
+        kos::print("[pspguard] ERROR: the peer was started without its arm\n");
+        return 1;
+    }
+    Arm* arm = &g_arm;
+#if KICKOS_PSPGUARD_MODE == 6
+    if (argc < 5)
+    {
+        kos::print("[pspguard] ERROR: the peer was started without its arm block\n");
+        return 1;
+    }
+    arm = reinterpret_cast<Arm*>(kickos::apps::hex_arg(argv[4]));
+#endif
+    arm->stack_lo = kickos::apps::hex_arg(argv[1]);
+    arm->stack_hi = kickos::apps::hex_arg(argv[2]);
+    arm->target = kickos::apps::hex_arg(argv[3]);
+#if KICKOS_PSPGUARD_MODE != 2 && KICKOS_PSPGUARD_MODE != 5 && KICKOS_PSPGUARD_MODE != 7
+    kos::thread::Handle const tk = kos::thread::create(ticker, nullptr, "ticker", 20);
+    if (not tk.valid())
+    {
+        kos::print("[pspguard] ERROR: ticker spawn refused\n");
+        return 1;
+    }
+#endif
+    wild(arm);
+    return 0;
+}
+#else
 int main(int, char**)
 {
     // Allocation order IS the geometry: the bump allocator hands out increasing addresses, so
@@ -502,10 +555,12 @@ int main(int, char**)
         kos::print("[pspguard] ERROR: arena ram_alloc refused (main AUTH_MEMORY seat?)\n");
         return 1;
     }
-    g_arm.stack_lo = reinterpret_cast<uintptr_t>(st);
-    g_arm.stack_hi = g_arm.stack_lo + STACK_BYTES;
+    g_arm.stack_lo =
+        reinterpret_cast<uintptr_t>(st) + reinterpret_cast<uintptr_t>(__kickos_tls_carve);
+    g_arm.stack_hi = reinterpret_cast<uintptr_t>(st) + STACK_BYTES;
 
-    // Granted, so hardware stacking into the pad SUCCEEDS and the push below it is refused.
+    // Granted, so hardware stacking into the pad SUCCEEDS and the push below it is refused: the
+    // wild thread's own window, or the peer's block.
     void* mem = nullptr;
     uint32_t mem_size = 0;
 #if KICKOS_PSPGUARD_MODE == 3
@@ -519,13 +574,22 @@ int main(int, char**)
 #else
     g_arm.target = g_arm.stack_lo + SP_OFFSET;
 #endif
+#if KICKOS_PSPGUARD_MODE == 6 and PG_SPLIM
+    mem = kos_ram_alloc(ARM_BLOCK_BYTES);
+    if (mem == nullptr)
+    {
+        kos::print("[pspguard] ERROR: arena ram_alloc refused the arm block\n");
+        return 1;
+    }
+    mem_size = ARM_BLOCK_BYTES;
+#endif
 
     if (g_arm.target == 0)
     {
         kos::print("[pspguard] ERROR: no arm target computed\n");
         return 1;
     }
-#if KICKOS_PSPGUARD_MODE != 2 && KICKOS_PSPGUARD_MODE != 5 && KICKOS_PSPGUARD_MODE != 7
+#if !PG_SPLIM && KICKOS_PSPGUARD_MODE != 2 && KICKOS_PSPGUARD_MODE != 5 && KICKOS_PSPGUARD_MODE != 7
     kos::thread::Handle const tk = kos::thread::create(ticker, nullptr, "ticker", 20);
     if (not tk.valid())
     {
@@ -534,33 +598,65 @@ int main(int, char**)
     }
 #endif
 #if PG_SPLIM
-    // A spawn bringing its own memory already gets a task of its own.
-    kos_task_t victim = KOS_TASK_NONE;
-    if (mem == nullptr and kos_task_create(nullptr, 0, 0, &victim) != 0)
+    kos_program_t prog = KOS_CAP_NONE;
+    if (kos_program_find(KICKOS_PSPGUARD_PEER_NAME, &prog) != 0)
     {
-        kos::print("[pspguard] ERROR: no task slot for the wild thread\n");
+        kos::print("[pspguard] ERROR: no wild program\n");
         return 1;
     }
-    kos::thread::Handle const w =
-        kos::thread::create(wild, &g_arm, "wild", 10, KOS_POLICY_FIFO, 0,
-                            mem, mem_size, st, STACK_BYTES,
-                            nullptr, 0, nullptr, 0, 0, nullptr, victim);
+    char arg_text[4][24];
+    ksnprintf(arg_text[0], sizeof(arg_text[0]), "%p", reinterpret_cast<void*>(g_arm.stack_lo));
+    ksnprintf(arg_text[1], sizeof(arg_text[1]), "%p", reinterpret_cast<void*>(g_arm.stack_hi));
+    ksnprintf(arg_text[2], sizeof(arg_text[2]), "%p", reinterpret_cast<void*>(g_arm.target));
+#if KICKOS_PSPGUARD_MODE == 6
+    ksnprintf(arg_text[3], sizeof(arg_text[3]), "%p", mem);
+    char const* const argv[] = {"wild", arg_text[0], arg_text[1], arg_text[2], arg_text[3],
+                                nullptr};
 #else
-    kos::thread::Handle const w =
-        kos::thread::create(wild, &g_arm, "wild", 10, KOS_POLICY_FIFO, 0,
-                            mem, mem_size, st, STACK_BYTES);
+    char const* const argv[] = {"wild", arg_text[0], arg_text[1], arg_text[2], nullptr};
 #endif
+    kos_task_params params = {};
+    params.argv = argv;
+    params.block = mem;
+    params.size = mem_size;
+    params.stack = st;
+    params.stack_size = STACK_BYTES;
+    kos_task_t victim = KOS_TASK_NONE;
+    if (kickos::apps::create_peer(prog, params, &victim) != 0)
+    {
+        kos::print("[pspguard] ERROR: wild spawn refused\n");
+        return 1;
+    }
+    int wild_status = 0;
+    while (kickos::apps::wait_dead(victim, &wild_status, 1000u) == -KOS_ETIMEDOUT)
+    {
+    }
+    (void)kos_task_slay(victim, 0);
+    (void)kos_handle_close(prog);
+#if KICKOS_PSPGUARD_MODE == 6
+    Arm volatile const* const back = static_cast<Arm volatile const*>(mem);
+    g_arm.canary_at = back->canary_at;
+    g_arm.canary_was = back->canary_was;
+#endif
+#else
+    kos_window pad = {};
+    pad.base = reinterpret_cast<uintptr_t>(mem);
+    pad.size = mem_size;
+    pad.kind = KOS_WINDOW_MEMORY;
+    uint16_t pad_count = 0;
+    if (mem != nullptr)
+    {
+        pad_count = 1;
+    }
+    kos::thread::Handle const w =
+        kos::thread::create(wild, &g_arm, "wild", 10, KOS_POLICY_FIFO, 0, st, STACK_BYTES, &pad,
+                            pad_count);
     if (not w.valid())
     {
         kos::print("[pspguard] ERROR: wild spawn refused\n");
         return 1;
     }
     w.join();
-#if PG_SPLIM
-    if (victim != KOS_TASK_NONE)
-    {
-        (void)kos_task_slay(victim, 0);
-    }
 #endif
 #if KICKOS_PSPGUARD_MODE == 5
     // Reached only because the trap was ACCEPTED: a refusal that is not contained ends the
@@ -573,9 +669,13 @@ int main(int, char**)
     // DOMAIN region because that is the one way to read the reservation: main has no grant on
     // it and faults (MMFSR DACCVIOL), the wild thread that owned it is gone, and the
     // reservation must live where the refused frame put it.
+    kos_window stack_window = {};
+    stack_window.base = reinterpret_cast<uintptr_t>(st);
+    stack_window.size = STACK_BYTES;
+    stack_window.kind = KOS_WINDOW_MEMORY;
     kos::thread::Handle const fc =
-        kos::thread::create(fpcheck, &g_arm, "fpcheck", 10, KOS_POLICY_FIFO, 0,
-                            st, STACK_BYTES);
+        kos::thread::create(fpcheck, &g_arm, "fpcheck", 10, KOS_POLICY_FIFO, 0, nullptr, 0,
+                            &stack_window, 1);
     if (not fc.valid())
     {
         kos::print("[pspguard] ERROR: fpcheck spawn refused\n");
@@ -608,3 +708,4 @@ int main(int, char**)
     return 0;
 #endif
 }
+#endif

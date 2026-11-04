@@ -21,10 +21,13 @@
 
 #include <kickos/arch/arch.h>
 #include <kickos/config.h> // KICKOS_MPU_MAX_REGIONS
+#include <kickos/list.h>
 #include <kickos/vrange.h>
 
 namespace kickos
 {
+    struct Task; // kickos/task.h
+
     // How many region descriptors one domain records. Where a backend translates only the
     // kernel singleton describes one, every grant going into the range list instead.
 #if KICKOS_HAVE_ASPACE
@@ -49,17 +52,25 @@ namespace kickos
         // What that space names, and the syscall entry's oracle. Seeded with the space and
         // thrown away with it.
         VirtualRanges ranges;
+        // The task record whose PAGES budget this domain's space is charged to, its slot index
+        // plus one, 0 for none. On that record's list of domains while `payer` names it
+        // (task_domains_head).
+        ListNode payer_node;
+        uint8_t payer = 0;
 #endif
         // Bumped on every claim and at its task's end and death, so a capability naming
         // (index, generation) cannot be answered by a later occupant or past its task. NOT reset
-        // by claim_slot's reinitialisation, which would defeat it.
-        uint16_t generation = 0;
+        // by claim_slot's reinitialisation, which would defeat it. A handle carries its low 16
+        // bits and a CAP_ASPACE entry all 32.
+        uint32_t generation = 0;
         // Live tasks holding this domain, plus one per explicit task's creator hold and one per
         // borrower; 0 and not immortal => free slot. A CAP_ASPACE capability holds none.
         uint16_t refcount = 0;
         uint8_t region_count = 0;
         bool privileged = false;
         bool immortal = false; // kernel + default-user singletons: never freed
+        // The domain pool's free list (domain.cc).
+        ListNode free_node;
     };
 
     // The only sanctioned way to read a domain's regions from outside domain.cc. count is
@@ -97,6 +108,30 @@ namespace kickos
     // At its task's death: the space maps no frame run any more, though the space itself may
     // live on. Caller holds IrqLock. Null-safe.
     void domain_retire_space(Domain* d);
+
+    // At its task's death: the space gives back the handoff it borrowed, and the edge to its
+    // donor, which no borrower of its own reservations reaches, is returned for the caller to
+    // release. Caller holds IrqLock. Null-safe.
+    Domain* domain_retire_handoff(Domain* d);
+
+    // At its task's death: the space ends, its data, stacks, tables and every reservation no
+    // other space maps going back to the pool; its lent reservations stay, charged to its
+    // payer, each until the last mapping of it goes. Caller holds IrqLock. Null-safe.
+    void domain_shed(Domain* d);
+
+    // A handoff or memory window of another space over `d`'s reservation at `base` ended; the
+    // last one of a shed space's reservation frees it. Caller holds IrqLock. Null-safe.
+    void domain_unlend(Domain* d, uintptr_t base);
+
+    // The task record `d`'s space is charged to, or null. Null-safe.
+    Task* domain_payer(Domain const* d);
+    // `d`'s space is charged to `t`'s record from now on, until `d` goes back to the pool or
+    // domain_unpay. A domain already paid for keeps its payer. Caller holds IrqLock.
+    void domain_pay(Domain* d, Task* t);
+    void domain_unpay(Domain* d);
+    // The PAGES of every domain `t`'s record pays for. O(those domains' ranges and tables).
+    // Caller holds IrqLock.
+    uint32_t domain_pages_paid(Task const* t);
 #endif
 
     // Boot: build the two immortal domains (kernel = whole arena/privileged,
@@ -114,8 +149,23 @@ namespace kickos
     enum : uint32_t
     {
         DOM_CALLER_UNPRIVILEGED = 0u,
-        DOM_CALLER_PRIVILEGED = 1u << 0 // resolves the kernel domain, whole arena
+        DOM_CALLER_PRIVILEGED = 1u << 0, // resolves the kernel domain, whole arena
+        DOM_CALLER_IMAGE_SHIFT = 8u,     // the image a new space is seeded with, from this bit
+        // The task record a new space is charged to, its slot index plus one, from this bit.
+        DOM_CALLER_PAYER_SHIFT = 16u
     };
+
+    // The `caller` bits naming image `image`, which a new space maps where a backend translates.
+    inline uint32_t dom_caller_image(size_t image)
+    {
+        return static_cast<uint32_t>(image) << DOM_CALLER_IMAGE_SHIFT;
+    }
+
+    // The `caller` bits naming task slot `slot` as the payer of a new space.
+    inline uint32_t dom_caller_payer(int slot)
+    {
+        return static_cast<uint32_t>(slot + 1) << DOM_CALLER_PAYER_SHIFT;
+    }
 
     // Resolve the domain a group of threads shares. privileged -> kernel; with a data region ->
     // a domain of its own; otherwise -> the default-user domain or an instance of it. Does not
@@ -134,6 +184,8 @@ namespace kickos
     //   KOS_ENOTSUP a memory type this chip cannot honour
     //   KOS_EPERM   (translating) a range the donor never reserved
     //   KOS_EBUSY   (translating) another mapping of the range's frames has another memory type
+    //   KOS_EAGAIN  (translating) the space's frames pass the PAGES budget of the task record
+    //               the `caller` bits name (dom_caller_payer)
     //   KOS_ENOMEM  the domain pool is full, no address space could be built, or the new
     //               space cannot take the range at the donor's address
     Domain* domain_for(uint32_t caller, void* mem_base, size_t mem_size, uint32_t mem_attr,

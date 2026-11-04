@@ -7,3 +7,8 @@
 add_executable(uartloop main.cc)
 kickos_app_system(uartloop COMPOSITION system.yaml)
 kickos_emit_image(uartloop)
+
+# The same app with simuart listed under main's `drivers`.
+add_executable(uartloop_intask main.cc)
+kickos_app_system(uartloop_intask COMPOSITION system_intask.yaml)
+kickos_emit_image(uartloop_intask)

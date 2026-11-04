@@ -8,8 +8,8 @@
  * every interrupt frame a resumable thread context on a stack that outlives the trap. The one
  * opening is arch_irq_window, outside every lock: the interrupt it lets in is an S-mode one,
  * built on the thread's own kernel block by .Ltrap_from_s_ctx and resumed by sret at SPP = S.
- * Its return goes through .Lrestore, which reloads tp from the thread's reent pointer, so the
- * syscall code entered with tp = 0 runs on with that pointer: the kernel takes no TLS.
+ * Its return goes through .Lrestore, which reloads tp from the thread's context, so the
+ * syscall code entered with tp = 0 runs on with that value: the kernel takes no TLS.
  *
  * SSCRATCH INVARIANT: outside the prologue, sscratch holds the trap-stack TOP, which is also
  * this hart's per-CPU block address (percpu.h). U-mode can neither read nor write it.
@@ -355,8 +355,8 @@ kickos_rv64_stvec:
  */
 .Lrestore:
     /* gp and tp are both U-mode writable and absent from the frame, so every resume forces them
-       back to their canonical values: tp is the resumed thread's libc state, and zero while a
-       secondary hart's ctx_current is still null during bring-up. */
+       back to their canonical values: tp is the top of the resumed thread's libc state carve, and
+       zero while a secondary hart's ctx_current is still null during bring-up. */
     .option push
     .option norelax
     ld      gp, .Lgp_anchor
@@ -499,18 +499,5 @@ kickos_panic_stack_enter:
     csrci   sstatus, 2              /* SIE */
     mv      sp, a3
     tail    kickos_panic_report
-
-/* arch_syscall(nr, a0, a1, a2, a3): args already in a0-a4 per the psABI.
- *
- * .apptrap because an unprivileged thread FETCHES this leaf and virt_rv64.ld selects the kernel
- * half by archive.
- */
-    .section .apptrap, "ax"
-    .global arch_syscall
-    .global arch_syscall64
-arch_syscall:
-arch_syscall64:
-    ecall
-    ret
 
     .end

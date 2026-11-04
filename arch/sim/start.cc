@@ -22,16 +22,6 @@ namespace kickos
 }
 #endif
 
-// An EMPTY app-ctor window: the host runtime has run every app ctor before main, so kmain's
-// walk must see start == end or it constructs them twice. Labels, not a zero-length array: two
-// distinct objects need not share an address.
-asm(".pushsection .kickos_app_init_array,\"a\"\n"
-    ".globl __kickos_app_init_array_start\n"
-    ".globl __kickos_app_init_array_end\n"
-    "__kickos_app_init_array_start:\n"
-    "__kickos_app_init_array_end:\n"
-    ".popsection\n");
-
 // The windows a hosted image has none of, stated empty: kmain and domain.cc reference these
 // bounds strongly, so absent is a link error. Labels, so each pair is start == end at a real
 // address.

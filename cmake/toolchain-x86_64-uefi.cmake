@@ -72,7 +72,8 @@ kickos_toolchain_bare_metal_rules()
 
 # Both languages' executable link rule is tools/x86_64-link.sh, which an installed package
 # carries beside this file, and their suffix .efi; only the per-language suffix survives
-# CMakeGenericSystem. The rule leaves out <FLAGS>: compile flags, which ld would refuse.
+# CMakeGenericSystem. The rule leaves out <FLAGS>: compile flags, which ld would refuse. It names
+# the tool as <CMAKE_LINKER>, the placeholder a target's linker launcher is put in front of.
 if(EXISTS "${CMAKE_CURRENT_LIST_DIR}/x86_64-link.sh")
   set(_kos_link "${CMAKE_CURRENT_LIST_DIR}/x86_64-link.sh")
 else()
@@ -109,8 +110,9 @@ if(NOT _kos_in_try_compile AND NOT "${KICKOS_X86_64_LIBDIRS_KEY}" STREQUAL "${_k
   set(KICKOS_X86_64_LIBDIRS_KEY "${_kos_libdirs_key}" CACHE INTERNAL
       "The compiler and flags KICKOS_X86_64_LIBDIRS was probed under")
 endif()
+set(CMAKE_LINKER "${_kos_link}" CACHE FILEPATH "The x86_64 image link tool" FORCE)
 foreach(_kos_lang C CXX)
   set(CMAKE_EXECUTABLE_SUFFIX_${_kos_lang} ".efi")
   set(CMAKE_${_kos_lang}_LINK_EXECUTABLE
-      "\"${_kos_link}\" \"${KICKOS_X86_64_LD}\" \"${CMAKE_READELF}\" \"${CMAKE_OBJDUMP}\" \"${CMAKE_OBJCOPY}\"${KICKOS_X86_64_LIBDIRS} <LINK_FLAGS> <OBJECTS> -o <TARGET> <LINK_LIBRARIES>")
+      "<CMAKE_LINKER> \"${KICKOS_X86_64_LD}\" \"${CMAKE_READELF}\" \"${CMAKE_OBJDUMP}\" \"${CMAKE_OBJCOPY}\"${KICKOS_X86_64_LIBDIRS} <LINK_FLAGS> <OBJECTS> -o <TARGET> <LINK_LIBRARIES>")
 endforeach()

@@ -49,7 +49,7 @@ namespace kickos
                 return static_cast<int>(
                     kernel().endpoints.handle_for(kernel().endpoints.index_of(ep)));
             }
-            static_assert(TABLE_WIDTH <= KICKOS_MAX_HANDLES,
+            static_assert(TABLE_WIDTH <= KICKOS_SEAM_ROOT_WIDTH,
                           "the arms below ask the slab for a table wider than the codec's "
                           "ceiling, which cap_slab_attach asserts on");
 

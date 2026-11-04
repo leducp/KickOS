@@ -21,20 +21,20 @@ namespace
     constexpr uintptr_t RTCDR = 0x000; // PL031 data register: seconds since it started
 }
 
-extern "C" void sensor_main(kos_self_t const* self)
+int main(int, char**)
 {
     // A window lookup answers an opaque handle into this task's entry of the emitted table;
     // its address and size come from there, the size from the description and never from
     // this source.
-    kos_window_t const rtc_window = kos_grant_mmio(self, "/dev/rtc");
-    kos_window_t const history_window = kos_grant_mem(self, "/shm/history");
+    kos_window_t const rtc_window = kos_grant_mmio("/dev/rtc");
+    kos_window_t const history_window = kos_grant_mem("/shm/history");
     auto const rtc = static_cast<unsigned char volatile*>(kos_window_addr(rtc_window));
     auto const hist = static_cast<history*>(kos_window_addr(history_window));
-    kos_cap_t const served = kos_grant_endpoint(self, "/svc/sensor");
+    kos_cap_t const served = kos_grant_endpoint("/svc/sensor");
     if (rtc == nullptr or kos_window_size(rtc_window) <= RTCDR or hist == nullptr
         or kos_window_size(history_window) < sizeof(history))
     {
-        return;
+        return 0;
     }
 
     struct kos_reply_recv_opts opts;

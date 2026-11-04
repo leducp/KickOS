@@ -2,21 +2,17 @@
  * Copyright (c) 2026 Philippe Leduc
  *
  * ESP32-C6 linker script: runs from the 512 KiB HP SRAM at 0x4080_0000. Fetch and load/store
- * share one address there (TRM Table 1.4-1), so ONE pow2 NAPOT code region covers
- * unprivileged fetch AND the shared-RX read.
+ * share one address there (TRM Table 1.4-1), so ONE TOR code window covers unprivileged fetch
+ * AND the shared-RX read.
  */
 
 #include <chip_layout.h>
 #include <amp_partition.ld.h>
 
-/* Full-C++ under PMP folds .eh_frame and .gcc_except_table into the code region, and
-   libstdc++ pushes code and rodata past 64K. */
-#ifndef KICKOS_CODE_SIZE
-#define KICKOS_CODE_SIZE 128K
-#endif
-
-/* The ROM loader places every segment at its VMA. */
+/* The kernel's .data loads where it runs; every image's loads at its template
+   (esp32c6.image.ld). */
 #define KICKOS_RV32_LOADS_AT_VMA 1
+#define KICKOS_RV32_IMAGE_DATA_LOADED 1
 
 MEMORY
 {

@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# The witness first, so it is image 1, restarted once; main watches it and ends the system.
+
+version: 1
+stdout: kernel
+ends: main
+heap: 0
+
+tasks:
+  - name: witness
+    program: restartwit_task
+    priority: 3
+    ceiling: 9
+    restart: { max: 1 }
+    budgets: { threads: 1 }
+
+  - name: main
+    program: main
+    priority: 2
+    ceiling: 9
+    watches: [witness]

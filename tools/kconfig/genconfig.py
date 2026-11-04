@@ -257,12 +257,6 @@ def amp_ports(kconf, nodes, self_node):
                           "twice, which would seat two capabilities for one endpoint and shift "
                           "every index after it.")
         pairs.append((node, port))
-    slots = sym_int(kconf, "KICKOS_MAX_ENDPOINTS")
-    if slots <= len(pairs):
-        return None, (what + ": it names " + str(len(pairs)) + " crossing(s) and the board "
-                      "provisions " + str(slots) + " endpoint slot(s). Each entry holds one for "
-                      "the life of the image, so the partition cannot seat itself and leave the "
-                      "app any. Raise CONFIG_KICKOS_MAX_ENDPOINTS.")
     return pairs, None
 
 

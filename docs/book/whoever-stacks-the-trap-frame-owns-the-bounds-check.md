@@ -153,7 +153,7 @@ trusted one, which is exactly what a validation step needs to exist at all.
 
 ## The cheap answer, why it looks sufficient, and where it still is
 
-Option 4 costs real RAM: `KICKOS_THREAD_SLOTS` blocks that exist whether or not the
+Option 4 costs real RAM: the thread slot count blocks that exist whether or not the
 threads do, carved out of kernel memory below the arena. On a 16 KiB part that is a
 significant fraction of everything. So the obvious question is whether option 3 alone will
 do -- validate the incoming pointer, reserve a **red zone** below it deep enough for the

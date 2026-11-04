@@ -85,12 +85,45 @@ namespace
         }
     };
 
+#if defined(KICKOS_SIMUART_READY_WEDGE) && KICKOS_SIMUART_READY_WEDGE
+    // The instances started, counted past the context in the ring block, which the init reserves
+    // once and no start lays out again.
+    constexpr size_t STARTS_AT = (sizeof(uart::Ctx) + 3u) & ~size_t{3u};
+    static_assert(STARTS_AT + sizeof(uint32_t) <= uart::KOS_UART_BLOCK_SIZE,
+                  "the start count fits the ring block past the context");
+#endif
+
+#if defined(KICKOS_SIMUART_READY_LATE) && KICKOS_SIMUART_READY_LATE
+    // Well past the receiver's first wait on the latch.
+    constexpr uint64_t READY_LATE_NS = 50000000ull;
+#endif
+
     void uart_irq_thread(void* arg)
     {
         uart::Shared* sh = &static_cast<uart::Ctx*>(arg)->sh;
+#if defined(KICKOS_SIMUART_READY_WEDGE) && KICKOS_SIMUART_READY_WEDGE
+        uint32_t* const starts = reinterpret_cast<uint32_t*>(static_cast<unsigned char*>(arg) + STARTS_AT);
+        *starts = *starts + 1u;
+        if (*starts == 1u)
+        {
+            kos::print("[simuart] wedge: ready never set\n");
+            while (true)
+            {
+                kos_sleep_ns(1000000000ull);
+            }
+        }
+#endif
+#if defined(KICKOS_SIMUART_READY_LATE) && KICKOS_SIMUART_READY_LATE
+        kos_sleep_ns(READY_LATE_NS);
+        if (drv::ready_publish(&sh->ready) == 1)
+        {
+            kos::print("[simuart] ready woke its parked receiver\n");
+        }
+#endif
         LoopUart dev;
         dev.sh = sh;
         (void)dev.configure(115200u, 8u, KOS_UART_PARITY_NONE, 1u);
+        kos::print("[simuart] UART service up (loopback over fd 1, IRQ-paced by doorbell)\n");
         uart::irq_loop(dev, sh); // parks in irq_wait; never returns
     }
 
@@ -111,13 +144,7 @@ extern "C"
 
 int simuart_start(struct kos_driver_instance* instance)
 {
-    int const rc = drv::bring_up(k_desc, instance);
-    if (rc != 0)
-    {
-        return rc;
-    }
-    kos::print("[simuart] UART service up (loopback over fd 1, IRQ-paced by doorbell)\n");
-    return 0;
+    return drv::bring_up(k_desc, instance);
 }
 
 }

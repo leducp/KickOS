@@ -34,7 +34,8 @@ struct arch_context
     uintptr_t kernel_sp;
 
 #if KICKOS_REENT_PER_THREAD
-    // tp at every return to this thread: its libc reentrant state, what __getreent returns.
+    // tp at every return to this thread: the top of its libc state carve, whose cell
+    // __getreent reads below it.
     uintptr_t reent_tp;
 #endif
 };

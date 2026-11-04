@@ -72,7 +72,17 @@ function(kickos_export_manifest export_dir)
     _kickos_json_quote("${_name}" _qname)
     list(APPEND _drivers "${_qname}: ${_entry}")
   endforeach()
+  # The apps' own drivers, which only manifest_local.yaml lists.
+  set(_drivers_local ${_drivers})
+  get_property(_local_catalogue GLOBAL PROPERTY KICKOS_LOCAL_DRIVER_CATALOGUE)
+  foreach(_name IN LISTS _local_catalogue)
+    get_target_property(_entry kickos_${_name} KICKOS_DRIVER_CATALOGUE_ENTRY)
+    kickos_driver_clients_exist(${_name} "${_entry}")
+    _kickos_json_quote("${_name}" _qname)
+    list(APPEND _drivers_local "${_qname}: ${_entry}")
+  endforeach()
   list(JOIN _drivers ", " _drivers)
+  list(JOIN _drivers_local ", " _drivers_local)
 
   # Root's region set holds KICKOS_MPU_MAX_REGIONS (cmake/mpu_geometry.cmake). Its static regions
   # and its stack are seated at boot, its domain bringing none, and the init self-grants into the
@@ -90,12 +100,19 @@ function(kickos_export_manifest export_dir)
   if(NOT "${KICKOS_STACK_STRIDE}" STREQUAL "")
     set(_stride ${KICKOS_STACK_STRIDE})
   endif()
-  set(_facts "{\"config\": ${_config}, \"abi\": {\"table\": ${KICKOS_TABLE_VERSION}, \"cap_reserved\": ${KICKOS_CAP_FIRST_DYNAMIC}, \"symbol_prefix\": \"${KICKOS_C_SYMBOL_PREFIX}\"}, \
+  # Each pool's type ceiling (cmake/pool_geometry.cmake), which the composer refuses a sum of
+  # budgets past.
+  string(CONCAT _ceilings "{\"threads\": ${KICKOS_THREAD_SLOT_CEILING}, "
+         "\"tasks\": ${KICKOS_TASK_SLOT_CEILING}, \"domains\": ${KICKOS_SLOT_POOL_CEILING}, "
+         "\"endpoints\": ${KICKOS_SLOT_POOL_CEILING}, \"notifies\": ${KICKOS_SLOT_POOL_CEILING}, "
+         "\"irq_bindings\": ${KICKOS_IRQ_BINDING_CEILING}, "
+         "\"frame_runs\": ${KICKOS_SLOT_POOL_CEILING}, \"ram_owners\": ${KICKOS_SLOT_POOL_CEILING}}")
+  set(_facts "{\"config\": ${_config}, \"abi\": {\"table\": ${KICKOS_TABLE_VERSION}, \"cap_reserved\": ${KICKOS_CAP_FIRST_DYNAMIC}, \"cap_chunk\": ${KICKOS_CAP_CHUNK_TARGET}, \"cap_width_max\": ${KICKOS_CAP_WIDTH_MAX}, \"symbol_prefix\": \"${KICKOS_C_SYMBOL_PREFIX}\"}, \
 \"seams\": ${_seams}, \"amp\": ${_amp}, \"fault_isolation\": ${KICKOS_FAULT_ISOLATION}, \
 \"priority\": [${KICKOS_PRIO_MIN}, ${KICKOS_PRIO_MAX}], \"stack_align\": ${KICKOS_STACK_ALIGN}, \"stack_stride\": ${_stride}, \
 \"init\": {\"status_record_size\": ${KICKOS_INIT_STATUS_RECORD_SIZE}, \
 \"private_record_size\": ${KICKOS_INIT_PRIVATE_RECORD_SIZE}, \"free_regions\": ${_free_regions}}, \
-\"descriptions\": ${_descriptions}, \"default\": ${_default}, \"drivers\": {${_drivers}}}")
+\"ceilings\": ${_ceilings}, \"descriptions\": ${_descriptions}, \"default\": ${_default}, \"drivers\": {${_drivers}}}")
   string(JSON _kind ERROR_VARIABLE _bad TYPE "${_facts}")
   if(_bad)
     message(FATAL_ERROR "KickOS: the manifest's build facts are not JSON: ${_bad}\n${_facts}")
@@ -108,7 +125,18 @@ function(kickos_export_manifest export_dir)
   if(NOT _rc EQUAL 0)
     message(FATAL_ERROR "KickOS: the export manifest was not written:\n${_err}")
   endif()
+  # Beside the manifest and never installed: the same facts and the local drivers as well.
+  string(REPLACE "\"drivers\": {${_drivers}}}" "\"drivers\": {${_drivers_local}}}" _facts_local "${_facts}")
+  kickos_write_if_changed("${export_dir}/manifest_local.json" "${_facts_local}\n")
+  execute_process(
+    COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/manifest/genmanifest.py"
+            "${export_dir}/manifest_local.json" "${export_dir}/manifest_local.yaml"
+    RESULT_VARIABLE _rc ERROR_VARIABLE _err)
+  if(NOT _rc EQUAL 0)
+    message(FATAL_ERROR "KickOS: the local manifest was not written:\n${_err}")
+  endif()
   set_property(DIRECTORY "${PROJECT_SOURCE_DIR}" APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
                "${PROJECT_SOURCE_DIR}/tools/manifest/genmanifest.py"
-               "${PROJECT_SOURCE_DIR}/tools/compose/kickos_compose/manifest_fields.py")
+               "${PROJECT_SOURCE_DIR}/tools/compose/kickos_compose/manifest_fields.py"
+               "${PROJECT_SOURCE_DIR}/user/include/kickos/sys/budget.h")
 endfunction()

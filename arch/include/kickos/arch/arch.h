@@ -248,18 +248,17 @@ void arch_context_init(struct arch_context* ctx,
                        void* stack_base, size_t stack_size,
                        int privileged);
 
+#if KICKOS_TLS && !KICKOS_TLS_FROM_SP
+// Seat the thread pointer a context arch_context_init built resumes with, on a backend that
+// seats it from the context rather than deriving it from SP.
+void arch_context_tls(struct arch_context* ctx, uintptr_t thread_pointer);
+#endif
+
 // Rebuild a nonrunning context to enter entry in privileged thread mode at
 // the stack top. Idempotent and infallible on every backend. Do not access
 // fault status registers; arch_fault_redirect_to_exit handles live contexts.
 void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),
                        void* stack_base, size_t stack_size);
-
-#if KICKOS_REENT_PER_THREAD and not KICKOS_REENT_IN_TCB
-// Make `state` the thread pointer this context resumes with, which is what __getreent returns.
-// Survives arch_ctx_redirect. A backend that keeps `state` in a cell of its own seats the lock
-// id `self` in that cell's next word; one whose thread pointer is the element itself ignores it.
-void arch_context_seat_reent(struct arch_context* ctx, void* state, uint32_t self);
-#endif
 
 // Switch from from to to, immediately or at exception return. The scheduler
 // must allow deferred completion. Call with interrupts masked or from an ISR;
@@ -274,6 +273,14 @@ void arch_switch(struct arch_context* from, struct arch_context* to);
 // Enter the first thread. boot is an optional context save slot that backends
 // may ignore. Callers must not switch back to it.
 void arch_start(struct arch_context* boot, struct arch_context* first);
+
+// The running thread in one read no preemption can split, where a port holds it in a per-core
+// register: kickos/arch/current_thread.h defines KICKOS_ARCH_CURRENT_ONE_READ,
+// arch_current_load and arch_current_store, and the seating core alone stores. A kernel without
+// it reads the core index and that core's cell with interrupts masked.
+#if defined(__has_include) && __has_include(<kickos/arch/current_thread.h>)
+#include <kickos/arch/current_thread.h>
+#endif
 
 // --- Critical section (RAII-wrapped by kernel IrqLock) ---------------------
 typedef uintptr_t arch_irq_state_t;
@@ -541,10 +548,10 @@ uintptr_t arch_ram_base(void);
 size_t arch_ram_size(void);
 void* arch_ram_alloc(size_t size);
 
-// Fill up to max shared application regions: code RX and static data RW/NX.
+// Fill up to max shared application regions: code RX and image `image`'s static data RW/NX.
 // Return their count, or zero if none are modeled. The kernel prepends these
-// to each unprivileged thread's domain and stack regions.
-size_t arch_domain_static_regions(struct arch_mpu_region* out, size_t max);
+// to each unprivileged thread's domain and stack regions, `image` the thread's task's.
+size_t arch_domain_static_regions(struct arch_mpu_region* out, size_t max, size_t image);
 
 // Readable application memory outside the running thread's MPU regions.
 // Called only after the region check fails. Enforcing backends return false.
@@ -606,13 +613,25 @@ enum arch_aspace_result
 size_t arch_aspace_granule(void);
 
 // Create an empty user space with the fixed kernel range mapped, or return
-// null on allocation failure. Later kernel-range edits must reach every space.
+// null on allocation failure or where no residency row is free. Later
+// kernel-range edits must reach every space.
 struct arch_aspace* arch_aspace_create(void);
 
 // Free the root, child tables and owned mapped frames. Invalidate before
 // reusing the root or tag. Null is a no-op. Activate another space first if
 // this one is running. Unmap borrowed frames before destroy to avoid double-free.
 void arch_aspace_destroy(struct arch_aspace* space);
+
+// The frames the space's own tables take, its root included: what a destroy gives back besides
+// the frames they map. O(the live spaces). Null is 0.
+size_t arch_aspace_table_pages(struct arch_aspace* space);
+
+// The frames arch_aspace_create takes for a new space.
+size_t arch_aspace_create_pages(void);
+
+// The table frames arch_aspace_map of [va, va + pages) would add to `space`: 0 for a range
+// already mapped, or one the map refuses. O(the range's tables).
+size_t arch_aspace_map_tables(struct arch_aspace* space, uintptr_t va, size_t pages);
 
 // Map pages granules from va to pa, or unmap them. Changes, including maps
 // into empty slots, must be visible locally on return. The active space may
@@ -708,10 +727,10 @@ void arch_dcache_invalidate(void* addr, size_t bytes);
 // chip_tables.h; any other chip with KICKOS_MEMORY_ENFORCED, MMU chips included, defines this.
 struct arch_reserved_span arch_reserved_blocks(void);
 
-// The physical apertures a user DEVICE window may lie in on a translating backend: device space
+// The physical apertures a user DEVICE window may lie in on every enforcing backend: device space
 // holding no RAM and no firmware, arch_reserved_blocks still carving the kernel's own devices
 // out of it. Empty admits no window. A chip whose headers are generated is served from its
-// chip_tables.h; any other chip of a translating arch defines this.
+// chip_tables.h; any other enforcing chip defines this.
 struct arch_reserved_span arch_window_apertures(void);
 
 // The windows of the grantable devices that master the bus: a window over one reaches memory by
@@ -811,12 +830,15 @@ bool arch_irq_line_kernel_owned(int line);
 // how many bytes of buf went out or were queued. A UART shared between images is written polled
 // and stops at the first byte the node's claim no longer covers, so the count can be short. A CR
 // may already have gone out for an uncounted newline: cr_pending carries it until the LF lands. A
-// null cr_pending is a kernel line, which on ARM64 renews a claim no peer took.
+// null cr_pending is a kernel line, which on ARM64 renews a claim no peer took. Each wire byte is
+// its own masked span; the caller keeps the node's other contexts out of the line.
 int arch_console_write_retry(char const* buf, size_t n, bool* cr_pending);
 // A user writer the claim refused, called masked from the park: marks this node waiting and
 // offers once more. 0 once this node holds the claim, else the microseconds to park for at most:
 // the release of the grant that refused it rings this node's doorbell.
 uint32_t arch_console_claim_wait(void);
+// The microseconds left on this node's own live grant, 0 where it holds none. Caller masked.
+uint32_t arch_console_claim_left(void);
 #endif
 // Bounded, polled output for panic, faults and startup, safe without scheduling or IRQs. It
 // answers false once the channel stalled, so more bytes would stall too, having dropped what it

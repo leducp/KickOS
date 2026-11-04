@@ -56,7 +56,7 @@ namespace
         g_park_kind = WAIT_NONE;
         l->writer = seat_pool(0, PRIO_WRITER);
         l->writer->affinity = 1u;
-        attach_caps(l->writer, KICKOS_CAP_CHILD_WIDTH);
+        attach_caps(l->writer, KICKOS_SEAM_CAP_WIDTH);
         {
             IrqLock lock;
             sched::reschedule(nullptr, lock);
@@ -221,27 +221,17 @@ TEST_F(ConsoleLive, a_receiver_of_a_live_console_takes_the_line)
     EXPECT_EQ(memcmp(g_receiver_buf, "abcd", 4), 0);
 }
 
-// O_NONBLOCK is its task's: the writer's task set it, so its send on the console never parks, and
-// no other task's flag moved.
-TEST_F(ConsoleLive, a_non_blocking_task_never_parks_on_the_console)
+// A send of timeout 0, the libc of a non-blocking task, never parks on the console.
+TEST_F(ConsoleLive, a_send_of_timeout_zero_never_parks_on_the_console)
 {
     ASSERT_NO_FATAL_FAILURE(stage(&g_live, true));
-    Task* const mine = task(1);
-    Task* const other = task(2);
-    join_task(g_live.writer, mine);
-    EXPECT_EQ(task_nonblock_call(KOS_NONBLOCK_SET), 1);
-    EXPECT_TRUE(task_nonblocking(mine));
-    EXPECT_FALSE(task_nonblocking(other)) << "a sibling task went non-blocking";
     uint32_t const parked = g_parked;
-    EXPECT_EQ(send(g_live, KOS_TIMEOUT_NONE), -KOS_ETIMEDOUT);
+    EXPECT_EQ(send(g_live, 0u), -KOS_ETIMEDOUT);
     EXPECT_EQ(g_parked, parked);
-    EXPECT_EQ(task_nonblock_call(KOS_NONBLOCK_GET), 1);
-    EXPECT_EQ(task_nonblock_call(KOS_NONBLOCK_CLEAR), 0);
-    EXPECT_EQ(task_nonblock_call(3), -KOS_EINVAL);
 }
 
-// The control: cleared, the same send parks again, until the task's end answers it.
-TEST_F(ConsoleLive, a_blocking_task_parks_on_the_console)
+// The control: a send of no timeout parks, until the task's end answers it.
+TEST_F(ConsoleLive, a_send_of_no_timeout_parks_on_the_console)
 {
     ASSERT_NO_FATAL_FAILURE(stage(&g_live, true));
     join_task(g_live.writer, task(1));
@@ -252,59 +242,6 @@ TEST_F(ConsoleLive, a_blocking_task_parks_on_the_console)
     });
     EXPECT_EQ(send(g_live, KOS_TIMEOUT_NONE), -KOS_ECONNREFUSED);
     EXPECT_TRUE(g_parked_on_send);
-}
-
-// Only the console: a non-blocking task's send on an ordinary endpoint with no receiver waiting
-// parks as it always did.
-TEST_F(ConsoleLive, a_non_blocking_task_parks_on_another_endpoint)
-{
-    ASSERT_NO_FATAL_FAILURE(stage(&g_live, true));
-    join_task(g_live.writer, task(1));
-    (void)task_nonblock_call(KOS_NONBLOCK_SET);
-    Endpoint* const plain = endpoint();
-    plain->recv_holders = 1;
-    uint32_t cap = 0;
-    {
-        IrqLock lock;
-        int const handle = kernel().endpoints.handle_for(kernel().endpoints.index_of(plain));
-        ASSERT_EQ(cap_install(g_live.writer, handle, CapType::CAP_ENDPOINT, CAP_SIGNAL, &cap), 0);
-    }
-    wake_next_park([](Thread* parked) {
-        g_parked_on_send = parked->wait_kind == WAIT_EP_SEND;
-        IrqLock lock;
-        thread_abort_park(parked, -KOS_ETIMEDOUT, lock);
-    });
-    g_parked_on_send = false;
-    EXPECT_EQ(endpoint_send(cap, reinterpret_cast<uintptr_t>(g_live.buf), sizeof(g_live.buf),
-                            KOS_TIMEOUT_NONE),
-              -KOS_ETIMEDOUT);
-    EXPECT_TRUE(g_parked_on_send) << "a non-blocking task's ordinary send did not park";
-}
-
-// A timed send keeps its own timeout for a non-blocking task: only a send of no timeout is
-// answered at once.
-TEST_F(ConsoleLive, a_non_blocking_task_keeps_a_timed_sends_timeout)
-{
-    ASSERT_NO_FATAL_FAILURE(stage(&g_live, true));
-    join_task(g_live.writer, task(1));
-    (void)task_nonblock_call(KOS_NONBLOCK_SET);
-    g_parked_on_send = false;
-    wake_next_park([](Thread* parked) {
-        g_parked_on_send = parked->wait_kind == WAIT_EP_SEND;
-        IrqLock lock;
-        thread_abort_park(parked, -KOS_ETIMEDOUT, lock);
-    });
-    EXPECT_EQ(send(g_live, 100u), -KOS_ETIMEDOUT);
-    EXPECT_TRUE(g_parked_on_send) << "a timed send was answered before its timeout";
-}
-
-// A thread of no task has no flag to set or read.
-TEST_F(ConsoleLive, a_thread_of_no_task_is_refused_the_flag)
-{
-    ASSERT_NO_FATAL_FAILURE(stage(&g_live, true));
-    g_live.writer->task = nullptr;
-    EXPECT_EQ(task_nonblock_call(KOS_NONBLOCK_GET), -KOS_EINVAL);
-    EXPECT_EQ(task_nonblock_call(KOS_NONBLOCK_SET), -KOS_EINVAL);
 }
 
 namespace
@@ -322,7 +259,7 @@ TEST_F(ConsoleLive, a_writer_parked_on_a_replaced_console_is_answered_and_follow
         g_parked_on_send = parked->wait_kind == WAIT_EP_SEND;
         Thread* const publisher = seat_pool(1, PRIO_WRITER - 1);
         detach_ready(publisher);
-        attach_caps(publisher, KICKOS_CAP_CHILD_WIDTH);
+        attach_caps(publisher, KICKOS_SEAM_CAP_WIDTH);
         Endpoint* const next = endpoint();
         IrqLock lock;
         g_next_console = kernel().endpoints.handle_for(kernel().endpoints.index_of(next));

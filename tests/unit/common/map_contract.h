@@ -20,6 +20,7 @@
 #define KICKOS_TESTS_UNIT_COMMON_MAP_CONTRACT_H
 
 #include <kickos/arch/arch.h>
+#include <kickos/pools.h>
 
 #include <gtest/gtest.h>
 
@@ -523,6 +524,95 @@ TEST_F(MAP_CONTRACT_FIXTURE, APartiallyMappedUnmapIsRefusedAndKeepsTheLeaf)
 
     EXPECT_EQ(arch_aspace_frame_at(space, va_a), PA_UNPOOLED);
     EXPECT_EQ(kickos::testfix::ops_count(), 0u);
+}
+
+// A space past the residency record's rows is refused and keeps no frame, so every space a
+// create answers has the row its table count lives in.
+TEST_F(MAP_CONTRACT_FIXTURE, ASpacePastTheResidencyRowsIsRefusedAndKeepsNoFrame)
+{
+    size_t const rows = static_cast<size_t>(kickos::kickos_kernel_pools.domain_count);
+    ASSERT_LT(rows + 4u, static_cast<size_t>(kickos::testfix::SYSOPS_FRAMES))
+        << "the seam's frame pool cannot fill the record";
+    struct arch_aspace* filler[kickos::testfix::SYSOPS_FRAMES] = {};
+    size_t made = 0;
+    while (made <= rows)
+    {
+        filler[made] = arch_aspace_create();
+        if (filler[made] == nullptr)
+        {
+            break;
+        }
+        made++;
+    }
+    ASSERT_GT(made, 0u);
+    ASSERT_LT(made, rows) << "the fixture's space holds a row, so fewer than the rows are left";
+    FrameCensus const census;
+    EXPECT_EQ(arch_aspace_create(), nullptr);
+    EXPECT_EQ(census.taken(), census.given()) << "the refused create kept a frame";
+    arch_aspace_destroy(filler[0]);
+    filler[0] = arch_aspace_create();
+    EXPECT_NE(filler[0], nullptr) << "a destroy gave its row back";
+    EXPECT_EQ(arch_aspace_table_pages(filler[0]), arch_aspace_create_pages());
+    for (size_t i = 0; i < made; i++)
+    {
+        arch_aspace_destroy(filler[i]);
+    }
+}
+
+// What a map will build is what it builds, and what a space counts as its own: a new space takes
+// arch_aspace_create_pages frames, a map exactly the tables arch_aspace_map_tables predicted, a
+// range spanning several leaf tables included, and a mapped range predicts none. An unmap, and a
+// map that runs out of frames and unwinds, take off the count every table they give back.
+TEST_F(MAP_CONTRACT_FIXTURE, AMapBuildsTheTablesItPredictsAndTheSpaceCountsThem)
+{
+    FrameCensus const created;
+    struct arch_aspace* const fresh = arch_aspace_create();
+    ASSERT_NE(fresh, nullptr);
+    EXPECT_EQ(created.taken(), arch_aspace_create_pages());
+    EXPECT_EQ(arch_aspace_table_pages(fresh), arch_aspace_create_pages());
+    size_t const g = arch_aspace_granule();
+    size_t const span = (static_cast<size_t>(1) << 21) / g;
+    struct Map
+    {
+        uintptr_t va;
+        size_t pages;
+    };
+    Map const maps[] = {{va_a, 1}, {va_a + g, 3}, {va_b - 2 * g, 2 * span + 4}};
+    size_t built = 0;
+    for (Map const& m : maps)
+    {
+        size_t const want = arch_aspace_map_tables(fresh, m.va, m.pages);
+        FrameCensus const census;
+        ASSERT_EQ(arch_aspace_map(fresh, m.va, PA_DEVICE, m.pages, ARCH_MAP_R, ARCH_MAP_DEVICE),
+                  ARCH_ASPACE_OK);
+        EXPECT_EQ(census.taken(), want) << "at " << m.va << " for " << m.pages << " pages";
+        built = built + want;
+        EXPECT_EQ(arch_aspace_table_pages(fresh), arch_aspace_create_pages() + built);
+        EXPECT_EQ(arch_aspace_map_tables(fresh, m.va, m.pages), 0u);
+    }
+    EXPECT_GT(built, 0u);
+    {
+        size_t const table_span = (g / sizeof(uint64_t)) * g;
+        uintptr_t const far = va_b + 4 * table_span - g;
+        size_t const want = arch_aspace_map_tables(fresh, far, 2);
+        ASSERT_GT(want, 0u);
+        kickos::testfix::set_frame_budget(static_cast<uint32_t>(want - 1u));
+        EXPECT_EQ(arch_aspace_map(fresh, far, PA_DEVICE, 2, ARCH_MAP_R, ARCH_MAP_DEVICE),
+                  ARCH_ASPACE_ENOMEM);
+        kickos::testfix::set_frame_budget(kickos::testfix::SYSOPS_FRAMES);
+        EXPECT_EQ(arch_aspace_table_pages(fresh), arch_aspace_create_pages() + built)
+            << "the unwind of a map out of frames";
+    }
+    for (Map const& m : maps)
+    {
+        FrameCensus const census;
+        EXPECT_EQ(arch_aspace_unmap(fresh, m.va, m.pages), ARCH_ASPACE_OK);
+        built = built - census.given();
+        EXPECT_EQ(arch_aspace_table_pages(fresh), arch_aspace_create_pages() + built)
+            << "after the unmap at " << m.va << " for " << m.pages << " pages";
+    }
+    EXPECT_EQ(built, 0u) << "the unmaps gave back every table the maps built";
+    arch_aspace_destroy(fresh);
 }
 
 #endif

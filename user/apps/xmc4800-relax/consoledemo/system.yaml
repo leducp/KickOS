@@ -16,6 +16,6 @@ tasks:
     priority: 12
 
   - name: main
-    entry: kickos_main
+    program: main
     priority: 2
     ceiling: 11

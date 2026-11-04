@@ -45,7 +45,7 @@ The pieces, all in the tree:
 - **The service loop** (`user/include/kickos/sys/spi_service.h`): `serve_loop` and `serve_one`, the
   part of the driver that speaks the wire.
 - **The wire format** (`user/include/kickos/sys/bus.h`): the request and reply structs.
-- **The client** (`user/apps/frdmk64f/k64dspi/main.cc`): `k64dspi_main`.
+- **The client** (`user/apps/frdmk64f/k64dspi/main.cc`): `main`.
 
 No emulator in this tree models the K64F, so nothing in this chapter was run under gdb. Two kinds
 of Try-it follow. The static ones read the linked images with `arm-none-eabi-nm` and
@@ -102,10 +102,10 @@ tasks:
     priority: 12
 
   - name: client
-    entry: k64dspi_main
+    program: main
     priority: 9
     ceiling: 9
-    uses: [/svc/spi0]
+    uses: [{ path: /svc/spi0, slots: [0] }]
 ```
 
 Read it line by line, because every grant in the rest of the chapter starts here.
@@ -117,8 +117,10 @@ Read it line by line, because every grant in the rest of the chapter starts here
   that device its address and size: `dspi0: { window: [0x4002C000, 0x40], ... }`. A window is a
   range of device addresses a thread is allowed to reach.
 - `serves: /svc/spi0` makes the driver the receiver of an **endpoint** called `/svc/spi0`, and
-  `uses: [/svc/spi0]` gives the client the right to call it. An endpoint is the kernel object a
-  call and its reply meet on ([05](05-call-and-reply.md)).
+  `uses: [{ path: /svc/spi0, slots: [0] }]` gives the client the right to call it. An endpoint is
+  the kernel object a call and its reply meet on ([05](05-call-and-reply.md)). The client's copy
+  of the endpoint carries a badge naming device slot 0, and the service refuses it any other
+  slot, so a second client on the bus would be given slots of its own.
 - The client gets nothing else: no window, no interrupt line, no authority bit. Its whole power
   over the SPI bus is one capability it can call through.
 - There is **no interrupt line** (`lines:`) anywhere. This engine polls the controller's FIFOs
@@ -245,10 +247,11 @@ by the driver thread. The `kos_spi_*` three are the proxy, used by the client (t
 side](../reference/bus-service.md), [Reference: architecture, Driver packaging: class versus
 service](../reference/architecture.md#driver-packaging-class-versus-service)
 
-### Stop 3: the init makes the endpoint, then starts the driver task
+### Stop 3: the init makes the endpoint, then creates the driver task
 **Where:** `system/init/compose/walk.cc`, `Walk::run`, `Walk::boot`, `Walk::scan`, `Walk::start`;
-`system/init/compose/driver_path.cc`, `driver_path::start`; `system/driver/mk64f/k64dspi/k64dspi.cc`,
-`k64dspi_spi_start`; `user/src/driver_service.cc`, `bring_up`, `instance_bring_up`, `spawn_one`
+`system/init/compose/driver_path.cc`, `driver_path::start`, `kickos_driver_task`;
+`kernel/syscall/syscall_thread.cc`, `task_create_call`; `system/driver/mk64f/k64dspi/k64dspi.cc`,
+`k64dspi_spi_start`; `user/src/driver_service.cc`, `bring_up`
 
 The init is the first unprivileged program; it holds every authority bit and hands them down
 ([08, Stop 4](08-spawn-and-caps.md)). `Walk::run` is three steps in a loop: `boot` once, then
@@ -261,16 +264,18 @@ capability on, and can hand out the rights it no longer holds, but it can never 
 driver thread will be the endpoint's only receiver. That matters again in Stop 12.
 
 `Walk::scan` goes through the tasks in file order. The driver uses nothing, so it starts first.
-Because its table entry names a driver, `Walk::start` does not create the task itself: it calls
-`driver_path::start`, which fills a `kos_driver_instance` (the window's base and size from the
-grant, the priority, the endpoint, a badged copy of the init's notification to watch the task
-with) and calls the start function the table points at, `k64dspi_spi_start`. That function runs
-**on the init's thread**:
+Because its table entry names a driver, `Walk::start` calls `driver_path::start`, which creates
+the task from its declaration with `kos_task_create`, passing the endpoint with
+`KOS_CAP_WAIT | KOS_CAP_TRANSFER` (the init can hand out a right it does not hold because it kept
+`KOS_CAP_HANDOUT`), then arms its watch. The kernel seats the declared window `{0x4002C000, 0x40}`
+on the task's entry thread and starts it at priority 12 with the authority the driver's
+`kickos_add_driver` names, `pinmux` here. That thread runs `kickos_driver_task`, which fills a
+`kos_driver_instance` from its table entry (the window's base and size, the priority) and calls
+the start function the table points at, `k64dspi_spi_start`:
 
 ```cpp
     int k64dspi_spi_start(struct kos_driver_instance* instance)
     {
-        // Here, on the init's thread: the driver's threads hold no pinmux authority.
         int32_t const muxed = k64dspi_bus_mux(instance->mmio_base);
         if (muxed != 0)
         {
@@ -283,32 +288,28 @@ with) and calls the start function the table points at, `k64dspi_spi_start`. Tha
 
 Pin muxing chooses what a pin is for (GPIO, SPI clock, UART, ...). It goes through the
 `kos_pinmux_set` syscall, which the kernel allows only to a holder of the `pinmux` authority bit.
-The init holds it; the driver thread will not. So the one privileged step of the bring-up happens
-here, before the driver exists. `k64dspi_bus_mux` (renamed `k64dspi_service_bus_mux` in this
-target) looks the bus up by its base in the generated `board_buses.h`, sets the three bus pins to
-their SPI function (alternative 2) and the chip select to GPIO.
+`k64dspi_bus_mux` (renamed `k64dspi_service_bus_mux` in this target) looks the bus up by its base
+in the generated `board_buses.h`, sets the three bus pins to their SPI function (alternative 2)
+and the chip select to GPIO.
 
-Then `bring_up` follows the descriptor. It checks it (`valid`), checks the instance against it
-(`instance_admits`), and in `instance_bring_up` creates the task (`kos_task_create`), grants it its
-priority ceiling (`kos_task_sched_grant`), sets the init's watch on it (`kos_task_watch`, with the
-endpoint as the readiness signal), and spawns the one thread with `spawn_one`. `spawn_one` turns
-the descriptor's thread into a `kos_thread_create` call: the window `{0x4002C000, 0x40}` as a
-device window, one delegated capability (the endpoint, taken from the init's capability with the
-rights mask `KOS_CAP_WAIT`: the init could hand out a right it does not hold because it kept
-`KOS_CAP_HANDOUT`), the window base as the thread's argument, and **authority 0**. The spawn
-itself is the path [08](08-spawn-and-caps.md) walks from Stop 8 on.
+Then `bring_up` follows the descriptor. It checks it (`valid`) and checks the instance against it
+(`instance_admits`). The descriptor has one thread, so there is nothing to spawn: the entry
+thread narrows its endpoint capability to `KOS_CAP_WAIT` and runs the thread's body itself, with
+the window base as its argument. A descriptor with more threads would see each spawned into the
+task first, along the path [08](08-spawn-and-caps.md) walks from Stop 8 on.
 
 **Try it:** the start shim's calls, in the image.
 
 ```
 $ arm-none-eabi-objdump -d -C --no-show-raw-insn $PROXY --disassemble=k64dspi_spi_start | grep -E 'bl|b\.w'
-    1e2e:	bl	1e98 <k64dspi_service_bus_mux>
-    1e3e:	b.w	2c3c <kickos::driver::bring_up(kickos::driver::Descriptor const&, kos_driver_instance*)>
-    1e44:	bl	25fe <kos_print>
 ```
 
+Expect a call to `k64dspi_service_bus_mux`, then a branch to
+`kickos::driver::bring_up(kickos::driver::Descriptor const&, kos_driver_instance*)`.
+<!-- unverified: needs a FRDM-K64F build -->
+
 On a board: `break k64dspi_spi_start`, `continue`, then `p *instance`. Expect `mmio_base =
-0x4002c000`, `mmio_window = 64`, `priority = 12`, and `task = 0` (no task yet; `KOS_TASK_NONE`).
+0x4002c000`, `mmio_window = 64` and `priority = 12`.
 <!-- unverified: needs a FRDM-K64F -->
 
 **Why, and the contract:** [Reference: bus-service, The bring-up](../reference/bus-service.md),
@@ -322,8 +323,8 @@ On a board: `break k64dspi_spi_start`, `continue`, then `p *instance`. Expect `m
 `kernel/syscall/syscall_mem.cc`, `caller_holds_mmio_block`; `arch/arm/chip/mk64f/chip_mk64f.cc`,
 `arch_periph_enable`
 
-The driver thread starts unprivileged, at priority 12, holding one window and one capability.
-Its first act is the bus bring-up, through the class:
+The driver thread is unprivileged, at priority 12, holding one window and one capability, past
+its start. Its first act is the bus bring-up, through the class:
 
 ```cpp
     void bus_thread(void* arg)
@@ -403,7 +404,7 @@ DSPI0 register map](../reference/bus-service.md)
 ### Stop 5: the driver parks in its receive, and the init starts the client
 **Where:** `user/include/kickos/sys/spi_service.h`, `serve_loop`; `kernel/task/task.cc`,
 `task_note_receive`; `system/init/compose/walk.cc`, `Walk::wake`, `Walk::startable`,
-`Walk::serving`, `Walk::spawn`
+`Walk::serving`, `Walk::create`
 
 After printing `[k64dspi] SPI service up (DSPI0, polled FIFO, GPIO CS)`, the driver thread
 enters `serve_loop` and never leaves it while the system runs:
@@ -426,19 +427,19 @@ enters `serve_loop` and never leaves it while the system runs:
 
 `kos_reply_recv` is the fused "reply to the last caller, then wait for the next one" syscall. On
 the first pass there is no caller yet (`reply_cap` is `KOS_CAP_NONE`), so it only waits, on the
-endpoint at `KOS_SPI_CAP_EP`, which is `KOS_SPAWN_DELEGATED_CAP0`: the slot `spawn_one` put it
-in. The thread parks ([05, Stop 3](05-call-and-reply.md)). The device handles live in `SlotTable
+endpoint at `KOS_SPI_CAP_EP`, which is `KOS_SPAWN_DELEGATED_CAP0`: the slot the task's create
+put it in. The thread parks ([05, Stop 3](05-call-and-reply.md)). The device handles live in `SlotTable
 slots` on this thread's own stack, so the driver keeps no per-device state in `.bss`.
 
-Parking is also the driver's signal that it is ready. The init's `kos_task_watch` named the
-endpoint, so the first time a member of the task waits on it, `task_note_receive` marks the task
+Parking is also the driver's signal that it is ready. The declaration names the endpoint as the
+task's ready one, so the first time a member of the task waits on it, `task_note_receive` marks the task
 ready and raises the init's watch bit. The init, asleep in `Walk::wake`, reads the task's state,
 sees `KOS_TASK_READY`, and records it.
 
 On the next `Walk::scan`, `Walk::startable` lets the client start: every task it `uses` is now
 `serving`. This is what the composition's `uses:` line buys. A client is never started against an
 endpoint nobody receives on, so its first call cannot meet an empty endpoint. The client is a
-plain task, so `Walk::start` creates it itself, and `Walk::spawn` turns its one grant into a
+plain task, so `Walk::start` creates it itself, and `Walk::create` turns its one grant into a
 delegated capability: source the init's endpoint capability, rights mask `KOS_CAP_SIGNAL`, landing
 at slot `KOS_SPAWN_DELEGATED_CAP0 + 0`. The client cannot receive on the endpoint, and since its
 copy carries no `KOS_CAP_TRANSFER`, it cannot pass it on either.
@@ -446,8 +447,8 @@ copy carries no `KOS_CAP_TRANSFER`, it cannot pass it on either.
 **Try it:** in the image, `serve_loop` is inlined into `bus_thread`: the disassembly in Stop 12
 shows `bus_thread` calling `kos_reply_recv` and `serve_one` directly. On a board,
 `break kickos::task_note_receive`, `continue`: the first stop is the driver thread's first
-receive (nothing else in this system receives on a watched endpoint). Then `break k64dspi_main`,
-`continue`, and `p *self` to see the client's table entry (`priority = 9`, `cap_grant_count = 1`).
+receive (nothing else in this system receives on a watched endpoint). Then `break main`,
+`continue`, and `p *kos_self()` to see the client's table entry (`priority = 9`, `cap_grant_count = 1`).
 <!-- unverified: needs a FRDM-K64F -->
 
 **Why, and the contract:** [Reference: Synchronous call/reply IPC](../reference/ipc-call-reply.md)
@@ -455,15 +456,15 @@ receive (nothing else in this system receives on a watched endpoint). Then `brea
 (the watch)
 
 ### Stop 6: the client opens the bus through the SPI class
-**Where:** `user/apps/frdmk64f/k64dspi/main.cc`, `k64dspi_main`, `open_device`;
+**Where:** `user/apps/frdmk64f/k64dspi/main.cc`, `main`, `open_device`;
 `user/src/grant_lookup.cc`, `kos_grant_endpoint`; `user/lib/spi_proxy/spi_proxy.cc`,
 `kos_spi_bus_open`, `kos_spi_device_open`, `seat_req`
 
-The client's entry receives `self`, its own entry in the init's table. It looks its capability up
-by the name the composition used:
+The client finds its capability by the name the composition used, among the grants of its own
+declaration, which `kos_self()` names:
 
 ```cpp
-    kos_cap_t const ep = kos_grant_endpoint(self, "/svc/spi0");
+    kos_cap_t const ep = kos_grant_endpoint("/svc/spi0");
     if (ep == KOS_CAP_NONE)
     {
         kos::print("[k64dspi] ERROR: no /svc/spi0 endpoint\n");
@@ -499,7 +500,7 @@ slot, nothing more.
 **Try it:** what the client's entry calls, in each image.
 
 ```
-$ arm-none-eabi-objdump -d -C --no-show-raw-insn $PROXY --disassemble=k64dspi_main | grep -E '\bbl\b' | head -4
+$ arm-none-eabi-objdump -d -C --no-show-raw-insn $PROXY --disassemble=main | grep -E '\bbl\b' | head -4
      426:	bl	3028 <kos_grant_endpoint>
      430:	bl	25fe <kos_print>
      440:	bl	19e6 <kos_spi_bus_open>
@@ -760,7 +761,7 @@ discipline](../reference/bus-service.md), [Reference: ipc-call-reply](../referen
 
 ### Stop 10: the same client, built to own the controller itself
 **Where:** `user/apps/frdmk64f/k64dspi/systems/local.yaml`; `user/apps/frdmk64f/k64dspi/CMakeLists.txt`;
-`user/apps/frdmk64f/k64dspi/main.cc`, `k64dspi_main` (the `KICKOS_SPI_LOCAL` branch);
+`user/apps/frdmk64f/k64dspi/main.cc`, `main` (the `KICKOS_SPI_LOCAL` branch);
 `system/CMakeLists.txt` (`KICKOS_SPI_LOCAL_ENGINE`); `system/driver/mk64f/k64dspi/spi_dspi.cc`,
 `k64dspi_bus_mux`
 
@@ -771,7 +772,7 @@ application's `CMakeLists.txt` picks the other composition:
 ```yaml
 tasks:
   - name: client
-    entry: k64dspi_main
+    program: main
     priority: 9
     ceiling: 9
     devices: [/dev/dspi0]
@@ -785,7 +786,7 @@ entry takes the other branch of the same source file:
 
 ```cpp
 #if KICKOS_SPI_LOCAL
-    kos_window_t const window = kos_grant_mmio(self, "/dev/dspi0");
+    kos_window_t const window = kos_grant_mmio("/dev/dspi0");
     uintptr_t const win = reinterpret_cast<uintptr_t>(kos_window_addr(window));
     // ...
     int32_t const muxed = k64dspi_bus_mux(win);
@@ -828,11 +829,11 @@ consumer chooses the coupling" seen from the code.
 ```
 $ arm-none-eabi-nm $LOCAL | grep -E ' T (kos_spi|k64dspi)_'
 000018c4 T k64dspi_bus_mux
-00000410 T k64dspi_main
+00000410 T main
 00001908 T kos_spi_bus_open
 00001948 T kos_spi_device_open
 00001ac4 T kos_spi_transfer
-$ arm-none-eabi-objdump -d -C --no-show-raw-insn $LOCAL --disassemble=k64dspi_main | grep -E '\bbl\b' | head -4
+$ arm-none-eabi-objdump -d -C --no-show-raw-insn $LOCAL --disassemble=main | grep -E '\bbl\b' | head -4
      42a:	bl	20e0 <kos_grant_mmio>
      43c:	bl	18c4 <k64dspi_bus_mux>
      44e:	bl	1908 <kos_spi_bus_open>

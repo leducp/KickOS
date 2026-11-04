@@ -6,6 +6,8 @@
 // This allows a peer blocked on the lock to answer without leaving its
 // dispatch epoch. A doorbell reply alone does not prove dispatch completion.
 
+#include "../common/seam_pools.h"
+
 #include "irq_seam.h"
 
 #include <kickos/notify.h>
@@ -127,9 +129,9 @@ namespace kickos
         void reset_kernel()
         {
             Kernel& k = kernel();
-            for (int i = 0; i < KICKOS_MAX_IRQ_HANDLES; i++)
+            for (int i = 0; i < KICKOS_SEAM_IRQ_BINDINGS; i++)
             {
-                k.irq_refs[i] = 0;
+                k.irq_bindings.refs()[i] = 0;
                 if (k.irq_bindings.live_index(k.irq_bindings.handle_for(i)) >= 0)
                 {
                     k.irq_bindings.free(k.irq_bindings.handle_for(i));
@@ -276,6 +278,14 @@ namespace kickos
         return 0;
     }
 
+    CapEntry* cap_install_at(Thread*, int, int obj, CapType, uint8_t rights, uint32_t)
+    {
+        g_installed_handle = obj;
+        g_installed_rights = rights;
+        g_installed_obj = kernel().irq_bindings.resolve(obj);
+        return &g_note_entry;
+    }
+
     // The notification half of the capability layer, flat: one object, one entry, no pool.
     CapEntry* cap_lookup(Thread*, uint32_t)
     {
@@ -303,12 +313,26 @@ namespace kickos
     {
     }
 
-    // The object budget reads a task's capability tables, which this seam does not build:
-    // every arm here runs one claim on a threadless fixture, so admitting all of them is the
-    // real kernel's answer for a caller holding no task.
-    bool task_object_admit(CapType, Task const*)
+    // The budget reads a task's capability tables, which this seam does not build: every arm
+    // here runs one claim on a threadless fixture, which the seam admits.
+    bool task_admit(Task const*, BudgetKind, uint32_t)
     {
         return true;
+    }
+
+    // No task pays for a retiring binding here.
+    Task const* cap_drop_payer()
+    {
+        return nullptr;
+    }
+
+    HeadList* task_irq_retiring(Task const*)
+    {
+        return nullptr;
+    }
+
+    void task_irq_retired(Task*)
+    {
     }
 
     bool task_object_admit_binding_notify(int, int)
@@ -345,7 +369,7 @@ namespace kickos
         int const obj = g_installed_handle;
         g_installed_obj = nullptr;
         g_installed_handle = -1;
-        if (obj >= 0)
+        if (obj != -1)
         {
             irq_ref_drop(obj, kickos::IrqLock());
         }

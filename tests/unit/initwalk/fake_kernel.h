@@ -54,7 +54,8 @@ namespace fake
     {
         NOTIFY,
         ENDPOINT,
-        LINE
+        LINE,
+        PROGRAM
     };
 
     struct Object
@@ -74,7 +75,8 @@ namespace fake
         kos_cap_t handle;
         size_t object;
         uint32_t rights;
-        int badge; // -1 for none
+        // A notification's bit or an endpoint's badge, -1 for none.
+        int64_t badge;
     };
 
     struct Thread
@@ -85,7 +87,8 @@ namespace fake
         std::string name;
         kos_thread_params params;
         std::vector<kos_window> windows;
-        std::vector<Cap> caps; // the delegated capabilities, at slot KOS_SPAWN_DELEGATED_CAP0 + i
+        std::vector<Cap> caps; // the delegated capabilities, then the lines a create claimed for it
+        std::vector<uint16_t> dest; // each delegated capability's destination, 0 for its default
         bool live;
         bool sweeping; // ended, its capabilities not yet released
     };
@@ -102,6 +105,8 @@ namespace fake
         int64_t watch_object; // -1 for no watch
         int watch_badge;
         int64_t ready_object; // -1 for none
+        bool ready_seated;    // its ready endpoint came with its kos_task_create
+        uint16_t decl;        // its declaration plus one, 0 for an undeclared task
         uint32_t state;
         int status;
         bool held;     // its creator's hold, which a kill drops
@@ -139,20 +144,19 @@ namespace fake
         uint32_t self_grants;
     };
 
-    // The kernel build's ceilings, 0 for none. A call past one answers as the kernel does.
+    // The system's ceilings, 0 for none. A call past one answers as the kernel does.
     struct Limits
     {
-        uint32_t cap_table;     // KICKOS_CAP_TABLE_SUPPLY, the reserved indices included
-        uint32_t tasks;         // KICKOS_MAX_TASKS less the idle tasks and the init's
-        uint32_t threads;       // KICKOS_MAX_THREADS
-        uint32_t endpoints;     // KICKOS_MAX_ENDPOINTS
-        uint32_t notifications; // KICKOS_MAX_NOTIFY
-        uint32_t irq_handles;   // KICKOS_MAX_IRQ_HANDLES
-        uint32_t domains;       // KICKOS_MAX_DOMAINS
+        uint32_t cap_table;     // the init's table width, the reserved indices included
+        uint32_t tasks;         // the task pool less the idle tasks and the init's
+        uint32_t threads;       // the thread pool less root's slot
+        uint32_t endpoints;     // the endpoint pool
+        uint32_t notifications; // the notification pool
+        uint32_t irq_handles;   // the IRQ binding pool
+        uint32_t domains;       // the domain pool
         uint32_t free_regions;  // the regions root's set takes past its static ones and its stack
-        uint32_t ram_owners;    // KICKOS_RAM_OWNER_SLOTS, on a region board that enforces its unit
-        // The per-task budgets: KICKOS_TASK_ENDPOINT_BUDGET, KICKOS_TASK_NOTIFY_BUDGET and
-        // KICKOS_TASK_IRQ_HANDLE_BUDGET.
+        uint32_t ram_owners;    // the RAM owner table, on a region board that enforces its unit
+        // The init's ENDPOINTS, NOTIFICATIONS and IRQ_BINDINGS budgets.
         uint32_t task_endpoints;
         uint32_t task_notifications;
         uint32_t task_lines;
@@ -176,6 +180,10 @@ namespace fake
         bool reuse_handles = false;
         // Whether a published console's receiver takes what is sent it.
         bool console_receives = true;
+        // The status the published console's receiver answers a KOS_UART_DRAIN with.
+        int32_t console_drain = 0;
+        // The table whose task i is the image's declaration i, as the composer emits both.
+        kos_table_header const* table = nullptr;
         Limits limits = {};
     };
 
@@ -249,6 +257,16 @@ namespace fake
     bool handout(size_t object);
     // Adds a live task the init did not create, as another creator's.
     kos_task_t foreign_task();
+    // An empty task the init holds, with `mem_base` as its data region: 0 and *out_task, or the
+    // errno a create answers. Stands for the task a program's create builds before its entry thread.
+    int empty_task(void* mem_base, uint32_t mem_size, kos_task_t* out_task);
+    // The spawn rules a create's entry thread meets, applied to a thread joining `into`.
+    int spawn_into(struct kos_thread_params const* params, kos_task_t into, kos_thread_t* out_thread);
+    // Narrows a task's priority ceiling and core grant, a 0 leaving that half alone.
+    void narrow_task(kos_task_t task, uint8_t ceiling, uint32_t cores);
+    // Publishes the endpoint `ep` as the console, served by `task` or by the caller's own task for
+    // KOS_TASK_NONE: what a create of a console driver does.
+    int publish_console(kos_cap_t ep, kos_task_t task);
 
     // What reached the console, through the kernel's or through a published console's receiver:
     // a kernel console write is dropped from a publish until the published endpoint's last WAIT
@@ -256,6 +274,8 @@ namespace fake
     std::string const& console();
     // Whether the published console's receiver takes what is sent it from now on.
     void set_console_receives(bool receives);
+    // The status the published console's receiver answers a KOS_UART_DRAIN with from now on.
+    void set_console_drain(int32_t status);
     // The endpoint object published as the console, or -1.
     int64_t stdout_object();
     // How many times the kernel took its console back.

@@ -204,15 +204,16 @@ namespace kickos
             Thread* const peer = seat_pool(SLOT_PEER, PRIO_LOW);
             join_task(c, group);
             join_task(peer, group);
-            c->task_entry = true;
+            c->task_role = kickos::TASK_ROLE_ENTRY;
             kernel().current(kickos_kernel_core()) = c;
 
             run_exit(5);
 
             EXPECT_EQ(peer->cancel_kind, CANCEL_SLAY)
                 << "the peer is slain, its creator holding the task";
-            EXPECT_TRUE(thread_slay_claim_pending(peer))
-                << "so it runs no further instruction of its own";
+            EXPECT_EQ(g_redirect_target, peer)
+                << "the exit's pass resumes it in its death stub, so it runs no further "
+                   "instruction of its own";
             EXPECT_TRUE(task_ended(group));
             EXPECT_EQ(group->exit_status, 5) << "the entry's code is the task's status";
         }
@@ -229,7 +230,7 @@ namespace kickos
                 join_task(c, group);
                 join_task(peer, group);
                 (void)park_on_word(peer);
-                c->task_entry = true;
+                c->task_role = kickos::TASK_ROLE_ENTRY;
                 c->cancel_kind = kind;
                 kernel().current(kickos_kernel_core()) = c;
 
@@ -241,6 +242,67 @@ namespace kickos
                 EXPECT_EQ(group->exit_status, KOS_EXIT_CANCELLED)
                     << "a cancelled entry's code is not the task's status";
             }
+        }
+
+        // An ESSENTIAL thread's end by any cause fails its task: the peer is slain and the task
+        // answers KOS_EXIT_FAULT, whatever code the thread left with.
+        namespace
+        {
+            void expect_an_essential_end_fails_the_task(uint8_t kind)
+            {
+                Task* const group = task(0);
+                Thread* const c = seat_pool(SLOT_DYING, PRIO_MID);
+                Thread* const peer = seat_pool(SLOT_PEER, PRIO_LOW);
+                join_task(c, group);
+                join_task(peer, group);
+                (void)park_on_word(peer);
+                c->task_role = kickos::TASK_ROLE_ESSENTIAL;
+                c->cancel_kind = kind;
+                kernel().current(kickos_kernel_core()) = c;
+
+                run_exit(0);
+
+                EXPECT_EQ(peer->cancel_kind, CANCEL_SLAY) << "an essential thread's death slays the group";
+                EXPECT_TRUE(task_ended(group));
+                EXPECT_EQ(group->exit_status, KOS_EXIT_FAULT) << "the task fails, its clean exit included";
+            }
+        }
+
+        TEST_F(TaskDeath, an_essential_thread_s_exit_fails_its_task)
+        {
+            expect_an_essential_end_fails_the_task(CANCEL_NONE);
+        }
+
+        TEST_F(TaskDeath, a_killed_essential_thread_fails_its_task)
+        {
+            expect_an_essential_end_fails_the_task(CANCEL_KILL);
+        }
+
+        TEST_F(TaskDeath, a_slain_essential_thread_fails_its_task)
+        {
+            expect_an_essential_end_fails_the_task(CANCEL_SLAY);
+        }
+
+        // Cancelled by its task's end, an essential thread leaves the status the end latched.
+        TEST_F(TaskDeath, an_essential_thread_ended_with_its_task_keeps_the_task_s_status)
+        {
+            Task* const group = task(0);
+            Thread* const c = seat_pool(SLOT_DYING, PRIO_MID);
+            Thread* const peer = seat_pool(SLOT_PEER, PRIO_LOW);
+            Thread* const stranger = seat_pool(SLOT_OTHER, PRIO_LOW);
+            join_task(c, group);
+            join_task(peer, group);
+            join_task(stranger, task(1));
+            c->task_role = kickos::TASK_ROLE_ENTRY;
+            peer->task_role = kickos::TASK_ROLE_ESSENTIAL;
+            kernel().current(kickos_kernel_core()) = c;
+            run_exit(5);
+            ASSERT_EQ(group->exit_status, 5);
+
+            kernel().current(kickos_kernel_core()) = peer;
+            run_exit(0);
+
+            EXPECT_EQ(group->exit_status, 5) << "the end the entry latched is kept";
         }
 
         TEST_F(TaskDeath, a_killed_entry_ends_the_task)
@@ -439,8 +501,8 @@ namespace kickos
 
         // --- the group-empty wake (WAIT_TASK_EMPTY) -----------------------------------
         // "The group is empty" is a different condition from any member's death, and it is
-        // reported by the release that CAUSED it rather than re-derived afterwards: an
-        // implicit task's slot is freed inside that call, and a refcount already at zero
+        // reported by the release that CAUSED it rather than re-derived afterwards: a
+        // task's slot is freed inside that call, and a refcount already at zero
         // cannot say whose departure took it there.
         TEST_F(TaskDeath, the_last_member_out_wakes_a_group_waiter)
         {

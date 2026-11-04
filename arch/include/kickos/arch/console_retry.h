@@ -6,6 +6,8 @@
 
 #include <stddef.h>
 
+#include <kickos/arch/arch.h>
+
 namespace kickos::console_retry
 {
     // A polled AMP UART can lose its claim after sending CR but before sending LF. The syscall
@@ -58,6 +60,19 @@ namespace kickos::console_retry
             }
         }
         return done;
+    }
+
+    // write, each wire byte its own masked span: `put` runs masked and interrupts are open
+    // between two bytes, so a line keeps a local interrupt waiting for one byte at most.
+    template<class Put>
+    size_t write_masked(char const* buf, size_t n, bool* cr_pending, Put put)
+    {
+        return write(buf, n, cr_pending, [&put](char c) {
+            arch_irq_state_t const irq = arch_irq_save();
+            bool const stored = put(c);
+            arch_irq_restore(irq);
+            return stored;
+        });
     }
 
     enum class Put

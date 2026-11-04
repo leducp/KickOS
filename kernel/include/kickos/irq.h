@@ -23,11 +23,13 @@
 #if KICKOS_KERNEL_CORES > 1
 #include <kickos/sys/atomic.h>
 #include <kickos/held.h>
+#include <kickos/list.h>
 #endif
 
 namespace kickos
 {
     struct Thread; // kickos/thread.h
+    struct Task;   // kickos/task.h
 
     using IrqHandler = void (*)(void* arg);
 
@@ -103,12 +105,15 @@ namespace kickos
         // cannot answer for: a controller whose gating state is global reports no owning
         // core, and that says nothing about delivery.
         uint8_t claim_core = 0;
+        // From the release of its last capability to its reclamation, the task record that
+        // last held it, its index plus one, still pays for it, and it is on that record's
+        // list of retiring bindings.
+        uint8_t payer = 0;
+        ListNode retiring;
 #endif
+        // The holdings epoch that last counted this slot (cap.cc), in the tail padding.
+        uint16_t hold_mark = 0;
     };
-
-    static_assert(KICKOS_MAX_IRQ_HANDLES < 255,
-                  "a binding pool index biased by one must fit the uint8_t chain link, with "
-                  "zero left over for the sentinel");
 
     // Call once at boot, before any attach or claim.
     void irq_init();
@@ -154,6 +159,17 @@ namespace kickos
     // ENOMEM for pool exhaustion, EMFILE for a full cap table,
     // EAGAIN for the task budget or a line still retiring, EBUSY for an occupied line.
     int irq_claim(Thread* c, int line, unsigned int flags, uint32_t* out_cap);
+
+    // A declaration's line, for a create: irq_claim's refusals for a claim by a member of `t`,
+    // with no pin asked and, with `freed`, the line taken as unbound, the console's own handler
+    // it is bound to being detached by the create's publish. Caller holds IrqLock.
+    int irq_declared_admit(int line, unsigned int flags, Task const* t, bool freed);
+
+    // Claims `line` into `holder`'s table at `slot`, routed to `core`, and binds it to
+    // notification `n`, object `notify_obj`, raising `bit`: 0, or the claim's or the bind's
+    // refusal, a refused bind leaving the line claimed in `holder`. Caller holds IrqLock.
+    int irq_declared_claim(Thread* holder, int line, unsigned int flags, uint32_t core,
+                           uint16_t slot, Notification* n, int notify_obj, uint8_t bit);
 
     // Attach this line to the notification `notify_cap` names, as one signaller among
     // others: the ISR raises that capability's badge bit there. Requires CAP_WAIT on the
@@ -213,6 +229,12 @@ namespace kickos
     // slot at refs -> 0. Above one kernel core the line is released here and the slot returns
     // to the pool from a later reclamation, once no dispatch can still hold its address.
     void irq_ref_drop(int obj_handle, Held held);
+
+#if KICKOS_KERNEL_CORES > 1
+    // Reclaim every released binding whose grace period has elapsed, its slot and its payer's
+    // charge with it. Caller holds IrqLock.
+    void irq_retire_drain();
+#endif
 }
 
 #endif

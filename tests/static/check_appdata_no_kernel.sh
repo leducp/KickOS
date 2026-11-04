@@ -18,6 +18,8 @@
 #     (EL0-executable). Their scripts select kernel/arch/chip only, libkickos_lib.a being
 #     app-side by design, so passing it would be a false positive waiting on lib's first
 #     global.
+#   - x86_64 holds its programs in the PE32+ image at an address firmware chooses, and spaces
+#     map all of __kickos_image0_load_start to __kickos_images_load_end.
 # A window is REFUSED, never skipped, when its bounds are missing or empty: a board whose
 # script states an absent window as start == end (arch/x86/x86_64/pe_image.ld does, every
 # window, because `ld -m i386pep` builds no GOT and a weak-undefined reference would resolve
@@ -32,13 +34,20 @@
 # bounds only: nm reports locals with lowercase types and names that repeat tree-wide, so an
 # address lookup keyed on a local name is ambiguous.
 #
+# Where every image is linked on its own first (tools/image-link.py), the final map names an image
+# by the one object its link wrote, so the archives behind it are read from that link's own map
+# (tests/lib/gate.sh image_map_set). Everything an image's link takes lands in that image's
+# windows, so no member of the archives after the second `--` may appear there at all. A map
+# loading an image with no such set given, or such a set given and no image loaded, is refused.
+#
 # usage: check_appdata_no_kernel.sh <nm> <elf> <map> <start-sym>:<end-sym>... `--` <archive>...
+#            [`--` <archive no image links>...]
 
 set -eu
 . "$(dirname "$0")/../lib/gate.sh"
 
 if [ "$#" -lt 6 ]; then
-    echo "usage: $0 <nm> <elf> <map> <start-sym>:<end-sym>... '--' <archive>..." >&2
+    echo "usage: $0 <nm> <elf> <map> <start-sym>:<end-sym>... '--' <archive>... ['--' <archive>...]" >&2
     exit 2
 fi
 
@@ -63,6 +72,30 @@ command -v "$NM" >/dev/null 2>&1 || fail "nm not found: $NM"
 [ "$#" -gt 0 ] || fail "no archives given (guard would pass vacuously)"
 
 scratch_dir
+
+KERNEL_ARCHIVES=""
+IMAGE_ARCHIVES=""
+IMAGE_SET=0
+for A in "$@"; do
+    if [ "$A" = "--" ]; then
+        [ "$IMAGE_SET" -eq 0 ] || fail "usage: a third archive list"
+        IMAGE_SET=1
+        continue
+    fi
+    if [ "$IMAGE_SET" -eq 1 ]; then
+        IMAGE_ARCHIVES="$IMAGE_ARCHIVES $A"
+    else
+        KERNEL_ARCHIVES="$KERNEL_ARCHIVES $A"
+    fi
+done
+[ -n "$KERNEL_ARCHIVES" ] || fail "no archives given (guard would pass vacuously)"
+if [ "$IMAGE_SET" -eq 1 ] && [ -z "$IMAGE_ARCHIVES" ]; then
+    fail "an empty list of archives no image links (guard would pass vacuously)"
+fi
+# Re-split below: no glob may expand against the cwd.
+set -f
+# shellcheck disable=SC2086
+set -- $KERNEL_ARCHIVES
 
 # The EREs the two scanners key on, defined once and handed in, so the planted record below and
 # the real scan cannot disagree about what the rule is.
@@ -149,9 +182,10 @@ NF >= 3 && $(NF - 2) ~ /^0x/ && $(NF - 1) ~ /^0x/ && ($NF ~ /\.a\(/ || $NF ~ /\.
     path = p[1]
     k = split(path, q, "/")
     base = q[k]
-    if (!(base in want)) { next }
     if (sec ~ nonalloc) { next }
     if (sec ~ attrsec) { next }
+    all++
+    if (!(base in want)) { next }
     total[base]++
     if (sec ~ writ || sec == "COMMON") { writable[base]++ }
     start = h2n($(NF - 2))
@@ -171,7 +205,7 @@ NF >= 3 && $(NF - 2) ~ /^0x/ && $(NF - 1) ~ /^0x/ && ($NF ~ /\.a\(/ || $NF ~ /\.
 }
 END {
     for (b in want) { printf "SEEN %s %d %d\n", b, total[b] + 0, writable[b] + 0 }
-    printf "TOTAL %d %d %d\n", grand + 0, leaks + 0, exempt + 0
+    printf "TOTAL %d %d %d %d\n", grand + 0, leaks + 0, exempt + 0, all + 0
 }' "$1"
 }
 
@@ -246,6 +280,55 @@ for W in $WINDOWS; do
     FOUND=$((FOUND + 1))
 done
 
+# --- the images' own links ----------------------------------------------------
+# An image map's addresses are offsets in a relocatable output, so its window is all of them.
+image_map_set "$MAP" "$TMP/maps"
+IMAGES=$(($(wc -l < "$TMP/maps") - 1))
+if [ "$IMAGES" -gt 0 ] && [ "$IMAGE_SET" -eq 0 ]; then
+    fail "$MAP loads $IMAGES image(s) linked on their own and no archive set no image links is given"
+fi
+if [ "$IMAGES" -eq 0 ] && [ "$IMAGE_SET" -eq 1 ]; then
+    fail "an archive set no image links is given and $MAP loads no image linked on its own"
+fi
+INAMES=""
+for A in $IMAGE_ARCHIVES; do
+    [ -f "$A" ] || fail "archive not found: $A"
+    INAMES="$INAMES $(basename "$A")"
+done
+IMAGE_FIRST="${IMAGE_ARCHIVES# }"
+IMAGE_FIRST="${IMAGE_FIRST%% *}"
+ALL_WIN_END=0x1000000000000
+printf 'Linker script and memory map\n\n' > "$TMP/empty.map"
+map_scan "$TMP/empty.map" "$INAMES" 0x0 "$ALL_WIN_END" "$MAP_HEADING" "$NONALLOC_ERE" \
+    "$ATTR_ERE" "$WRITABLE_ERE" '^$' > "$TMP/empty"
+[ "$(awk '/^TOTAL /{ print $5 }' "$TMP/empty")" = 0 ] \
+    || fail "an image map holding no input section is read as holding some, so the refusal of
+      an empty one below proves nothing"
+sed 1d "$TMP/maps" > "$TMP/imaps"
+while IFS= read -r IMAP; do
+    map_scan "$IMAP" "$INAMES" 0x0 "$ALL_WIN_END" "$MAP_HEADING" "$NONALLOC_ERE" \
+        "$ATTR_ERE" "$WRITABLE_ERE" '^$' > "$TMP/iverdict"
+    { cat "$IMAP"; printf ' .data.kos_planted 0x0 0x10 %s(planted.cc.obj)\n' "$IMAGE_FIRST"; } \
+        > "$TMP/iplanted.map"
+    map_scan "$TMP/iplanted.map" "$INAMES" 0x0 "$ALL_WIN_END" "$MAP_HEADING" "$NONALLOC_ERE" \
+        "$ATTR_ERE" "$WRITABLE_ERE" '^$' > "$TMP/iplanted"
+    [ "$(grep -c '^LEAK ' "$TMP/iplanted")" -eq "$(($(grep -c '^LEAK ' "$TMP/iverdict") + 1))" ] \
+        || fail "a .data record of $IMAGE_FIRST planted in $IMAP is not read as one more leak, so
+      this scan would miss a real one"
+    iall="$(awk '/^TOTAL /{ print $5 }' "$TMP/iverdict")"
+    ileaks="$(awk '/^TOTAL /{ print $3 }' "$TMP/iverdict")"
+    [ "$iall" -gt 0 ] || fail "no allocated input section appears in $IMAP (map format changed?
+      guard would pass vacuously)"
+    if [ "$ileaks" -gt 0 ]; then
+        echo "FAIL: an image's own link took privileged KickOS archive content, which lands in" >&2
+        echo "      that image's windows. Its placements in $IMAP:" >&2
+        awk '/^LEAK /{ printf "        %s %s size %s\n", $2, $3, $5 }' "$TMP/iverdict" >&2
+        LEAKED=$((LEAKED + ileaks))
+    fi
+    REPORT="$REPORT
+      $(basename "$IMAP"): 0 of $iall input section(s) from $(echo $IMAGE_ARCHIVES | wc -w | tr -d ' ') archive(s) no image links"
+done < "$TMP/imaps"
+
 [ "$LEAKED" -eq 0 ] || exit 1
 
-echo "PASS: $FOUND window(s) clean of $# privileged archive(s)$REPORT"
+echo "PASS: $FOUND window(s) clean of $# privileged archive(s), $IMAGES image link(s)$REPORT"

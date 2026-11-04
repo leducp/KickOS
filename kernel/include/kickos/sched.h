@@ -214,7 +214,8 @@ namespace kickos
         enum ExitCause : uint8_t
         {
             EXIT_RETURN = 0, // an ordinary return, kos_exit, or a cancel honoured at a death point
-            EXIT_FAULTED = 1 // a fault the arch reporter contained (kernel/init/fault.cc)
+            EXIT_FAULTED = 1 // a fault the arch reporter contained (kernel/init/fault.cc), or
+                             // a kos_panic that may not end the system
         };
 
         // Terminate the current thread with exit code `code`; never returns. The

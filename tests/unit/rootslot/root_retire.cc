@@ -17,6 +17,8 @@
 //
 // Host-only, single core: every claim is pool arithmetic, and the pool is not per-core.
 
+#include <vector>
+
 #include <kickos/cap.h>
 #include <kickos/instance.h>
 #include <kickos/irqlock.h>
@@ -51,18 +53,18 @@ namespace kickos
                 return seat_pool(SLOT_ROOT, PRIO_MID);
             }
 
-            // alloc leaves `state` to thread_create, so an arm claiming twice must take the
-            // slot out of EXITED itself or the second scan matches the first slot again.
+            // alloc leaves `state` to thread_create, so an arm claiming takes the slot out of
+            // EXITED itself, as the spawn's thread_create would.
             int claim()
             {
                 int index = -1;
                 {
                     IrqLock lock;
-                    index = kernel().threads.alloc();
+                    index = kernel().threads.alloc(nullptr);
                 }
                 if (index >= 0)
                 {
-                    kernel().threads.slots[index].state.to<ThreadState::READY>();
+                    kernel().threads.slots()[index].state.to<ThreadState::READY>();
                 }
                 return index;
             }
@@ -73,20 +75,20 @@ namespace kickos
                 run_exit(0);
             }
 
-            // Runs of KICKOS_MAX_HANDLES the slab still hands out, counted by taking them all.
+            // Runs of the init's width the slab still hands out, counted by taking them all.
             // Destructive, so an arm calls it last.
             uint32_t runs_left()
             {
                 uint32_t taken = 0;
                 while (true)
                 {
-                    CapRun run{};
+                    std::vector<CapEntry*> dir(cap_dir_length(), nullptr);
                     uint16_t head = 0;
                     uint16_t width = 0;
                     bool got = false;
                     {
                         IrqLock lock;
-                        got = cap_slab_attach(&run, KICKOS_MAX_HANDLES, &head, &width);
+                        got = cap_slab_attach(dir.data(), cap_root_width(), &head, &width);
                     }
                     if (not got)
                     {
@@ -97,8 +99,8 @@ namespace kickos
             }
         }
 
-        // THE SKIP is the first statement of the scan, upstream of the EXITED key, so there is
-        // no window for a race against it.
+        // THE SKIP is in retire, where EXITED is published, so the slot is never listed and
+        // there is no window for a race against it.
         TEST_F(RootRetire, a_dead_root_does_not_give_its_slot_back)
         {
             Thread* const root = seat_root();
@@ -125,7 +127,7 @@ namespace kickos
             ASSERT_GE(next, 0);
             EXPECT_TRUE(kernel().threads.is_root(root))
                 << "the dead occupant of the root slot is still root";
-            EXPECT_FALSE(kernel().threads.is_root(&kernel().threads.slots[next]))
+            EXPECT_FALSE(kernel().threads.is_root(&kernel().threads.slots()[next]))
                 << "and the thread the next spawn took is not";
         }
 
@@ -145,7 +147,7 @@ namespace kickos
 
             EXPECT_EQ(child->spawner_tag, root_tag)
                 << "the reclaim sweep that clears an orphan's tag never runs for root's";
-            EXPECT_NE(kernel().threads.kill_tag_of(&kernel().threads.slots[next]), root_tag)
+            EXPECT_NE(kernel().threads.kill_tag_of(&kernel().threads.slots()[next]), root_tag)
                 << "and no successor answers that tag, so none inherits cancel authority";
         }
 
@@ -156,7 +158,7 @@ namespace kickos
         TEST_F(RootRetire, roots_capability_directory_goes_back_to_the_slab)
         {
             Thread* const root = seat_root();
-            attach_caps(root, KICKOS_MAX_HANDLES);
+            attach_caps(root, KICKOS_SEAM_ROOT_WIDTH);
             ASSERT_TRUE(cap_run_held(root->caps));
 
             kill(root);
@@ -174,7 +176,7 @@ namespace kickos
 
             reset();
             Thread* const root = seat_root();
-            attach_caps(root, KICKOS_MAX_HANDLES);
+            attach_caps(root, KICKOS_SEAM_ROOT_WIDTH);
             kill(root);
 
             EXPECT_EQ(runs_left(), fresh)
@@ -183,8 +185,8 @@ namespace kickos
         }
 
         // The control: the skip is not a hole. An ordinary slot still reclaims
-        // lowest-exited-first, with slot 0 dead and skipped over.
-        TEST_F(RootRetire, an_ordinary_slot_still_reclaims_lowest_exited_first)
+        // last-exited-first, with slot 0 dead and never listed.
+        TEST_F(RootRetire, an_ordinary_slot_still_reclaims_last_exited_first)
         {
             Thread* const root = seat_root();
             Thread* const low = seat_pool(3, PRIO_LOW);
@@ -193,8 +195,9 @@ namespace kickos
             kill(low);
             kill(high);
 
-            EXPECT_EQ(claim(), 3) << "the lowest EXITED slot above ROOT_INDEX";
-            EXPECT_EQ(claim(), 4) << "then the next one up";
+            EXPECT_EQ(claim(), 4) << "the slot that exited last";
+            EXPECT_EQ(claim(), 3) << "then the one before it";
+            EXPECT_EQ(claim(), 5) << "then a fresh slot, never root's";
         }
     }
 }

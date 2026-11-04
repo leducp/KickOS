@@ -44,9 +44,7 @@ gdb-multiarch build/qemu/user/apps/common/hello/hello \
     -ex 'target remote :1234'
 ```
 
-One gdb habit to have from the start: the app's `main` is compiled under another name,
-`kickos_app_main` (`user/include/kickos/app.h` explains the rename), so `break main` finds
-nothing. Use `break kickos_app_main`. And gdb reads kernel memory only while the core is stopped
+One gdb habit to have from the start: `break main` stops in the app's `main`. And gdb reads kernel memory only while the core is stopped
 in privileged code ([README](README.md#reading-with-gdb-or-without-it)): from `svc_trampoline`
 onwards in this chapter.
 
@@ -91,7 +89,7 @@ the first syscall fail at Stop 8.
 #1  0x00001930 in kickos::stdout_write (s=0xf343 "hello from KickOS userspace!\n", total=29) at .../emit.h:88
 #2  kos_print (s=0xf343 "hello from KickOS userspace!\n") at .../user/src/print.cc:11
 #3  0x0000019a in kos::print (...) at .../user/include/kickos/kos.h:23
-#4  kickos_app_main () at .../user/apps/common/hello/main.cc:58
+#4  main () at .../user/apps/common/hello/main.cc:58
 ```
 
 `buf=0xf343` is an address in flash, where the string literal lives. `p $control` prints `3`:

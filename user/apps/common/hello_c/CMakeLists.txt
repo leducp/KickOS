@@ -4,6 +4,7 @@
 # The plain-C twin of apps/hello: same demo, kos_* API instead of kos::. The source must stay
 # .c: it compiles the kos_* headers it includes as C.
 add_executable(hello_c main.c)
-target_link_libraries(hello_c PRIVATE KickOS::kernel KickOS::system_default)
+target_link_libraries(hello_c PRIVATE kickos)
+kickos_app_system(hello_c DEFAULT)
 kickos_emit_image(hello_c)
 kickos_app_judge(hello_c tests/integration/check_qemu_hello.sh)

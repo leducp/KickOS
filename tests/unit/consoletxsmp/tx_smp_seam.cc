@@ -165,6 +165,8 @@ extern "C"
 
     void console_write_line_sync(char const*, size_t) {}
 
+    int console_write_line_owned(char const*, size_t n) { return static_cast<int>(n); }
+
 // At one core, arch_cpu_id is a macro folding to a literal and no other source may define it; the
 // assert above pins which arm this translation unit is on.
 #if KICKOS_NUM_CORES > 1

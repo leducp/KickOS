@@ -47,7 +47,7 @@ namespace
     Thread* driver()
     {
         Thread* const t = seat_pool(0, PRIO_DRIVER);
-        attach_caps(t, KICKOS_CAP_CHILD_WIDTH);
+        attach_caps(t, KICKOS_SEAM_CAP_WIDTH);
         {
             IrqLock lock;
             policy_on_remove(t);

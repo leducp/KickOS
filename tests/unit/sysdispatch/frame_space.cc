@@ -6,6 +6,8 @@
 // what a space capability holds, what a space still maps once its task is gone, the memory
 // counts, and a thread's stack at its exit.
 
+#include "../common/seam_pools.h"
+
 #include <kickos/slotpool.h>
 
 #include <setjmp.h>
@@ -30,18 +32,16 @@ namespace kickos
             class SpaceRetire : public SysFixture
             {
               protected:
-                // A task main created, with one member at main's priority, and main's
-                // capability over its space.
+                // A task main created, its entry thread its one member at main's priority, and
+                // main's capability over its space.
                 void SetUp() override
                 {
                     SysFixture::SetUp();
                     spaces_ = domain_spaces_held();
                     handle_ = new_task(main_, 0, 0, 0);
                     ASSERT_NE(handle_, KOS_TASK_NONE);
-                    kos_thread_t m = KOS_THREAD_NONE;
-                    uintptr_t const p = spawn_params(MAIN_PARAMS, 0, 0, 0, handle_);
-                    ASSERT_EQ(spawn(main_, p, MAIN_OUT, &m), 0);
-                    member_ = kernel().threads.resolve(m);
+                    member_ = entry_of(handle_);
+                    ASSERT_NE(member_, nullptr);
                     {
                         IrqLock lock;
                         child_ = task_resolve(handle_);
@@ -55,7 +55,7 @@ namespace kickos
                 // A thread of main's task spawned with `cap` delegated to it.
                 Thread* delegate_by_spawn(uint32_t cap)
                 {
-                    uintptr_t const p = spawn_params(MAIN_PARAMS, 0, 0, 0, KOS_TASK_NONE);
+                    uintptr_t const p = spawn_params(MAIN_PARAMS, 0, 0, 0);
                     *host<kos_cap_grant>(uva(MAIN_PARAMS, CAPS_AT)) = {cap, KOS_CAP_TRANSFER};
                     params(p)->caps =
                         reinterpret_cast<kos_cap_grant const*>(uva(MAIN_PARAMS, CAPS_AT));
@@ -140,6 +140,83 @@ namespace kickos
                 EXPECT_EQ(d_->ranges.at_base(RUN_VA), nullptr);
             }
 
+            // A space capability names its domain by a handle carrying 16 bits of the slot's
+            // generation and keeps all 32. Once the slot's generation has come round 65536 times,
+            // the handle alone names the domain again; the capability is still refused.
+            TEST_F(SpaceRetire, a_space_capability_kept_across_a_generation_wrap_is_refused)
+            {
+                RunCaps const run = mint(1);
+                ASSERT_NE(run.obj, FRAME_RUN_NONE);
+                int handle = 0;
+                {
+                    IrqLock lock;
+                    handle = cap_lookup(main_, acap_)->obj;
+                }
+                d_->generation += 1u << 16;
+                ASSERT_EQ(domain_resolve(handle), d_) << "fixture: the old handle names the slot again";
+                {
+                    IrqLock lock;
+                    int e = 0;
+                    EXPECT_EQ(cap_resolve_e(main_, acap_, CapType::CAP_ASPACE, 0, &e), nullptr)
+                        << "the kept capability named the slot's later space";
+                }
+                EXPECT_EQ(map(run), -KOS_EBADF) << "a frame was mapped through the kept capability";
+                EXPECT_EQ(d_->ranges.at_base(RUN_VA), nullptr);
+
+                // The control: a capability minted now names the space and maps.
+                uint32_t const fresh = space_cap(main_, d_);
+                ASSERT_NE(fresh, KCAP_INVALID);
+                EXPECT_EQ(err(call_as(main_, KOS_SYS_FRAME_MAP, run.fcap, fresh, va_word(RUN_VA), 0)),
+                          0);
+            }
+
+            // The same capability once its task is gone and a new task holds the domain slot, at a
+            // generation whose low 16 bits are the ones the capability's handle carries.
+            TEST_F(SpaceRetire, a_space_capability_kept_across_a_wrap_names_nothing_of_the_slot_s_next_task)
+            {
+                RunCaps const run = mint(1);
+                ASSERT_NE(run.obj, FRAME_RUN_NONE);
+                uint32_t installed = 0;
+                int handle = 0;
+                {
+                    IrqLock lock;
+                    CapEntry const* const e = cap_lookup(main_, acap_);
+                    installed = e->obj_gen;
+                    handle = e->obj;
+                }
+                ASSERT_EQ(call_as(main_, KOS_SYS_TASK_SLAY, handle_), 0u);
+                exit_as(member_);
+                {
+                    IrqLock lock;
+                    task_drop_hold(child_, lock);
+                }
+                ASSERT_EQ(d_->refcount, 0u) << "fixture: the domain slot is still held";
+
+                // The next claim advances the generation by one, onto the handle's 16 bits.
+                d_->generation = installed + (1u << 16) - 1u;
+                kos_task_t const next = new_task(main_, 0, 0, 0);
+                ASSERT_NE(next, KOS_TASK_NONE);
+                Task* nt = nullptr;
+                {
+                    IrqLock lock;
+                    nt = task_resolve(next);
+                }
+                ASSERT_NE(nt, nullptr);
+                ASSERT_EQ(task_domain(nt), d_) << "fixture: the new task took another domain slot";
+                ASSERT_EQ(domain_resolve(handle), d_) << "fixture: the old handle names the new task's domain";
+                ASSERT_NE(d_->space, nullptr);
+                {
+                    IrqLock lock;
+                    int e = 0;
+                    EXPECT_EQ(cap_resolve_e(main_, acap_, CapType::CAP_ASPACE, 0, &e), nullptr)
+                        << "the kept capability named the new task's space";
+                    EXPECT_EQ(e, KOS_EBADF);
+                }
+                EXPECT_EQ(map(run), -KOS_EBADF) << "a frame was mapped into the new task's space";
+                EXPECT_EQ(d_->ranges.at_base(RUN_VA), nullptr);
+                EXPECT_EQ(arch_aspace_frame_at(d_->space, RUN_VA), 0u);
+            }
+
             TEST_F(SpaceRetire,
                    a_run_mapped_into_a_dead_space_is_unmapped_at_its_death_and_its_reference_returned)
             {
@@ -177,7 +254,7 @@ namespace kickos
                 static int live_runs()
                 {
                     int n = 0;
-                    for (uint8_t const r : kernel().frame_run_refs)
+                    for (uint8_t const r : PoolSpan<uint8_t>{kernel().frame_runs.refs(), kernel().frame_runs.count()})
                     {
                         if (r != 0)
                         {
@@ -190,7 +267,7 @@ namespace kickos
                 static bool admits(Task const* t)
                 {
                     IrqLock lock;
-                    return frame_run_admit(t);
+                    return task_admit(t, BudgetKind::FRAME_RUNS, 1);
                 }
             };
 
@@ -272,9 +349,10 @@ namespace kickos
                 int obj = FRAME_RUN_NONE;
                 {
                     IrqLock lock;
-                    obj = frame_run_create_empty(KOS_TASK_NONE);
+                    obj = frame_run_create_empty(nullptr);
                     ASSERT_NE(obj, FRAME_RUN_NONE);
-                    ASSERT_NE(aspace_reserve_stage(domain_ranges(thread_domain(main_)), 2 * G),
+                    ASSERT_NE(aspace_reserve_stage(domain_ranges(thread_domain(main_)), 2 * G,
+                                                   PresyncStage::CLEAR),
                               0u);
                     EXPECT_FALSE(aspace_reserve_run(obj)) << "an uncleared stage filled a run";
                     EXPECT_EQ(kernel().frame_runs.resolve(obj)->pages, 0u);
@@ -327,19 +405,19 @@ namespace kickos
                         case Short::RUN_SLOT:
                         {
                             constexpr int UNCHARGED = 2;
-                            static_assert(KICKOS_MAX_FRAME_RUNS - UNCHARGED
-                                              < KICKOS_TASK_FRAME_RUN_BUDGET,
+                            static_assert(KICKOS_SEAM_FRAME_RUNS - UNCHARGED
+                                              < KICKOS_SEAM_BUDGET_FRAME_RUNS,
                                           "the pool must fill before main's budget does");
                             {
                                 IrqLock lock;
                                 for (int i = 0; i < UNCHARGED; i++)
                                 {
-                                    ASSERT_NE(frame_run_create_empty(KOS_TASK_NONE),
+                                    ASSERT_NE(frame_run_create_empty(nullptr),
                                               FRAME_RUN_NONE);
                                 }
                             }
                             uint32_t cap = KCAP_INVALID;
-                            for (int i = UNCHARGED; i < KICKOS_MAX_FRAME_RUNS; i++)
+                            for (int i = UNCHARGED; i < KICKOS_SEAM_FRAME_RUNS; i++)
                             {
                                 ASSERT_EQ(create(G, &cap), 0);
                             }
@@ -406,7 +484,7 @@ namespace kickos
                 uint32_t cap = KCAP_INVALID;
                 {
                     IrqLock lock;
-                    int const obj = frame_run_create_empty(KOS_TASK_NONE);
+                    int const obj = frame_run_create_empty(nullptr);
                     ASSERT_NE(obj, FRAME_RUN_NONE);
                     ASSERT_EQ(cap_install(main_, obj, CapType::CAP_FRAME, CAP_TRANSFER, &cap), 0);
                 }
@@ -420,7 +498,7 @@ namespace kickos
             {
                 int const runs = live_runs();
                 size_t const used = host_pool_used();
-                uintptr_t const p = spawn_params(EDIT_PARAMS, 0, 0, 0, KOS_TASK_NONE);
+                uintptr_t const p = spawn_params(EDIT_PARAMS, 0, 0, 0);
                 params(p)->authority = KOS_AUTH_MEMORY | KOS_AUTH_TASKS;
                 kos_thread_t child = KOS_THREAD_NONE;
                 ASSERT_EQ(spawn(main_, p, EDIT_OUT, &child), 0);
@@ -572,7 +650,7 @@ namespace kickos
 
                 // The pool hands a freed slot out last.
                 int obj = FRAME_RUN_NONE;
-                for (int i = 0; i <= KICKOS_MAX_FRAME_RUNS; i++)
+                for (int i = 0; i <= KICKOS_SEAM_FRAME_RUNS; i++)
                 {
                     ASSERT_EQ(create(G, &cap), 0);
                     obj = obj_of(main_, cap);
@@ -589,7 +667,7 @@ namespace kickos
                     IrqLock lock;
                     EXPECT_EQ(frame_run_slot_of(old_obj), -1);
                     EXPECT_FALSE(frame_run_ref(old_obj)) << "a stale handle took a reference";
-                    EXPECT_EQ(kernel().frame_run_refs[old_slot], 1u)
+                    EXPECT_EQ(kernel().frame_runs.refs()[old_slot], 1u)
                         << "the stale handle moved the new run's count";
                 }
                 EXPECT_EQ(close(main_, cap), 0);
@@ -620,8 +698,9 @@ namespace kickos
                     IrqLock lock;
                     (void)presync_begin();
                     uintptr_t va = RUN_VA;
-                    EXPECT_EQ(aspace_cap_map(domain_space(d), domain_ranges_mut(d), &va, run.obj,
-                                             run.base, 1, RIGHT_NO_RANGE_HOLDS, ARCH_MAP_NORMAL),
+                    EXPECT_EQ(aspace_cap_map(domain_payer(d), domain_space(d),
+                                             domain_ranges_mut(d), &va, run.obj, run.base, 1,
+                                             RIGHT_NO_RANGE_HOLDS, ARCH_MAP_NORMAL),
                               -KOS_ENOMEM);
                     (void)presync_end();
                 }
@@ -673,7 +752,7 @@ namespace kickos
             TEST_F(SysStackExit, a_thread_exit_unmaps_its_whole_stack_in_one_call)
             {
                 kos_thread_t child = KOS_THREAD_NONE;
-                ASSERT_EQ(spawn(main_, spawn_params(MAIN_PARAMS, 0, 0, 0, KOS_TASK_NONE),
+                ASSERT_EQ(spawn(main_, spawn_params(MAIN_PARAMS, 0, 0, 0),
                                 MAIN_OUT, &child),
                           0);
                 Thread* const t = kernel().threads.resolve(child);
@@ -689,12 +768,12 @@ namespace kickos
             TEST_F(FrameRunBudget, the_ceiling_is_eagain)
             {
                 uint32_t cap = KCAP_INVALID;
-                for (int i = 0; i < KICKOS_TASK_FRAME_RUN_BUDGET; i++)
+                for (int i = 0; i < KICKOS_SEAM_BUDGET_FRAME_RUNS; i++)
                 {
                     ASSERT_EQ(create(G, &cap), 0);
                 }
                 int const runs = live_runs();
-                ASSERT_LT(runs, KICKOS_MAX_FRAME_RUNS) << "fixture: the pool itself is full";
+                ASSERT_LT(runs, KICKOS_SEAM_FRAME_RUNS) << "fixture: the pool itself is full";
                 EXPECT_EQ(create(G, &cap), -KOS_EAGAIN);
                 EXPECT_EQ(live_runs(), runs);
             }
@@ -711,7 +790,7 @@ namespace kickos
                 ASSERT_EQ(call_as(main_, KOS_SYS_FRAME_MAP, fcap, acap, va_word(RUN_VA), 0), 0u);
                 ASSERT_EQ(close(main_, fcap), 0);
                 uint32_t cap = KCAP_INVALID;
-                for (int i = 1; i < KICKOS_TASK_FRAME_RUN_BUDGET; i++)
+                for (int i = 1; i < KICKOS_SEAM_BUDGET_FRAME_RUNS; i++)
                 {
                     ASSERT_EQ(create(G, &cap), 0);
                 }
@@ -720,12 +799,80 @@ namespace kickos
                 EXPECT_TRUE(admits(tk)) << "the space mapping the run was charged for it";
             }
 
+            // The payer's list is LIFO, so the run minted first is the one furthest from the
+            // head. Its release reads only its own links: a link further up, bent for the
+            // release to skip its true neighbour, is never followed.
+            // The same for a record's list of domains: the one paid for first leaves it through
+            // its own links.
+            TEST_F(FrameRunBudget, unpaying_the_oldest_domain_reads_only_its_own_links)
+            {
+                Kernel& k = kernel();
+                Task* const payer = task(1);
+                ASSERT_NE(payer, nullptr);
+                Domain* doms[4] = {};
+                int found = 0;
+                for (Domain& d : k.domains())
+                {
+                    if (found < 4 and not d.immortal and d.refcount == 0 and d.payer == 0)
+                    {
+                        doms[found] = &d;
+                        found++;
+                    }
+                }
+                ASSERT_EQ(found, 4) << "fixture: four free domain slots";
+                IrqLock lock;
+                uint32_t const before = domain_pages_paid(payer);
+                for (Domain* d : doms)
+                {
+                    domain_pay(d, payer);
+                }
+                ListNode* const tail = doms[0]->payer_node.next;
+                ListNode* const cut = &doms[2]->payer_node;
+                ListNode* const after = cut->next;
+                ASSERT_EQ(after, &doms[1]->payer_node) << "fixture: the list is LIFO";
+                cut->next = &doms[0]->payer_node;
+                domain_unpay(doms[0]);
+                cut->next = after;
+                EXPECT_EQ(doms[0]->payer, 0u);
+                EXPECT_EQ(doms[1]->payer_node.next, tail)
+                    << "the release walked the payer's list from its head to find the domain";
+                for (Domain* d : doms)
+                {
+                    domain_unpay(d);
+                }
+                EXPECT_EQ(domain_pages_paid(payer), before);
+            }
+
+            TEST_F(FrameRunBudget, closing_the_oldest_run_reads_only_its_own_links)
+            {
+                uint32_t caps[4] = {KCAP_INVALID, KCAP_INVALID, KCAP_INVALID, KCAP_INVALID};
+                for (uint32_t& cap : caps)
+                {
+                    ASSERT_EQ(create(G, &cap), 0);
+                }
+                ListNode* const cut = &run_of(caps[2])->payer_node;
+                ListNode* const after = cut->next;
+                ASSERT_EQ(after, &run_of(caps[1])->payer_node) << "fixture: the list is LIFO";
+                cut->next = &run_of(caps[0])->payer_node;
+                int const rc = close(main_, caps[0]);
+                cut->next = after;
+                ASSERT_EQ(rc, 0);
+                uint32_t used = 0;
+                {
+                    IrqLock lock;
+                    used = task_usage(task_, BudgetKind::FRAME_RUNS);
+                }
+                EXPECT_EQ(used, 3u)
+                    << "the release walked the payer's list from its head to find the run";
+                EXPECT_EQ(run_of(caps[1])->payer_node.next, nullptr);
+            }
+
             TEST_F(FrameRunBudget, the_receiver_of_a_delegated_run_is_not_charged)
             {
                 Task* const tk = task(1);
                 ASSERT_NE(tk, nullptr);
                 Thread* const r = member(2, MAIN_PRIO, tk);
-                for (int i = 0; i < KICKOS_TASK_FRAME_RUN_BUDGET; i++)
+                for (int i = 0; i < KICKOS_SEAM_BUDGET_FRAME_RUNS; i++)
                 {
                     uint32_t cap = KCAP_INVALID;
                     ASSERT_EQ(create(G, &cap), 0);
@@ -742,7 +889,7 @@ namespace kickos
                 ASSERT_NE(tk, nullptr);
                 Thread* const r = member(2, MAIN_PRIO, tk);
                 uint32_t cap = KCAP_INVALID;
-                for (int i = 0; i < KICKOS_TASK_FRAME_RUN_BUDGET; i++)
+                for (int i = 0; i < KICKOS_SEAM_BUDGET_FRAME_RUNS; i++)
                 {
                     ASSERT_EQ(create(G, &cap), 0);
                 }
@@ -754,19 +901,23 @@ namespace kickos
                 EXPECT_TRUE(admits(task_)) << "a freed run still charges its minter";
             }
 
-            TEST_F(FrameRunBudget, a_dead_minter_s_runs_charge_its_successor_nothing)
+            // The record pays: a declaration's next incarnation reuses its record, and a run
+            // the dead one minted still charges it until the run's last holder lets it go.
+            TEST_F(FrameRunBudget, a_dead_minter_s_surviving_runs_charge_its_record_until_released)
             {
                 Task* const tk = task(1);
                 ASSERT_NE(tk, nullptr);
-                int const slot = slot_index_of(kernel().tasks, tk);
+                int const slot = slot_index_of<Task>(kernel().tasks().base, kernel().tasks().size(), tk);
                 Thread* const minter = member(2, MAIN_PRIO, tk);
                 uintptr_t const word = reserve(minter, G, 0);
                 ASSERT_NE(word, 0u);
-                for (int i = 0; i < KICKOS_TASK_FRAME_RUN_BUDGET; i++)
+                uint32_t kept[KICKOS_SEAM_BUDGET_FRAME_RUNS];
+                for (int i = 0; i < KICKOS_SEAM_BUDGET_FRAME_RUNS; i++)
                 {
                     uint32_t cap = KCAP_INVALID;
                     ASSERT_EQ(create_as(minter, word, G, &cap), 0);
-                    ASSERT_NE(delegate(main_, obj_of(minter, cap)), KCAP_INVALID);
+                    kept[i] = delegate(main_, obj_of(minter, cap));
+                    ASSERT_NE(kept[i], KCAP_INVALID);
                 }
                 ASSERT_FALSE(admits(tk)) << "fixture: the minter is not at its budget";
                 exit_as(minter);
@@ -774,12 +925,15 @@ namespace kickos
                     IrqLock lock;
                     task_drop_hold(tk, lock);
                 }
-                kos_task_t const next = new_task(main_, 0, 0, 0);
-                ASSERT_NE(next, KOS_TASK_NONE);
-                Task* const successor = task_resolve(next);
-                ASSERT_EQ(slot_index_of(kernel().tasks, successor), slot)
-                    << "fixture: the successor took another slot";
-                EXPECT_TRUE(admits(successor)) << "a dead minter's runs charge its successor";
+                Task* const successor = task(slot);
+                ASSERT_NE(successor, nullptr);
+                EXPECT_FALSE(admits(successor))
+                    << "the runs a dead incarnation minted stopped charging its record while held";
+                for (uint32_t cap : kept)
+                {
+                    ASSERT_EQ(close(main_, cap), 0);
+                }
+                EXPECT_TRUE(admits(successor)) << "a run its last holder let go still charges";
             }
 
             TEST_F(SpaceSelf, names_the_caller_s_space_and_holds_no_reference)
@@ -837,7 +991,7 @@ namespace kickos
             {
                 uint32_t const before = count(KOS_MEM_RANGES_FREE);
                 kos_thread_t child = KOS_THREAD_NONE;
-                ASSERT_EQ(spawn(main_, spawn_params(MAIN_PARAMS, 0, 0, 0, KOS_TASK_NONE),
+                ASSERT_EQ(spawn(main_, spawn_params(MAIN_PARAMS, 0, 0, 0),
                                 MAIN_OUT, &child),
                           0);
                 Thread* const t = kernel().threads.resolve(child);
@@ -853,6 +1007,7 @@ namespace kickos
                 kos_task_t const t = new_task(main_, 0, 0, 0);
                 ASSERT_NE(t, KOS_TASK_NONE);
                 EXPECT_EQ(count(KOS_MEM_SPACES_HELD), before + 1u);
+                exit_as(entry_of(t));
                 ASSERT_EQ(call_as(main_, KOS_SYS_TASK_SLAY, t), 0u);
                 EXPECT_EQ(count(KOS_MEM_SPACES_HELD), before);
             }

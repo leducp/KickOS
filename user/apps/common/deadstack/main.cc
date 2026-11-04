@@ -116,8 +116,7 @@ int main(int, char**)
     victim_mask = 1u << core_victim;
 #endif
     auto const v = kos::thread::create_caps(victim, nullptr, "victim", 10, nullptr, 0,
-                                            KOS_POLICY_FIFO, 0, nullptr,
-                                            0, 0, nullptr, KOS_TASK_NONE, nullptr, 0,
+                                            KOS_POLICY_FIFO, 0, 0, nullptr, nullptr, 0,
                                             victim_mask);
     if (not v.valid() or kos_sem_wait(&g_ready, KOS_TIMEOUT_NONE) != 0)
     {
@@ -126,8 +125,7 @@ int main(int, char**)
     }
 #if KICKOS_KERNEL_CORES > 1
     auto const r = kos::thread::create(reader, nullptr, "reader", PRIO_SPINNER, KOS_POLICY_FIFO,
-                                       0, nullptr, 0, nullptr, 0, nullptr,
-                                       0, nullptr, 0, 0, nullptr, KOS_TASK_NONE,
+                                       0, nullptr, 0, nullptr, 0, nullptr, 0, 0, nullptr,
                                        1u << core_reader);
     if (not r.valid())
     {

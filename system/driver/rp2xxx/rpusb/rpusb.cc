@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // RP2040 / RP2350 USB CDC-ACM console driver on the <kickos/sys/usb_cdc_service.h>
-// substrate: a privileged one-shot bring-up plus two unprivileged threads, one parked in
+// substrate: two unprivileged threads, one parked in
 // a notification wait owning every USB register and the whole control endpoint, one parked in
 // kos_recv owning neither. ONE backend for both chips: writing ABSOLUTE values rather than
 // read-modify-writes is what absorbs the reset-value differences.

@@ -17,6 +17,15 @@ family: none
 exits_on_fault: false
 interrupts: { count: 32 }
 
+# The candidate bases of the fake register block, each its whole span (SIM_PVREG_BASES,
+# SIM_PVREG_SPAN): a device window is admitted only on the one that maps.
+apertures:
+  - { window: [0x40000000, 0x30000] }
+  - { window: [0x100000000, 0x30000] }
+  - { window: [0x400000000, 0x30000] }
+  - { window: [0x10000000000, 0x30000] }
+  - { window: [0x100000000000, 0x30000] }
+
 devices:
   # The kernel console's buffered drain runs on a signal raised as this line, which stays clear
   # of the block an app may inject into, from KICKOS_IRQ_FREE_BASE.

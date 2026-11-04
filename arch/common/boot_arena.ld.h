@@ -28,7 +28,7 @@
 
 #define KICKOS_BOOT_ARENA_ASSERT(ram_start, ram_end)                              \
     ASSERT(KICKOS_BOOT_ROOT_BASE(ram_start) + KICKOS_BOOT_ROOT_SIZE <= (ram_end), \
-           "KickOS: the user-RAM arena cannot hold the idle + root boot stacks once MPU natural alignment is paid; kmain would kpanic before root ever runs. Lower KICKOS_ROOT_STACK_SIZE / KICKOS_IDLE_STACK_SIZE in the board's variant defconfig (boards/<board>/configs/<variant>/defconfig), or cut this image's static footprint, which where KICKOS_KERNEL_STACKS is 1 includes KICKOS_THREAD_SLOTS blocks of KICKOS_KERNEL_STACK_SIZE in kernel .bss below the arena.")
+           "KickOS: the user-RAM arena cannot hold the idle + root boot stacks once MPU natural alignment is paid; kmain would kpanic before root ever runs. Lower KICKOS_ROOT_STACK_SIZE / KICKOS_IDLE_STACK_SIZE in the board's variant defconfig (boards/<board>/configs/<variant>/defconfig), or cut this image's static footprint, which includes the system's pools and, where KICKOS_KERNEL_STACKS is 1, a KICKOS_KERNEL_STACK_SIZE block per thread slot in kernel .bss below the arena.")
 
 /* The init's private block holds one record per task and per shared region; one record is
  * the least any system with a task reserves.
@@ -37,8 +37,9 @@
     KICKOS_BOOT_ALIGN_UP(KICKOS_BOOT_ROOT_BASE(ram_start) + KICKOS_BOOT_ROOT_SIZE,   \
                          KICKOS_BOOT_PRIVATE_ALIGN)
 
-/* The pool holds KICKOS_MAX_THREADS blocks of KICKOS_USER_STACK_SIZE, the slots but root's,
- * whose stack is the root boot stack. Where the alignment exceeds the size, as KICKOS_TLS
+/* The pool holds a block of KICKOS_USER_STACK_SIZE per thread slot but root's, whose stack is
+ * the root boot stack: KICKOS_POOL_STACK_COUNT names the symbol the system's pools TU defines,
+ * provided as 0 to a link carrying no system, which its system check refuses. Where the alignment exceeds the size, as KICKOS_TLS
  * makes it so the thread pointer can be SP masked, EVERY pool block pays a run-up.
  */
 #define KICKOS_POOL_STRIDE \
@@ -53,12 +54,13 @@
 
 /* Every linker script the fleet links must invoke it, board-local ones included; omitting it
  * fails the configure. It binds the FATTEST image on the board: where __kickos_ram_start
- * floats with .bss, the heaviest image caps KICKOS_MAX_THREADS. The sections between .bss and
+ * floats with .bss, the heaviest image caps the thread pool. The sections between .bss and
  * the arena (.userheap, and .appdata on an enforcing chip) move ram_start, and so does the
  * per-thread kernel-stack block, which is .bss itself.
  */
 #define KICKOS_POOL_ARENA_ASSERT(ram_start, ram_end)                    \
+    PROVIDE(KICKOS_POOL_STACK_COUNT = 0);                               \
     ASSERT(KICKOS_POOL_TOP(ram_start) <= (ram_end),                     \
-           "KickOS: the user-RAM arena cannot back KICKOS_MAX_THREADS default stacks of KICKOS_USER_STACK_SIZE past the two boot stacks and the init's private block, so this board advertises thread slots it cannot seat; kos_thread_create would return -KOS_ENOMEM for a slot the board claims to have, indistinguishable at runtime from a full slot table. Lower KICKOS_MAX_THREADS / KICKOS_USER_STACK_SIZE in the board's variant defconfig (boards/<board>/configs/<variant>/defconfig), or cut this image's static footprint, which where KICKOS_KERNEL_STACKS is 1 includes KICKOS_THREAD_SLOTS blocks of KICKOS_KERNEL_STACK_SIZE in kernel .bss below the arena.")
+           "KickOS: the user-RAM arena cannot back a default stack of KICKOS_USER_STACK_SIZE for every thread slot the composition's THREADS budgets size, past the two boot stacks and the init's private block, so a task within its budget would get -KOS_ENOMEM from kos_thread_create. Lower the THREADS budgets in the composition, or KICKOS_USER_STACK_SIZE in the board's variant defconfig (boards/<board>/configs/<variant>/defconfig), or cut this image's static footprint, which includes the system's pools and, where KICKOS_KERNEL_STACKS is 1, a KICKOS_KERNEL_STACK_SIZE block per thread slot in kernel .bss below the arena.")
 
 #endif

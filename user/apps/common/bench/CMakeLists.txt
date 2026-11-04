@@ -2,14 +2,30 @@
 # Copyright (c) 2026 Philippe Leduc
 
 add_executable(bench main.cc)
-kickos_app_system(bench COMPOSITION system.yaml)
+target_include_directories(bench PRIVATE "${PROJECT_SOURCE_DIR}/user/apps/common/include")
+add_executable(bench_peer peer.cc)
+target_link_libraries(bench_peer PRIVATE kickos)
+# main's THREADS: its entry, the two players and the end-to-end pair, and a spinner on each core
+# past the second, at most three; on the SMP images two IPC peers per core.
+math(EXPR BENCH_MAIN_THREADS "${KICKOS_KERNEL_CORES} + 3")
+if(BENCH_MAIN_THREADS LESS 5)
+  set(BENCH_MAIN_THREADS 5)
+elseif(BENCH_MAIN_THREADS GREATER 8)
+  set(BENCH_MAIN_THREADS 8)
+endif()
+configure_file(system.yaml "${CMAKE_CURRENT_BINARY_DIR}/system.yaml" @ONLY)
+math(EXPR BENCH_MAIN_THREADS "2 * ${KICKOS_KERNEL_CORES} + 1")
+configure_file(system_smp.yaml "${CMAKE_CURRENT_BINARY_DIR}/system_smp.yaml" @ONLY)
+kickos_app_system(bench COMPOSITION "${CMAKE_CURRENT_BINARY_DIR}/system.yaml")
 kickos_emit_image(bench)
 
 if(KICKOS_ARCH STREQUAL "x86_64" OR
    ((KICKOS_ARCH STREQUAL "armv8a" OR KICKOS_ARCH STREQUAL "lx6") AND
     KICKOS_KERNEL_CORES GREATER 1))
   add_executable(bench_smp smp_lock.cc)
-  kickos_app_system(bench_smp COMPOSITION system.yaml SYSTEM bench_system)
+  target_compile_definitions(bench_smp PRIVATE BENCH_MAIN_THREADS=${BENCH_MAIN_THREADS})
+  kickos_app_system(bench_smp COMPOSITION "${CMAKE_CURRENT_BINARY_DIR}/system_smp.yaml"
+                     SYSTEM bench_smp_system)
   if(NOT KICKOS_ARCH STREQUAL "x86_64")
     if(KICKOS_KERNEL_CORES GREATER 4)
       target_compile_definitions(bench_smp PRIVATE KICKOS_SMP_LOCK_ROUNDS=50000)
@@ -23,7 +39,9 @@ endif()
 if(KICKOS_ARCH STREQUAL "x86_64" OR
    (KICKOS_ARCH STREQUAL "armv8a" AND KICKOS_CONFIG_VARIANT STREQUAL "benchsmp12"))
   add_executable(bench_smp_ipc smp_ipc.cc)
-  kickos_app_system(bench_smp_ipc COMPOSITION system.yaml SYSTEM bench_system)
+  target_compile_definitions(bench_smp_ipc PRIVATE BENCH_MAIN_THREADS=${BENCH_MAIN_THREADS})
+  kickos_app_system(bench_smp_ipc COMPOSITION "${CMAKE_CURRENT_BINARY_DIR}/system_smp.yaml"
+                     SYSTEM bench_smp_system)
   set(KICKOS_M95_BENCH_PAIRS "${KICKOS_KERNEL_CORES}" CACHE STRING
       "Active pairs in the SMP IPC benchmark")
   set(KICKOS_M95_BENCH_REMOTE_PAIRS "0" CACHE STRING

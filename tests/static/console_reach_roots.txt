@@ -108,10 +108,11 @@ floor   x86_64   qemu-x86_64-smp8 files=90 nodes=700 reason: measured directly o
 floor   x86_64   qemu-x86_64-smp12 files=90 nodes=700 reason: measured directly on this preset, 131 .ci files and 1352 nodes on 2026-09-28
 
 # --- the route -----------------------------------------------------------------
-root    * _ZN6kickos13kprintf_faultEPKcz reason: the fault-record line, the only caller that passes WRITE_RECORD, so the held half of console_emit runs inside it
+root    * _ZN6kickos13kprintf_faultEPKcz reason: the fault-record line offered once, the entry over the record route below
+root    * console.cc:kvprintf_fault reason: the record route itself, every offer of a record line and the only caller that passes WRITE_RECORD, so the held half of console_emit runs inside it. kprintf_record, which waits between offers, is not a root: its wait parks, and a park reaches the panic terminal
 root    * _ZN6kickos11krecord_endEv reason: commits the record and hands it on through cap_console_deliver
-root    * _ZN6kickos7kprintfEPKcz reason: the ordinary entry, the same body with record=false; gcc gives each caller its own copy of an inlined static, so both have to be roots or half the body goes unwalked
-root    * ?console.cc:kvprintf_route reason: the function this clause is named for. OPTIONAL because a board that inlines it has no node; where it IS a node the clause additionally requires it reachable from the two callers above, so a root set that stopped covering it is refused rather than believed
+root    * _ZN6kickos7kprintfEPKcz reason: the ordinary entry, the same body with record=false; gcc gives each caller its own copy of an inlined static, so every caller has to be a root or part of the body goes unwalked
+root    * ?console.cc:kvprintf_route reason: the function this clause is named for. OPTIONAL because a board that inlines it has no node; where it IS a node the clause additionally requires it reachable from the callers above, so a root set that stopped covering it is refused rather than believed
 
 # A root set that has drifted off the code it names still walks a graph and still finds no
 # panic. These two are what a route that still routes must reach.

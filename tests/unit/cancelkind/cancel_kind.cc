@@ -109,7 +109,7 @@ namespace kickos
                 int n = 0;
                 for (int s = 0; s < k.threads.next; s++)
                 {
-                    if (k.threads.slots[s].cancel_kind == kind)
+                    if (k.threads.slots()[s].cancel_kind == kind)
                     {
                         n++;
                     }

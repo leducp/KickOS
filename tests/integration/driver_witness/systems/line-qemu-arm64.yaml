@@ -20,7 +20,7 @@ tasks:
     core: 1
 
   - name: client
-    entry: line_client_main
+    program: main
     stack: 12288
     priority: 8
     ceiling: 8

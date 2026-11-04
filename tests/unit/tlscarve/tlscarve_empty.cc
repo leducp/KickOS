@@ -50,7 +50,7 @@ void assert_fabricated_layout()
 TEST(TlsCarveEmpty, no_thread_local_carves_nothing)
 {
     assert_fabricated_layout();
-    EXPECT_EQ(kickos::tls_block_size(), 0u);
+    EXPECT_EQ(kickos::tls_block_size(0), 0u);
 }
 
 TEST(TlsCarveEmpty, seat_touches_nothing)
@@ -62,7 +62,7 @@ TEST(TlsCarveEmpty, seat_touches_nothing)
         block[i] = 0xAA;
     }
 
-    kickos::tls_seat(block);
+    kickos::tls_seat(block, 0);
 
     for (size_t i = 0; i < sizeof(block); ++i)
     {
@@ -74,6 +74,6 @@ TEST(TlsCarveEmpty, every_stack_is_admissible)
 {
     // Idle's 512-byte unstrided block reaches no thread_local, and with nothing to carve
     // there is no thread pointer to collide on.
-    EXPECT_TRUE(kickos::tls_stack_admissible(0x20010200u, 512u));
-    EXPECT_TRUE(kickos::tls_stack_admissible(0x20010000u, TLSCARVE_STRIDE));
+    EXPECT_TRUE(kickos::tls_stack_admissible(0x20010200u, 512u, 0));
+    EXPECT_TRUE(kickos::tls_stack_admissible(0x20010000u, TLSCARVE_STRIDE, 0));
 }

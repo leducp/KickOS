@@ -253,6 +253,48 @@ namespace
         }
     }
 
+    // The RV32 code window is a TOR pair that ends where the code ends, not on a power of two:
+    // its first and last words are read and fetched, the word before it (the kernel's text) and
+    // the word past it are neither, and nothing in it is writable.
+    TEST(MpuOverlap, ThePmpCodeWindowIsATorPairEndingWhereTheCodeEnds)
+    {
+        constexpr uintptr_t KERNEL_END = 0x80030000u;
+        constexpr uintptr_t CODE_END = KERNEL_END + 0x5A5Cu;
+        arch_mpu_region const data = region(BLOCK, SIZE, RW);
+        for (arch_mpu_region const* set : {static_cast<arch_mpu_region const*>(nullptr), &data})
+        {
+            size_t n = 0;
+            if (set != nullptr)
+            {
+                n = 1;
+            }
+            bool exec = false;
+            HwAccess got = hw_rv32imac_code_window(set, n, KERNEL_END, CODE_END, KERNEL_END, &exec);
+            EXPECT_TRUE(got.read);
+            EXPECT_FALSE(got.write);
+            EXPECT_TRUE(exec);
+            got = hw_rv32imac_code_window(set, n, KERNEL_END, CODE_END, CODE_END - 4u, &exec);
+            EXPECT_TRUE(got.read);
+            EXPECT_TRUE(exec);
+            got = hw_rv32imac_code_window(set, n, KERNEL_END, CODE_END, CODE_END, &exec);
+            EXPECT_FALSE(got.read);
+            EXPECT_FALSE(exec);
+            got = hw_rv32imac_code_window(set, n, KERNEL_END, CODE_END, KERNEL_END - 4u, &exec);
+            EXPECT_FALSE(got.read);
+            EXPECT_FALSE(exec);
+            // The next power of two above the code is not granted.
+            got = hw_rv32imac_code_window(set, n, KERNEL_END, CODE_END, KERNEL_END + 0x8000u,
+                                          &exec);
+            EXPECT_FALSE(got.read);
+        }
+        // A thread's own region wins over the window and keeps its rights.
+        bool exec = true;
+        HwAccess const got
+            = hw_rv32imac_code_window(&data, 1, KERNEL_END, CODE_END, BLOCK, &exec);
+        EXPECT_TRUE(got.write);
+        EXPECT_FALSE(exec);
+    }
+
     // A region with no descriptor decides nothing in the hardware.
     TEST(MpuOverlap, AnUnseatedRegionDecidesNothing)
     {

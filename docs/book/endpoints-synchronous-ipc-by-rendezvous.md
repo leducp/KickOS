@@ -130,7 +130,11 @@ struct IpcDesc
 {
     uintptr_t buf;       // the parked thread's own (already bound-checked) buffer
     size_t    len;       // sender: bytes to send; receiver: buffer capacity
-    uintptr_t badge_out; // receiver: where to store the sender's badge, or 0
+    union
+    {
+        uintptr_t badge_out; // receiver: where to store the sender's badge, or 0
+        uint32_t badge;      // sender: the badge of the capability it sends through
+    };
 };
 ```
 

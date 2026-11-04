@@ -265,7 +265,7 @@ arch_syscall:
     bx      lr
 ```
 
-**Try it:** `break kickos_app_main` (the hello app's `main`), `continue`, `delete`,
+**Try it:** `break main` (the hello app's `main`), `continue`, `delete`,
 `break SVC_Handler`, `continue`:
 ```
 (gdb) p/x *(unsigned*)($psp)@8
@@ -299,7 +299,7 @@ argument), the address to return to, the process stack pointer to come back to, 
 alignment pad. A blocking syscall is frozen by PendSV below this header, so the header survives
 the block.
 
-**Try it:** `break kickos_app_main`, `continue`, `delete`, `break *syscall_dispatch`,
+**Try it:** `break main`, `continue`, `delete`, `break *syscall_dispatch`,
 `continue`:
 ```
 (gdb) info registers sp
@@ -444,7 +444,7 @@ $1 = 0xfffffffd
 $2 = {0x3f, 0x0, 0x3f, 0x2, 0x200009b0, 0x1329, 0xc8, 0x61000000}
 ```
 The fault came from a thread on its process stack. The stacked `pc` (`0xc8`, inside
-`kickos_app_main`) is the illegal instruction the app executes on purpose; the console then
+`main`) is the illegal instruction the app executes on purpose; the console then
 prints `=== HARD FAULT ===` with those same registers.
 
 **Why, and the contract:** [Book: Interrupts and traps](../book/interrupts-and-traps.md),

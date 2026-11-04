@@ -13,8 +13,9 @@ arch: rv32imac
 # the two cores share is coherent by absence, and a region's cache attribute changes nothing.
 data_cache: false
 # A RAM-only image at flash 0x0 with no second-stage loader: the ROM loads a plain image and
-# never enters it (`ets_loader.c 67`), and mis-reads a QIO header ("Checksum failure").
-esptool_image: [--ram-only-header, --dont-append-digest, --flash-mode, dio]
+# never enters it (`ets_loader.c 67`), and mis-reads a QIO header ("Checksum failure"). The
+# image is built from the ELF's load segments, so an image's .data lands at its template.
+esptool_image: [--use-segments, --ram-only-header, --dont-append-digest, --flash-mode, dio]
 c: { line_enum: "kernel_line : int", led: addressable }
 
 # Two cores, two postures. An own-image AMP node per core, so a composition is per node.
@@ -57,6 +58,9 @@ family: none
 exits_on_fault: false
 interrupts: { count: { value: 32, ref: "10.3.2 CPU Interrupts, p.384" }, soft_only_from: 26 }
 
+apertures:
+  - { window: [0x60000000, 0xD0000], ref: "Table 5.3-1 Memory Address Mapping, Peripherals, p.171" }
+
 devices:
   # Interrupts are routed: a peripheral's matrix source reaches a CPU interrupt, and the
   # kernel posts it on a logical line. The number kos_irq_claim takes is the logical line.
@@ -77,6 +81,12 @@ devices:
   timg1: { window: [0x60009000, 0x1000], ref: "Table 5.3-2, p.175" }
   rtc_wdt: { window: [0x600B1C00, 0x400], ref: "Table 5.3-2, p.176" }
   usb_serial_jtag: { window: [0x6000F000, 0x1000], ref: "Table 5.3-2, p.175" }
+  # The masters but the two CPUs (Table 18.4-5 DMA Access Source, p.609). SDIO is its HINF, SLC
+  # and SLCHOST blocks.
+  gdma: { window: [0x60080000, 0x1000], bus_master: true, ref: "Table 5.3-2, p.175" }
+  sdio: { window: [0x60016000, 0x3000], bus_master: true, ref: "Table 5.3-2, p.175" }
+  mem_monitor: { window: [0x60092000, 0x1000], bus_master: true, ref: "Table 5.3-2, p.176" }
+  trace: { window: [0x600C0000, 0x1000], bus_master: true, ref: "Table 5.3-2, p.176" }
 
   # The M-mode CLINT at +0x800 and the U-mode one at +0xC00, and at the base a view of the
   # CPU interrupt controller that the TRM does not document but the kernel drives.

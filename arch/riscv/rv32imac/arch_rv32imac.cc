@@ -25,6 +25,7 @@ static_assert(KICKOS_TRACE_ARCH == kickos::trace::ARCH_RISCV,
 namespace kickos
 {
     void kprintf(char const* fmt, ...);
+    void kpanic(char const* msg) __attribute__((noreturn));
 }
 extern "C" void kpanic_enter(void);
 extern "C" void kfault_terminate(void) __attribute__((noreturn));
@@ -74,11 +75,6 @@ static_assert(offsetof(struct arch_context, kernel_sp) == KICKOS_RV_CTX_OFF_KERN
 #if KICKOS_TLS
 static_assert(offsetof(struct arch_context, tls_base) == KICKOS_RV_CTX_OFF_KERNEL_SP + 4,
               ".Lrestore loads ctx.tls_base at F_CTX_TLS_BASE");
-
-namespace kickos
-{
-    size_t tls_block_size();
-}
 #endif
 static_assert(KICKOS_PANIC_STACK_SIZE >= KICKOS_RV_PANIC_FRAME + KICKOS_RV_PANIC_DEPTH,
               "KICKOS_PANIC_STACK_SIZE is below what this arch's panic reporter descends");
@@ -171,7 +167,7 @@ extern "C"
     void trap_entry(void);
     void kickos_rv_mtvec(void);
     void kickos_thread_return(void);
-    void kickos_user_thread_return(void);
+    extern void (*kickos_image_thread_return)(void);
 }
 
 extern "C"
@@ -210,7 +206,7 @@ void arch_context_init(struct arch_context* ctx,
     }
     else
     {
-        ret = reinterpret_cast<uint32_t>(kickos_user_thread_return); // MPP stays U (0)
+        ret = reinterpret_cast<uint32_t>(kickos_image_thread_return); // MPP stays U (0)
     }
 
     f[F_MEPC] = reinterpret_cast<uint32_t>(entry);
@@ -225,14 +221,16 @@ void arch_context_init(struct arch_context* ctx,
     // stores a frame through it.
     ctx->stack_lo = reinterpret_cast<uint32_t>(stack_base);
     ctx->stack_hi = static_cast<uint32_t>(top);
-#if KICKOS_TLS
-    // The carve sits directly below the stack this is handed.
-    ctx->tls_base = ctx->stack_lo - static_cast<uint32_t>(::kickos::tls_block_size());
-#endif
-
     // ctx->kernel_sp IS DELIBERATELY UNTOUCHED: thread_create seats it before this call, and
     // its zero (no block seated) is what the trusted entry's refusal path keys on.
 }
+
+#if KICKOS_TLS
+void arch_context_tls(struct arch_context* ctx, uintptr_t thread_pointer)
+{
+    ctx->tls_base = static_cast<uint32_t>(thread_pointer);
+}
+#endif
 
 // ctx->sp is the frame base, where .Lrestore reloads a0 from.
 void arch_ctx_set_syscall_result(struct arch_context* ctx, uint32_t result)
@@ -357,6 +355,46 @@ void kickos_arch_mpu_commit(void)
 #else
 // KICKOS_HAVE_MPU=0: the permissive bootstrap PMP stays in place for the life of the image.
 void kickos_arch_mpu_commit(void) {}
+#endif
+
+#if KICKOS_HAVE_MPU
+extern "C"
+{
+    extern unsigned char __kickos_pmp_code_start[];
+    extern unsigned char __kickos_pmp_code_end[];
+}
+
+// Entries 8 and 9: every image's code, the kernel's text below it. Read back, since a core
+// with fewer entries ignores the writes.
+static void pmp_code_window_seat(void)
+{
+    kickos::rv32::PmpCodeWindow const w = kickos::rv32::pmp_code_window(
+        reinterpret_cast<uintptr_t>(__kickos_pmp_code_start),
+        reinterpret_cast<uintptr_t>(__kickos_pmp_code_end));
+    uint32_t base_back = 0;
+    uint32_t top_back = 0;
+    uint32_t cfg2_back = 0;
+    __asm volatile("csrw pmpaddr8, %0" ::"r"(w.base_addr) : "memory");
+    __asm volatile("csrw pmpaddr9, %0" ::"r"(w.top_addr) : "memory");
+    __asm volatile("csrw pmpcfg2, %0" ::"r"(w.cfg2) : "memory");
+    __asm volatile("csrr %0, pmpaddr8" : "=r"(base_back));
+    __asm volatile("csrr %0, pmpaddr9" : "=r"(top_back));
+    __asm volatile("csrr %0, pmpcfg2" : "=r"(cfg2_back));
+    __asm volatile("fence" ::: "memory");
+    if (base_back != w.base_addr or top_back != w.top_addr or cfg2_back != w.cfg2)
+    {
+        kickos::kpanic(kickos::diag::kPmpCodeWindow);
+    }
+}
+
+// Whether [ptr, ptr + len) lies inside the code window, which every user thread reads.
+bool arch_mpu_code_window_holds(uintptr_t ptr, size_t len)
+{
+    uintptr_t const lo = reinterpret_cast<uintptr_t>(__kickos_pmp_code_start);
+    uintptr_t const hi = reinterpret_cast<uintptr_t>(__kickos_pmp_code_end);
+    uintptr_t const end = ptr + len;
+    return end >= ptr and ptr >= lo and end <= hi;
+}
 #endif
 
 // A NAPOT entry names a power of two of 8 bytes at the least.
@@ -730,6 +768,9 @@ void kickos_rv32_init(void)
 #if !KICKOS_RV32_LP
     __asm volatile("csrw pmpaddr0, %0" ::"r"(0xFFFFFFFFu) : "memory");
     __asm volatile("csrw pmpcfg0, %0" ::"r"(0x0Fu) : "memory");
+#if KICKOS_HAVE_MPU
+    pmp_code_window_seat();
+#endif
 #endif
 }
 

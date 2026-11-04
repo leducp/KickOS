@@ -5,28 +5,25 @@
 // later workers away from their valid console capability.
 // The counting console driver does not print, so exit status reports whether
 // it received the expected payload. QEMU reads the semihosting exit code.
-// Its globals cross tasks: on the flat mps2 image every thread reaches the app's data.
+// The sink is a console driver, whose byte count main asks for with a one-byte call.
 
 #include <kickos/board_config.h>
 #include <kickos/kos.h>
 #include <kickos/sys.h>
 
 #include <kickos/sys/atomic.h>
+#include <kickos/sys/driver_service.h>
 
 #include <stdio.h>
-
-#if KICKOS_USER_STACK_SIZE > 2048
-#define SINK_STACK KICKOS_USER_STACK_SIZE
-#else
-#define SINK_STACK 2048
-#endif
+#include <string.h>
 
 namespace
 {
     using kickos::Atomic;
     using kickos::Order;
 
-    constexpr uint8_t DRIVER_PRIO = 12; // >= WORKER_PRIO (D9: rendezvous has no PI)
+    // Below the sink's priority, which the composition states: the rendezvous has no priority
+    // inheritance.
     constexpr uint8_t WORKER_PRIO = 10;
 
     // Byte count is known at compile time: the driver must receive exactly this many
@@ -37,32 +34,21 @@ namespace
         "[worker] initdemo payload line 3\n";
     constexpr size_t PAYLOAD_LEN = sizeof(WORKER_PAYLOAD) - 1;
 
-    // Cross-task channel: one address space on the flat mps2 image.
     // g_worker_done is set after the worker's final fflush, before it exits.
-    Atomic<int32_t, Order::RELAXED> g_driver_bytes{0};
     Atomic<int, Order::RELAXED> g_worker_done{0};
 
-    // A no-hardware sink: counts the bytes it receives on the delegated endpoint cap
-    // (B1: first delegated cap is the child's kos::child_cap(0)). A negative recv (dead endpoint)
-    // ends it; otherwise it parks in recv until shutdown.
-    void console_sink(void*)
+    // The bytes the sink has taken, or -1.
+    int32_t sink_bytes(kos_cap_t ep)
     {
-        int const ep = KOS_SPAWN_DELEGATED_CAP0;
-        char buf[KOS_EP_MSG_MAX];
-        while (true)
+        char buf[KOS_EP_MSG_MAX] = {'Q'};
+        int32_t const n = kos_call(ep, buf, 1, sizeof(buf), 1000000u);
+        if (n != static_cast<int32_t>(sizeof(int32_t)))
         {
-            // Info-less recv: this sink counts plain sends only (a client kos_call
-            // bounces -KOS_ENOTSUP rather than minting a reply cap here).
-            struct kos_reply_recv_opts opts;
-            kos_reply_recv_opts_init(&opts, ep, KOS_RECV_NO_INFO, KOS_TIMEOUT_NONE);
-            int32_t const n = kos_reply_recv(KOS_CAP_NONE, buf, kos_call_lens_pack(0, sizeof(buf)), &opts);
-            if (n < 0)
-            {
-                break;
-            }
-            g_driver_bytes = g_driver_bytes + n;
+            return -1;
         }
-        kos_exit(0);
+        int32_t count = 0;
+        memcpy(&count, buf, sizeof(count));
+        return count;
     }
 
     // Post-publish worker: an ordinary app that just prints. Its cap 0 was seated to
@@ -92,41 +78,32 @@ int main(int, char**)
     }
 
     // The sink serves the console from a task of its own: a thread of the serving task gets no
-    // stdout, so the worker below must live outside it.
-    void* const sink_stack = kos_ram_alloc(SINK_STACK);
-    kos_task_t sink_task = KOS_TASK_NONE;
-    if (sink_stack == nullptr or kos_task_create(nullptr, 0, 0, &sink_task) != 0)
+    // stdout, so the worker below must live outside it. Its declaration publishes the console
+    // through the endpoint main passes.
+    kos_program_t prog = KOS_CAP_NONE;
+    if (kos_program_find(KICKOS_APP_IMAGE, &prog) != 0)
     {
-        kos::print("[initdemo] ERROR: no task for the sink\n");
+        kos::print("[initdemo] ERROR: no program for the sink\n");
         return 2;
     }
-
-    // Spawn the counting sink with a narrowed {ep | WAIT} recv cap (the child's
-    // kos::child_cap(0)). No SIGNAL/TRANSFER: it only receives.
     kos_cap_grant const caps[1] = {
-        { .source_cap = ep, .rights_mask = KOS_CAP_WAIT },
+        { .source_cap = ep, .rights_mask = KOS_CAP_WAIT | KOS_CAP_TRANSFER },
     };
-    auto const drv = kos::thread::create_caps(console_sink, nullptr, "sink", DRIVER_PRIO,
-                                              caps, /*cap_count=*/1, KOS_POLICY_FIFO, 0,
-                                              nullptr, 0, 0, nullptr,
-                                              sink_task, sink_stack, SINK_STACK);
-    if (not drv.valid())
+    kos_task_params params = {};
+    params.instance = "sink";
+    params.caps = caps;
+    params.cap_count = 1;
+    kos_task_t sink_task = KOS_TASK_NONE;
+    int const created = kos_task_create(prog, &params, &sink_task);
+    (void)kos_handle_close(prog);
+    if (created != 0)
     {
-        kos::print("[initdemo] ERROR: sink spawn failed\n");
+        kos::print("[initdemo] ERROR: sink create failed\n");
         return 2;
     }
 
-    // Route stdout to the endpoint (kernel chip path drops; children spawned AFTER
-    // this get cap 0 seated to it). Gated on AUTH_CONSOLE, which main's composition grants.
-    if (kos_console_publish(ep, sink_task) != 0)
-    {
-        kos::print("[initdemo] ERROR: console_publish failed\n");
-        return 2;
-    }
-
-    // Drop main's own WAIT cap so the sink is the sole receiver. g_stdout_target
-    // holds the endpoint alive on the kernel ref, so this does not tear it down.
-    kos_handle_close(ep);
+    // Drop main's own WAIT so the sink is the sole receiver; the endpoint stays to ask its count.
+    (void)kos_cap_narrow(ep, kickos::driver::KOS_DRV_HANDOVER_KEPT);
 
     // Spawn the printing worker AFTER publish, so its cap 0 is seated to the endpoint.
     auto const w = kos::thread::create(worker, nullptr, "worker", WORKER_PRIO);
@@ -149,7 +126,7 @@ int main(int, char**)
     }
     for (int i = 0; i < 50; i++)
     {
-        if (g_driver_bytes >= static_cast<int32_t>(PAYLOAD_LEN))
+        if (sink_bytes(ep) >= static_cast<int32_t>(PAYLOAD_LEN))
         {
             break;
         }
@@ -157,7 +134,7 @@ int main(int, char**)
     }
 
     int rc = 1;
-    if (g_driver_bytes == static_cast<int32_t>(PAYLOAD_LEN))
+    if (sink_bytes(ep) == static_cast<int32_t>(PAYLOAD_LEN))
     {
         rc = 0;
     }

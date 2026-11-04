@@ -19,9 +19,12 @@
 extern "C"
 {
     void kfault_terminate(void) __attribute__((noreturn));
-    // The app window, where the loader put it (arch/x86/x86_64/pe_image.ld).
+    // The span every image's spaces map it in, and where firmware loaded every image's bytes
+    // (tools/image-link.py): image 0's, then each later one's.
     extern unsigned char __kickos_app_rom_start[];
     extern unsigned char __kickos_app_sram_end[];
+    extern unsigned char __kickos_image0_load_start[];
+    extern unsigned char __kickos_images_load_end[];
 #if KICKOS_KERNEL_CORES > 1
     uint32_t kickos_x86_64_online_cores(void);
     void kickos_x86_64_translation_rendezvous(uint32_t peers);
@@ -85,7 +88,7 @@ namespace
     // The top of the conventional run, which is the widest output address this port programs.
     arch_phys_addr_t g_ram_hi = 0;
 
-    // The arena and the app window where aspace_init found the boot root mapping every byte at
+    // The arena and image 0's frames where aspace_init found the boot root mapping every byte at
     // its own address; empty where it did not. Nothing edits the boot root after aspace_init.
     struct IdentityRun
     {
@@ -99,6 +102,19 @@ namespace
     uint64_t g_nocache_bits = ~0ull;
     uintptr_t g_user_lo = 0;
     uintptr_t g_user_hi = 0;
+
+    // Absolute user addresses: a PC-relative reference cannot reach them.
+    unsigned char* const volatile g_image_lo = __kickos_app_rom_start;
+    unsigned char* const volatile g_image_hi = __kickos_app_sram_end;
+
+    // The top-level slot holding the program where the adopted root maps that slot (always, at
+    // five levels): firmware's table under it, whose entries every space shares through a copy
+    // of its own, and the span of that table's empty entries the program occupies. No split:
+    // g_split_child null.
+    size_t g_split_slot = 0;
+    uint64_t const* g_split_child = nullptr;
+    uintptr_t g_split_lo = 0;
+    uintptr_t g_split_hi = 0;
 
     // Root-keyed residency, updated by install_root and retained after switching away.
     kickos::aspace::Residency<KICKOS_NUM_CORES> g_residency;
@@ -454,8 +470,14 @@ namespace
 
     Edit edit_of(struct arch_aspace* space)
     {
-        Edit const e = {resident_anywhere(space), 0, false, 0};
+        Edit const e = {resident_anywhere(space), false, 0, 0, 0};
         return e;
+    }
+
+    void tables_moved(struct arch_aspace* space, Edit const& e)
+    {
+        uint32_t* const count = g_residency.tables(root_key(space));
+        *count = *count + e.tables;
     }
 
     // Whether an unprivileged access reaches any leaf under `table`. The user bit ANDs down
@@ -501,6 +523,10 @@ namespace
         {
             return false; // 0 pages, a byte count past the pointer width, or a wrapped end
         }
+        if (g_split_child != nullptr and va >= g_split_lo and end <= g_split_hi)
+        {
+            return true;
+        }
         if (va < g_user_lo or end > g_user_hi)
         {
             return false;
@@ -518,6 +544,61 @@ namespace
             at = (at & ~(span - 1)) + span;
         }
         return true;
+    }
+
+    // Records the split of the top-level slot holding [lo, hi) where the adopted root maps it,
+    // or refuses the boot where firmware's table under it leaves the span no empty entry.
+    void split_adopt(uintptr_t lo, uintptr_t hi, int top)
+    {
+        size_t const slot = index_at(lo, top);
+        if (slot_is_user(slot))
+        {
+            return;
+        }
+        uint64_t const desc = g_boot_root[slot];
+        if (index_at(hi - 1, top) != slot or not entry_table(desc, top))
+        {
+            refuse("the program base lies outside the top-level slots firmware left empty");
+        }
+        uint64_t const* const child = table_at(entry_pa(desc));
+        for (size_t i = index_at(lo, top - 1); i <= index_at(hi - 1, top - 1); i++)
+        {
+            if ((child[i] & PTE_P) != 0)
+            {
+                refuse("the program base lies outside the top-level slots firmware left empty");
+            }
+        }
+        uintptr_t const span = span_at(top - 1);
+        g_split_slot = slot;
+        g_split_child = child;
+        g_split_lo = lo & ~(span - 1);
+        g_split_hi = ((hi - 1) & ~(span - 1)) + span;
+    }
+
+    // Frees a space's own tables under its copy of the split slot's table, then the copy; the
+    // entries firmware's table holds are shared and stay.
+    void split_free(uint64_t* root)
+    {
+        if (g_split_child == nullptr or (root[g_split_slot] & PTE_P) == 0)
+        {
+            return;
+        }
+        int const height = walk_top() - 1;
+        uint64_t* const copy = table_at(entry_pa(root[g_split_slot]));
+        for (size_t i = 0; i < PTES; i++)
+        {
+            if ((copy[i] & PTE_P) == 0 or (g_split_child[i] & PTE_P) != 0)
+            {
+                continue;
+            }
+            if (entry_table(copy[i], height))
+            {
+                free_subtree(table_at(entry_pa(copy[i])), height - 1, false);
+            }
+            kickos_frame_free(entry_pa(copy[i]));
+        }
+        kickos_frame_free(phys_of(copy));
+        root[g_split_slot] = 0;
     }
 
     // Whether [pa, pa + bytes) moved up by the user offset lies wholly in user slots.
@@ -663,22 +744,41 @@ namespace kickos::x86_64
         {
             refuse("the adopted root leaves no top-level slot for a space to map");
         }
-        // A task reaches every frame of the arena, and the app window, at the physical address
-        // plus the first user slot's base (arch_aspace_user_offset), so both have to land in
-        // slots the firmware left absent.
+        // A task reaches every frame of the arena at the physical address plus the first user
+        // slot's base (arch_aspace_user_offset), so it has to land in slots the firmware left
+        // absent.
         if (not alias_fits(ram_base, ram_size))
         {
             refuse("the arena moved up by the user offset leaves the slots a space may map");
         }
-        uintptr_t const app_lo = reinterpret_cast<uintptr_t>(__kickos_app_rom_start);
-        uintptr_t const app_hi = reinterpret_cast<uintptr_t>(__kickos_app_sram_end);
-        if (app_hi > app_lo and not alias_fits(app_lo, app_hi - app_lo))
+        // Image 0 is mapped where it was linked, apart from the arena's alias and the spawn
+        // windows.
+        uintptr_t const image_lo = reinterpret_cast<uintptr_t>(g_image_lo);
+        uintptr_t const image_hi = reinterpret_cast<uintptr_t>(g_image_hi);
+        g_split_child = nullptr;
+        if (image_hi > image_lo)
         {
-            refuse("the app window moved up by the user offset leaves the slots a space may map");
+            split_adopt(image_lo, image_hi, top);
+            if (not range_ok(image_lo, (image_hi - image_lo + GRANULE - 1) / GRANULE))
+            {
+                refuse("the program base lies outside the top-level slots firmware left empty");
+            }
+            uintptr_t window_lo = 0;
+            size_t window_size = 0;
+            arch_aspace_window_area(&window_lo, &window_size);
+            uintptr_t const alias_lo = ram_base + g_user_lo;
+            uintptr_t const alias_hi = static_cast<uintptr_t>(g_ram_hi) + g_user_lo;
+            if ((image_lo < alias_hi and alias_lo < image_hi)
+                or (image_lo < window_lo + window_size and window_lo < image_hi))
+            {
+                refuse("the program's span meets the arena's alias or the spawn windows");
+            }
         }
+        uintptr_t const frames_lo = reinterpret_cast<uintptr_t>(__kickos_image0_load_start);
+        uintptr_t const frames_hi = reinterpret_cast<uintptr_t>(__kickos_images_load_end);
         aspace_identity_record(0, static_cast<arch_phys_addr_t>(ram_base), g_ram_hi);
-        aspace_identity_record(1, static_cast<arch_phys_addr_t>(app_lo),
-                               static_cast<arch_phys_addr_t>(app_hi));
+        aspace_identity_record(1, static_cast<arch_phys_addr_t>(frames_lo),
+                               static_cast<arch_phys_addr_t>(frames_hi));
         invalidate_all();
     }
 
@@ -758,8 +858,31 @@ struct arch_aspace* arch_aspace_create(void)
     {
         table[i] = g_boot_root[i];
     }
+    // The split slot's copy holds firmware's entries without the user bit, so the one the root
+    // entry needs for the program grants ring 3 none of them.
+    if (g_split_child != nullptr)
+    {
+        arch_phys_addr_t const copy = kickos_frame_alloc();
+        if (copy == 0)
+        {
+            kickos_frame_free(root);
+            return nullptr;
+        }
+        uint64_t* const entries = table_at(copy);
+        for (size_t i = 0; i < PTES; i++)
+        {
+            entries[i] = g_split_child[i] & ~PTE_US;
+        }
+        table[g_split_slot] = table_desc_user(copy);
+    }
     // A recycled root frame needs no flush here: destroy invalidated it on every core first.
-    g_residency.open(static_cast<uint64_t>(root) & PTE_ADDR_MASK);
+    if (not g_residency.open(static_cast<uint64_t>(root) & PTE_ADDR_MASK,
+                             static_cast<uint32_t>(arch_aspace_create_pages())))
+    {
+        split_free(table);
+        kickos_frame_free(root);
+        return nullptr;
+    }
     return reinterpret_cast<struct arch_aspace*>(table);
 }
 
@@ -779,8 +902,36 @@ void arch_aspace_destroy(struct arch_aspace* space)
     // Invalidate on every online core, close residency, then free: a freed table can be reused.
     invalidate_all();
     g_residency.close(key);
+    split_free(table);
     free_subtree(table, walk_top(), true);
     kickos_frame_free(phys_of(table));
+}
+
+size_t arch_aspace_table_pages(struct arch_aspace* space)
+{
+    if (space == nullptr or root_of(space) == g_boot_root)
+    {
+        return 0;
+    }
+    return *g_residency.tables(root_key(space));
+}
+
+size_t arch_aspace_create_pages(void)
+{
+    if (g_split_child != nullptr)
+    {
+        return 2;
+    }
+    return 1;
+}
+
+size_t arch_aspace_map_tables(struct arch_aspace* space, uintptr_t va, size_t pages)
+{
+    if (space == nullptr or root_of(space) == g_boot_root or not range_ok(va, pages))
+    {
+        return 0;
+    }
+    return tables_needed(root_of(space), walk_top(), va, pages);
 }
 
 enum arch_aspace_result arch_aspace_map(struct arch_aspace* space, uintptr_t va,
@@ -800,7 +951,10 @@ enum arch_aspace_result arch_aspace_map(struct arch_aspace* space, uintptr_t va,
     {
         return ARCH_ASPACE_EINVAL;
     }
-    return walk_map(root_of(space), va, pa, pages, leaf, edit_of(space));
+    Edit e = edit_of(space);
+    enum arch_aspace_result const rc = walk_map(root_of(space), va, pa, pages, leaf, e);
+    tables_moved(space, e);
+    return rc;
 }
 
 enum arch_aspace_result arch_aspace_unmap(struct arch_aspace* space, uintptr_t va, size_t pages)
@@ -809,7 +963,10 @@ enum arch_aspace_result arch_aspace_unmap(struct arch_aspace* space, uintptr_t v
     {
         return ARCH_ASPACE_EINVAL;
     }
-    return walk_unmap(root_of(space), va, pages, edit_of(space));
+    Edit e = edit_of(space);
+    enum arch_aspace_result const rc = walk_unmap(root_of(space), va, pages, e);
+    tables_moved(space, e);
+    return rc;
 }
 
 void arch_aspace_activate(struct arch_aspace* space)
@@ -830,8 +987,8 @@ uintptr_t arch_aspace_user_offset(void)
     return g_user_lo;
 }
 
-// Spawn windows sit halfway up the user slot, far above g_user_lo plus every physical frame
-// and the app window, and 1 GiB of it is theirs.
+// Spawn windows sit halfway up the user slot, far above g_user_lo plus every physical frame,
+// and 1 GiB of it is theirs.
 void arch_aspace_window_area(uintptr_t* base, size_t* size)
 {
     *base = g_user_lo + (g_user_hi - g_user_lo) / 2u;

@@ -275,12 +275,35 @@ scratch_dir
 LOG="$TMP/exec.log"
 
 # --- The stub's address, out of the image itself -------------------------------
-tool_out "$TMP/nm" "[0-9a-fA-F]" "$nm" --defined-only "$elf"
-stub_hex="$(sed -n "s/^\\([0-9a-fA-F][0-9a-fA-F]*\\) [Tt] $STUB_SYM\$/\\1/p" "$TMP/nm" \
-    | head -n1)"
+# A program the kernel's link embeds carries its own symbols, the stub's among them. Where each
+# task runs a program of its own, the stub is the one in the program holding the app's main,
+# which the threads witnessed run.
+printf '%s\n' "$elf" > "$TMP/elves"
+if [ -f "$elf.map" ]; then
+    image_elf_set "$elf" "$elf.map" "$TMP/elves"
+fi
+: > "$TMP/stubs"
+: > "$TMP/app_stubs"
+while IFS= read -r _elf; do
+    tool_out "$TMP/nm" "[0-9a-fA-F]" "$nm" --defined-only "$_elf"
+    sed -n "s/^\\([0-9a-fA-F][0-9a-fA-F]*\\) [Tt] $STUB_SYM\$/\\1/p" "$TMP/nm" | head -n1 \
+        > "$TMP/stub"
+    cat "$TMP/stub" >> "$TMP/stubs"
+    if grep -qE '^[0-9a-fA-F]+ [Tt] main$' "$TMP/nm"; then
+        cat "$TMP/stub" >> "$TMP/app_stubs"
+    fi
+done < "$TMP/elves"
+if [ "$(wc -l < "$TMP/stubs" | tr -d ' ')" -gt 1 ]; then
+    cp "$TMP/app_stubs" "$TMP/stubs"
+fi
+stub_hex=""
+if [ "$(wc -l < "$TMP/stubs" | tr -d ' ')" = 1 ]; then
+    stub_hex="$(cat "$TMP/stubs")"
+fi
 case "$stub_hex" in
-    ''|*[!0-9a-fA-F]*) fail "no text symbol '$STUB_SYM' in $elf. The trap stub is what an
-  unprivileged thread executes, so without it there is nothing to filter on" ;;
+    ''|*[!0-9a-fA-F]*) fail "no text symbol '$STUB_SYM' in $elf, or more than one among its
+  images. The trap stub is what an unprivileged thread executes, so without it there is
+  nothing to filter on" ;;
 esac
 stub_dec="$(printf '%d' "0x$stub_hex")"
 require_number "$stub_dec" "the stub address"

@@ -3,6 +3,8 @@
 //
 // The K-seam fixture's state and helpers; the contract is in kfixture.h.
 
+#include "../common/seam_pools.h"
+
 #include <setjmp.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -10,10 +12,13 @@
 #include <string.h>
 #include <unistd.h>
 
+#include <map>
 #include <new> // Thread holds a kickos::Atomic, so a reset is a re-construction
+#include <vector>
 
 #include <kickos/cap.h>
 #include <kickos/endpoint.h>
+#include <kickos/image.h>
 #include <kickos/instance.h>
 #include <kickos/irq.h>
 #include <kickos/irqlock.h>
@@ -24,8 +29,22 @@
 #include <kickos/time.h>
 
 #include <kickos/sys/abi.h>
+#include <kickos/sys/errno.h>
 
 #include "kfixture.h"
+
+#if KICKOS_HAVE_ASPACE
+// One image, empty, for a gate whose link states none (tests/unit/common/host_image.cmake states
+// one over these): what a declaration's create prices its data copy from.
+extern "C"
+{
+    __attribute__((weak)) uintptr_t __kickos_image_frames[8] = {};
+}
+__asm__(".weak __kickos_image_frames_end\n"
+        ".set __kickos_image_frames_end, __kickos_image_frames + 64\n"
+        ".weak __kickos_image_frames_anchor\n"
+        ".set __kickos_image_frames_anchor, 0\n");
+#endif
 
 namespace kickos
 {
@@ -380,8 +399,33 @@ namespace kickos
             return g_gap_seen;
         }
 
+        namespace
+        {
+            kos_task_decl const* g_decls = nullptr;
+            size_t g_decl_count = 0;
+            char const* g_program = nullptr;
+            uintptr_t g_decl_start = 0;
+            kos_image_header g_program_header = {};
+        }
+
+        void declare(kos_task_decl const* decls, size_t count)
+        {
+            g_decls = decls;
+            g_decl_count = count;
+        }
+
+        void program(char const* name, uintptr_t decl_start)
+        {
+            g_program = name;
+            g_decl_start = decl_start;
+        }
+
         void reset()
         {
+            g_decls = nullptr;
+            g_decl_count = 0;
+            g_program = nullptr;
+            g_decl_start = 0;
             // Disable gap injection before resetting traces or taking scheduler locks.
             g_gap_watch = false;
             g_in_gap_action = false;
@@ -422,6 +466,7 @@ namespace kickos
                 exit(1);
             }
             new (&kernel()) Kernel{};
+            pools_reset();
             new (&g_fx) Fixture{};
             g_in_isr = false;
             g_word_fault = false;
@@ -490,7 +535,8 @@ namespace kickos
             {
                 for (uint32_t c = 0; c < KICKOS_KERNEL_CORES; c++)
                 {
-                    uint16_t* const ring = k.sched_slot[p][c];
+                    uint16_t* const ring = k.sched_ring(p, c);
+                    uint32_t const mask = k.sched_ring_mask();
                     uint32_t const tail = k.sched_in[c].tail[p].load();
                     uint32_t const head = k.sched_out[p].head[c].load();
                     uint32_t const staged = k.sched_out[p].staged[c];
@@ -498,13 +544,13 @@ namespace kickos
                     uint32_t kept_head = tail;
                     for (uint32_t i = tail; i != staged; i++)
                     {
-                        uint16_t const e = ring[i & (SCHED_RING_DEPTH - 1u)];
+                        uint16_t const e = ring[i & mask];
                         if (static_cast<int>(e) == slot)
                         {
                             found = true;
                             continue;
                         }
-                        ring[kept & (SCHED_RING_DEPTH - 1u)] = e;
+                        ring[kept & mask] = e;
                         kept++;
                         if (i - tail < head - tail)
                         {
@@ -561,7 +607,7 @@ namespace kickos
         // Use the real pool allocator when a test needs a resolvable thread handle.
         Thread* seat_pool(int slot, uint8_t prio)
         {
-            if (slot < 0 or slot >= KICKOS_THREAD_SLOTS)
+            if (slot < 0 or slot >= KICKOS_SEAM_THREAD_SLOTS)
             {
                 printf("FIXTURE FAIL: pool slot %d out of range\n", slot);
                 exit(1);
@@ -569,9 +615,9 @@ namespace kickos
             Kernel& k = kernel();
 #if KICKOS_KERNEL_CORES > 1
             // The slot's own state survives its reuse, as it does across thread_create.
-            uint8_t const reseat_owed = k.threads.slots[slot].reseat_owed;
+            uint8_t const reseat_owed = k.threads.slots()[slot].reseat_owed;
 #endif
-            Thread* w = new (&k.threads.slots[slot]) Thread{};
+            Thread* w = new (&k.threads.slots()[slot]) Thread{};
 #if KICKOS_KERNEL_CORES > 1
             w->reseat_owed = reseat_owed;
 #endif
@@ -579,6 +625,8 @@ namespace kickos
             w->prio = prio;
             w->id = static_cast<uint16_t>(10 + slot);
             w->lock_id = k.threads.lock_id_for(slot);
+            // A slot's directory row, as thread_create seats it.
+            w->caps = cap_directory(slot);
 #if KICKOS_KERNEL_CORES > 1
             // Supply the placement mask normally set by thread_create; zero is unschedulable.
             w->affinity = KICKOS_CORE_SET_ALL;
@@ -609,7 +657,7 @@ namespace kickos
         Endpoint* endpoint()
         {
             Endpoint* ep = nullptr;
-            if (endpoint_slot_claim(&ep) < 0)
+            if (endpoint_slot_claim(nullptr, &ep) < 0)
             {
                 printf("FIXTURE FAIL: endpoint pool exhausted\n");
                 exit(1);
@@ -619,11 +667,29 @@ namespace kickos
 
         void attach_caps(Thread* t, uint32_t width)
         {
-            if (not cap_slab_attach(&t->caps, width, &t->cap_free_head, &t->cap_width))
+            // A pool slot's directory is its row; a fixture TCB outside the pool gets one of its
+            // own, as long as a row.
+            int const slot = kernel().threads.index_of(t);
+            if (slot >= 0)
+            {
+                t->caps = cap_directory(slot);
+            }
+            else
+            {
+                static std::map<Thread*, std::vector<CapEntry*>> outside;
+                std::vector<CapEntry*>& dir = outside[t];
+                dir.assign(cap_dir_length(), nullptr);
+                t->caps = dir.data();
+            }
+            if (not cap_slab_attach(t->caps, width, &t->cap_free_head, &t->cap_width))
             {
                 printf("FIXTURE FAIL: cap slab refused %u slots\n", width);
                 exit(1);
             }
+            // Charged to its task as a spawn charges it, whichever of the two the case seats
+            // first.
+            IrqLock lock;
+            task_run_join(t->task, slot);
         }
 
         // Match wq_block: set BLOCKED before on_remove, then unlink the ready node
@@ -647,7 +713,7 @@ namespace kickos
             {
                 Kernel& k = kernel();
                 WordRecord* m = nullptr;
-                for (WordRecord& r : k.word_records)
+                for (WordRecord& r : k.word_records())
                 {
                     if (r.kind == WordKind::FREE)
                     {
@@ -690,25 +756,50 @@ namespace kickos
             return record_listed(word, WordKind::PLAIN);
         }
 
+        namespace
+        {
+            bool record_free(Task const& r)
+            {
+                return r.refcount == 0 and r.creator_tag == ThreadPool::KILL_TAG_NONE
+                       and r.sweeping == 0;
+            }
+        }
+
+        Task* task_held(uint16_t tag, int* err, Held held)
+        {
+            *err = 0;
+            for (int decl = 0; decl < KICKOS_SEAM_TASKS; decl++)
+            {
+                if (record_free(kernel().tasks()[KICKOS_SEAM_TASKS - 1 - decl]))
+                {
+                    return task_create_declared(static_cast<size_t>(decl), 0, tag, nullptr, 0,
+                                                0u, nullptr, err, held);
+                }
+            }
+            *err = KOS_ENOMEM;
+            return nullptr;
+        }
+
         Task* task(int slot)
         {
-            if (slot < 0 or slot >= KICKOS_MAX_TASKS)
+            if (slot < 0 or slot >= KICKOS_SEAM_TASKS)
             {
                 printf("FIXTURE FAIL: task slot %d out of range\n", slot);
                 exit(1);
             }
-            int err = 0;
-            Task* const tk =
-                task_create(FIXTURE_TASK_TAG, nullptr, 0, /*mem_attr=*/0u,
-                            /*donor=*/nullptr, &err);
-            if (tk == nullptr)
+            if (not record_free(kernel().tasks()[slot]))
             {
-                printf("FIXTURE FAIL: task_create refused (%d)\n", err);
+                printf("FIXTURE FAIL: task slot %d is taken\n", slot);
                 exit(1);
             }
-            if (tk != &kernel().tasks[slot])
+            int err = 0;
+            IrqLock lock;
+            Task* const tk = task_create_declared(static_cast<size_t>(KICKOS_SEAM_TASKS - 1 - slot),
+                                                  0, FIXTURE_TASK_TAG, nullptr, 0, 0u, nullptr,
+                                                  &err, lock);
+            if (tk == nullptr)
             {
-                printf("FIXTURE FAIL: task_create landed off slot %d\n", slot);
+                printf("FIXTURE FAIL: the create refused (%d)\n", err);
                 exit(1);
             }
             return tk;
@@ -716,8 +807,16 @@ namespace kickos
 
         void join_task(Thread* t, Task* tk)
         {
-            t->task = tk;
+            IrqLock lock;
+            int const slot = kernel().threads.index_of(t);
+            task_run_leave(t->task, slot);
+            task_member_leave(t, slot);
+            task_member_join(tk, t, slot);
             task_ref(tk);
+            if (t->cap_width != 0)
+            {
+                task_run_join(tk, slot);
+            }
         }
 
         void park_sleeper(Thread* w, uint64_t deadline_ns)
@@ -815,5 +914,82 @@ namespace kickos
             fflush(stdout);
             (void) dup2(STDERR_FILENO, STDOUT_FILENO);
         }
+    }
+
+    kos_task_decl const* image_decl(size_t i)
+    {
+        if (i >= testfix::g_decl_count)
+        {
+            return nullptr;
+        }
+        return &testfix::g_decls[i];
+    }
+
+    size_t image_decl_count(void)
+    {
+        return testfix::g_decl_count;
+    }
+
+    size_t image_count(void)
+    {
+        return 1;
+    }
+
+    size_t image_of_decl(size_t i)
+    {
+        if (i >= testfix::g_decl_count)
+        {
+            return 1;
+        }
+        return 0;
+    }
+
+    bool image_same_program(size_t a, size_t b)
+    {
+        return a == b;
+    }
+
+    void image_thread_return_select(size_t)
+    {
+    }
+
+    void image_decls_of(int image, size_t* first, size_t* count)
+    {
+        *first = 0;
+        *count = 0;
+        if (image == 0)
+        {
+            *count = testfix::g_decl_count;
+        }
+    }
+
+    uintptr_t image_decl_start(size_t)
+    {
+        return testfix::g_decl_start;
+    }
+
+    char const* image_decl_name(kos_task_decl const* d)
+    {
+        return reinterpret_cast<char const*>(testfix::g_decls) + d->name;
+    }
+
+    kos_decl_grant const* image_decl_grants(kos_task_decl const* d)
+    {
+        return reinterpret_cast<kos_decl_grant const*>(reinterpret_cast<char const*>(testfix::g_decls)
+                                                       + d->grants);
+    }
+
+    char const* image_program_name(int)
+    {
+        return testfix::g_program;
+    }
+
+    kos_image_header const* image_program(int i)
+    {
+        if (i != 0 or testfix::g_program == nullptr)
+        {
+            return nullptr;
+        }
+        return &testfix::g_program_header;
     }
 }

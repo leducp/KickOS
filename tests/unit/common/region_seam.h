@@ -20,6 +20,7 @@ struct RegionSeam
     int pow2 = 0;
     int nocache = ARCH_MPU_NOCACHE_ALREADY;
     struct arch_reserved_span reserved = {};
+    struct arch_reserved_span apertures = {};
     struct arch_reserved_span bus_masters = {};
     int bitband = 0;
 };

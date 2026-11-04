@@ -25,14 +25,15 @@ parked TCB is the reply object.
 
 - **`CapType::CAP_REPLY`** (`kernel/include/kickos/cap.h`) -- one arm beside `CAP_ENDPOINT` /
   `CAP_IRQ` / `CAP_NOTIFY`.
-- **`CapEntry.obj` packing** (fits the frozen 8-byte `CapEntry`): `obj` holds
+- **`CapEntry.obj` packing** (in the frozen 16-byte `CapEntry`): `obj` holds
   `ThreadPool::handle_for(caller)` WHOLE and UNSHIFTED, all 32 bits of it
   (`gen:16 | index:16`, since `ThreadPool::INDEX_BITS` is 16) -- read it back with
   `cap_reply_handle`. The caller's 8-bit `call_seq` low byte is NOT in `obj`: it is split
   across the two spare bitfields beside the type and the rights -- `seq_lo`
-  (`KCAP_REPLY_SEQ_LO_BITS` = 5, beside `CapType`'s 3) and `seq_hi`
-  (`KCAP_REPLY_SEQ_HI_BITS` = 3, beside `CapRights`' 3) -- seated by `cap_reply_seq_seat`
-  and read by `cap_reply_seq`. Giving `obj` to the whole handle is what makes it impossible
+  (`KCAP_REPLY_SEQ_LO_BITS` = 4, beside `CapType`'s 4) and `seq_hi`
+  (`KCAP_REPLY_SEQ_HI_BITS` = 4, beside `CapRights`' 4) -- seated by `cap_reply_seq_seat`
+  and read by `cap_reply_seq`. The entry's `badge` field is not the sequence's: it is
+  `KCAP_BADGE_NONE` on a reply capability. Giving `obj` to the whole handle is what makes it impossible
   for any width of the thread index to truncate the thread generation.
 - **Decode the handle with UNSIGNED shifts** (`cap_reply_caller`): a fully aged thread
   generation sets bit 31, so `obj` is routinely negative and an arithmetic shift would
@@ -314,7 +315,9 @@ no line attached is a complete notification.
   &out)` mints a second name for the same object carrying `bit` and the source's rights; the
   source must itself be UNBADGED, which is what makes an unbadged capability the unconfined
   name and a badged one reach its own bit and no other. It cannot be re-seated: a holder able
-  to mint from its own badged copy reaches every bit and the confinement is vacuous.
+  to mint from its own badged copy reaches every bit and the confinement is vacuous. The badge
+  is `CapEntry::badge`, stored as `bit + 1`, the field an endpoint capability keeps its own
+  badge in (*The sender's badge* below).
 - **A line is one signaller among others.** `kos_irq_bind_notify(irq_cap, notify_cap)` attaches
   the line, copying that capability's badge INTO the binding, because ISR context may resolve
   no capability, walk no pool and allocate nothing. It is ONE-WAY: nothing detaches a live
@@ -418,6 +421,8 @@ out-struct they carried survives, nested in `kos_reply_recv_opts`:
 
     struct kos_recv_info { uint32_t badge; kos_cap_t reply_cap; };   // 8 bytes, 4-aligned
 
+- `badge` is the badge of the capability the sender sent or called through, and
+  `KOS_BADGE_NONE` (0) for an unbadged one (*The sender's badge* below).
 - A plain `kos_send` arrival delivers `reply_cap == KOS_CAP_NONE`.
 - A `kos_call` arrival delivers a real one-shot `CAP_REPLY` handle in the receiver's
   table; the receiver must eventually `kos_reply` it or `kos_handle_close` it. Test it
@@ -439,6 +444,29 @@ so a stack-garbage deadline would have been one line away and the rule against i
 been a comment anyone could violate. Nested, the kernel's write-back stays a WHOLE-struct copy
 at `opts + offsetof(struct kos_reply_recv_opts, info)`, with no uninitialised tail to leak and
 no input word to preserve, and the input words above it survive every call.
+
+## The sender's badge
+
+A server tells its clients apart by the badge on the capability each one sends through, which
+the party that handed the capability out chose.
+
+- **`kos_endpoint_badge(src, badge, &out)`** (`KOS_SYS_ENDPOINT_BADGE`, `endpoint_badge` in
+  `kernel/syscall/syscall_ipc.cc`) mints a copy of an endpoint capability carrying a 32-bit
+  `badge`, with the source's `SIGNAL` and `TRANSFER` and no other right. The source must hold
+  `SIGNAL` and `HANDOUT`, or the mint is `-KOS_EACCES`: only the endpoint's provider hands out a
+  badge, and a badged copy, holding no `HANDOUT`, cannot mint itself another client's. `KOS_BADGE_NONE`
+  (0) is refused with `-KOS_EINVAL`, being what an unbadged capability delivers.
+- **The badge is stored at the width it is delivered at**, `CapEntry::badge`, and travels with
+  every copy of the capability: a spawn stages a delegated grant's badge whole
+  (`thread_create_call`, `kernel/syscall/syscall_thread.cc`).
+- **Every delivery writes it into `kos_recv_info.badge`**: a send or a call meeting a parked
+  receiver, a receive meeting a parked sender or caller (`Thread::ipc.badge`, which holds it while
+  the sender is parked), the register fastpath, and a far call, whose ring slot carries it
+  (`amp::Slot::badge`) into the record its receiver lands (`amp::Inbound::badge`). A reply
+  carries none. A far badge is the sending kernel's word, which a node trusts and does not
+  validate (`kernel/include/kickos/ampwindow.h`).
+- The init mints each badge a composition declares, a bus client's slot mask
+  (`bus-service.md`, *Device slots*).
 
 ## A copy the boundary check cannot promise
 
@@ -545,7 +573,7 @@ Neither term scans the handle table. The `CAP_REPLY` donors come from `Thread::r
 one entry per live reply capability `t` holds, and the endpoint-server term from the chain
 through `Endpoint::next_served` -- both O(donors) rather than O(table), and
 `kernel/include/kickos/thread.h` forbids a table walk here in as many words. A capacity-bounded
-scan would in any case be wrong now that width is per task: `KICKOS_MAX_HANDLES` is ROOT's width,
+scan would in any case be wrong now that width is per task: the init's width is ROOT's,
 and a scan of `t`'s table is bounded by `thread_cap_capacity(t)`. Nothing here scans an object
 pool either: the
 same cheap-scan philosophy as the mutex held-list walk. `Endpoint::server` is a raw
@@ -861,9 +889,9 @@ in order:
 **The receiver lands the call in its own `kos_reply_recv`** (`far_call_land`), out of the call
 slot its record holds. It snapshots the payload with interrupts open, checks the record on both
 sides of that copy, then copies the private snapshot to its buffer. The record is settled under the
-lock afterwards. `kos_recv_info` carries `KOS_BADGE_NONE`, a far sender holding no badge this kernel
-minted, beside a `CAP_REPLY` installed for the record (`cap_install_far_reply`) **only where the
-bytes landed**: a capability is disclosed only beside the bytes it answers for, which is the rule
+lock afterwards. `kos_recv_info` carries the badge the call's slot carried, which its record keeps
+(`amp::Inbound::badge`), beside a `CAP_REPLY` installed for the record (`cap_install_far_reply`)
+**only where the bytes landed**: a capability is disclosed only beside the bytes it answers for, which is the rule
 the local rendezvous keeps by minting only after its own copy. Where no capability reaches the
 receiver, for an info-less receive, a table with no room, a refused copy or a refused info write,
 the landing ANSWERS THE RECORD itself (`amp::inbound_reply`, an empty `PORT_REPLY` carrying the tag,

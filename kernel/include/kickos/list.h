@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// A minimal intrusive doubly-linked list. The TCB's single ListNode is SHARED by the
-// ready lists, the wait queues, and a server's reply-donor list (HeadList below), so a
-// thread may be on exactly one of the three at a time: ready XOR blocked-on-a-waitq XOR
+// A minimal intrusive doubly-linked list. The TCB's `link` node is SHARED by the ready
+// lists, the wait queues, and a server's reply-donor list (HeadList below), so a thread may
+// be on exactly one of the three at a time: ready XOR blocked-on-a-waitq XOR
 // waiting-for-a-reply. detach_current(), or a wq_pop_highest, MUST run before the thread
 // is pushed onto the next list, else the shared links are clobbered.
-// The timer delta list (tnext) is a separate, singly-linked concern.
 
 #ifndef KICKOS_LIST_H
 #define KICKOS_LIST_H
@@ -50,6 +49,13 @@ namespace kickos
             return head == nullptr;
         }
 
+        // Whether `n` is on this list, for a node on this list or on none: a node on another
+        // list answers true. O(1).
+        bool holds(ListNode const* n) const
+        {
+            return n->prev != nullptr or head == n;
+        }
+
         // The membership asserts are compiled out by default, so queue integrity rests on
         // caller discipline: a node inserted twice, or unlinked from a list it is not on,
         // corrupts the links silently and surfaces somewhere else entirely.
@@ -76,7 +82,7 @@ namespace kickos
         {
             // Unlinking a node not on this list splices this list's head/tail onto that
             // node's neighbours, corrupting both lists quietly. The scan is O(n) over a
-            // queue bounded by KICKOS_MAX_THREADS.
+            // queue bounded by the thread pool.
             KICKOS_DEBUG_ASSERT(list_contains(head, n));
             if (n->prev != nullptr)
             {
@@ -97,6 +103,27 @@ namespace kickos
             n->next = nullptr;
             n->prev = nullptr;
         }
+
+        // Unlink and return the first node, nullptr when empty. O(1).
+        ListNode* pop_front()
+        {
+            ListNode* const n = head;
+            if (n == nullptr)
+            {
+                return nullptr;
+            }
+            head = n->next;
+            if (head != nullptr)
+            {
+                head->prev = nullptr;
+            }
+            else
+            {
+                tail = nullptr;
+            }
+            n->next = nullptr;
+            return n;
+        }
     };
 
     // The same ListNode, one head word instead of two: no tail, so insertion is LIFO and
@@ -108,6 +135,12 @@ namespace kickos
         bool empty() const
         {
             return head == nullptr;
+        }
+
+        // As List::holds: for a node on this list or on none. O(1).
+        bool holds(ListNode const* n) const
+        {
+            return n->prev != nullptr or head == n;
         }
 
         void push(ListNode* n)
@@ -123,6 +156,30 @@ namespace kickos
             head = n;
         }
 
+        // Unlink and return the node pushed last, nullptr when empty. O(1).
+        ListNode* pop()
+        {
+            ListNode* const n = head;
+            if (n == nullptr)
+            {
+                return nullptr;
+            }
+            head = n->next;
+            if (head != nullptr)
+            {
+                head->prev = nullptr;
+            }
+            n->next = nullptr;
+            return n;
+        }
+
+        // `n` must be on this list. O(1).
+        void unlink(ListNode* n)
+        {
+            KICKOS_DEBUG_ASSERT(list_contains(head, n));
+            detach(n);
+        }
+
         // False means `n` was not on this list, which is NOT an error here; see
         // reply_donor_unpark. O(members), bounded by one server's outstanding callers.
         bool unlink_if_present(ListNode* n)
@@ -131,6 +188,13 @@ namespace kickos
             {
                 return false;
             }
+            detach(n);
+            return true;
+        }
+
+    private:
+        void detach(ListNode* n)
+        {
             if (n->prev != nullptr)
             {
                 n->prev->next = n->next;
@@ -145,7 +209,6 @@ namespace kickos
             }
             n->next = nullptr;
             n->prev = nullptr;
-            return true;
         }
     };
 }

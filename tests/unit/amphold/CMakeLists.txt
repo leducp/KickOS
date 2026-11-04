@@ -13,7 +13,7 @@ kickos_add_kseam(kickos_kseam_amp
         amp_hold_seam.cc
         "${PROJECT_SOURCE_DIR}/kernel/syscall/syscall_ipc.cc"
         "${PROJECT_SOURCE_DIR}/kernel/syscall/syscall_ipc_fast.cc"
-        "${PROJECT_SOURCE_DIR}/kernel/amp/ampwindow.cc"
+        ampwindow_shim.cc
         "${PROJECT_SOURCE_DIR}/kernel/amp/ampmap.cc"
   INCLUDES "${PROJECT_SOURCE_DIR}/tests/unit/fusedwake"
            "${PROJECT_SOURCE_DIR}/kernel/syscall"
@@ -34,3 +34,16 @@ kickos_add_kseam(kickos_kseam_amp
 
 kickos_add_unit_test(NAME amp_hold SOURCES hold.cc
   LIBRARIES kickos_kseam_amp)
+
+# The endpoint badge's mint and its delivery on the local, fastpath and far paths, over the same
+# source set.
+kickos_add_unit_test(NAME ipc_badge SOURCES badge.cc stale_reply.cc
+  LIBRARIES kickos_kseam_amp)
+
+# Every case of each binary in one process, in shuffled orders: no case leans on what another
+# left in the amp window.
+foreach(_bin amp_hold ipc_badge)
+  add_test(NAME ${_bin}_one_process COMMAND ${_bin} --gtest_shuffle --gtest_repeat=20)
+  kickos_host_gate(${_bin}_one_process TIMEOUT 60)
+  set_property(TEST ${_bin}_one_process APPEND PROPERTY FIXTURES_REQUIRED kickos_build)
+endforeach()

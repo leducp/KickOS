@@ -72,13 +72,6 @@ extern "C"
     extern kickos::Atomic<uint32_t, kickos::Order::RELAXED> kickos_c6_amp_rtc_hz;
 #endif
 
-#if KICKOS_HAVE_MPU
-    // App-data NAPOT region (esp32c6.ld). LMA == VMA is asserted by the linker script, so
-    // the .appdata copy is a no-op; the .appbss + pad zeroing is the real work.
-    extern uint32_t _appdata_lma, __kickos_appdata_start, __kickos_appbss_start,
-        __kickos_appdata_end;
-#endif
-
     // CPU_CLK, read off PCR before the constructors run (mtime_conv.h); the ROM's PLL until then.
     uint32_t SystemCoreClock = kickos::esp32c6::PLL_ROOT_HZ;
 }
@@ -804,7 +797,7 @@ void arch_shutdown(int status)
 void Reset_Handler(void)
 {
     c6_early_mark('A'); // reset entry reached (gp/sp/tp already set by _start)
-    // LMA == VMA (ROM loader), so this copy is a no-op.
+    // The kernel's .data loads where it runs, so this copy is a no-op.
     uint32_t* src = &_sidata;
     uint32_t* dst = &_sdata;
     while (dst < &_edata)
@@ -819,19 +812,8 @@ void Reset_Handler(void)
     arch_amp_shared_zero();
 #endif
     c6_early_mark('B'); // .data copied + .bss zeroed
-#if KICKOS_HAVE_MPU
-    uint32_t* asrc = &_appdata_lma;
-    uint32_t* adst = &__kickos_appdata_start;
-    while (adst < &__kickos_appbss_start) // .appdata: LMA == VMA on this chip (see decl)
-    {
-        *adst++ = *asrc++;
-    }
-    for (uint32_t* b = &__kickos_appbss_start; b < &__kickos_appdata_end; b++)
-    {
-        *b = 0;
-    }
-    c6_early_mark('C'); // .appdata copied + .appbss zeroed (enforcement symbols sane)
-#endif
+    kickos_crt_images_data();
+    c6_early_mark('C'); // every image's .data copied and the rest of its window zeroed
     mtime_rate_init(); // a constructor may read SystemCoreClock
     kickos_crt_ctors();
     c6_early_mark('D'); // C++ static constructors (init_array) ran

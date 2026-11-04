@@ -64,11 +64,10 @@ struct Shared
     struct kos_byte_ring tx;
     struct kos_byte_ring rx;
     struct kos_uart_stats stats;
-    // Set by the IRQ thread once its own bring-up has run. A bring-up MUST spin on this,
-    // bounded, BEFORE it spawns the service thread, and fail loud on the timeout: once the
-    // service thread holds a WAIT cap, recv_holders never reaches 0, nothing reclaims the
-    // console, and a diagnostic goes to an endpoint nobody is draining.
-    Atomic<uint32_t, Order::RELAXED> ready;
+    // Set by the IRQ thread once its own bring-up has run (driver::ready_publish). The service
+    // thread waits on it, bounded, before its first receive (driver::ready_wait), and traps on
+    // the timeout, which ends the task and with it the console it holds.
+    driver::Latch ready;
     // Write policy for the unframed console arm, from kos_uart_flags. The service thread is
     // its only writer. Zero, so BLOCKING: a UART drains whether or not anything is
     // listening. A transport whose consumer may never exist must seat KOS_UART_F_NONBLOCK.
@@ -190,7 +189,7 @@ void irq_loop(Uart& dev, Shared* sh)
         dev_shutdown(&dev);
         driver::trap();
     }
-    sh->ready = 1;
+    (void)driver::ready_publish(&sh->ready);
     // Seeded from the ack: a request raised before this thread's first wait is still pending.
     uint32_t flush_seen = sh->flush_ack;
     int waited = 0;

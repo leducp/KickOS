@@ -2,15 +2,15 @@
 # Copyright (c) 2026 Philippe Leduc
 #
 # The composition example: an app polling a sensor service, a health checker told of each death,
-# and a sensor for the board, composed by systems/<board>.yaml into the image sensor_system on
-# xmc4800-relax, qemu-arm64 and qemu-x86_64.
+# and a sensor for the board, each a program of its own, composed by systems/<board>.yaml into the
+# image sensor_system on xmc4800-relax, qemu-arm64 and qemu-x86_64.
 #
 # Two roles, one file here only because the example is self-contained:
 #   * the INTEGRATOR turns a composition into a system target with `kickos_compose`, which
 #     admits it against the installed kernel's exported configuration and descriptions and
 #     refuses a system that does not fit;
-#   * the USER writes plain CMake, add_executable and target_link_libraries, linking the
-#     kernel and the system target they were handed. Which system target is linked IS the
+#   * the USER writes plain CMake, add_executable and target_link_libraries, linking KickOS::kickos
+#     and the system target they were handed. Which system target is linked IS the
 #     choice of composition; a plain app links the kernel package's KickOS::system_default.
 #
 # Built out of tree against the installed package of a KickOS build for one of those boards, with
@@ -33,6 +33,7 @@ kickos_compose(example_system systems/${KICKOS_BOARD}.yaml)
 
 # --- the user's half: plain CMake -----------------------------------------------------------
 # The app and the health checker are the same source on every board; the sensor is the board's.
+# The app is the main of the image sensor_system, the other two are programs of their own.
 if(KICKOS_BOARD STREQUAL "xmc4800-relax")
   set(sensor sensor_spi.cc)
 elseif(KICKOS_BOARD STREQUAL "qemu-arm64")
@@ -43,6 +44,10 @@ else()
   message(FATAL_ERROR "no composition for board '${KICKOS_BOARD}' in systems/")
 endif()
 
-add_executable(sensor_system app.cc health.cc ${sensor})
-target_link_libraries(sensor_system PRIVATE KickOS::kernel example_system)
+add_executable(sensor_system app.cc)
+target_link_libraries(sensor_system PRIVATE KickOS::kickos example_system)
 kickos_emit_image(sensor_system)
+add_executable(health health.cc)
+target_link_libraries(health PRIVATE KickOS::kickos)
+add_executable(sensor ${sensor})
+target_link_libraries(sensor PRIVATE KickOS::kickos)

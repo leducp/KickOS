@@ -2,9 +2,8 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // K64F console demo. The composition names the packaged k64uartirq as stdout, so the init hands
-// UART0 to that unprivileged driver before main runs, and main and a worker print through it.
-// A constructor runs before the handover and prints through the
-// kernel console, so the wire shows both paths in order.
+// UART0 to that unprivileged driver, and main and a worker print through it. The driver's up line
+// and a constructor's line reach the wire in either order.
 //
 // K64CONSOLE_SCRAMBLE_TEST instead garbles UART0 from a thread holding no grant and panics: the
 // panic must still reach the wire, the kernel reclaiming the console out of the published state.
@@ -25,7 +24,7 @@
 
 namespace
 {
-    // Runs on root before the init hands the console over, so it prints through the kernel.
+    // Runs in main's entry thread before main, with the driver's bring-up before or after it.
     __attribute__((constructor)) void prepublish_ctor()
     {
         printf("[init] pre-publish ctor line\n");
@@ -73,7 +72,7 @@ namespace
         r8(uart + OFF_C2) = 0; // TX off last
         kos::print("[scramble] UART0 garbled (TXCTSE/baud/TXINV, TX off); ending the system\n");
         // A panic, never a fault: a thread's fault kills it alone and does not reclaim the
-        // console, so nothing would reach the wire. Inside user_panic's 64-byte buffer.
+        // console, so nothing would reach the wire. Inside the kernel's 64-byte panic buffer.
         kos_panic("[k64console] PASS: the dead channel came back");
     }
 #endif

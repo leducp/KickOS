@@ -136,7 +136,7 @@ kernel. The kernel gives each thread a **lock id** when it creates it:
 The low bits are the thread's slot in the thread pool, plus one, so no id is 0. The bits above
 are the slot's generation, a counter that moves on each time the slot is used again, so a dead
 thread's id does not name the slot's next thread. `LOCK_ID_SLOT_BITS` is as wide as the number of
-slots needs. On this build there are 17 slots (`KICKOS_THREAD_SLOTS`), so the slot part is the low
+slots needs. On this build there are 17 slots (the thread slot count), so the slot part is the low
 5 bits. Root is slot 0 with generation 0, so its id is 1. Each `Thread` keeps its own id in
 `Thread::lock_id`.
 
@@ -344,8 +344,8 @@ touches `depth`. A nested take is a load, a compare and an add.
 (`-KOS_ECANCELED`) asks again through `kickos_mutex_lock_entry`, straight to the kernel and never
 through the compare-and-swap. So the killed thread ends at that kernel entry, and never takes, with
 no entry at all, a lock that was freed meanwhile. Any other refusal traps the thread, and so does
-`-KOS_EOWNERDEAD` on malloc's lock: a heap that a dead thread left half edited would corrupt every
-later allocation silently. The libc lock accepts `-KOS_EOWNERDEAD`. Taking the libc lock while
+`-KOS_EOWNERDEAD` on either lock: a heap, a stream or an environment that a dead thread left half
+edited would corrupt every later call silently. Taking the libc lock while
 holding malloc's traps too, since newlib never takes them in that order. A program that needs the
 word itself, for instance to try it, gets it from `kos_libc_lock(KOS_LIBC_LOCK_STDIO)` or
 `kos_libc_lock(KOS_LIBC_LOCK_MALLOC)`.
@@ -359,7 +359,7 @@ word itself, for instance to try it, gets it from `kos_libc_lock(KOS_LIBC_LOCK_S
 #3  __sinit (s=0x20010840 <s_reent+320>) at .../newlib/libc/stdio/findfp.c:247
 #4  _vfprintf_r (data=0x20010840 <s_reent+320>, fp=0x20011cf0 <__sf+104>, fmt0=0x15125 "libcrace: %d workers x %d rounds\n", ...) at .../newlib/libc/stdio/vfprintf.c:599
 #5  printf (fmt=0x15125 "libcrace: %d workers x %d rounds\n") at .../newlib/libc/stdio/printf.c:56
-#6  kickos_app_main () at .../user/apps/common/libcrace/main.cc:653
+#6  main () at .../user/apps/common/libcrace/main.cc:653
 ```
 
 Then `finish` twice (the lock returns `0`, the take `true`) and print both locks and the seat:
@@ -478,7 +478,7 @@ inheritance needs that list to answer "who is waiting on anything I hold?". `pre
 `next_active` chain the live records both ways into the kernel's list, `word_active`, so a record
 whose last waiter leaves comes off it in one step.
 
-The records sit in a fixed array inside the kernel instance, `WordRecord word_records[KICKOS_THREAD_SLOTS]`.
+The records sit in a fixed array inside the kernel instance, `WordRecord word_records[the thread slot count]`.
 One per thread slot is always enough: each waiter parks on one record, and a record with no waiter
 is free, so there are never more live records than threads. There is no heap in the kernel, and
 no budget per mutex: a program may use as many words as it likes.
@@ -554,7 +554,7 @@ The id read from the word is only a candidate:
         Thread* owner_resolve(uint32_t id, WordRef const& w)
         {
             uint32_t const slot = id & LOCK_ID_SLOT_MASK;
-            if (slot == 0 or slot > static_cast<uint32_t>(KICKOS_THREAD_SLOTS))
+            if (slot == 0 or slot > static_cast<uint32_t>(the thread slot count))
             {
                 return nullptr;
             }
@@ -1094,7 +1094,7 @@ along was boosted at least that high when its own waiter blocked. A thread parke
 no owner to boost.
 Pass 1 follows the same edges first, read-only. If they lead back to the caller, the lock would
 deadlock. It is refused before pass 2 has boosted anyone, so a refused lock leaves no boost behind.
-A depth bound of `KICKOS_THREAD_SLOTS` backs both walks up. An honest chain visits each thread
+A depth bound of the thread slot count backs both walks up. An honest chain visits each thread
 once, and a cycle that does not pass through the caller, which honest use never builds, is cut
 there instead of walked forever.
 
@@ -1247,7 +1247,7 @@ killed, is not handed the word. `thread_abort_park` undoes its park:
                 t->wait_queue->unlink(&t->link);
                 Thread* owner = m->owner;
                 word_waiter_left(m);
-                for (int depth = 0; owner != nullptr and depth <= KICKOS_THREAD_SLOTS; depth++)
+                for (int depth = 0; owner != nullptr and depth <= the thread slot count; depth++)
                 {
                     uint8_t const p = thread_effective_prio(owner);
                     if (p == owner->prio)

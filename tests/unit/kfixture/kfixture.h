@@ -19,6 +19,8 @@
 #ifndef KICKOS_TESTS_UNIT_KFIXTURE_KFIXTURE_H
 #define KICKOS_TESTS_UNIT_KFIXTURE_KFIXTURE_H
 
+#include "../common/seam_pools.h"
+
 #include <stdint.h>
 
 #include <kickos/domain.h>
@@ -26,6 +28,8 @@
 #include <kickos/sched.h>
 #include <kickos/task.h>
 #include <kickos/thread.h>
+
+#include <kickos/sys/image.h>
 
 namespace kickos
 {
@@ -51,7 +55,7 @@ namespace kickos
 
         // Separate creator and member references. Reserve one more domain than task
         // slots so task-pool exhaustion can be tested after successful admission.
-        constexpr int FIXTURE_DOMAIN_SLOTS = KICKOS_MAX_TASKS + 1;
+        constexpr int FIXTURE_DOMAIN_SLOTS = KICKOS_SEAM_TASKS + 1;
         extern Domain g_domains[FIXTURE_DOMAIN_SLOTS];
         extern uint16_t g_domain_refs[FIXTURE_DOMAIN_SLOTS];
         extern bool g_domain_live[FIXTURE_DOMAIN_SLOTS];
@@ -184,8 +188,16 @@ namespace kickos
         // Gaps traced since the last run_in_chunk_gap.
         uint32_t gaps_seen();
 
-        // Reset the kernel and start the scheduler with one idle thread.
+        // Reset the kernel and start the scheduler with one idle thread. Image 0 then declares
+        // nothing.
         void reset();
+        // Every pool back to its boot state (tests/unit/common/pools_seam.cc).
+        void pools_reset();
+        // Image 0's declarations, which image_decl answers, until the next reset.
+        void declare(kos_task_decl const* decls, size_t count);
+        // Image 0's program, `name`, whose declared tasks' entry threads start at `decl_start`,
+        // until the next reset.
+        void program(char const* name, uintptr_t decl_start);
         // Takes a READY thread off its ready list, or a HANDED one out of every ring entry naming
         // it, by hand. A fixture shortcut no kernel path takes: the kernel parks only a running
         // thread.
@@ -207,14 +219,18 @@ namespace kickos
         // Allocate a real capability table; fail if the slab cannot supply it.
         void attach_caps(Thread* t, uint32_t width);
         // Use a creator tag outside ThreadPool so test-thread exit cannot orphan tasks.
-        constexpr uint16_t FIXTURE_TASK_TAG = KICKOS_THREAD_SLOTS + 1;
+        constexpr uint16_t FIXTURE_TASK_TAG = KICKOS_SEAM_THREAD_SLOTS + 1;
         static_assert(FIXTURE_TASK_TAG < 0xFFu,
                       "the fixture's creator tag would alias idle's boot tag once truncated "
                       "into Task::creator_tag, and every arm's exiting thread would orphan "
                       "the groups task() minted");
 
-        // Create an explicit task with real holds and references. Call in slot order;
-        // fail if task_create returns a different slot.
+        // Create a task held by `tag` in the lowest-numbered free declaration record, as a
+        // program's create seats one; null and *err KOS_ENOMEM where every record is taken.
+        // Caller holds the lock `held` names.
+        Task* task_held(uint16_t tag, int* err, Held held);
+        // Create a held task in pool slot `slot`, with real holds and references; fail if that
+        // slot is taken.
         Task* task(int slot);
         // Join through task_ref and store the task pointer used by membership scans.
         void join_task(Thread* t, Task* tk);

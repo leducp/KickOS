@@ -15,6 +15,7 @@
 // keeping the two in step; do not add a default.
 #define KICKOS_ERRNO_TABLE(X)                                                                     \
     X(KOS_EPERM,      "privilege or authority denied, or not the owner",              "EPERM")    \
+    X(KOS_ENOENT,     "no program or declared instance of that name",                 "ENOENT")   \
     X(KOS_ESRCH,      "reply target gone: the caller is stale",                       "ESRCH")    \
     X(KOS_EIO,        "the device did not play its part in the transfer",             "EIO")      \
     X(KOS_EBADF,      "handle names nothing valid",                                   "EBADF")    \

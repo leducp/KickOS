@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+
+  ==============================================
+   KickOS 0.5.1  -  microkernel RTOS
+  ==============================================
+   board   bluepill-c8
+   arch    armv7m
+   cpu     cortex-m3
+   mpu     none
+   sched   tickless
+
+libc_death: start
+libc_death: the victim died inside printf holding the libc lock

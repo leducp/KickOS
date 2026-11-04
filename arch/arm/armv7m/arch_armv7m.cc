@@ -163,7 +163,7 @@ extern "C"
     // An unprivileged thread whose entry returns cannot run kickos_thread_return: with
     // nPRIV=1 the BASEPRI write in IrqLock is a no-op and the SCS write in arch_switch
     // BusFaults. This one traps out via the exit syscall.
-    void kickos_user_thread_return(void);
+    extern void (*kickos_image_thread_return)(void);
 
     extern uint32_t SystemCoreClock;
 }
@@ -195,7 +195,7 @@ void arch_context_init(struct arch_context* ctx,
     uint32_t ret = reinterpret_cast<uint32_t>(kickos_thread_return);
     if (not privileged)
     {
-        ret = reinterpret_cast<uint32_t>(kickos_user_thread_return);
+        ret = reinterpret_cast<uint32_t>(kickos_image_thread_return);
     }
 
     *(--sp) = 0x01000000u;                                    // xPSR (Thumb bit)

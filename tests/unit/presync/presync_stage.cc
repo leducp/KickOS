@@ -131,6 +131,8 @@ extern "C"
     }
 
     void arch_aspace_destroy(struct arch_aspace*) {}
+    size_t arch_aspace_table_pages(struct arch_aspace*) { return 0; }
+    size_t arch_aspace_map_tables(struct arch_aspace*, uintptr_t, size_t) { return 0; }
     void arch_aspace_activate(struct arch_aspace*) {}
     struct arch_aspace* arch_aspace_boot(void) { return nullptr; }
     uint64_t arch_clock_now(void) { return 0; }
@@ -164,6 +166,28 @@ namespace kickos
     void frame_run_release_by_slot(int) {}
 
     struct arch_aspace* domain_space(Domain const*) { return g_own_space; }
+    bool task_admit(Task const*, BudgetKind, uint32_t) { return true; }
+
+    // Declaration 0, whose next space the image stage is for.
+    Task g_decl_record;
+    ThreadLink g_decl_stager = 0;
+    Task* task_decl_record(size_t decl)
+    {
+        if (decl != 0)
+        {
+            return nullptr;
+        }
+        return &g_decl_record;
+    }
+    ThreadLink* task_image_stager(Task const* t)
+    {
+        if (t != &g_decl_record)
+        {
+            return nullptr;
+        }
+        return &g_decl_stager;
+    }
+    size_t image_of_decl(size_t) { return 0; }
     VirtualRanges const* domain_ranges(Domain const*) { return nullptr; }
     VirtualRanges* domain_ranges_mut(Domain*) { return nullptr; }
     Domain* task_domain(Task const*) { return nullptr; }
@@ -173,7 +197,7 @@ namespace
 {
     using kickos::Thread;
 
-    // The first space borrows the image's data, which it then writes over: every later case
+    // The first space copies the image's data, which it then writes over: every later case
     // must find the loader's bytes and never the first space's.
     class PresyncStage : public ::testing::Test
     {
@@ -187,12 +211,14 @@ namespace
             g_seeded = true;
             memset(g_stage_sram, PRISTINE, sizeof(g_stage_sram));
             g_map_count = 0;
-            ASSERT_TRUE(kickos::aspace_image_seed(SPACE_A, &g_first));
+            ASSERT_EQ(kickos::aspace_image_seed(nullptr, SPACE_A, &g_first, 0), 0);
             ASSERT_EQ(g_map_count, 2u) << "the first space maps its text and its data";
             g_home_text = g_map_log[0];
             g_home_data = g_map_log[1];
             g_base_frames = host_pool_used();
-            memset(g_stage_sram, LIVE, sizeof(g_stage_sram));
+            unsigned char* const live = host_pool_bytes(g_home_data.pa, DATA_PAGES);
+            ASSERT_NE(live, nullptr) << "the first space's data is a run of the pool";
+            memset(live, LIVE, DATA_PAGES * G);
         }
 
         void SetUp() override
@@ -225,13 +251,14 @@ namespace
             EXPECT_EQ(kickos::testfix::host_pool_outside_frees(), 0u);
         }
 
-        static Thread* a() { return &kickos::kernel().threads.slots[0]; }
-        static Thread* b() { return &kickos::kernel().threads.slots[1]; }
+        static Thread* a() { return &kickos::kernel().threads.slots()[0]; }
+        static Thread* b() { return &kickos::kernel().threads.slots()[1]; }
 
         static bool locked_seed(struct arch_aspace* space, kickos::VirtualRanges* ranges)
         {
             g_locked = true;
-            bool const took = kickos::aspace_image_seed(space, ranges);
+            bool const took =
+                kickos::aspace_image_seed(kickos::task_decl_record(0), space, ranges, 0) == 0;
             g_locked = false;
             return took;
         }
@@ -242,7 +269,7 @@ namespace
                                bool filled = true)
         {
             kickos::presync_begin();
-            kickos::presync_stage_image();
+            kickos::presync_stage_image(0);
             if (filled)
             {
                 kickos::presync_run();
@@ -349,7 +376,7 @@ namespace
     TEST_F(PresyncStage, a_succeeded_call_holding_a_stage_panics_rather_than_open_a_window)
     {
         kickos::presync_begin();
-        kickos::presync_stage_image();
+        kickos::presync_stage_image(0);
         EXPECT_FALSE(kickos::presync_end());
         EXPECT_DEATH(kickos::presync_release(true), "");
     }
@@ -357,7 +384,8 @@ namespace
     TEST_F(PresyncStage, a_cleared_reservation_is_reserved_or_given_back)
     {
         kickos::presync_begin();
-        ASSERT_NE(kickos::aspace_reserve_stage(&ranges_, 3u * G), 0u);
+        ASSERT_NE(kickos::aspace_reserve_stage(&ranges_, 3u * G, kickos::PresyncStage::RESERVE),
+                  0u);
         unsigned char* const first = host_pool_bytes(kickos::presync_record()->staged, 3u);
         memset(first, 0xEE, 3u * G);
         kickos::presync_run();
@@ -368,7 +396,7 @@ namespace
         EXPECT_FALSE(end_round());
         EXPECT_EQ(host_pool_used(), g_base_frames);
         kickos::presync_begin();
-        ASSERT_NE(kickos::aspace_reserve_stage(&ranges_, G), 0u);
+        ASSERT_NE(kickos::aspace_reserve_stage(&ranges_, G, kickos::PresyncStage::RESERVE), 0u);
         kickos::presync_run();
         EXPECT_NE(kickos::aspace_reserve_commit(&ranges_), 0u);
         EXPECT_FALSE(end_round());
@@ -399,9 +427,9 @@ namespace
         EXPECT_EQ(g_home_text.pa,
                   kickos::aspace_frame_of(reinterpret_cast<uintptr_t>(g_stage_rom)))
             << "the first space maps the frames the loader put the text in";
-        EXPECT_EQ(g_home_data.pa,
+        EXPECT_NE(g_home_data.pa,
                   kickos::aspace_frame_of(reinterpret_cast<uintptr_t>(g_stage_sram)))
-            << "the first space borrows the image's own data";
+            << "the first space maps the frames the loader put the data in";
         arch_phys_addr_t data_pa[2] = {};
         struct arch_aspace* const spaces[2] = {SPACE_NEW, SPACE_B};
         for (size_t i = 0; i < 2; i++)
@@ -432,7 +460,7 @@ namespace
         arch_phys_addr_t const run = kickos::testfix::host_pool_take(NOTED);
         ASSERT_NE(run, 0u);
         kickos::presync_note(run, NOTED);
-        kickos::presync_stage_image();
+        kickos::presync_stage_image(0);
         kickos::presync_run();
         EXPECT_EQ(g_syncs, static_cast<int>(NOTED));
         EXPECT_EQ(g_windows, static_cast<int>(NOTED + DATA_PAGES));
@@ -447,7 +475,7 @@ namespace
     {
         HostPoolMark const before = host_pool_mark();
         kickos::aspace_release(SPACE_A, &g_first);
-        EXPECT_EQ(host_pool_used(), g_base_frames) << "the first space's data is not the pool's";
+        EXPECT_EQ(host_pool_used(), g_base_frames) << "only the stubbed destroy frees a run";
         g_map_count = 0;
         ASSERT_TRUE(spawn_round());
         EXPECT_FALSE(end_round());

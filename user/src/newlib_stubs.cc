@@ -5,6 +5,8 @@
 // so the toolchain's libstdc++/libsupc++, onto KickOS syscalls. NOT compiled for the
 // sim, where host glibc already provides these symbols.
 
+#include <kickos/arch/arch.h>
+#include <kickos/chip_limits.h> // KICKOS_CHIP_ONE_TASK
 #include <kickos/sys.h>
 #include <kickos/sys/emit.h>
 
@@ -89,7 +91,7 @@ int _lseek(int, int, int)
 {
     return 0;
 }
-// Newlib reads st_blksize as its buffer size where it has one, so the whole struct is written.
+// A character device, so newlib line-buffers a stream on it.
 int _fstat(int, struct stat* st)
 {
     struct stat const console{};
@@ -156,6 +158,22 @@ int _gettimeofday(struct timeval* tv, void*)
     return 0;
 }
 
+#if KICKOS_CHIP_ONE_TASK
+// The init shares this image's C library, so the whole image ends.
+void _exit(int code)
+{
+    arch_syscall(KOS_SYS_EXIT, static_cast<uintptr_t>(code), KOS_EXIT_IMAGE, 0, 0);
+    while (true)
+    {
+    }
+}
+
+// newlib's exit() would run the image's exit handlers and flush its streams, the init's too.
+void exit(int code)
+{
+    _exit(code);
+}
+#else
 void _exit(int code)
 {
     kos_exit(code);
@@ -163,6 +181,7 @@ void _exit(int code)
     {
     }
 }
+#endif
 
 // It must STAY empty: every chip .ld routes the app .fini_array into a section of its own
 // and ASSERTs it empty, and newlib's own array bounds are weak-undefined in these images,

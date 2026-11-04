@@ -34,6 +34,6 @@ int main(int, char**)
     }
 
     // A panic, never a fault: a thread's fault kills it alone and leaves the console with its
-    // driver, so nothing would reach the wire. Inside user_panic's 64-byte buffer.
+    // driver, so nothing would reach the wire. Inside the kernel's 64-byte panic buffer.
     kos_panic("[conreclaim] PASS: the dead channel came back");
 }

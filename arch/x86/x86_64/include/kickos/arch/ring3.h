@@ -16,6 +16,7 @@
 #define KICKOS_X86_64_CPU_USER_RSP   8
 #define KICKOS_X86_64_CPU_SW_START  16
 #define KICKOS_X86_64_CPU_CORE_ID   20
+#define KICKOS_X86_64_CPU_CURRENT   24
 #define KICKOS_X86_64_CPU_SIZE      64
 
 /* The selectors the syscall entry writes into the frame it builds; arch_syscall issues the
@@ -50,6 +51,8 @@ namespace kickos::x86_64
         uint64_t user_rsp;
         uint32_t sw_start;
         uint32_t core_id;
+        // The running thread, kickos/arch/current_thread.h's cell.
+        void* current;
     };
 
     // Used only before this processor has installed its GS block. Once ring3_cpu_init

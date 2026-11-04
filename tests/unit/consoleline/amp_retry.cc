@@ -10,6 +10,8 @@
 #define KICKOS_CONSOLE_CRLF 1
 #include <kickos/arch/console_retry.h>
 
+#include "line_seam.h"
+
 TEST(ConsoleRetry, AClaimLostBetweenCrAndLfResumesWithoutRepeatingCr)
 {
     std::string wire;
@@ -59,4 +61,26 @@ TEST(ConsoleRetry, RepeatedRefusalsKeepThePendingCrWithItsWriter)
     EXPECT_EQ(kickos::console_retry::write("\n", 1, &first_pending, store), 1u);
     EXPECT_FALSE(first_pending);
     EXPECT_EQ(wire, "\rx\r\n\n");
+}
+
+// Each wire byte is its own masked span, CR included: interrupts are open between two bytes.
+TEST(ConsoleRetry, AMaskedWriteMasksOneByteAtATime)
+{
+    std::string wire;
+    std::string depths;
+    std::string spans;
+    bool pending = false;
+    uint32_t const before = consoleline::mask_spans();
+    auto put = [&](char c) {
+        wire.push_back(c);
+        depths.push_back(static_cast<char>('0' + consoleline::mask_depth()));
+        spans.push_back(static_cast<char>('0' + (consoleline::mask_spans() - before)));
+        return true;
+    };
+    ASSERT_EQ(consoleline::mask_depth(), 0);
+    EXPECT_EQ(kickos::console_retry::write_masked("ab\nc", 4, &pending, put), 4u);
+    EXPECT_EQ(wire, "ab\r\nc");
+    EXPECT_EQ(depths, "11111") << "a byte went out unmasked";
+    EXPECT_EQ(spans, "12345") << "a masked span carried more than one byte";
+    EXPECT_EQ(consoleline::mask_depth(), 0);
 }

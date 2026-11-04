@@ -5,6 +5,8 @@
 // recorded system operations. Build all test mappings through the backend.
 // These tests do not model a hardware TLB.
 
+#include "../common/seam_pools.h"
+
 #include <kickos/arch/arch.h>
 #include <kickos/diag.h>
 
@@ -553,38 +555,6 @@ TEST_F(MapExec, LeavingARootWithNoIdentifierSweepsTheWholeLowHalf)
 
     EXPECT_EQ(ops_with(OP_TLBI_ALL_LOCAL), 1u);
     arch_aspace_destroy(plain);
-}
-
-TEST_F(MapExec, ASpaceBeyondTheRecordsRowsRunsUntaggedAndKeepsItsSweep)
-{
-    // Fill all rows to test the untracked-root fallback. SetUp already uses two.
-    constexpr size_t ROWS_LEFT = KICKOS_MAX_DOMAINS - 2;
-    // Each root uses one of the 64 frame slots.
-    static_assert(KICKOS_MAX_DOMAINS + 2 < 60, "the seam's frame pool cannot fill this record");
-    struct arch_aspace* filler[ROWS_LEFT] = {};
-    for (size_t i = 0; i < ROWS_LEFT; i++)
-    {
-        filler[i] = arch_aspace_create();
-        ASSERT_NE(filler[i], nullptr);
-        arch_aspace_activate(filler[i]);
-        ASSERT_NE(last_identifier(), NO_WRITE);
-        EXPECT_NE(last_identifier(), 0u) << "row " << i << " of the record went unassigned";
-    }
-
-    struct arch_aspace* const rowless = arch_aspace_create();
-    ASSERT_NE(rowless, nullptr);
-    arch_aspace_activate(rowless);
-    EXPECT_EQ(last_identifier(), 0u);
-
-    ops_clear();
-    arch_aspace_activate(space);
-    EXPECT_EQ(ops_with(OP_TLBI_ALL_LOCAL), 1u);
-
-    arch_aspace_destroy(rowless);
-    for (size_t i = 0; i < ROWS_LEFT; i++)
-    {
-        arch_aspace_destroy(filler[i]);
-    }
 }
 
 TEST_F(MapExec, AReservedIdentifierWidthTagsNothingAndLeavesEverySwitchSweeping)

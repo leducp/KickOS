@@ -4,7 +4,10 @@
  * PE32+ layout based on ld -m i386pep. Collect .data.*, .rodata.* and .bss.*
  * to avoid a separate PE section for each compiler-generated input section.
  * Too many sections extend headers beyond 0x1000 and EDK II rejects the image.
- * Keep kernel and app constructors in separate ranges.
+ *
+ * The kernel's link. Each image is a program linked on its own (program.ld): kickos_image0.ld
+ * places image 0's loadable bytes and .kimgs holds every later image's (tools/image-link.py); a
+ * probe image's -L directory holds fragments that place nothing.
  */
 
 /* Default linker script, for normal executables */
@@ -19,11 +22,9 @@ SECTIONS
   /* Keep virtual and file offsets aligned when section alignment is below page size. */
   . = SIZEOF_HEADERS;
   . = ALIGN(__section_alignment__);
-  /* The kernel's half: the kernel, arch and chip archives and the boot objects, named by
-   * archive or object directory. Everything the selectors below do not claim is the app's
-   * and goes to the app window further down, which a task reaches at its alias (the loader
-   * address plus the user offset) and which is the only part of this image a ring-3 access
-   * can reach. An input section goes to the first output section that names it.
+  /* The kernel, arch and chip archives and the boot objects, named by archive or object
+   * directory: cmake/x86_64_boot.cmake gives each the kernel posture by these lines. An input
+   * section goes to the first output section that names it.
    *
    * tools/x86_64-link.sh pre-links the inputs into one object first, turning each archive and
    * object selector line below into a .kickos.kernel.* section that the line after the block
@@ -41,6 +42,7 @@ SECTIONS
     *kickos_x86_64_nobench.dir/*(.text .text.*)
     *kickos_x86_64_nokernel.dir/*(.text .text.*)
     *(.kickos.kernel.text)
+    *(.text .text.*)
     . = ALIGN(8);
     KEEP (*(SORT_NONE(.fini)))
     PROVIDE (etext = .);
@@ -57,16 +59,17 @@ SECTIONS
     *kickos_x86_64_nobench.dir/*(.data .data.*)
     *kickos_x86_64_nokernel.dir/*(.data .data.*)
     *(.kickos.kernel.data)
+    *(.data .data.*)
     __data_end__ = . ;
   }
-  /* PE section names must fit in eight bytes without an image string table. Only the
-   * kernel's constructors run before kmain; the app's are in the app window and run from
-   * kickos_root_entry, unprivileged.
+  /* PE section names must fit in eight bytes without an image string table. These
+   * constructors run before kmain.
    */
   .kosinit BLOCK(__section_alignment__) :
   {
     /* A word of its own, so an image with no kernel constructor keeps the section and its two
-     * symbols stay where they are assigned (see the app window below). */
+     * symbols stay where they are assigned: ld -m i386pep drops an empty output section after
+     * assigning its symbols and re-bases them onto the image's first section. */
     LONG (0); LONG (0);
     . = ALIGN(8);
     __init_array_start = . ;
@@ -79,6 +82,8 @@ SECTIONS
     KEEP (*kickos_x86_64_nobench.dir/*(SORT(.init_array.*) .init_array))
     KEEP (*kickos_x86_64_nokernel.dir/*(SORT(.init_array.*) .init_array))
     KEEP (*(.kickos.kernel.init_array))
+    KEEP (*(SORT(.init_array.*)))
+    KEEP (*(.init_array))
     __init_array_end = . ;
   }
   .rdata BLOCK(__section_alignment__) :
@@ -92,6 +97,16 @@ SECTIONS
     *kickos_x86_64_nobench.dir/*(.rodata .rodata.*)
     *kickos_x86_64_nokernel.dir/*(.rodata .rodata.*)
     *(.kickos.kernel.rodata)
+    *(.rodata .rodata.* .rdata)
+    /* The kernel reads every header the table names in place, through its own view of the
+       image (kernel/task/image.cc), and per image where a space maps it from. */
+    . = ALIGN(8);
+    __kickos_image_table = .;
+    INCLUDE kickos_image_table.ld
+    __kickos_image_table_end = .;
+    __kickos_image_frames = .;
+    INCLUDE kickos_image_frames.ld
+    __kickos_image_frames_end = .;
     . = ALIGN(4);
     __rt_psrelocs_start = .;
     KEEP(*(.rdata_runtime_pseudo_reloc))
@@ -175,102 +190,27 @@ SECTIONS
     *kickos_x86_64_nobench.dir/*(.bss .bss.* COMMON)
     *kickos_x86_64_nokernel.dir/*(.bss .bss.* COMMON)
     *(.kickos.kernel.bss)
+    *(.bss .bss.* COMMON)
     __bss_end__ = . ;
   }
-  /* The app window: contiguous from __kickos_app_rom_start to __kickos_app_sram_end, so one
-   * offset carries all of it. aspace_image_seed maps the text read-execute in every space
-   * and gives each space its own copy of the rest.
-   *
-   * NONE OF ITS SECTIONS MAY BE EMPTY. ld -m i386pep drops an empty output section after
-   * assigning its symbols and re-bases them onto the image's first section, so an app with no
-   * data would state __kickos_app_sram_start at the kernel's .text and the seed would hand
-   * every space the kernel's own pages. Each section below therefore carries a word of its own,
-   * and tests/static/check_x86_64_app_split.py refuses an image whose symbols moved.
-   *
-   * .apptrap is the syscall trap (switch.S), its own section name because the arch archive
-   * holding it is the kernel's and its .text is claimed above.
-   */
-  .apptext BLOCK(__section_alignment__) :
+  /* Image 0's bytes and its bounds, then every later image's text and window, each on pages of
+   * their own. */
+  INCLUDE kickos_image0.ld
+  .kimgs BLOCK(__section_alignment__) :
   {
-    __kickos_app_rom_start = . ;
-    *(.apptrap)
-    *(.text .text.*)
-    *(SORT(.text$*))
-    *(.gnu.linkonce.t.*)
-    *(.gcc_exc)
+    KEEP (*(.kickos_images))
+    . = ALIGN(0x1000);
+    __kickos_images_load_end = .;
   }
-  /* The app's read-only data: its own section so no disassembler reads it as code, and still
-   * inside the read-execute half of the window.
-   */
-  .appro BLOCK(__section_alignment__) :
-  {
-    LONG (0); LONG (0);
-    *(.rodata .rodata.* .rdata)
-    /* The C++ exception tables and the unwind tables, which ring 3's unwinder reads:
-     * system/cxx/vterminate.cc registers the latter from here. -ffunction-sections names a
-     * table per function, and one left unnamed here lands in the kernel's half. The zero word
-     * is the terminator crtend would supply, which no image links. */
-    KEEP (*(.gcc_except_table .gcc_except_table.*))
-    . = ALIGN(8);
-    __eh_frame_start = . ;
-    KEEP (*(.eh_frame*))
-    LONG (0);
-    . = ALIGN(8);
-    __kickos_app_rom_end = . ;
-  }
-  /* On the section alignment PE32+ requires of every section, which is this board's page, and
-   * granular after it: no power-of-two window to lose, and nothing above the app window slides
-   * with it, so it takes no KICKOS_APPDATA_SECTION.
-   */
-  .appdata BLOCK(__section_alignment__) : ALIGN(8)
-  {
-    __kickos_app_sram_start = . ;
-    LONG (0); LONG (0);
-    . = ALIGN(8);
-    __kickos_app_init_array_start = . ;
-    KEEP (*(SORT(.init_array.*)))
-    KEEP (*(.init_array))
-    __kickos_app_init_array_end = . ;
-    . = ALIGN(8);
-    __fini_array_start = . ;
-    KEEP (*(SORT(.fini_array.*)))
-    KEEP (*(.fini_array))
-    __fini_array_end = . ;
-    *(.data .data.*)
-    *(.data2)
-    *(SORT(.data$*))
-    KEEP(*(.jcr))
-    *(.data_cygwin_nocopy)
-  }
-  .appbss BLOCK(__section_alignment__) :
-  {
-    . += 8;
-    *(.bss .bss.*)
-    *(COMMON)
-    . = ALIGN(8);
-    /* newlib's heap, KICKOS_USER_HEAP_SIZE bytes, a link symbol. In
-     * the app window, so every address space gets a copy of its own. */
-    _kickos_heap_start = . ;
-    . += KICKOS_USER_HEAP_SIZE;
-    _kickos_heap_limit = . ;
-    __kickos_app_sram_end = . ;
-  }
-  /* Opt-in link-time heap floor, --defsym KICKOS_HEAP_MIN=<bytes> (undefined by default). */
-  ASSERT (DEFINED (KICKOS_HEAP_MIN) ? _kickos_heap_limit - _kickos_heap_start >= KICKOS_HEAP_MIN : 1,
-          "KickOS: heap below KICKOS_HEAP_MIN")
-  /* The block a stack pays for thread-local data, which a system target's asserts read
-   * (arch/common/sections.ld.h). This board has no KICKOS_TLS, so a stack pays none. */
-  __kickos_tls_carve = 0;
+  PROVIDE (__kickos_build_id = ABSOLUTE (0)) ;
   .edata BLOCK(__section_alignment__) :
   {
     *(.edata)
   }
-  /* Absolute, so no base-relocation record moves them. The kernel's view is the loader's
-   * identity map, and the app is not linked where tasks reach it: the user offset, which the
-   * boot measures, is what separates the two.
+  /* Absolute, so no base-relocation record moves it: the kernel's view of a frame is the
+   * loader's identity map.
    */
   __kickos_frame_pool_delta = 0;
-  __kickos_app_load_delta = 0;
   /* Where the image was linked to run. Firmware rewrites the loaded header's ImageBase to the
    * address it chose, so only a word no relocation touches still holds the preferred one.
    */
@@ -349,16 +289,6 @@ SECTIONS
   .reloc BLOCK(__section_alignment__) :
   {
     *(.reloc)
-  }
-  /* The retained copy of .reloc, which the boot reads to relocate the app window a second
-   * time (tools/x86_64-link.sh links it in on a second pass). After every section a
-   * fixup can sit in and carrying none itself, so its presence leaves .reloc unchanged.
-   */
-  .krel BLOCK(__section_alignment__) :
-  {
-    __kickos_krel_start = . ;
-    KEEP (*(.krel))
-    __kickos_krel_end = . ;
   }
   .stab BLOCK(__section_alignment__) (NOLOAD) :
   {

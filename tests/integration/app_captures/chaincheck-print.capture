@@ -1,0 +1,53 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+
+  ==============================================
+   KickOS 0.5.1  -  microkernel RTOS
+  ==============================================
+   board   f302nucleo
+   arch    armv7m
+   cpu     stm32f302
+   mpu     off
+   sched   tickless
+
+[chaincheck] start
+[chaincheck] ok - snprintf returns the untruncated length
+[chaincheck] ok - snprintf truncates and terminates
+[chaincheck] ok - printf %d
+[chaincheck] ok - printf %d int min
+[chaincheck] ok - printf %i
+[chaincheck] ok - printf %u
+[chaincheck] ok - printf %x
+[chaincheck] ok - printf %X
+[chaincheck] ok - printf %o
+[chaincheck] ok - printf %c
+[chaincheck] ok - printf %s
+[chaincheck] ok - printf %%
+[chaincheck] ok - printf %p
+[chaincheck] ok - printf %5d
+[chaincheck] ok - printf %-5d
+[chaincheck] ok - printf %05d
+[chaincheck] ok - printf %+d
+[chaincheck] ok - printf % d
+[chaincheck] ok - printf %#x
+[chaincheck] ok - printf %#x of zero
+[chaincheck] ok - printf %#o
+[chaincheck] ok - printf %.3d
+[chaincheck] ok - printf %8.3d
+[chaincheck] ok - printf %.0d of zero
+[chaincheck] ok - printf %*d
+[chaincheck] ok - printf %*d negative width
+[chaincheck] ok - printf %.*d
+[chaincheck] ok - printf %5s
+[chaincheck] ok - printf %-5s
+[chaincheck] ok - printf %.2s
+[chaincheck] ok - printf %.*s
+[chaincheck] ok - printf %hd
+[chaincheck] ok - printf %hd negative
+[chaincheck] ok - printf %hu
+[chaincheck] ok - printf %hx
+[chaincheck] ok - printf %ld
+[chaincheck] ok - printf %ld long max
+[chaincheck] ok - printf %lu
+[chaincheck] ok - printf %lx
+[chaincheck] PASS (39 arms)

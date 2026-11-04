@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// RISC-V RV32 PMP: the ten CSR words a switch writes. RV32 implements pmpaddr0..7 and
-// packs the eight cfg BYTES four to a word across pmpcfg0/pmpcfg1, so the packing is a
-// property of the whole set and not of any one region.
+// RISC-V RV32 PMP: the ten CSR words a switch writes, entries 0..7. They pack the eight cfg
+// BYTES four to a word across pmpcfg0/pmpcfg1, so the packing is a property of the whole set
+// and not of any one region. Entries 8 and 9 are the code window, written once at boot.
 
 #ifndef KICKOS_ARCH_MPU_ENCODED_H
 #define KICKOS_ARCH_MPU_ENCODED_H
@@ -16,6 +16,9 @@
 // Descriptor slots the image carries. kernel/include/kickos/mpuset.h static_asserts that
 // KICKOS_MPU_MAX_REGIONS fits.
 #define ARCH_MPU_ENCODED_SLOTS 8
+
+// The code window is not in a thread's set.
+#define ARCH_MPU_CODE_WINDOW_FIXED 1
 
 // Privileged spec, PMP prioritization: the lowest-numbered entry matching an access decides it.
 #define ARCH_MPU_OVERLAP ARCH_MPU_OVERLAP_LOWER

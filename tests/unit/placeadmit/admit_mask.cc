@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // sched_admit_mask, the one gate every core mask passes before it is stored: a spawn's
-// requested mask, kos_thread_affinity, and both halves of kos_task_sched_grant.
+// requested mask, kos_thread_affinity, and a declaration's core mask.
 //
 // Built at four kernel cores with cores 2 and 3 isolated (see CMakeLists.txt), so
 // KICKOS_CORE_SET_ALL is 0xf and 0xc is a mask over SEVERAL isolated cores, the shape no board
@@ -109,16 +109,14 @@ namespace
         EXPECT_EQ(sched_admit_mask(~0u, FREE, MaskBound::INTERSECT, &effective), 0);
         EXPECT_EQ(effective, FREE);
 
-        // The same request against a task's grant, where the answer used to depend on which of
-        // the two paths asked it.
+        // The same request against a task's grant.
         uint32_t granted = 0;
         EXPECT_EQ(sched_admit_mask(~0u, ALL, MaskBound::SUBSET, &granted), 0);
         EXPECT_EQ(granted, ALL);
     }
 
-    // A zero word means a different thing at each ABI that carries one: the task's default
-    // set at a spawn and at kos_thread_affinity, "leave this half alone" in a grant. So
-    // the admission treats it as the empty set and every caller resolves its own meaning
+    // A zero word selects the task's default set at a thread create and at kos_thread_affinity.
+    // The admission treats it as the empty set and every caller resolves its own meaning
     // before calling.
     TEST(AdmitMask, EmptyMaskIsMalformed)
     {

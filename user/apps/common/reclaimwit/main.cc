@@ -21,46 +21,11 @@
 #define KICKOS_RW_RTT 0
 #endif
 
-// The driver's stack, by this name in tests/static/app_stack_roots.txt, which bounds it.
-#if KICKOS_USER_STACK_SIZE > 2048
-#define RW_DRIVER_STACK KICKOS_USER_STACK_SIZE
-#else
-#define RW_DRIVER_STACK 2048
-#endif
-#if KICKOS_TLS and KICKOS_TLS_FROM_SP
-static_assert(RW_DRIVER_STACK == KICKOS_TLS_STRIDE,
-              "a masked thread pointer admits a caller stack of exactly one stride");
-#endif
-
 namespace
 {
-    // At or above every stdout client's priority: the console rendezvous carries no
-    // priority inheritance.
-    constexpr uint8_t DRIVER_PRIO = 12;
-
     // -KOS_ETIMEDOUT means condemned but not yet swept, so a timeout costs the sweep's
     // timing, not the death.
     constexpr uint32_t SLAY_TIMEOUT_US = 5000000u;
-
-    // The published console driver. It must stay a pure sink: one console write here
-    // destroys what separates a fired reclaim from a driver that never died.
-    void console_sink(void*)
-    {
-        uint8_t buf[KOS_EP_MSG_MAX];
-        struct kos_reply_recv_opts opts;
-        kos_reply_recv_opts_init(&opts, KOS_SPAWN_DELEGATED_CAP0, KOS_RECV_NO_INFO,
-                                 KOS_TIMEOUT_NONE);
-        while (true)
-        {
-            int32_t const n = kos_reply_recv(KOS_CAP_NONE, buf,
-                                             kos_call_lens_pack(0, sizeof(buf)), &opts);
-            if (n < 0)
-            {
-                break;
-            }
-        }
-        kos_exit(0);
-    }
 
     __attribute__((noreturn)) void park_forever(void)
     {
@@ -113,48 +78,27 @@ int main(int, char**)
         park_forever();
     }
 
-    void* const drv_stack = kos_ram_alloc(RW_DRIVER_STACK);
-    if (drv_stack == nullptr)
+    // The driver is a task of its own: the console's death is its task's end, and main's task
+    // never ends before the verdict. Its declaration publishes the console through the endpoint
+    // main passes, so a refused create publishes nothing and reports on a kernel-owned console.
+    kos_program_t prog = KOS_CAP_NONE;
+    int const find_rc = kos_program_find(KICKOS_APP_IMAGE, &prog);
+    if (find_rc != 0)
     {
-        print_rc("FAIL ram_alloc driver stack", -KOS_ENOMEM);
+        print_rc("FAIL program_find", find_rc);
         park_forever();
     }
-    // Under translation the stack must also be mapped in the task the driver joins. Not
-    // elsewhere: an ARMv8-M MPU faults on an address two regions cover.
-    void* task_mem = nullptr;
-    uint32_t task_mem_size = 0;
-#if KICKOS_HAVE_ASPACE
-    task_mem = drv_stack;
-    task_mem_size = RW_DRIVER_STACK;
-#endif
-
-    // The driver is a task of its own: the console's death is its task's end, and main's task
-    // never ends before the verdict.
+    kos_cap_grant const caps[1] = {{ep, KOS_CAP_WAIT | KOS_CAP_TRANSFER}};
+    kos_task_params params = {};
+    params.instance = "sink";
+    params.caps = caps;
+    params.cap_count = 1;
     kos_task_t drv_task = KOS_TASK_NONE;
-    int const task_rc = kos_task_create(task_mem, task_mem_size, 0, &drv_task);
+    int const task_rc = kos_task_create(prog, &params, &drv_task);
+    (void)kos_handle_close(prog);
     if (task_rc != 0)
     {
         print_rc("FAIL task_create", task_rc);
-        park_forever();
-    }
-
-    // Spawned before the publish so a refused spawn still reports on a kernel-owned
-    // console. Unprivileged: a task slay kills a privileged member rather than slaying it.
-    kos_cap_grant const caps[1] = {{ep, KOS_CAP_WAIT}};
-    auto const drv = kos::thread::create_caps(console_sink, nullptr, "rwdrv", DRIVER_PRIO,
-                                              caps, /*cap_count=*/1, KOS_POLICY_FIFO, 0,
-                                              nullptr, 0, 0, nullptr,
-                                              drv_task, drv_stack, RW_DRIVER_STACK);
-    if (not drv.valid())
-    {
-        print_rc("FAIL driver spawn", drv.error());
-        park_forever();
-    }
-
-    int const pub_rc = kos_console_publish(ep, drv_task);
-    if (pub_rc != 0)
-    {
-        print_rc("FAIL console_publish", pub_rc);
         park_forever();
     }
 

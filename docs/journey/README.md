@@ -105,8 +105,7 @@ and type the **Try it** commands. Some habits help:
 - Started with `-S`, QEMU holds the core at its first instruction. `continue` runs until the next
   breakpoint.
 - `break <function>` works for C functions and for C++ functions with their namespace
-  (`break kickos::kmain`). The application's `main` is renamed by the build: use
-  `break kickos_app_main`.
+  (`break kickos::kmain`). `break main` stops in the application's `main`.
 - **gdb sees memory through the MPU.** When the core is stopped in unprivileged code, QEMU
   applies the running thread's permissions to gdb's reads too. Reading a kernel variable then
   fails with `Cannot access memory at address ...`. Stop in kernel code (any kernel function,

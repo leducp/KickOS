@@ -20,11 +20,15 @@ ENTRY(Reset_Handler)
    QOM property, so every invocation passes -global nrf51-soc.sram-size=<the RAM length>, which
    cmake/kickos.cmake's kickos_qemu_machine reads from the chip file's RAM link region. Without
    it an image linked here locks up on its first push, before any vector table is live, as
-   "can't escalate 3 to HardFault". */
+   "can't escalate 3 to HardFault".
+
+   An image linked with --defsym=__kickos_ram_length=<bytes> runs on that much SRAM instead, and
+   its emulator run passes the same figure. */
+PROVIDE(__kickos_ram_length = KICKOS_LAYOUT_SRAM_SIZE);
 MEMORY
 {
     KICKOS_LINK_FLASH
-    KICKOS_LINK_RAM
+    RAM (rwx) : ORIGIN = KICKOS_LAYOUT_SRAM_BASE, LENGTH = __kickos_ram_length
 }
 
 _estack = ORIGIN(RAM) + LENGTH(RAM);

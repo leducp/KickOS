@@ -58,7 +58,7 @@ def run_manifest(paths):
 
 BIG = "1" * 5000
 # Thirty-two tasks above `health` in the x86 golden, each watched with `sensor` by WATCHES_33.
-WATCHED = ("\n  - name: health\n", "".join("\n  - name: w%d\n    entry: w%d_main\n    stack: 4096\n    priority: 7\n    ceiling: 7\n"
+WATCHED = ("\n  - name: health\n", "".join("\n  - name: w%d\n    program: w%d_main\n    stack: 4096\n    priority: 7\n    ceiling: 7\n"
                                          % (n, n) for n in range(32)) + "\n  - name: health\n")
 WATCHES_33 = ", ".join(["sensor"] + ["w%d" % n for n in range(32)])
 WATCHES_32 = ", ".join(["w%d" % n for n in range(32)])
@@ -158,10 +158,10 @@ ARMS = [
     ("form.range", "stm32f411/chip.yaml", [("[0x40004400, 0x20]", "[0xFFFFFFFFFFFFFFF0, 0x20]")], False),
     ("form.range", "virt_arm64/chip.yaml", [("[0x0A000000, 0x200]", "[0xFFFFFFFFFFFFF000, 0x200]")], False),
     ("form.range", "stm32f411/chip.yaml", [("base: 0x20000000, size", "base: 0xFFFFFFFFFFFF0000, size")], False),
-    ("chip.address-width", "stm32f411/chip.yaml", [("[0x40004400, 0x20]", "[0xFFFFFFFFFFFFFFE0, 0x20]")], False),
+    ("chip.address-width", "stm32f411/chip.yaml", [("[0x40023800, 0x400]", "[0xFFFFFFFFFFFFFC00, 0x400]")], False),
     ("chip.address-width", "stm32f411/chip.yaml", [("base: 0x20000000, size: 0x20000", "base: 0xFFFF0000, size: 0x20000")],
      False),
-    (None, "stm32f411/chip.yaml", [("[0x40004400, 0x20]", "[0xFFFFFFE0, 0x20]")], False),
+    (None, "stm32f411/chip.yaml", [("[0x40023800, 0x400]", "[0xFFFFFC00, 0x400]")], False),
     (None, "virt_arm64/chip.yaml", [("[0x09030000, 0x1000]", "[0xFFFFFFFFFFFFE000, 0x1000]")], False),
     ("chip.reserved", "virt_rv32/chip.yaml", RV32_UNRESERVED, True),
     (None, "virt_rv32/chip.yaml",
@@ -273,7 +273,7 @@ ARMS = [
     ("chip.overlap", "virt_arm64/chip.yaml", [("    stride: 0x200\n", "    stride: 0x100\n")], True),
     ("chip.overlap", "imx8mp/chip.yaml",
      [("mu1_b: { window: [0x30AB0000, 0x10000]", "mu1_b: { window: [0x30860000, 0x10000]")], False),
-    ("chip.overlap", "imx8mp/chip.yaml", [("m7: 0x20200000", "m7: 0x30AB0000")], False),
+    (["chip.overlap", "chip.aperture-memory"], "imx8mp/chip.yaml", [("m7: 0x20200000", "m7: 0x30AB0000")], True),
     (None, "imx8mp/chip.yaml", [("mu1_b: { window: [0x30AB0000, 0x10000]", "mu1_b: { window: [0x30AA0000, 0x10000]")], False),
     (None, "imx8mp/chip.yaml", [("mu1_b: { window: [0x30AB0000, 0x10000]", "mu1_b: { window: [0x00900000, 0x10000]")], False),
     (None, "stm32f411/chip.yaml", [("[0x40013000, 0x20]", "[0x40004420, 0x20]")], False),
@@ -281,8 +281,28 @@ ARMS = [
     ("chip.cluster-unknown", "imx8mp/chip.yaml", [("m7: 0x20200000", "m4: 0x20200000")], False),
     ("chip.cluster-unknown", "stm32f411/chip.yaml", [("  spi1: { window", "  spi1: { cluster: m4, window")], False),
     ("chip.kernel-window", "stm32f411/chip.yaml", [("\ndevices:\n", "\ndevices:\n  iwdg: { owner: kernel }\n")], False),
-    ("chip.memory-required", "q35/chip.yaml",
+    (["chip.memory-required", "form.missing"], "q35/chip.yaml",
      [("unit: mmu, page: 0x1000, covers_devices: true,", "unit: pmp, granule: 8, covers_devices: true,")], True),
+    # The bus apertures a device window lies in.
+    ("form.missing", "stm32f411/chip.yaml",
+     [("apertures:\n  - { window: [0x40000000, 0x7400], ref: \"Table 1 APB1, p.39\" }\n"
+       "  - { window: [0x40010000, 0x5400], ref: \"Table 1 APB2, p.39\" }\n"
+       "  - { window: [0x40020000, 0x6800], ref: \"Table 1 AHB1, p.38\" }\n"
+       "  - { window: [0x50000000, 0x40000], ref: \"Table 1 AHB2, p.38\" }\n", "")], True),
+    ("form.missing", "mps2/chip.yaml",
+     [("apertures:\n  - { window: [0x40000000, 0x200000] }\n  - { window: [0x40200000, 0x100] }\n"
+       "  - { window: [0x41000000, 0x200000] }\n  - { window: [0xA0000000, 0x100] }\n", "apertures: []\n")], False),
+    ("form.inapplicable", "stm32f302/chip.yaml",
+     [("exits_on_fault: false\n", "exits_on_fault: false\napertures:\n  - { window: [0x40000000, 0x1000] }\n")], False),
+    ("chip.aperture-memory", "stm32f411/chip.yaml",
+     [("- { window: [0x50000000, 0x40000]", "- { window: [0x20000000, 0x40000]")], False),
+    ("chip.aperture-outside", "stm32f411/chip.yaml",
+     [("- { window: [0x40000000, 0x7400]", "- { window: [0x40000000, 0x441F]")], True),
+    (None, "stm32f411/chip.yaml", [("- { window: [0x40000000, 0x7400]", "- { window: [0x40000000, 0x4420]")], False),
+    ("chip.address-width", "stm32f411/chip.yaml",
+     [("- { window: [0x50000000, 0x40000]", "- { window: [0xFFFFFFFFFFFC0000, 0x40000]")], False),
+    ("board.memory-overlap", "rp2040/picopi.yaml",
+     [("    base: 0x10000000\n    size: 0x200000\n", "    base: 0x40000000\n    size: 0x4000\n")], False),
     ("chip.arena", "stm32f411/chip.yaml", [("arena: true", "arena: false")], True),
     ("chip.arena", "stm32f411/chip.yaml",
      [("\nmemory:\n", "\nmemory:\n  ccm: { base: 0x10000000, size: 0x10000, arena: true }\n")], True),
@@ -297,9 +317,9 @@ ARMS = [
     ("chip.zero-size", "mk64f/chip.yaml", [("    size: 0x1000\n", "    size: 0\n")], False),
     ("form.type", "mk64f/chip.yaml", [("[[0x40000000, 0x80000], [", "[[0x40000000], [")], False),
     ("form.type", "mk64f/chip.yaml", [("ranges: [[0x40000000, 0x80000], [0x40080000, 0x7F000]]", "ranges: 0x40000000")], False),
-    ("chip.zero-size", "mk64f/chip.yaml", [("[0x40080000, 0x7F000]", "[0x40080000, 0]")], False),
-    ("form.range", "mk64f/chip.yaml", [("[0x40080000, 0x7F000]", "[0x40080000, 0x100000000]")], False),
-    ("form.range", "mk64f/chip.yaml", [("[0x40080000, 0x7F000]", "[0xFFFFFFFFFFFFF000, 0x7F000]")], False),
+    ("chip.zero-size", "mk64f/chip.yaml", [("[0x40080000, 0x7F000]]", "[0x40080000, 0]]")], False),
+    ("form.range", "mk64f/chip.yaml", [("[0x40080000, 0x7F000]]", "[0x40080000, 0x100000000]]")], False),
+    ("form.range", "mk64f/chip.yaml", [("[0x40080000, 0x7F000]]", "[0xFFFFFFFFFFFFF000, 0x7F000]]")], False),
     ("form.missing", "mk64f/chip.yaml", [("ranges: [[0x40000000, 0x80000], [0x40080000, 0x7F000]]", "ranges: []")], False),
     ("chip.gate-straddle", "mk64f/chip.yaml", [("[[0x40000000, 0x80000], [", "[[0x40000000, 0x6A010], [")], True),
     (None, "mk64f/chip.yaml", [("[[0x40000000, 0x80000], [", "[[0x40000000, 0x6A020], [")], False),
@@ -438,7 +458,56 @@ ARMS = [
 ]
 
 
+# A task no init starts, holding nothing its creator would pass.
+ON_REQUEST = ("    maps: { /shm/history: ro }\n",
+              "    maps: { /shm/history: ro }\n\n  - name: spare\n    program: spare_main\n    stack: 4096\n"
+              "    priority: 3\n    ceiling: 3\n    start: on_request\n")
+
+# The same task serving the endpoint its creator passes it.
+ON_REQUEST_SERVING = (ON_REQUEST[0], ON_REQUEST[1].replace("    start: on_request\n", "    serves: /svc/spare\n    start: on_request\n"))
+
+# The XMC golden's SPI bus service listed under `drivers` of its one client, `sensor`.
+XMC_HOSTED = [
+    ("  - name: spi0\n    driver: xmcssc\n    devices: [/dev/usic0/ch1]\n    lines: { irq: /dev/usic0/sr1 }\n"
+     "    serves: /svc/spi0\n    priority: 11\n    restart: { max: 3 }\n    accepts: [coarse_gate]\n\n", ""),
+    ("    ceiling: 9\n", "    ceiling: 10\n    drivers:\n      - driver: xmcssc\n        devices: [/dev/usic0/ch1]\n"
+     "        lines: { irq: /dev/usic0/sr1 }\n        serves: /svc/spi0\n        priority: 10\n"
+     "        accepts: [coarse_gate]\n"),
+    ("    watches: [spi0, sensor]\n", "    watches: [sensor]\n"),
+]
+
+# A catalogue driver of one thread and no window or line, and the arm64 golden's `health`
+# running it, on a core of its own or on none.
+PLAIN_DRIVER = ("drivers:\n  xmcssc:\n", "drivers:\n  plain:\n    windows: []\n    lines: []\n    triggers: []\n"
+                "    entry: [ep]\n    threads:\n      - { name: service, priority: 0, stack: default, caps: 1, badged: 0 }\n"
+                "    endpoints: 1\n    notifications: 0\n    block: none\n    block_cache: cached\n"
+                "    posture: retain\n    barrier: none\n    console: false\n    usb_device: false\n"
+                "    start: plain_start\n    receiver: service\n    client: []\n    slots: 0\n  xmcssc:\n")
+ARM64_HOSTED = ("    watches: [sensor]\n", "    watches: [sensor]\n    drivers:\n"
+                "      - { driver: plain, serves: /svc/plain, priority: 11 }\n")
+# A ring block for xmcssc and for plain.
+XMC_SSC_BLOCK = ("    block: none\n    block_cache: cached\n    posture: retain\n",
+                 "    block: 64\n    block_cache: cached\n    posture: retain\n")
+PLAIN_BLOCK = ("    notifications: 0\n    block: none\n", "    notifications: 0\n    block: 64\n")
+ARM64_CEILING = ("    priority: 10\n    ceiling: 10\n", "    priority: 10\n    ceiling: 11\n")
+ARM64_HOSTED_CORE = ("    ceiling: 11\n", "    ceiling: 11\n    core: 3\n")
+# The plain driver taking the console, and the arm64 golden's task running it on request.
+CONSOLE_DRIVER = ("    posture: retain\n    barrier: none\n    console: false\n    usb_device: false\n"
+                  "    start: plain_start\n",
+                  "    posture: handover\n    barrier: none\n    console: true\n    usb_device: false\n"
+                  "    start: plain_start\n")
+SINK_REQUEST = ("    maps: { /shm/history: ro }\n",
+                "    maps: { /shm/history: ro }\n\n  - name: sink\n    driver: plain\n    serves: /svc/sink\n"
+                "    priority: 11\n    start: on_request\n")
+SECOND_SINK = ("    start: on_request\n", "    start: on_request\n\n  - name: sink2\n    driver: plain\n"
+               "    serves: /svc/sink2\n    priority: 11\n    start: on_request\n")
+
 COMPOSITION_ARMS = [
+    ("form.inapplicable", "xmc4800-relax.yaml",
+     [("    driver: xmcssc\n", "    driver: xmcssc\n    drivers: [{ driver: xmcssc, serves: /svc/spi1 }]\n")], False),
+    ("order.hosted", "xmc4800-relax.yaml", XMC_HOSTED + [("    uses: [/svc/sensor]\n", "    uses: [/svc/sensor, /svc/spi0]\n")],
+     False),
+    (None, "xmc4800-relax.yaml", XMC_HOSTED, False),
     ("form.unknown-field", "xmc4800-relax.yaml", [("ends: never\n", "ends: never\nlog: verbose\n")], False),
     ("form.unknown-field", "xmc4800-relax.yaml", [("    priority: 12\n", "    priority: 12\n    weight: 1\n")], False),
     ("form.unknown-field", "qemu-arm64.yaml", [("    size: 64\n", "    size: 64\n    align: 8\n")], False),
@@ -446,7 +515,7 @@ COMPOSITION_ARMS = [
     ("form.missing", "qemu-arm64.yaml", [("stdout: kernel\n", "")], True),
     ("form.missing", "qemu-arm64.yaml", [("ends: never\n", "")], True),
     ("form.missing", "qemu-x86_64.yaml", [("    priority: 8\n", "")], True),
-    ("form.missing", "qemu-x86_64.yaml", [("    entry: app_main\n", "")], True),
+    ("form.missing", "qemu-x86_64.yaml", [("    program: main\n", "")], True),
     ("form.missing", "qemu-x86_64.yaml", [("    stack: 8192\n", "")], True),
     ("form.missing", "qemu-arm64.yaml", [("    cache: cached # shared by tasks of this image only, on coherent memory\n", "")],
      True),
@@ -454,9 +523,12 @@ COMPOSITION_ARMS = [
     ("form.version", "qemu-arm64.yaml", [("version: 1\n", "version: 2\n")], False),
     ("form.inapplicable", "xmc4800-relax.yaml", [("    driver: xmcssc\n", "    driver: xmcssc\n    stack: 1024\n")], False),
     ("form.inapplicable", "xmc4800-relax.yaml", [("board: xmc4800-relax\n", "board: xmc4800-relax\ncluster: m4\n")], False),
-    ("form.exclusive", "xmc4800-relax.yaml", [("    driver: xmcssc\n", "    driver: xmcssc\n    entry: spi_main\n")], False),
-    ("form.name", "qemu-x86_64.yaml", [("entry: app_main", "entry: app-main")], False),
-    (None, "qemu-x86_64.yaml", [("entry: app_main", "entry: App_Main2")], False),
+    ("form.exclusive", "xmc4800-relax.yaml", [("    driver: xmcssc\n", "    driver: xmcssc\n    program: spi_main\n")], False),
+    (None, "qemu-x86_64.yaml", [("program: main", "program: app.elf-1+")], False),
+    ("form.name", "qemu-x86_64.yaml", [("program: main", "program: app/main")], False),
+    ("form.exclusive", "xmc4800-relax.yaml", [("    driver: xmcssc\n", "    driver: xmcssc\n    program: spi\n")],
+     False),
+    ("form.missing", "qemu-x86_64.yaml", [("    program: main\n    stack: 8192\n", "    program: app\n")], True),
     ("form.name", "xmc4800-relax.yaml", [("driver: xmcssc", "driver: XmcSsc")], False),
     ("form.name", "qemu-x86_64.yaml", [("  - name: app\n", "  - name: App\n")], False),
     ("form.name", "qemu-arm64.yaml", [("ends: never", "ends: Never")], False),
@@ -545,7 +617,7 @@ COMPOSITION_ARMS = [
     (("form.inapplicable", "order.forward"), "xmc4800-relax.yaml",
      [("    serves: /svc/spi0\n", "    serves: /svc/spi0\n    uses: [/svc/sensor]\n")],
      False),
-    ("order.forward", "xmc4800-relax.yaml", [("uses: [/svc/spi0]", "uses: [/svc/spi0, /svc/sensor]")], False),
+    ("order.forward", "xmc4800-relax.yaml", [("uses: [{ path: /svc/spi0, slots: [0] }]", "uses: [{ path: /svc/spi0, slots: [0] }, /svc/sensor]")], False),
     ("order.undeclared", "qemu-x86_64.yaml", [("watches: [sensor]", "watches: [sensors]")], False),
     ("order.forward", "qemu-x86_64.yaml", [("    serves: /svc/sensor\n", "    serves: /svc/sensor\n    watches: [health]\n")],
      False),
@@ -553,6 +625,15 @@ COMPOSITION_ARMS = [
     ("order.undeclared", "qemu-arm64.yaml", [("maps: { /shm/history: ro }", "maps: { /shm/histories: ro }")], False),
     ("order.undeclared", "qemu-arm64.yaml", [("ends: never", "ends: main")], False),
     ("restart.ends", "qemu-arm64.yaml", [("ends: never", "ends: sensor")], True),
+    (None, "qemu-arm64.yaml", [ON_REQUEST], False),
+    (None, "qemu-arm64.yaml", [ON_REQUEST_SERVING], False),
+    ("form.inapplicable", "qemu-arm64.yaml",
+     [(ON_REQUEST_SERVING[0], ON_REQUEST_SERVING[1].replace("    start: on_request\n", "    start: on_request\n    uses: [/svc/sensor]\n"))],
+     True),
+    ("form.inapplicable", "qemu-arm64.yaml", [ON_REQUEST, ("ends: never", "ends: spare")], True),
+    ("form.inapplicable", "qemu-arm64.yaml", [("    core: 2\n    uses:", "    core: 2\n    start: on_request\n    uses:")],
+     True),
+    ("form.enum", "qemu-arm64.yaml", [("    core: 2\n    uses:", "    core: 2\n    start: later\n    uses:")], False),
     (None, "qemu-arm64.yaml", [("ends: never", "ends: sensor"), ("    restart: { max: 3 }\n", "")], False),
     (None, "qemu-arm64.yaml", [("ends: never", "ends: health")], False),
     (None, "xmc4800-relax.yaml", [("    priority: 12\n", "    priority: 12\n    restart: { max: 1 }\n")], False),
@@ -584,14 +665,8 @@ COMPOSITION_ARMS = [
      False),
     ("ownership.kernel", "xmc4800-relax.yaml", [("devices: [/dev/usic0/ch1]", "devices: [/dev/usic0/ch1, /dev/scu]")], False),
     ("form.inapplicable", "xmc4800-relax.yaml", [("    serves: /svc/spi0\n", "    serves: /svc/spi0\n    watches: [console]\n")], False),
-    ("name.entry", "qemu-x86_64.yaml", [("entry: app_main", "entry: switch")], False),
-    ("name.entry", "qemu-x86_64.yaml", [("entry: app_main", "entry: xor_eq")], False),
-    ("name.entry", "qemu-x86_64.yaml", [("entry: app_main", "entry: kickos_table")], False),
-    ("name.entry", "qemu-x86_64.yaml", [("entry: app_main", "entry: kickos_table_image")], False),
-    ("name.entry", "qemu-x86_64.yaml", [("entry: app_main", "entry: kos_app")], False),
-    ("name.entry", "qemu-x86_64.yaml", [("entry: app_main", "entry: KOS_APP")], False),
-    ("name.entry", "qemu-x86_64.yaml", [("entry: app_main", "entry: KICKOS_APP")], False),
-    (None, "qemu-x86_64.yaml", [("entry: app_main", "entry: kickos_main")], False),
+    # A task runs a program or a driver; `entry` names neither.
+    ("form.unknown-field", "qemu-x86_64.yaml", [("    program: main\n", "    program: main\n    entry: kickos_main\n")], False),
     ("ownership.kernel", "qemu-x86_64.yaml", [("devices: [/dev/cmos_rtc]", "devices: [/dev/cmos_rtc, /dev/pit]")], False),
     ("ownership.console", "qemu-x86_64.yaml", [("devices: [/dev/cmos_rtc]", "devices: [/dev/cmos_rtc, /dev/com1]")], False),
     ("ownership.kernel", "qemu-arm64.yaml", [("devices: [/dev/rtc]", "devices: [/dev/timer]")], False),
@@ -614,6 +689,8 @@ MANIFEST = """version: 1
 abi:
   table: 6
   cap_reserved: 1
+  cap_chunk: 8
+  cap_width_max: 248
   symbol_prefix: ""
 target:
   board: xmc4800-relax
@@ -635,10 +712,26 @@ protection:
   thread_windows: 4
   fault_isolation: true
 pools:
-  KICKOS_MAX_THREADS: 8
-  KICKOS_TASK_ENDPOINT_BUDGET: 4
   KICKOS_MAX_SPAWN_GRANTS: 6
-  KICKOS_CAP_TABLE_SUPPLY: 16
+budgets:
+  threads: { default: 8, pool: threads }
+  ram_bytes: { default: 65536, pool: none }
+  ram_blocks: { default: 24, pool: ram_owners }
+  pages: none
+  endpoints: { default: 4, pool: endpoints }
+  notifications: { default: 7, pool: notifies }
+  irq_bindings: { default: 7, pool: irq_bindings }
+  frame_runs: none
+  cap_slots: { default: 64, pool: cap_slab }
+ceilings:
+  threads: 254
+  tasks: 254
+  domains: 65534
+  endpoints: 65534
+  notifies: 65534
+  irq_bindings: 254
+  frame_runs: 65534
+  ram_owners: 65534
 threads:
   priority: [1, 31]
   min_stack: 960
@@ -658,6 +751,8 @@ drivers:
   xmcssc:
     windows: [regs]
     lines: [irq]
+    triggers: [edge]
+    entry: [ep, notify, "line:0"]
     threads:
       - { name: bus, priority: 0, stack: default, caps: 3, badged: 0 }
     endpoints: 1
@@ -671,9 +766,12 @@ drivers:
     start: xmc_spi0_start
     receiver: bus
     client: [kickos_spi_proxy]
+    slots: 4
   xmcuartirq:
     windows: [regs]
     lines: [irq]
+    triggers: [edge]
+    entry: [notify, "line:0", ep, doorbell]
     threads:
       - { name: uartirq, priority: 1, stack: default, caps: 2, badged: 0 }
       - { name: service, priority: 0, stack: default, caps: 2, badged: 1 }
@@ -688,6 +786,7 @@ drivers:
     start: xmcuartirq_console_start
     receiver: service
     client: []
+    slots: 0
 """
 
 MANIFEST_DEFAULT = ("drivers:\n  xmcssc:", "default:\n  composition: boards/xmc4800-relax/composition.yaml\ndrivers:\n  xmcssc:")
@@ -698,8 +797,12 @@ XMC_TARGET = ("  board: xmc4800-relax\n  chip: xmc4800\n  arch: armv7m\n  cores:
               "    share: 0x4000\n    share_cache: uncached\n")
 XMC_PROTECTION = ("protection:\n  enforced: true\n  window_rule: pow2\n  smallest_window: 32\n  thread_windows: 4\n"
                   "  fault_isolation: true\n")
-XMC_POOLS = ("  KICKOS_MAX_THREADS: 8\n  KICKOS_TASK_ENDPOINT_BUDGET: 4\n  KICKOS_MAX_SPAWN_GRANTS: 6\n"
-             "  KICKOS_CAP_TABLE_SUPPLY: 16\n")
+XMC_POOLS = ("  KICKOS_MAX_SPAWN_GRANTS: 6\nbudgets:\n"
+             "  threads: { default: 8, pool: threads }\n  ram_bytes: { default: 65536, pool: none }\n"
+             "  ram_blocks: { default: 24, pool: ram_owners }\n  pages: none\n"
+             "  endpoints: { default: 4, pool: endpoints }\n  notifications: { default: 7, pool: notifies }\n"
+             "  irq_bindings: { default: 7, pool: irq_bindings }\n  frame_runs: none\n"
+             "  cap_slots: { default: 64, pool: cap_slab }\n")
 XMC_THREADS = "  min_stack: 960\n  user_stack: 4096\n  idle_stack: 512\n  root_stack: 4096\n  stack_align: 16\n  stack_stride: 4096\n"
 XMC_DESCRIPTIONS = "  chip: platform/xmc4800/chip.yaml\n  board: platform/xmc4800/xmc4800-relax.yaml\n"
 # A node of a two-node partition that names no crossing and states a user share.
@@ -707,23 +810,31 @@ SHARE_AMP = "  amp:\n    node: 0\n    nodes: 2\n    ports: []\n    share: 0x4000
 XMC_SHARE = [("  kernel_cores: 1\n  isolated_cores: 0x0\n", "  kernel_cores: 1\n  isolated_cores: 0x0\n" + SHARE_AMP)]
 ARM64_SHARE = [("  kernel_cores: 4\n  isolated_cores: 0x0\n", "  kernel_cores: 1\n  isolated_cores: 0x0\n" + SHARE_AMP)]
 ARM64_UNPINNED = [("    core: 1\n", ""), ("    core: 2\n", "")]
+# One thread per task, so the init's space is the one a short range count binds.
+ARM64_ONE_THREAD = [("  threads: { default: 16, pool: threads }\n", "  threads: { default: 1, pool: threads }\n")]
 TRANSLATING = "protection:\n  enforced: true\n  window_rule: none\n  thread_windows: 4\n  fault_isolation: true\n"
 
 
-def pools_of(threads, tasks, domains, endpoints, endpoint_budget, supply):
-    """The pools a kernel build of the fleet's exports, as their figures."""
-    return ("  KICKOS_MAX_THREADS: %d\n  KICKOS_MAX_TASKS: %d\n  KICKOS_MAX_DOMAINS: %d\n"
-            "  KICKOS_MAX_ENDPOINTS: %d\n  KICKOS_MAX_IRQ_HANDLES: 8\n  KICKOS_MAX_NOTIFY: 8\n"
-            "  KICKOS_TASK_ENDPOINT_BUDGET: %d\n"
-            "  KICKOS_TASK_IRQ_HANDLE_BUDGET: 7\n  KICKOS_TASK_NOTIFY_BUDGET: 7\n  KICKOS_MAX_SPAWN_GRANTS: 6\n"
-            "  KICKOS_CAP_TABLE_SUPPLY: %d\n  KICKOS_RAM_OWNER_SLOTS: 48\n  KICKOS_ASPACE_RANGES: 64\n"
-            % (threads, tasks, domains, endpoints, endpoint_budget, supply))
+def pools_of(threads, endpoints, translating):
+    """The bounds and default budgets a kernel build of the fleet's exports, as their figures."""
+    region = ("  ram_bytes: { default: 65536, pool: none }\n  ram_blocks: { default: 24, pool: ram_owners }\n"
+              "  pages: none\n")
+    mapped = "  frame_runs: none\n"
+    if translating:
+        region = ("  ram_bytes: { default: 65536, pool: none }\n  ram_blocks: { default: 24, pool: none }\n"
+                  "  pages: { default: 1024, pool: none }\n")
+        mapped = "  frame_runs: { default: 7, pool: frame_runs }\n"
+    return ("  KICKOS_MAX_SPAWN_GRANTS: 6\n  KICKOS_ASPACE_RANGES: 64\n"
+            "budgets:\n  threads: { default: %d, pool: threads }\n%s"
+            "  endpoints: { default: %d, pool: endpoints }\n  notifications: { default: 7, pool: notifies }\n"
+            "  irq_bindings: { default: 7, pool: irq_bindings }\n%s  cap_slots: { default: %d, pool: cap_slab }\n"
+            % (threads, region, endpoints, mapped, 8 * threads))
 
 
-REGION_POOLS = pools_of(8, 10, 10, 5, 4, 16)
-ARM64_POOLS = pools_of(16, 18, 20, 4, 3, 16)
-Q35_POOLS = pools_of(32, 18, 20, 16, 12, 32)
-C6_POOLS = pools_of(16, 18, 18, 4, 3, 16)
+REGION_POOLS = pools_of(8, 4, False)
+ARM64_POOLS = pools_of(16, 3, True)
+Q35_POOLS = pools_of(32, 12, True)
+C6_POOLS = pools_of(16, 3, False)
 
 
 def manifest_of(board, chip, arch, protection, cores, pools, stacks):
@@ -756,8 +867,7 @@ C6_MANIFEST = manifest_of("esp32c6-wroom", "esp32c6", "rv32imac", XMC_PROTECTION
                           (1024, 8192, 512, 8192, "none"))
 IMX_MANIFEST = manifest_of("imx8mp-evk", "imx8mp", "armv8a", TRANSLATING, 1, ARM64_POOLS, (2816, 12288, 4096, 20480, "none"))
 RV64_MANIFEST = manifest_of("qemu-riscv64", "virt_rv64", "rv64imac", TRANSLATING, 1, ARM64_POOLS, (2304, 12288, 4096, 20480, "none"))
-XMC_ENDPOINTS_2 = XMC_MANIFEST.replace("  KICKOS_TASK_ENDPOINT_BUDGET: 4\n", "  KICKOS_TASK_ENDPOINT_BUDGET: 2\n")
-XMC_ENDPOINTS_3 = XMC_MANIFEST.replace("  KICKOS_TASK_ENDPOINT_BUDGET: 4\n", "  KICKOS_TASK_ENDPOINT_BUDGET: 3\n")
+XMC_ENDPOINTS_2 = XMC_MANIFEST.replace("  endpoints: { default: 4,", "  endpoints: { default: 2,")
 XMC_ARENA = "    size: 0x40000\n    arena: true\n"
 UNENFORCED = [("  enforced: true\n", "  enforced: false\n")]
 NO_PROTECTION = ("ends: never\n", "ends: never\naccepts: [no_protection]\n")
@@ -779,10 +889,10 @@ XMC_SPI = "    devices: [/dev/usic0/ch1]\n    lines: { irq: /dev/usic0/sr1 }\n  
 SENSOR_LINES = ("    maps: { /shm/history: rw }\n", "    maps: { /shm/history: rw }\n    lines: { a: /dev/usic0/sr2, b: /dev/usic0/sr3 }\n")
 
 # A packaged driver of one window role, and a task running it on q35 over `device`.
-PORT_DRIVER = [("drivers:\n", "drivers:\n  portdrv:\n    windows: [regs]\n    lines: []\n    threads:\n"
+PORT_DRIVER = [("drivers:\n", "drivers:\n  portdrv:\n    windows: [regs]\n    lines: []\n    triggers: []\n    entry: [ep]\n    threads:\n"
                 "      - { name: io, priority: 0, stack: default, caps: 1, badged: 0 }\n    endpoints: 1\n"
                 "    notifications: 0\n    block: none\n    block_cache: cached\n    posture: retain\n    barrier: none\n"
-                "    console: false\n    usb_device: false\n    start: portdrv_start\n    receiver: io\n    client: []\n")]
+                "    console: false\n    usb_device: false\n    start: portdrv_start\n    receiver: io\n    client: []\n    slots: 0\n")]
 def com2_driver(device):
     return ("    maps: { /shm/history: ro }\n",
             "    maps: { /shm/history: ro }\n\n  - name: uart\n    driver: portdrv\n    devices: [%s]\n"
@@ -791,6 +901,30 @@ def com2_driver(device):
 # A golden system against its control manifest, each with edits: (rules, system, edits, manifest
 # edits, anywhere).
 ADMISSION_ARMS = [
+    (None, "xmc4800-relax.yaml", XMC_HOSTED, [], False),
+    ("scheduling.hosted", "xmc4800-relax.yaml", XMC_HOSTED + [("        priority: 10\n", "        priority: 11\n")], [], False),
+    (None, "xmc4800-relax.yaml", XMC_HOSTED + [("        priority: 10\n", "        priority: 8\n")], [], False),
+    (None, "qemu-arm64.yaml", [ARM64_HOSTED, ARM64_CEILING, ARM64_HOSTED_CORE], [PLAIN_DRIVER], False),
+    ("scheduling.hosted", "qemu-arm64.yaml", [ARM64_HOSTED, ARM64_CEILING], [PLAIN_DRIVER], False),
+    (None, "qemu-arm64.yaml", [SINK_REQUEST], [PLAIN_DRIVER, CONSOLE_DRIVER], False),
+    ("scheduling.console-driver", "qemu-arm64.yaml", [SINK_REQUEST], [PLAIN_DRIVER], False),
+    ("scheduling.console-driver", "qemu-arm64.yaml", [SINK_REQUEST, SECOND_SINK], [PLAIN_DRIVER, CONSOLE_DRIVER],
+     False),
+    (("scheduling.console-driver", "scheduling.stdout-order"), "qemu-arm64.yaml",
+     [SINK_REQUEST, ("stdout: kernel", "stdout: /svc/sink")],
+     [PLAIN_DRIVER, CONSOLE_DRIVER], True),
+    ("form.inapplicable", "qemu-arm64.yaml",
+     [SINK_REQUEST, ("    serves: /svc/sink\n    priority: 11\n    start", "    serves: /svc/sink\n    uses: [/svc/sensor]\n"
+                                                                          "    priority: 11\n    start")],
+     [PLAIN_DRIVER, CONSOLE_DRIVER], False),
+    ("scheduling.console-driver", "xmc4800-relax.yaml",
+     [("  - name: console\n    driver: xmcuartirq\n" + XMC_CONSOLE + "    accepts: [coarse_gate]\n\n", ""),
+      ("    ceiling: 9\n", "    ceiling: 11\n    drivers:\n      - driver: xmcuartirq\n        devices: [/dev/usic0/ch0]\n"
+       "        lines: { irq: /dev/usic0/sr0 }\n        serves: /svc/console\n        priority: 10\n"
+       "        accepts: [coarse_gate]\n")], [], False),
+    (None, "xmc4800-relax.yaml", XMC_HOSTED, [XMC_SSC_BLOCK], False),
+    ("supply.hosted-block", "qemu-arm64.yaml", [ARM64_HOSTED, ARM64_CEILING, ARM64_HOSTED_CORE],
+     [PLAIN_DRIVER, PLAIN_BLOCK], False),
     ("encoding.window", "xmc4800-relax.yaml", [], [("  smallest_window: 32\n", "  smallest_window: 0x400\n")], True),
     ("encoding.window", "xmc4800-relax.yaml", [NO_PROTECTION],
      UNENFORCED + [("  smallest_window: 32\n", "  smallest_window: 0x400\n")], True),
@@ -904,48 +1038,83 @@ ADMISSION_ARMS = [
      [], False),
     (None, "xmc4800-relax.yaml", [("    priority: 10\n    ceiling: 10\n", "    priority: 31\n    ceiling: 31\n")], [], False),
     ("scheduling.stdout-order", "xmc4800-relax.yaml",
-     [("\ntasks:\n", "\ntasks:\n  - name: early\n    entry: early_main\n    stack: 2048\n    priority: 5\n    ceiling: 5\n")], [], False),
+     [("\ntasks:\n", "\ntasks:\n  - name: early\n    program: early_main\n    stack: 2048\n    priority: 5\n    ceiling: 5\n")], [], False),
     (("ownership.console", "scheduling.console-driver"), "xmc4800-relax.yaml", [("stdout: /svc/console", "stdout: kernel")],
      [], True),
     ("scheduling.console-driver", "xmc4800-relax.yaml", [],
      [("posture: handover", "posture: retain"), ("    console: true\n", "    console: false\n")], True),
-    ("supply.pool", "xmc4800-relax.yaml", [], [("  KICKOS_MAX_THREADS: 8\n", "  KICKOS_MAX_THREADS: 5\n")], True),
-    (None, "xmc4800-relax.yaml", [], [("  KICKOS_MAX_THREADS: 8\n", "  KICKOS_MAX_THREADS: 6\n")], False),
-    ("supply.pool", "xmc4800-relax.yaml", [], [("  KICKOS_MAX_ENDPOINTS: 5\n", "  KICKOS_MAX_ENDPOINTS: 2\n")], True),
-    ("supply.pool", "xmc4800-relax.yaml", [], [("  KICKOS_MAX_TASKS: 10\n", "  KICKOS_MAX_TASKS: 6\n")], True),
-    (None, "xmc4800-relax.yaml", [], [("  KICKOS_MAX_TASKS: 10\n", "  KICKOS_MAX_TASKS: 7\n")], False),
-    ("supply.budget", "xmc4800-relax.yaml", [], [("  KICKOS_TASK_ENDPOINT_BUDGET: 4\n", "  KICKOS_TASK_ENDPOINT_BUDGET: 2\n")],
-     True),
-    (None, "xmc4800-relax.yaml", [], [("  KICKOS_TASK_ENDPOINT_BUDGET: 4\n", "  KICKOS_TASK_ENDPOINT_BUDGET: 3\n")], False),
-    ("supply.budget", "xmc4800-relax.yaml", [], [("  KICKOS_TASK_NOTIFY_BUDGET: 7\n", "  KICKOS_TASK_NOTIFY_BUDGET: 2\n")],
-     True),
-    (None, "xmc4800-relax.yaml", [], [("  KICKOS_TASK_NOTIFY_BUDGET: 7\n", "  KICKOS_TASK_NOTIFY_BUDGET: 3\n")], False),
-    ("supply.budget", "xmc4800-relax.yaml", [SENSOR_LINES], [("  KICKOS_TASK_IRQ_HANDLE_BUDGET: 7\n", "  KICKOS_TASK_IRQ_HANDLE_BUDGET: 1\n")],
-     True),
-    (None, "xmc4800-relax.yaml", [SENSOR_LINES], [("  KICKOS_TASK_IRQ_HANDLE_BUDGET: 7\n", "  KICKOS_TASK_IRQ_HANDLE_BUDGET: 2\n")],
+    # A task's stated budget below what its composition gives it to hold: the sensor serves an
+    # endpoint, uses another and is seated the console's as its standard output, which the kernel's
+    # console does not take.
+    ("supply.budget", "xmc4800-relax.yaml",
+     [("    serves: /svc/sensor\n", "    serves: /svc/sensor\n    budgets: { endpoints: 2 }\n")], [], False),
+    (None, "xmc4800-relax.yaml",
+     [("    serves: /svc/sensor\n", "    serves: /svc/sensor\n    budgets: { endpoints: 3 }\n")], [], False),
+    (None, "xmc4800-relax.yaml", XMC_KERNEL_CONSOLE +
+     [("    serves: /svc/sensor\n", "    serves: /svc/sensor\n    budgets: { endpoints: 2 }\n")], [], False),
+    ("supply.budget", "xmc4800-relax.yaml",
+     [("    serves: /svc/sensor\n", "    serves: /svc/sensor\n    budgets: { threads: 0 }\n")], [], False),
+    ("supply.budget", "xmc4800-relax.yaml", [SENSOR_LINES,
+     ("    serves: /svc/sensor\n", "    serves: /svc/sensor\n    budgets: { irq_bindings: 1 }\n")], [], False),
+    (None, "xmc4800-relax.yaml", [SENSOR_LINES,
+     ("    serves: /svc/sensor\n", "    serves: /svc/sensor\n    budgets: { irq_bindings: 2 }\n")], [], False),
+    # A kind the kernel build lists is accepted where the build charges none of it, so one
+    # composition runs on every backend; a kind it does not list is refused.
+    ("supply.budget-kind", "xmc4800-relax.yaml",
+     [("    serves: /svc/sensor\n", "    serves: /svc/sensor\n    budgets: { pagez: 4 }\n")], [], False),
+    (None, "xmc4800-relax.yaml",
+     [("    serves: /svc/sensor\n", "    serves: /svc/sensor\n    budgets: { pages: 4 }\n")], [], False),
+    ("supply.budget-kind", "xmc4800-relax.yaml", [("budgets: { threads: 1 }\n", "budgets: { thread: 4 }\n")], [],
      False),
-    ("supply.pool", "xmc4800-relax.yaml", [], [("  KICKOS_MAX_DOMAINS: 10\n", "  KICKOS_MAX_DOMAINS: 2\n")], True),
-    (None, "xmc4800-relax.yaml", [], [("  KICKOS_MAX_DOMAINS: 10\n", "  KICKOS_MAX_DOMAINS: 3\n")], False),
-    ("supply.pool", "qemu-arm64.yaml", [], [("  KICKOS_MAX_DOMAINS: 20\n", "  KICKOS_MAX_DOMAINS: 5\n")], True),
-    (None, "qemu-arm64.yaml", [], [("  KICKOS_MAX_DOMAINS: 20\n", "  KICKOS_MAX_DOMAINS: 6\n")], False),
-    ("supply.pool", "qemu-arm64.yaml", [], [("  KICKOS_MAX_TASKS: 18\n", "  KICKOS_MAX_TASKS: 7\n")], True),
-    (None, "qemu-arm64.yaml", [], [("  KICKOS_MAX_TASKS: 18\n", "  KICKOS_MAX_TASKS: 8\n")], False),
-    ("supply.pool", "xmc4800-relax.yaml", [], [("  KICKOS_MAX_NOTIFY: 8\n", "  KICKOS_MAX_NOTIFY: 3\n")], True),
-    (None, "xmc4800-relax.yaml", [], [("  KICKOS_MAX_NOTIFY: 8\n", "  KICKOS_MAX_NOTIFY: 4\n")], False),
-    ("supply.pool", "xmc4800-relax.yaml", [], [("  KICKOS_MAX_IRQ_HANDLES: 8\n", "  KICKOS_MAX_IRQ_HANDLES: 1\n")], True),
-    (None, "xmc4800-relax.yaml", [], [("  KICKOS_MAX_IRQ_HANDLES: 8\n", "  KICKOS_MAX_IRQ_HANDLES: 2\n")], False),
-    ("supply.pool", "xmc4800-relax.yaml", [], [("  KICKOS_MAX_ENDPOINTS: 5\n", "  KICKOS_MAX_ENDPOINTS: 4\n"),
-                                                ("  isolated_cores: 0x0\n", "  isolated_cores: 0x0\n" + MANIFEST_AMP),
-                                                ("  KICKOS_TASK_ENDPOINT_BUDGET: 4\n", "  KICKOS_TASK_ENDPOINT_BUDGET: 5\n")],
-     True),
-    (None, "xmc4800-relax.yaml", [], [("  KICKOS_MAX_ENDPOINTS: 5\n", "  KICKOS_MAX_ENDPOINTS: 4\n")], False),
-    ("supply.cap-table", "qemu-arm64.yaml", [], [("  KICKOS_CAP_TABLE_SUPPLY: 16\n", "  KICKOS_CAP_TABLE_SUPPLY: 4\n")], True),
-    (None, "qemu-arm64.yaml", [("    watches: [sensor]\n", "")], [("  KICKOS_CAP_TABLE_SUPPLY: 16\n", "  KICKOS_CAP_TABLE_SUPPLY: 4\n")],
+    ("supply.budget-kind", "xmc4800-relax.yaml", [("heap: 16384\n", "heap: 16384\nreserve: { thread: 4 }\n")], [],
      False),
-    (None, "qemu-arm64.yaml", [], [("  KICKOS_CAP_TABLE_SUPPLY: 16\n", "  KICKOS_CAP_TABLE_SUPPLY: 5\n")], False),
-    ("supply.cap-table", "qemu-arm64.yaml", [SENSOR_ALARM], [("  KICKOS_CAP_TABLE_SUPPLY: 16\n", "  KICKOS_CAP_TABLE_SUPPLY: 5\n")],
+    # No kind for a task beyond the declared ones, nor for a program loaded at run time.
+    ("supply.budget-kind", "xmc4800-relax.yaml", [("heap: 16384\n", "heap: 16384\nreserve: { instances: 1 }\n")],
+     [], False),
+    ("supply.budget-kind", "xmc4800-relax.yaml", [("budgets: { threads: 1 }\n", "budgets: { programs: 1 }\n")],
+     [], False),
+    ("form.type", "xmc4800-relax.yaml", [("budgets: { threads: 1 }\n", "budgets: 4\n")], [], False),
+    ("form.type", "xmc4800-relax.yaml", [("heap: 16384\n", "heap: 16384\nreserve: { threads: four }\n")], [], False),
+    ("form.range", "xmc4800-relax.yaml", [("budgets: { threads: 1 }\n", "budgets: { ram_bytes: 0x100000000 }\n")], [],
+     False),
+    # Every pool is the sum of its budgets: past its type ceiling it is refused, naming it.
+    ("supply.ceiling", "xmc4800-relax.yaml", [("budgets: { threads: 1 }\n", "budgets: { threads: 100 }\n")], [],
+     False),
+    (None, "xmc4800-relax.yaml", [("budgets: { threads: 1 }\n", "budgets: { threads: 40 }\n")], [], False),
+    ("supply.ceiling", "xmc4800-relax.yaml", [("heap: 16384\n", "heap: 16384\nreserve: { threads: 250 }\n")], [],
+     False),
+    (None, "xmc4800-relax.yaml", [("heap: 16384\n", "heap: 16384\nreserve: { threads: 200 }\n")], [], False),
+    ("supply.ceiling", "xmc4800-relax.yaml", [("heap: 16384\n", "heap: 16384\nreserve: { irq_bindings: 250 }\n")], [],
+     False),
+    ("supply.pool", "xmc4800-relax.yaml", [], [("  threads: { default: 8, pool: threads }", "  threads: { default: 8, pool: tables }")],
      True),
-    (None, "qemu-arm64.yaml", [SENSOR_ALARM], [("  KICKOS_CAP_TABLE_SUPPLY: 16\n", "  KICKOS_CAP_TABLE_SUPPLY: 6\n")], False),
+    ("form.missing", "xmc4800-relax.yaml", [],
+     [("  cap_slots: { default: 64, pool: cap_slab }\n", "  cap_slots: { pool: cap_slab }\n")], True),
+    # A declaration's capability tables: whole chunks within the widest one thread seats, its slots no
+    # fewer than its threads take at its width, and its CAP_SLOTS budget stated there alone.
+    ("supply.cap-width", "xmc4800-relax.yaml", [("    serves: /svc/sensor\n", "    serves: /svc/sensor\n    caps: { width: 249 }\n")],
+     [], False),
+    (None, "xmc4800-relax.yaml", [("    serves: /svc/sensor\n", "    serves: /svc/sensor\n    caps: { width: 248 }\n")], [], False),
+    ("supply.budget", "xmc4800-relax.yaml",
+     [("    serves: /svc/sensor\n", "    serves: /svc/sensor\n    caps: { width: 16, slots: 8 }\n")], [], False),
+    (None, "xmc4800-relax.yaml", [("    serves: /svc/sensor\n", "    serves: /svc/sensor\n    caps: { width: 9, slots: 9 }\n")],
+     [], False),
+    ("form.unknown-field", "xmc4800-relax.yaml",
+     [("    serves: /svc/sensor\n", "    serves: /svc/sensor\n    caps: { wide: 8 }\n")], [], False),
+    ("form.unknown-field", "xmc4800-relax.yaml", [("heap: 16384\n", "heap: 16384\ncaps: { slot: 8 }\n")], [], False),
+    (None, "xmc4800-relax.yaml", [("heap: 16384\n", "heap: 16384\ncaps: { width: 16, slots: 64 }\n")], [], False),
+    ("supply.budget-kind", "xmc4800-relax.yaml",
+     [("    serves: /svc/sensor\n", "    serves: /svc/sensor\n    budgets: { cap_slots: 8 }\n")], [], False),
+    ("supply.budget-kind", "xmc4800-relax.yaml", [("budgets: { threads: 1 }\n", "budgets: { cap_slots: 8 }\n")], [], False),
+    (None, "xmc4800-relax.yaml", [("heap: 16384\n", "heap: 16384\nreserve: { cap_slots: 8 }\n")], [], False),
+    # A driver's thread takes its task's width, above the reserved indices with every capability its
+    # spawn passes.
+    ("supply.cap-width", "xmc4800-relax.yaml", [("heap: 16384\n", "heap: 16384\ncaps: { width: 8 }\n")],
+     [("  KICKOS_MAX_SPAWN_GRANTS: 6\n", "  KICKOS_MAX_SPAWN_GRANTS: 8\n"),
+      ("{ name: bus, priority: 0, stack: default, caps: 3,", "{ name: bus, priority: 0, stack: default, caps: 8,")], False),
+    (None, "xmc4800-relax.yaml", [("heap: 16384\n", "heap: 16384\ncaps: { width: 8 }\n")],
+     [("  KICKOS_MAX_SPAWN_GRANTS: 6\n", "  KICKOS_MAX_SPAWN_GRANTS: 8\n"),
+      ("{ name: bus, priority: 0, stack: default, caps: 3,", "{ name: bus, priority: 0, stack: default, caps: 7,")], False),
     ("supply.stack", "xmc4800-relax.yaml", [("    stack: 2048\n    priority: 9\n", "    stack: 2056\n    priority: 9\n")], [], False),
     (None, "xmc4800-relax.yaml", [("    stack: 2048\n    priority: 9\n", "    stack: 2064\n    priority: 9\n")], [], False),
     ("supply.stack", "xmc4800-relax.yaml", [("    stack: 2048\n    priority: 9\n", "    stack: 4112\n    priority: 9\n")], [], False),
@@ -954,54 +1123,44 @@ ADMISSION_ARMS = [
     ("scheduling.line-core", "xmc4800-relax.yaml", [], [("  cores: 1\n  kernel_cores: 1\n", "  cores: 2\n  kernel_cores: 2\n")], True),
     (None, "xmc4800-relax.yaml", [("    priority: 12\n", "    priority: 12\n    core: 0\n"), ("    priority: 11\n", "    priority: 11\n    core: 1\n")],
      [("  cores: 1\n  kernel_cores: 1\n", "  cores: 2\n  kernel_cores: 2\n")], False),
-    ("scheduling.core", "xmc4800-relax.yaml", [("    uses: [/svc/spi0]\n", "    uses: [/svc/spi0]\n    core: 1\n")], [], False),
-    (None, "xmc4800-relax.yaml", [("    uses: [/svc/spi0]\n", "    uses: [/svc/spi0]\n    core: 0\n")], [], False),
+    ("scheduling.core", "xmc4800-relax.yaml", [("    uses: [{ path: /svc/spi0, slots: [0] }]\n", "    uses: [{ path: /svc/spi0, slots: [0] }]\n    core: 1\n")], [], False),
+    (None, "xmc4800-relax.yaml", [("    uses: [{ path: /svc/spi0, slots: [0] }]\n", "    uses: [{ path: /svc/spi0, slots: [0] }]\n    core: 0\n")], [], False),
     (None, "xmc4800-relax.yaml", [("    priority: 10\n    ceiling: 10\n", "    priority: 13\n    ceiling: 13\n")], [("    receiver: service\n", "    receiver: uartirq\n")],
      False),
-    ("name.entry", "xmc4800-relax.yaml", [("entry: app_main", "entry: xmc_spi0_start")], [], False),
+    # A second client of the bus, on a slot of its own, and on the sensor's.
+    (None, "xmc4800-relax.yaml", [("    uses: [/svc/sensor]\n", "    uses: [/svc/sensor, { path: /svc/spi0, slots: [1] }]\n")], [], False),
+    ("ownership.slot", "xmc4800-relax.yaml", [("    uses: [/svc/sensor]\n", "    uses: [/svc/sensor, { path: /svc/spi0, slots: [0] }]\n")], [], False),
+    ("ownership.slot", "xmc4800-relax.yaml", [("    uses: [/svc/sensor]\n", "    uses: [/svc/sensor, { path: /svc/spi0, slots: [1, 0] }]\n")], [], False),
+    ("form.missing", "xmc4800-relax.yaml", [("    uses: [/svc/sensor]\n", "    uses: [/svc/sensor, /svc/spi0]\n")], [], False),
+    ("form.missing", "xmc4800-relax.yaml", [("uses: [{ path: /svc/spi0, slots: [0] }]", "uses: [{ path: /svc/spi0 }]")], [], False),
+    ("form.inapplicable", "xmc4800-relax.yaml", [("    uses: [/svc/sensor]\n", "    uses: [{ path: /svc/sensor, slots: [0] }]\n")], [], False),
+    ("form.range", "xmc4800-relax.yaml", [("slots: [0] }]", "slots: [4] }]")], [], False),
+    (None, "xmc4800-relax.yaml", [("slots: [0] }]", "slots: [3] }]")], [], False),
+    ("form.range", "xmc4800-relax.yaml", [("slots: [0] }]", "slots: [32] }]")], [], False),
+    ("form.range", "xmc4800-relax.yaml", [("slots: [0] }]", "slots: [] }]")], [], False),
+    ("form.duplicate-entry", "xmc4800-relax.yaml", [("slots: [0] }]", "slots: [0, 0] }]")], [], False),
+    (None, "xmc4800-relax.yaml", [("slots: [0] }]", "slots: [0, 3] }]")], [], False),
+    (("form.inapplicable", "partition.port"), "xmc4800-relax.yaml",
+     [("    uses: [/svc/sensor]\n", "    uses: [/svc/sensor, { path: /amp/3, slots: [0] }]\n")], [], False),
     ("supply.spawn-grants", "xmc4800-relax.yaml", [], [("  KICKOS_MAX_SPAWN_GRANTS: 6\n", "  KICKOS_MAX_SPAWN_GRANTS: 1\n")],
      True),
     ("supply.spawn-grants", "xmc4800-relax.yaml", [], [("  KICKOS_MAX_SPAWN_GRANTS: 6\n", "  KICKOS_MAX_SPAWN_GRANTS: 2\n")],
      True),
     (None, "xmc4800-relax.yaml", [], [("  KICKOS_MAX_SPAWN_GRANTS: 6\n", "  KICKOS_MAX_SPAWN_GRANTS: 3\n")], False),
-    ("supply.cap-table", "xmc4800-relax.yaml", [], [("  KICKOS_CAP_TABLE_SUPPLY: 16\n", "  KICKOS_CAP_TABLE_SUPPLY: 9\n")], True),
-    (None, "xmc4800-relax.yaml", [], [("  KICKOS_CAP_TABLE_SUPPLY: 16\n", "  KICKOS_CAP_TABLE_SUPPLY: 10\n")], False),
-    (None, "xmc4800-relax.yaml", [], DRIVERS_UNNOTIFIED + [("  KICKOS_CAP_TABLE_SUPPLY: 16\n", "  KICKOS_CAP_TABLE_SUPPLY: 8\n")],
-     False),
-    ("supply.cap-table", "xmc4800-relax.yaml", [],
-     DRIVERS_UNNOTIFIED + [("  KICKOS_CAP_TABLE_SUPPLY: 16\n", "  KICKOS_CAP_TABLE_SUPPLY: 7\n")], True),
-    ("supply.cap-table", "xmc4800-relax.yaml", [],
-     [("caps: 2, badged: 1 }", "caps: 2, badged: 2 }"), ("  KICKOS_CAP_TABLE_SUPPLY: 16\n", "  KICKOS_CAP_TABLE_SUPPLY: 10\n")],
-     True),
-    ("supply.cap-table", "xmc4800-relax.yaml", [],
-     [("caps: 2, badged: 1 }", "caps: 2, badged: 0 }"), ("  KICKOS_CAP_TABLE_SUPPLY: 16\n", "  KICKOS_CAP_TABLE_SUPPLY: 9\n")],
-     True),
-    (None, "xmc4800-relax.yaml", [],
-     [("caps: 2, badged: 1 }", "caps: 2, badged: 0 }"), ("  KICKOS_CAP_TABLE_SUPPLY: 16\n", "  KICKOS_CAP_TABLE_SUPPLY: 10\n")],
-     False),
     ("supply.stack", "xmc4800-relax.yaml", [], [("  min_stack: 960\n", "  min_stack: 4096\n")], True),
     (None, "xmc4800-relax.yaml", [], [("  min_stack: 960\n", "  min_stack: 2048\n")], False),
     ("supply.arena", "xmc4800-relax.yaml", [], [("  user_stack: 4096\n", "  user_stack: 0x10000\n"),
                                                  ("  stack_stride: 4096\n", "  stack_stride: 0x10000\n")], True),
     (None, "xmc4800-relax.yaml", [], [("  user_stack: 4096\n", "  user_stack: 0x2000\n")], False),
     (None, "xmc4800-relax.yaml", [("heap: 16384\n", "heap: 0x18000\n")], [], False),
-    ("supply.reservations", "xmc4800-relax.yaml", [], [("  KICKOS_RAM_OWNER_SLOTS: 48\n", "  KICKOS_RAM_OWNER_SLOTS: 3\n")], True),
-    (None, "xmc4800-relax.yaml", [], [("  KICKOS_RAM_OWNER_SLOTS: 48\n", "  KICKOS_RAM_OWNER_SLOTS: 4\n")], False),
-    # The partition's user share takes one slot more, seated in root before the init runs.
-    ("supply.reservations", "xmc4800-relax.yaml", [],
-     XMC_SHARE + [("  KICKOS_RAM_OWNER_SLOTS: 48\n", "  KICKOS_RAM_OWNER_SLOTS: 4\n")], True),
-    (None, "xmc4800-relax.yaml", [], XMC_SHARE + [("  KICKOS_RAM_OWNER_SLOTS: 48\n", "  KICKOS_RAM_OWNER_SLOTS: 5\n")],
-     False),
-    (None, "xmc4800-relax.yaml", [NO_PROTECTION], UNENFORCED + [("  KICKOS_RAM_OWNER_SLOTS: 48\n", "  KICKOS_RAM_OWNER_SLOTS: 3\n")],
-     False),
-    ("supply.ranges", "qemu-arm64.yaml", [], [("  KICKOS_ASPACE_RANGES: 64\n", "  KICKOS_ASPACE_RANGES: 8\n")], True),
-    (None, "qemu-arm64.yaml", [], [("  KICKOS_ASPACE_RANGES: 64\n", "  KICKOS_ASPACE_RANGES: 9\n")], False),
+    ("supply.ranges", "qemu-arm64.yaml", [], ARM64_ONE_THREAD + [("  KICKOS_ASPACE_RANGES: 64\n", "  KICKOS_ASPACE_RANGES: 8\n")], True),
+    (None, "qemu-arm64.yaml", [], ARM64_ONE_THREAD + [("  KICKOS_ASPACE_RANGES: 64\n", "  KICKOS_ASPACE_RANGES: 9\n")], False),
     # The init's space holds the partition's user share, seated in root before the init runs.
-    (None, "qemu-arm64.yaml", ARM64_UNPINNED, [("  KICKOS_ASPACE_RANGES: 64\n", "  KICKOS_ASPACE_RANGES: 9\n")], False),
+    (None, "qemu-arm64.yaml", ARM64_UNPINNED, ARM64_ONE_THREAD + [("  KICKOS_ASPACE_RANGES: 64\n", "  KICKOS_ASPACE_RANGES: 9\n")], False),
     ("supply.ranges", "qemu-arm64.yaml", ARM64_UNPINNED,
-     ARM64_SHARE + [("  KICKOS_ASPACE_RANGES: 64\n", "  KICKOS_ASPACE_RANGES: 9\n")], True),
+     ARM64_ONE_THREAD + ARM64_SHARE + [("  KICKOS_ASPACE_RANGES: 64\n", "  KICKOS_ASPACE_RANGES: 9\n")], True),
     (None, "qemu-arm64.yaml", ARM64_UNPINNED,
-     ARM64_SHARE + [("  KICKOS_ASPACE_RANGES: 64\n", "  KICKOS_ASPACE_RANGES: 10\n")], False),
+     ARM64_ONE_THREAD + ARM64_SHARE + [("  KICKOS_ASPACE_RANGES: 64\n", "  KICKOS_ASPACE_RANGES: 10\n")], False),
     ("supply.size", "qemu-arm64.yaml", [("    size: 64\n", "    size: 0xFFFFFFFF\n")], [], False),
     ("manifest.window", "xmc4800-relax.yaml", [], [("  window_rule: pow2\n  smallest_window: 32\n", "  window_rule: none\n")],
      True),
@@ -1024,8 +1183,17 @@ MANIFEST_ARMS = [
     ("form.unknown-field", [("  arch: armv7m\n", "  arch: armv7m\n  fpu: true\n")], False),
     ("form.unknown-field", [("    nodes: 2\n", "    nodes: 2\n    peers: [1]\n")], False),
     ("form.unknown-field", [("  enforced: true\n", "  enforced: true\n  unit: pmsav7\n")], False),
-    ("form.unknown-field", [("  KICKOS_MAX_THREADS: 8\n", "  KICKOS_MAX_THREADS: 8\n  KICKOS_HEAP_SIZE: 4096\n")], False),
-    ("form.unknown-field", [("  KICKOS_MAX_THREADS: 8\n", "  KICKOS_MAX_THREADS: 8\n  KICKOS_MAX_THREAD_WINDOWS: 4\n")], False),
+    ("form.unknown-field", [("  KICKOS_MAX_SPAWN_GRANTS: 6\n", "  KICKOS_MAX_SPAWN_GRANTS: 6\n  KICKOS_HEAP_SIZE: 4096\n")], False),
+    ("form.unknown-field", [("  KICKOS_MAX_SPAWN_GRANTS: 6\n", "  KICKOS_MAX_SPAWN_GRANTS: 6\n  KICKOS_MAX_THREAD_WINDOWS: 4\n")],
+     False),
+    ("form.unknown-field", [("  KICKOS_MAX_SPAWN_GRANTS: 6\n", "  KICKOS_MAX_SPAWN_GRANTS: 6\n  KICKOS_TASK_ENDPOINT_BUDGET: 3\n")],
+     False),
+    ("form.unknown-field", [("  threads: { default: 8, pool: threads }\n", "  threads: { default: 8, pool: threads, max: 9 }\n")],
+     False),
+    ("form.unknown-field", [("  ram_owners: 65534\n", "  ram_owners: 65534\n  slabs: 4\n")], False),
+    ("form.missing", [("  threads: { default: 8, pool: threads }\n", "  threads: { default: 8 }\n")], False),
+    ("form.missing", [("  ram_owners: 65534\n", "")], True),
+    ("form.type", [("  threads: { default: 8, pool: threads }\n", "  threads: { default: eight, pool: threads }\n")], False),
     ("form.unknown-field", [("  user_stack: 4096\n", "  user_stack: 4096\n  policies: [fifo]\n")], False),
     ("form.unknown-field", [("  board: platform/xmc4800/xmc4800-relax.yaml\n",
                              "  board: platform/xmc4800/xmc4800-relax.yaml\n  memory: arena\n")], False),
@@ -1033,8 +1201,7 @@ MANIFEST_ARMS = [
     ("form.unknown-field", [("{ name: bus, priority: 0, stack: default, caps: 3, badged: 0 }",
                              "{ name: bus, priority: 0, stack: default, caps: 3, badged: 0, core: 0 }")], False),
     ("form.missing", [("  arch: armv7m\n", "")], True),
-    ("form.missing", [("pools:\n  KICKOS_MAX_THREADS: 8\n  KICKOS_TASK_ENDPOINT_BUDGET: 4\n"
-                       "  KICKOS_MAX_SPAWN_GRANTS: 6\n  KICKOS_CAP_TABLE_SUPPLY: 16\n", "")], True),
+    ("form.missing", [("pools:\n  KICKOS_MAX_SPAWN_GRANTS: 6\n", "")], True),
     ("form.missing", [("    console: false\n", "")], True),
     ("form.missing", [("stack: default, caps: 3, badged: 0 }", "caps: 3, badged: 0 }")], False),
     ("form.missing", [("stack: default, caps: 3, badged: 0 }", "stack: default, caps: 3 }")], False),
@@ -1082,7 +1249,7 @@ MANIFEST_ARMS = [
     ("form.type", [("stack: default, caps: 2, badged: 0 }\n      - { name: service", "stack: big, caps: 2, badged: 0 }\n      - { name: service")],
      False),
     ("form.type", [("    barrier: 1\n", "    barrier: after\n")], False),
-    ("form.type", [("  KICKOS_MAX_THREADS: 8\n", "  KICKOS_MAX_THREADS: eight\n")], False),
+    ("form.type", [("  KICKOS_MAX_SPAWN_GRANTS: 6\n", "  KICKOS_MAX_SPAWN_GRANTS: six\n")], False),
     ("form.type", [("  chip: platform/xmc4800/chip.yaml\n", "  chip: [platform/xmc4800/chip.yaml]\n")], False),
     ("form.integer", [("    endpoints: 1\n    notifications: 1\n    block: 1024\n",
                        "    endpoints: 1\n    notifications: 1\n    block: 1_024\n")], False),
@@ -1091,13 +1258,15 @@ MANIFEST_ARMS = [
     ("form.range", [("  thread_windows: 4\n", "  thread_windows: 256\n")], False),
     ("form.range", [("  isolated_cores: 0x0\n", "  isolated_cores: 0x100000000\n")], False),
     ("form.name", [("  board: xmc4800-relax\n", "  board: XMC4800\n")], False),
-    ("form.name", [("    lines: [irq]\n    threads:\n      - { name: uartirq",
-                    "    lines: [IRQ]\n    threads:\n      - { name: uartirq")], False),
+    ("form.name", [("    lines: [irq]\n    triggers: [edge]\n    entry: [notify, \"line:0\", ep, doorbell]\n    threads:\n      - { name: uartirq",
+                    "    lines: [IRQ]\n    triggers: [edge]\n    entry: [notify, \"line:0\", ep, doorbell]\n    threads:\n      - { name: uartirq")], False),
     ("form.name", [("  xmcssc:\n", "  XmcSsc:\n")], False),
+    ("manifest.bound", [("    slots: 4\n", "    slots: 33\n")], False),
+    (None, [("    slots: 4\n", "    slots: 32\n")], False),
     (None, [("    block: 1024\n", "    block: none\n"), ("    barrier: 1\n", "    barrier: none\n")], False),
     (None, [("stack: default, caps: 2, badged: 0 }\n      - { name: service",
              "stack: 2048, caps: 2, badged: 0 }\n      - { name: service")], False),
-    (None, [("    barrier: 1\n", "    barrier: 2\n")], False),
+    ("manifest.barrier", [("    barrier: 1\n", "    barrier: 2\n")], False),
     (None, [(MANIFEST[MANIFEST.index("drivers:\n"):], "drivers: {}\n")], False),
     (None, [("descriptions:\n  chip: platform/xmc4800/chip.yaml\n  board: platform/xmc4800/xmc4800-relax.yaml\n",
              "")], False),
@@ -1151,10 +1320,22 @@ MANIFEST_ARMS = [
     ("manifest.bound", [("  thread_windows: 4\n", "  thread_windows: 0\n")], False),
     ("manifest.bound", [("  min_stack: 960\n", "  min_stack: 0\n")], False),
     ("manifest.bound", [("  user_stack: 4096\n", "  user_stack: 0\n")], False),
-    (None, [("    lines: [irq]\n    threads:\n      - { name: bus",
-             "    lines: [\"off\", \"no\"]\n    threads:\n      - { name: bus")], False),
-    ("form.duplicate-entry", [("    lines: [irq]\n    threads:\n      - { name: uartirq",
-                               "    lines: [irq, irq]\n    threads:\n      - { name: uartirq")], False),
+    (None, [("    lines: [irq]\n    triggers: [edge]\n    entry: [ep, notify, \"line:0\"]\n    threads:\n"
+             "      - { name: bus",
+             "    lines: [\"off\", \"no\"]\n    triggers: [edge, edge]\n    entry: [ep, notify, \"line:0\", \"line:1\"]\n"
+             "    threads:\n      - { name: bus")], False),
+    ("form.duplicate-entry", [("    lines: [irq]\n    triggers: [edge]\n    entry: [notify, \"line:0\", ep, doorbell]\n"
+                               "    threads:\n      - { name: uartirq",
+                               "    lines: [irq, irq]\n    triggers: [edge, edge]\n    entry: [notify, \"line:0\", ep, doorbell]\n"
+                               "    threads:\n      - { name: uartirq")], False),
+    ("manifest.bound", [("    lines: [irq]\n    triggers: [edge]\n    entry: [notify",
+                         "    lines: [irq]\n    triggers: []\n    entry: [notify")], False),
+    ("form.enum", [("    triggers: [edge]\n    entry: [notify", "    triggers: [pulse]\n    entry: [notify")], False),
+    ("form.enum", [("    entry: [notify, \"line:0\", ep, doorbell]", "    entry: [notify, \"line:1\", ep, doorbell]")], False),
+    ("form.duplicate-entry", [("    entry: [notify, \"line:0\", ep, doorbell]",
+                               "    entry: [notify, notify, \"line:0\", ep, doorbell]")], False),
+    ("manifest.bound", [("    entry: [notify, \"line:0\", ep, doorbell]", "    entry: [notify, ep, doorbell]")], False),
+    ("manifest.bound", [("    entry: [notify, \"line:0\", ep, doorbell]", "    entry: [notify, \"line:0\", doorbell]")], False),
     ("form.duplicate-entry", [("{ name: uartirq, priority: 1,", "{ name: service, priority: 1,")], True),
     ("manifest.description-path", [("  chip: platform/xmc4800/chip.yaml\n", "  chip: platform/stm32f411/chip.yaml\n")], False),
     ("manifest.description-path", [("  board: platform/xmc4800/xmc4800-relax.yaml\n",
@@ -1361,7 +1542,7 @@ ends: never
 heap: 0
 tasks:
   - name: audio
-    entry: audio_main
+    program: audio_main
     stack: 4096
     priority: 9
     ceiling: 9
@@ -1376,20 +1557,49 @@ ends: never
 heap: 0
 tasks:
   - name: spi
-    entry: spi_main
+    program: spi_main
     stack: 2048
     priority: 9
     ceiling: 9
     devices: [/dev/dspi0]
     accepts: [device_not_isolated, coarse_gate]
   - name: leds
-    entry: leds_main
+    program: leds_main
     stack: 1024
     priority: 8
     ceiling: 8
     devices: [/dev/gpio/1] # leds
     accepts: [device_not_isolated, coarse_gate]
 """
+
+# A bluepill-c8 system whose one task runs a packaged driver as its own threads.
+ONE_TASK_SYSTEM = """version: 1
+board: bluepill-c8
+stdout: kernel
+ends: main
+heap: 2048
+accepts: [no_protection]
+tasks:
+  - name: main
+    program: main_main
+    stack: 2048
+    priority: 2
+    ceiling: 31
+    drivers:
+      - { driver: testexits, serves: /svc/exits, priority: 10 }
+    uses: [/svc/exits]
+"""
+# The same driver as a task of its own, which a one-task chip refuses.
+ONE_TASK_DRIVER_TASK = ("  - name: main\n", "  - name: exits\n    driver: testexits\n    serves: /svc/exits\n    priority: 10\n"
+                        "  - name: main\n")
+ONE_TASK_HOSTED = ("    drivers:\n      - { driver: testexits, serves: /svc/exits, priority: 10 }\n", "")
+# A second task watching the first, and a region shared between tasks: each needs a second task.
+ONE_TASK_WATCH = ("    uses: [/svc/exits]\n", "    uses: [/svc/exits]\n  - name: mon\n    program: mon_main\n"
+                  "    stack: 1024\n    priority: 3\n    ceiling: 3\n    watches: [main]\n")
+ONE_TASK_SECOND = ("    uses: [/svc/exits]\n", "    uses: [/svc/exits]\n  - name: spare\n    program: spare_main\n"
+                   "    stack: 1024\n    priority: 3\n    ceiling: 3\n")
+ONE_TASK_SHARED = [("tasks:\n", "shared:\n  - name: /shm/buf\n    size: 64\n    cache: cached\ntasks:\n"),
+                   ("    uses: [/svc/exits]\n", "    uses: [/svc/exits]\n    maps: { /shm/buf: rw }\n")]
 
 RX_SYSTEM = """version: 1
 board: rx72m
@@ -1398,7 +1608,7 @@ ends: never
 heap: 0
 tasks:
   - name: pins
-    entry: pins_main
+    program: pins_main
     stack: 1024
     priority: 9
     ceiling: 9
@@ -1418,7 +1628,7 @@ shared:
     cache: uncached
 tasks:
   - name: blink
-    entry: blink_main
+    program: blink_main
     stack: 1024
     priority: 9
     ceiling: 9
@@ -1437,7 +1647,7 @@ shared:
     cache: cached
 tasks:
   - name: clock
-    entry: clock_main
+    program: clock_main
     stack: 4096
     priority: 9
     ceiling: 9
@@ -1533,12 +1743,13 @@ ends: never
 heap: 0
 tasks:
     - name: probe
-      entry: probe_main
+      program: probe_main
       stack: 4096
       priority: 9
       ceiling: 9
       devices: [/dev/rtc, /dev/gpio, /dev/virtio/31, /dev/virtio/23]
       accepts: [bus_master, coarse_gate]
+      budgets: { threads: 1 }
 """
 
 
@@ -1553,12 +1764,13 @@ shared:
     cache: uncached
 tasks:
     - name: probe
-      entry: probe_main
+      program: probe_main
       stack: 4096
       priority: 9
       ceiling: 9
+      budgets: { threads: 1 }
     - name: watcher
-      entry: watcher_main
+      program: watcher_main
       stack: 4096
       priority: 8
       ceiling: 8
@@ -1566,6 +1778,7 @@ tasks:
       accepts: [bus_master, coarse_gate]
       watches: [probe]
       maps: { /shm/state: rw }
+      budgets: { threads: 1 }
 """
 
 ARM64_DRIVER = """version: 1
@@ -1605,11 +1818,13 @@ def on_arm64_driver(ranges, expect):
     return composed("qemu-arm64.yaml", ARM64_DRIVER, [], expect, manifest=manifest)
 
 
-def on_arm64_alone(ranges, expect):
-    """One task whose space holds seven ranges, its image's two, its stack and four windows, while
-    the init's holds six, its image's two, its stack, its two blocks and the task's stack."""
+def on_arm64_alone(ranges, expect, threads=1):
+    """One task whose space holds seven ranges, its image's two, its stack and four windows, and a
+    stack per thread of its THREADS budget past the first, while the init's holds six, its image's
+    two, its stack, its two blocks and the task's stack."""
     manifest = MANIFESTS["qemu-arm64.yaml"].replace("  KICKOS_ASPACE_RANGES: 64\n", "  KICKOS_ASPACE_RANGES: %d\n" % ranges)
-    return composed("qemu-arm64.yaml", ARM64_ALONE, [], expect, manifest=manifest)
+    text = ARM64_ALONE.replace("budgets: { threads: 1 }", "budgets: { threads: %d }" % threads)
+    return composed("qemu-arm64.yaml", text, [], expect, manifest=manifest)
 
 
 def on_rv64(edits, expect):
@@ -1629,10 +1844,10 @@ K64F_UNRANGED = [("    ranges: [[0x40000000, 0x80000], [0x40080000, 0x7F000]]\n"
 K64F_LEDS = "# leds\n    accepts: [device_not_isolated, coarse_gate]\n"
 K64F_LEDS_ISOLATED = (K64F_LEDS, "# leds\n    accepts: [device_not_isolated]\n")
 # A packaged driver with an uncached ring block and nothing else, and a K64F task running it.
-BLOCK_DRIVER = ("drivers:\n", "drivers:\n  blkdrv:\n    windows: []\n    lines: []\n    threads:\n"
+BLOCK_DRIVER = ("drivers:\n", "drivers:\n  blkdrv:\n    windows: []\n    lines: []\n    triggers: []\n    entry: [ep]\n    threads:\n"
                 "      - { name: io, priority: 0, stack: default, caps: 1, badged: 0 }\n    endpoints: 1\n"
                 "    notifications: 0\n    block: 1024\n    block_cache: uncached\n    posture: retain\n"
-                "    barrier: 1\n    console: false\n    usb_device: false\n    start: blkdrv_start\n    receiver: io\n    client: []\n")
+                "    barrier: none\n    console: false\n    usb_device: false\n    start: blkdrv_start\n    receiver: io\n    client: []\n    slots: 0\n")
 K64F_BLOCK_TASK = ("tasks:\n", "tasks:\n  - name: blk\n    driver: blkdrv\n    serves: /svc/blk\n    priority: 9\n")
 K64F_SHARED = ("stdout: kernel\n", "stdout: kernel\nshared:\n  - name: /shm/state\n    size: 16\n    cache: uncached\n")
 K64F_CACHED = [("\ndata_cache: false\n", "\n")]
@@ -1656,12 +1871,11 @@ C6_FREE = C6_MANIFEST.replace("  free_regions: 5\n", "  free_regions: %d\n")
 XMC_ODD_STACKS = mutate(XMC_MANIFEST, [("window_rule: pow2", "window_rule: granule"),
                                        ("  user_stack: 4096\n", "  user_stack: 0x2000\n"),
                                        ("  stack_stride: 4096\n", "  stack_stride: 0x2000\n")])[0]
-C6_OWNER_SLOTS = C6_MANIFEST.replace("  KICKOS_RAM_OWNER_SLOTS: 48\n", "  KICKOS_RAM_OWNER_SLOTS: %d\n")
 # Two watchers of blink, each reserving and self-granting a status block of its own.
 C6_WATCHERS = [("    maps: { /shm/state: rw }\n",
                 "    maps: { /shm/state: rw }\n"
-                "  - name: first\n    entry: first_main\n    stack: 1024\n    priority: 8\n    ceiling: 8\n    watches: [blink]\n"
-                "  - name: second\n    entry: second_main\n    stack: 1024\n    priority: 8\n    ceiling: 8\n    watches: [blink]\n")]
+                "  - name: first\n    program: first_main\n    stack: 1024\n    priority: 8\n    ceiling: 8\n    watches: [blink]\n"
+                "  - name: second\n    program: second_main\n    stack: 1024\n    priority: 8\n    ceiling: 8\n    watches: [blink]\n")]
 LP_PROTECTED = [("{ unit: none, privilege: false }",
                  "{ unit: pmp, granule: 8, covers_devices: true, memory_type: false }")]
 
@@ -1672,7 +1886,7 @@ def diagnostic_app(name, grants, expect):
     def scenario(root):
         path = golden(root, "xmc4800-relax.yaml")
         text = read(path)
-        task = "\n  - name: %s\n    entry: %s_main\n    stack: 2048\n    priority: 10\n    ceiling: 10\n%s" % (name, name, grants)
+        task = "\n  - name: %s\n    program: %s_main\n    stack: 2048\n    priority: 10\n    ceiling: 10\n%s" % (name, name, grants)
         write(path, text + task)
         first = text.count("\n") + 1
         expected = []
@@ -1780,7 +1994,7 @@ heap: 0
     partition: true
 tasks:
   - name: main
-    entry: ping_main
+    program: ping_main
     stack: %d
     priority: 9
     ceiling: 9
@@ -1800,7 +2014,7 @@ heap: 0
     partition: true
 tasks:
   - name: serve
-    entry: serve_main
+    program: serve_main
     stack: %d
     priority: 9
     ceiling: 9
@@ -1815,7 +2029,7 @@ RP_PAIR = (PING % ("pizero2350", "", "cached", 1024), PONG % ("pizero2350", "", 
 IMX_PAIR = (PING % ("imx8mp-evk", "cluster: a53\naccepts: [no_protection]\n", "cached", 8192),
             PONG % ("imx8mp-evk", "cluster: m7\naccepts: [no_protection]\n", "cached", 8192))
 IMX_ACCEPT = ("accepts: [no_protection]", "accepts: [no_protection, cached_incoherent]")
-SPARE = ("    maps: { /shm/book: rw }\n", "    maps: { /shm/book: rw }\n  - name: spare\n    entry: spare_main\n"
+SPARE = ("    maps: { /shm/book: rw }\n", "    maps: { /shm/book: rw }\n  - name: spare\n    program: spare_main\n"
          "    stack: 8192\n    priority: 8\n    ceiling: 8\n    serves:  /amp/3\n")
 C6_HP_SMALL = [("regions: { value: 16,", "regions: { value: 2,")]
 # The HP gate fronting less than timg1.
@@ -1919,6 +2133,23 @@ SCENARIOS = [
     ("name.board-ambiguous", ambiguous_board),
     ("form.unknown-field", broken_board),
     (None, on_imx([], [])),
+    (None, composed("bluepill-c8.yaml", ONE_TASK_SYSTEM, [], [])),
+    ("driver.one-task", composed("bluepill-c8.yaml", ONE_TASK_SYSTEM, [ONE_TASK_DRIVER_TASK, ONE_TASK_HOSTED],
+                                 [("    driver: testexits", "driver.one-task"), ("  - name: main", "supply.one-task")])),
+    (None, composed("bluepill-c8.yaml", ONE_TASK_SYSTEM, [ONE_TASK_DRIVER_TASK, ONE_TASK_HOSTED], [],
+                    platform_edits=(("stm32f103/chip.yaml", [("one_task: true\n", "")]),))),
+    ("supply.one-task", composed("bluepill-c8.yaml", ONE_TASK_SYSTEM, [ONE_TASK_SECOND],
+                                 [("  - name: spare", "supply.one-task")])),
+    (None, composed("bluepill-c8.yaml", ONE_TASK_SYSTEM, [ONE_TASK_SECOND], [],
+                    platform_edits=(("stm32f103/chip.yaml", [("one_task: true\n", "")]),))),
+    ("supply.one-task", composed("bluepill-c8.yaml", ONE_TASK_SYSTEM, [ONE_TASK_WATCH],
+                                 [("  - name: mon", "supply.one-task"), ("    watches: ", "supply.one-task")])),
+    (None, composed("bluepill-c8.yaml", ONE_TASK_SYSTEM, [ONE_TASK_WATCH], [],
+                    platform_edits=(("stm32f103/chip.yaml", [("one_task: true\n", "")]),))),
+    ("supply.one-task", composed("bluepill-c8.yaml", ONE_TASK_SYSTEM, ONE_TASK_SHARED,
+                                 [("  - name: /shm/buf", "supply.one-task")])),
+    (None, composed("bluepill-c8.yaml", ONE_TASK_SYSTEM, ONE_TASK_SHARED, [],
+                    platform_edits=(("stm32f103/chip.yaml", [("one_task: true\n", "")]),))),
     ("form.missing", on_imx([("cluster: a53\n", "")], [("version: ", "form.missing")])),
     ("name.cluster-unknown", on_imx([("cluster: a53", "cluster: m4")], [("cluster: ", "name.cluster-unknown")])),
     ("name.device-unknown", on_imx([("[/dev/sai5, /dev/sai6]", "[/dev/sai5, /dev/sai6, /dev/mu1_b]")],
@@ -1932,7 +2163,7 @@ SCENARIOS = [
                                [("    devices: ", "ownership.kernel")])),
     ("ownership.kernel", on_rx([("[/dev/port]", "[/dev/port, /dev/mpc]")], [("    devices: ", "ownership.kernel")])),
     ("ownership.line", on_imx([("    lines: { irq: /dev/sai5/shared }\n",
-                                "    lines: { irq: /dev/sai5/shared }\n  - name: echo\n    entry: echo_main\n"
+                                "    lines: { irq: /dev/sai5/shared }\n  - name: echo\n    program: echo_main\n"
                                 "    stack: 4096\n    priority: 8\n    ceiling: 8\n    lines: { irq: /dev/sai6/shared }\n")],
                               [("    lines: { irq: /dev/sai6", "ownership.line")])),
     (None, on_k64f([], [])),
@@ -2065,25 +2296,25 @@ SCENARIOS = [
                             [("    lines: { irq", "form.range")], VIRTIO_WIDE)),
     (None, on_arm64([("devices: [/dev/rtc]", "devices: [/dev/rtc]\n    lines: { irq: /dev/virtio/65486/irq }")], [],
                     VIRTIO_WIDE)),
-    ("encoding.table", table_limits(0, 0, 0, ["5 tasks", "13 grants", "4 refs", "3 privileged registers",
+    ("encoding.table", table_limits(0, 0, 0, ["5 tasks", "16 grants", "4 refs", "3 privileged registers",
                                                "1 regions", "bytes of strings", "catalogue driver 1",
                                                "line 1 of a device"])),
-    (None, table_limits(13, 1, 0xFFFFFFFF, [])),
-    ("supply.budget", on_xmc([("    uses: [/svc/sensor]\n", "    uses: [/svc/sensor]\n    serves: /svc/app\n")],
-                             [("version: ", "supply.budget")], [], XMC_ENDPOINTS_3, names="the init")),
-    ("supply.budget", on_xmc([("    uses: [/svc/sensor]\n", "    uses: [/svc/sensor, /svc/spi0, /svc/console]\n")],
-                             [("version: ", "supply.budget"), ("  - name: app", "supply.budget")], [], XMC_ENDPOINTS_2,
-                             names="holds 3 endpoints")),
+    (None, table_limits(16, 1, 0xFFFFFFFF, [])),
+    ("supply.budget", on_xmc([("    uses: [/svc/sensor]\n",
+                               "    uses: [/svc/sensor, { path: /svc/spi0, slots: [1] }, /svc/console]\n"
+                               "    budgets: { endpoints: 2 }\n")],
+                             [("    budgets: {", "supply.budget")], [], XMC_ENDPOINTS_2, names="holds 4 of them")),
     ("supply.arena", on_xmc([], [("version: ", "supply.arena")], [(XMC_ARENA, XMC_ARENA.replace("size: 0x40000", "size: 0x8000"))],
                             XMC_MANIFEST)),
     ("supply.arena", on_xmc([], [("version: ", "supply.arena")],
                             [(XMC_ARENA, XMC_ARENA.replace("size: 0x40000", "size: 0x8800"))], XMC_MANIFEST)),
     (None, on_xmc([], [], [(XMC_ARENA, XMC_ARENA.replace("size: 0x40000", "size: 0x9000"))], XMC_MANIFEST)),
     (None, on_xmc([HEAP], [], [(XMC_ARENA, XMC_ARENA.replace("size: 0x40000", "size: 0x9000"))], XMC_MANIFEST)),
-    ("supply.reservations", on_c6(C6_WATCHERS, [("version: ", "supply.reservations")], manifest=C6_OWNER_SLOTS % 6)),
-    (None, on_c6(C6_WATCHERS, [], manifest=C6_OWNER_SLOTS % 7)),
+
     ("supply.ranges", on_arm64_alone(6, [("    - name: probe", "supply.ranges")])),
     (None, on_arm64_alone(7, [])),
+    ("supply.ranges", on_arm64_alone(8, [("    - name: probe", "supply.ranges")], threads=3)),
+    (None, on_arm64_alone(9, [], threads=3)),
     ("supply.ranges", on_arm64_watcher(8, [("    - name: watcher", "supply.ranges")])),
     (None, on_arm64_watcher(9, [])),
     ("supply.ranges", on_arm64_driver(6, [("    - name: spi", "supply.ranges")])),
@@ -2115,8 +2346,7 @@ SCENARIOS = [
     ("partition.port", partitioned("arm64", ARM64_PAIR, {0: [("uses: [/amp/3]", "uses: [/amp/1]")]},
                                    [(0, "    uses: ", "partition.port")], ARM64_AMP)),
     (None, partitioned("arm64", ARM64_PAIR, {0: [("uses: [/amp/3]", "uses: [/amp/0, /amp/3]")]}, [],
-                       ARM64_AMP.replace("[[0, 2], [1, 3], [1, 4]]", "[[0, 2], [1, 0], [1, 3], [1, 4]]")
-                       .replace("KICKOS_TASK_ENDPOINT_BUDGET: 3", "KICKOS_TASK_ENDPOINT_BUDGET: 4"))),
+                       ARM64_AMP.replace("[[0, 2], [1, 3], [1, 4]]", "[[0, 2], [1, 0], [1, 3], [1, 4]]"))),
     ("partition.port", partitioned("arm64", ARM64_PAIR, {1: [("serves: /amp/3", "serves: /amp/2")]},
                                    [(1, "    serves: ", "partition.port")], ARM64_AMP)),
     ("partition.port", partitioned("arm64", ARM64_PAIR, {1: [SPARE]}, [(1, "    serves:  /amp/3", "partition.port")],
@@ -2132,7 +2362,7 @@ SCENARIOS = [
                                                              (1, "    serves: ", "partition.port")],
                                    ARM64_AMP.replace("[[0, 2], [1, 3], [1, 4]]", "[[0, 3], [1, 3]]"))),
     ("partition.port", composed("xmc4800-relax.yaml", read(os.path.join(SYSTEMS, "xmc4800-relax.yaml")),
-                                [("    serves: /svc/spi0\n", "    serves: /amp/3\n"), ("    uses: [/svc/spi0]\n", "")],
+                                [("    serves: /svc/spi0\n", "    serves: /amp/3\n"), ("    uses: [{ path: /svc/spi0, slots: [0] }]\n", "")],
                                 [("    serves: /amp/3", "partition.port")])),
     ("partition.unserved", partitioned("arm64", ARM64_PAIR, {1: [("    serves: /amp/3\n", "")]},
                                        [(0, "    uses: ", "partition.unserved")], ARM64_AMP)),

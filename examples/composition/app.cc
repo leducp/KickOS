@@ -23,9 +23,9 @@ namespace
     constexpr unsigned FROZEN_AFTER = 20u;
 }
 
-extern "C" void app_main(kos_self_t const* self)
+int main(int, char**)
 {
-    kos_cap_t const sensor = kos_grant_endpoint(self, "/svc/sensor");
+    kos_cap_t const sensor = kos_grant_endpoint("/svc/sensor");
 
     uint32_t last = 0;
     unsigned same = 0;

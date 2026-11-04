@@ -61,6 +61,9 @@ namespace kickos
     // peripheral region. Size 0 touches nothing; a wrapping window fails closed.
     bool grant_hits_reserved(uintptr_t base, size_t size);
 
+    // True iff [base, base+size) lies inside ONE chip-stated aperture, which holds no RAM.
+    bool grant_window_in_aperture(uintptr_t base, size_t size);
+
 #if KICKOS_HAVE_ASPACE
     // True iff [base, base+size) is whole granules inside ONE chip-stated aperture.
     bool grant_window_aperture_ok(uintptr_t base, size_t size);
@@ -72,7 +75,7 @@ namespace kickos
     //   size 0 / wrap                              -> refuse
     //   hits a reserved block (authorized too)     -> refuse   [Rule 7 core]
     //   memory type this chip cannot encode        -> refuse
-    //   DEV : authorized caller + exactly-encodable + not a bit-band alias
+    //   DEV : authorized caller + exactly-encodable + inside an aperture + not a bit-band alias
     //   RAM : exactly encodable + confined to the user arena (every caller)
     //
     // `caller_authorized` is AUTH_MEMORY on the caller's authority cap. Only the DEV arm reads
@@ -80,11 +83,12 @@ namespace kickos
     bool grant_region_admissible(uintptr_t base, size_t size, uint32_t attr,
                                  bool caller_authorized);
 
-    // Boot self-check: every reserved block is well-formed and the static grantable extents
-    // are reserved-disjoint.
+    // Boot self-check: every reserved block is well-formed, the static grantable extents are
+    // reserved-disjoint, and no aperture meets them.
     void grant_reserved_validate(void);
 #else
     inline bool grant_hits_reserved(uintptr_t, size_t) { return false; }
+    inline bool grant_window_in_aperture(uintptr_t, size_t) { return true; }
     inline bool grant_window_bus_master(uintptr_t, size_t) { return false; }
     // The memory-type arm survives with enforcement off.
     inline bool grant_region_admissible(uintptr_t, size_t, uint32_t attr, bool)
@@ -93,6 +97,11 @@ namespace kickos
     }
     inline void grant_reserved_validate(void) {}
 #endif
+
+    // The device arm every device window passes, at a spawn and in a declaration at boot: 0,
+    // -KOS_EINVAL (empty, wrapping, outside every aperture, not one region) or -KOS_EPERM (the
+    // kernel's own device, a bit-band alias). Neither authority nor occupancy.
+    int grant_device_window_admit(uintptr_t base, size_t size);
 }
 
 #endif

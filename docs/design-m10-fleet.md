@@ -238,7 +238,7 @@ the kernel owns, the buses and parts soldered on, and the pins it spends. Nothin
 fact no source in the tree states is left out, and a device no file names is absent.
 
 **A default composition is the same file everywhere:** the kernel console, one task `main` with
-`entry: kickos_main`, `authority: [memory, system, tasks]`, `ends: main`, and the board's `heap`,
+`program: main`, `authority: [memory, system, tasks]`, `ends: main`, and the board's `heap`,
 which is the figure its `base` preset carries today. `main` runs at priority 2 under `ceiling: 31`,
 the build's `KICKOS_PRIO_MAX`: a plain `main` runs where root ran and may spawn threads above
 itself, as root's could. A preset that cannot afford that heap, as an
@@ -346,23 +346,23 @@ arms not yet moved off root.
 
 **What is measured**, per image: flash (loaded text, read-only data and data's load image), static
 RAM (data, bss, the heap carve), the arena the boot and the init spend (`kickos_compose cost` and
-the chip script's arena asserts), and the thread slots left under `KICKOS_MAX_THREADS`. **The
+the chip script's arena asserts), and the thread slots left under `KICKOS_BUDGET_THREADS`. **The
 instrument** is `size -A` over each linked ELF, B and C as deltas against A from the same tree
 with the stamp masked as 1.4 masks it, and A built twice as the null control. The table went to
 archived `M10.5_smallest_boards_meas.md` with the presets, toolchain and tree it was taken on.
 
 **What the selftest as a task costs is decided here too, per board.** Run by the init rather than
-as root, it spends a task slot and its entry thread from `KICKOS_MAX_THREADS`, where root's slot
-was outside both, and its capability table is a child's, `KICKOS_CAP_CHILD_WIDTH` wide, where
+as root, it spends a task slot and its entry thread from `KICKOS_BUDGET_THREADS`, where root's slot
+was outside both, and its capability table is a child's, the child width wide, where
 root's was summed. Its declared peak is 5 slots held at once plus 3 the deadlock arm skips without,
 above the `KICKOS_CAP_FIRST_DYNAMIC` reserved ones, and its composition delegates no capability at
 the spawn. A self-test defconfig states `KICKOS_MAX_SPAWN_GRANTS=9` on a board whose
-`KICKOS_CAP_TABLE_SUPPLY` is 10 or more, a child's 10 slots holding the 2 reserved, the 5 and the 3.
+the board's supply is 10 or more, a child's 10 slots holding the 2 reserved, the 5 and the 3.
 `bluepill-c8` and `f302nucleo` state a supply of 7 and stay at 6, a child's 7 holding the 2 and
 the 5 exactly, and their gates declare `mutex_deadlock` a skip. On `microbit` the 9 costs each
 selftest image 560 B of `.bss` and 312 to 856 B of `.text` against 6, measured on two builds of
 one tree, and no image loses a 2 KiB arena block: `selftest` keeps 320 B before the next block
-boundary and the other four 928 to 1,440 B. The row decides each small board: `KICKOS_MAX_THREADS` and `KICKOS_MAX_TASKS` raised by
+boundary and the other four 928 to 1,440 B. The row decides each small board: `KICKOS_BUDGET_THREADS` and the task pool size raised by
 one where its RAM allows, recording nothing again; a board whose child width cannot hold the peak
 raises `KICKOS_MAX_SPAWN_GRANTS` where its RAM allows; a misfit goes to the maintainer.
 
@@ -383,7 +383,7 @@ dropping arms (maintainer, 2026-10-03).
    composition its CMake passes to `kickos_app_system` (`user/apps/CMakeLists.txt`), the root
    `CMakeLists.txt` composing each once the manifest is written. It is `<app>/system.yaml`, naming
    no board and taking its heap, stack and platform-wide `accepts` from the build board's default
-   but stating each `entry` task's `ceiling`, and `<app>/systems/<board>.yaml` only where the
+   but stating each `program` task's `ceiling`, and `<app>/systems/<board>.yaml` only where the
    devices it names differ by board. The app names
    the authority, devices, lines and drivers it uses; nothing is mapped or claimed by number at
    run time that the composition can state.
@@ -440,7 +440,7 @@ whose child never exits (`initdemo`, `tele_pingpong`, `drvdeath`, `rootfault`) e
 | `frdmk64f/k64drv` | 2 | retargeted from PIT channel 2 to LPTMR0, since PIT's AIPS slot 55 also holds the channels the kernel's time base chains and is never opened: LPTMR0 sits alone in AIPS0 slot 64 at 0x4004_0000, raises line 58, and is clocked by SCGC5 bit 0 (K64 RM 4.5.2 Table 4-2, 3.2.2.3 Table 3-5, 12.2.12). Its window and line, `device_not_isolated`, `coarse_gate` for its slot; the chip file gains the device, and `arch_periph_enable` the base, gating its clock and clearing its slot's SP bit as it does for UART0 and DSPI0. The driver counts the 1 kHz LPO (PSR PCS=01, PBYP=1; RM 42.3.2) and a thread of its task holding no window reads the counter, which succeeds, the slot being the gate: the window, 32 bytes by the SYSMPU's granule, already holds every register LPTMR0 implements, and the slot answers any other address with a transfer error (RM 4.5) |
 | `frdmk64f/k64dspi` | 2 | two compositions, chosen by `KICKOS_SPI_LOCAL_ENGINE`: the packaged `k64dspi`, whose start muxes the pins the board file wires to DSPI0, and a client using its endpoint `/svc/spi0`; and a task holding DSPI0 and `pinmux` that links the local SPI engine and muxes those pins through `k64dspi_bus_mux` |
 | `rx72m/rxdrv` | 2 | the port window, `pinmux`; the ungranted poke is a child thread's fault. The chip file's port window holds `PMR`, so it takes `coarse_gate` beside the console's pins and the kernel's LED, and the poke writes the console pin's `PB1PFS` in the MPC, which the chip file gives the kernel, instead |
-| `xmc4800-relax/conreclaim` | 3 | retargeted: `testusic`, a test-owned console driver over USIC0 CH0 in `tests/drivers`, is named `stdout` and holds the console device alone, so no plain task may hold it. It serves plain sends polled, a zero-length one as a flush, and a zero-length call by scrambling the channel it holds, its clock gated last, before it answers; `main` prints through it, asks for the scramble and panics, and the verdict reaches the wire only through the kernel reclaiming the published console. Built only where `KICKOS_TEST_DRIVERS` is on, which the board preset leaves off, so an operator configures it in (`EXTRA_CMAKE=-DKICKOS_TEST_DRIVERS=ON`); `tests/integration/check_conreclaim.sh` judges the capture |
+| `xmc4800-relax/conreclaim` | 3 | retargeted: `testusic`, a test-owned console driver over USIC0 CH0 in `tests/drivers`, is named `stdout` and holds the console device alone, so no plain task may hold it. It serves plain sends polled, `KOS_UART_DRAIN` with the channel's flush, and a zero-length call by scrambling the channel it holds, its clock gated last, before it answers; `main` prints through it, asks for the scramble and panics, and the verdict reaches the wire only through the kernel reclaiming the published console. Built only where `KICKOS_TEST_DRIVERS` is on, which the board preset leaves off, so an operator configures it in (`EXTRA_CMAKE=-DKICKOS_TEST_DRIVERS=ON`); `tests/integration/check_conreclaim.sh` judges the capture |
 | `xmc4800-relax/consoledemo` | 2 | `stdout` names the packaged `xmcuartirq` |
 | `inprstorm`, `pvprobe`, `xmccshold`, `xmcspi` | 2 | USIC0 CH1, and for `xmcspi` the line `/dev/usic0/sr1`; `inprstorm`'s entry holds the window and re-delegates it to a storm thread below itself, so it takes `memory` and runs on `ends: never`; `pvprobe` and `xmcspi` fault their own entry on the closing ungranted read, which ends the system, while `xmccshold` returns. Their compositions do not name `xmcssc`, so nothing else holds the window. The refusal of the old conflict is already armed: `tools/compose/tests/test_arms.py` grants each beside the golden system's `xmcssc` and reddens `ownership.device`, and `ownership.line` for `xmcspi` |
 | `xmc4800-relax/xmcssc` | 2 | two images in every configure: `xmcssc`, the packaged `xmcssc` and a client using its endpoint `/svc/spi0`, and `xmcssc_local`, a task holding CH1 and its line that links the local SPI engine |
@@ -466,7 +466,7 @@ other one, which is the unanswered port the reply-guard arms park on; `amp_parti
 assembles that partition. The shared image's one composition names its crossings alone (9.1). An
 AMP node builds no driver images.
 
-**Priority.** Every `entry` task states its `ceiling`, which no default supplies, and the init
+**Priority.** Every `program` task states its `ceiling`, which no default supplies, and the init
 narrows the task's ceiling to it. The selftest spawns threads above the one it runs at, so it runs
 at today's root priority, 2, under a `ceiling` above.
 
@@ -495,14 +495,14 @@ The ceiling arms read the declared ceiling rather than a constant, so one arm ho
 | `process_data_from_image`, `irq_as_event` | root's data pages | the task's, a copy of the image's pristine data whichever way the task was made (M10.6.6, `space-data-starts-from-the-image`) |
 | an arm reading a pin a board pin map set | the default init applied it | none exists |
 
-The pools follow the task. A task's entry thread and task come out of `KICKOS_MAX_THREADS` and
-`KICKOS_MAX_TASKS`, raised by one on `microbit`, `f302nucleo` and `bluepill-c8` (section 3), and its
+The pools follow the task. A task's entry thread and task come out of `KICKOS_BUDGET_THREADS` and
+the task pool size, raised by one on `microbit`, `f302nucleo` and `bluepill-c8` (section 3), and its
 table is a child's: a self-test defconfig states `KICKOS_MAX_SPAWN_GRANTS=9` on a board whose
 supply backs the 3 optional slots, and an AMP node's defconfig widens it for its crossings.
 
 **Where the selftest overflows an image under its composition, it splits into one more region**,
-as ruled. `main.cc` cuts ten regions, and each board states the first region of each of its
-images: ten on the two STM32 parts, one region each; five on `microbit`, whose binding resource is
+as ruled. `main.cc` cuts twelve regions, and each board states the first region of each of its
+images: twelve on the two STM32 parts, one region each; five on `microbit`, whose binding resource is
 the arena after `.bss`; one on an enforcing XMC4800, whose arena spans DSRAM2; five on an
 enforcing ESP32-C6 bench build and four on the other enforcing or AMP builds of that chip; two on
 every ESP32 build. Its bloat audit stays
@@ -574,7 +574,7 @@ x86_64's move to `add_executable`.
 | --- | --- | --- |
 | the service lists: every `system/init/<board>/service_list*.cc`, `services_none.cc`, `service_list_run.cc`, the service-list array and bring-up entry types (formerly `kos_service_list`, `kos_service_bringup`), the board-services symbol (formerly `kickos_board_services`), the list runner (formerly `kickos_service_list_run`), the service-list selection knob and the two board defaults | compositions (4.5) | `check_service_lists.sh` and `service_lists.txt` deleted; `kconfig_gen`'s string arm moves to another string knob; the `check_sim_*.sh` gates configure compositions instead of `-D` lists; `boards.md`, `architecture.md`, `invariants.md`, `porting.md` |
 | the service config, the service-kind enum, the descriptor's line numbers, the line argument of `KICKOS_UART_CONSOLE_SERVICE`, `bring_up` given no instance and the posture bit | `START` taking the instance (section 5) | `tests/unit/drvbringup/bringup_unwind.cc`'s number-mismatch and service-list cases; the size assert on the cfg |
-| the board-provider helper (formerly `kickos_add_board_provider`) and `cmake/cap_table.cmake`'s summing, with the app-capability and app-endpoint declaration helpers (formerly `kickos_declare_app_capabilities`, `kickos_declare_app_endpoints`) | root, which is the init, gets a table `KICKOS_CAP_TABLE_SUPPLY` wide, the supply admission already counts the init against; the init's endpoints are admission's `supply.budget` | the selftest gate's partials on the summed width; `architecture.md` |
+| the board-provider helper (formerly `kickos_add_board_provider`) and the configure-time cap-table summing, with the app-capability and app-endpoint declaration helpers (formerly `kickos_declare_app_capabilities`, `kickos_declare_app_endpoints`) | root, which is the init, gets a table the board's supply wide, the supply admission already counts the init against; the init's endpoints are admission's `supply.budget` | the selftest gate's partials on the summed width; `architecture.md` |
 | the pin maps, the pin-map selection knob, `pinmap.h`, `pinmux_run.cc` | a task muxes its own pins under `pinmux`; the board file states the wiring | `check_provider_alias.sh` and its fixture; `boards.md` |
 | the default init: its entry symbol (formerly `kickos_default_init`), the init-provider cache variable, the app authority macro, its default definition's source file | the composed init, authority per task | the `init_flush` host test is deleted, the walk's host tests holding the stdout drain at the ending; `check_seam_defaults.sh` loses those archives |
 | the root lowering step (formerly `kickos_root_lower`) | `kickos_root_entry` runs the constructors and calls the init, which lowers itself | the link group and `kernel/init/kmain.cc`'s reference |
@@ -613,10 +613,10 @@ endforeach()
 `_kos_link` is the tool beside the toolchain file, and `KICKOS_X86_64_LIBDIRS` the `-L` directory
 of each toolchain library, which the tool resolves every `-l` against and hands `ld` as a path.
 
-**The wrapper**, installed beside `tools/x86_64-krel.sh`, runs what the image's custom command ran,
+**The wrapper**, installed beside the toolchain file, runs what the image's custom command ran,
 in order: `tools/check-x86_64-no-got.sh` and `tools/check-x86_64-weak-undef.sh` over the
-objects and every archive, the first `ld -m i386pep` pass, the relocation directory's extract, its
-object, the second pass, and the check that the directory did not move. It passes
+objects and every archive, the pre-link, the `ld -m i386pep` link and the ELF twin a debugger
+reads. It passes
 `-b elf64-x86-64` unconditionally, and CI's probe of whether that flag is load-bearing stays;
 CI links with the toolchain's binutils 2.47, so the 2.42 path the flag exists for is not
 witnessed. It writes the map beside the image as `<TARGET>.map`, the path the gates read through

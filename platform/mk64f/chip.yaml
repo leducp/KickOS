@@ -32,6 +32,11 @@ family: none
 exits_on_fault: false
 interrupts: { count: { value: 86, ref: "Table 3-5 Interrupt vector assignments, p.76" } }
 
+apertures:
+  - { window: [0x40000000, 0x80000], ref: "Table 4-1 System memory map, AIPS0, p.170" }
+  - { window: [0x40080000, 0x7F000], ref: "Table 4-1 System memory map, AIPS1, p.170" }
+  - { window: [0x400FF000, 0x1000], ref: "Table 4-1 System memory map, GPIO, p.170" }
+
 devices:
   # Windows are what a driver uses; the gate the kernel opens is the whole slot around it.
   uart0:
@@ -52,6 +57,13 @@ devices:
     lines: { irq: { number: 58, ref: "Table 3-5 Interrupt vector assignments, p.75" } }
   # A crossbar slave behind no AIPS slot: every unprivileged thread reaches it ungranted.
   gpio: { window: [0x400FF000, 0x40], count: 5, stride: 0x40, symbol: GPIOA_BASE, ref: "GPIO memory map, p.1799" } # A to E
+
+  # The crossbar masters but the core (3.3.6.1 Crossbar Switch Master Assignments, p.86). The DMA
+  # controller and its transfer control descriptors are two slots.
+  dma: { window: [0x40008000, 0x2000], bus_master: true, ref: "Table 4-2 Peripheral bridge 0 slot assignments, p.175" }
+  usbotg: { window: [0x40072000, 0x1000], bus_master: true, ref: "Table 4-2 Peripheral bridge 0 slot assignments, p.178" }
+  sdhc: { window: [0x400B1000, 0x1000], bus_master: true, ref: "Table 4-3 Peripheral bridge 1 slot assignments, p.180" }
+  enet: { window: [0x400C0000, 0x1000], bus_master: true, ref: "Table 4-3 Peripheral bridge 1 slot assignments, p.180" }
 
   # MCR and channels 0 and 1. Channels 2 and 3 above them share the slot but not the owner.
   pit: { window: [0x40037000, 0x120], owner: kernel, ref: "Table 4-2 Peripheral bridge 0 slot assignments, p.176" }

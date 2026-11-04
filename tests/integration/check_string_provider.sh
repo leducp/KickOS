@@ -2,8 +2,9 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# Every mem*/str* function an image links has one provider, the one its rule names, read from the
-# link map: the inputs its LOAD lines name and the archive members it lists taken.
+# Every mem*/str* function an image links has one provider, the one its rule names, read from
+# each of its link maps, the final link's and each image's own: the inputs its LOAD lines name
+# and the archive members it lists taken.
 #   - no two archives of one link define the same mem*/str* name, since the link order would
 #     then pick the copy;
 #   - no KickOS archive defines one;
@@ -15,7 +16,9 @@
 #   check_string_provider.sh --self-test <cc> <ar> <nm>
 #
 # A relative LOAD path is resolved against the list's directory, the build tree each link ran in.
-# The map's headings are matched in English, as check_no_libnosys.sh's are.
+# The map's headings are matched in English, as check_no_libnosys.sh's are. A final link that
+# loads an image linked on its own and takes no libc may define no such name at all; each of its
+# images' own links must define some.
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
@@ -59,17 +62,16 @@ map_read() {
             print norm(a) "\t" m
         }' "$1" | sort -u > "$4"
     [ -s "$3" ] || return 2
-    grep -q "libkickos_kernel\.a$TAB" "$4" || return 2
+    [ "$5" = image ] || grep -q "libkickos_kernel\.a$TAB" "$4" || return 2
     return 0
 }
 
 # <map> <base> <rule>: prints each finding, status 1 when there is one. A tool that could not read
 # an input fails the run. Each input is read once per run, into $TMP/alldefs.
 judge_map() {
-    map_read "$1" "$2" "$TMP/inputs" "$TMP/taken" \
+    map_read "$1" "$2" "$TMP/inputs" "$TMP/taken" "${4:-final}" \
         || fail "$1 lists no LOAD input or no kernel archive member taken, so it was not read"
-    # x86_64's link removes the relocation object it built the image's directory from.
-    grep -vxF -- "${1%.map}.krel.o" "$TMP/inputs" > "$TMP/inputs.on" || true
+    cp "$TMP/inputs" "$TMP/inputs.on"
     grep -vxFf "$TMP/read" "$TMP/inputs.on" > "$TMP/inputs.new" || true
     while IFS= read -r _p; do
         [ -f "$_p" ] || fail "$1 loads $_p, which is not on disk"
@@ -86,6 +88,9 @@ judge_map() {
     done < "$TMP/inputs.new"
     awk -F "$TAB" 'FNR == NR { on[$0] = 1; next } $1 in on' "$TMP/inputs.on" "$TMP/alldefs" \
         | sort -u > "$TMP/defs"
+    if [ ! -s "$TMP/defs" ] && [ "${4:-final}" = final ] && [ "${5:-0}" -gt 0 ]; then
+        return 0
+    fi
     [ -s "$TMP/defs" ] || fail "$1: no input defines any mem*/str* name, so nm read nothing"
 
     awk -F "$TAB" -v rule="$3" '
@@ -239,11 +244,17 @@ BAD=0
 while IFS= read -r MAP; do
     [ -f "$MAP" ] || fail "no link map at $MAP"
     COUNT=$((COUNT + 1))
-    if ! judge_map "$MAP" "$BASE" "$RULE" > "$TMP/out"; then
-        echo "$(basename "$MAP"):" >&2
-        cat "$TMP/out" >&2
-        BAD=$((BAD + 1))
-    fi
+    image_map_set "$MAP" "$TMP/set"
+    IMAGES=$(($(wc -l < "$TMP/set") - 1))
+    KIND=final
+    while IFS= read -r ONE; do
+        if ! judge_map "$ONE" "$BASE" "$RULE" "$KIND" "$IMAGES" > "$TMP/out"; then
+            echo "$(basename "$ONE"):" >&2
+            cat "$TMP/out" >&2
+            BAD=$((BAD + 1))
+        fi
+        KIND=image
+    done < "$TMP/set"
 done < "$TMP/maps"
 if [ "$BAD" -ne 0 ]; then
     fail "$BAD of $COUNT image(s) take a mem*/str* function from other than the $RULE provider"

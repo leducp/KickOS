@@ -10,7 +10,7 @@ ends: main
 
 tasks:
   - name: main
-    entry: kickos_main
+    program: main
     priority: 2
     ceiling: 2
     authority: [memory, system, irq]

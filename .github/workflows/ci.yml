@@ -252,12 +252,17 @@ jobs:
       - run: ctest --test-dir build/sim-ubsan -LE tree --no-tests=error --output-on-failure
 
   # Build and boot the Cortex-M boards QEMU runs: the four MPS2 machines, enforcing and flat,
-  # the AN386 on the periodic scheduler tick, and the micro:bit.
+  # the AN386 on the periodic scheduler tick, and the micro:bit, one job each.
   qemu-arm:
     needs: [changes, toolchain-arm-none-eabi]
     if: needs.changes.outputs.arm == 'true'
     runs-on: ubuntu-26.04
     timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [an386, an386-tick, m33, m7, m3, flat-qemu, flat-qemu-m33, flat-qemu-m7,
+               flat-qemu-m3, microbit]
     # Allow timeout headroom for loaded runners. These QEMU targets use a coarse
     # semihosting clock; arch_idle_wait spins to keep it advancing.
     env:
@@ -270,7 +275,7 @@ jobs:
       - uses: ./.github/actions/kconfiglib
       - uses: ./.github/actions/build-tools
         with:
-          packages: cmake ninja-build qemu-system-arm curl xz-utils
+          packages: cmake ninja-build qemu-system-arm curl xz-utils gdb-multiarch
       - uses: ./.github/actions/kickos-toolchain
         with:
           family: arm-none-eabi
@@ -281,6 +286,7 @@ jobs:
       # Retry only polled ARM gates: the coarse clock and runner load can delay output.
       # Each attempt still has its own timeout.
       - name: armv7m (mps2-an386)
+        if: matrix.part == 'an386'
         run: |
           cmake --preset qemu
           cmake --build --preset qemu
@@ -290,7 +296,16 @@ jobs:
           tests/ci/ctest_named.sh 'mpu_fault|rootfault' \
             --preset qemu --no-tests=error --output-on-failure --repeat until-pass:2
           tests/ci/ctest_named.sh '^qemu_sysdefault$|qemu_sysdefault_spin|qemu_sysdefault_fault|qemu_sysdefault_no_eh_runtime|qemu_sysdefault_no_driver_path|^qemu_cxxterm$|qemu_cxxterm_eh_control|qemu_nvic' --preset qemu --no-tests=error --output-on-failure
+          # The programs' gates, which a missing gdb or emulator would SKIP, and the two systems
+          # of different pool sizes over the package's one set of kernel archives.
+          out=$(tests/ci/ctest_named.sh '^qemu_tlsprobe$|^qemu_gdb_main$|^qemu_pool_abi_two$|^qemu_pool_abi_skew$' \
+            --preset qemu --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
+          printf '%s\n' "$out"
+          case "$out" in
+            *Skipped*) echo "a required gate SKIPPED, which ctest reports as success"; exit 1 ;;
+          esac
       - name: armv7m with the periodic scheduler tick (mps2-an386)
+        if: matrix.part == 'an386-tick'
         run: |
           cmake --preset qemu-tick
           cmake --build --preset qemu-tick
@@ -300,6 +315,7 @@ jobs:
             --preset qemu-tick --no-tests=error --output-on-failure --repeat until-pass:2
       # Cover PMSAv8 on M33, the larger M7 MPU, and the soft-float M3 switch path.
       - name: armv8-m mainline (mps2-an505, Cortex-M33)
+        if: matrix.part == 'm33'
         run: |
           cmake --preset qemu-m33
           cmake --build --preset qemu-m33
@@ -317,6 +333,7 @@ jobs:
             *Skipped*) echo "a stack-limit gate SKIPPED, which ctest reports as success"; exit 1 ;;
           esac
       - name: armv7m (mps2-an500, Cortex-M7)
+        if: matrix.part == 'm7'
         run: |
           cmake --preset qemu-m7
           cmake --build --preset qemu-m7
@@ -327,6 +344,7 @@ jobs:
             --preset qemu-m7 --no-tests=error --output-on-failure --repeat until-pass:2
           tests/ci/ctest_named.sh '^qemu_m7_sysdefault$|qemu_m7_sysdefault_spin|qemu_m7_sysdefault_fault|qemu_m7_sysdefault_no_eh_runtime|qemu_m7_sysdefault_no_driver_path|^qemu_m7_cxxterm$|qemu_m7_cxxterm_eh_control|qemu_m7_nvic' --preset qemu-m7 --no-tests=error --output-on-failure
       - name: armv7m soft-float (mps2-an385, Cortex-M3)
+        if: matrix.part == 'm3'
         run: |
           cmake --preset qemu-m3
           cmake --build --preset qemu-m3
@@ -340,9 +358,12 @@ jobs:
           tests/ci/ctest_named.sh '^qemu_m3_diag_terse$|^qemu_m3_sysdefault$|qemu_m3_sysdefault_spin|qemu_m3_sysdefault_fault|qemu_m3_sysdefault_no_eh_runtime|qemu_m3_sysdefault_no_driver_path|^qemu_m3_cxxterm$|qemu_m3_cxxterm_eh_control|qemu_m3_nvic' --preset qemu-m3 --no-tests=error --output-on-failure
       # Test privilege rings with MPU enforcement disabled.
       - name: ARM ring-only run gates (no PMSA enforcement)
+        if: startsWith(matrix.part, 'flat-')
+        env:
+          PART: ${{ matrix.part }}
         run: |
           # Flat builds do not register mpu_fault or rootfault.
-          for b in qemu qemu-m33 qemu-m7 qemu-m3; do
+          for b in "${PART#flat-}"; do
             if [ "$b" = qemu-m3 ]; then
               flat_polled='hello|reclaimwit_park'
             else
@@ -371,6 +392,7 @@ jobs:
             fi
           done
       - name: armv6m (microbit)
+        if: matrix.part == 'microbit'
         run: |
           cmake --preset microbit
           cmake --build --preset microbit
@@ -396,7 +418,7 @@ jobs:
       - uses: ./.github/actions/kconfiglib
       - uses: ./.github/actions/build-tools
         with:
-          packages: cmake ninja-build qemu-system-arm curl xz-utils
+          packages: cmake ninja-build qemu-system-arm curl xz-utils gdb-multiarch
       - uses: ./.github/actions/kickos-toolchain
         with:
           family: aarch64-none-elf
@@ -410,7 +432,7 @@ jobs:
           cmake --build --preset qemu-arm64
           ctest --preset qemu-arm64 -LE tree --no-tests=error --output-on-failure
           # Require the kernel-stack and TLS tests for this architecture, and the default system's.
-          out=$(tests/ci/ctest_named.sh 'death_stack_seating|no_privileged_tls|qemu_arm64_tlsprobe|qemu_arm64_uaccess|qemu_arm64_sysdefault_no_eh_runtime|qemu_arm64_sysdefault_no_driver_path|^qemu_arm64_sysdefault$|qemu_arm64_sysdefault_spin|qemu_arm64_sysdefault_fault|qemu_arm64_system_link_none|qemu_arm64_system_link_two|qemu_arm64_system_link_entry|qemu_arm64_system_link_refused|qemu_arm64_system_link_notool|qemu_arm64_system_link_nocc|qemu_arm64_system_link_rerun|qemu_arm64_system_link_noheap|qemu_arm64_system_link_stack' \
+          out=$(tests/ci/ctest_named.sh 'death_stack_seating|no_privileged_tls|qemu_arm64_gdb_space|qemu_arm64_tlsprobe|qemu_arm64_uaccess|qemu_arm64_sysdefault_no_eh_runtime|qemu_arm64_sysdefault_no_driver_path|^qemu_arm64_sysdefault$|qemu_arm64_sysdefault_spin|qemu_arm64_sysdefault_fault|qemu_arm64_system_link_none|qemu_arm64_system_link_two|qemu_arm64_system_link_program|qemu_arm64_system_link_refused|qemu_arm64_system_link_notool|qemu_arm64_system_link_nocc|qemu_arm64_system_link_rerun|qemu_arm64_system_link_noheap|qemu_arm64_system_link_stack' \
             --preset qemu-arm64 --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
           case "$out" in
@@ -461,7 +483,7 @@ jobs:
           cmake --build --preset qemu-arm64-smp
           ctest --preset qemu-arm64-smp -LE tree --no-tests=error --output-on-failure
           # Require tests that depend on the configured core count, and the default system's.
-          out=$(tests/ci/ctest_named.sh 'qemu_arm64_uaccess|qemu_arm64_smp_arrival|qemu_arm64_smp_doorbell|qemu_arm64_smp_threads|qemu_arm64_slaypeer|qemu_arm64_deadstack|qemu_arm64_golden_system|qemu_arm64_restart_witness|qemu_arm64_line_taker|qemu_arm64_driver_restart|qemu_arm64_driver_line|qemu_arm64_console_restart|^qemu_arm64_sysdefault$|qemu_arm64_sysdefault_spin|qemu_arm64_sysdefault_fault|qemu_arm64_system_link_none|qemu_arm64_system_link_two|qemu_arm64_system_link_entry|qemu_arm64_system_link_refused|qemu_arm64_system_link_notool|qemu_arm64_system_link_nocc|qemu_arm64_system_link_rerun|qemu_arm64_system_link_noheap|qemu_arm64_system_link_stack' \
+          out=$(tests/ci/ctest_named.sh 'qemu_arm64_uaccess|qemu_arm64_smp_arrival|qemu_arm64_smp_doorbell|qemu_arm64_smp_threads|qemu_arm64_slaypeer|qemu_arm64_deadstack|qemu_arm64_golden_system|qemu_arm64_restart_witness|qemu_arm64_line_taker|qemu_arm64_driver_restart|qemu_arm64_driver_line|qemu_arm64_console_restart|^qemu_arm64_sysdefault$|qemu_arm64_sysdefault_spin|qemu_arm64_sysdefault_fault|qemu_arm64_system_link_none|qemu_arm64_system_link_two|qemu_arm64_system_link_program|qemu_arm64_system_link_refused|qemu_arm64_system_link_notool|qemu_arm64_system_link_nocc|qemu_arm64_system_link_rerun|qemu_arm64_system_link_noheap|qemu_arm64_system_link_stack' \
             --preset qemu-arm64-smp --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
           case "$out" in
@@ -479,7 +501,7 @@ jobs:
           fi
           cmake --build --preset qemu-arm64-smpiso
           ctest --preset qemu-arm64-smpiso -LE tree --no-tests=error --output-on-failure
-          out=$(tests/ci/ctest_named.sh 'isolated_cores|qemu_arm64_selftest|^qemu_arm64_sysdefault$|qemu_arm64_sysdefault_spin|qemu_arm64_sysdefault_fault|qemu_arm64_system_link_none|qemu_arm64_system_link_two|qemu_arm64_system_link_entry|qemu_arm64_system_link_refused|qemu_arm64_system_link_notool|qemu_arm64_system_link_nocc|qemu_arm64_system_link_rerun|qemu_arm64_system_link_noheap|qemu_arm64_system_link_stack' \
+          out=$(tests/ci/ctest_named.sh 'isolated_cores|qemu_arm64_selftest|^qemu_arm64_sysdefault$|qemu_arm64_sysdefault_spin|qemu_arm64_sysdefault_fault|qemu_arm64_system_link_none|qemu_arm64_system_link_two|qemu_arm64_system_link_program|qemu_arm64_system_link_refused|qemu_arm64_system_link_notool|qemu_arm64_system_link_nocc|qemu_arm64_system_link_rerun|qemu_arm64_system_link_noheap|qemu_arm64_system_link_stack' \
             --preset qemu-arm64-smpiso --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
           case "$out" in
@@ -561,7 +583,7 @@ jobs:
           cmake --build --preset qemu-arm64-gicv3
           ctest --preset qemu-arm64-gicv3 -LE tree --no-tests=error --output-on-failure
           # Require tests that depend on the configured kernel-core count, and the default system's.
-          out=$(tests/ci/ctest_named.sh 'qemu_arm64_uaccess|qemu_arm64_smp_arrival|qemu_arm64_smp_doorbell|qemu_arm64_smp_threads|qemu_arm64_slaypeer|^qemu_arm64_sysdefault$|qemu_arm64_sysdefault_spin|qemu_arm64_sysdefault_fault|qemu_arm64_system_link_none|qemu_arm64_system_link_two|qemu_arm64_system_link_entry|qemu_arm64_system_link_refused|qemu_arm64_system_link_notool|qemu_arm64_system_link_nocc|qemu_arm64_system_link_rerun|qemu_arm64_system_link_noheap|qemu_arm64_system_link_stack' \
+          out=$(tests/ci/ctest_named.sh 'qemu_arm64_uaccess|qemu_arm64_smp_arrival|qemu_arm64_smp_doorbell|qemu_arm64_smp_threads|qemu_arm64_slaypeer|^qemu_arm64_sysdefault$|qemu_arm64_sysdefault_spin|qemu_arm64_sysdefault_fault|qemu_arm64_system_link_none|qemu_arm64_system_link_two|qemu_arm64_system_link_program|qemu_arm64_system_link_refused|qemu_arm64_system_link_notool|qemu_arm64_system_link_nocc|qemu_arm64_system_link_rerun|qemu_arm64_system_link_noheap|qemu_arm64_system_link_stack' \
             --preset qemu-arm64-gicv3 --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
           case "$out" in
@@ -599,7 +621,7 @@ jobs:
           . ./.github/scripts/amp-pin.sh build/qemu-arm64-amp 0 shared 4
           cmake --build --preset qemu-arm64-amp
           ctest --preset qemu-arm64-amp -LE tree --no-tests=error --output-on-failure
-          out=$(tests/ci/ctest_named.sh 'ipi_fence|qemu_arm64_selftest|^qemu_arm64_sysdefault$|qemu_arm64_sysdefault_spin|qemu_arm64_sysdefault_fault|qemu_arm64_system_link_none|qemu_arm64_system_link_two|qemu_arm64_system_link_entry|qemu_arm64_system_link_refused|qemu_arm64_system_link_notool|qemu_arm64_system_link_nocc|qemu_arm64_system_link_rerun|qemu_arm64_system_link_noheap|qemu_arm64_system_link_stack' \
+          out=$(tests/ci/ctest_named.sh 'ipi_fence|qemu_arm64_selftest|^qemu_arm64_sysdefault$|qemu_arm64_sysdefault_spin|qemu_arm64_sysdefault_fault|qemu_arm64_system_link_none|qemu_arm64_system_link_two|qemu_arm64_system_link_program|qemu_arm64_system_link_refused|qemu_arm64_system_link_notool|qemu_arm64_system_link_nocc|qemu_arm64_system_link_rerun|qemu_arm64_system_link_noheap|qemu_arm64_system_link_stack' \
             --preset qemu-arm64-amp --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
           case "$out" in
@@ -612,7 +634,7 @@ jobs:
           cmake --build --preset qemu-arm64-amp2-n0
           # These tests build the peer and merged partition, then run both kernels.
           ctest --preset qemu-arm64-amp2-n0 -LE tree --no-tests=error --output-on-failure
-          out=$(tests/ci/ctest_named.sh '^amp_partition$|^amp_peer_arms$|amp_peer_arms_controls|ipi_fence|^qemu_arm64_sysdefault$|qemu_arm64_sysdefault_spin|qemu_arm64_sysdefault_fault|qemu_arm64_system_link_none|qemu_arm64_system_link_two|qemu_arm64_system_link_entry|qemu_arm64_system_link_refused|qemu_arm64_system_link_notool|qemu_arm64_system_link_nocc|qemu_arm64_system_link_rerun|qemu_arm64_system_link_noheap|qemu_arm64_system_link_stack' \
+          out=$(tests/ci/ctest_named.sh '^amp_partition$|^amp_peer_arms$|amp_peer_arms_controls|ipi_fence|^qemu_arm64_sysdefault$|qemu_arm64_sysdefault_spin|qemu_arm64_sysdefault_fault|qemu_arm64_system_link_none|qemu_arm64_system_link_two|qemu_arm64_system_link_program|qemu_arm64_system_link_refused|qemu_arm64_system_link_notool|qemu_arm64_system_link_nocc|qemu_arm64_system_link_rerun|qemu_arm64_system_link_noheap|qemu_arm64_system_link_stack' \
             --preset qemu-arm64-amp2-n0 --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
           case "$out" in
@@ -625,7 +647,7 @@ jobs:
           . ./.github/scripts/amp-pin.sh build/qemu-arm64-amp2-n1 1 own 2
           cmake --build --preset qemu-arm64-amp2-n1
           ctest --preset qemu-arm64-amp2-n1 -LE tree --no-tests=error --output-on-failure
-          out=$(tests/ci/ctest_named.sh '^qemu_arm64_sysdefault$|qemu_arm64_sysdefault_spin|qemu_arm64_sysdefault_fault|qemu_arm64_system_link_none|qemu_arm64_system_link_two|qemu_arm64_system_link_entry|qemu_arm64_system_link_refused|qemu_arm64_system_link_notool|qemu_arm64_system_link_nocc|qemu_arm64_system_link_rerun|qemu_arm64_system_link_noheap|qemu_arm64_system_link_stack' \
+          out=$(tests/ci/ctest_named.sh '^qemu_arm64_sysdefault$|qemu_arm64_sysdefault_spin|qemu_arm64_sysdefault_fault|qemu_arm64_system_link_none|qemu_arm64_system_link_two|qemu_arm64_system_link_program|qemu_arm64_system_link_refused|qemu_arm64_system_link_notool|qemu_arm64_system_link_nocc|qemu_arm64_system_link_rerun|qemu_arm64_system_link_noheap|qemu_arm64_system_link_stack' \
             --preset qemu-arm64-amp2-n1 --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
           case "$out" in
@@ -678,7 +700,7 @@ jobs:
           cmake --preset qemu-riscv-flat
           cmake --build --preset qemu-riscv-flat
           ctest --preset qemu-riscv-flat -LE tree --no-tests=error --output-on-failure
-          out=$(tests/ci/ctest_named.sh '^qemu_riscv_sysdefault$|qemu_riscv_sysdefault_spin|qemu_riscv_sysdefault_fault|qemu_riscv_sysdefault_no_eh_runtime|qemu_riscv_sysdefault_no_driver_path|^qemu_riscv_cxxterm$|qemu_riscv_cxxterm_eh_control|qemu_riscv_system_link_none|qemu_riscv_system_link_two|qemu_riscv_system_link_entry|qemu_riscv_system_link_refused|qemu_riscv_system_link_notool|qemu_riscv_system_link_nocc|qemu_riscv_system_link_rerun|qemu_riscv_system_link_noheap|qemu_riscv_system_link_stack|qemu_riscv_system_link_arena' \
+          out=$(tests/ci/ctest_named.sh '^qemu_riscv_sysdefault$|qemu_riscv_sysdefault_spin|qemu_riscv_sysdefault_fault|qemu_riscv_sysdefault_no_eh_runtime|qemu_riscv_sysdefault_no_driver_path|^qemu_riscv_cxxterm$|qemu_riscv_cxxterm_eh_control|qemu_riscv_system_link_none|qemu_riscv_system_link_two|qemu_riscv_system_link_program|qemu_riscv_system_link_refused|qemu_riscv_system_link_notool|qemu_riscv_system_link_nocc|qemu_riscv_system_link_rerun|qemu_riscv_system_link_noheap|qemu_riscv_system_link_stack|qemu_riscv_system_link_arena' \
             --preset qemu-riscv-flat --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
           case "$out" in
@@ -690,7 +712,7 @@ jobs:
           cmake --preset esp32c6-wroom
           cmake --build --preset esp32c6-wroom
           ctest --test-dir build/esp32c6-wroom -L host -LE tree --no-tests=error --output-on-failure
-          out=$(tests/ci/ctest_named.sh 'esp32c6_wroom_system_link_none|esp32c6_wroom_system_link_two|esp32c6_wroom_system_link_entry|esp32c6_wroom_system_link_refused|esp32c6_wroom_system_link_notool|esp32c6_wroom_system_link_nocc|esp32c6_wroom_system_link_rerun|esp32c6_wroom_system_link_noheap|esp32c6_wroom_system_link_stack|esp32c6_wroom_system_link_arena|esp32c6_wroom_system_link_heap' \
+          out=$(tests/ci/ctest_named.sh 'esp32c6_wroom_system_link_none|esp32c6_wroom_system_link_two|esp32c6_wroom_system_link_program|esp32c6_wroom_system_link_refused|esp32c6_wroom_system_link_notool|esp32c6_wroom_system_link_nocc|esp32c6_wroom_system_link_rerun|esp32c6_wroom_system_link_noheap|esp32c6_wroom_system_link_stack|esp32c6_wroom_system_link_arena|esp32c6_wroom_system_link_heap' \
             --test-dir build/esp32c6-wroom --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
           case "$out" in
@@ -699,7 +721,7 @@ jobs:
           cmake --preset esp32c6-wroom-flat
           cmake --build --preset esp32c6-wroom-flat
           ctest --test-dir build/esp32c6-wroom-flat -L host -LE tree --no-tests=error --output-on-failure
-          out=$(tests/ci/ctest_named.sh 'esp32c6_wroom_system_link_none|esp32c6_wroom_system_link_two|esp32c6_wroom_system_link_entry|esp32c6_wroom_system_link_refused|esp32c6_wroom_system_link_notool|esp32c6_wroom_system_link_nocc|esp32c6_wroom_system_link_rerun|esp32c6_wroom_system_link_noheap|esp32c6_wroom_system_link_stack|esp32c6_wroom_system_link_arena' \
+          out=$(tests/ci/ctest_named.sh 'esp32c6_wroom_system_link_none|esp32c6_wroom_system_link_two|esp32c6_wroom_system_link_program|esp32c6_wroom_system_link_refused|esp32c6_wroom_system_link_notool|esp32c6_wroom_system_link_nocc|esp32c6_wroom_system_link_rerun|esp32c6_wroom_system_link_noheap|esp32c6_wroom_system_link_stack|esp32c6_wroom_system_link_arena' \
             --test-dir build/esp32c6-wroom-flat --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
           case "$out" in
@@ -709,7 +731,7 @@ jobs:
           cmake --preset esp32c6-wroom-bench
           cmake --build --preset esp32c6-wroom-bench
           ctest --test-dir build/esp32c6-wroom-bench -L host -LE tree --no-tests=error --output-on-failure
-          out=$(tests/ci/ctest_named.sh 'esp32c6_wroom_system_link_none|esp32c6_wroom_system_link_two|esp32c6_wroom_system_link_entry|esp32c6_wroom_system_link_refused|esp32c6_wroom_system_link_notool|esp32c6_wroom_system_link_nocc|esp32c6_wroom_system_link_rerun|esp32c6_wroom_system_link_noheap|esp32c6_wroom_system_link_stack|esp32c6_wroom_system_link_arena|esp32c6_wroom_system_link_heap' \
+          out=$(tests/ci/ctest_named.sh 'esp32c6_wroom_system_link_none|esp32c6_wroom_system_link_two|esp32c6_wroom_system_link_program|esp32c6_wroom_system_link_refused|esp32c6_wroom_system_link_notool|esp32c6_wroom_system_link_nocc|esp32c6_wroom_system_link_rerun|esp32c6_wroom_system_link_noheap|esp32c6_wroom_system_link_stack|esp32c6_wroom_system_link_arena|esp32c6_wroom_system_link_heap' \
             --test-dir build/esp32c6-wroom-bench --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
           case "$out" in
@@ -719,7 +741,7 @@ jobs:
           cmake --preset esp32c6-wroom-amp2-n0
           cmake --build --preset esp32c6-wroom-amp2-n0 --target amp_partition kickos_system_default_table
           ctest --test-dir build/esp32c6-wroom-amp2-n0 -L host -LE tree --no-tests=error --output-on-failure
-          out=$(tests/ci/ctest_named.sh 'esp32c6_wroom_system_link_none|esp32c6_wroom_system_link_two|esp32c6_wroom_system_link_entry|esp32c6_wroom_system_link_refused|esp32c6_wroom_system_link_notool|esp32c6_wroom_system_link_nocc|esp32c6_wroom_system_link_rerun|esp32c6_wroom_system_link_noheap|esp32c6_wroom_system_link_stack|esp32c6_wroom_system_link_arena' \
+          out=$(tests/ci/ctest_named.sh 'esp32c6_wroom_system_link_none|esp32c6_wroom_system_link_two|esp32c6_wroom_system_link_program|esp32c6_wroom_system_link_refused|esp32c6_wroom_system_link_notool|esp32c6_wroom_system_link_nocc|esp32c6_wroom_system_link_rerun|esp32c6_wroom_system_link_noheap|esp32c6_wroom_system_link_stack|esp32c6_wroom_system_link_arena' \
             --test-dir build/esp32c6-wroom-amp2-n0 --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
           case "$out" in
@@ -728,7 +750,7 @@ jobs:
           cmake --preset esp32c6-wroom-amp2-n1
           cmake --build --preset esp32c6-wroom-amp2-n1
           ctest --test-dir build/esp32c6-wroom-amp2-n1 -L host -LE tree --no-tests=error --output-on-failure
-          out=$(tests/ci/ctest_named.sh 'esp32c6_wroom_system_link_none|esp32c6_wroom_system_link_two|esp32c6_wroom_system_link_entry|esp32c6_wroom_system_link_refused|esp32c6_wroom_system_link_notool|esp32c6_wroom_system_link_nocc|esp32c6_wroom_system_link_rerun|esp32c6_wroom_system_link_noheap|esp32c6_wroom_system_link_stack|esp32c6_wroom_system_link_arena' \
+          out=$(tests/ci/ctest_named.sh 'esp32c6_wroom_system_link_none|esp32c6_wroom_system_link_two|esp32c6_wroom_system_link_program|esp32c6_wroom_system_link_refused|esp32c6_wroom_system_link_notool|esp32c6_wroom_system_link_nocc|esp32c6_wroom_system_link_rerun|esp32c6_wroom_system_link_noheap|esp32c6_wroom_system_link_stack|esp32c6_wroom_system_link_arena' \
             --test-dir build/esp32c6-wroom-amp2-n1 --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
           case "$out" in
@@ -737,7 +759,7 @@ jobs:
           cmake --preset qemu-riscv-bench
           cmake --build --preset qemu-riscv-bench
           ctest --test-dir build/qemu-riscv-bench -L host -LE tree --no-tests=error --output-on-failure
-          out=$(tests/ci/ctest_named.sh 'qemu_riscv_system_link_none|qemu_riscv_system_link_two|qemu_riscv_system_link_entry|qemu_riscv_system_link_refused|qemu_riscv_system_link_notool|qemu_riscv_system_link_nocc|qemu_riscv_system_link_rerun|qemu_riscv_system_link_noheap|qemu_riscv_system_link_stack|qemu_riscv_system_link_arena' \
+          out=$(tests/ci/ctest_named.sh 'qemu_riscv_system_link_none|qemu_riscv_system_link_two|qemu_riscv_system_link_program|qemu_riscv_system_link_refused|qemu_riscv_system_link_notool|qemu_riscv_system_link_nocc|qemu_riscv_system_link_rerun|qemu_riscv_system_link_noheap|qemu_riscv_system_link_stack|qemu_riscv_system_link_arena' \
             --test-dir build/qemu-riscv-bench --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
           case "$out" in
@@ -761,7 +783,7 @@ jobs:
       - uses: ./.github/actions/kconfiglib
       - uses: ./.github/actions/build-tools
         with:
-          packages: cmake ninja-build qemu-system-riscv curl xz-utils
+          packages: cmake ninja-build qemu-system-riscv curl xz-utils gdb-multiarch
       - uses: ./.github/actions/kickos-toolchain
         with:
           family: riscv64-none-elf
@@ -775,7 +797,7 @@ jobs:
           cmake --build --preset qemu-riscv
           ctest --preset qemu-riscv -LE tree --no-tests=error --output-on-failure
           # Require tests that depend on PMP enforcement, the witnesses and the default system's.
-          out=$(tests/ci/ctest_named.sh 'mpu_fault|rootfault|qemu_riscv_restart_witness|qemu_riscv_init_priority|qemu_riscv_driver_restart|^qemu_riscv_sysdefault$|qemu_riscv_sysdefault_spin|qemu_riscv_sysdefault_fault|qemu_riscv_system_link_none|qemu_riscv_system_link_two|qemu_riscv_system_link_entry|qemu_riscv_system_link_refused|qemu_riscv_system_link_notool|qemu_riscv_system_link_nocc|qemu_riscv_system_link_rerun|qemu_riscv_system_link_noheap|qemu_riscv_system_link_stack|qemu_riscv_system_link_arena|qemu_riscv_system_link_heap' \
+          out=$(tests/ci/ctest_named.sh 'mpu_fault|rootfault|qemu_riscv_restart_witness|qemu_riscv_init_priority|qemu_riscv_driver_restart|^qemu_riscv_sysdefault$|qemu_riscv_sysdefault_spin|qemu_riscv_sysdefault_fault|qemu_riscv_system_link_none|qemu_riscv_system_link_two|qemu_riscv_system_link_program|qemu_riscv_system_link_refused|qemu_riscv_system_link_notool|qemu_riscv_system_link_nocc|qemu_riscv_system_link_rerun|qemu_riscv_system_link_noheap|qemu_riscv_system_link_stack|qemu_riscv_system_link_arena|qemu_riscv_system_link_heap|^qemu_riscv_tlsprobe$|^qemu_riscv_gdb_main$' \
             --preset qemu-riscv --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
           case "$out" in
@@ -798,7 +820,7 @@ jobs:
       - uses: ./.github/actions/kconfiglib
       - uses: ./.github/actions/build-tools
         with:
-          packages: cmake ninja-build qemu-system-riscv curl xz-utils
+          packages: cmake ninja-build qemu-system-riscv curl xz-utils gdb-multiarch
       - uses: ./.github/actions/kickos-toolchain
         with:
           family: riscv64-none-elf
@@ -812,7 +834,7 @@ jobs:
           cmake --build --preset qemu-riscv64
           ctest --preset qemu-riscv64 -LE tree --no-tests=error --output-on-failure
           # Require tests that depend on memory enforcement, and the default system's.
-          out=$(tests/ci/ctest_named.sh 'rootfault|qemu_riscv64_uaccess|qemu_riscv64_sysdefault_no_eh_runtime|qemu_riscv64_sysdefault_no_driver_path|^qemu_riscv64_cxxterm$|qemu_riscv64_cxxterm_eh_control|^qemu_riscv64_sysdefault$|qemu_riscv64_sysdefault_spin|qemu_riscv64_sysdefault_fault|qemu_riscv64_system_link_none|qemu_riscv64_system_link_two|qemu_riscv64_system_link_entry|qemu_riscv64_system_link_refused|qemu_riscv64_system_link_notool|qemu_riscv64_system_link_nocc|qemu_riscv64_system_link_rerun|qemu_riscv64_system_link_noheap' \
+          out=$(tests/ci/ctest_named.sh 'rootfault|qemu_riscv64_gdb_space|qemu_riscv64_uaccess|qemu_riscv64_sysdefault_no_eh_runtime|qemu_riscv64_sysdefault_no_driver_path|^qemu_riscv64_cxxterm$|qemu_riscv64_cxxterm_eh_control|^qemu_riscv64_sysdefault$|qemu_riscv64_sysdefault_spin|qemu_riscv64_sysdefault_fault|qemu_riscv64_system_link_none|qemu_riscv64_system_link_two|qemu_riscv64_system_link_program|qemu_riscv64_system_link_refused|qemu_riscv64_system_link_notool|qemu_riscv64_system_link_nocc|qemu_riscv64_system_link_rerun|qemu_riscv64_system_link_noheap' \
             --preset qemu-riscv64 --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
           case "$out" in
@@ -823,7 +845,7 @@ jobs:
           cmake --preset qemu-riscv64-sv48
           cmake --build --preset qemu-riscv64-sv48
           ctest --preset qemu-riscv64-sv48 -LE tree --no-tests=error --output-on-failure
-          out=$(tests/ci/ctest_named.sh '^qemu_riscv64_sysdefault$|qemu_riscv64_sysdefault_spin|qemu_riscv64_sysdefault_fault|qemu_riscv64_system_link_none|qemu_riscv64_system_link_two|qemu_riscv64_system_link_entry|qemu_riscv64_system_link_refused|qemu_riscv64_system_link_notool|qemu_riscv64_system_link_nocc|qemu_riscv64_system_link_rerun|qemu_riscv64_system_link_noheap' \
+          out=$(tests/ci/ctest_named.sh '^qemu_riscv64_sysdefault$|qemu_riscv64_sysdefault_spin|qemu_riscv64_sysdefault_fault|qemu_riscv64_system_link_none|qemu_riscv64_system_link_two|qemu_riscv64_system_link_program|qemu_riscv64_system_link_refused|qemu_riscv64_system_link_notool|qemu_riscv64_system_link_nocc|qemu_riscv64_system_link_rerun|qemu_riscv64_system_link_noheap' \
             --preset qemu-riscv64-sv48 --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
           case "$out" in
@@ -835,7 +857,7 @@ jobs:
           cmake --build --preset qemu-riscv64-smp
           ctest --preset qemu-riscv64-smp -LE tree --no-tests=error --output-on-failure
           # Require tests that depend on the hart count.
-          out=$(tests/ci/ctest_named.sh 'smp_threads|taskleave|slaypeer|qemu_riscv64_uaccess|qemu_riscv64_deadstack|^qemu_riscv64_sysdefault$|qemu_riscv64_sysdefault_spin|qemu_riscv64_sysdefault_fault|qemu_riscv64_system_link_none|qemu_riscv64_system_link_two|qemu_riscv64_system_link_entry|qemu_riscv64_system_link_refused|qemu_riscv64_system_link_notool|qemu_riscv64_system_link_nocc|qemu_riscv64_system_link_rerun|qemu_riscv64_system_link_noheap' \
+          out=$(tests/ci/ctest_named.sh 'smp_threads|taskleave|slaypeer|qemu_riscv64_uaccess|qemu_riscv64_deadstack|^qemu_riscv64_sysdefault$|qemu_riscv64_sysdefault_spin|qemu_riscv64_sysdefault_fault|qemu_riscv64_system_link_none|qemu_riscv64_system_link_two|qemu_riscv64_system_link_program|qemu_riscv64_system_link_refused|qemu_riscv64_system_link_notool|qemu_riscv64_system_link_nocc|qemu_riscv64_system_link_rerun|qemu_riscv64_system_link_noheap' \
             --preset qemu-riscv64-smp --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
           case "$out" in
@@ -843,7 +865,7 @@ jobs:
           esac
 
   # Boot PE32+ through OVMF, linked by the KickOS toolchain's x86_64-elf ld under i386pep.
-  # Require firmware and mtools so image tests cannot silently skip.
+  # Require firmware, mtools and gdb-multiarch so image tests cannot silently skip.
   qemu-x86_64:
     needs: [changes, toolchain-x86_64-elf]
     if: needs.changes.outputs.x86 == 'true'
@@ -857,7 +879,7 @@ jobs:
       - uses: ./.github/actions/kconfiglib
       - uses: ./.github/actions/build-tools
         with:
-          packages: cmake ninja-build g++ qemu-system-x86 ovmf mtools
+          packages: cmake ninja-build g++ qemu-system-x86 ovmf mtools gdb-multiarch
       - uses: ./.github/actions/kickos-toolchain
         with:
           family: x86_64-elf
@@ -892,11 +914,11 @@ jobs:
           case "$out" in
             *Skipped*) echo "a gate SKIPPED, which ctest reports as success"; exit 1 ;;
           esac
-          # Require the architecture-specific boot checks.
-          tests/ci/ctest_named.sh 'x86_64_no_vector|x86_64_entry_cld|x86_64_weak_undef_selftest' \
+          # Require the architecture-specific boot checks and the debugger's view of the images.
+          tests/ci/ctest_named.sh 'x86_64_no_vector|x86_64_entry_cld|x86_64_weak_undef_selftest|^qemu_x86_64_gdb_space$' \
             --preset qemu-x86_64 --no-tests=error --output-on-failure
           # Require the default system's gates.
-          out=$(tests/ci/ctest_named.sh '^qemu_x86_64_sysdefault$|qemu_x86_64_sysdefault_spin|qemu_x86_64_sysdefault_fault|qemu_x86_64_sysdefault_no_eh_runtime|qemu_x86_64_sysdefault_no_driver_path|^qemu_x86_64_cxxterm$|qemu_x86_64_cxxterm_eh_control|qemu_x86_64_system_link_none|qemu_x86_64_system_link_two|qemu_x86_64_system_link_entry|qemu_x86_64_system_link_refused|qemu_x86_64_system_link_notool|qemu_x86_64_system_link_nocc|qemu_x86_64_system_link_rerun|qemu_x86_64_system_link_noheap' \
+          out=$(tests/ci/ctest_named.sh '^qemu_x86_64_sysdefault$|qemu_x86_64_sysdefault_spin|qemu_x86_64_sysdefault_fault|qemu_x86_64_sysdefault_no_eh_runtime|qemu_x86_64_sysdefault_no_driver_path|^qemu_x86_64_cxxterm$|qemu_x86_64_cxxterm_eh_control|qemu_x86_64_system_link_none|qemu_x86_64_system_link_two|qemu_x86_64_system_link_program|qemu_x86_64_system_link_refused|qemu_x86_64_system_link_notool|qemu_x86_64_system_link_nocc|qemu_x86_64_system_link_rerun|qemu_x86_64_system_link_noheap' \
             --preset qemu-x86_64 --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
           case "$out" in
@@ -945,7 +967,7 @@ jobs:
           ctest --test-dir build/qemu-x86_64-smp2 -LE tree --no-tests=error --output-on-failure
           # Require the golden system, the default system's and the out-of-tree app's gates, and the
           # peer-core read of a dead thread's stack.
-          out=$(tests/ci/ctest_named.sh 'qemu_x86_64_golden_system|qemu_x86_64_deadstack|qemu_x86_64_restart_witness|^qemu_x86_64_sysdefault$|qemu_x86_64_sysdefault_spin|qemu_x86_64_sysdefault_fault|qemu_x86_64_oot_mcu_app|qemu_x86_64_system_link_none|qemu_x86_64_system_link_two|qemu_x86_64_system_link_entry|qemu_x86_64_system_link_refused|qemu_x86_64_system_link_notool|qemu_x86_64_system_link_nocc|qemu_x86_64_system_link_rerun|qemu_x86_64_system_link_noheap' \
+          out=$(tests/ci/ctest_named.sh 'qemu_x86_64_golden_system|qemu_x86_64_deadstack|qemu_x86_64_restart_witness|^qemu_x86_64_sysdefault$|qemu_x86_64_sysdefault_spin|qemu_x86_64_sysdefault_fault|qemu_x86_64_oot_mcu_app|qemu_x86_64_system_link_none|qemu_x86_64_system_link_two|qemu_x86_64_system_link_program|qemu_x86_64_system_link_refused|qemu_x86_64_system_link_notool|qemu_x86_64_system_link_nocc|qemu_x86_64_system_link_rerun|qemu_x86_64_system_link_noheap' \
             --test-dir build/qemu-x86_64-smp2 --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
           case "$out" in
@@ -1012,19 +1034,19 @@ jobs:
           cmake --preset esp32-wroom
           cmake --build --preset esp32-wroom
           ctest --test-dir build/esp32-wroom -L host -LE tree --no-tests=error --output-on-failure
-          tests/ci/ctest_named.sh 'esp32_wroom_system_link_none|esp32_wroom_system_link_two|esp32_wroom_system_link_entry|esp32_wroom_system_link_refused|esp32_wroom_system_link_notool|esp32_wroom_system_link_nocc|esp32_wroom_system_link_rerun|esp32_wroom_system_link_noheap' --test-dir build/esp32-wroom --no-tests=error --output-on-failure
+          tests/ci/ctest_named.sh 'esp32_wroom_system_link_none|esp32_wroom_system_link_two|esp32_wroom_system_link_program|esp32_wroom_system_link_refused|esp32_wroom_system_link_notool|esp32_wroom_system_link_nocc|esp32_wroom_system_link_rerun|esp32_wroom_system_link_noheap' --test-dir build/esp32-wroom --no-tests=error --output-on-failure
       - name: xtensa lx6 on both cores
         run: |
           cmake --preset esp32-wroom-smp
           cmake --build --preset esp32-wroom-smp
           ctest --test-dir build/esp32-wroom-smp -L host -LE tree --no-tests=error --output-on-failure
-          tests/ci/ctest_named.sh 'esp32_wroom_system_link_none|esp32_wroom_system_link_two|esp32_wroom_system_link_entry|esp32_wroom_system_link_refused|esp32_wroom_system_link_notool|esp32_wroom_system_link_nocc|esp32_wroom_system_link_rerun|esp32_wroom_system_link_noheap' --test-dir build/esp32-wroom-smp --no-tests=error --output-on-failure
+          tests/ci/ctest_named.sh 'esp32_wroom_system_link_none|esp32_wroom_system_link_two|esp32_wroom_system_link_program|esp32_wroom_system_link_refused|esp32_wroom_system_link_notool|esp32_wroom_system_link_nocc|esp32_wroom_system_link_rerun|esp32_wroom_system_link_noheap' --test-dir build/esp32-wroom-smp --no-tests=error --output-on-failure
       - name: xtensa lx6 + bench config
         run: |
           cmake --preset esp32-wroom-bench
           cmake --build --preset esp32-wroom-bench
           ctest --test-dir build/esp32-wroom-bench -L host -LE tree --no-tests=error --output-on-failure
-          tests/ci/ctest_named.sh 'esp32_wroom_system_link_none|esp32_wroom_system_link_two|esp32_wroom_system_link_entry|esp32_wroom_system_link_refused|esp32_wroom_system_link_notool|esp32_wroom_system_link_nocc|esp32_wroom_system_link_rerun|esp32_wroom_system_link_noheap' --test-dir build/esp32-wroom-bench --no-tests=error --output-on-failure
+          tests/ci/ctest_named.sh 'esp32_wroom_system_link_none|esp32_wroom_system_link_two|esp32_wroom_system_link_program|esp32_wroom_system_link_refused|esp32_wroom_system_link_notool|esp32_wroom_system_link_nocc|esp32_wroom_system_link_rerun|esp32_wroom_system_link_noheap' --test-dir build/esp32-wroom-bench --no-tests=error --output-on-failure
           cmake --preset esp32-wroom-benchsmp
           cmake --build --preset esp32-wroom-benchsmp
           ctest --test-dir build/esp32-wroom-benchsmp -L host -LE tree --no-tests=error --output-on-failure
@@ -1055,7 +1077,7 @@ jobs:
           cmake --preset "$PRESET"
           cmake --build --preset "$PRESET"
           ctest --test-dir "build/$PRESET" -L host -LE tree --no-tests=error --output-on-failure
-          names='rx72m_system_link_none|rx72m_system_link_two|rx72m_system_link_entry|rx72m_system_link_refused|rx72m_system_link_notool|rx72m_system_link_nocc|rx72m_system_link_rerun|rx72m_system_link_noheap'
+          names='rx72m_system_link_none|rx72m_system_link_two|rx72m_system_link_program|rx72m_system_link_refused|rx72m_system_link_notool|rx72m_system_link_nocc|rx72m_system_link_rerun|rx72m_system_link_noheap'
           # The heap arm is an enforcing build's.
           if [ "$PRESET" != rx72m-flat ]; then
             names="$names|rx72m_system_link_heap"
@@ -1074,10 +1096,8 @@ jobs:
         preset: [frdmk64f-flat, f411disco-flat, blackpill-flat, bluepill-c8, picopi-flat,
                  f302nucleo, due, xmc4800-relax-flat, qemu-telem, teensy41-flat,
                  pizero2350-flat]
-        # The two boards whose suite needs pools of its own build that provisioning too.
+        # The board whose suite needs pools of its own builds that provisioning too.
         include:
-          - preset: bluepill-c8
-            st: bluepill-c8-st
           - preset: f302nucleo
             st: f302nucleo-st
     steps:
@@ -1099,17 +1119,17 @@ jobs:
           # The system link gates <preset> registers: its default composition's refusals.
           links() { # <preset>
             case "$1" in
-              frdmk64f-flat) printf '%s' 'frdmk64f_system_link_none|frdmk64f_system_link_two|frdmk64f_system_link_entry|frdmk64f_system_link_refused|frdmk64f_system_link_notool|frdmk64f_system_link_nocc|frdmk64f_system_link_rerun|frdmk64f_system_link_noheap' ;;
-              f411disco-flat) printf '%s' 'f411disco_system_link_none|f411disco_system_link_two|f411disco_system_link_entry|f411disco_system_link_refused|f411disco_system_link_notool|f411disco_system_link_nocc|f411disco_system_link_rerun|f411disco_system_link_noheap' ;;
-              xmc4800-relax-flat) printf '%s' 'xmc4800_relax_system_link_none|xmc4800_relax_system_link_two|xmc4800_relax_system_link_entry|xmc4800_relax_system_link_refused|xmc4800_relax_system_link_notool|xmc4800_relax_system_link_nocc|xmc4800_relax_system_link_rerun|xmc4800_relax_system_link_noheap' ;;
-              qemu-telem) printf '%s' 'qemu_system_link_none|qemu_system_link_two|qemu_system_link_entry|qemu_system_link_refused|qemu_system_link_notool|qemu_system_link_nocc|qemu_system_link_rerun|qemu_system_link_noheap' ;;
-              blackpill-flat) printf '%s' 'blackpill_system_link_none|blackpill_system_link_two|blackpill_system_link_entry|blackpill_system_link_refused|blackpill_system_link_notool|blackpill_system_link_nocc|blackpill_system_link_rerun|blackpill_system_link_noheap' ;;
-              bluepill-c8|bluepill-c8-st) printf '%s' 'bluepill_c8_system_link_none|bluepill_c8_system_link_two|bluepill_c8_system_link_entry|bluepill_c8_system_link_refused|bluepill_c8_system_link_notool|bluepill_c8_system_link_nocc|bluepill_c8_system_link_rerun|bluepill_c8_system_link_noheap' ;;
-              picopi-flat) printf '%s' 'picopi_system_link_none|picopi_system_link_two|picopi_system_link_entry|picopi_system_link_refused|picopi_system_link_notool|picopi_system_link_nocc|picopi_system_link_rerun|picopi_system_link_noheap' ;;
-              f302nucleo|f302nucleo-st) printf '%s' 'f302nucleo_system_link_none|f302nucleo_system_link_two|f302nucleo_system_link_entry|f302nucleo_system_link_refused|f302nucleo_system_link_notool|f302nucleo_system_link_nocc|f302nucleo_system_link_rerun|f302nucleo_system_link_noheap' ;;
-              due) printf '%s' 'due_system_link_none|due_system_link_two|due_system_link_entry|due_system_link_refused|due_system_link_notool|due_system_link_nocc|due_system_link_rerun|due_system_link_noheap' ;;
-              teensy41-flat) printf '%s' 'teensy41_system_link_none|teensy41_system_link_two|teensy41_system_link_entry|teensy41_system_link_refused|teensy41_system_link_notool|teensy41_system_link_nocc|teensy41_system_link_rerun|teensy41_system_link_noheap' ;;
-              pizero2350-flat) printf '%s' 'pizero2350_system_link_none|pizero2350_system_link_two|pizero2350_system_link_entry|pizero2350_system_link_refused|pizero2350_system_link_notool|pizero2350_system_link_nocc|pizero2350_system_link_rerun|pizero2350_system_link_noheap' ;;
+              frdmk64f-flat) printf '%s' 'frdmk64f_system_link_none|frdmk64f_system_link_two|frdmk64f_system_link_program|frdmk64f_system_link_refused|frdmk64f_system_link_notool|frdmk64f_system_link_nocc|frdmk64f_system_link_rerun|frdmk64f_system_link_noheap' ;;
+              f411disco-flat) printf '%s' 'f411disco_system_link_none|f411disco_system_link_two|f411disco_system_link_program|f411disco_system_link_refused|f411disco_system_link_notool|f411disco_system_link_nocc|f411disco_system_link_rerun|f411disco_system_link_noheap' ;;
+              xmc4800-relax-flat) printf '%s' 'xmc4800_relax_system_link_none|xmc4800_relax_system_link_two|xmc4800_relax_system_link_program|xmc4800_relax_system_link_refused|xmc4800_relax_system_link_notool|xmc4800_relax_system_link_nocc|xmc4800_relax_system_link_rerun|xmc4800_relax_system_link_noheap' ;;
+              qemu-telem) printf '%s' 'qemu_system_link_none|qemu_system_link_two|qemu_system_link_program|qemu_system_link_refused|qemu_system_link_notool|qemu_system_link_nocc|qemu_system_link_rerun|qemu_system_link_noheap' ;;
+              blackpill-flat) printf '%s' 'blackpill_system_link_none|blackpill_system_link_two|blackpill_system_link_program|blackpill_system_link_refused|blackpill_system_link_notool|blackpill_system_link_nocc|blackpill_system_link_rerun|blackpill_system_link_noheap' ;;
+              bluepill-c8) printf '%s' 'bluepill_c8_system_link_none|bluepill_c8_system_link_two|bluepill_c8_system_link_program|bluepill_c8_system_link_refused|bluepill_c8_system_link_notool|bluepill_c8_system_link_nocc|bluepill_c8_system_link_rerun|bluepill_c8_system_link_noheap' ;;
+              picopi-flat) printf '%s' 'picopi_system_link_none|picopi_system_link_two|picopi_system_link_program|picopi_system_link_refused|picopi_system_link_notool|picopi_system_link_nocc|picopi_system_link_rerun|picopi_system_link_noheap' ;;
+              f302nucleo|f302nucleo-st) printf '%s' 'f302nucleo_system_link_none|f302nucleo_system_link_two|f302nucleo_system_link_program|f302nucleo_system_link_refused|f302nucleo_system_link_notool|f302nucleo_system_link_nocc|f302nucleo_system_link_rerun|f302nucleo_system_link_noheap' ;;
+              due) printf '%s' 'due_system_link_none|due_system_link_two|due_system_link_program|due_system_link_refused|due_system_link_notool|due_system_link_nocc|due_system_link_rerun|due_system_link_noheap' ;;
+              teensy41-flat) printf '%s' 'teensy41_system_link_none|teensy41_system_link_two|teensy41_system_link_program|teensy41_system_link_refused|teensy41_system_link_notool|teensy41_system_link_nocc|teensy41_system_link_rerun|teensy41_system_link_noheap' ;;
+              pizero2350-flat) printf '%s' 'pizero2350_system_link_none|pizero2350_system_link_two|pizero2350_system_link_program|pizero2350_system_link_refused|pizero2350_system_link_notool|pizero2350_system_link_nocc|pizero2350_system_link_rerun|pizero2350_system_link_noheap' ;;
               *) echo "no system link gates are listed for $1" >&2; return 1 ;;
             esac
           }
@@ -1168,13 +1188,13 @@ jobs:
           # The system link gates <preset> registers: its default composition's refusals.
           links() { # <preset>
             case "$1" in
-              frdmk64f) printf '%s' 'frdmk64f_system_link_none|frdmk64f_system_link_two|frdmk64f_system_link_entry|frdmk64f_system_link_refused|frdmk64f_system_link_notool|frdmk64f_system_link_nocc|frdmk64f_system_link_rerun|frdmk64f_system_link_noheap|frdmk64f_system_link_heap' ;;
-              f411disco) printf '%s' 'f411disco_system_link_none|f411disco_system_link_two|f411disco_system_link_entry|f411disco_system_link_refused|f411disco_system_link_notool|f411disco_system_link_nocc|f411disco_system_link_rerun|f411disco_system_link_noheap|f411disco_system_link_heap' ;;
-              xmc4800-relax) printf '%s' 'xmc4800_relax_system_link_none|xmc4800_relax_system_link_two|xmc4800_relax_system_link_entry|xmc4800_relax_system_link_refused|xmc4800_relax_system_link_notool|xmc4800_relax_system_link_nocc|xmc4800_relax_system_link_rerun|xmc4800_relax_system_link_noheap|xmc4800_relax_system_link_heap' ;;
-              blackpill) printf '%s' 'blackpill_system_link_none|blackpill_system_link_two|blackpill_system_link_entry|blackpill_system_link_refused|blackpill_system_link_notool|blackpill_system_link_nocc|blackpill_system_link_rerun|blackpill_system_link_noheap|blackpill_system_link_heap' ;;
-              pizero2350) printf '%s' 'pizero2350_system_link_none|pizero2350_system_link_two|pizero2350_system_link_entry|pizero2350_system_link_refused|pizero2350_system_link_notool|pizero2350_system_link_nocc|pizero2350_system_link_rerun|pizero2350_system_link_noheap|pizero2350_system_link_heap' ;;
-              teensy41) printf '%s' 'teensy41_system_link_none|teensy41_system_link_two|teensy41_system_link_entry|teensy41_system_link_refused|teensy41_system_link_notool|teensy41_system_link_nocc|teensy41_system_link_rerun|teensy41_system_link_noheap|teensy41_system_link_heap' ;;
-              picopi) printf '%s' 'picopi_system_link_none|picopi_system_link_two|picopi_system_link_entry|picopi_system_link_refused|picopi_system_link_notool|picopi_system_link_nocc|picopi_system_link_rerun|picopi_system_link_noheap|picopi_system_link_heap' ;;
+              frdmk64f) printf '%s' 'frdmk64f_system_link_none|frdmk64f_system_link_two|frdmk64f_system_link_program|frdmk64f_system_link_refused|frdmk64f_system_link_notool|frdmk64f_system_link_nocc|frdmk64f_system_link_rerun|frdmk64f_system_link_noheap|frdmk64f_system_link_heap' ;;
+              f411disco) printf '%s' 'f411disco_system_link_none|f411disco_system_link_two|f411disco_system_link_program|f411disco_system_link_refused|f411disco_system_link_notool|f411disco_system_link_nocc|f411disco_system_link_rerun|f411disco_system_link_noheap|f411disco_system_link_heap' ;;
+              xmc4800-relax) printf '%s' 'xmc4800_relax_system_link_none|xmc4800_relax_system_link_two|xmc4800_relax_system_link_program|xmc4800_relax_system_link_refused|xmc4800_relax_system_link_notool|xmc4800_relax_system_link_nocc|xmc4800_relax_system_link_rerun|xmc4800_relax_system_link_noheap|xmc4800_relax_system_link_heap' ;;
+              blackpill) printf '%s' 'blackpill_system_link_none|blackpill_system_link_two|blackpill_system_link_program|blackpill_system_link_refused|blackpill_system_link_notool|blackpill_system_link_nocc|blackpill_system_link_rerun|blackpill_system_link_noheap|blackpill_system_link_heap' ;;
+              pizero2350) printf '%s' 'pizero2350_system_link_none|pizero2350_system_link_two|pizero2350_system_link_program|pizero2350_system_link_refused|pizero2350_system_link_notool|pizero2350_system_link_nocc|pizero2350_system_link_rerun|pizero2350_system_link_noheap|pizero2350_system_link_heap' ;;
+              teensy41) printf '%s' 'teensy41_system_link_none|teensy41_system_link_two|teensy41_system_link_program|teensy41_system_link_refused|teensy41_system_link_notool|teensy41_system_link_nocc|teensy41_system_link_rerun|teensy41_system_link_noheap|teensy41_system_link_heap' ;;
+              picopi) printf '%s' 'picopi_system_link_none|picopi_system_link_two|picopi_system_link_program|picopi_system_link_refused|picopi_system_link_notool|picopi_system_link_nocc|picopi_system_link_rerun|picopi_system_link_noheap|picopi_system_link_heap' ;;
               *) echo "no system link gates are listed for $1" >&2; return 1 ;;
             esac
           }
@@ -1207,7 +1227,7 @@ jobs:
           cmake --preset pizero2350-amp
           cmake --build --preset pizero2350-amp
           ctest --test-dir build/pizero2350-amp -L host -LE tree --no-tests=error --output-on-failure
-          tests/ci/ctest_named.sh 'pizero2350_system_link_none|pizero2350_system_link_two|pizero2350_system_link_entry|pizero2350_system_link_refused|pizero2350_system_link_notool|pizero2350_system_link_nocc|pizero2350_system_link_rerun|pizero2350_system_link_noheap|pizero2350_system_link_heap' \
+          tests/ci/ctest_named.sh 'pizero2350_system_link_none|pizero2350_system_link_two|pizero2350_system_link_program|pizero2350_system_link_refused|pizero2350_system_link_notool|pizero2350_system_link_nocc|pizero2350_system_link_rerun|pizero2350_system_link_noheap|pizero2350_system_link_heap' \
             --test-dir build/pizero2350-amp --no-tests=error --output-on-failure
       - name: armv8-M own-image partition, both nodes
         run: |
@@ -1215,7 +1235,7 @@ jobs:
             cmake --preset pizero2350-amp2-n$node
             cmake --build --preset pizero2350-amp2-n$node
             ctest --test-dir build/pizero2350-amp2-n$node -L host -LE tree --no-tests=error --output-on-failure
-            tests/ci/ctest_named.sh 'pizero2350_system_link_none|pizero2350_system_link_two|pizero2350_system_link_entry|pizero2350_system_link_refused|pizero2350_system_link_notool|pizero2350_system_link_nocc|pizero2350_system_link_rerun|pizero2350_system_link_noheap|pizero2350_system_link_heap' \
+            tests/ci/ctest_named.sh 'pizero2350_system_link_none|pizero2350_system_link_two|pizero2350_system_link_program|pizero2350_system_link_refused|pizero2350_system_link_notool|pizero2350_system_link_nocc|pizero2350_system_link_rerun|pizero2350_system_link_noheap|pizero2350_system_link_heap' \
               --test-dir build/pizero2350-amp2-n$node --no-tests=error --output-on-failure
           done
       - name: armv8-M own-image partition, the MERGED artefact
@@ -1284,7 +1304,7 @@ jobs:
           cmake --preset qemu-arm64-benchsmp
           cmake --build --preset qemu-arm64-benchsmp
           ctest --test-dir build/qemu-arm64-benchsmp -L host -LE tree --no-tests=error --output-on-failure
-          out=$(tests/ci/ctest_named.sh 'qemu_arm64_system_link_none|qemu_arm64_system_link_two|qemu_arm64_system_link_entry|qemu_arm64_system_link_refused|qemu_arm64_system_link_notool|qemu_arm64_system_link_nocc|qemu_arm64_system_link_rerun|qemu_arm64_system_link_noheap|qemu_arm64_system_link_stack' \
+          out=$(tests/ci/ctest_named.sh 'qemu_arm64_system_link_none|qemu_arm64_system_link_two|qemu_arm64_system_link_program|qemu_arm64_system_link_refused|qemu_arm64_system_link_notool|qemu_arm64_system_link_nocc|qemu_arm64_system_link_rerun|qemu_arm64_system_link_noheap|qemu_arm64_system_link_stack' \
             --test-dir build/qemu-arm64-benchsmp --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
           case "$out" in
@@ -1299,7 +1319,7 @@ jobs:
           cmake --preset qemu-riscv64-benchsmp
           cmake --build --preset qemu-riscv64-benchsmp
           ctest --test-dir build/qemu-riscv64-benchsmp -L host -LE tree --no-tests=error --output-on-failure
-          out=$(tests/ci/ctest_named.sh 'qemu_riscv64_system_link_none|qemu_riscv64_system_link_two|qemu_riscv64_system_link_entry|qemu_riscv64_system_link_refused|qemu_riscv64_system_link_notool|qemu_riscv64_system_link_nocc|qemu_riscv64_system_link_rerun|qemu_riscv64_system_link_noheap' \
+          out=$(tests/ci/ctest_named.sh 'qemu_riscv64_system_link_none|qemu_riscv64_system_link_two|qemu_riscv64_system_link_program|qemu_riscv64_system_link_refused|qemu_riscv64_system_link_notool|qemu_riscv64_system_link_nocc|qemu_riscv64_system_link_rerun|qemu_riscv64_system_link_noheap' \
             --test-dir build/qemu-riscv64-benchsmp --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
           case "$out" in
@@ -1335,11 +1355,11 @@ jobs:
           cmake --preset f411disco-bench
           cmake --build --preset f411disco-bench
           ctest --test-dir build/f411disco-bench -LE tree --no-tests=error --output-on-failure
-          tests/ci/ctest_named.sh 'f411disco_system_link_none|f411disco_system_link_two|f411disco_system_link_entry|f411disco_system_link_refused|f411disco_system_link_notool|f411disco_system_link_nocc|f411disco_system_link_rerun|f411disco_system_link_noheap|f411disco_system_link_heap' \
+          tests/ci/ctest_named.sh 'f411disco_system_link_none|f411disco_system_link_two|f411disco_system_link_program|f411disco_system_link_refused|f411disco_system_link_notool|f411disco_system_link_nocc|f411disco_system_link_rerun|f411disco_system_link_noheap|f411disco_system_link_heap' \
             --test-dir build/f411disco-bench --no-tests=error --output-on-failure
           # XMC builds the min/avg/max variant without histograms.
           cmake --preset xmc4800-relax-bench
           cmake --build --preset xmc4800-relax-bench
           ctest --test-dir build/xmc4800-relax-bench -LE tree --no-tests=error --output-on-failure
-          tests/ci/ctest_named.sh 'xmc4800_relax_system_link_none|xmc4800_relax_system_link_two|xmc4800_relax_system_link_entry|xmc4800_relax_system_link_refused|xmc4800_relax_system_link_notool|xmc4800_relax_system_link_nocc|xmc4800_relax_system_link_rerun|xmc4800_relax_system_link_noheap|xmc4800_relax_system_link_heap' \
+          tests/ci/ctest_named.sh 'xmc4800_relax_system_link_none|xmc4800_relax_system_link_two|xmc4800_relax_system_link_program|xmc4800_relax_system_link_refused|xmc4800_relax_system_link_notool|xmc4800_relax_system_link_nocc|xmc4800_relax_system_link_rerun|xmc4800_relax_system_link_noheap|xmc4800_relax_system_link_heap' \
             --test-dir build/xmc4800-relax-bench --no-tests=error --output-on-failure

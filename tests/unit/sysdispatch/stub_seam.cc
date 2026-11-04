@@ -10,6 +10,7 @@
 
 #include <kickos/arch/arch.h>
 #include <kickos/kernel.h>
+#include <kickos/image.h>
 #include <kickos/task.h>
 
 #include <kickos/sys/errno.h>
@@ -32,6 +33,11 @@ namespace kickos
     int endpoint_create(uint32_t*)
     {
         unreached("endpoint_create");
+    }
+
+    int endpoint_badge(Thread*, uint32_t, uint32_t, uint32_t*)
+    {
+        unreached("endpoint_badge");
     }
 
     int32_t endpoint_send(uint32_t, uintptr_t, size_t, uint32_t)
@@ -69,9 +75,11 @@ namespace kickos
         unreached("ktime_sleep_ns");
     }
 
-    int kconsole_write_user(char const*, size_t, bool)
+    int kconsole_write_user(char const*, size_t n, bool wait)
     {
-        unreached("kconsole_write_user");
+        testfix::g_kconsole_waits = wait;
+        testfix::g_kconsole_writes = testfix::g_kconsole_writes + 1u;
+        return static_cast<int>(n);
     }
 
     void kdiag_led_set(bool)
@@ -81,7 +89,7 @@ namespace kickos
 
     bool console_window_withheld(uintptr_t, size_t, Task const*)
     {
-        unreached("console_window_withheld");
+        return false;
     }
 }
 
@@ -95,6 +103,11 @@ namespace kickos
         uintptr_t g_reply_buf = 0;
         size_t g_reply_len = 0;
         uint32_t g_reply_recvs = 0;
+        bool g_kconsole_waits = false;
+        uint32_t g_handovers_begun = 0;
+        uint32_t g_handovers_done = 0;
+        void (*g_handover_probe)(void) = nullptr;
+        uint32_t g_kconsole_writes = 0;
         uint32_t g_console_drains = 0;
         uintptr_t g_context_entry = 0;
         uintptr_t g_second_arg = 0;
@@ -173,7 +186,9 @@ extern "C"
 
     struct arch_reserved_span arch_window_apertures(void)
     {
-        return {};
+        static arch_reserved_block const apertures[] = {
+            {kickos::testfix::STUB_DEVICE_BASE, kickos::testfix::STUB_DEVICE_SIZE}};
+        return apertures;
     }
 
     struct arch_reserved_span arch_bus_master_apertures(void)
@@ -213,16 +228,43 @@ extern "C"
 
     int console_handover_refused(void)
     {
-        unreached("console_handover_refused");
+        return 0;
     }
 
     void console_handover_begin(void)
     {
-        unreached("console_handover_begin");
+        kickos::testfix::g_handovers_begun++;
     }
 
     void console_owner_set_user(void)
     {
-        unreached("console_owner_set_user");
+        void (*const probe)(void) = kickos::testfix::g_handover_probe;
+        kickos::testfix::g_handover_probe = nullptr;
+        if (probe != nullptr)
+        {
+            probe();
+        }
+        kickos::testfix::g_handovers_done++;
+    }
+
+    int console_tx_line(void)
+    {
+        return -1;
     }
 }
+
+#if KICKOS_HAVE_ASPACE
+namespace kickos
+{
+    // aspace_task_start reads its image's entry for every unprivileged thread.
+    kos_image_header const& image_record(size_t)
+    {
+        static kos_image_header const h = [] {
+            kos_image_header r{};
+            r.task_start = reinterpret_cast<uintptr_t>(kickos_task_start);
+            return r;
+        }();
+        return h;
+    }
+}
+#endif

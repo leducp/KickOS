@@ -34,6 +34,7 @@ import json
 import os
 import re
 import shlex
+import subprocess
 import sys
 
 NODE_RE = re.compile(r'^node:\s*\{\s*title:\s*"([^"]*)"\s*label:\s*"([^"]*)"')
@@ -48,9 +49,6 @@ INDIRECT = '__indirect_call'
 # gcc writes the .ci beside the object, so a unit's .ci is its compile-database output with
 # the extension swapped. Assembly sits in that database and writes none.
 CI_SOURCE_EXT = ('.c', '.cc', '.cpp', '.cxx')
-# The configure compiles this one itself to identify the compiler, so it answers to no compile
-# command: the one unexpected .ci in a tree that is not a stale unit.
-COMPILER_ID_DIR = re.compile(r'(?:^|/)CompilerId[^/]*/')
 # The archives kickos_privatise_runtime rewrites (cmake/kickos.cmake): their .ci files keep the
 # names the compiler emitted, and the link resolves those to the kernel's private twins.
 PRIVATISED_CI = re.compile(r'/CMakeFiles/kickos_(kernel|arch_[^/]+|chip_[^/]+)\.dir/')
@@ -404,7 +402,9 @@ class Decl(object):
 
 
 def split_site_key(key):
-    """(caller spec, ordinal, count), the ordinal None for the unlocated aggregate, or None."""
+    """(caller spec, ordinal, count), the ordinal None for the unlocated aggregate, or None. A
+    caller written with a leading `?` is one a graph may not link."""
+    key = key.lstrip('?')
     at = key.rfind(ORDINAL_SEP)
     if at < 1:
         return None
@@ -493,7 +493,8 @@ def read_bindings(path, arch, preset, kernel_cores):
 def resolve_bindings(graph, raw):
     """Canonical site key -> [(callee spec, optional)], every record's key resolved first.
 
-    Refuses a key whose caller is absent, ambiguous, or no longer makes the declared number of
+    Refuses a key whose caller is absent (unless written `?<caller>`, which is also skipped where
+    every callee is optional and absent), ambiguous, or no longer makes the declared number of
     indirect calls, and says so in those words: none of the three leaves the record describing
     the site it was written for, and re-pointing the ordinal would bind silently.
     """
@@ -502,6 +503,8 @@ def resolve_bindings(graph, raw):
     for key, (callees, where) in raw.items():
         spec, ordinal, count = split_site_key(key)
         hits = graph.match(spec)
+        if not hits and key.startswith('?'):
+            continue
         if not hits:
             die('%s: KEY DOES NOT RESOLVE: site %s names the caller "%s", which is no node in'
                 ' this graph. It was renamed, compiled out or inlined away, so the call this'
@@ -527,6 +530,10 @@ def resolve_bindings(graph, raw):
                     ' re-read it and re-declare its %d site(s) rather than renumbering this'
                     ' one' % (where, key, count, spec, have, have))
             canon += '%s%d/%d' % (ORDINAL_SEP, ordinal, count)
+        # A `?` caller whose callees are all optional is for the graphs that link the callees too.
+        if key.startswith('?') and callees and all(opt for _spec, opt in callees) \
+                and not any(graph.match(spec) for spec, _opt in callees):
+            continue
         if canon in seen:
             die('%s: site %s is the same call as the record at %s; one site is bound once'
                 % (where, canon, seen[canon]))
@@ -589,6 +596,72 @@ def pretty_leaf(name):
 
 
 # --- the corpus, keyed to the build that wrote it ------------------------------
+
+def ninja_tool(build_dir, args):
+    """(exit code, stdout, stderr) of one ninja tool over the build graph of build_dir."""
+    cache = os.path.join(build_dir, 'CMakeCache.txt')
+    ninja = None
+    try:
+        for line in open(cache):
+            if line.startswith('CMAKE_MAKE_PROGRAM:'):
+                ninja = line.split('=', 1)[1].strip()
+                break
+    except OSError as e:
+        die('cannot read %s: %s' % (cache, e))
+    if not ninja:
+        die('%s names no CMAKE_MAKE_PROGRAM, so the build graph cannot be asked what it builds'
+            % cache)
+    try:
+        r = subprocess.run([ninja, '-t'] + args, cwd=build_dir, stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE)
+    except OSError as e:
+        die('cannot run %s: %s' % (ninja, e))
+    return (r.returncode, r.stdout.decode('utf-8', 'replace'),
+            r.stderr.decode('utf-8', 'replace'))
+
+
+def built_files(build_dir):
+    """Every file the build graph of build_dir writes, as real paths."""
+    rc, out, err = ninja_tool(build_dir, ['targets', 'all'])
+    if rc != 0:
+        die('ninja cannot list the outputs of %s: %s' % (build_dir, err.strip()))
+    files = set()
+    for line in out.splitlines():
+        path, _sep, rule = line.rpartition(': ')
+        if path and rule != 'phony':
+            files.add(os.path.realpath(os.path.join(build_dir, path)))
+    return files
+
+
+def target_file(build_dir, target):
+    """The path of the one file the build graph builds for `target`, or None when the graph
+    has no such target."""
+    rc, out, err = ninja_tool(build_dir, ['query', target])
+    if rc != 0:
+        if 'unknown target' in err:
+            return None
+        die('ninja cannot query %s in %s: %s' % (target, build_dir, err.strip()))
+    lines = out.splitlines()
+    at = None
+    for n, line in enumerate(lines):
+        if line.startswith('  input: '):
+            at = n
+            break
+    if at is None:
+        die('ninja query %s in %s printed no input line' % (target, build_dir))
+    # CMake names a target by a phony edge over its file, except where the file is the name.
+    if lines[at][len('  input: '):].strip() != 'phony':
+        return os.path.join(build_dir, target)
+    inputs = []
+    for line in lines[at + 1:]:
+        if not line.startswith('    '):
+            break
+        inputs.append(line.strip())
+    if len(inputs) != 1 or inputs[0].startswith('|'):
+        die('%s in %s is no target of one file: ninja names %s'
+            % (target, build_dir, ' '.join(inputs)))
+    return os.path.join(build_dir, inputs[0])
+
 
 def entry_output(where, e):
     """The object path one compile-database entry writes; any other shape is refused by name.
@@ -658,9 +731,9 @@ def build_units(build_dir):
 def corpus(build_dir):
     """The .ci files of this build, refusing a tree that is not exactly this build's.
 
-    The count is not the check: a .ci outlives the unit that wrote it, and a scratch tree
-    shared with another checkout collects that checkout's, so both directions are refused by
-    identity. The declared floor stays the gross guard on a build that barely started.
+    The count is not the check: a .ci outlives the unit that wrote it, so a .ci beside no object
+    the build graph builds is not read, and one beside such an object that no compile command
+    names is refused. The declared floor stays the gross guard on a build that barely started.
     """
     want = {ci: src for ci, src in build_units(build_dir).items() if not UNLINKED_CI.search(ci)}
     # realpath on both sides: the database records the path cmake resolved, and a build
@@ -677,13 +750,18 @@ def corpus(build_dir):
             ' it finished, or a tree compiled without -fcallgraph-info. Every figure below'
             ' would be read off what happened to be there'
             % (len(missing), build_dir, missing[0], want[missing[0]]))
-    extra = sorted(p for p in found - set(want) if not COMPILER_ID_DIR.search(p))
+    extra = sorted(found - set(want))
     if extra:
-        die('CORPUS IS NOT THIS BUILD: %d .ci file(s) under %s answer to no compile command of'
-            ' this build, the first being %s. They are units that left the build, or another'
-            ' checkout sharing this scratch tree, and the merged graph carries their code as'
-            ' if the image held it. Delete the tree and let it build cold'
-            % (len(extra), build_dir, extra[0]))
+        built = built_files(build_dir)
+        unnamed = [p for p in extra
+                   if os.path.realpath(p[:-len('.ci')] + '.o') in built
+                   or os.path.realpath(p[:-len('.ci')] + '.obj') in built]
+        if unnamed:
+            die('CORPUS IS NOT THIS BUILD: %d .ci file(s) under %s sit beside an object this'
+                ' build compiles and answer to no compile command of it, the first being %s.'
+                ' The compile database is what keys a unit to its flags, so that code would'
+                ' be measured under no known posture, or not at all'
+                % (len(unnamed), build_dir, unnamed[0]))
     return sorted(want)
 
 
@@ -756,11 +834,21 @@ class Graph(object):
 
     @staticmethod
     def load_set(ci_dir, pattern):
-        """Every input the declared link maps LOAD, as real paths."""
-        maps = sorted(glob.glob(os.path.join(ci_dir, pattern), recursive=True))
+        """Every input the declared link maps LOAD, as real paths.
+
+        A map counts only beside a file the build graph links: a reused tree keeps the maps
+        of an earlier build's links.
+        """
+        if not pattern.endswith('.map'):
+            die('link maps=%s does not end in .map, so no linked file can own what it matches'
+                % pattern)
+        built = built_files(ci_dir)
+        maps = sorted(m for m in glob.glob(os.path.join(ci_dir, pattern), recursive=True)
+                      if os.path.realpath(m[:-len('.map')]) in built)
         if not maps:
-            die('NO LINK MAP: %s matches nothing under %s, so no unit can be shown to be in an'
-                ' image and the corpus would fall back to everything compiled' % (pattern, ci_dir))
+            die('NO LINK MAP: %s matches no map of a file this build links under %s, so no unit'
+                ' can be shown to be in an image and the corpus would fall back to everything'
+                ' compiled' % (pattern, ci_dir))
         loaded = set()
         for m in maps:
             n = 0

@@ -65,7 +65,7 @@ thread in a task of its own:
 
 ```
     kos_task_t victim = KOS_TASK_NONE;
-    if (kos_task_create(nullptr, 0, 0, &victim) != 0)
+    if (kos_task_create_empty(nullptr, 0, 0, &victim) != 0)
     {
         kos::print("[fs] ERROR: no task slot for the faulter\n");
         return 1;
@@ -78,15 +78,13 @@ thread in a task of its own:
     int const rc = t.join(KOS_TIMEOUT_NONE);
 ```
 
-[Spawn and capabilities](08-spawn-and-caps.md) walked `kos_task_create` and the spawn. Here, notice
+[Spawn and capabilities](08-spawn-and-caps.md) walked the empty-task create and the spawn. Here, notice
 only that `main` is the task's creator, which is what will let it kill the task afterwards.
 
-**Try it:** the first spawn is the init starting `main`; the second is `main` starting
-`faulter`.
+**Try it:** the first `spawn_masked` is `main` starting `faulter`.
 
 ```
 (gdb) break kickos::spawn_masked
-(gdb) continue
 (gdb) continue
 (gdb) p $k->currents.cells[0]->name
 $1 = "main", '\000' <repeats 11 times>
@@ -360,7 +358,7 @@ on nothing runs on the user stack. That matters: another thread of the same task
 domain and could overwrite frames on the user stack while the exit path walks the kernel's
 data structures. Then it branches into `kickos_thread_fault_exit`, which runs as the dying
 thread, in thread context, with interrupts enabled. This is an ordinary kernel path now, not
-an exception handler, and it may print. It prints the record through `kprintf_fault` (a path
+an exception handler, and it may print. It prints the record through `kprintf_record` (a path
 that still reaches a user console driver if one owns stdout, see
 [Reference: console, "A fault record while a driver owns the console"](../reference/console.md#a-fault-record-while-a-driver-owns-the-console)),
 then exits:
@@ -850,9 +848,10 @@ Breakpoint 4, kfault_terminate () at .../arch/common/kfault_terminate_shutdown.c
 
 A fault is the hardware's verdict. A **panic** is the kernel's own: an invariant that cannot
 hold any more. `KICKOS_ASSERT(cond)` calls `kpanic` when `cond` is false (`kpanic_at` in a
-terse diagnostic build), and a user thread can
-ask for the same end with `kos_panic` (the `KOS_SYS_PANIC` arm, `user_panic`, which copies the
-message in with the same per-byte checks as any user string). `kpanic` does not trust the
+terse diagnostic build), and root or a user thread holding `AUTH_SYSTEM` can
+ask for the same end with `kos_panic` (the `KOS_SYS_PANIC` arm, `user_panic_system`, which copies
+the message in with the same per-byte checks as any user string). Without the bit the same call
+ends only the caller's task, with `KOS_EXIT_PANIC`. `kpanic` does not trust the
 stack it was called on: `kickos_panic_stack_enter` (assembly) moves SP to a dedicated panic
 stack (`g_panic_stack`, one per core) and calls `kickos_panic_report`, which calls
 `kpanic_enter` and prints `KERNEL PANIC:` with the message. Then `kfault_terminate`, as above.

@@ -20,6 +20,7 @@
 enum kos_errno
 {
     KOS_EPERM = 1,       // privilege or authority denied, or not the owner
+    KOS_ENOENT = 2,      // no such name: a program or a declared instance
     KOS_ESRCH = 3,       // reply target gone: a one-shot reply cap's caller is stale (aborted/reused)
     KOS_EIO = 5,         // device transfer failed, e.g. I2C NACK or a peripheral error
     KOS_EBADF = 9,       // handle names nothing valid: bad index, empty, stale gen, wrong type

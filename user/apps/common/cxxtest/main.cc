@@ -19,7 +19,14 @@
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
+#include <kickos/sys/image.h>
 #include <kickos/libc/fmt.h>
+
+#if KICKOS_HAVE_ASPACE
+#include <kickos/apps/peer_run.h>
+
+#include "peer.h"
+#endif
 
 #include <exception>
 #include <stdexcept>
@@ -159,98 +166,120 @@ namespace
     }
 
 #if KICKOS_HAVE_ASPACE
-    // Read through a volatile, so each space constructs the word at its startup.
-    volatile int g_ctor_seed = 41;
-    int const g_ctor_word = g_ctor_seed + 1;
-
-    enum
-    {
-        TK_CTOR = 0,
-        TK_CAUGHT = 1,
-        TK_OUT = 16 // words, ahead of the least stack in the same block
-    };
     constexpr uint32_t TK_FILL = 0x5AA5C33Cu;
     constexpr uint32_t TK_STACK_MAX = KICKOS_MIN_STACK_SIZE + 1024u;
-    constexpr size_t TK_BLOCK = TK_OUT * sizeof(int) + TK_STACK_MAX;
 
-    void task_worker(void* arg)
+    // One incarnation of the peer; its exit status, or a value no status takes.
+    int run_peer(kos_program_t prog, kos_task_params const& p)
     {
-        auto const out = static_cast<int volatile*>(arg);
-        out[TK_CTOR] = g_ctor_word;
-        int caught = 0;
-        try
+        kos_task_t t = KOS_TASK_NONE;
+        int const rc = kickos::apps::create_peer(prog, p, &t);
+        if (rc != 0)
         {
-            throw MyError(7);
+            return rc;
         }
-        catch (MyError const& e)
+        int status = -1;
+        int const wait = kickos::apps::wait_dead(t, &status, 5000u);
+        if (wait != 0)
         {
-            caught = e.code_;
+            return wait;
         }
-        out[TK_CAUGHT] = caught;
+        return status;
     }
 
-    void least_worker(void* arg)
-    {
-        static_cast<int volatile*>(arg)[TK_CTOR] = g_ctor_word;
-    }
-
-    // Each task a spawn builds starts from the image's pristine data and runs the image's
+    // Each task a create builds starts from the image's pristine data and runs the image's
     // startup on its own stack: the unwind tables and the constructors, before its entry.
     void test_task_start()
     {
-        void* const blk = kos_ram_alloc(TK_BLOCK);
-        if (blk == nullptr or kos_mem_self_grant(blk, TK_BLOCK, 0) != 0)
+        kos_program_t prog = KOS_CAP_NONE;
+        if (kos_program_find("cxxtest_peer", &prog) != 0)
         {
-            report("a block for the task checks", false);
+            report("the peer program is found", false);
             return;
         }
-        auto const out = static_cast<int volatile*>(blk);
-        out[TK_CTOR] = 0;
-        out[TK_CAUGHT] = 0;
-        auto h = kos::thread::create(task_worker, blk, "cxxtask", 10, KOS_POLICY_FIFO, 0, blk,
-                                     TK_BLOCK);
-        bool const ran = h.valid() and h.join(KOS_TIMEOUT_NONE) == 0;
-        report("a task runs in a space of its own", ran);
-        report("a task's constructors ran in its space", out[TK_CTOR] == 42);
-        report("a task throws and catches in its space", out[TK_CAUGHT] == 7);
+        kos_task_params p = {};
+        int status = run_peer(prog, p);
+        report("a task runs in a space of its own", status >= 0);
+        report("a task's constructors ran in its space",
+               status >= 0 and (status & CXXTEST_PEER_CTOR_BAD) == 0);
+        report("a task throws and catches in its space",
+               status >= 0 and (status & CXXTEST_PEER_CAUGHT_BAD) == 0);
 
-        // The least stack the spawn admits: the floor plus the image's thread-local carve.
-        auto const stk = static_cast<unsigned char*>(blk) + TK_OUT * sizeof(int);
+        // The least stack the create admits: the floor plus the image's thread-local carve.
+        static char const* const least_argv[] = {"peer", "least", nullptr};
+        void* const blk = kos_ram_alloc(TK_STACK_MAX);
+        if (blk == nullptr or kos_mem_self_grant(blk, TK_STACK_MAX, 0) != 0)
+        {
+            report("a block for the least stack", false);
+            (void)kos_handle_close(prog);
+            return;
+        }
+        auto const stk = static_cast<unsigned char*>(blk);
         uint32_t size = KICKOS_MIN_STACK_SIZE;
-        int rc = -KOS_EINVAL;
-        while (rc == -KOS_EINVAL and size <= TK_STACK_MAX)
+        status = -KOS_EINVAL;
+        while (status == -KOS_EINVAL and size <= TK_STACK_MAX)
         {
             for (uint32_t i = 0; i < TK_STACK_MAX; i += 4u)
             {
                 *reinterpret_cast<uint32_t volatile*>(stk + i) = TK_FILL;
             }
-            out[TK_CTOR] = 0;
-            h = kos::thread::create(least_worker, blk, "cxxleast", 10, KOS_POLICY_FIFO, 0, blk,
-                                    TK_BLOCK, stk, size);
-            rc = h.error();
-            if (rc == -KOS_EINVAL)
+            kos_task_params q = {};
+            q.argv = least_argv;
+            q.block = blk;
+            q.size = TK_STACK_MAX;
+            q.stack = stk;
+            q.stack_size = size;
+            status = run_peer(prog, q);
+            if (status == -KOS_EINVAL)
             {
                 size += 16u;
             }
         }
-        bool const least_ran = rc == 0 and h.join(KOS_TIMEOUT_NONE) == 0;
+        (void)kos_handle_close(prog);
+        bool const least_ran = status == 0;
         // The carve sits at the low end; the scan starts above it.
-        uintptr_t p = reinterpret_cast<uintptr_t>(stk) + size - KICKOS_MIN_STACK_SIZE;
-        uintptr_t const lo = p;
+        uintptr_t p0 = reinterpret_cast<uintptr_t>(stk) + size - KICKOS_MIN_STACK_SIZE;
+        uintptr_t const lo = p0;
         uintptr_t const top = reinterpret_cast<uintptr_t>(stk) + size;
-        while (p < top and *reinterpret_cast<uint32_t volatile const*>(p) == TK_FILL)
+        while (p0 < top and *reinterpret_cast<uint32_t volatile const*>(p0) == TK_FILL)
         {
-            p += 4u;
+            p0 += 4u;
         }
         char b[112];
         ksnprintf(b, sizeof(b),
                   "task start: least stack %u, deepest %u of the %u above the carve\n",
-                  static_cast<unsigned>(size), static_cast<unsigned>(top - p),
+                  static_cast<unsigned>(size), static_cast<unsigned>(top - p0),
                   static_cast<unsigned>(KICKOS_MIN_STACK_SIZE));
         kos::print(b);
-        report("a task starts on the least stack a spawn admits",
-               least_ran and out[TK_CTOR] == 42);
-        report("its startup left the least stack's low end unwritten", p > lo);
+        report("a task starts on the least stack a create admits", least_ran);
+        report("its startup left the least stack's low end unwritten", p0 > lo);
+    }
+#endif
+
+    // Where the init's statics are its own, an image of its own or a space of its own, root's
+    // startup is the init's alone, and the app's constructors run in the entry thread of the
+    // app's first task, which here is main's: the thread this word names. The host runs a sim
+    // image's before the kernel boots.
+#if (KICKOS_INIT_IMAGE or KICKOS_HAVE_ASPACE) and not KICKOS_ARCH_SIM
+#define CXXTEST_OWN_STARTUP 1
+    kos_thread_t g_ctor_thread = KOS_THREAD_NONE;
+
+    struct CtorWitness
+    {
+        CtorWitness()
+        {
+            g_ctor_thread = kos_thread_self();
+        }
+    };
+    CtorWitness g_ctor_witness;
+
+    void test_own_startup()
+    {
+        report("app constructors ran in main's thread", g_ctor_thread == kos_thread_self());
+        uintptr_t const at = reinterpret_cast<uintptr_t>(&g_ctor_thread);
+        uintptr_t const base = kickos_image_header.window_start;
+        report("app statics in the app image's window",
+               at >= base and at - base < kickos_image_header.window_size);
     }
 #endif
 
@@ -276,6 +305,9 @@ namespace
 int main(int, char**)
 {
     kos::print("KickOS full-C++ opt-in test\n");
+#if CXXTEST_OWN_STARTUP
+    test_own_startup();
+#endif
 #if KICKOS_HAVE_ASPACE
     test_task_start();
 #endif

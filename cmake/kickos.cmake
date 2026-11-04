@@ -19,9 +19,8 @@
 # ---------------------------------------------------------------------------
 get_filename_component(KICKOS_BOARDS_DIR "${CMAKE_CURRENT_LIST_DIR}/../boards" ABSOLUTE)
 
-# List-dir-relative: cap_table.cmake, driver_geometry.cmake, driver_metadata.cmake,
-# heap_symbol.cmake, qemu_cpu.cmake and compose.cmake must be installed beside this file.
-include("${CMAKE_CURRENT_LIST_DIR}/cap_table.cmake")
+# List-dir-relative: driver_geometry.cmake, driver_metadata.cmake, heap_symbol.cmake,
+# qemu_cpu.cmake and compose.cmake must be installed beside this file.
 include("${CMAKE_CURRENT_LIST_DIR}/driver_geometry.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/driver_metadata.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/heap_symbol.cmake")
@@ -37,6 +36,35 @@ endif()
 
 # After KICKOS_IN_TREE, which places the host tool.
 include("${CMAKE_CURRENT_LIST_DIR}/compose.cmake")
+
+# The image link (tools/image-link.py) and the bounds it renames, from the source tree or beside
+# this file in an installed package.
+if(KICKOS_IN_TREE)
+  get_filename_component(KICKOS_IMAGE_LINK_TOOL "${CMAKE_CURRENT_LIST_DIR}/../tools/image-link.py"
+                         ABSOLUTE)
+else()
+  set(KICKOS_IMAGE_LINK_TOOL "${CMAKE_CURRENT_LIST_DIR}/image-link.py")
+endif()
+set(KICKOS_IMAGE_NAMES "${CMAKE_CURRENT_LIST_DIR}/image_names.txt")
+set(KICKOS_IMAGE_EMBED_NAMES "${CMAKE_CURRENT_LIST_DIR}/embed_names.txt")
+
+# kickos_image_link_features()
+#   The KICKOS_KERNEL link group the kernel's archives ride. Where every image is linked on its
+#   own first (KICKOS_IMAGE_SPLIT, KICKOS_IMAGE_EMBED), its bounds tell tools/image-link.py which
+#   inputs are the kernel's, and a link no launcher reads fails on them, naming kickos_image_link.
+macro(kickos_image_link_features)
+  foreach(_kos_lang C CXX ASM)
+    set(CMAKE_${_kos_lang}_LINK_GROUP_USING_KICKOS_KERNEL_SUPPORTED TRUE)
+    if(KICKOS_IMAGE_SPLIT OR KICKOS_IMAGE_EMBED)
+      set(CMAKE_${_kos_lang}_LINK_GROUP_USING_KICKOS_KERNEL
+          "LINKER:--kickos-image-link-needs-kickos_image_link,--start-group"
+          "LINKER:--end-group,--kickos-image-link-end")
+    else()
+      set(CMAKE_${_kos_lang}_LINK_GROUP_USING_KICKOS_KERNEL
+          "LINKER:--start-group" "LINKER:--end-group")
+    endif()
+  endforeach()
+endmacro()
 
 # KICKOS_ARCH_FAMILY (arm|rx|sim|...) routes arch/<family>/... and the cross toolchain; a
 # board that omits it falls back to a derivation from the arch.
@@ -209,20 +237,132 @@ endfunction()
 # CMAKE_<LANG>_FLAGS_INIT, so no CPU flag belongs here.
 
 # ---------------------------------------------------------------------------
+# kickos_image_host_launcher(<out var>)
+#   The sim's image link as a linker launcher: an executable whose link carries the kernel's
+#   group is an image, and any other link runs unchanged.
+# ---------------------------------------------------------------------------
+function(kickos_image_host_launcher out)
+  find_program(KICKOS_PYTHON3 NAMES python3 REQUIRED)
+  set(${out} "${KICKOS_PYTHON3}" -I "${KICKOS_IMAGE_LINK_TOOL}" --host "${CMAKE_OBJCOPY}"
+             "${CMAKE_NM}" "${KICKOS_IMAGE_NAMES}" ${KICKOS_IMAGE_KERNEL_ENTRIES} ${ARGN} --link
+      PARENT_SCOPE)
+endfunction()
+
+# ---------------------------------------------------------------------------
+# kickos_image_link(<target>)
+#   Links <target>, an executable linking KickOS::kernel, as images and a final link: where
+#   KICKOS_IMAGE_SPLIT or KICKOS_IMAGE_EMBED is on, tools/image-link.py is its linker launcher,
+#   and under KICKOS_IMAGE_EMBED image 0 is also <target>.kimg/image0.elf. kickos_emit_image calls
+#   it; an image no one emits, a sizing link say, calls it itself. Properties set before it: a
+#   KICKOS_IMAGE_KERNEL_NAMES names kernel symbols the image names directly, on a board that
+#   enforces nothing; a KICKOS_IMAGE_KERNEL_OBJECTS names objects the final link takes for the
+#   kernel and the image does not. The objects of KICKOS_IMAGE_KERNEL_OBJECT_TARGETS ride the
+#   command and only the final link takes them.
+# ---------------------------------------------------------------------------
+function(kickos_image_link target)
+  if(NOT KICKOS_IMAGE_SPLIT AND NOT KICKOS_IMAGE_EMBED)
+    return()
+  endif()
+  find_program(KICKOS_PYTHON3 NAMES python3 REQUIRED)
+  get_target_property(_calls ${target} KICKOS_IMAGE_KERNEL_NAMES)
+  if(NOT _calls)
+    set(_calls "")
+  endif()
+  if(KICKOS_ARCH STREQUAL "sim")
+    kickos_image_host_launcher(_launcher ${_calls})
+  else()
+    # The kernel's own copy of what it calls under the app's names, each image linking its own,
+    # and any object the target states is the kernel's.
+    get_target_property(_objects ${target} KICKOS_IMAGE_KERNEL_OBJECTS)
+    if(NOT _objects)
+      set(_objects "")
+    endif()
+    list(JOIN _objects "\n" _objects)
+    set(_kernel_objects "${CMAKE_CURRENT_BINARY_DIR}/${target}.kernel_objects")
+    if(KICKOS_IMAGE_KERNEL_OBJECT_TARGETS)
+      string(APPEND _objects "\n--kernel-only")
+    endif()
+    foreach(_t IN LISTS KICKOS_IMAGE_KERNEL_OBJECT_TARGETS)
+      string(APPEND _objects "\n$<JOIN:$<TARGET_OBJECTS:${_t}>,\n>")
+    endforeach()
+    file(GENERATE OUTPUT "${_kernel_objects}" CONTENT
+      "$<$<TARGET_EXISTS:KickOS::kickos_string>:$<JOIN:$<TARGET_OBJECTS:KickOS::kickos_string>,\n>>\n${_objects}\n")
+    set(_mode "")
+    if(KICKOS_IMAGE_EMBED)
+      set(_mode --embed)
+    endif()
+    set(_launcher "${KICKOS_PYTHON3}" -I "${KICKOS_IMAGE_LINK_TOOL}" ${_mode} "${CMAKE_OBJCOPY}"
+                  "${CMAKE_NM}" "${KICKOS_IMAGE_NAMES}" "${_kernel_objects}"
+                  ${KICKOS_IMAGE_KERNEL_ENTRIES} ${_calls} --link)
+  endif()
+  set_target_properties(${target} PROPERTIES C_LINKER_LAUNCHER "${_launcher}"
+                                             CXX_LINKER_LAUNCHER "${_launcher}")
+  set_property(TARGET ${target} APPEND PROPERTY LINK_DEPENDS
+    "${KICKOS_IMAGE_LINK_TOOL}" "${KICKOS_IMAGE_NAMES}"
+    "${KICKOS_IMAGE_EMBED_NAMES}")
+  # The tool's one folder of every per-image file, removed whole.
+  set_property(TARGET ${target} APPEND PROPERTY ADDITIONAL_CLEAN_FILES
+    "$<TARGET_FILE:${target}>.kimg")
+endfunction()
+
+# ---------------------------------------------------------------------------
+# kickos_program_link(<target>)
+#   Links <target>, an executable linking KickOS::kickos that a system runs as a program,
+#   through tools/image-link.py --program: its link command is recorded beside its output, which
+#   is its relocatable link, and the final link of each system running it replays that command
+#   for each image of it. kickos_compose calls it for each program it binds.
+# ---------------------------------------------------------------------------
+function(kickos_program_link target)
+  get_target_property(_was ${target} C_LINKER_LAUNCHER)
+  if(_was AND NOT _was MATCHES "--program")
+    message(FATAL_ERROR "kickos_program_link(${target}): ${target} is an image of its own "
+      "(kickos_emit_image), so no system runs it as a program")
+  endif()
+  find_program(KICKOS_PYTHON3 NAMES python3 REQUIRED)
+  set(_mode --program)
+  if(KICKOS_ARCH STREQUAL "sim")
+    set(_mode --program --host)
+  endif()
+  set(_launcher "${KICKOS_PYTHON3}" -I "${KICKOS_IMAGE_LINK_TOOL}" ${_mode} "${KICKOS_IMAGE_NAMES}"
+                --link)
+  set_target_properties(${target} PROPERTIES C_LINKER_LAUNCHER "${_launcher}"
+                                             CXX_LINKER_LAUNCHER "${_launcher}")
+  set_property(TARGET ${target} APPEND PROPERTY LINK_DEPENDS "${KICKOS_IMAGE_LINK_TOOL}"
+                                                            "${KICKOS_IMAGE_NAMES}")
+  set_property(TARGET ${target} APPEND PROPERTY ADDITIONAL_CLEAN_FILES
+    "$<TARGET_FILE:${target}>.kprog")
+endfunction()
+
+# ---------------------------------------------------------------------------
 # kickos_emit_image(<target>)
 #   Writes the link map that KICKOS_IMAGE_MAP names; x86_64's link rule writes it itself, and
 #   the sim's selftest map is read by its seam gates. On an MCU it also writes the .bin and .hex
-#   a board flashes and prints the size.
+#   a board flashes and prints the size. <target> may be a system composed with DEFAULT, whose
+#   target it emits, the flash files keeping that target's name.
 #
 #   PUBLIC: a POST_BUILD action cannot ride a usage requirement, so it is one opt-in line
 #   after target_link_libraries(app PRIVATE KickOS::kernel KickOS::system_default).
 # ---------------------------------------------------------------------------
 function(kickos_emit_image target)
+  # Deferred, since the DEFAULT target is linked to the system only at the end of the directory.
+  if(TARGET ${target})
+    get_target_property(_default ${target} KICKOS_SYSTEM_DEFAULT)
+    if(_default)
+      cmake_language(EVAL CODE
+        "cmake_language(DEFER DIRECTORY [[${CMAKE_CURRENT_SOURCE_DIR}]] CALL kickos_emit_image [[${_default}]])")
+      return()
+    endif()
+  endif()
   set_property(GLOBAL APPEND PROPERTY KICKOS_EMITTED_IMAGES ${target})
+  kickos_image_link(${target})
   set_target_properties(${target} PROPERTIES KICKOS_IMAGE_MAP "$<TARGET_FILE:${target}>.map")
   set_property(TARGET ${target} APPEND PROPERTY ADDITIONAL_CLEAN_FILES
     "$<TARGET_FILE:${target}>.map")
-  if(NOT KICKOS_ARCH STREQUAL "x86_64")
+  if(KICKOS_ARCH STREQUAL "x86_64")
+    # The ELF twin tools/x86_64-link.sh writes beside the image.
+    set_property(TARGET ${target} APPEND PROPERTY ADDITIONAL_CLEAN_FILES
+      "$<TARGET_FILE:${target}>.elf")
+  else()
     target_link_options(${target} PRIVATE "-Wl,-Map=$<TARGET_FILE:${target}>.map")
   endif()
   if(KICKOS_ARCH STREQUAL "sim" OR KICKOS_ARCH STREQUAL "x86_64")
@@ -357,7 +497,7 @@ endfunction()
 #                   [TAG <word>] [BASE <expr>] [WINDOWS <role>...] [LINES <role>:edge|level...]
 #                   [BLOCK <bytes>|none] [BLOCK_CACHE cached|uncached] [INIT <function>]
 #                   [POSTURE handover|retain] [BARRIER <threads before the poll>|none] [READY <expr>]
-#                   [START <symbol>] [CONSOLE [USB_DEVICE]] [CLIENT <target>...]
+#                   [START <symbol>] [CONSOLE [USB_DEVICE]] [CLIENT <target>...] [SLOTS <count>] [LOCAL]
 #                   [THREAD <role> [PRIORITY <offset>] ENTRY <function>
 #                           [ARG none|block|window|line0_index] [WINDOW <role>] [CAPS <grant>...]]...)
 #   The one shape of an unprivileged chip/device driver library: a freestanding STATIC lib
@@ -377,9 +517,14 @@ endfunction()
 #   types the ring block KOS_MEM_NOCACHE. USB_DEVICE marks a console served over the board's USB
 #   device controller, whose clock tree chip init brings up in an image whose stdout it is. CLIENT
 #   names the libraries a task using the driver links, which kickos_compose links in a system
-#   naming it. ENTRY, INIT, BASE and READY are C++ expressions: the driver's TU expands
+#   naming it. SLOTS is the device slots a bus service keys on each client's badge, which the
+#   composition hands each client as a slot mask (KICKOS_DRIVER_SLOTS in the generated header).
+#   ENTRY, INIT, BASE and READY are C++ expressions: the driver's TU expands
 #   KICKOS_DRIVER_DESCRIPTOR from the generated <kickos/driver/declared/<name>.h> where they are in
 #   scope. The catalogue entry joins the KICKOS_DRIVER_CATALOGUE global property for the manifest.
+#   LOCAL declares a driver for the apps of this tree: it is neither installed nor in the manifest
+#   a package carries, and only a composition that kickos_app_system names LOCAL_DRIVERS is
+#   admitted against the manifest_local.yaml that lists it (KICKOS_LOCAL_DRIVER_CATALOGUE).
 function(kickos_add_driver name)
   cmake_parse_arguments(DRV "${KICKOS_DRIVER_OPTIONS}" "${KICKOS_DRIVER_SINGLE}" "${KICKOS_DRIVER_MULTI}" ${ARGN})
   kickos_driver_metadata(${name} _packaged _json _header ${ARGN})
@@ -399,12 +544,20 @@ function(kickos_add_driver name)
   if(DEFINED DRV_CLASS)
     target_link_libraries(kickos_${name} PRIVATE ${DRV_CLASS})
   endif()
-  kickos_export_targets(kickos_${name})
+  if(DRV_LOCAL)
+    kickos_alias_target(kickos_${name})
+  else()
+    kickos_export_targets(kickos_${name})
+  endif()
   if(NOT _packaged)
     return()
   endif()
   set_target_properties(kickos_${name} PROPERTIES KICKOS_DRIVER_CATALOGUE_ENTRY "${_json}")
-  set_property(GLOBAL APPEND PROPERTY KICKOS_DRIVER_CATALOGUE "${name}")
+  if(DRV_LOCAL)
+    set_property(GLOBAL APPEND PROPERTY KICKOS_LOCAL_DRIVER_CATALOGUE "${name}")
+  else()
+    set_property(GLOBAL APPEND PROPERTY KICKOS_DRIVER_CATALOGUE "${name}")
+  endif()
   set(_declared_dir "${CMAKE_CURRENT_BINARY_DIR}/kickos_${name}_declared")
   kickos_write_if_changed("${_declared_dir}/kickos/driver/declared/${name}.h" "${_header}")
   target_include_directories(kickos_${name} PRIVATE "${_declared_dir}")

@@ -18,7 +18,9 @@
 #   require_root_depth  reads the last figure, refuses it unreadable, and passes over an earlier
 #                       one a split left unreadable;
 #   require_drivers_up  takes each packaged driver's up line, as its source prints it, before a
-#                       given line, and refuses a driver whose source prints none.
+#                       given line, and refuses a driver whose source prints none;
+#   image_raw_set       names the object each image's own link wrote, beside the image object
+#                       a link map loads, and refuses a map whose image has none beside it.
 #
 #   check_gate.sh <registered TIMEOUT>
 
@@ -164,7 +166,7 @@ fi
 
 # --- require_drivers_up ---------------------------------------------------------------------
 SYSTEM="$TMP/system.yaml"
-printf 'tasks:\n  - name: console\n    driver: xmcuartirq\n  - name: spi0\n    driver: xmcssc\n  - name: app\n    entry: app_main\n' > "$SYSTEM"
+printf 'tasks:\n  - name: console\n    driver: xmcuartirq\n  - name: spi0\n    driver: xmcssc\n  - name: app\n    program: main\n' > "$SYSTEM"
 UART_UP='[xmcuartirq] device up (IRQ TX)'
 SSC_UP='[xmcssc] SPI service up (USIC0-CH1 SSC, IRQ-paced, HW CS on SELO0)'
 # Whether `require_drivers_up <system> <before>` passes over <capture>, in a subshell.
@@ -200,6 +202,21 @@ sensor: 1" 2 "$TMP/none.yaml"; then
     bad "require_drivers_up passes a driver whose source prints no up line"
 fi
 
+# --- image_raw_set --------------------------------------------------------------------------
+mkdir -p "$TMP/app.kimg"
+printf 'LOAD /lib/crt1.o\nLOAD %s/app.kimg/kickos_image0.o\nLOAD kernel/libk.a\n' "$TMP" \
+    > "$TMP/app.map"
+: > "$TMP/app.kimg/image0.raw.o"
+( image_raw_set "$TMP/app.map" "$TMP/raws" ) >/dev/null 2>&1 \
+    || bad "image_raw_set refuses a map whose image object has its link's object beside it"
+[ "$(cat "$TMP/raws" 2>/dev/null)" = "$TMP/app.kimg/image0.raw.o" ] \
+    || bad "image_raw_set names '$(cat "$TMP/raws" 2>/dev/null)', not the image's own object"
+rm "$TMP/app.kimg/image0.raw.o"
+if ( image_raw_set "$TMP/app.map" "$TMP/raws" ) >/dev/null 2>&1; then
+    bad "image_raw_set passes an image object with no object of its link beside it"
+fi
+
 [ "$rc" -eq 0 ] || exit 1
 echo "PASS: boot_bound charges every boot to its TIMEOUT, and after, log_holds,
-  require_root_depth and require_drivers_up read the planted captures as the witnesses need"
+  require_root_depth, require_drivers_up and image_raw_set read the planted inputs as the
+  witnesses need"

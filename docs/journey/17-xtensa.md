@@ -54,8 +54,9 @@ both, and [the multicore chapter](11-multicore.md) covers what that adds.
 On the Cortex-M4 the CPU fetches its first instruction from flash through the vector table. The ESP32
 starts in code of its own, the mask ROM. The ROM reads the image header at flash offset `0x1000`,
 copies each segment of the image to the RAM address the linker gave it, and jumps to the entry
-point, which `esp32.ld` sets to `_start`. KickOS links everything into internal RAM: code into
-`IRAM` at `0x40080000`, data into `DRAM` at `0x3FFB0000`. There is no second-stage bootloader and
+point, which `esp32.ld` sets to `_start`. KickOS links everything into internal RAM: the kernel's
+code into `IRAM1`, SRAM1's instruction alias at `0x400A0000`, each task image's code into `IRAM` at
+`0x40080000`, and data into `DRAM` at `0x3FFB0000`. There is no second-stage bootloader and
 no flash cache to set up.
 
 `_start` then does what a windowed core needs before its first function call (`CORE_PROLOGUE`).
@@ -70,16 +71,16 @@ runs the constructors, calls `arch_init`, and enters `kmain`, exactly as on the 
 above, with `rsync` after each special-register write:
 
 ```
-40081ea4:	f01c      	movi.n	a0, 31
-40081ea6:	13e600        	wsr.ps	a0
+400a0424:	f01c      	movi.n	a0, 31
+400a0426:	13e600        	wsr.ps	a0
 ...
-40081eae:	134800        	wsr.windowbase	a0
+400a042e:	134800        	wsr.windowbase	a0
 ...
-40081eb6:	134900        	wsr.windowstart	a0
+400a0436:	134900        	wsr.windowstart	a0
 ...
-40081ec2:	13e700        	wsr.vecbase	a0
+400a0442:	13e700        	wsr.vecbase	a0
 ...
-40081ed1:	007cd5        	call4	400826a0 <Reset_Handler>
+400a0451:	007f55        	call4	400a0c48 <Reset_Handler>
 ```
 
 **Why, and the contract:** [Book: context switching, "Startup"](../book/context-switching-and-the-silicon-contract.md),
@@ -111,17 +112,17 @@ stack, the switch can push them there by forcing the overflows, then rebuild eve
 through underflows. Stop 9 shows this.
 
 **Try it:** `xtensa-esp32-elf-nm -n hello | grep -E ' t _(Window|Level2|User)'`. The handlers
-start the IRAM, 64 bytes apart:
+start `IRAM1`, 64 bytes apart:
 
 ```
-40080000 t _WindowOverflow4
-40080040 t _WindowUnderflow4
-40080080 t _WindowOverflow8
-400800c0 t _WindowUnderflow8
-40080100 t _WindowOverflow12
-40080140 t _WindowUnderflow12
-40080180 t _Level2InterruptVector
-40080340 t _UserExceptionVector
+400a0000 t _WindowOverflow4
+400a0040 t _WindowUnderflow4
+400a0080 t _WindowOverflow8
+400a00c0 t _WindowUnderflow8
+400a0100 t _WindowOverflow12
+400a0140 t _WindowUnderflow12
+400a0180 t _Level2InterruptVector
+400a0340 t _UserExceptionVector
 ```
 
 **Why, and the contract:** [Book: context switching](../book/context-switching-and-the-silicon-contract.md)
@@ -173,7 +174,7 @@ it masks interrupts up to level 3 (the LX6's `EXCM_LEVEL`) and sends a nested ex
 `KernelExceptionVector`, which halts.
 
 **Try it:** `xtensa-esp32-elf-objdump -d hello | grep -A4 '<_UserExceptionVector>:'` shows the
-four instructions above at `0x40080340`.
+four instructions above at `0x400a0340`.
 
 **Why, and the contract:** [Reference: invariants, `irqlock-nesting-safe`, `device-irq-in-maskable-band`](../reference/invariants.md)
 
@@ -282,7 +283,7 @@ Note what the frame does not carry: a privilege bit. `arch_context_init` receive
 discards it. There is nothing to put it in.
 
 **Try it:** `xtensa-esp32-elf-objdump -d hello | grep -A5 '<_thread_trampoline>:'` shows the four
-instructions above (`call8` is at `0x40082c97` in this build, after an `or a1, a1, a1`
+instructions above (`call8` is at `0x400a1283` in this build, after an `or a1, a1, a1`
 padding word the assembler places before it). Live: `break _thread_trampoline`
 and read `$a2` and `$a3` after `entry`: the entry function and its argument.
 <!-- unverified (the live half): no ESP32 emulator -->
@@ -315,13 +316,13 @@ reply into a saved register frame, and a plain call has none.
 **Try it:** `xtensa-esp32-elf-objdump -d hello | grep -A9 '<arch_syscall>:'`:
 
 ```
-40082ae4 <arch_syscall>:
-40082ae4:	004136        	entry	a1, 32
-40082ae7:	02ad      	mov.n	a10, a2
+400a10d0 <arch_syscall>:
+400a10d0:	004136        	entry	a1, 32
+400a10d3:	02ad      	mov.n	a10, a2
 ...
-40082af1:	03bda5        	call8	400866cc <syscall_dispatch>
-40082af4:	0a2d      	mov.n	a2, a10
-40082af6:	f01d      	retw.n
+400a10dd:	031c65        	call8	400a42a4 <syscall_dispatch>
+400a10e0:	0a2d      	mov.n	a2, a10
+400a10e2:	f01d      	retw.n
 ```
 
 **Why, and the contract:** [Book: the syscall path](../book/the-syscall-path-trap-dispatch-return.md),

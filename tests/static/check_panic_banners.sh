@@ -45,9 +45,10 @@ require_repo_root
 # NOT, so a gate reads them while asserting no panic occurred and the ERE must not match them.
 #   - the thread-fault report, read by check_rootfault.sh, check_mpu_fault.sh,
 #     check_faultsurvive.sh and check_qemu_ringppb.sh;
+#   - the record of a kos_panic that ended only its caller's task, read by panicgate's case 6;
 #   - every CONTAINED refusal, which the trap entry resumes from: the arch reporters spell the
 #     noun rather than substitute it precisely so this scan can see which outcome each is.
-EXCLUDED_RE='=== THREAD FAULT ===| CONTAINED '
+EXCLUDED_RE='=== THREAD FAULT ===|=== TASK PANIC ===| CONTAINED '
 
 # Files that MUST each yield a banner, one per fault reporter in the tree, so a shape that
 # stops matching cannot read as "no reporter emits a banner any more".

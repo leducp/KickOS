@@ -3,7 +3,7 @@
 # Copyright (c) 2026 Philippe Leduc
 #
 # A system target whose composition names no packaged driver links the walk's trivial driver
-# path and not the driver path itself, read from the objects its link map loads. --control reads
+# path and not the driver path itself, read from the objects its link maps load. --control reads
 # a system naming a driver, which must link the driver path and not the trivial one.
 #
 #   check_no_driver_path.sh [--control] <map>
@@ -19,8 +19,13 @@ fi
 [ "$#" -eq 1 ] || fail "usage: check_no_driver_path.sh [--control] <map>"
 MAP="$1"
 [ -f "$MAP" ] || fail "no link map at $MAP"
+scratch_dir
+image_map_set "$MAP" "$TMP/maps"
+while IFS= read -r _m; do
+    cat "$_m"
+done < "$TMP/maps" > "$TMP/all.map"
 loads() { # <object basename, as an ERE>
-    grep -Eq "^LOAD .*/init/compose/$1\\.cc\\.o(bj)?\$" "$MAP"
+    grep -Eq "^LOAD .*/init/compose/$1\\.cc\\.o(bj)?\$" "$TMP/all.map"
 }
 loads walk || fail "$(basename "$MAP") loads no init walk, so it is no system target's image"
 WANT=driver_path_none

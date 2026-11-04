@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# The packaged simcon serving stdout, main, the survivor, and the faulter, a program of its own.
+
+version: 1
+stdout: /svc/console
+ends: main
+
+tasks:
+  - name: simcon
+    driver: simcon
+    serves: /svc/console
+    priority: 12
+
+  - name: main
+    program: @FS_APP@
+    priority: 2
+    ceiling: 10
+    authority: [memory, system, tasks]
+
+  - name: faulter
+    program: @FS_APP@_peer
+    priority: 10
+    ceiling: 10
+    start: on_request
+    budgets: { threads: 1 }

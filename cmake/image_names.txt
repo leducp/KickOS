@@ -1,0 +1,43 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# The bounds an image references that the final link states for it: `<name> <field>`, the name
+# as C spells it, renamed in the image to __kickos_image<n>_<field> (tools/image-link.py). Each
+# field is one name's alone. The final script states each field for every image; a name left out
+# here stays undefined in the image, which the image link refuses.
+__kickos_image_code_start     code_start
+__kickos_image_code_end       code_end
+__kickos_image_window_start   window_start
+__kickos_image_window_size    window_size
+__kickos_image_data_load      data_load
+__kickos_image_data_start     data_start
+__kickos_image_data_end       data_end
+__kickos_image_bss_end        bss_end
+__kickos_image_heap_start     heap_start
+__kickos_image_heap_end       heap_end
+__kickos_image_tls_template   tls_template
+__kickos_image_tls_offset     tls_offset
+__kickos_image_tls_init       tls_init
+__kickos_image_tls_total      tls_total
+__kickos_image_tls_align      tls_align
+__kickos_image_ctor_start     ctor_start
+__kickos_image_ctor_end       ctor_end
+__kickos_image_eh_frame       eh_frame
+__kickos_app_init_array_start app_init_array_start
+__kickos_app_init_array_end   app_init_array_end
+__exidx_start                 exidx_start
+__exidx_end                   exidx_end
+__eh_frame_start              eh_frame_start
+_kickos_heap_start            newlib_heap_start
+_kickos_heap_limit            newlib_heap_end
+__kickos_tls_carve            tls_carve
+_sdata                        kernel_data
+_ebss                         kernel_bss_end
+__kickos_tbss_start           tbss_start
+__kickos_tbss_end             tbss_end
+__kickos_code_start           code_window_start
+__kickos_code_end             code_window_end
+__kickos_pmp_code_start       pmp_code_start
+__kickos_pmp_code_end         pmp_code_end
+__kickos_emutls_v_start       emutls_start
+__kickos_emutls_v_end         emutls_end

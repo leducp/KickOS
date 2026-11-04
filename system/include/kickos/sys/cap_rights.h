@@ -33,8 +33,8 @@ enum kos_cap_authority
     KOS_AUTH_PINMUX = 1 << 1,  // kos_pinmux_set
     KOS_AUTH_PSTATE = 1 << 2,  // kos_cpu_clock_set
     KOS_AUTH_IRQ = 1 << 3,     // kos_irq_claim
-    KOS_AUTH_SYSTEM = 1 << 4,  // kos_shutdown
-    KOS_AUTH_CONSOLE = 1 << 5, // kos_console_publish
+    KOS_AUTH_SYSTEM = 1 << 4,  // kos_shutdown, and a kos_panic that ends the system
+    KOS_AUTH_CONSOLE = 1 << 5, // creating a console driver
     KOS_AUTH_TASKS = 1 << 6,   // kos_task_create, and a spawn that builds a task of its own
     KOS_AUTH_BUS_MASTER = 1 << 7, // a spawn's device window over a device that masters the bus
     KOS_AUTH_BOOTLOADER = 1 << 8  // kos_shutdown into the chip's bootloader, beside KOS_AUTH_SYSTEM

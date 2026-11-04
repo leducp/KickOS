@@ -139,6 +139,22 @@ TEST(VRange, release_frees_the_slot_and_the_address_space)
     EXPECT_TRUE(v.reserve(BASE, 1));
 }
 
+TEST(VRange, release_at_frees_the_slot_index_at_names)
+{
+    kickos::VirtualRanges v = made();
+    ASSERT_TRUE(v.reserve(BASE, 1));
+    ASSERT_TRUE(v.reserve(BASE + 2 * G, 1));
+    size_t const i = v.index_at(BASE + 2 * G);
+    ASSERT_LT(i, kickos::VirtualRanges::capacity());
+    EXPECT_EQ(v.at(i)->base, BASE + 2 * G);
+    EXPECT_EQ(v.index_at(BASE + G), kickos::VirtualRanges::capacity());
+    EXPECT_TRUE(v.release_at(i));
+    EXPECT_FALSE(v.release_at(i));
+    EXPECT_FALSE(v.release_at(kickos::VirtualRanges::capacity()));
+    EXPECT_EQ(v.count(), 1u);
+    EXPECT_NE(v.at_base(BASE), nullptr);
+}
+
 TEST(VRange, the_slot_bound_refuses_rather_than_evicting)
 {
     kickos::VirtualRanges v = made();

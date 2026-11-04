@@ -572,12 +572,11 @@ namespace
         MOVE_PUSH,
         MOVE_RESEAT
     };
-    struct MoveStamp
+
+    kickos::BenchMoveStamp* moves()
     {
-        uint64_t t0;
-        uint32_t kind;
-    };
-    constinit MoveStamp g_move[KICKOS_THREAD_SLOTS] = {};
+        return kickos::kickos_kernel_pools.bench_moves;
+    }
     // [asker][holder]: when the asker's standing drop ask toward the holder was made.
     constinit uint64_t g_drop_t0[KICKOS_KERNEL_CORES][KICKOS_KERNEL_CORES] = {};
 
@@ -591,17 +590,17 @@ namespace
     void move_close(kickos::Thread const* t)
     {
         int const s = move_slot(t);
-        if (s < 0 or g_move[s].kind == MOVE_NONE)
+        if (s < 0 or moves()[s].kind == MOVE_NONE)
         {
             return;
         }
-        uint64_t const ns = arch_clock_now() - g_move[s].t0;
+        uint64_t const ns = arch_clock_now() - moves()[s].t0;
         uint32_t d = kickos::BD_PUSH_E2E;
-        if (g_move[s].kind == MOVE_RESEAT)
+        if (moves()[s].kind == MOVE_RESEAT)
         {
             d = kickos::BD_RESEAT_E2E;
         }
-        g_move[s].kind = MOVE_NONE;
+        moves()[s].kind = MOVE_NONE;
         dist_add_row(row(), d, ns);
     }
 }
@@ -723,8 +722,8 @@ extern "C"
         {
             return;
         }
-        g_move[s].t0 = t0;
-        g_move[s].kind = MOVE_PUSH;
+        moves()[s].t0 = t0;
+        moves()[s].kind = MOVE_PUSH;
     }
 
     void kickos_bench_reseat_asked(kickos::Thread const* t)
@@ -734,8 +733,8 @@ extern "C"
         {
             return;
         }
-        g_move[s].t0 = arch_clock_now();
-        g_move[s].kind = MOVE_RESEAT;
+        moves()[s].t0 = arch_clock_now();
+        moves()[s].kind = MOVE_RESEAT;
         sched_row().count[kickos::BS_RESEAT]++;
     }
 
@@ -744,13 +743,13 @@ extern "C"
     void kickos_bench_reseat_applied(kickos::Thread const* t, int running)
     {
         int const s = move_slot(t);
-        if (s < 0 or g_move[s].kind != MOVE_RESEAT)
+        if (s < 0 or moves()[s].kind != MOVE_RESEAT)
         {
             return;
         }
         if (running < 0)
         {
-            g_move[s].kind = MOVE_NONE;
+            moves()[s].kind = MOVE_NONE;
             return;
         }
         if (running > 0)

@@ -26,9 +26,9 @@ import re
 import sys
 
 TAP_ADD_RE = re.compile(r'\bTAP_ADD\w*\(\s*"(\w+)"\s*,\s*(\w+)')
-POOLS = ('workers', 'tasks', 'irqs', 'caps', 'endpoints', 'notifies')
+POOLS = ('workers', 'tasks', 'irqs', 'caps', 'endpoints', 'notifies', 'peer_workers')
 OBJECTS = ('endpoints', 'notifies')
-FIELDS = ('workers', 'tasks') + OBJECTS + ('caps', 'irqs', 'irq_line')
+FIELDS = ('workers', 'tasks') + OBJECTS + ('caps', 'irqs', 'irq_line', 'peer_workers')
 ASK_RE = re.compile(r'\bTAP_ASK(_LINE)?\s*\(')
 FIELD_RE = re.compile(r'^\s*\.(\w+)\s*=\s*(\w+)\s*$')
 LINE_RE = re.compile(r'^\s*\.irq_line\s*=\s*[\w\s+]+$')
@@ -386,7 +386,7 @@ def own_demand(body, consts):
     """{pool: n} that one function body states."""
     need = dict((p, 0) for p in POOLS)
     for fields in asks(body):
-        ask = dict((p, 0) for p in OBJECTS + ('workers', 'tasks', 'irqs', 'caps'))
+        ask = dict((p, 0) for p in OBJECTS + ('workers', 'tasks', 'irqs', 'caps', 'peer_workers'))
         for field in fields:
             if not field.strip():
                 continue
@@ -400,6 +400,8 @@ def own_demand(body, consts):
             ask[m.group(1)] = max(ask[m.group(1)], value(m.group(2), consts, 'a TAP_ASK field'))
         for p in OBJECTS + ('workers', 'tasks', 'irqs'):
             need[p] = max(need[p], ask[p])
+        if ask['tasks']:
+            need['peer_workers'] = max(need['peer_workers'], ask['peer_workers'])
         probe = 0
         if ask['caps'] and not ask['notifies']:
             probe = 1
@@ -421,7 +423,7 @@ def demands(texts, config=None):
         for arm, fn in TAP_ADD_RE.findall(live(text, config or {})):
             registered.setdefault(fn, []).append(arm)
     for text in texts:
-        code = strip(text)
+        code = strip(live(text, config or {}))
         code_lines = code.split('\n')
         for fn, a, b in spans(code):
             body = '\n'.join(code_lines[a:b + 1])
@@ -429,6 +431,8 @@ def demands(texts, config=None):
             prev = own.get(fn, dict((p, 0) for p in POOLS))
             own[fn] = dict((p, max(prev[p], need[p])) for p in POOLS)
             calls.setdefault(fn, set()).update(re.findall(r'\b(\w+)\s*\(', body))
+            # A body passed as a template argument, as main_pinned<body>() runs it.
+            calls[fn].update(re.findall(r'<\s*(\w+)\s*>\s*\(', body))
     out = {}
     for fn, arms in registered.items():
         seen = set()
@@ -472,21 +476,25 @@ PLANTED = [
     'void t_k()\n{\n    TAP_ASK(.notifies = 1, .caps = 2);\n}\n'
     'void t_l()\n{\n    kos_cap_t line = KOS_CAP_NONE;\n'
     '    TAP_ASK_LINE(&line, .irqs = 2, .irq_line = KICKOS_IRQ_FREE_BASE + 3);\n}\n'
+    'void t_m()\n{\n#if KICKOS_HAVE_ASPACE\n    TAP_ASK(.workers = 1, .tasks = 1, .peer_workers = 2);\n#else\n'
+    '    TAP_ASK(.workers = 1);\n#endif\n}\n'
+    'void n_body()\n{\n    TAP_ASK(.workers = 2);\n}\n'
+    'void t_n()\n{\n    pinned<n_body>();\n}\n'
     'void reg()\n{\n    TAP_ADD("a", t_a);\n    TAP_ADD("b", t_b);\n    TAP_ADD("i", t_i);\n'
     '    TAP_ADD("c", t_c);\n    TAP_ADD("d", t_d);\n    TAP_ADD("j", t_j);\n    TAP_ADD("k", t_k);\n'
-    '    TAP_ADD("l", t_l);\n'
+    '    TAP_ADD("l", t_l);\n    TAP_ADD("m", t_m);\n    TAP_ADD("n", t_n);\n'
     '#if defined(X) && KICKOS_KERNEL_CORES > 1\n    TAP_ADD("f", t_f);\n#endif\n'
     '#if defined(KICKOS_SELFTEST_SPARE_DEV)\n    TAP_ADD("g", t_g);\n#endif\n'
     '#if KICKOS_KERNEL_CORES > 1 \\\n    and not KICKOS_HAVE_ASPACE\n'
     '    TAP_ADD("h", t_h);\n#endif\n'
     '}\n']
 PLANTED_CONFIG = {'KICKOS_KERNEL_CORES': 2}
-ROOMY = {'workers': 5, 'tasks': 2, 'irqs': 2, 'caps': 6, 'endpoints': 2, 'notifies': 1}
+ROOMY = {'workers': 5, 'tasks': 2, 'irqs': 2, 'caps': 6, 'endpoints': 2, 'notifies': 1, 'peer_workers': 5}
 
 
-def ask(workers=0, tasks=0, irqs=0, caps=0, endpoints=0, notifies=0):
+def ask(workers=0, tasks=0, irqs=0, caps=0, endpoints=0, notifies=0, peer=0):
     return {'workers': workers, 'tasks': tasks, 'irqs': irqs, 'caps': caps,
-            'endpoints': endpoints, 'notifies': notifies}
+            'endpoints': endpoints, 'notifies': notifies, 'peer_workers': peer}
 
 
 def self_test():
@@ -496,7 +504,8 @@ def self_test():
             'i': ask(workers=2, tasks=2, irqs=1, caps=1),
             'g': ask(workers=2), 'h': ask(workers=2),
             'j': ask(caps=3, notifies=1), 'k': ask(caps=3, notifies=1),
-            'l': ask(irqs=2, caps=2)}
+            'l': ask(irqs=2, caps=2), 'm': ask(workers=1, tasks=1, peer=2),
+            'n': ask(workers=2)}
     if got != want:
         print('FAIL: planted arms read as %s, expected %s' % (got, want))
         return 1
@@ -511,6 +520,12 @@ def self_test():
             print('FAIL: a posture one %s short expects %s to skip, not %s'
                   % (pool, short(got, posture), arms))
             return 1
+    # A peer's workers are what the arm states, never its own workers.
+    posture = dict(ROOMY)
+    posture['peer_workers'] = 1
+    if short(got, posture) != ['m']:
+        print('FAIL: a peer seating one worker expects %s to skip, not [m]' % short(got, posture))
+        return 1
     # The stated slots and the probe's own notification: three slots fit j, two do not.
     for caps, arms in ((3, []), (2, ['j', 'k'])):
         posture = dict(ROOMY)
@@ -553,6 +568,10 @@ def self_test():
         if absent in got or (present and present not in got):
             print('FAIL: under %s the planted arms read as %s' % (config, sorted(got)))
             return 1
+    ruled = demands(PLANTED, {'KICKOS_KERNEL_CORES': 2, 'KICKOS_HAVE_ASPACE': 0}).get('m')
+    if ruled != ask(workers=1):
+        print('FAIL: an ask in a branch the configuration rules out was read, as %s' % ruled)
+        return 1
     try:
         demands(PLANTED)
     except ValueError:

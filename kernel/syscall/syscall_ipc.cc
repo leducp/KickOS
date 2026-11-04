@@ -144,14 +144,14 @@ namespace kickos
         // Caller holds IrqLock. Returns bytes sent or the mapped window error; the stage
         // uses KOS_EP_MSG_MAX bytes of syscall stack.
         int32_t far_publish(Thread* c, Endpoint const* e, uintptr_t buf, size_t len,
-                            amp::ReplyTag const& tag)
+                            amp::ReplyTag const& tag, uint32_t badge)
         {
             uint8_t stage[KOS_EP_MSG_MAX];
             if (not kaccess_from_user(stage, user_space_of(c), buf, len))
             {
                 return -KOS_EFAULT;
             }
-            amp::Sent const rc = amp::send(endpoint_far_node(e), e->far_port, tag, stage,
+            amp::Sent const rc = amp::send(endpoint_far_node(e), e->far_port, tag, badge, stage,
                                            static_cast<uint32_t>(len));
             if (rc == amp::Sent::OK)
             {
@@ -195,14 +195,20 @@ namespace kickos
                 return -KOS_EPIPE;
             }
             bool const copied = copy == 0;
+            amp::Inbound const* const in = amp::inbound_at(record);
+            uint32_t badge = KCAP_BADGE_NONE;
+            if (in != nullptr)
+            {
+                badge = in->badge;
+            }
             // A capability is disclosed only beside the bytes it answers for.
             uint32_t rcap = KCAP_INVALID;
-            if (copied and badge_out != 0 and amp::inbound_at(record) != nullptr
+            if (copied and badge_out != 0 and in != nullptr
                 and cap_install_far_reply(c, record, &rcap) != 0)
             {
                 rcap = KCAP_INVALID;
             }
-            bool const info_ok = write_recv_info(user_space_of(c), badge_out, KOS_BADGE_NONE, rcap);
+            bool const info_ok = write_recv_info(user_space_of(c), badge_out, badge, rcap);
             if (not info_ok and rcap != KCAP_INVALID)
             {
                 bool const undone = cap_uninstall_far_reply(c, rcap, record);
@@ -258,26 +264,66 @@ namespace kickos
         IrqLock lock;
         *out_cap = KCAP_INVALID;
         Thread* c = sched::current();
-        if (not task_object_admit(CapType::CAP_ENDPOINT, c->task))
-        {
-            return -KOS_EAGAIN;
-        }
         Endpoint* ep = nullptr;
-        int const i = endpoint_claim_created(&ep);
+        int const i = endpoint_claim_created(c->task, &ep);
+        if (i == SLOT_OVER_BUDGET)
+        {
+            return -KOS_EAGAIN; // the task holds its budget of endpoints
+        }
         // The bound, not the sign: an index this unit cannot bound reads as out of range below.
         if (kernel().endpoints.at(i) == nullptr)
         {
             return -KOS_ENOMEM;
         }
-        kernel().endpoint_refs[i] = 1;
+        kernel().endpoints.refs()[i] = 1;
         int const obj = kernel().endpoints.handle_for(i);
         int const rc = cap_install(c, obj, CapType::CAP_ENDPOINT, CAP_RIGHTS_ALL, out_cap);
         if (rc != 0)
         {
-            kernel().endpoint_refs[i] = 0;
+            kernel().endpoints.refs()[i] = 0;
             kernel().endpoints.free(obj);
             return rc;
         }
+        return 0;
+    }
+
+    static_assert(KCAP_BADGE_NONE == KOS_BADGE_NONE, "the unbadged value is the ABI's");
+    static_assert(sizeof(CapEntry::badge) == sizeof(kos_recv_info::badge),
+                  "the entry stores the badge at the width the receive delivers it");
+
+    int endpoint_badge(Thread* c, uint32_t src_cap, uint32_t badge, uint32_t* out_cap)
+    {
+        IrqLock lock;
+        *out_cap = KCAP_INVALID;
+        if (badge == KCAP_BADGE_NONE)
+        {
+            return -KOS_EINVAL;
+        }
+        int err = 0;
+        if (cap_resolve_e(c, src_cap, CapType::CAP_ENDPOINT, CAP_SIGNAL | CAP_HANDOUT, &err)
+            == nullptr)
+        {
+            return -err;
+        }
+        CapEntry const* const e = cap_lookup(c, src_cap);
+        int const obj = e->obj;
+        // No HANDOUT on the copy: a holder minting from its own badged copy could send as any
+        // client of the server.
+        uint8_t const rights = static_cast<uint8_t>(e->rights & (CAP_SIGNAL | CAP_TRANSFER));
+        // The reference comes BEFORE the slot: a refused bump must leave no capability.
+        if (not obj_ref_inc(CapType::CAP_ENDPOINT, obj, rights))
+        {
+            return -KOS_EOVERFLOW;
+        }
+        uint32_t const index = cap_run_peek_free(c->cap_free_head);
+        if (index == KCAP_NO_SLOT)
+        {
+            obj_ref_undo(CapType::CAP_ENDPOINT, obj, rights);
+            return -KOS_EMFILE;
+        }
+        CapEntry const* const ne = cap_install_at(c, static_cast<int>(index), obj,
+                                                  CapType::CAP_ENDPOINT, rights, badge);
+        *out_cap = (static_cast<uint32_t>(ne->gen) << KCAP_INDEX_BITS) | index;
         return 0;
     }
 
@@ -302,21 +348,25 @@ namespace kickos
             return -KOS_EINVAL;
         }
         Endpoint* ep = nullptr;
-        int const i = endpoint_slot_claim(&ep);
+        int const i = endpoint_slot_claim(c->task, &ep);
         // As endpoint_create's.
+        if (i == SLOT_OVER_BUDGET)
+        {
+            return -KOS_EAGAIN;
+        }
         if (kernel().endpoints.at(i) == nullptr)
         {
             return -KOS_ENOMEM;
         }
         ep->far_node = static_cast<uint8_t>(node + 1u);
         ep->far_port = static_cast<uint8_t>(port);
-        kernel().endpoint_refs[i] = 1;
+        kernel().endpoints.refs()[i] = 1;
         int const obj = kernel().endpoints.handle_for(i);
         // Never CAP_WAIT: receive and server binding on a far endpoint are refused.
         int const rc = cap_install(c, obj, CapType::CAP_ENDPOINT, rights, out_cap);
         if (rc != 0)
         {
-            kernel().endpoint_refs[i] = 0;
+            kernel().endpoints.refs()[i] = 0;
             kernel().endpoints.free(obj);
             return rc;
         }
@@ -355,11 +405,12 @@ namespace kickos
             {
                 return -err;
             }
+            uint32_t const badge = sender_badge(c, cap);
 #if KICKOS_AMP_NODE
             // Handle far endpoints before checking recv_holders: they have no local receiver.
             if (endpoint_is_far(e))
             {
-                return far_publish(c, e, buf, len, amp::REPLY_TAG_NONE);
+                return far_publish(c, e, buf, len, amp::REPLY_TAG_NONE, badge);
             }
 #endif
             if (not endpoint_takes_sends(e))
@@ -380,21 +431,18 @@ namespace kickos
                     sched::wake(w, lock);
                     return -KOS_EFAULT;
                 }
-                (void)write_recv_info(user_space_of(w), w->ipc.badge_out, KOS_BADGE_NONE,
-                                      KCAP_INVALID);
+                (void)write_recv_info(user_space_of(w), w->ipc.badge_out, badge, KCAP_INVALID);
                 w->wait_result = static_cast<intptr_t>(n);
                 sched::wake(w, lock);
                 return static_cast<int>(n); // did not block: no resume barrier
             }
-            if (timeout_us == 0
-                or (timeout_us == KOS_TIMEOUT_NONE and e->console != EP_CONSOLE_NONE
-                    and task_nonblocking(c->task)))
+            if (timeout_us == 0)
             {
                 return -KOS_ETIMEDOUT;
             }
             c->ipc.buf = buf;
             c->ipc.len = len;
-            c->ipc.badge_out = 0;
+            c->ipc.badge = badge;
             c->call_state = CALL_NONE;
             ktime_deadline_arm(c, timeout_us, lock);
             epoch = wq_block(ask)(e->send_waiters, WAIT_EP_SEND, e, nullptr, lock);
@@ -557,7 +605,7 @@ namespace kickos
                     // Allocate outside the assert so release builds also execute it.
                     int const minted = cap_install_reply(c, s, &rcap);
                     KICKOS_ASSERT(minted == 0);
-                    ok = write_recv_info(user_space_of(c), badge_out, KOS_BADGE_NONE, rcap);
+                    ok = write_recv_info(user_space_of(c), badge_out, s->ipc.badge, rcap);
                     if (not ok)
                     {
                         bool const undone = cap_uninstall_reply(c, rcap, s);
@@ -595,7 +643,7 @@ namespace kickos
                 KICKOS_BENCH_SPAN(PH_RECV_LOCKED, bm_rlocked);
                 return -KOS_EFAULT;
             }
-            (void)write_recv_info(user_space_of(c), badge_out, KOS_BADGE_NONE, KCAP_INVALID);
+            (void)write_recv_info(user_space_of(c), badge_out, s->ipc.badge, KCAP_INVALID);
             s->wait_result = static_cast<intptr_t>(n);
             if (sched::wake_no_resched(s, dw->held()))
             {
@@ -676,6 +724,7 @@ namespace kickos
             {
                 return -err;
             }
+            uint32_t const badge = sender_badge(c, cap);
             // Handle far endpoints before checking recv_holders: they have no local receiver.
             bool const far = endpoint_is_far(e);
             if (not far and not endpoint_takes_sends(e))
@@ -694,7 +743,7 @@ namespace kickos
                 uint16_t const seq = static_cast<uint16_t>(c->call_seq + 1u);
                 amp::ReplyTag const tag = {kernel().threads.handle_for(idx),
                                            amp::reply_seq(seq)};
-                int32_t const sent = far_publish(c, e, buf, send_len, tag);
+                int32_t const sent = far_publish(c, e, buf, send_len, tag, badge);
                 if (sent < 0)
                 {
                     return sent;
@@ -757,7 +806,7 @@ namespace kickos
                 KICKOS_BENCH_SPAN(PH_CALL_MINT_CAP, bm_mint_cap);
                 KICKOS_ASSERT(minted == 0);
                 KICKOS_BENCH_MARK(bm_mint_info);
-                if (not write_recv_info(user_space_of(w), w->ipc.badge_out, KOS_BADGE_NONE, rcap))
+                if (not write_recv_info(user_space_of(w), w->ipc.badge_out, badge, rcap))
                 {
                     KICKOS_BENCH_SPAN(PH_CALL_MINT_INFO, bm_mint_info);
                     KICKOS_BENCH_SPAN(PH_CALL_MINT, bm_mint);
@@ -802,7 +851,7 @@ namespace kickos
                 // transfer in server context later.
                 c->ipc.buf = buf;
                 c->ipc.len = send_len;
-                c->ipc.badge_out = 0;
+                c->ipc.badge = badge;
                 c->call_rx_cap = recv_cap;
                 c->call_seq++; // Packed when the receiver removes this call.
                 c->call_state = CALL_SEND_WAIT;
@@ -858,8 +907,14 @@ namespace kickos
         {
             uint32_t const record =
                 ThreadPool::far_reply_record(cap_reply_handle(*e));
+            // A record that died and seated again since the install is a stranger's call.
+            bool const current = cap_obj(*e) == e->obj;
             // Consume the reply capability on every exit.
             cap_slot_vacate(c, reply_cap & KCAP_INDEX_MASK, e);
+            if (not current)
+            {
+                return -KOS_ESRCH;
+            }
             uint8_t stage[KOS_EP_MSG_MAX];
             if (not kaccess_from_user(stage, user_space_of(c), buf, len))
             {
@@ -1135,7 +1190,7 @@ namespace kickos
     // Runs in the doorbell handler with local interrupts masked; takes no lock and copies
     // nothing. False refuses before any receiver is popped, and dispatch_call answers it.
     bool endpoint_far_call_deliver(uint32_t from, uint32_t port, amp::ReplyTag const& tag,
-                                   uint32_t len, uint32_t slot, Held held)
+                                   uint32_t badge, uint32_t len, uint32_t slot, Held held)
     {
         uint16_t const bound = amp::port_endpoint(port);
         // The binding holds the endpoint slot alive, so lookup uses its index.
@@ -1150,7 +1205,7 @@ namespace kickos
         }
         // BEFORE THE POP: a receiver once popped is completed, and it can only land a call its
         // record holds, the landing reading the payload out of that slot.
-        uint32_t const record = amp::inbound_seat(from, slot, tag);
+        uint32_t const record = amp::inbound_seat(from, slot, tag, badge);
         if (record == amp::FAR_RECORD_NONE)
         {
             return false;
@@ -1174,20 +1229,24 @@ namespace kickos
             return -KOS_EINVAL;
         }
         Endpoint* ep = nullptr;
-        int const i = endpoint_slot_claim(&ep);
+        int const i = endpoint_slot_claim(c->task, &ep);
         // As endpoint_create's.
+        if (i == SLOT_OVER_BUDGET)
+        {
+            return -KOS_EAGAIN;
+        }
         if (kernel().endpoints.at(i) == nullptr)
         {
             return -KOS_ENOMEM;
         }
         // Keep separate references for the capability and binding: port_bind stores
         // a slot index, so the binding must keep that slot alive after the cap closes.
-        kernel().endpoint_refs[i] = 2;
+        kernel().endpoints.refs()[i] = 2;
         int const obj = kernel().endpoints.handle_for(i);
         int const rc = cap_install(c, obj, CapType::CAP_ENDPOINT, CAP_WAIT | CAP_SIGNAL | CAP_TRANSFER, out_cap);
         if (rc != 0)
         {
-            kernel().endpoint_refs[i] = 0;
+            kernel().endpoints.refs()[i] = 0;
             kernel().endpoints.free(obj);
             return rc;
         }

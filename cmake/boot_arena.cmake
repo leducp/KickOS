@@ -51,13 +51,13 @@ endfunction()
 function(kickos_boot_arena_defs ld out)
   set(_mn "${KICKOS_CHIP_REGION_GRANULE}")
   set(_p2 "${KICKOS_CHIP_REGION_POW2}")
-  # From the generated fragment, the resolution the compile reads. KICKOS_MAX_THREADS is the slots
-  # but root's, whose stack is the boot replay's.
+  # From the generated fragment, the resolution the compile reads. The pool's stack count is the
+  # system's, an absolute symbol its pools TU defines (<kickos/pool_storage.h>).
   set(_idle "${KICKOS_IDLE_STACK_SIZE}")
   set(_root "${KICKOS_ROOT_STACK_SIZE}")
   set(_user "${KICKOS_USER_STACK_SIZE}")
-  set(_stacks "${KICKOS_MAX_THREADS}")
-  foreach(_v idle root user stacks)
+  set(_stacks "${KICKOS_C_SYMBOL_PREFIX}kickos_pool_stacks")
+  foreach(_v idle root user)
     if(NOT "${_${_v}}" MATCHES "^[0-9]+$")
       message(FATAL_ERROR
         "KickOS: the boot-arena model has no ${_v} size. Every board states "

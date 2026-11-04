@@ -22,9 +22,9 @@
 #define AMPPING_GATE_WAIT_NS (20ull * 1000ull * 1000ull)
 #define AMPPING_GATE_TRIES 40
 
-static uint32_t ampping_date(kos_self_t const* self, char const* device)
+static uint32_t ampping_date(char const* device)
 {
-    kos_window_t const window = kos_grant_mmio(self, device);
+    kos_window_t const window = kos_grant_mmio(device);
     if (kos_window_addr(window) == NULL or kos_window_size(window) <= AMPPING_TIMG_DATE)
     {
         return AMPBOOK_UNSET;
@@ -32,18 +32,18 @@ static uint32_t ampping_date(kos_self_t const* self, char const* device)
     return *(uint32_t const volatile*)((uintptr_t)kos_window_addr(window) + AMPPING_TIMG_DATE);
 }
 
-void ampping_gate_serve(kos_self_t const* self, struct ampbook_row* row)
+void ampping_gate_serve(struct ampbook_row* row)
 {
-    atomic_store_explicit(&row->gate_held, ampping_date(self, "/dev/timg1"), memory_order_release);
+    atomic_store_explicit(&row->gate_held, ampping_date("/dev/timg1"), memory_order_release);
     atomic_store_explicit(&row->gate_probing, 1u, memory_order_release);
     // An APM denial reads zero and does not trap (TRM v1.2 section 16.5).
     uint32_t const foreign = *(uint32_t const volatile*)(AMPPING_TIMG0_BASE + AMPPING_TIMG_DATE);
     atomic_store_explicit(&row->gate_foreign, foreign, memory_order_release);
 }
 
-void ampping_gate_report(kos_self_t const* self, struct ampbook_row* book)
+void ampping_gate_report(struct ampbook_row* book)
 {
-    uint32_t const own = ampping_date(self, "/dev/timg0");
+    uint32_t const own = ampping_date("/dev/timg0");
     struct ampbook_row* const lp = &book[AMPPING_GATE_NODE];
     // The serving node marks its row alive only once both of its reads have returned.
     int tries;

@@ -7,6 +7,7 @@
 #include "fake_kernel.h"
 
 #include <kickos/sys/errno.h>
+#include <kickos/sys/uart.h> // kos_uart_req
 
 #include <gtest/gtest.h>
 
@@ -35,24 +36,25 @@ namespace
         kos_task_t task(void* data = nullptr, uint32_t size = 0u)
         {
             kos_task_t t = KOS_TASK_NONE;
-            EXPECT_EQ(kos_task_create(data, size, 0u, &t), 0);
+            EXPECT_EQ(fake::empty_task(data, size, &t), 0);
             return t;
         }
 
+        // The task the thread joins rides in `arg`, which `entry` ignores.
         kos_thread_params params(kos_task_t t)
         {
             kos_thread_params p = {};
             p.entry = entry;
+            p.arg = reinterpret_cast<void*>(static_cast<uintptr_t>(t));
             p.name = "t";
             p.prio = 10;
-            p.task = t;
             return p;
         }
 
         int spawn(kos_thread_params const& p)
         {
             kos_thread_t thread = KOS_THREAD_NONE;
-            return kos_thread_create(&p, &thread);
+            return fake::spawn_into(&p, static_cast<kos_task_t>(reinterpret_cast<uintptr_t>(p.arg)), &thread);
         }
 
         fake::Config config_;
@@ -114,7 +116,7 @@ namespace
         with(c);
         void* const data = kos_ram_alloc(8192u);
         kos_task_t t = KOS_TASK_NONE;
-        EXPECT_EQ(kos_task_create(data, 4096u, 0u, &t), -KOS_EPERM);
+        EXPECT_EQ(fake::empty_task(data, 4096u, &t), -KOS_EPERM);
         kos_thread_params p = params(task());
         kos_window const half = {reinterpret_cast<uintptr_t>(kos_ram_alloc(8192u)), 4096u, KOS_WINDOW_MEMORY, 0};
         p.windows = &half;
@@ -185,7 +187,7 @@ namespace
         with(c);
         kos_task_t t = task();
         kos_task_t second = KOS_TASK_NONE;
-        EXPECT_EQ(kos_task_create(nullptr, 0u, 0u, &second), -KOS_ENOMEM);
+        EXPECT_EQ(fake::empty_task(nullptr, 0u, &second), -KOS_ENOMEM);
         EXPECT_EQ(spawn(params(t)), 0);
         EXPECT_EQ(spawn(params(t)), -KOS_ENOMEM);
         kos_cap_t cap = KOS_CAP_NONE;
@@ -205,7 +207,7 @@ namespace
         with(c);
         task();
         kos_task_t second = KOS_TASK_NONE;
-        EXPECT_EQ(kos_task_create(nullptr, 0u, 0u, &second), -KOS_ENOMEM) << "the kernel's two, the init's, one task";
+        EXPECT_EQ(fake::empty_task(nullptr, 0u, &second), -KOS_ENOMEM) << "the kernel's two, the init's, one task";
     }
 
     TEST_F(Fake, root_s_free_regions_and_the_ram_owner_slots_run_out)
@@ -221,11 +223,10 @@ namespace
         EXPECT_EQ(kos_mem_self_grant(b, 256u, 0u), -KOS_ENOMEM);
     }
 
-    TEST_F(Fake, a_grant_narrows_a_task_s_priority_and_a_spawn_stays_within_it)
+    TEST_F(Fake, a_spawn_stays_within_its_task_s_priority_ceiling)
     {
         kos_task_t const t = task();
-        EXPECT_EQ(kos_task_sched_grant(t, 9u, 0u), 0);
-        EXPECT_EQ(kos_task_sched_grant(t, 12u, 0u), -KOS_EPERM) << "a grant never widens";
+        fake::narrow_task(t, 9u, 0u);
         kos_thread_params p = params(t);
         EXPECT_EQ(spawn(p), -KOS_EPERM) << "priority 10 over the ceiling 9";
         p.prio = 9;
@@ -250,7 +251,6 @@ namespace
         EXPECT_EQ(kos_task_slay(foreign, 0u), -KOS_EPERM);
         EXPECT_EQ(kos_task_slay(foreign, 1000u), -KOS_EPERM);
         EXPECT_EQ(kos_task_state(foreign, &status), -KOS_EPERM);
-        EXPECT_EQ(kos_task_sched_grant(foreign, 9u, 0u), -KOS_EPERM);
         EXPECT_EQ(spawn(params(foreign)), -KOS_EPERM);
     }
 
@@ -304,7 +304,7 @@ namespace
         c.kernel_cores = 4u;
         with(c);
         kos_task_t const t = task();
-        ASSERT_EQ(kos_task_sched_grant(t, 0u, 1u << 1), 0);
+        fake::narrow_task(t, 0u, 1u << 1);
         kos_thread_params p = params(t);
         p.core_mask = 1u << 2;
         EXPECT_EQ(spawn(p), -KOS_EPERM);
@@ -394,7 +394,7 @@ namespace
     {
         kos_cap_t ep = KOS_CAP_NONE;
         ASSERT_EQ(kos_endpoint_create(&ep), 0);
-        ASSERT_EQ(kos_console_publish(ep, KOS_TASK_NONE), 0);
+        ASSERT_EQ(fake::publish_console(ep, KOS_TASK_NONE), 0);
         kos_cap_grant const wait[] = {{ep, KOS_CAP_WAIT}};
         kos_thread_params p = params(task());
         p.caps = wait;
@@ -410,28 +410,29 @@ namespace
         EXPECT_EQ(kos_send(KOS_CAP_STDOUT, "x", 1u, 1000u), 1);
     }
 
-    TEST_F(Fake, a_console_flush_is_two_zero_length_sends_and_stops_at_a_failed_one)
+    TEST_F(Fake, a_console_flush_is_one_drain_call_answering_the_drain_s_result)
     {
         kos_cap_t ep = KOS_CAP_NONE;
         ASSERT_EQ(kos_endpoint_create(&ep), 0);
-        ASSERT_EQ(kos_console_publish(ep, KOS_TASK_NONE), 0);
+        ASSERT_EQ(fake::publish_console(ep, KOS_TASK_NONE), 0);
         kos_cap_grant const wait[] = {{ep, KOS_CAP_WAIT}};
         kos_thread_params p = params(task());
         p.caps = wait;
         p.cap_count = 1;
         ASSERT_EQ(spawn(p), 0);
         ASSERT_EQ(kos_cap_narrow(ep, KOS_CAP_SIGNAL | KOS_CAP_TRANSFER | KOS_CAP_HANDOUT), 0);
-        size_t const before = fake::calls_of("kos_send").size();
+        size_t const sends = fake::calls_of("kos_send").size();
         EXPECT_EQ(kos_console_flush(1000u), 0);
-        std::vector<fake::Call> sends = fake::calls_of("kos_send");
-        ASSERT_EQ(sends.size(), before + 2u);
-        for (size_t k = before; k < sends.size(); k++)
-        {
-            EXPECT_EQ(sends[k].args, (std::vector<uint64_t>{KOS_CAP_STDOUT, 0u, 1000u}));
-        }
+        std::vector<fake::Call> calls = fake::calls_of("kos_call");
+        ASSERT_EQ(calls.size(), 1u);
+        EXPECT_EQ(calls[0].args, (std::vector<uint64_t>{KOS_CAP_STDOUT, sizeof(struct kos_uart_req), 1000u}));
+        fake::set_console_drain(-KOS_EBUSY);
+        EXPECT_EQ(kos_console_flush(1000u), -KOS_EBUSY) << "a drain whose bound expired read as drained";
+        fake::set_console_drain(0);
         fake::set_console_receives(false);
         EXPECT_EQ(kos_console_flush(1000u), -KOS_ETIMEDOUT);
-        EXPECT_EQ(fake::calls_of("kos_send").size(), before + 3u);
+        EXPECT_EQ(fake::calls_of("kos_call").size(), 3u);
+        EXPECT_EQ(fake::calls_of("kos_send").size(), sends);
     }
 
     // The console's task ends first, so the endpoint answers as any other one does.
@@ -440,7 +441,7 @@ namespace
         kos_cap_t ep = KOS_CAP_NONE;
         ASSERT_EQ(kos_endpoint_create(&ep), 0);
         kos_task_t const served = task();
-        ASSERT_EQ(kos_console_publish(ep, served), 0);
+        ASSERT_EQ(fake::publish_console(ep, served), 0);
         ASSERT_EQ(kos_task_slay(served, 0), 0);
         // The creator's WAIT goes before any receiver is seated.
         ASSERT_EQ(kos_cap_narrow(ep, KOS_CAP_SIGNAL | KOS_CAP_TRANSFER | KOS_CAP_HANDOUT), 0);
@@ -483,7 +484,7 @@ namespace
         kos_cap_t ep = KOS_CAP_NONE;
         ASSERT_EQ(kos_endpoint_create(&ep), 0);
         kos_task_t const served = task();
-        ASSERT_EQ(kos_console_publish(ep, served), 0);
+        ASSERT_EQ(fake::publish_console(ep, served), 0);
         ASSERT_EQ(kos_cap_narrow(ep, KOS_CAP_SIGNAL | KOS_CAP_TRANSFER | KOS_CAP_HANDOUT), 0);
         uint64_t const before = fake::now();
         EXPECT_EQ(kos_send(KOS_CAP_STDOUT, "x", 1u, 0u), -KOS_ETIMEDOUT);
@@ -515,16 +516,5 @@ namespace
             message = panic.message;
         }
         EXPECT_EQ(message, "fake: runaway");
-    }
-
-    TEST_F(Fake, a_grant_past_the_init_s_own_ceiling_or_naming_no_core_of_the_build_is_refused)
-    {
-        fake::Config c;
-        c.init_ceiling = 20u;
-        with(c);
-        kos_task_t const t = task();
-        EXPECT_EQ(kos_task_sched_grant(t, 21u, 0u), -KOS_EPERM);
-        EXPECT_EQ(kos_task_sched_grant(t, 0u, 1u << 3), -KOS_EINVAL) << "one kernel core";
-        EXPECT_EQ(kos_task_sched_grant(t, 20u, 1u), 0);
     }
 }
