@@ -58,3 +58,12 @@ kickos_add_unit_test(NAME init_walk_no_drivers TEST_PREFIX no_drivers_
           ${_walk_sources} "${PROJECT_SOURCE_DIR}/system/init/compose/driver_path_none.cc"
   INCLUDES ${_walk_includes}
   DEFINITIONS KICKOS_INITWALK_NO_DRIVERS=1)
+
+# The walk's end through the wrap every image of user/apps links on a chip with a bootloader entry.
+kickos_add_unit_test(NAME init_walk_bootloader TEST_PREFIX bootloader_
+  SOURCES ending_rules.cc harness.cc drivers.cc fake_kernel.cc ${_outputs}
+          ${_walk_sources} "${PROJECT_SOURCE_DIR}/system/init/compose/driver_path_none.cc"
+          "${PROJECT_SOURCE_DIR}/user/apps/ending/shutdown.cc"
+  INCLUDES ${_walk_includes}
+  DEFINITIONS KICKOS_INITWALK_NO_DRIVERS=1)
+target_link_options(init_walk_bootloader PRIVATE "LINKER:--wrap=kos_shutdown")

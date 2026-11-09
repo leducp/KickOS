@@ -19,6 +19,7 @@
 #include <kickos/arch/bounded_wait.h>
 #include "pin_guard.h"
 #include <kickos/arch/clk_anchor.h>
+#include <kickos/arch/clock_fallback.h>
 #include <kickos/console_tx.h>
 #include <kickos/io/mmio.h>
 
@@ -229,7 +230,8 @@ namespace
         r32(scu::PLLCON0) &= ~scu::PLLCON0_FINDIS;
         r32(scu::PLLCON0) |= scu::PLLCON0_RESLD;
 
-        if (not kickos::arch::wait_set(r32(scu::PLLSTAT), scu::PLLSTAT_VCOLOCK))
+        if (not kickos::arch::wait_set(r32(scu::PLLSTAT), scu::PLLSTAT_VCOLOCK)
+            or KICKOS_WITNESS_CLOCK_FALLBACK)
         {
             SystemCoreClock = 24000000u; // PLL never locked: the CPU stays on fOFI
             return;

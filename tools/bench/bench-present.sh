@@ -17,6 +17,11 @@
 #
 #   KICKOS_RIG=/path/to/main/checkout/.session/rig.conf tools/bench/bench-present.sh
 #
+# The machine asked is BENCH_HOST when it is set, THIS BOX when it is set empty, and otherwise
+# RIG_BENCH_HOST from the rig config:
+#
+#   BENCH_HOST= tools/bench/bench-present.sh      this box, whatever the rig names
+#
 # THE MACHINE IT ASKED IS IN ITS OWN OUTPUT, always, and so is what ssh resolves that name
 # to. A bench reached through an alias and a laptop with an empty bus otherwise produce the
 # same board table.
@@ -57,12 +62,11 @@ case "${1:-}" in
         ;;
 esac
 
-# The host, and where the name came from. BENCH_HOST wins, because that is what bench.sh and
-# bench-fleet.sh select remote mode on; RIG_BENCH_HOST is the rig's own answer to which box
-# is the bench, so this script never has to be told a hostname.
+# BENCH_HOST wins whenever it is SET, and set empty it names this box, as it does for bench.sh
+# and bench-fleet.sh. Only an unset BENCH_HOST falls back to RIG_BENCH_HOST.
 HOST=""
 HOST_FROM=""
-if [ -n "${BENCH_HOST:-}" ]; then
+if [ -n "${BENCH_HOST+set}" ]; then
     HOST="$BENCH_HOST"
     HOST_FROM="BENCH_HOST"
 elif [ -n "${RIG_BENCH_HOST:-}" ]; then
@@ -73,6 +77,13 @@ bench_host_select "$HOST"
 
 say_where() {
     echo "=== rig     ${RIG_CONF:-none}"
+    if [ -z "$HOST" ] && [ -n "$HOST_FROM" ]; then
+        echo "=== bench   THIS BOX ($(uname -n)): BENCH_HOST is set empty"
+        if [ -n "${RIG_BENCH_HOST:-}" ]; then
+            echo "===         $RIG_BENCH_HOST, which ${RIG_CONF:-the rig config} names as the bench, was not asked."
+        fi
+        return 0
+    fi
     if [ -z "$HOST" ]; then
         echo "=== bench   THIS BOX ($(uname -n)): no bench host is named"
         echo "===         If the boards are on another machine, set RIG_BENCH_HOST in"
@@ -99,7 +110,8 @@ say_where() {
     fi
     if [ -z "${BENCH_HOST:-}" ]; then
         echo "===         BENCH_HOST is unset, so bench.sh and bench-fleet.sh would run"
-        echo "===         against THIS BOX. Export BENCH_HOST=$HOST for a flashing run."
+        echo "===         against THIS BOX. Export BENCH_HOST=$HOST for a flashing run,"
+        echo "===         or BENCH_HOST= (set, empty) to ask this box here too."
     fi
 }
 
@@ -160,11 +172,48 @@ hardware_boards() {
 BYID="/dev/serial/by-id"
 DEVS=""
 
-# Expand every console pattern, and the whole by-id directory, in ONE round trip. The
-# directory listing is what says whether a derived J-Link VCOM path is really there: a
-# pattern holding no wildcard comes back as itself whether or not it exists.
+# The boards naming each row id, and each console pattern, over every board the tree can flash.
+declare -A ROW_BOARDS=() CONSOLE_BOARDS=()
+add_namer() { # <array> <key> <board>
+    local -n _namers=$1
+    case " ${_namers[$2]:-} " in
+        *" $3 "*)
+            ;;
+        *)
+            _namers[$2]="${_namers[$2]:+${_namers[$2]} }$3"
+            ;;
+    esac
+}
+fill_namers() {
+    local b id _
+    while IFS= read -r b; do
+        while IFS='|' read -r id _; do
+            [ -n "$id" ] || continue
+            add_namer ROW_BOARDS "$id" "$b"
+        done < <(board_probe_rows "$b" 2>/dev/null)
+        if console_row "$b" "" 0 && [ -n "$CONSOLE_PATTERN" ]; then
+            add_namer CONSOLE_BOARDS "$CONSOLE_PATTERN" "$b"
+        fi
+    done < <(hardware_boards)
+}
+
+others_of() { # <array> <key> <board>
+    local -n _namers=$1
+    local b out=""
+    for b in ${_namers[$2]:-}; do
+        if [ "$b" != "$3" ]; then
+            out="${out:+$out, }$b"
+        fi
+    done
+    printf '%s' "$out"
+}
+
+# Expand every console pattern and every by-id row, and the whole by-id directory, in ONE round
+# trip. The directory listing is what says whether a derived J-Link VCOM path is really there.
+# A pattern is sent once however many boards name it, or each of its devices comes back once per
+# board.
 resolve_consoles() { # <board>...
-    local b pats=""
+    local b id _ pats=""
     for b in "$@"; do
         if console_row "$b" "" 0; then
             if [ -n "$CONSOLE_PATTERN" ]; then
@@ -172,8 +221,18 @@ resolve_consoles() { # <board>...
 "
             fi
         fi
+        while IFS='|' read -r id _; do
+            case $id in
+                /*)
+                    pats="$pats$id
+"
+                    ;;
+                *)
+                    ;;
+            esac
+        done < <(board_probe_rows "$b" 2>/dev/null)
     done
-    DEVS=$(printf '%s%s/*\n' "$pats" "$BYID" | console_expand_all)
+    DEVS=$(printf '%s%s/*\n' "$pats" "$BYID" | awk '!seen[$0]++' | console_expand_all)
 }
 
 matches_of() { # <pattern>
@@ -202,7 +261,7 @@ done <<\KICKOS_DEVS'
 
 # console_state <board> <probe serial>  one line, plus more where something needs saying.
 console_state() {
-    local board="$1" sn="$2" rc n m
+    local board="$1" sn="$2" rc n m others
     console_row "$board" "$sn" 0
     rc=$?
     if [ "$rc" = "1" ]; then
@@ -232,6 +291,10 @@ console_state() {
             echo "$m (pinned by $CONSOLE_RIGKEY)"
         else
             echo "$m"
+        fi
+        others=$(others_of CONSOLE_BOARDS "$CONSOLE_PATTERN" "$board")
+        if [ -n "$others" ]; then
+            echo "$INDENT""SHARED with $others: a capture reads whichever board the cable is on."
         fi
         return 0
     fi
@@ -265,43 +328,58 @@ flash_serial() { # <rows>
 }
 
 # board_state <board>  the block for one board. Returns 1 when it is not fully present and 2
-# when the bus cannot decide it, which is NO ROW, SHARED, or a probe serial that is a guess.
+# when the bus cannot decide it: NO ROW, a row another board names too, or a probe serial that
+# is a guess.
 board_state() {
-    local board="$1" rows rc id flag what sn snrc missing=0 shown=0 state undecided=0
-    rows=$(board_probe_rows "$board")
-    rc=$?
-    if [ "$rc" = "1" ]; then
+    local board="$1" rows id flag what sn snrc missing=0 shown=0 state word undecided=0 devs others
+    if ! rows=$(board_probe_rows "$board"); then
         printf '%-16s %-9s %s\n' "$board" "NO ROW" "presence is not decidable; add a row to tools/bench/board-rows.sh"
-        console_line "$board" ""
-        return 2
-    fi
-    if [ "$rc" = "2" ]; then
-        printf '%-16s %-9s %s\n' "$board" "SHARED" "$rows"
         console_line "$board" ""
         return 2
     fi
     while IFS='|' read -r id flag what; do
         [ -n "$id" ] || continue
-        if usb_present "$id"; then
-            sn=""
-            # A `vid` row is presence only, never identification (see board-rows.sh): the
-            # display below never reads $sn for one. Asking usb_serial_of anyway means every
-            # vid row that shares its vid:pid with more than one enumerated device prints
-            # that function's ambiguity refusal on stderr, on every run, whether or not
-            # anything here needed to know WHICH device it was.
-            snrc=0
-            if [ "$flag" != "vid" ]; then
-                sn=$(usb_serial_of "${id%%:*}" "${id##*:}")
-                snrc=$?
-                if [ "$snrc" != "0" ]; then
-                    sn=""
+        sn=""
+        snrc=0
+        devs=""
+        state="ABSENT"
+        case $id in
+            /*)
+                devs=$(matches_of "$id" | paste -sd ' ' -)
+                if [ -n "$devs" ]; then
+                    state="present"
                 fi
+                ;;
+            *)
+                if usb_present "$id"; then
+                    state="present"
+                    # A `vid` row is presence only, never identification (see board-rows.sh), and
+                    # asking anyway prints usb_serial_of's ambiguity refusal for nothing.
+                    if [ "$flag" != "vid" ]; then
+                        sn=$(usb_serial_of "${id%%:*}" "${id##*:}")
+                        snrc=$?
+                        if [ "$snrc" != "0" ]; then
+                            sn=""
+                        fi
+                    fi
+                fi
+                ;;
+        esac
+        others=""
+        if [ "$state" = "present" ]; then
+            others=$(others_of ROW_BOARDS "$id" "$board")
+        fi
+        word="$state"
+        if [ "$flag" = "seen" ]; then
+            word="seen"
+            if [ "$state" = "ABSENT" ]; then
+                word="unseen"
             fi
-            state="present"
-        else
-            sn=""
-            state="ABSENT"
+        elif [ "$state" = "ABSENT" ]; then
             missing=1
+        elif [ -n "$others" ]; then
+            word="SHARED"
+            undecided=1
         fi
         if [ "$shown" = "0" ]; then
             printf '%-16s ' "$board"
@@ -309,23 +387,37 @@ board_state() {
         else
             printf '%-16s ' ""
         fi
-        if [ "$state" = "ABSENT" ]; then
-            printf '%-9s %s %s\n' "ABSENT" "$id" "$what"
+        printf '%-9s ' "$word"
+        if [ -n "$devs" ]; then
+            printf '%s at %s' "$what" "$devs"
+        elif [ "${id#/}" != "$id" ]; then
+            printf '%s (%s)' "$what" "$id"
+        elif [ "$state" = "ABSENT" ]; then
+            printf '%s %s' "$id" "$what"
         elif [ "$flag" = "vid" ]; then
-            printf '%-9s %s %s: a device of that kind is here, which is no evidence it is this one\n' "present" "$id" "$what"
+            printf '%s %s: a device of that kind is here, which is no evidence it is this one' "$id" "$what"
         elif [ -n "$sn" ]; then
-            printf '%-9s %s %s, serial %s\n' "present" "$id" "$what" "$(pretty_serial "$sn")"
+            printf '%s %s, serial %s' "$id" "$what" "$(pretty_serial "$sn")"
         elif [ "$snrc" = "2" ]; then
             # The flashing path refuses this bus, so the read-only one may not answer it.
             undecided=1
-            printf '%-9s %s %s, SERIAL REFUSED: which device this is is a guess (the refusal is above)\n' \
-                   "present" "$id" "$what"
+            printf '%s %s, SERIAL REFUSED: which device this is is a guess (the refusal is above)' "$id" "$what"
         else
-            printf '%-9s %s %s, no serial descriptor\n' "present" "$id" "$what"
+            printf '%s %s, no serial descriptor' "$id" "$what"
         fi
+        if [ -n "$others" ]; then
+            printf '; also a row of %s, so whose it is is not on the bus' "$others"
+        fi
+        printf '\n'
     done <<EOF
 $rows
 EOF
+    if [ "$missing" = "1" ]; then
+        what=$(board_unseen "$board")
+        if [ -n "$what" ]; then
+            printf '%-16s %-9s %s\n' "" "reading" "$what"
+        fi
+    fi
     sn=$(flash_serial "$rows")
     snrc=$?
     # A console derived from a probe serial cannot be derived when the probe is absent, and
@@ -380,6 +472,7 @@ fi
 say_where
 reach || exit 2
 read_bus
+fill_namers
 resolve_consoles "${WANT[@]}"
 echo
 
@@ -436,8 +529,9 @@ if [ "$ABSENT" -gt 0 ]; then
 fi
 if [ "$UNDECIDED" -gt 0 ]; then
     echo "    NO ROW and SHARED are neither present nor absent: this chain cannot tell from"
-    echo "    the bus, which is a row to add to tools/bench/board-rows.sh and never a thing"
-    echo "    to assume. A SERIAL REFUSED row is the same verdict one level in: the device is"
+    echo "    the bus. NO ROW is a row to add to tools/bench/board-rows.sh, SHARED a device"
+    echo "    more than one board can be wired to, and neither is a thing to assume."
+    echo "    A SERIAL REFUSED row is the same verdict one level in: the device is"
     echo "    here and which unit it is is a guess, which is a RIG_PROBE_<VID>_<PID> pin to"
     echo "    set in the rig config and never a board to flash."
 fi

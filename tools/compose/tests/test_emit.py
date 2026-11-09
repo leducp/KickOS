@@ -2,6 +2,7 @@
 # Copyright (c) 2026 Philippe Leduc
 
 import os
+import random
 import re
 import shutil
 import subprocess
@@ -10,7 +11,7 @@ import tempfile
 import types
 import unittest
 
-from kickos_compose import descriptions, emit, partition, supply
+from kickos_compose import descriptions, emit, partition, region, supply
 from kickos_compose.composition import Cache, admit_composition
 from kickos_compose.manifest import read_manifest
 
@@ -234,9 +235,10 @@ class Emitted(unittest.TestCase):
     def test_a_masked_stack_is_the_chip_scripts_to_check_and_the_arena_is_replayed(self):
         source, asserts, fragment, gate = self.system("xmc4800-relax.yaml")
         self.assertNotIn("_tls_carve", asserts)
-        placed = [line for line in asserts.splitlines() if line.startswith("__kickos_system_arena_")]
-        self.assertEqual(placed[0], "__kickos_system_arena_0 = ALIGN(__kickos_ram_start, 0x200) + 0x200;")
-        self.assertTrue(placed[1].startswith("__kickos_system_arena_1 = ALIGN(__kickos_system_arena_0, "))
+        placed = [line for line in asserts.splitlines() if re.match(r"__kickos_system_arena_\d+ = ", line)]
+        self.assertTrue(placed[0].startswith("__kickos_system_arena_0 = "))
+        self.assertIn("__kickos_system_arena_a_0 = ALIGN(__kickos_system_arena_gs_start, 0x200);", asserts)
+        self.assertIn("__kickos_system_arena_b_1 = ALIGN(__kickos_system_arena_0, ", asserts)
         self.assertEqual(asserts.count("<= __kickos_ram_end,"), len(placed))
         self.assertIn("the arena cannot hold root's boot stack", asserts)
         self.assertIn("task `sensor`'s default stack", asserts)
@@ -653,6 +655,87 @@ class Reserved(unittest.TestCase):
         reserved = supply.init_reservations([], shared, Manifest())
         self.assertEqual(reserved, [64, 64])
         self.assertEqual(supply.private_block([], shared, Manifest()), 64)
+
+
+def ld_eval(text, env):
+    """Evaluates the `symbol = expression;` statements of an ld fragment over `env`, as ld's
+    unsigned arithmetic: the strings of ASSERTs are dropped and their conditions kept in order."""
+    text = re.sub(r'"[^"]*"', '""', text).replace('"")', '"");')
+    asserts = []
+    for statement in text.split(";"):
+        statement = statement.strip()
+        if not statement or statement.startswith("PROVIDE"):
+            continue
+        found = re.match(r"ASSERT\((.*), \"\"\)$", statement, re.S)
+        if found:
+            asserts.append(found.group(1))
+            continue
+        name, expression = re.match(r"(\w+)\s*=\s*(.*)$", statement, re.S).groups()
+        expression = expression.replace("/", "//")
+        env[name] = eval(expression, {"ALIGN": lambda v, a: -(-v // a) * a}, env) % (1 << 64)
+    return [bool(eval(c.replace("/", "//"), {}, env)) for c in asserts]
+
+
+class ArenaReplays(unittest.TestCase):
+    """arch/common/ram_arena.h has three replays that must place alike: region.py ArenaModel,
+    emit.py arena_step and the ld macros of arch/common/boot_arena.ld.h."""
+
+    BLOCKS = ((0x200, 0x200), (0x1000, 0x1000), (0x40, 0x40), (0x2000, 0x2000), (0x100, 0x100),
+              (0x20, 0x20), (0x60, 0x20), (0x400, 0x400), (0x30, 0x10), (0x800, 0x800),
+              (0x20, 0x100), (0x10, 0x400))
+
+    def test_the_emitted_statements_place_every_sequence_as_the_model_does(self):
+        rng = random.Random(7)
+        for _ in range(300):
+            start = rng.randrange(0, 0x3000, 16)
+            sequence = [rng.choice(self.BLOCKS) for _ in range(rng.randrange(1, 12))]
+            model = region.ArenaModel(start)
+            env = {"s": start}
+            text = ["Ac_start = s; Ags_start = s; Age_start = s;"]
+            prev = "start"
+            for n, (size, align) in enumerate(sequence):
+                model.place(size, align)
+                text.extend(emit.arena_step(str(n), prev, size, align))
+                prev = str(n)
+            text = " ".join(text).replace("__kickos_system_arena_", "A")
+            ld_eval(text, env)
+            self.assertEqual(env["A%d" % (len(sequence) - 1)], model.cursor)
+            self.assertEqual((env["Ags_" + prev], env["Age_" + prev]), (model.gs, model.ge))
+
+    def test_the_boot_macros_refuse_exactly_when_the_model_does(self):
+        cpp = shutil.which("cpp")
+        self.assertIsNotNone(cpp, "no cpp: the boot macros are replayed through it")
+        header = os.path.join(TREE, "arch", "common")
+        rng = random.Random(11)
+        for _ in range(200):
+            idle, root = rng.choice((0x200, 0x400, 0x2000)), rng.choice((0x400, 0x1000, 0x2000))
+            private = rng.choice((0x40, 0x80, 0x200))
+            stack, stack_align = rng.choice(((0x1000, 0x1000), (0x2000, 0x2000), (0x400, 0x1000),
+                                              (0x800, 0x2000)))
+            count = rng.randrange(0, 6)
+            start = rng.randrange(0, 0x3000, 16)
+            end = start + rng.randrange(0x2000, 0x10000, 0x400)
+            defs = ["-DKICKOS_BOOT_IDLE_SIZE=%d" % idle, "-DKICKOS_BOOT_IDLE_ALIGN=%d" % idle,
+                    "-DKICKOS_BOOT_ROOT_SIZE=%d" % root, "-DKICKOS_BOOT_ROOT_ALIGN=%d" % root,
+                    "-DKICKOS_BOOT_PRIVATE_SIZE=%d" % private, "-DKICKOS_BOOT_PRIVATE_ALIGN=%d" % private,
+                    "-DKICKOS_POOL_STACK_SIZE=%d" % stack, "-DKICKOS_POOL_STACK_ALIGN=%d" % stack_align,
+                    "-DKICKOS_POOL_STACK_COUNT=pool_stacks"]
+            source = ('#include "boot_arena.ld.h"\nKICKOS_BOOT_ARENA_ASSERT(ram_start, ram_end)\n'
+                      "KICKOS_POOL_ARENA_ASSERT(ram_start, ram_end)\n")
+            done = subprocess.run([cpp, "-P", "-I", header] + defs + ["-"], input=source, text=True,
+                                  capture_output=True, check=True)
+            env = {"ram_start": start, "ram_end": end, "pool_stacks": count}
+            boot, pool = ld_eval(done.stdout, env)
+            model = region.ArenaModel(start)
+            for size in (idle, root):
+                model.place(size, size)
+            boots = model.cursor <= end
+            model.place(private, private)
+            for _ in range(count):
+                model.place(stack, stack_align)
+            self.assertEqual(boot, boots)
+            self.assertEqual(pool, model.cursor <= end,
+                             (idle, root, private, stack, stack_align, count, start, end))
 
 
 if __name__ == "__main__":

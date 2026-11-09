@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Philippe Leduc
 
 #include <kickos/sync.h>
+#include <kickos/bench.h>
 #include <kickos/sched.h>
 #include <kickos/smptrace.h>
 #include <kickos/cap.h>
@@ -10,6 +11,7 @@
 #include <kickos/kernel.h>
 #include <kickos/irqlock.h>
 #include <kickos/klock.h>
+#include <kickos/task.h>
 #include <kickos/time.h>
 #include <kickos/vrange.h>
 #include <kickos/word.h>
@@ -89,7 +91,7 @@ namespace kickos
         return c->switch_count;
     }
 
-    uint32_t wq_block(List& q, WaitKind kind, void* obj, Thread* woken, Held held)
+    uint32_t wq_park(List& q, WaitKind kind, void* obj, Held held)
     {
         Thread* c = sched::current();
         uint32_t const epoch = park_queueless(c, kind, obj, held);
@@ -97,6 +99,12 @@ namespace kickos
         q.push_back(&c->link);
         // BEFORE the reschedule, which on a stall never returns.
         KOS_TRACE(::kickos::KOS_TR_PARK, KOS_TRACE_ID(c), KOS_TRACE_ID(&q));
+        return epoch;
+    }
+
+    uint32_t wq_block(List& q, WaitKind kind, void* obj, Thread* woken, Held held)
+    {
+        uint32_t const epoch = wq_park(q, kind, obj, held);
         sched::reschedule(woken, held);
         return epoch;
     }
@@ -247,6 +255,33 @@ namespace kickos
         return i;
     }
 
+    namespace
+    {
+        // The highest of `p` and the priorities of the waiters on `l` that wait on the death of the
+        // task whose run list `t` is on. *first caches that run list's first node, found on the
+        // first waiter that outranks `p`.
+        uint8_t waiters_lend(Thread const* t, uint8_t p, HeadList const& l, ListNode const** first)
+        {
+            for (ListNode* n = l.head; n != nullptr; n = n->next)
+            {
+                Thread* const w = thread_of(n);
+                if (w->prio <= p)
+                {
+                    continue;
+                }
+                if (*first == nullptr)
+                {
+                    *first = task_run_first(t);
+                }
+                if (task_runs(w->wait_task_target()) == *first)
+                {
+                    p = w->prio;
+                }
+            }
+            return p;
+        }
+    }
+
     // The single effective-priority funnel. Runs under IrqLock on every mutex unlock,
     // reply and close, so NO term added here may walk the capability table.
     uint8_t thread_effective_prio(Thread* t)
@@ -286,7 +321,208 @@ namespace kickos
                 }
             }
         }
+        // O(W + t's place on its run list), interrupt-masked, W the death waiters, at most the
+        // thread slots; one empty-list test each with none.
+        ListNode const* first = nullptr;
+        p = waiters_lend(t, p, kernel().death_waiters, &first);
+        p = waiters_lend(t, p, kernel().death_dirty, &first);
         return p;
+    }
+
+    namespace
+    {
+        Thread* pi_next(Thread const* o)
+        {
+            WordRecord const* const m = o->wait_mutex();
+            if (m == nullptr)
+            {
+                return nullptr;
+            }
+            return m->owner;
+        }
+
+        // Death waiter `w`'s priority moved: its task's threads owe it a recompute.
+        void death_dirty_mark(Thread* w)
+        {
+            Kernel& k = kernel();
+            if (list_contains(k.death_dirty.head, &w->link))
+            {
+                return;
+            }
+            k.death_waiters.unlink(&w->link);
+            k.death_dirty.push(&w->link);
+        }
+
+        // Stops at the first thread already at or above `p`, what it waits on having it too, and
+        // at a death waiter, whose task pi_drain_deaths visits. The depth bound only stops the
+        // walk on a foreign cycle.
+        void pi_raise_chain(Thread* o, uint8_t p, Held held)
+        {
+            for (int depth = 0; o != nullptr and depth <= kernel().threads.count(); depth++)
+            {
+                if (o->prio >= p)
+                {
+                    return;
+                }
+                sched::set_prio(o, p, held);
+                if (o->wait_task_target() != nullptr)
+                {
+                    death_dirty_mark(o);
+                    return;
+                }
+                o = pi_next(o);
+            }
+        }
+
+        // As pi_raise_chain, a recompute in place of a raise: stops at the first thread the
+        // recompute leaves where it was.
+        void pi_settle_chain(Thread* o, Held held)
+        {
+            for (int depth = 0; o != nullptr and depth <= kernel().threads.count(); depth++)
+            {
+                uint8_t const p = thread_effective_prio(o);
+                if (p == o->prio)
+                {
+                    return;
+                }
+                sched::set_prio(o, p, held);
+                if (o->wait_task_target() != nullptr)
+                {
+                    death_dirty_mark(o);
+                    return;
+                }
+                o = pi_next(o);
+            }
+        }
+
+        void pi_settle_runs(Task const* t, Held held)
+        {
+            for (ListNode* n = task_runs(t); n != nullptr; n = n->next)
+            {
+                pi_settle_chain(KICKOS_CONTAINER_OF(n, Thread, reclaim), held);
+            }
+        }
+
+#ifndef KICKOS_PI_DRAIN_POPS
+#define KICKOS_PI_DRAIN_POPS (kernel().threads.count() + 1)
+#endif
+
+        // Each death waiter whose priority moved has its task's threads recomputed, which can
+        // move another. From a consistent state one priority change moves each thread at most
+        // once, a lowered value never rising again within the drain nor a raised one falling,
+        // so a waiter is dirtied at most once: pops <= W <= N, the thread slots, each recomputing
+        // the M threads of a task and their mutex chains, up to N + 1 each. A waited task is
+        // ended or stopped before it is lent to, its threads waiting on nothing, so in a state
+        // the ABI reaches a drain pops at most the waiter its walk stopped at. KICKOS_PI_DRAIN_POPS
+        // (N + 1) is not reached from a consistent state; past it the lends are left as they
+        // stand, silent in a release build as the mutex chain's bound is. A test posture lowers
+        // it to reach that arm.
+        void pi_drain_deaths(Held held)
+        {
+            Kernel& k = kernel();
+            for (int pops = 0; not k.death_dirty.empty(); pops++)
+            {
+                if (pops >= KICKOS_PI_DRAIN_POPS)
+                {
+                    KICKOS_DEBUG_ASSERT(KICKOS_PI_DRAIN_POPS < kernel().threads.count() + 1);
+                    while (not k.death_dirty.empty())
+                    {
+                        k.death_waiters.push(k.death_dirty.pop());
+                    }
+                    return;
+                }
+                ListNode* const w = k.death_dirty.pop();
+                k.death_waiters.push(w);
+                pi_settle_runs(thread_of(w)->wait_task_target(), held);
+            }
+        }
+    }
+
+    void pi_raise(Thread* o, uint8_t p, Held held)
+    {
+        pi_raise_chain(o, p, held);
+        pi_drain_deaths(held);
+    }
+
+    void pi_settle(Thread* o, Held held)
+    {
+        pi_settle_chain(o, held);
+        pi_drain_deaths(held);
+    }
+
+    uint32_t death_park(Thread* c, Task* t, Held held)
+    {
+        uint32_t const epoch = park_queueless(c, WAIT_TASK_EMPTY, t, held);
+        kernel().death_waiters.push(&c->link);
+        return epoch;
+    }
+
+    void death_wait_lend(Task const* t, Held held)
+    {
+        pi_settle_runs(t, held);
+        pi_drain_deaths(held);
+    }
+
+    // Also from the timer interrupt, for a wait that timed out.
+    void death_wait_leave(Thread* w, Held held)
+    {
+        Kernel& k = kernel();
+        Task* const t = w->wait_task_target();
+        if (not k.death_dirty.unlink_if_present(&w->link))
+        {
+            k.death_waiters.unlink(&w->link);
+        }
+        if (k.death_leave_batch)
+        {
+            task_lend_owe(t);
+            k.death_leave_owed = true;
+            if (w->prio > k.death_leave_top)
+            {
+                k.death_leave_top = w->prio;
+            }
+            return;
+        }
+        death_wait_lend(t, held);
+    }
+
+    void death_leave_batch_begin()
+    {
+        kernel().death_leave_batch = true;
+    }
+
+    void death_leave_batch_end(Held held)
+    {
+        Kernel& k = kernel();
+        k.death_leave_batch = false;
+        if (not k.death_leave_owed)
+        {
+            return;
+        }
+        k.death_leave_owed = false;
+        uint8_t const top = k.death_leave_top;
+        k.death_leave_top = 0;
+        Thread* const c = sched::current();
+        uint8_t before = 0;
+        if (c != nullptr)
+        {
+            before = c->prio;
+        }
+        for (Task& t : kernel().tasks())
+        {
+            if (task_lend_owed_take(&t))
+            {
+                pi_settle_runs(&t, held);
+            }
+        }
+        pi_drain_deaths(held);
+        // The wakes in between chose against the current's lend: lowered, it owes the pass
+        // resched_after_wake would have taken, an exiting thread rotated only by a higher wake.
+        if (c == nullptr or c->prio >= before or c->state == ThreadState::EXITED
+            or (c->dying and top <= c->prio))
+        {
+            return;
+        }
+        sched::reschedule(nullptr, held);
     }
 
     namespace
@@ -509,34 +745,13 @@ namespace kickos
                 m = record_take(w.key, WordKind::PI, t);
             }
             c->wait_va = va;
-            // Pass 2: the chain is now known acyclic. Stopping at the first holder already at
-            // or above c's prio is sufficient; everything above it is too.
-            {
-                Thread* o = t;
-                int depth = 0;
-                while (o != nullptr)
-                {
-                    if (o->prio >= c->prio)
-                    {
-                        break;
-                    }
-                    sched::set_prio(o, c->prio, lock);
-                    if (o->wait_mutex() == nullptr)
-                    {
-                        break;
-                    }
-                    o = o->wait_mutex()->owner;
-                    depth++;
-                    if (depth > kernel().threads.count())
-                    {
-                        break;
-                    }
-                }
-            }
-            // WAIT_MUTEX is what puts c on the chain walk above for the next blocker. A waker
+            // WAIT_MUTEX is what puts c on the chain walk below for the next blocker. A waker
             // transfers the record and writes wait_result.
+            *epoch = wq_park(ask)(m->waiters, WAIT_MUTEX, m, lock);
+            // Pass 2, the chain now known acyclic, with c on the waiters its recomputes read.
+            pi_raise(t, c->prio, lock);
             ktime_limit_arm(c, limit, lock);
-            *epoch = wq_block(ask)(m->waiters, WAIT_MUTEX, m, nullptr, lock);
+            sched::reschedule(nullptr, lock);
             return Attempt::PARKED;
         }
 
@@ -882,8 +1097,15 @@ namespace kickos
         // `dying` gets NO recompute: it stays boosted for the remainder of its own teardown, a
         // bounded inversion since the sweep is chunked. The waiter is woken with
         // MUTEX_OWNER_DIED, the protected state may be inconsistent, but never stranded.
+#if KICKOS_BENCH_WALKS
+        BenchTick const walk_start = bench_cyccnt();
+        uint32_t handed_records = 0;
+#endif
         while (dying->held_list != nullptr)
         {
+#if KICKOS_BENCH_WALKS
+            handed_records++;
+#endif
             WordRecord* const m = dying->held_list;
             held_remove(dying, m);
             Thread* const next = wq_pop_highest(m->waiters);
@@ -908,29 +1130,89 @@ namespace kickos
             }
             sched::wake(next, held);
         }
+#if KICKOS_BENCH_WALKS
+        if (handed_records != 0)
+        {
+            bench_walk_add(BD_OWNER_EXIT, bench_cyccnt() - walk_start, handed_records);
+        }
+#endif
     }
 
 #if KICKOS_HAVE_ASPACE
+    namespace
+    {
+        // The pass is weighed on the highest thread woken: a dying caller declines one for a
+        // thread it outranks.
+        void reach_lost_woke(Thread* t, Thread** top, [[maybe_unused]] Held held)
+        {
+            if (*top == nullptr)
+            {
+                *top = t;
+                return;
+            }
+            Thread* placed = t;
+            if (t->prio > (*top)->prio)
+            {
+                placed = *top;
+                *top = t;
+            }
+#if KICKOS_KERNEL_CORES > 1
+            sched::place_ready(placed, held);
+#else
+            (void)placed;
+#endif
+        }
+
+        // Readies and never switches: a switch here lets other threads unpark, free and reuse
+        // what the walk's saved pointers name before it resumes on them.
+        void reach_lost_scan(struct arch_aspace* space, uintptr_t base, size_t bytes,
+                             Thread** top, Held held)
+        {
+#if KICKOS_BENCH_WALKS
+            BenchTick const scan_start = bench_cyccnt();
+            uint32_t ended_waits = 0;
+#endif
+            WordRecord* m = kernel().word_active;
+            while (m != nullptr)
+            {
+                // Saved first: the abort frees a record its last waiter leaves.
+                WordRecord* const next_record = m->next_active;
+                ListNode* n = m->waiters.head;
+                while (n != nullptr)
+                {
+                    ListNode* const after = n->next;
+                    Thread* const t = thread_of(n);
+                    if (domain_space(thread_domain(t)) == space and t->wait_va >= base
+                        and t->wait_va - base < bytes)
+                    {
+                        if (thread_abort_park_no_resched(t, -KOS_EFAULT, held))
+                        {
+                            reach_lost_woke(t, top, held);
+                        }
+#if KICKOS_BENCH_WALKS
+                        ended_waits++;
+#endif
+                    }
+                    n = after;
+                }
+                m = next_record;
+            }
+#if KICKOS_BENCH_WALKS
+            if (ended_waits != 0)
+            {
+                bench_walk_add(BD_REACH_LOST, bench_cyccnt() - scan_start, ended_waits);
+            }
+#endif
+        }
+    }
+
     void word_reach_lost(struct arch_aspace* space, uintptr_t base, size_t bytes, Held held)
     {
-        WordRecord* m = kernel().word_active;
-        while (m != nullptr)
+        Thread* top = nullptr;
+        reach_lost_scan(space, base, bytes, &top, held);
+        if (top != nullptr)
         {
-            // Saved first: the abort frees a record its last waiter leaves.
-            WordRecord* const next_record = m->next_active;
-            ListNode* n = m->waiters.head;
-            while (n != nullptr)
-            {
-                ListNode* const after = n->next;
-                Thread* const t = thread_of(n);
-                if (domain_space(thread_domain(t)) == space and t->wait_va >= base
-                    and t->wait_va - base < bytes)
-                {
-                    thread_abort_park(t, -KOS_EFAULT, held);
-                }
-                n = after;
-            }
-            m = next_record;
+            sched::resched_after_wake(top, held);
         }
     }
 
@@ -942,13 +1224,18 @@ namespace kickos
             return;
         }
         size_t const g = arch_aspace_granule();
+        Thread* top = nullptr;
         for (size_t i = 0; i < VirtualRanges::capacity(); i++)
         {
             VirtualRange const* const e = ranges->at(i);
             if (e != nullptr and (e->flags & VR_WINDOW) != 0 and e->holder == holder)
             {
-                word_reach_lost(space, e->base, static_cast<size_t>(e->pages) * g, held);
+                reach_lost_scan(space, e->base, static_cast<size_t>(e->pages) * g, &top, held);
             }
+        }
+        if (top != nullptr)
+        {
+            sched::resched_after_wake(top, held);
         }
     }
 #endif

@@ -11,7 +11,7 @@
    sched   tickless
 
 [rootfault] child: wrote my own granted region
-[rootfault] main: writing the child's granted region at 0x20000 (expect fault)
+[rootfault] main: writing the child's granted region at 0x20000 (expect fault) by the store at 0xffc00682
 
 === THREAD FAULT === thread 'main' killed, system continues
   PC=0xffc00682 MPESTS=0x6

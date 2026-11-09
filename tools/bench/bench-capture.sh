@@ -102,6 +102,13 @@ refuse() {
   exit 1
 }
 
+picotool_why() {
+  local line
+  line=$(printf '%s\n' "$1" | grep -v '^flash: +' | grep -m1 -iE 'error|fail|more than one|no accessible|not found|unable|cannot')
+  [ -n "$line" ] || line=$(printf '%s\n' "$1" | grep -v '^flash: +' | tail -n 1)
+  printf '%s' "${line:-no output}"
+}
+
 [ -x "$ROOT/tools/flash.sh" ] || refuse "no $ROOT/tools/flash.sh: ROOT does not hold the flash recipes"
 [ -f "$ROOT/boards/$BOARD/board.cmake" ] || refuse "no $ROOT/boards/$BOARD/board.cmake"
 [ -e "$IMG" ] || [ -e "$IMG.hex" ] || refuse "no image at $IMG or $IMG.hex"
@@ -177,6 +184,8 @@ resolve_console() {
 # The kernel banner never reaches this route. The identity rows the driver opens each host
 # configuration with stand in for it (bench.sh route_identity).
 arm_waiting_reader() {
+  [ -n "${PYBIN:-}" ] || refuse "PYBIN is unset: a USB CDC capture reads through cap_cdc.py (RIG_PYBIN here, RIG_REMOTE_PYBIN on the bench host)"
+  [ -f "$HERE/cap_cdc.py" ] || refuse "no $HERE/cap_cdc.py"
   setsid bash -c '
     shopt -s nullglob
     while true; do
@@ -191,12 +200,15 @@ arm_waiting_reader() {
         printf "  %s\n" "${m[@]}" >&2
         exit 1
       fi
+      # ONE OPEN, held across the raw setting and the read: cdc_acm discards what it received
+      # when the last opener closes, and the first bytes the device sends are its identity
+      # rows. The device holds its output until a line coding, which cdc_acm sends from inside
+      # the call that makes the tty raw; cap_cdc.py makes sure that call carries one.
       if [ "${#m[@]}" -eq 1 ]; then
-        stty -F "${m[0]}" 115200 raw -echo -hupcl clocal min 1 time 0 2>/dev/null
-        cat "${m[0]}" 2>/dev/null
+        "$2" "$3" "${m[0]}" 2>/dev/null
       fi
       sleep 0.05
-    done' _ "$PATTERN" >> "$LOG" &
+    done' _ "$PATTERN" "$PYBIN" "$HERE/cap_cdc.py" >> "$LOG" &
   READER=$!
   READER_GROUP=1
 }
@@ -219,6 +231,7 @@ else
   echo "=== $BOARD  console <its own USB CDC, after the flash>  image $IMG"
 fi
 : > "$LOG" || refuse "cannot write $LOG"
+rm -f "$LOG.bus"
 # Every route's lines are stamped on arrival here, for a judge that times the board against this
 # host. It stops at the capture window's end, before a route cuts the log's head away.
 stamper_start "$HERE" "$LOG" "$$" || refuse "$STAMPER_WHY"
@@ -269,6 +282,41 @@ stop_wrapped_reader() {
     echo "  reports before the next capture, or it will split the bytes." >&2
   fi
 }
+
+# Per presence row of the board (board_probe_rows, less its `seen` ones),
+# `<vid:pid>|<identity>|<what>`: the device this capture selects, by the serial it was given for an
+# `sn` row and otherwise by the port the row's one device sits on before the flash, or
+# `none: <why>` where neither establishes one.
+BUS_IDENTITY=$(
+  _bus_read=0
+  if bench_bus_read; then
+    _bus_read=1
+  fi
+  board_probe_rows "$BOARD" | while IFS='|' read -r _bus_id _bus_kind _bus_what; do
+    if [ "$_bus_kind" = seen ]; then
+      continue
+    fi
+    if [ "$_bus_kind" = sn ]; then
+      if [ -n "$SN" ]; then
+        printf '%s|serial %s|%s\n' "$_bus_id" "$SN" "$_bus_what"
+      else
+        printf '%s|none: no serial was given to select it by|%s\n' "$_bus_id" "$_bus_what"
+      fi
+      continue
+    fi
+    if [ "$_bus_read" = 0 ]; then
+      printf '%s|none: the bus could not be read before the flash|%s\n' "$_bus_id" "$_bus_what"
+      continue
+    fi
+    _bus_ports=$(usb_ports_of "$_bus_id")
+    _bus_n=$(printf '%s\n' "$_bus_ports" | grep -c .)
+    if [ "$_bus_n" -eq 1 ]; then
+      printf '%s|port %s|%s\n' "$_bus_id" "$_bus_ports" "$_bus_what"
+    else
+      printf '%s|none: %s devices at %s before the flash|%s\n' "$_bus_id" "$_bus_n" "$_bus_id" "$_bus_what"
+    fi
+  done
+)
 
 case $BOARD in
   esp32c6-wroom|esp32-wroom)
@@ -338,10 +386,10 @@ case $BOARD in
       arm_waiting_reader
       sleep 1
       check_reader "on arming"
-      if ! POUT=$(FLASH_ERASE_RANGES="${PEER_ERASE:-}" FLASH_IMAGE="$IMG" "$ROOT/tools/flash-picotool.sh" "$BOARD" "$APP" 2>&1); then
+      if ! POUT=$(PICOTOOL_SN="$SN" FLASH_ERASE_RANGES="${PEER_ERASE:-}" FLASH_IMAGE="$IMG" "$ROOT/tools/flash-picotool.sh" "$BOARD" "$APP" 2>&1); then
         stop_wrapped_reader
         printf '%s\n' "$POUT" | tail -8 >&2
-        refuse "picotool could not flash $BOARD. Already ran KickOS? Power-cycle it into BOOTSEL."
+        refuse "picotool could not flash $BOARD: $(picotool_why "$POUT"). Already ran KickOS? Power-cycle it into BOOTSEL."
       fi
     else
       # picotool load -x reboots straight into the app, so the run is over before a reader armed
@@ -351,9 +399,9 @@ case $BOARD in
       arm_wrapped_reader "$PORT"
       sleep 1
       check_reader "on arming"
-      if ! POUT=$(FLASH_ERASE_RANGES="${PEER_ERASE:-}" FLASH_IMAGE="$IMG" "$ROOT/tools/flash-picotool.sh" "$BOARD" "$APP" 2>&1); then
+      if ! POUT=$(PICOTOOL_SN="$SN" FLASH_ERASE_RANGES="${PEER_ERASE:-}" FLASH_IMAGE="$IMG" "$ROOT/tools/flash-picotool.sh" "$BOARD" "$APP" 2>&1); then
         printf '%s\n' "$POUT" | tail -8 >&2
-        refuse "picotool could not flash $BOARD. Already ran KickOS? Power-cycle it into BOOTSEL."
+        refuse "picotool could not flash $BOARD: $(picotool_why "$POUT"). Already ran KickOS? Power-cycle it into BOOTSEL."
       fi
     fi
     sleep "${CAP_SECS:-25}"
@@ -435,6 +483,7 @@ case $BOARD in
     case $BOARD in
       frdmk64f)      DEV=MK64FN1M0xxx12 ;;
       xmc4800-relax) DEV=XMC4800-2048 ;;
+      blackpill)     DEV=STM32F411CE ;;
       *) refuse "no -device row for $BOARD; add one rather than passing an empty -device" ;;
     esac
     [ -n "$SN" ] || refuse "$BOARD needs its probe serial: two J-Links on one bench and JLinkExe grabs whichever it likes"
@@ -465,8 +514,22 @@ case $BOARD in
         SWD_SPEED=$_sp
         break
       fi
+      _vt=$(printf '%s\n' "$JOUT" | sed -n 's/.*VTref *= *\([0-9.]*\) *V.*/\1/p' | head -1)
+      if [ -n "$_vt" ] && awk -v v="$_vt" 'BEGIN { exit !(v + 0 == 0) }'; then
+        VTREF_ZERO=1
+        break
+      fi
     done
     rm -f "$PROBE"
+    if [ "${VTREF_ZERO:-0}" -eq 1 ]; then
+      {
+        echo "REFUSING: the probe reads VTref 0 V: the target is unpowered or the probe's cable is not on it."
+        echo "  SN $SN, so no other SWD speed was tried."
+        printf '%s\n' "$JOUT" | grep -vE '^[[:space:]]*$' | tail -5
+      } >&2
+      stop_capture
+      exit 1
+    fi
     if [ -z "$SWD_SPEED" ]; then
       {
         echo "REFUSING: no SWD speed in 4000/1000/400 reached a halted core on SN $SN."
@@ -503,6 +566,17 @@ case $BOARD in
     arm_wrapped_reader "$PORT"
     sleep 1
     check_reader "on arming"
+    # A cable stays open across the reset and heard the flash's own boot, so the log is cut to
+    # the reset's. The probe's own VCOM hangs up at the reset and is not cut.
+    _reset_bytes=""
+    case $PORT in
+      */usb-SEGGER_J-Link_*)
+        ;;
+      *)
+        stamper_truncate "$HERE" "$LOG" "$$" || refuse "$STAMPER_WHY"
+        _reset_bytes=$(wc -c < "$LOG")
+        ;;
+    esac
     RESET=$(mktemp)
     printf 'r\ng\nq\n' > "$RESET"
     # AND THE RESET IS WHAT STARTS THE RUN, so discarding its status buys a capture window over
@@ -526,9 +600,45 @@ case $BOARD in
     sleep "${CAP_SECS:-25}"
     note_reader
     stop_wrapped_reader
+    if [ -n "$_reset_bytes" ]; then
+      _why=$(reset_boot_cut "$LOG" "$_reset_bytes") || refuse "$_why"
+    fi
     ;;
 esac
 stop_stamper
+
+# <log>.bus: each BUS_IDENTITY row as the bus reads once the window is over,
+# `<vid:pid>|<state>|<identity>|<what>`, the state present or absent for the selected device,
+# ambiguous where its identity matches more than one and unidentified where it has none. A board
+# that ends in its loader is present by the loader's row, which is what
+# tests/integration/check_reboot.sh reads.
+if bench_bus_read; then
+  printf '%s\n' "$BUS_IDENTITY" | while IFS='|' read -r _bus_id _bus_ident _bus_what; do
+    if [ -z "$_bus_id" ]; then
+      continue
+    fi
+    case $_bus_ident in
+      "serial "*)
+        _bus_n=$(usb_ports_of "$_bus_id" "${_bus_ident#serial }" | grep -c .)
+        ;;
+      "port "*)
+        _bus_n=$(usb_ports_of "$_bus_id" | grep -cxF -- "${_bus_ident#port }")
+        ;;
+      *)
+        _bus_n=none
+        ;;
+    esac
+    case $_bus_n in
+      none) _bus_state=unidentified ;;
+      0) _bus_state=absent ;;
+      1) _bus_state=present ;;
+      *) _bus_state=ambiguous ;;
+    esac
+    printf '%s|%s|%s|%s\n' "$_bus_id" "$_bus_state" "$_bus_ident" "$_bus_what"
+  done > "$LOG.bus"
+else
+  echo "NOTE: the bus could not be read after the window, so $LOG.bus is not written" >&2
+fi
 
 # Every `KickOS: ` line the log holds, echoed before this script's own verdict: an image that
 # refuses by name says why it produced no plan line.
@@ -1654,16 +1764,18 @@ if [ "$APP" = bench_smp ] && ! grep -aq '^smp-lock: done' "$LOG"; then
 fi
 if [ -z "$LAST" ]; then
   if [ "$WANT_TAP" -eq 1 ] && [ "${CONSOLE_USB_CDC:-0}" = "1" ]; then
-    # A console that IS the device cannot deliver its own head, so the plan line is gone
-    # and demanding one refuses every capture taken this way. The TAP verdict below needs a
-    # plan, so this route reaches NO verdict at all: what is left is the ok count, which is a
-    # count of the lines that arrived. Reconcile the arm total by eye against the manifest.
+    # A console that IS the device delivers only what its ring held until the host opened it,
+    # so the plan line can be gone and demanding one refuses such a capture. The TAP verdict
+    # below needs a plan, so this route reaches NO verdict at all: what is left is the ok count,
+    # which is a count of the lines that arrived. Reconcile the arm total by eye against the
+    # manifest.
     if [ "$OKC" -eq 0 ]; then
       say_kickos_lines
       refuse "$LOG carries no plan line AND no ok lines: nothing of the suite arrived"
     fi
-    echo "NOTE: no plan line; a USB CDC console loses the head of every capture, this one" >&2
-    echo "  included. $OKC ok line(s) and the arms below the first one are NOT accounted for," >&2
+    echo "NOTE: no plan line; a USB CDC console loses what its ring could not hold before the" >&2
+    echo "  host opened it, this plan line included. $OKC ok line(s) and the arms below the" >&2
+    echo "  first one are NOT accounted for," >&2
     echo "  and the TAP verdict needs the plan, so THIS CAPTURE IS NOT JUDGED: derive the" >&2
     echo "  expected count and check it by hand." >&2
   elif [ "$WANT_TAP" -eq 1 ]; then

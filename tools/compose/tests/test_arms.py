@@ -247,6 +247,8 @@ ARMS = [
                                      "    pins: [PA5, PA6, PA7]\n")], False),
     ("board.pin-signal", "stm32f411/f411disco.yaml", [("pins: { tx: PA2, rx: PA3 }", "pins: { tx: PA3, rx: PA2 }")], False),
     ("board.memory-overlap", "rp2040/picopi.yaml", [("    base: 0x10000000\n", "    base: 0x20000000\n")], False),
+    ("board.flash-size", "esp32/esp32-wroom.yaml", [("flash: { size: 0x400000,", "flash: { size: 0x401000,")],
+     False),
     ("board.link-duplicate", "rp2040/picopi.yaml",
      [("link: { region: FLASH, access: rx }", "link: { region: RAM, access: rx }")], False),
     ("board.symbol-collision", "rp2040/picopi.yaml", [("  xip_flash:\n", "  sram:\n")], False),
@@ -2257,10 +2259,11 @@ SCENARIOS = [
                                "    uses: [/svc/sensor, { path: /svc/spi0, slots: [1] }, /svc/console]\n"
                                "    budgets: { endpoints: 2 }\n")],
                              [("    budgets: {", "supply.budget")], [], XMC_ENDPOINTS_2, names="holds 4 of them")),
-    ("supply.arena", on_xmc([], [("version: ", "supply.arena")], [(XMC_ARENA, XMC_ARENA.replace("size: 0x40000", "size: 0x8000"))],
+    ("supply.arena", on_xmc([], [("version: ", "supply.arena")], [(XMC_ARENA, XMC_ARENA.replace("size: 0x40000", "size: 0x7000"))],
                             XMC_MANIFEST)),
     ("supply.arena", on_xmc([], [("version: ", "supply.arena")],
-                            [(XMC_ARENA, XMC_ARENA.replace("size: 0x40000", "size: 0x8800"))], XMC_MANIFEST)),
+                            [(XMC_ARENA, XMC_ARENA.replace("size: 0x40000", "size: 0x7FF0"))], XMC_MANIFEST)),
+    (None, on_xmc([], [], [(XMC_ARENA, XMC_ARENA.replace("size: 0x40000", "size: 0x8000"))], XMC_MANIFEST)),
     (None, on_xmc([], [], [(XMC_ARENA, XMC_ARENA.replace("size: 0x40000", "size: 0x9000"))], XMC_MANIFEST)),
     (None, on_xmc([HEAP], [], [(XMC_ARENA, XMC_ARENA.replace("size: 0x40000", "size: 0x9000"))], XMC_MANIFEST)),
 

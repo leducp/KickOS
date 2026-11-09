@@ -63,6 +63,7 @@ namespace kickos
     }
 
     using WqBlock = uint32_t(List& q, WaitKind kind, void* obj, Thread* woken, Held held);
+    using WqPark = uint32_t(List& q, WaitKind kind, void* obj, Held held);
     using ParkQueueless = uint32_t(Thread* c, WaitKind kind, void* obj, Held held);
 
     // wq_block(ask)(q, kind, obj, woken, held): park current on q and switch away. Thread context
@@ -78,6 +79,15 @@ namespace kickos
         return wq_block;
     }
 
+    // wq_park(ask)(q, kind, obj, held): wq_block without the switch, for a caller that lends its
+    // priority once it is on `q`, where the lend's recomputes count it, and then reschedules.
+    inline WqPark& wq_park(ParkToken const&)
+    {
+        // As wq_block's.
+        WqPark wq_park;
+        return wq_park;
+    }
+
     // park_queueless(ask)(c, kind, obj, held): park `current` on no list at all. The wait edge
     // is then the only thing that can find it again, so `kind` must be a kind some waker sweeps
     // for (thread.h). Detaches from the ready set without rescheduling, so the caller decides
@@ -91,6 +101,35 @@ namespace kickos
         ParkQueueless park_queueless;
         return park_queueless;
     }
+
+    // death_park(ask)(c, t, held): park `c` on task `t`'s death (WAIT_TASK_EMPTY), on
+    // Kernel::death_waiters. Does not switch and lends nothing yet: death_wait_lend follows,
+    // once `t` is stopped. Returns the epoch for wq_confirm_resume.
+    using DeathPark = uint32_t(Thread* c, Task* t, Held held);
+    inline DeathPark& death_park(ParkToken const&)
+    {
+        // As wq_block's.
+        DeathPark death_park;
+        return death_park;
+    }
+    // The threads on stopped task `t`'s run list take the priority of every thread parked on its
+    // death, as a mutex holder takes its waiters'. Caller holds IrqLock.
+    void death_wait_lend(Task const* t, Held held);
+    // `w`, parked by death_park, leaves Kernel::death_waiters or death_dirty, and the threads of
+    // the task it waited on fall back to what still lends to them. The park unwind's alone.
+    // Caller holds IrqLock.
+    void death_wait_leave(Thread* w, Held held);
+    // Between the two, under one IrqLock, a death_wait_leave only unlinks its waiter and marks
+    // its task, whose threads keep the left waiters' lend until the end recomputes each marked
+    // task once; a wake decided in between against a current so lent is retaken there.
+    void death_leave_batch_begin();
+    void death_leave_batch_end(Held held);
+    // `o` raised to `p`, or its effective priority recomputed, and the change passed on along
+    // what it waits on: a mutex's holder, and the threads of a task whose death it waits for,
+    // within pi_drain_deaths' bound. A raise for a waiter is made once the waiter is on the queue
+    // it waits on, or the recomputes do not count it. Caller holds IrqLock.
+    void pi_raise(Thread* o, uint8_t p, Held held);
+    void pi_settle(Thread* o, Held held);
 
     // Park the calling writer while the kernel console is dark (console_dark), with no
     // deadline: the reclaim and a publish end the wait (console_dark_wake). 0 once the console
@@ -218,8 +257,9 @@ namespace kickos
 
     // The single effective-priority recompute funnel. t's effective prio is the max of its
     // base_prio, the highest waiter across every mutex it holds, the prio of every caller
-    // parked on t->reply_waiters, and the highest parked SEND_WAIT caller on each endpoint
-    // where ep->server == t. Never a restore-to-base: a mutex unlock mid-transaction must not
+    // parked on t->reply_waiters, the highest parked SEND_WAIT caller on each endpoint
+    // where ep->server == t, and every thread parked on the death of a task whose run list t is
+    // on. Never a restore-to-base: a mutex unlock mid-transaction must not
     // deflate a live call donation. Every term is O(donors) and none is bounded by a configured
     // pool capacity, and this runs interrupt-masked on every mutex unlock, reply and close.
     // Caller holds IrqLock.

@@ -24,7 +24,7 @@
     X(KOS_EINVAL,     "malformed argument")                                                       \
     X(KOS_EMFILE,     "the capability table has no free slot")                                    \
     X(KOS_EPIPE,      "the server died holding the request")                                      \
-    X(KOS_EDEADLK,    "self, recursive, or cycle-closing lock")                                   \
+    X(KOS_EDEADLK,    "self, recursive or cycle-closing lock, or a wait on one's own task")       \
     X(KOS_ENOSYS,     "not implemented on this chip")                                             \
     X(KOS_ENOTIFY,    "an interrupt notification ended the wait, no message")                     \
     X(KOS_EOVERFLOW,  "a count is at its maximum and cannot take one more")                       \

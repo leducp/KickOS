@@ -8,6 +8,7 @@
 #include <kickos/arch/console_poll.h>
 #include "pin_guard.h"
 #include <kickos/arch/clk_anchor.h>
+#include <kickos/arch/clock_fallback.h>
 #include <kickos/console_tx.h>
 #include <kickos/io/mmio.h>
 
@@ -228,7 +229,7 @@ namespace
         {
             return fail_to_fei();
         }
-        if (not mcg_wait(reg::mcg::S_LOCK0, reg::mcg::S_LOCK0))
+        if (not mcg_wait(reg::mcg::S_LOCK0, reg::mcg::S_LOCK0) or KICKOS_WITNESS_CLOCK_FALLBACK)
         {
             return fail_to_fei();
         }

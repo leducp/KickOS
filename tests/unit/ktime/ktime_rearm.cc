@@ -1,16 +1,17 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Host gate on the ONE property every arch one-shot backend depends on: the
-// deadline ktime_rearm hands arch_timer_arm must be a function of what is
-// pending, and of nothing else; in particular, not of when the call happens.
+// Host gate on the two properties every arch one-shot backend depends on.
 //
-// No backend dedups an arm any more: arch_timer_arm reprograms whatever it is handed, and
-// the kernel is the sole authority for what each comparator holds. A rearm that re-derives
-// its value from the current clock defeats that: ktime_rearm runs on EVERY context switch,
-// so a moving value never matches what is already programmed, the countdown restarts before
-// it can reach the compare, and the sleeper is held off for as long as the switches keep
-// coming.
+// Whether ktime_rearm reprograms the comparator must be a function of what is pending, and of
+// nothing else; in particular, not of when the call happens. No backend dedups an arm:
+// arch_timer_arm reprograms whatever it is handed, and the kernel is the sole authority for
+// what each comparator holds. A rearm whose dedup key moves with the clock defeats that:
+// ktime_rearm runs on EVERY context switch, so the countdown restarts before it can reach the
+// compare, and the sleeper is held off for as long as the switches keep coming.
+//
+// What it hands arch_timer_arm, once it does program, is never closer than the min delta to the
+// clock it reads then.
 //
 // The other half is that a comparator which has FIRED no longer holds what the kernel
 // recorded. A backend that clamps a far deadline into a narrow counter fires early and is
@@ -40,12 +41,19 @@ namespace
     uint64_t g_armed = UINT64_MAX; // last deadline handed to arch_timer_arm
     uint32_t g_arms = 0;
     uint32_t g_disarms = 0;
+    uint64_t g_slice = UINT64_MAX; // the policy deadline next_timed_event answers for a thread
+    uint32_t g_switch_ins = 0;
+    uint32_t g_irq_saves = 0;
 }
 
 // --- the seam under the unit: a fake clock and a recording timer ---
 extern "C"
 {
-    arch_irq_state_t arch_irq_save(void) { return 0; }
+    arch_irq_state_t arch_irq_save(void)
+    {
+        g_irq_saves++;
+        return 0;
+    }
     void arch_irq_restore(arch_irq_state_t) {}
 
     uint64_t arch_clock_now(void) { return g_now; }
@@ -99,6 +107,15 @@ namespace kickos
     }
 
 
+    // No death wait here either: the expiry loop's batch has nothing to leave.
+    void death_leave_batch_begin()
+    {
+    }
+
+    void death_leave_batch_end(Held)
+    {
+    }
+
     // realtime.cc is not linked here, and no arm here parks toward the wall clock.
     uint64_t realtime_now()
     {
@@ -119,6 +136,11 @@ namespace kickos
         c->wait_kind = kind;
         c->wait_obj = obj;
         return c->switch_count;
+    }
+
+    void policy_on_switch_in(Thread*)
+    {
+        g_switch_ins++;
     }
 
     namespace sched
@@ -147,7 +169,14 @@ namespace kickos
 
         // The seam reports "no timed event" and the reschedule only arms the timer as the
         // switch would, which leaves the sleeper on the sleepq for an arm to read.
-        uint64_t next_timed_event(Thread const*) { return UINT64_MAX; }
+        uint64_t next_timed_event(Thread const* t)
+        {
+            if (t == nullptr)
+            {
+                return UINT64_MAX;
+            }
+            return g_slice;
+        }
         Thread* current()
         {
             return kernel().current(kickos_kernel_core());
@@ -182,6 +211,9 @@ namespace
         g_armed = UINT64_MAX;
         g_arms = 0;
         g_disarms = 0;
+        g_slice = UINT64_MAX;
+        g_switch_ins = 0;
+        kernel().switch_landing_owed[kickos_kernel_core()] = 0;
         // What boot leaves: a value no computation can produce, so the first rearm of an arm
         // always programs.
         kernel().timer_armed_ns[kickos_kernel_core()] = 0;
@@ -197,7 +229,8 @@ namespace
 }
 
 // A deadline inside the min-delta window is the one case where a rearm is tempted to
-// substitute now+min-delta for it.
+// substitute now+min-delta for it as its dedup key. The comparator fires at the floor, and the
+// switches behind it must leave it counting.
 TEST(KTime, deadline_is_stable_inside_the_window)
 {
     reset();
@@ -205,15 +238,18 @@ TEST(KTime, deadline_is_stable_inside_the_window)
     park(deadline);
 
     g_now = deadline - KICKOS_TIMER_MIN_DELTA_NS / 4; // well inside the window
+    uint64_t const armed_at = g_now;
     {
         IrqLock lock;
         ktime_rearm(sched::current(), lock);
     }
-    uint64_t const first = g_armed;
-    EXPECT_EQ(first, deadline) << "first arm inside the window is the parked deadline";
+    ASSERT_EQ(g_arms, 1u) << "the first rearm did not program the comparator";
+    EXPECT_EQ(g_armed, armed_at + KICKOS_TIMER_MIN_DELTA_NS)
+        << "a deadline inside the window was programmed closer than the min delta";
+    EXPECT_EQ(kernel().timer_armed_ns[kickos_kernel_core()], deadline)
+        << "the dedup key is not the pending deadline";
 
-    // What a context switch does: same sleepq, later clock. Every backend's dedup
-    // compares THIS value against the one above.
+    // What a context switch does: same sleepq, later clock.
     for (uint32_t i = 0; i < 8; i++)
     {
         g_now += KICKOS_TIMER_MIN_DELTA_NS / 8;
@@ -221,31 +257,41 @@ TEST(KTime, deadline_is_stable_inside_the_window)
             IrqLock lock;
             ktime_rearm(sched::current(), lock);
         }
-        EXPECT_EQ(g_armed, first) << "rearm inside the window moved the deadline";
     }
+    EXPECT_EQ(g_arms, 1u) << "a switch inside the window reprogrammed the comparator, which "
+                             "restarts its countdown";
+    EXPECT_EQ(g_armed, armed_at + KICKOS_TIMER_MIN_DELTA_NS);
 }
 
-// Same, once the deadline is already due: a due deadline fires immediately on every backend
-// (the delta ones floor at one tick, the absolute compares are already behind), so what it
-// must not become is a fresh future deadline.
-TEST(KTime, due_deadline_is_not_pushed_into_the_future)
+// A deadline already due when the comparator is programmed: the work between its birth and the
+// rearm outlasted the min delta, which is what a slow timer handler that books a switch does.
+// Programmed in the past, the one-shot raises again before the handler returns, and on a core
+// where the timer outranks the deferred switch no thread ever runs again. The deadline stays
+// the dedup key, so the switches behind it do not move the comparator either.
+TEST(KTime, a_due_deadline_fires_no_sooner_than_the_min_delta)
 {
     reset();
-    uint64_t const deadline = 1000000;
+    g_now = 5000000;
+    uint64_t const deadline = g_now + KICKOS_TIMER_MIN_DELTA_NS; // born floored
     park(deadline);
-    g_now = deadline + 1;
+    g_now += 2 * KICKOS_TIMER_MIN_DELTA_NS; // the handler's work after the birth
+    uint64_t const armed_at = g_now;
     {
         IrqLock lock;
         ktime_rearm(sched::current(), lock);
     }
-    EXPECT_EQ(g_armed, deadline) << "a due deadline was rearmed into the future";
+    ASSERT_EQ(g_arms, 1u);
+    EXPECT_GE(g_armed, armed_at + KICKOS_TIMER_MIN_DELTA_NS)
+        << "the comparator was programmed " << (armed_at - g_armed)
+        << " ns in the past, so it raises again before the handler that armed it returns";
+    EXPECT_EQ(kernel().timer_armed_ns[kickos_kernel_core()], deadline);
 
     g_now += 5 * KICKOS_TIMER_MIN_DELTA_NS;
     {
         IrqLock lock;
         ktime_rearm(sched::current(), lock);
     }
-    EXPECT_EQ(g_armed, deadline) << "a due deadline drifted with the clock";
+    EXPECT_EQ(g_arms, 1u) << "a due deadline was reprogrammed as the clock moved";
 }
 
 // The min-delta floor is not dropped, only moved: it belongs where the deadline is
@@ -393,3 +439,76 @@ TEST(KTime, a_fired_comparator_is_reprogrammed_for_the_same_deadline)
                              "the fire was skipped as a repeat of a deadline no longer "
                              "programmed, and the sleeper never wakes";
 }
+
+#if KICKOS_ARCH_SWITCH_LANDS_LATER
+// A switch booked for a later exception: until it lands, the comparator holds no slice, so no
+// expiry can be taken against a thread that has not run. The landing stamps the slice and
+// programs it from the clock read there, however long the landing took.
+TEST(KTime, a_booked_switch_arms_no_slice_until_it_lands)
+{
+    reset();
+    g_now = 5000000;
+    g_slice = g_now + 2 * KICKOS_TIMER_MIN_DELTA_NS; // the incoming thread's live deadline
+    kernel().switch_landing_owed[kickos_kernel_core()] = 1;
+    {
+        IrqLock lock;
+        ktime_rearm(sched::current(), lock);
+    }
+    EXPECT_EQ(g_arms, 0u) << "the slice of a thread not yet landed was armed";
+    EXPECT_EQ(g_armed, UINT64_MAX);
+
+    g_now += 3 * KICKOS_TIMER_MIN_DELTA_NS; // a slow switcher exception
+    {
+        IrqLock lock;
+        ktime_land(lock);
+    }
+    EXPECT_EQ(g_switch_ins, 1u) << "the landing did not stamp the landed thread's slice";
+    EXPECT_EQ(kernel().switch_landing_owed[kickos_kernel_core()], 0u);
+    EXPECT_EQ(g_armed, g_now + KICKOS_TIMER_MIN_DELTA_NS)
+        << "the landed thread's comparator was not programmed from the landing";
+}
+
+// A slice landing after the deadline the comparator already holds leaves the comparator alone.
+TEST(KTime, a_landed_slice_after_the_armed_deadline_writes_no_comparator)
+{
+    reset();
+    g_now = 5000000;
+    park(g_now + 2 * KICKOS_TIMER_MIN_DELTA_NS);
+    kernel().switch_landing_owed[kickos_kernel_core()] = 1;
+    {
+        IrqLock lock;
+        ktime_rearm(nullptr, lock);
+    }
+    uint32_t const arms = g_arms;
+    uint64_t const armed = g_armed;
+    g_slice = g_now + 10 * KICKOS_TIMER_MIN_DELTA_NS;
+    {
+        IrqLock lock;
+        ktime_land(lock);
+    }
+    EXPECT_EQ(g_switch_ins, 1u);
+    EXPECT_EQ(kernel().switch_landing_owed[kickos_kernel_core()], 0u);
+    EXPECT_EQ(g_arms, arms) << "the landing reprogrammed a comparator already due sooner";
+    EXPECT_EQ(g_armed, armed);
+}
+#endif
+
+#if not KICKOS_ARCH_SWITCH_LANDS_LATER
+// Every device interrupt's exit asks, and with nothing owed it must cost no lock: on a kernel
+// over several cores that lock is the cross-core one.
+TEST(KTime, an_interrupt_exit_with_no_landing_owed_takes_no_lock)
+{
+    reset();
+    uint32_t const saves = g_irq_saves;
+    ktime_land_at_isr_exit();
+    EXPECT_EQ(g_irq_saves, saves) << "the exit took the lock with no landing owed";
+    EXPECT_EQ(g_arms, 0u);
+
+    g_now = 5000000;
+    g_slice = g_now + 2 * KICKOS_TIMER_MIN_DELTA_NS;
+    kernel().switch_landing_owed[kickos_kernel_core()] = 1;
+    ktime_land_at_isr_exit();
+    EXPECT_EQ(kernel().switch_landing_owed[kickos_kernel_core()], 0u);
+    EXPECT_EQ(g_armed, g_slice) << "an owed landing was not settled at the exit";
+}
+#endif

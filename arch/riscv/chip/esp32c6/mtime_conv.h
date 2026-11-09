@@ -54,6 +54,28 @@ namespace kickos::esp32c6
         return root / div;
     }
 
+    // TIMG0's T0 counting PLL_F80M_CLK through its smallest prescaler, 2.
+    constexpr uint32_t PLL_PROBE_HZ = 40000000u;
+
+    // Whether probe_ticks, counted over the span in which MTIME counted mtime_ticks of a CPU_CLK
+    // at cpu_hz, is PLL_PROBE_HZ to within 1/64. A PLL stopped or off its rate answers false:
+    // selected as the CPU's root, it would stop the core or misprice MTIME.
+    inline bool pll_probe_alive(uint32_t probe_ticks, uint32_t mtime_ticks, uint32_t cpu_hz)
+    {
+        uint64_t const want = static_cast<uint64_t>(mtime_ticks) * PLL_PROBE_HZ;
+        uint64_t const got = static_cast<uint64_t>(probe_ticks) * cpu_hz;
+        if (want == 0u or got == 0u)
+        {
+            return false;
+        }
+        uint64_t diff = want - got;
+        if (got > want)
+        {
+            diff = got - want;
+        }
+        return diff <= (want >> 6);
+    }
+
     namespace detail
     {
         constexpr char HEX_DIGITS[] = "0123456789abcdef";

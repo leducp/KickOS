@@ -13,20 +13,10 @@
 
 namespace kickos::apps
 {
-    // kos_task_create, asked again for up to a second while the instance's last incarnation is
-    // still dying.
+    // kos_task_create, waiting up to a second for the instance's last incarnation to die.
     inline int create_peer(kos_program_t prog, kos_task_params const& params, kos_task_t* out)
     {
-        int rc = -KOS_EAGAIN;
-        for (int tries = 0; rc == -KOS_EAGAIN and tries < 10000; tries++)
-        {
-            rc = kos_task_create(prog, &params, out);
-            if (rc == -KOS_EAGAIN)
-            {
-                kos::sleep_ns(100000ull);
-            }
-        }
-        return rc;
+        return kos_task_create(prog, &params, 1000000u, out);
     }
 
     // The value of a hex argument as `%p` prints it, with or without the 0x.

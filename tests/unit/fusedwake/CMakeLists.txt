@@ -20,3 +20,8 @@ kickos_add_unit_test(NAME bench_e2e_publish SOURCES e2e_publish.cc
   INCLUDES "${PROJECT_SOURCE_DIR}/kernel/bench"
   POSTURE KICKOS_NUM_CORES=2 KICKOS_KERNEL_CORES=2 KICKOS_MULTICORE_MODEL_SHARED=1
           KICKOS_BENCH=1)
+
+# A death waiter's lend over the real IPC and scheduler at two cores.
+kickos_add_unit_test(NAME death_lend_ipc SOURCES death_lend.cc
+  INCLUDES "${PROJECT_SOURCE_DIR}/kernel/syscall"
+  LIBRARIES kickos_kseam_ipc_smp)

@@ -6,6 +6,8 @@
 #include <kickos/arch/arch.h>
 #include <kickos/klink.h>
 
+#include "ram_arena.h"
+
 #include <stddef.h>
 #include <stdint.h>
 
@@ -27,8 +29,8 @@ extern "C"
 
 namespace
 {
-    // Bump-allocated, never freed; written under arch_irq_save in arch_ram_alloc.
-    uint32_t g_ram_used = 0;
+    // Written under arch_irq_save in arch_ram_alloc.
+    kickos::RamArena g_arena;
 
 #if !KICKOS_MEMORY_ENFORCED
     bool range_within(uintptr_t ptr, uintptr_t end, uintptr_t start, uintptr_t stop)
@@ -83,19 +85,9 @@ void* arch_ram_alloc(size_t size)
     }
     size_t const rsz = arch_ram_region_size(size);
     size_t const ralign = arch_ram_region_align(size);
-    size_t const total = arch_ram_size();
-    uintptr_t const base = reinterpret_cast<uintptr_t>(__kickos_ram_start);
     arch_irq_state_t s = arch_irq_save();
-    void* p = nullptr;
-    uintptr_t const cur = base + g_ram_used;
-    // Absolute alignment: PMSA and NAPOT want the base aligned to the size.
-    uintptr_t const aligned = (cur + (ralign - 1)) & ~static_cast<uintptr_t>(ralign - 1);
-    size_t const off = static_cast<size_t>(aligned - base);
-    if (aligned >= cur and off <= total and rsz <= total - off)
-    {
-        p = reinterpret_cast<void*>(aligned);
-        g_ram_used = static_cast<uint32_t>(off + rsz);
-    }
+    void* const p = kickos::ram_arena_alloc(g_arena, reinterpret_cast<uintptr_t>(__kickos_ram_start),
+                                            arch_ram_size(), rsz, ralign);
     arch_irq_restore(s);
     return p;
 }

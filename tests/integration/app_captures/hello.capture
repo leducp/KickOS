@@ -11,7 +11,7 @@
    sched   tickless
 
 hello from KickOS userspace!
-two threads play ping-pong; press Ctrl+C to stop.
+two threads play ten rounds of ping-pong, then the run ends.
 
   ping 1
   pong 1

@@ -10,12 +10,12 @@ manual: "QEMU 11.1 `mps2-an505` machine (hw/arm/mps2-tz.c)"
 arch: armv7m
 protection: { unit: pmsav8, granule: 32, covers_devices: true, memory_type: true }
 data_cache: false
-reserved: none
 family:
   dir: arm/chip/mps2
   sources: [arm/chip/mps2/chip_mps2.cc, arm/chip/mps2/startup.S, common/semihost_console.cc]
 exits_on_fault: true
 stack_limit: true
+timebase: { hz: { value: 20000000, ref: "DAI0505B 5.1.4 SYSCLK" } }
 
 interrupts: { count: { value: 140, ref: "QEMU 11.1 `info qtree`: armv7m_nvic num-irq" } }
 
@@ -29,8 +29,14 @@ apertures:
   - { window: [0x51000000, 0x140000] }
   - { window: [0x52000000, 0x100] }
 
-# The four PL080 DMA controllers, at both aliases.
 devices:
+  # The kernel's clock, at the Secure alias.
+  dualtimer:
+    window: [0x50002000, 0x1000]
+    owner: kernel
+    ref: "SSE-200 TRM 101104_0200_00 Table 3-4"
+    lines: { global: { number: 5, symbol: DUALTIMER_IRQ, ref: "DAI0505B Table 7-1" } }
+  # The four PL080 DMA controllers, at both aliases.
   dma: { window: [0x40110000, 0x4000], count: 2, stride: 0x10000000, bus_master: true }
 
 memory:

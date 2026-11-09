@@ -58,17 +58,14 @@ namespace kickos
         constexpr uint16_t CMWSTR_STR = 1u << 0;
         // CMWIOR.CMWE (b15) GATES the CMWCOR compare-match operation: with CMWE=0
         // (reset) the counter never matches CMWCOR, so it neither clears (CCLR=000) nor
-        // raises CMWI. It must be set for the one-shot timer (UM sec.32.2.3). CMTW1
-        // (free-running clock) does no compare, so it omits it.
+        // raises CMWI (UM sec.32.2.3).
         constexpr uint16_t CMWIOR_CMWE = 1u << 15;
         // CMWCR fields (UM sec.32.2.2): CKS[1:0]=b1:0 clock select (00 => PCLK/8);
         // CMWIE=b3 compare-match interrupt enable; CMS=b9 counter size (0 => 32-bit);
-        // CCLR[2:0]=b15:13 clear source (000 => cleared by CMWCOR compare match,
-        // 001 => clearing disabled / free-running).
+        // CCLR[2:0]=b15:13 clear source (000 => cleared by CMWCOR compare match).
         constexpr uint16_t CMWCR_CKS_PCLK8 = 0x0000;      // CKS=00: PCLK/8
         constexpr uint16_t CMWCR_CMWIE = 1u << 3;         // compare-match interrupt
         constexpr uint16_t CMWCR_CCLR_ON_MATCH = 0x0000;  // CCLR=000: clear on CMWCOR
-        constexpr uint16_t CMWCR_CCLR_FREERUN = 0x2000;   // CCLR=001: no clear (free-run)
 
         // --- Memory-Protection Unit (HW UM sec.17) ---
         // Eight access-control regions (n=0..7) + one background region. Page granularity

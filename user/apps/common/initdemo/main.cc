@@ -94,7 +94,7 @@ int main(int, char**)
     params.caps = caps;
     params.cap_count = 1;
     kos_task_t sink_task = KOS_TASK_NONE;
-    int const created = kos_task_create(prog, &params, &sink_task);
+    int const created = kos_task_create(prog, &params, 0, &sink_task);
     (void)kos_handle_close(prog);
     if (created != 0)
     {

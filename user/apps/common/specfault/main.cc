@@ -25,15 +25,27 @@
 #define KICKOS_SPECFAULT_ADDR 0x60800000u
 #endif
 
+namespace
+{
+    // armv6m reports the faulting instruction and no address, so its judge holds the fault's PC
+    // to the address main announces for this load: the load must stay the body's first
+    // instruction, and main calls through g_peek so no inlined copy or clone runs instead.
+    __attribute__((noinline)) uint32_t peek(volatile uint32_t const* cell)
+    {
+        return *cell;
+    }
+    uint32_t (*volatile g_peek)(volatile uint32_t const*) = peek;
+}
+
 int main(int, char**)
 {
-    char msg[80];
-    ksnprintf(msg, sizeof(msg), "[specfault] reading 0x%x: expect a clean MPU FAULT\n",
-              static_cast<unsigned>(KICKOS_SPECFAULT_ADDR));
+    auto const load = g_peek;
+    char msg[128];
+    ksnprintf(msg, sizeof(msg),
+              "[specfault] reading 0x%x: expect a clean MPU FAULT by the load at %p\n",
+              static_cast<unsigned>(KICKOS_SPECFAULT_ADDR), reinterpret_cast<void*>(load));
     kos_print(msg);
-    volatile uint32_t const* p = reinterpret_cast<volatile uint32_t const*>(KICKOS_SPECFAULT_ADDR);
-    volatile uint32_t v = *p; // denied by the wrap -> MemManage; never returns
-    (void)v;
+    (void)load(reinterpret_cast<volatile uint32_t const*>(KICKOS_SPECFAULT_ADDR));
     // Reached only where the read was PERMITTED, i.e. on a target carrying no wrap at
     // all: on this silicon a permitted read hangs instead of returning.
     kos_print("[specfault] ERROR: read was permitted (wrap not no-access?)\n");

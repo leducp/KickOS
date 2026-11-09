@@ -128,6 +128,10 @@ endif()
 if(KICKOS_WITNESS_UACCESS)
   add_subdirectory(uaccess)
 endif()
+# Only the CCR plant's scratch trees build it: elsewhere nothing planted what it probes.
+if(KICKOS_CCR_PLANT)
+  add_subdirectory(ccrprobe)
+endif()
 # Only the rewind witness's scratch tree builds it: no other kernel answers its call.
 if(KICKOS_WITNESS_REWIND)
   add_subdirectory(ucasrewind)

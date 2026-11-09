@@ -47,7 +47,7 @@ namespace
         uint16_t const gen = task_gen(t);
         (void)task_release(t, lock);
         task_member_leave(g_reseat.member, kernel().threads.index_of(g_reseat.member));
-        if (task_sweep_done(t, gen))
+        if (task_sweep_done(t))
         {
             thread_abort_park(slayer, 0, lock);
             task_report_death(t, gen);

@@ -10,7 +10,7 @@
    mpu     enforce
    sched   tickless
 
-[domain] expect fault at 0x20011000
+[domain] expect fault at 0x20011000 by the store at 0x800037f
 [domain] A: writing my own region
 [domain] A: my region ok; writing domain B (expect fault)
 

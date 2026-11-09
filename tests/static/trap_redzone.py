@@ -34,6 +34,7 @@ import json
 import os
 import re
 import shlex
+import struct
 import subprocess
 import sys
 
@@ -66,6 +67,8 @@ HEADER_CLASS_RE = re.compile(r'^\s*\*\s+class\s+([A-Z][A-Z0-9_]*(?:\s+[a-z]+=\S+
 HEADER_CLASS_LIKE_RE = re.compile(r'^\s*\*\s+class\s+[A-Z]')
 HEADER_DEFINE_RE = re.compile(r'^\s*#\s*define\s+([A-Za-z_][A-Za-z0-9_]*)')
 DEPTH_MACRO_RE = re.compile(r'^KICKOS_[A-Z0-9_]*DEPTH[A-Z0-9_]*$')
+# A map's assignment line; rx-elf prefixes a C symbol with one more underscore.
+MAIN_STACK_RE = re.compile(r'^\s+0x([0-9a-fA-F]+)\s+_?__kickos_kernel_stack_(start|end)\s+=')
 
 
 class Bad(Exception):
@@ -134,6 +137,8 @@ def header_classes(path):
     depths = set()
     for where, f in found:
         for opt in f[1:]:
+            # size= names what reserves the stack, which can live in a header of its own; the
+            # compiler's resolution refuses it if no included file defines it.
             for key in ('frame=', 'depth='):
                 if opt.startswith(key) and opt[len(key):] not in defined:
                     die('%s: class %s names %s, which %s does not define'
@@ -150,21 +155,31 @@ class Decl(object):
     def __init__(self, roots_path, arch, kernel_cores, src):
         self.arch = arch
         self.header = None
+        self.header_rel = None
         self.classes = []                            # class names, declaration order
         self.macros = {}                             # class -> (frame macro, depth macro)
         self.trap_stack = set()                      # classes declared stack=trap
         self.kernel_stack = set()                    # classes declared stack=kernel
         self.panic_stack = set()                     # classes declared stack=panic
         self.idle_stack = set()                      # classes declared stack=idle
+        self.main_stack = set()                      # classes declared stack=main
+        self.main_size = {}                          # stack=main class -> its size= macro
+        self.secondary = set()                       # classes declared secondary
         self.at = {}                                 # class -> the one callee it prices below
         self.roots = collections.OrderedDict()        # class -> [(symbol, optional)]
+        self.root_levels = {}                         # class -> [level], one per roots entry
+        self.levels = {}                              # class -> OrderedDict(level -> reason)
         self.rootless = {}                            # class -> declared reason
         self.excludes = []                           # [(mangled, reason, optional)]
         self.scoped_excludes = []                    # [(mangled, [class], reason, optional)]
         self.unsized = collections.OrderedDict()      # symbol -> (bytes, reason)
         self.unsized_calls = {}                       # symbol -> [(callee, optional)]
         self.recurse = collections.OrderedDict()      # symbol -> (activations, reason)
+        self.asmcalls = collections.OrderedDict()     # symbol -> reason
         self.link_maps = None                         # glob under the build dir, or None
+        self.tables = []                              # [(symbol, first word, prefix, optional)]
+        self.vectors = {}                             # handler -> level, or None for NONE
+        self.inits = []                               # [(start symbol, end symbol)]
         self.floor_files = None
         self.floor_nodes = None
         seen_arch = set()
@@ -174,7 +189,8 @@ class Decl(object):
             if f[0] == 'arch' and len(f) > 1 and f[1] == arch:
                 if len(f) != 3 or not f[2].startswith('header='):
                     die('%s:%d: arch record wants exactly header=<path>' % (roots_path, n))
-                self.header = os.path.join(src, f[2][len('header='):])
+                self.header_rel = f[2][len('header='):]
+                self.header = os.path.join(src, self.header_rel)
         if self.header is None:
             die('%s declares nothing for arch %s' % (roots_path, arch))
         for where, f in header_classes(self.header):
@@ -197,15 +213,41 @@ class Decl(object):
             elif kind == 'floor':
                 self.floor_files = self._number(where, f[2], 'files=')
                 self.floor_nodes = self._number(where, f[3], 'nodes=')
+            elif kind == 'level':
+                self._level(where, f, reason)
+            elif kind == 'table':
+                self._table(where, f, reason)
+            elif kind == 'vector':
+                self._vector(where, f, reason)
+            elif kind == 'init':
+                if reason is None or len(f) != 4:
+                    die('%s: init wants <arch> <start symbol> <end symbol> reason: ...' % where)
+                self.inits.append((f[2], f[3]))
             elif kind == 'root':
+                if len(f) < 4:
+                    die('%s: root wants <arch> <CLASS> [?]<symbol> [level=<name>]' % where)
                 cls = f[2]
                 if cls not in self.roots:
                     die('%s: root names class %s, which %s does not declare'
                         % (where, cls, self.header))
                 sym = f[3]
+                level = None
+                if len(f) == 5 and f[4].startswith('level=') and len(f[4]) > len('level='):
+                    level = f[4][len('level='):]
+                elif len(f) != 4:
+                    die('%s: root wants <arch> <CLASS> [?]<symbol> [level=<name>]' % where)
+                if (level is None) != (cls not in self.main_stack):
+                    die('%s: a root of a stack=main class names its level=, and no other root'
+                        ' does' % where)
+                if level is not None and level not in self.levels.get(cls, {}):
+                    die('%s: root %s names level %s, which no level record above it declares'
+                        ' for class %s' % (where, sym, level, cls))
                 # NONE is the deliberate twin of an omitted record: the class runs no C on
                 # this stack, so 0 is the answer rather than a silence.
                 if sym == 'NONE':
+                    if cls in self.main_stack:
+                        die('%s: class %s is stack=main, whose stack every interrupt spends;'
+                            ' NONE cannot be its answer' % (where, cls))
                     if reason is None:
                         die('%s: root NONE carries no "reason:"; a class that measures'
                             ' nothing has to say why nothing is the right answer' % where)
@@ -219,6 +261,7 @@ class Decl(object):
                         ' beside it' % (where, cls))
                 optional = sym.startswith('?')
                 self.roots[cls].append((sym.lstrip('?'), optional))
+                self.root_levels[cls].append(level)
             elif kind == 'exclude':
                 if reason is None:
                     die('%s: exclude %s carries no "reason:"; an undocumented exclusion is'
@@ -283,6 +326,12 @@ class Decl(object):
                 if self.link_maps is not None:
                     die('%s: link declared twice for %s' % (where, arch))
                 self.link_maps = f[2][len('maps='):]
+            elif kind == 'asmcall':
+                if reason is None or len(f) != 3:
+                    die('%s: asmcall wants <arch> <symbol> reason: ...' % where)
+                if f[2] in self.asmcalls:
+                    die('%s: asmcall %s declared twice' % (where, f[2]))
+                self.asmcalls[f[2]] = reason
             elif kind == 'recurse':
                 if reason is None:
                     die('%s: recurse %s carries no "reason:"; the bound has to say what'
@@ -315,6 +364,24 @@ class Decl(object):
                 die('%s: class %s has no root, so it would measure 0 and always pass.'
                     ' Declare `root %s %s NONE reason: ...` if that is the honest answer'
                     % (roots_path, cls, arch, cls))
+        if (self.tables or self.vectors) and len(self.main_stack) != 1:
+            die('%s: table and vector records price the one stack=main class of %s, and it'
+                ' declares %d' % (roots_path, arch, len(self.main_stack)))
+        if self.inits and not self.main_stack:
+            die('%s: an init record prices the constructors boot runs on a stack=main class,'
+                ' and %s declares none' % (roots_path, arch))
+        for handler, level in self.vectors.items():
+            if level is not None and level not in self.levels[next(iter(self.main_stack))]:
+                die('%s: vector %s names level %s, which the stack=main class does not declare'
+                    % (roots_path, handler, level))
+        for cls in sorted(self.main_stack):
+            if not self.levels.get(cls):
+                die('%s: class %s is stack=main and declares no level, so nothing says which'
+                    ' of its roots can be live at once' % (roots_path, cls))
+            for level in self.levels[cls]:
+                if level not in self.root_levels[cls]:
+                    die('%s: level %s of class %s has no root, so it would add 0 to the stack'
+                        ' it claims to price' % (roots_path, level, cls))
 
     def _class(self, where, f):
         """One class line: its name, then frame=, depth= and the stack options."""
@@ -325,10 +392,16 @@ class Decl(object):
         on_kernel = False
         on_panic = False
         on_idle = False
+        on_main = False
         at = None
+        size = None
         for opt in f[1:]:
             if opt.startswith('frame='):
                 frame = opt[len('frame='):]
+            elif opt.startswith('size=') and len(opt) > len('size='):
+                size = opt[len('size='):]
+            elif opt == 'core=secondary':
+                self.secondary.add(name)
             elif opt.startswith('at=') and len(opt) > len('at='):
                 at = opt[len('at='):]
             elif opt.startswith('depth='):
@@ -341,6 +414,8 @@ class Decl(object):
                 on_panic = True
             elif opt == 'stack=idle':
                 on_idle = True
+            elif opt == 'stack=main':
+                on_main = True
             elif opt in ('kstacks=0', 'kstacks=1'):
                 # Read by check_trap_redzone.sh, which owns the live posture knob. Accepted
                 # here only so a marked record parses: a .ci tree carries no board config to
@@ -350,7 +425,7 @@ class Decl(object):
                 die('%s: unknown class option "%s"' % (where, opt))
         if frame is None or depth is None:
             die('%s: class %s needs both frame= and depth=' % (where, name))
-        if (on_trap + on_kernel + on_panic + on_idle) > 1:
+        if (on_trap + on_kernel + on_panic + on_idle + on_main) > 1:
             die('%s: class %s names two stacks; a frame goes on one of them' % (where, name))
         if name in self.macros:
             die('%s: class %s declared twice' % (where, name))
@@ -362,11 +437,68 @@ class Decl(object):
             self.panic_stack.add(name)
         if on_idle:
             self.idle_stack.add(name)
+        if on_main:
+            if at is not None:
+                die('%s: class %s is stack=main, which sums whole levels; at= prices one callee'
+                    % (where, name))
+            self.main_stack.add(name)
+            self.levels[name] = collections.OrderedDict()
+            if size is not None:
+                self.main_size[name] = size
+        elif size is not None:
+            die('%s: class %s names size=, which only a stack=main class takes: every other'
+                ' stack is sized by its own knob' % (where, name))
+        if name in self.secondary and not on_main:
+            die('%s: class %s is core=secondary, which only a stack=main class can be: it names the'
+                ' boot stack a secondary core parks on' % (where, name))
         if at is not None:
             self.at[name] = at
         self.classes.append(name)
         self.macros[name] = (frame, depth)
         self.roots[name] = []
+        self.root_levels[name] = []
+
+    def _table(self, where, f, reason):
+        """A vector table the linked images carry, named by a sized symbol."""
+        shape = '%s: table wants <arch> [?]<symbol> [first=<n>] [prefix=<p>] reason: ...' % where
+        if reason is None or len(f) < 3:
+            die(shape)
+        first = 0
+        prefix = ''
+        for opt in f[3:]:
+            if opt.startswith('first=') and opt[len('first='):].isdigit():
+                first = int(opt[len('first='):])
+            elif opt.startswith('prefix=') and len(opt) > len('prefix='):
+                prefix = opt[len('prefix='):]
+            else:
+                die(shape)
+        self.tables.append((f[2].lstrip('?'), first, prefix, f[2].startswith('?')))
+
+    def _vector(self, where, f, reason):
+        """An assembly handler a table names: the level whose roots price it, or NONE."""
+        if reason is None or len(f) != 4 or not (f[3] == 'NONE' or f[3].startswith('level=')):
+            die('%s: vector wants <arch> <symbol> level=<name>|NONE reason: ...' % where)
+        if f[2] in self.vectors:
+            die('%s: vector %s declared twice' % (where, f[2]))
+        level = None
+        if f[3] != 'NONE':
+            level = f[3][len('level='):]
+        self.vectors[f[2]] = level
+
+    def _level(self, where, f, reason):
+        """One level of a stack=main class: the roots that can be live at one nesting step."""
+        if len(f) != 4:
+            die('%s: level wants <arch> <CLASS> <name>' % where)
+        if reason is None:
+            die('%s: level %s carries no "reason:"; it has to say which priority puts it above'
+                ' the level before it' % (where, f[3]))
+        cls = f[2]
+        if cls not in self.main_stack:
+            die('%s: level names class %s, which %s does not declare stack=main'
+                % (where, cls, self.header))
+        if f[3] in self.levels[cls]:
+            die('%s: level %s of class %s declared twice' % (where, f[3], cls))
+        self.levels[cls][f[3]] = reason
 
     @staticmethod
     def _check_floor(where, f, reason, seen):
@@ -398,7 +530,8 @@ class Decl(object):
 
     def off_thread(self):
         """Classes whose descent spends no unprivileged thread stack."""
-        return self.trap_stack | self.kernel_stack | self.panic_stack | self.idle_stack
+        return (self.trap_stack | self.kernel_stack | self.panic_stack | self.idle_stack
+                | self.main_stack)
 
 
 def split_site_key(key):
@@ -494,9 +627,10 @@ def resolve_bindings(graph, raw):
     """Canonical site key -> [(callee spec, optional)], every record's key resolved first.
 
     Refuses a key whose caller is absent (unless written `?<caller>`, which is also skipped where
-    every callee is optional and absent), ambiguous, or no longer makes the declared number of
-    indirect calls, and says so in those words: none of the three leaves the record describing
-    the site it was written for, and re-pointing the ordinal would bind silently.
+    the caller makes no located indirect call at all, or where every callee is optional and
+    absent), ambiguous, or no longer makes the declared number of indirect calls, and says so in
+    those words: none of the three leaves the record describing the site it was written for, and
+    re-pointing the ordinal would bind silently.
     """
     out = collections.OrderedDict()
     seen = {}
@@ -524,6 +658,8 @@ def resolve_bindings(graph, raw):
             canon += UNLOCATED_SUFFIX
         else:
             have = len(graph.located(src))
+            if have == 0 and key.startswith('?'):
+                continue
             if have != count:
                 die('%s: KEY DOES NOT RESOLVE: site %s is one of %d indirect calls in "%s"'
                     ' and this graph has %d. The ordinals in that body have all moved:'
@@ -1249,9 +1385,11 @@ class Walk(object):
         return seen
 
 
-def root_keys(graph, decl, cls, report):
+def root_keys(graph, decl, cls, report, levels=None):
+    """The graph keys of a class's roots. Where `levels` is a dict, it is filled with level ->
+    [key] for a stack=main class."""
     keys = []
-    for sym, optional in decl.roots[cls]:
+    for (sym, optional), level in zip(decl.roots[cls], decl.root_levels[cls]):
         key = graph.resolve(sym)
         if key is None:
             if optional:
@@ -1261,6 +1399,14 @@ def root_keys(graph, decl, cls, report):
             die('%s root %s is not in the graph and is not declared optional; a root'
                 ' nobody measured is a path nobody bounded' % (cls, sym))
         keys.append(key)
+        if levels is not None and level is not None:
+            levels.setdefault(level, []).append(key)
+    if levels is not None and cls in decl.main_stack:
+        for level in decl.levels[cls]:
+            if not levels.get(level):
+                die('%s level %s has no root in this graph: every root it declares is optional'
+                    ' and absent, so the level would add 0 to the stack it prices'
+                    % (cls, level))
     # A class whose roots are ALL optional and all absent has a non-empty declaration and an
     # empty root set, so it would measure 0 and pass forever.
     if not keys and cls not in decl.rootless:
@@ -1271,6 +1417,431 @@ def root_keys(graph, decl, cls, report):
     return keys
 
 
+def nested_depth(walk, order, keys):
+    """A stack=main class's depth: one root per level live at once, each level nesting below the
+    one before it, so the deepest root of every level, summed. Returns (total, [(level, depth,
+    winner)]) in `order`; `keys` maps a level to its graph keys."""
+    total = 0
+    steps = []
+    for level in order:
+        best = None
+        winner = None
+        for key in keys[level]:
+            d = walk.depth(key)
+            if best is None or d > best:
+                best = d
+                winner = key
+        steps.append((level, best, winner))
+        total += best
+    return total, steps
+
+
+EM_ARM = 40
+
+
+def elf_read(path):
+    """(byte order, [section], {name: (value, size, shndx)}, {address: {name}}, word size, code
+    mask) of an ELF32 or ELF64 file; a section is (addr, size, offset, type), an address a code
+    symbol's ANDed with the code mask, which clears bit 0 on Arm alone."""
+    try:
+        data = open(path, 'rb').read()
+    except OSError as e:
+        die('cannot read the linked image %s: %s' % (path, e))
+    if data[:4] != b'\x7fELF' or data[4] not in (1, 2):
+        die('%s is not an ELF image' % path)
+    order = '<'
+    if data[5] == 2:
+        order = '>'
+    wide = data[4] == 2
+    machine, = struct.unpack_from(order + 'H', data, 0x12)
+    # Bit 0 is the Thumb state bit on EM_ARM alone; elsewhere functions a byte apart are distinct.
+    mask = ~0
+    if machine == EM_ARM:
+        mask = ~1
+    if wide:
+        shoff, = struct.unpack_from(order + 'Q', data, 0x28)
+        shentsize, shnum = struct.unpack_from(order + 'HH', data, 0x3A)
+    else:
+        shoff, = struct.unpack_from(order + 'I', data, 0x20)
+        shentsize, shnum = struct.unpack_from(order + 'HH', data, 0x2E)
+    sections = []
+    for i in range(shnum):
+        at = shoff + i * shentsize
+        if wide:
+            _n, typ, _fl, addr, off, size, link = struct.unpack_from(order + 'IIQQQQI', data, at)
+        else:
+            _n, typ, _fl, addr, off, size, link = struct.unpack_from(order + 'IIIIIII', data, at)
+        sections.append((addr, size, off, typ, link))
+    symbols = {}
+    code = collections.defaultdict(set)
+    entsize = 16
+    if wide:
+        entsize = 24
+    for addr, size, off, typ, link in sections:
+        if typ != 2:
+            continue
+        stroff = sections[link][2]
+        for k in range(size // entsize):
+            if wide:
+                name, info, _other, shndx, value, ssize = struct.unpack_from(
+                    order + 'IBBHQQ', data, off + k * entsize)
+            else:
+                name, value, ssize, info, _other, shndx = struct.unpack_from(
+                    order + 'IIIBBH', data, off + k * entsize)
+            end = data.index(b'\0', stroff + name)
+            label = data[stroff + name:end].decode('utf-8', 'replace')
+            if not label or label.startswith('$') or shndx == 0:
+                continue
+            symbols.setdefault(label, (value, ssize, shndx))
+            if info & 0xf in (0, 2) and shndx < 0xff00:
+                code[value & mask].add(label)
+    word = 4
+    if wide:
+        word = 8
+    return order, sections, symbols, code, word, mask
+
+
+def vector_refusals(decl, image, roots, priced_ctor):
+    """[(key, refusal)] the image's vector tables and constructor array earn: a table entry naming
+    a handler no root of the stack=main class is and no vector record prices, and a constructor
+    `priced_ctor` refuses, given the names its address carries. The key names the defect without
+    the image, so one defect every image links is reported once."""
+    order, sections, symbols, code, word, mask = elf_read(image)
+    data = None
+    out = []
+    for sym, first, prefix, optional in decl.tables:
+        if sym not in symbols:
+            if not optional:
+                out.append((sym, '%s links no vector table %s' % (image, sym)))
+            continue
+        value, size, shndx = symbols[sym]
+        if size == 0 or size % 4 or shndx >= len(sections):
+            out.append((sym, '%s: vector table %s carries no size the image can be read by;'
+                               ' give it a .size' % (image, sym)))
+            continue
+        addr, _ssize, off, typ, _link = sections[shndx]
+        if data is None:
+            data = open(image, 'rb').read()
+        words = struct.unpack_from(order + '%dI' % (size // 4), data, off + value - addr)
+        for slot, handler in enumerate(words):
+            if slot < first or handler == 0:
+                continue
+            names = set()
+            for n in code.get(handler & mask, ()):
+                if n.startswith(prefix):
+                    n = n[len(prefix):]
+                names.add(n)
+            if names & roots or names & set(decl.vectors):
+                continue
+            what = ', '.join(sorted(names)) or 'no symbol'
+            out.append(((sym, slot, what),
+                        'UNPRICED VECTOR: %s slot %d of %s holds 0x%x (%s), which no root of the'
+                        ' stack=main class is and no vector record prices. Root it at its level,'
+                        ' or declare `vector <arch> <handler> level=<name>|NONE reason: ...`'
+                        % (sym, slot, image, handler, what)))
+    for start, end in decl.inits:
+        if start not in symbols or end not in symbols:
+            out.append((start, '%s links no %s/%s pair' % (image, start, end)))
+            continue
+        lo = symbols[start][0]
+        hi = symbols[end][0]
+        if hi < lo or (hi - lo) % word:
+            out.append((start, '%s: %s to %s is not a whole array of %d-byte words'
+                        % (image, start, end, word)))
+            continue
+        fmt = {4: 'I', 8: 'Q'}[word]
+        for slot in range((hi - lo) // word):
+            at = lo + slot * word
+            entry = None
+            for addr, ssize, off, typ, _link in sections:
+                if typ != 8 and addr <= at < addr + ssize and ssize:
+                    if data is None:
+                        data = open(image, 'rb').read()
+                    entry, = struct.unpack_from(order + fmt, data, off + at - addr)
+                    break
+            if entry is None:
+                out.append((start, '%s: slot %d of %s lies in no loaded section'
+                            % (image, slot, start)))
+                continue
+            names = code.get(entry & mask, set())
+            if priced_ctor(names):
+                continue
+            what = ', '.join(sorted(names)) or 'no symbol'
+            out.append(((start, what),
+                        'UNPRICED CONSTRUCTOR: slot %d between %s and %s of %s holds 0x%x (%s),'
+                        ' which the reset handler calls on the main stack and no stack=main'
+                        ' walk reaches. Bind the reset handler\'s walk of the array to it in'
+                        ' tests/static/trap_redzone_indirect.txt'
+                        % (slot, start, end, image, entry, what)))
+    return out
+
+
+ASM_SOURCE_EXT = ('.S', '.s', '.sx')
+# What an assembly unit can pull in that the stale-record check reads raw: a .h it includes is
+# C as much as assembly, and its declarations would keep a dead record alive.
+ASM_TEXT_EXT = ASM_SOURCE_EXT + ('.inc',)
+ASM_COMMENT_RE = re.compile(r'/\*.*?\*/', re.S)
+ASM_STRING_RE = re.compile(r'"(?:[^"\\]|\\.)*"')
+ASM_LABEL_RE = re.compile(r'^\s*([A-Za-z_.$][A-Za-z0-9_.$]*):')
+ASM_TOKEN_RE = re.compile(r'[A-Za-z_.$][A-Za-z0-9_.$]*')
+ASM_LINEMARK_RE = re.compile(r'^#\s*(\d+)\s+"((?:[^"\\]|\\.)*)"')
+# GAS's comment_chars per arch: the character that starts a comment anywhere on a line. '#' at
+# the start of a line is one everywhere; mid-line it is an immediate on arm, aarch64 and rx.
+ASM_LINE_COMMENT = {
+    'armv6m': '@',
+    'armv7m': '@',
+    'armv8a': None,
+    'rv32imac': '#',
+    'rv64imac': '#',
+    'x86_64': '#',
+    'lx6': '#',
+    'rxv3': ';',
+}
+
+
+def asm_comment(arch):
+    if arch not in ASM_LINE_COMMENT:
+        die('no assembler comment syntax is known for arch %s, so a name in one of its comments'
+            ' could not be told from a call' % arch)
+    return ASM_LINE_COMMENT[arch]
+
+
+def asm_code(line, comment):
+    """The part of one line the assembler reads: '//' comments, strings and the arch's comment
+    character gone. A line starting with '#' is a comment or a directive and reads as empty."""
+    if line.lstrip().startswith('#'):
+        return ''
+    line = line.split('//', 1)[0]
+    line = ASM_STRING_RE.sub(' ', line)
+    if comment is not None:
+        line = line.split(comment, 1)[0]
+    return line
+
+
+def asm_units(build_dir, src, header_rel):
+    """The compile-database entries of this build's assembly under the arch family directory the
+    trap-stack header belongs to, the arch's own directory and its chips' alike: the files whose
+    calls the classes price."""
+    if '/include/' not in header_rel:
+        die('the arch header %s is not under an <archdir>/include/ path, so the arch\'s'
+            ' assembly cannot be found' % header_rel)
+    archdir = os.path.realpath(os.path.join(src, header_rel.split('/include/', 1)[0]))
+    family = os.path.dirname(archdir)
+    path = os.path.join(build_dir, 'compile_commands.json')
+    try:
+        with open(path) as f:
+            db = json.load(f)
+    except (OSError, ValueError) as e:
+        die('cannot read %s: %s' % (path, e))
+    units = {}
+    for e in db:
+        f = e.get('file', '') if isinstance(e, dict) else ''
+        if os.path.splitext(f)[1] not in ASM_SOURCE_EXT:
+            continue
+        real = os.path.realpath(os.path.join(e.get('directory', build_dir), f))
+        if real.startswith(family + os.sep):
+            units[real] = e
+    if not units:
+        die('%s compiles no assembly under %s, so no trap site\'s calls could be read'
+            % (path, family))
+    return [units[u] for u in sorted(units)]
+
+
+def asm_preprocess(entry, build_dir):
+    """The text the assembler reads for one unit: its own compile command with -E in place of the
+    object, so every include and every macro resolves as it does for the image, and only the
+    branches this posture assembles are left."""
+    argv = entry.get('arguments')
+    if argv is None:
+        argv = shlex.split(entry.get('command', ''))
+    if not argv:
+        die('compile database entry for %s carries no command' % entry.get('file'))
+    cmd = [argv[0], '-E']
+    i = 1
+    while i < len(argv):
+        a = argv[i]
+        if a in ('-o', '-MF', '-MT', '-MQ'):
+            i += 2
+            continue
+        if a not in ('-c', '-MD', '-MMD', '-MP'):
+            cmd.append(a)
+        i += 1
+    try:
+        r = subprocess.run(cmd, cwd=entry.get('directory', build_dir), stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE, universal_newlines=True)
+    except OSError as e:
+        die('cannot preprocess %s: %s' % (entry.get('file'), e))
+    if r.returncode != 0:
+        die('preprocessing %s failed:\n%s' % (entry.get('file'), r.stderr[-2000:]))
+    return r.stdout
+
+
+def asm_references(text, prefix, comment):
+    """([(file, line, symbol)], {file}) of a preprocessed assembly unit: every identifier it names
+    outside comments and strings, its own labels and `prefix` stripped, each at the source line
+    the preprocessor's line markers place it on; and every file those markers name."""
+    labels = set()
+    refs = []
+    files = set()
+    where = '<unknown>'
+    n = 0
+    for line in text.splitlines():
+        m = ASM_LINEMARK_RE.match(line)
+        if m:
+            where = m.group(2)
+            n = int(m.group(1))
+            files.add(where)
+            continue
+        code = asm_code(line, comment)
+        m = ASM_LABEL_RE.match(code)
+        if m:
+            labels.add(m.group(1))
+        for tok in ASM_TOKEN_RE.findall(code):
+            refs.append((where, n, tok))
+        n += 1
+    out = []
+    for where, n, tok in refs:
+        if tok in labels:
+            continue
+        if prefix:
+            if not tok.startswith(prefix):
+                continue
+            tok = tok[len(prefix):]
+        out.append((where, n, tok))
+    return out, files
+
+
+def asm_raw_names(paths, prefix, comment):
+    """Every identifier the assembly files name in ANY conditional branch, `prefix` stripped: what
+    an asmcall record is stale against, a posture that compiles a call out leaving it live."""
+    names = set()
+    for path in sorted(paths):
+        if os.path.splitext(path)[1] not in ASM_TEXT_EXT:
+            continue
+        try:
+            with open(path) as f:
+                text = f.read()
+        except OSError as e:
+            die('cannot read %s: %s' % (path, e))
+        text = ASM_COMMENT_RE.sub(lambda m: '\n' * m.group(0).count('\n'), text)
+        for line in text.splitlines():
+            for tok in ASM_TOKEN_RE.findall(asm_code(line, comment)):
+                if prefix:
+                    if not tok.startswith(prefix):
+                        continue
+                    tok = tok[len(prefix):]
+                names.add(tok)
+    return names
+
+
+def asm_refusals(refs, raw_names, defined, rooted, priced, asmcalls, report):
+    """A refusal per C function the assembly names that no class roots, no priced assembly edge
+    or vector record reaches and no asmcall record places off every trap path: its frames would
+    land on a stack no figure prices. An asmcall record on a trap path, or naming a function no
+    branch of the assembly names, is refused too.
+
+    Which body of the assembly a priced edge leaves from, and which class roots a call, is still
+    the reader's to keep honest against the site: the check is per function, not per site."""
+    out = []
+    named = set()
+    for where, n, sym in refs:
+        if sym not in defined or sym in named:
+            continue
+        named.add(sym)
+        if sym in rooted or sym in priced or sym in asmcalls:
+            continue
+        out.append('UNROOTED ASSEMBLY CALL: %s:%d names %s, a C function no class roots and no'
+                   ' unsized calls= edge or vector record prices. Its descent runs on a stack no'
+                   ' figure here prices; root it in the class of the stack that site runs it on,'
+                   ' declare the edge on the assembly body that makes the call, or declare'
+                   ' `asmcall <arch> %s reason: ...` if no trap reaches it' % (where, n, sym, sym))
+    for sym in asmcalls:
+        if sym in rooted:
+            out.append('asmcall %s is also a root, so it is on a trap path and off every one'
+                       % sym)
+        elif sym in priced:
+            out.append('asmcall %s is also a priced calls= edge or vector record, so it is on a'
+                       ' trap path and off every one' % sym)
+        elif sym not in defined:
+            report.append('  asmcall %s: not in this graph, unused' % sym)
+        elif sym not in raw_names:
+            out.append('asmcall %s names a C function no assembly under the arch family names;'
+                       ' the record is stale' % sym)
+        elif sym not in named:
+            report.append('  asmcall %s: compiled out of this posture\'s assembly' % sym)
+    return out
+
+
+def priced_edges(graph, decl, unsized_keys, reach):
+    """The callees of the unsized assembly bodies a class reaches, through the calls= edges the
+    walk charges: what the assembly calls on a stack some figure prices."""
+    out = set()
+    for sym, calls in decl.unsized_calls.items():
+        body = graph.resolve(sym)
+        if body is None or body not in unsized_keys or body not in reach:
+            continue
+        for callee, _optional in calls:
+            key = graph.resolve(callee)
+            if key is not None and key in reach and key in graph.edges.get(body, ()):
+                out.add(key)
+    return out
+
+
+def linked_images(build):
+    """The ELF image beside each link map kickos-image-maps.txt lists: the map's name without
+    .map, or that with .elf where the link converts its ELF into another format."""
+    try:
+        maps = open(os.path.join(build, 'kickos-image-maps.txt')).read().split()
+    except OSError as e:
+        die('cannot read the link map list of %s: %s' % (build, e))
+    out = []
+    for m in maps:
+        if not m.endswith('.map'):
+            continue
+        for image in (m[:-len('.map')] + '.elf', m[:-len('.map')]):
+            if os.path.isfile(image):
+                out.append(image)
+                break
+    return out
+
+
+def main_stack_size(build):
+    """(bytes, maps read, smallest map) of the main stack every image of a build links: the
+    span between __kickos_kernel_stack_start and __kickos_kernel_stack_end in each map
+    kickos-image-maps.txt lists, the smallest one binding."""
+    listing = os.path.join(build, 'kickos-image-maps.txt')
+    try:
+        maps = open(listing).read().split()
+    except OSError as e:
+        die('cannot read %s, the list of the link maps whose main stack a stack=main class is'
+            ' compared against: %s' % (listing, e))
+    best = None
+    where = None
+    read = 0
+    for path in maps:
+        if not os.path.isfile(path):
+            continue
+        ends = {}
+        for line in open(path, errors='replace'):
+            m = MAIN_STACK_RE.match(line)
+            if m:
+                ends.setdefault(m.group(2), int(m.group(1), 16))
+        if set(ends) != {'start', 'end'}:
+            die('%s links no __kickos_kernel_stack_start/__kickos_kernel_stack_end pair, so its'
+                ' main stack cannot be read' % path)
+        size = ends['end'] - ends['start']
+        if size <= 0:
+            die('%s links a main stack of %d bytes' % (path, size))
+        read += 1
+        if best is None or size < best:
+            best = size
+            where = path
+    if best is None:
+        die('none of the %d link maps %s lists exists, so no main stack was read'
+            % (len(maps), listing))
+    return best, read, where
+
+
 # --- main ----------------------------------------------------------------------
 
 def usage():
@@ -1278,28 +1849,39 @@ def usage():
         'usage: trap_redzone.py --ci-dir <dir> --src <dir> --arch <arch> --preset <preset>\n'
         '                       --kernel-cores <n> --roots <file> --indirect <file>\n'
         '                       --enforced <CLASS>=<frame>,<depth> [--enforced ...]\n'
-        '                       [--not-compiled <CLASS>]...\n'
+        '                       --label-prefix <C symbol prefix, possibly empty>\n'
+        '                       [--not-compiled <CLASS>]... [--absent <CLASS>]...\n'
+        '                       [--main-size <bytes> --main-map <map>]\n'
+        '                       [--stack-size <CLASS>=<bytes>,<macro>]...\n'
         '       trap_redzone.py --check-file <indirect-file>\n'
-        '       trap_redzone.py --classes <trap-stack header>\n')
+        '       trap_redzone.py --classes <trap-stack header>\n'
+        '       trap_redzone.py --main-stack <build dir>\n')
     return 2
 
 
 def print_classes(path):
-    """The header's classes, one per line: CLASS, frame, depth, stack, kstacks."""
+    """The header's classes, one per line: CLASS, frame, depth, stack, kstacks, size, cores."""
     for _where, f in header_classes(path):
         frame = depth = ''
         onstack = 'thread'
         kstacks = 'any'
+        size = '-'
+        cores = 'any'
         for opt in f[1:]:
             if opt.startswith('frame='):
                 frame = opt[len('frame='):]
             elif opt.startswith('depth='):
                 depth = opt[len('depth='):]
-            elif opt in ('stack=trap', 'stack=kernel', 'stack=panic', 'stack=idle'):
+            elif opt.startswith('size='):
+                size = opt[len('size='):]
+            elif opt == 'core=secondary':
+                cores = 'secondary'
+            elif opt in ('stack=trap', 'stack=kernel', 'stack=panic', 'stack=idle',
+                         'stack=main'):
                 onstack = opt[len('stack='):]
             elif opt in ('kstacks=0', 'kstacks=1'):
                 kstacks = opt[len('kstacks='):]
-        print('\t'.join((f[0], frame, depth, onstack, kstacks)))
+        print('\t'.join((f[0], frame, depth, onstack, kstacks, size, cores)))
     return 0
 
 
@@ -1333,11 +1915,15 @@ def read_renames(path):
 
 def parse_argv(argv):
     want = {'--ci-dir', '--src', '--arch', '--preset', '--kernel-cores', '--roots', '--indirect'}
-    opt = {'privatised': None}
+    opt = {'privatised': None, 'main-size': None, 'main-map': None, 'label-prefix': None}
     enforced = collections.OrderedDict()
     # Classes this image does not compile, per the caller's read of the live posture knob.
     # Still measured and printed; only the figure comparison is dropped.
     not_compiled = set()
+    # Classes whose stack this image does not have at all: their roots are not looked up.
+    absent = set()
+    # A stack=main class's size= figure, as the caller resolved its macro: CLASS -> (bytes, macro).
+    stack_size = {}
     i = 0
     while i < len(argv):
         a = argv[i]
@@ -1347,10 +1933,35 @@ def parse_argv(argv):
             opt['privatised'] = argv[i + 1]
             i += 2
             continue
+        if a in ('--main-size', '--main-map', '--label-prefix'):
+            if i + 1 >= len(argv):
+                die('%s wants a value' % a)
+            opt[a.lstrip('-')] = argv[i + 1]
+            i += 2
+            continue
         if a == '--not-compiled':
             if i + 1 >= len(argv):
                 die('--not-compiled wants <CLASS>')
             not_compiled.add(argv[i + 1])
+            i += 2
+            continue
+        if a == '--absent':
+            if i + 1 >= len(argv):
+                die('--absent wants <CLASS>')
+            absent.add(argv[i + 1])
+            i += 2
+            continue
+        if a == '--stack-size':
+            if i + 1 >= len(argv):
+                die('--stack-size wants <CLASS>=<bytes>,<macro>')
+            spec = argv[i + 1]
+            if '=' not in spec or ',' not in spec:
+                die('--stack-size "%s" is not <CLASS>=<bytes>,<macro>' % spec)
+            cls, rest = spec.split('=', 1)
+            nbytes, macro = rest.split(',', 1)
+            if not nbytes.isdigit() or int(nbytes) < 1:
+                die('--stack-size %s carries "%s", which is not a byte count' % (cls, nbytes))
+            stack_size[cls] = (int(nbytes), macro)
             i += 2
             continue
         if a == '--enforced':
@@ -1377,17 +1988,27 @@ def parse_argv(argv):
     for a in sorted(want):
         if a.lstrip('-') not in opt:
             die('missing %s' % a)
+    if opt['label-prefix'] is None:
+        die('missing --label-prefix: without the C symbol prefix of this target an assembly'
+            ' reference to a C function cannot be told from any other name')
     opt['kernel-cores'] = parse_kernel_cores(opt['kernel-cores'])
+    if opt['main-size'] is not None:
+        if not opt['main-size'].isdigit() or int(opt['main-size']) < 1:
+            die('--main-size "%s" is not a byte count' % opt['main-size'])
+        opt['main-size'] = int(opt['main-size'])
     if not enforced:
         die('no --enforced figure; there would be nothing to compare against')
-    if not_compiled and set(enforced) <= not_compiled:
-        die('every class was passed --not-compiled, so nothing would be compared at all;'
-            ' a posture that enforces no class of an arch is a declaration bug, not a run')
+    if (not_compiled or absent) and set(enforced) <= (not_compiled | absent):
+        die('every class was passed --not-compiled or --absent, so nothing would be compared at'
+            ' all; a posture that enforces no class of an arch is a declaration bug, not a run')
+    opt['absent'] = absent
+    opt['stack-size'] = stack_size
     return opt, enforced, not_compiled
 
 
 def run(argv):
     opt, enforced, not_compiled = parse_argv(argv)
+    absent = opt['absent']
     arch = opt['arch']
     preset = opt['preset']
     decl = Decl(opt['roots'], arch, opt['kernel-cores'], opt['src'])
@@ -1402,6 +2023,28 @@ def run(argv):
         if cls not in decl.macros:
             die('--not-compiled names class %s, which %s does not declare'
                 % (cls, decl.header))
+    for cls in sorted(absent):
+        if cls not in decl.secondary:
+            die('--absent names class %s, which %s does not declare secondary: only a secondary'
+                ' core\'s stack can be missing from an image' % (cls, decl.header))
+    for cls in sorted(opt['stack-size']):
+        if cls not in decl.main_size:
+            die('--stack-size names class %s, which %s does not size with size='
+                % (cls, decl.header))
+    for cls in sorted(decl.main_stack - absent):
+        if cls in decl.main_size:
+            if cls not in opt['stack-size']:
+                die('%s sizes class %s with size=%s and no --stack-size passed its figure'
+                    % (decl.header, cls, decl.main_size[cls]))
+        elif opt['main-size'] is None:
+            die('%s declares stack=main class %s and no --main-size says what the image links'
+                % (decl.header, cls))
+
+    def main_size_of(cls):
+        if cls in decl.main_size:
+            size, macro = opt['stack-size'][cls]
+            return size, 'that %s sizes' % macro
+        return opt['main-size'], 'linked in %s' % opt['main-map']
 
     renames = None
     if opt['privatised'] is not None:
@@ -1429,8 +2072,15 @@ def run(argv):
 
     report = []
     roots = collections.OrderedDict()
+    levels = {}                                       # class -> {level: [key]}, stack=main
     for cls in decl.classes:
-        roots[cls] = root_keys(graph, decl, cls, report)
+        levels[cls] = {}
+        if cls in absent:
+            roots[cls] = []
+            report.append('  %-8s ABSENT: this image runs no secondary core, so the stack it'
+                          ' prices is not linked and no root of it is looked up' % cls)
+            continue
+        roots[cls] = root_keys(graph, decl, cls, report, levels[cls])
         if cls in decl.rootless:
             report.append('  %-8s root NONE, so its measured depth is 0 by declaration: %s'
                           % (cls, decl.rootless[cls]))
@@ -1551,9 +2201,16 @@ def run(argv):
 
     measured = {}
     for cls in decl.classes:
+        if cls in absent:
+            continue
         best = 0
         winner = None
+        steps = None
+        if cls in decl.main_stack:
+            best, steps = nested_depth(walk_for(cls), decl.levels[cls], levels[cls])
         for key in roots[cls]:
+            if steps is not None:
+                break
             d = class_depth(walk_for(cls), cls, key)
             if winner is None or d > best:
                 best = d
@@ -1574,6 +2231,8 @@ def run(argv):
             where = 'on the panic reporter stack, exclusions NOT applied'
         if cls in decl.idle_stack:
             where = 'on idle\'s stack, exclusions NOT applied'
+        if cls in decl.main_stack:
+            where = 'on the main stack, one root per level summed, exclusions NOT applied'
         if cls in not_compiled:
             where += ', NOT ENFORCED: this image does not compile the entry design this' \
                      ' class describes'
@@ -1581,6 +2240,13 @@ def run(argv):
               % (cls, best, macro_depth, enf_depth, where))
         print('  red zone = %s %d + %s %d = %d bytes'
               % (macro_frame, frame, macro_depth, enf_depth, frame + enf_depth))
+        for level, d, key in steps or ():
+            print('  level %s: %d bytes, deepest root %s:' % (level, d, key))
+            print('    ' + ' -> '.join(walk_for(cls).chain(key)))
+        if steps is not None:
+            size, source = main_size_of(cls)
+            print('  main stack = %s %d + measured %d = %d bytes of the %d %s'
+                  % (macro_frame, frame, best, frame + best, size, source))
         if winner is not None and (cls not in targets or targets[cls] is not None):
             print('  deepest root %s:' % winner)
             if cls in targets:
@@ -1600,11 +2266,17 @@ def run(argv):
             print('  excluded %s from %s' % (spec, ','.join(classes)))
             print('    reason: %s' % reason)
         for cls in decl.classes:
+            if cls in absent:
+                continue
             if walk_for(cls) is bare:
                 print('  %-6s already measured that way, see above' % cls)
                 continue
             b = 0
+            if cls in decl.main_stack:
+                b = nested_depth(bare, decl.levels[cls], levels[cls])[0]
             for key in roots[cls]:
+                if cls in decl.main_stack:
+                    break
                 b = max(b, class_depth(bare, cls, key))
             frame, enf_depth = enforced[cls]
             note = ''
@@ -1626,8 +2298,75 @@ def run(argv):
         return key
 
     fails = []
+    if decl.tables or decl.inits:
+        rooted = set()
+        if decl.tables:
+            rooted = set(sym for sym, _opt in decl.roots[next(iter(decl.main_stack))])
+        main_reach = set()
+        for cls in decl.main_stack - absent:
+            main_reach |= walk_for(cls).reach(roots[cls])
+
+        def priced_ctor(names):
+            prefix = opt['label-prefix']
+            for n in names:
+                if prefix and n.startswith(prefix):
+                    n = n[len(prefix):]
+                if set(graph.match(n)) & main_reach:
+                    return True
+            return False
+
+        images = linked_images(opt['ci-dir'])
+        if not images:
+            fails.append('no linked image beside the maps of %s, so no vector table or'
+                         ' constructor array was read' % opt['ci-dir'])
+        seen = set()
+        for image in images:
+            for key, refusal in vector_refusals(decl, image, rooted, priced_ctor):
+                if key not in seen:
+                    seen.add(key)
+                    fails.append(refusal)
+        print('trap_redzone: vector tables and constructors of %d linked image(s) read against'
+              ' %s' % (len(images), ', '.join(sorted(decl.main_stack - absent))))
+    comment = asm_comment(arch)
+    units = asm_units(opt['ci-dir'], opt['src'], decl.header_rel)
+    refs = []
+    asm_files = set()
+    for e in units:
+        r, files = asm_references(asm_preprocess(e, opt['ci-dir']), opt['label-prefix'], comment)
+        refs += r
+        asm_files |= set(os.path.realpath(os.path.join(e.get('directory', opt['ci-dir']), f))
+                         for f in files if not f.startswith('<'))
+    defined = set(k for k, tus in graph.definers.items() if tus)
+    asm_report = []
+    fails += asm_refusals(refs, asm_raw_names(asm_files, opt['label-prefix'], comment), defined,
+                          set().union(*roots.values()),
+                          priced_edges(graph, decl, unsized_keys, reach) | set(decl.vectors),
+                          decl.asmcalls,
+                          asm_report)
+    for line in asm_report:
+        print(line)
+    src_real = os.path.realpath(opt['src'])
+    print('trap_redzone: %d assembly unit(s) read for the C they name, with what they include'
+          ' under the source tree: %s'
+          % (len(units), ', '.join(sorted(os.path.relpath(f, src_real) for f in asm_files
+                                          if f.startswith(src_real + os.sep)
+                                          and os.path.splitext(f)[1] in ASM_TEXT_EXT))))
+    for cls in sorted(decl.main_stack - absent):
+        frame = enforced[cls][0]
+        size, source = main_size_of(cls)
+        remedy = 'Raise _kernel_stack_size in the chip\'s linker script'
+        if cls in decl.main_size:
+            remedy = 'Raise %s' % decl.main_size[cls]
+        if frame + measured[cls] > size:
+            fails.append(
+                'MAIN STACK BELOW ITS REQUIREMENT: %s needs %s %d + %d measured = %d bytes for'
+                ' its boot chain and one root per level nested on it, and the image has %d (%s).'
+                ' The deepest nest runs off the stack\'s base into whatever is linked below it.'
+                ' %s; do NOT shrink the depth to fit, it is a measurement.'
+                % (cls, decl.macros[cls][0], frame, measured[cls], frame + measured[cls],
+                   size, source, remedy))
     for cls in decl.classes:
-        if cls in not_compiled:
+        if cls in not_compiled or cls in absent:
             continue
         frame, enf_depth = enforced[cls]
         if measured[cls] > enf_depth:
@@ -1694,10 +2433,13 @@ def run(argv):
         return 1
     print('trap_redzone: depths OK, %s' % ', '.join(
         '%s %d <= %d' % (c, measured[c], enforced[c][1])
-        for c in decl.classes if c not in not_compiled))
+        for c in decl.classes if c not in not_compiled and c not in absent))
     if not_compiled:
         print('trap_redzone: measured and NOT enforced here, %s' % ', '.join(
             '%s %d' % (c, measured[c]) for c in sorted(not_compiled)))
+    if absent:
+        print('trap_redzone: no stack on this image, so not measured, %s'
+              % ', '.join(sorted(absent)))
     return 0
 
 
@@ -1705,11 +2447,14 @@ def main():
     if len(sys.argv) < 2:
         return usage()
     try:
-        if sys.argv[1] in ('--check-file', '--classes'):
+        if sys.argv[1] in ('--check-file', '--classes', '--main-stack'):
             if len(sys.argv) != 3:
                 return usage()
             if sys.argv[1] == '--classes':
                 return print_classes(sys.argv[2])
+            if sys.argv[1] == '--main-stack':
+                print('%d\t%d\t%s' % main_stack_size(sys.argv[2]))
+                return 0
             return check_file(sys.argv[2])
         return run(sys.argv[1:])
     except Bad as e:

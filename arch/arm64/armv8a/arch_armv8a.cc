@@ -90,6 +90,10 @@ static_assert(KICKOS_KERNEL_STACK_SIZE - sizeof(uint32_t) >= KICKOS_ARMV8A_TRAP_
               "the kernel block cannot hold the relocated death path's switch");
 static_assert(KICKOS_PANIC_STACK_SIZE >= KICKOS_ARMV8A_PANIC_FRAME + KICKOS_ARMV8A_PANIC_DEPTH,
               "KICKOS_PANIC_STACK_SIZE is below what this arch's panic reporter descends");
+static_assert(KICKOS_ARMV8A_CORE_STACK >= KICKOS_ARMV8A_TRAP_FRAME_NONE + KICKOS_ARMV8A_MAIN_DEPTH,
+              "a core's stack cannot hold the boot path and a fault nested on it");
+static_assert(KICKOS_ARMV8A_CORE_STACK >= KICKOS_ARMV8A_TRAP_FRAME + KICKOS_ARMV8A_CORE_DEPTH,
+              "a secondary's stack cannot hold its park and the interrupt nested on it");
 // The link checks the same floor above idle's thread-local carve.
 static_assert(KICKOS_IDLE_STACK_SIZE >= KICKOS_ARCH_IDLE_FLOOR,
               "an EL1h interrupt does not fit this board's idle stack");

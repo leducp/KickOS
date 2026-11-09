@@ -69,8 +69,8 @@ namespace kickos
         uint8_t staged_decl = 0;
         // Every granule of an IMAGE stage holds its source's bytes.
         bool staged_full = false;
-        // The pool had no run for the stage the call needed: the locked pass fails rather than
-        // sending the call round.
+        // The plan found no run, or no budget, for the stage the call needed: the locked pass
+        // sends the call round only where the run is there by then.
         bool staged_short = false;
         bool active = false;
         // A spawn's parameters and window list, copied in once when the call enters: its plan
@@ -79,9 +79,10 @@ namespace kickos
         bool has_windows = false;
         kos_thread_params params = {};
         kos_window windows[KICKOS_MAX_THREAD_WINDOWS] = {};
-        // A task create's, read the same way.
+        // A task create's, read the same way, and the instant its wait ends.
         bool has_task_params = false;
         kos_task_params task_params = {};
+        uint64_t task_until = 0;
         // Set when the first span is noted, cleared by a completed call of another thread
         // that mapped a noted frame: only a live record excuses the locked pass.
         bool live = false;

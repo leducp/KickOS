@@ -2,14 +2,14 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# Fault-dump gate: run the `fault` image (which executes an illegal instruction),
-# and assert: the dump MARKER appears EXACTLY ONCE, and the process exits with the
-# status that marker implies. The marker presence catches a dump that was enqueued
-# into an armed console ring and lost (the C1 regression) rather than written
-# synchronously; the exactly-once count catches a dump doubled by a re-pushed ring
-# (the drain-reentrancy regression), and on an isolating backend a redirect that
-# fired twice. Native run for the sim; QEMU (semihosting) when QEMU_MACHINE is set; with
-# KOS_CAPTURE a silicon capture, which carries no exit status.
+# Fault-dump gate: run the `fault` image (which executes an illegal instruction, or in
+# fault_div0 and fault_ldiv0 a divide by zero), and assert: the dump MARKER appears
+# EXACTLY ONCE, and the process exits with the status that marker implies. The marker
+# presence catches a dump that was enqueued into an armed console ring and lost (the C1
+# regression) rather than written synchronously; the exactly-once count catches a dump
+# doubled by a re-pushed ring (the drain-reentrancy regression), and on an isolating backend
+# a redirect that fired twice. Native run for the sim; QEMU (semihosting) when QEMU_MACHINE
+# is set; with KOS_CAPTURE a silicon capture, which carries no exit status.
 #
 # The "did not fault" clause is an absence and weak on its own, which above one core is all a
 # grep can be. It is corroborated: a run that did not fault carries no marker and does not exit
@@ -53,10 +53,10 @@ else
     run_image "$elf"
 fi
 
-ANNOUNCE='[fault] executing an illegal instruction'
+ANNOUNCE='[fault] executing'
 require_on_wire "$ANNOUNCE" "the fault app never announced its instruction" announce
 if has "did not fault"; then
-    cfail faulted "the illegal instruction did not trap"
+    cfail faulted "the deliberate fault did not trap"
 fi
 require_single_marker "$marker" "dump lost (enqueued into an undrained ring?)" \
     "dump doubled (ring re-pushed?)"

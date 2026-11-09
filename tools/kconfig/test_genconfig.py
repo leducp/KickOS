@@ -306,14 +306,16 @@ class Genconfig(unittest.TestCase):
         smp = os.path.join(SRC, "boards", "qemu-arm64", "configs", "smp", "defconfig")
         self.assertIn("set(KICKOS_MULTICORE_MODEL_SHARED 1)", self.accepted(smp))
         # A part meeting none of the six still takes the count under AMP.
-        amp = os.path.join(SRC, "boards", "pizero2350", "configs", "amp", "defconfig")
+        base = os.path.join(SRC, "boards", "pizero2350", "configs", "base", "defconfig")
+        amp = os.path.join(scratch, "two-core-amp-defconfig")
+        with open(amp, "w") as f:
+            f.write(read(base) + "CONFIG_KICKOS_CORES_TWO=y\nCONFIG_KICKOS_MULTICORE_AMP=y\n")
         frag = self.accepted(amp)
         self.assertIn("set(KICKOS_NUM_CORES 2)", frag)
         self.assertIn("set(KICKOS_MULTICORE_MODEL_SHARED 0)", frag)
         self.refused(amp, "CONFIG_KICKOS_MULTICORE_SHARED=y", "unmet dependency", "ARCH_SMP_COHERENT",
                      "CHIP_SMP_TARGETING", "!ARCH_HAS_IPC_FASTPATH")
         # Two cores and no model on a part that cannot take the shared default.
-        base = os.path.join(SRC, "boards", "pizero2350", "configs", "base", "defconfig")
         self.refused(base, "CONFIG_KICKOS_CORES_TWO=y", "its default KICKOS_MULTICORE_SHARED is unavailable",
                      "State one of KICKOS_MULTICORE_AMP")
 

@@ -244,6 +244,14 @@ namespace selftest
             p.argv = argv;
             return peer_start(p, t, prog);
         }
+        // The create of `instance` alone, refused rather than waiting for its last incarnation.
+        int try_start(char const* instance, kos_task_t* t, kos_program_t prog = g_peer_prog)
+        {
+            kos_task_params named = p;
+            named.argv = argv;
+            named.instance = instance;
+            return kos_task_create(prog, &named, 0, t);
+        }
         char const* argv[6];
         kos_task_params p{};
     };

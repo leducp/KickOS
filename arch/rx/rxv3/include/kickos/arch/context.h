@@ -12,6 +12,9 @@
 #ifndef KICKOS_ARCH_CONTEXT_H
 #define KICKOS_ARCH_CONTEXT_H
 
+// arch_switch pends the switcher exception, which installs the incoming context.
+#define KICKOS_ARCH_SWITCH_LANDS_LATER 1
+
 // RX has no thread pointer and no native TLS: the emutls override owns the block layout.
 #define KICKOS_ARCH_TLS_TCB 0
 

@@ -89,10 +89,9 @@ namespace
         IrqLock lock;
         (void)handle_close(g_holder, g_line, lock);
         (void)handle_close(g_holder, g_note, lock);
-        uint16_t const gen = task_gen(g_record);
         (void)task_release(g_record, lock);
         task_member_leave(g_holder, kernel().threads.index_of(g_holder));
-        (void)task_sweep_done(g_record, gen);
+        (void)task_sweep_done(g_record);
         task_drop_hold(g_record, lock);
         g_ended.decl_state = task_decl_state(decl_of(g_record));
         g_ended.listed = kernel().task_free.holds(&g_record->free_node);

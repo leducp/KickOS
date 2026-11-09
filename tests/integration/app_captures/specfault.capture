@@ -10,7 +10,7 @@
    mpu     enforce
    sched   tickless
 
-[specfault] reading 0x60800000: expect a clean MPU FAULT
+[specfault] reading 0x60800000: expect a clean MPU FAULT by the load at 0x60001a2d
 
 === THREAD FAULT === thread 'main' killed, system continues
   PC=0x60001a2c CFSR=0x82

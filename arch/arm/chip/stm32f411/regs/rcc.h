@@ -36,6 +36,7 @@ namespace kickos::stm32f411::reg::rcc
     constexpr uint32_t CFGR_SW_MASK = 0x3u << 0;     // SW[1:0] system-clock select
     constexpr uint32_t CFGR_SW_PLL = 0x2u << 0;      // SW=10: PLL as SYSCLK
     constexpr uint32_t CFGR_SWS_PLL = 0x2u << 2;     // SWS=10: PLL is SYSCLK (readback)
+    constexpr uint32_t CFGR_SWS_MASK = 0x3u << 2;    // SWS=00: HSI is SYSCLK
     constexpr uint32_t CFGR_HPRE_DIV1 = 0x0u << 4;   // AHB  = SYSCLK/1
     constexpr uint32_t CFGR_PPRE1_DIV2 = 0x4u << 10; // APB1 = HCLK/2 (<=42 MHz)
     constexpr uint32_t CFGR_PPRE2_DIV1 = 0x0u << 13; // APB2 = HCLK/1 (<=84 MHz)

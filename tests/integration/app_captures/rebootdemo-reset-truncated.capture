@@ -1,0 +1,86 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# Recorded on esp32c6-wroom: two boots that decline and reset, then the window ends inside the
+# third's build row. The gate cuts the last line's newline (tests/static/check_app_judges.sh).
+
+Build:Sep 19 2022
+rst:0x1 (POWERON),boot:0xc (SPI_FAST_FLASH_BOOT)
+SPIWP:0xee
+mode:DIO, clock div:2
+load:0x40800000,len:0x1488c
+SHA-256 comparison failed:
+Calculated: 78ff74cb9377903511aa68d77d22e274032cf84d430e97e4116f4c40933241e6
+Expected: ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+Attempting to boot anyway...
+entry 0x40800000
+
+  ==============================================
+   KickOS 0.5.1  -  microkernel RTOS
+  ==============================================
+   board   esp32c6-wroom
+   arch    rv32imac
+   cpu     rv32imac_zicsr
+   mpu     enforce
+   sched   tickless
+   build   2026-11-05 13:24:44 +0100
+   app     rebootdemo Nov  5 2026 12:49:47 +0100
+   commit  432524be2
+   heap    30 KiB available
+   kstack  1184 B x 5 = 5920 B
+
+[rebootdemo] KickOS reboot-to-bootloader demo
+[rebootdemo] handing the chip to its bootloader in 3s
+[rebootdemo] reboot declined: rc=-38
+ESP-ROM:esp32c6-20220919
+Build:Sep 19 2022
+rst:0x3 (LP_SW_HPSYS),boot:0xc (SPI_FAST_FLASH_BOOT)
+Saved PC:0x40800a78
+SPIWP:0xee
+mode:DIO, clock div:2
+load:0x40800000,len:0x1488c
+SHA-256 comparison failed:
+Calculated: 78ff74cb9377903511aa68d77d22e274032cf84d430e97e4116f4c40933241e6
+Expected: ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+Attempting to boot anyway...
+entry 0x40800000
+
+  ==============================================
+   KickOS 0.5.1  -  microkernel RTOS
+  ==============================================
+   board   esp32c6-wroom
+   arch    rv32imac
+   cpu     rv32imac_zicsr
+   mpu     enforce
+   sched   tickless
+   build   2026-11-05 13:24:44 +0100
+   app     rebootdemo Nov  5 2026 12:49:47 +0100
+   commit  432524be2
+   heap    30 KiB available
+   kstack  1184 B x 5 = 5920 B
+
+[rebootdemo] KickOS reboot-to-bootloader demo
+[rebootdemo] handing the chip to its bootloader in 3s
+[rebootdemo] reboot declined: rc=-38
+ESP-ROM:esp32c6-20220919
+Build:Sep 19 2022
+rst:0x3 (LP_SW_HPSYS),boot:0xc (SPI_FAST_FLASH_BOOT)
+Saved PC:0x40800a78
+SPIWP:0xee
+mode:DIO, clock div:2
+load:0x40800000,len:0x1488c
+SHA-256 comparison failed:
+Calculated: 78ff74cb9377903511aa68d77d22e274032cf84d430e97e4116f4c40933241e6
+Expected: ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+Attempting to boot anyway...
+entry 0x40800000
+
+  ==============================================
+   KickOS 0.5.1  -  microkernel RTOS
+  ==============================================
+   board   esp32c6-wroom
+   arch    rv32imac
+   cpu     rv32imac_zicsr
+   mpu     enforce
+   sched   tickless
+   build   2026-11-05 13:24:

@@ -50,7 +50,7 @@ endif()
 # Check outermost lock sampling at every core count; WAIT exists only on SMP.
 kickos_add_qemu_test(NAME ${_tag}_bench_lock TARGET bench
   SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_bench_lock.sh"
-  ARGS ${KICKOS_KERNEL_CORES})
+  ARGS ${KICKOS_KERNEL_CORES} ${KICKOS_BENCH_WALK_SLOTS})
 if(KICKOS_KERNEL_CORES GREATER 1)
   # Run serially to avoid host contention during the sweep.
   if(TEST ${_tag}_bench_lock)

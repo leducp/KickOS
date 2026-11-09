@@ -18,21 +18,25 @@
 # ours. That is why every FTDI console is keyed on the CABLE'S OWN SERIAL through
 # RIG_CONSOLE_<BOARD> and there is deliberately no vendor-pattern fallback.
 #
-# A BOARD WHOSE PROBE IS SHARED WITH ANOTHER BOARD'S IS NOT DECIDABLE HERE, and is reported
-# as undecidable rather than guessed at. A standalone J-Link presents 1366:* exactly as the
-# onboard probes do, so a wildcard row for one of those boards reports the other board's
-# probe as its own.
+# A ROW TWO BOARDS NAME DECIDES NEITHER. A standalone probe's presence says nothing about which
+# board its lead is on, so bench-present.sh reports such a row as SHARED, naming the other
+# boards, rather than as present.
+
+# The by-id glob of a KickOS USB CDC console. Every board's image presents the same strings and
+# serial, so a match says some board runs one and never which.
+KICKOS_CDC_CONSOLE="/dev/serial/by-id/usb-KickOS_KickOS_console_*-if00"
 
 # board_probe_rows <board>
 #
-# Prints one row per USB device the board must present, as
+# Prints one row per USB device the board presents, as
 #
-#     <vid:pid>|<sn, vid or ->|<what it is>
+#     <vid:pid or by-id glob>|<sn, vid, seen or ->|<what it is>
 #
-# where `sn` marks the device whose serial the flasher has to be told, and `vid` marks a row
-# whose vendor id is all the evidence there is, so its presence says a device of that kind is
-# on the bus and nothing about whose. Returns 1 for a board this table does not decode, and 2
-# for a board whose probe cannot be told from another's, printing the reason instead of rows.
+# where `sn` marks the device whose serial the flasher has to be told, `vid` a row whose vendor
+# id is all the evidence there is, so its presence says a device of that kind is on the bus and
+# nothing about whose, and `seen` a device the board may present and need not, which never
+# decides presence. Every other row must be present for the board to be. Returns 1 for a board
+# this table does not decode.
 board_probe_rows() {
     case "$1" in
         frdmk64f)
@@ -58,14 +62,42 @@ board_probe_rows() {
             printf '1a86:55d3|-|the CH343P\n'
             ;;
         blackpill)
-            printf 'an ST-Link V2 presents 0483:3748, which the f411disco probe presents too\n'
-            return 2
+            printf '1366:1020|sn|the J-Link Pro on its SWD header\n'
+            ;;
+        picopi)
+            printf '2e8a:0003|sn|the RP2040 in BOOTSEL, which picotool loads\n'
+            printf '%s|seen|a KickOS USB CDC console\n' "$KICKOS_CDC_CONSOLE"
+            printf '1366:1020|seen|the J-Link Pro, its SWD probe, which this chain never drives\n'
+            ;;
+        pizero2350)
+            printf '2e8a:000f|sn|the RP2350 in BOOTSEL, which picotool loads\n'
+            printf '%s|seen|a KickOS USB CDC console\n' "$KICKOS_CDC_CONSOLE"
+            ;;
+        teensy41)
+            printf '16c0:0478|-|HalfKay, the bootloader teensy_loader_cli loads\n'
+            printf '%s|seen|a KickOS USB CDC console\n' "$KICKOS_CDC_CONSOLE"
             ;;
         *)
             return 1
             ;;
     esac
     return 0
+}
+
+# board_unseen <board>  what a board whose required rows are absent may still be doing, for a
+# board that leaves the bus when it runs. Prints nothing for any other board.
+# tests/integration/check_reboot.sh witnesses a loader only on a board this prints for.
+board_unseen() {
+    case "$1" in
+        picopi|pizero2350)
+            printf 'not in BOOTSEL: running an image, unpowered or not attached, and only BOOTSEL brings a running one back. A console cable is not a board.\n'
+            ;;
+        teensy41)
+            printf 'not in HalfKay: running an image, unpowered or not attached, and only its button brings a running one back. A console cable is not a board.\n'
+            ;;
+        *)
+            ;;
+    esac
 }
 
 # console_row <board> <probe-serial> <usb-cdc 0|1>
@@ -89,7 +121,7 @@ console_row() {
         xmc4800-relax|frdmk64f) CONSOLE_PORT="/dev/serial/by-id/usb-SEGGER_J-Link_${sn}-if00" ;;
         esp32c6-wroom)          CONSOLE_PATTERN="/dev/serial/by-id/usb-1a86_USB_Single_Serial_*" ;;
         esp32-wroom)            CONSOLE_PATTERN="/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0" ;;
-        f411disco|rx72m|picopi|pizero2350|teensy41) ;;
+        f411disco|rx72m|picopi|pizero2350|teensy41|blackpill) ;;
         *) return 1 ;;
     esac
     key="$CONSOLE_RIGKEY"
@@ -107,7 +139,7 @@ console_row() {
             picopi|pizero2350|teensy41) ;;
             *) return 2 ;;
         esac
-        CONSOLE_PATTERN="/dev/serial/by-id/usb-KickOS_KickOS_console_*-if00"
+        CONSOLE_PATTERN="$KICKOS_CDC_CONSOLE"
         CONSOLE_PORT=""
     fi
     return 0
@@ -172,9 +204,8 @@ image_string() {
 }
 
 # The glob expansion, as a script, so a pattern is expanded WHERE THE DEVICES ARE and by the
-# same bash on both sides. Each match comes back as `<pattern><tab><device>`; a pattern
-# carrying no wildcard comes back as itself whether or not it exists, which is what lets a
-# caller's refusal name what it looked for.
+# same bash on both sides. Each match comes back as `<pattern><tab><device>`; only devices
+# that exist come back, a pattern without a wildcard included.
 #
 # THE PATTERNS TRAVEL INSIDE THE SCRIPT, in a quoted heredoc, and not as arguments. `bash -s`
 # reads its whole program from stdin, so patterns appended after it would be program text;
@@ -184,7 +215,10 @@ CONSOLE_GLOB_SCRIPT='shopt -s nullglob
 while IFS= read -r pat; do
   [ -n "$pat" ] || continue
   m=($pat)
-  for d in ${m[@]+"${m[@]}"}; do printf "%s\t%s\n" "$pat" "$d"; done
+  for d in ${m[@]+"${m[@]}"}; do
+    [ -e "$d" ] || continue
+    printf "%s\t%s\n" "$pat" "$d"
+  done
 done <<\KICKOS_PATTERNS'
 
 # console_expand_all  patterns on stdin, `<pattern><tab><device>` out. ONE round trip

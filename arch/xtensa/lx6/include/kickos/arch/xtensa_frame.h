@@ -48,8 +48,8 @@
 /* Frame size, 16-byte aligned. */
 #define F_SIZE 0x100
 
-/* xtensa_switch's own frame (`entry a1, 32`): FCR and FSR of the thread suspended there, which
-   every retw tail onto that frame reloads. Slot 0 carries `to` across the spill. */
+/* kickos_lx6_switch's own frame (`entry a1, 32`): FCR and FSR of the thread suspended there,
+   which every retw tail onto that frame reloads. Slot 0 carries `to` across the spill. */
 #define SW_FCR 4
 #define SW_FSR 8
 

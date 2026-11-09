@@ -43,11 +43,11 @@ if(KICKOS_BUILD_UNIT_TESTS)
   foreach(_unit IN ITEMS
       ampconsole amphold ampreset ampshare ampwindow atomiccas benchdist c6apm capreply consolebaud consoleline consoleown
       consolepace consolering consoletxsmp ctxredirect dcacheplan
-      deathspace doorbell drvbringup fastrefuse faultline frame fusedwake gthrtimed grantlookup grantnocache
+      deathspace doorbell drvbringup fastrefuse faultline flashmmu frame fusedwake gthrtimed grantlookup grantnocache
       heapbreak imagecheck imagecrt0 initwalk irqquiesce kstring
       k64fsysmpu ktime mapexec mapfence mapshoot mpuoverlap mpuskip mtimeconv placeadmit presync ramalign ramowner regionsync
       reschedowed rp2350gate rp2xxxbringup slotpool
-      stdoutwrite taskbudget uartclass useratomic usersem vrange windowholder)
+      stdoutwrite taskbudget uartclass useratomic usersem vrange windowholder wrapextend)
     add_subdirectory(${_unit})
   endforeach()
 
@@ -56,7 +56,7 @@ if(KICKOS_BUILD_UNIT_TESTS)
   add_subdirectory(kfixture)
   foreach(_unit IN ITEMS
       cancelkind capbadge capprobe capsweep consolepub faultband faultrecord irqbindown libclock lockid parkresult priodonor rangecheck rootslot
-      rrslice schedwake slayhook taskdeath taskpool v6mframe wildstack windowclose wordref)
+      rrlanding rrslice schedwake slayhook taskdeath taskpool v6mframe wildstack windowclose wordref)
     add_subdirectory(${_unit})
   endforeach()
 

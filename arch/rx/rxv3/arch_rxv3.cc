@@ -11,6 +11,7 @@
 #include "regs.h"
 #include "rx_mpu_encode.h"
 #include <kickos/console_tx.h>
+#include <kickos/arch/wrap_extend.h>
 #include <kickos/sys/atomic.h>
 #include <kickos/trace/record.h>
 
@@ -47,6 +48,7 @@ namespace kickos::rxv3
     constexpr uintptr_t CMTW0_BASE = KICKOS_LAYOUT_CMTW_BASE;
     constexpr uintptr_t CMTW1_BASE = KICKOS_LAYOUT_CMTW_BASE + 0x80;
     constexpr int CMWI0_VECTOR = KICKOS_LAYOUT_LINE_CMTW_CMWI0;
+    constexpr int CMWI1_VECTOR = KICKOS_LAYOUT_LINE_CMTW_CMWI1;
 
     // RSPAGEn at +n*8, REPAGEn at +4+n*8 (UM sec.17.2.1, 17.2.2).
     constexpr uintptr_t MPU_RSPAGE_BASE = KICKOS_LAYOUT_MPU_BASE;
@@ -180,11 +182,16 @@ namespace
     using kickos::Atomic;
     using kickos::Order;
 
-    // CMTW1 is 32-bit, extended to 64 in software by catching wraps on each read, so a wrap
-    // not observed within one 2^32-cycle period is MISSED. The two words are one value,
-    // kept coherent by the IrqLock in now_cycles.
-    uint32_t g_cyc_high = 0;
-    uint32_t g_cyc_last = 0;
+    // CMWI1 is an edge source: the ICU clears its IR as the CPU accepts it (UM sec.15.2.1), so
+    // the latch is gone before take() runs. Sound because no handler here sets PSW.I, so
+    // nothing runs between that acceptance and the handler's return.
+    struct cmtw1_wrap_ops
+    {
+        static uint32_t count() { return r32(CMTW1_BASE + CMTW_CMWCNT); }
+        static bool pending() { return (r8(ICU_IR_BASE + CMWI1_VECTOR) & 1u) != 0; }
+        static bool take() { return true; }
+    };
+    kickos::arch_wrap_extend<cmtw1_wrap_ops> g_clk_wrap;
 
     // Bumped only by the first-level DEVICE-IRQ dispatchers, never by the syscall INT path,
     // so arch_in_isr() reads false throughout syscall_dispatch (arch.h contract).
@@ -193,7 +200,7 @@ namespace
     // Software IRQ controller for INJECTED logical lines: the ICU's two software interrupts
     // are the only ones settable from software, so every injected line rides the single
     // SWINT2 doorbell. Lines < SOFT_IRQ_LINES are software; lines >= it are real ICU vectors
-    // gated by ICU.IER. RX's own sub-32 vectors (SWINT 26/27, timer CMWI0 30) are configured
+    // gated by ICU.IER. RX's own sub-32 vectors (SWINT 26/27, CMWI0 30, CMWI1 31) are configured
     // directly by the arch/chip init and never pass through the arch_irq_* seam.
     constexpr int SOFT_IRQ_LINES = 32;
     uint32_t g_irq_masked = 0xFFFFFFFFu;
@@ -255,17 +262,7 @@ namespace
 
     inline uint64_t now_cycles()
     {
-        // The wrap-extend read must be atomic against a concurrent reader.
-        arch_irq_state_t s = arch_irq_save();
-        uint32_t cur = r32(CMTW1_BASE + CMTW_CMWCNT);
-        if (cur < g_cyc_last)
-        {
-            ++g_cyc_high;
-        }
-        g_cyc_last = cur;
-        uint64_t hi = g_cyc_high;
-        arch_irq_restore(s);
-        return (hi << 32) | cur;
+        return g_clk_wrap.read();
     }
 
     inline uint64_t cycles_to_ns(uint64_t cyc)
@@ -1109,6 +1106,11 @@ __attribute__((interrupt)) void kickos_rx_timer_isr(void)
     g_in_isr = g_in_isr - 1;
 }
 
+__attribute__((interrupt)) void kickos_rx_clock_isr(void)
+{
+    g_clk_wrap.on_overflow();
+}
+
 // SCI6 transmit-data-empty (TXI6, vector 87). TXI6 is edge-triggered (UM sec.15.3.1 p.523)
 // and the ICU clears IR087 on accept, so no source flag is touched here; console_tx_isr
 // gates SCR.TIE, which re-arms the edge.
@@ -1174,8 +1176,6 @@ __attribute__((interrupt)) void kickos_rx_sci6_rxi_isr(void)
 void kickos_rxv3_init(void)
 {
     g_in_isr = 0;
-    g_cyc_high = 0;
-    g_cyc_last = 0;
 
     // SWINT is the deferred-switch line, at the lowest active priority so a switch requested
     // from an ISR is accepted only after every other ISR drains, and below IPL_LOCK so an
@@ -1190,12 +1190,15 @@ void kickos_rxv3_init(void)
     // IER bit.
     icu_ier_set(SWINT2_VECTOR, true);
 
-    // CMTW1: CCLR=001 disables clearing, so the 32-bit counter wraps at 2^32 on its own and
-    // is read-extended in software. Also the raw telemetry trace clock (arch_trace_now).
+    // CMTW1, also the raw telemetry trace clock (arch_trace_now): cleared on matching
+    // CMWCOR = 2^32-1, so it wraps at 2^32 and CMWI1 marks the wrap. A free-running CCLR raises
+    // no interrupt at its overflow. CMWI1 is raised as the counter leaves the matching value,
+    // already reading 0 (UM sec.32.4.2), so its IR is set by the time a reader sees the wrap.
     r16(CMTW1_BASE + CMTW_CMWSTR) = 0;
     r32(CMTW1_BASE + CMTW_CMWCNT) = 0;
     r32(CMTW1_BASE + CMTW_CMWCOR) = 0xFFFFFFFFu;
-    r16(CMTW1_BASE + CMTW_CMWCR) = CMWCR_CKS_PCLK8 | CMWCR_CCLR_FREERUN;
+    r16(CMTW1_BASE + CMTW_CMWCR) = CMWCR_CKS_PCLK8 | CMWCR_CCLR_ON_MATCH | CMWCR_CMWIE;
+    r16(CMTW1_BASE + CMTW_CMWIOR) = CMWIOR_CMWE;
     r16(CMTW1_BASE + CMTW_CMWSTR) = CMWSTR_STR;
 }
 

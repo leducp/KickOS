@@ -8,7 +8,7 @@
  *
  * WHERE IT MAY BE CALLED, every clause load-bearing on this ISA:
  *
- *   AFTER SPILL_ALL_WINDOWS. xtensa_switch writes from->sp/ps/pc before it spills, so between
+ *   AFTER FLUSH_WINDOWS. kickos_lx6_switch writes from->sp/ps/pc before it spills, so between
  *   those two the outgoing context is published while its ancestor frames still live only in
  *   this core's physical AR file, and a peer that took `from` there would retw into a base save
  *   area nothing has written yet.

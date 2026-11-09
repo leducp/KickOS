@@ -15,17 +15,17 @@
 //      every register-derived clause of the rule says yes and only the stack-bounds test can
 //      refuse it. On RX the frame goes to the ISP instead and the bounds test reads the USP the
 //      exit stub WOULD have run on. Above the stack where a stack limit refuses one below.
-//   3  the worker points SP at a word of MAIN's data (its address is the peer's argument) and traps. A software trap prologue that
-//      stored the frame through the U-mode SP overwrites that word in privileged mode, where no
-//      protection applies; the bounds test refuses the SP before the first store. Main reads
-//      the word back after the join and prints either verdict.
+//   3  the worker points SP at a word of MAIN's data (its address is the peer's argument) and
+//      traps. A software trap prologue that stored the frame through the U-mode SP overwrites
+//      that word in privileged mode, where no protection applies; the bounds test refuses the SP
+//      before the first store. Main reads the word back after the join and prints either verdict.
 //   4  the LOW EDGE, which is legal. The worker runs on a CALLER-PROVIDED stack, so the app
 //      knows stack_lo and poisons a band of its own data immediately below the block, under the
-//      thread's libc state; the worker then
-//      parks SP with less room under it than the frame plus the kernel descent needs, and
-//      faults. On rv32imac that SP is accepted, the entry transferring to the thread's kernel
-//      stack, so the claim is a clean kill with the band INTACT. An entry that adopted the
-//      U-mode SP would run the reporter chain privileged through the band.
+//      thread's libc state; the worker then parks SP with less room under it than the frame plus
+//      the kernel descent needs, and faults. On rv32imac that SP is accepted, the entry
+//      transferring to the thread's kernel stack, so the claim is a clean kill with the band
+//      INTACT. An entry that adopted the U-mode SP would run the reporter chain privileged
+//      through the band.
 //   5  the alignment leg. The worker drops SP two bytes, still deep inside its own stack and in
 //      bounds, so only alignment can refuse it. QEMU virt COMPLETES the misaligned frame stores,
 //      so this witnesses the REFUSAL and not the prologue live-lock a trapping core would take.
@@ -34,6 +34,9 @@
 //   7  the overflow arm on a core with a stack limit, which stops a recursion first: SP aimed
 //      at an arena block above the stack that the worker holds no grant on, so the MPU aborts
 //      the stacking.
+//   8  the worker divides by zero in 32 bits; 9 in 64. Where the core traps it, the worker is
+//      killed as by any fault; where the ISA defines a quotient instead, the worker prints it.
+//      Either way main must run after it.
 
 #include <kickos/apps/peer_run.h>
 #include <kickos/kos.h>
@@ -58,6 +61,31 @@ namespace
 #if KICKOS_FS_MODE == 4
 // What the kernel carves off the worker's stack below its stack_lo (arch/common/sections.ld.h).
 extern "C" char const __kickos_tls_carve[];
+#endif
+
+#if KICKOS_FS_MODE == 7 || (KICKOS_FS_MODE == 2 && KICKOS_HAVE_STACK_LIMIT)
+namespace
+{
+    // Allocation order does not place a block: the arena fills an earlier alignment run-up
+    // first. Of two equal blocks the lower is the worker's stack and the upper the block above.
+    bool stack_and_above(void** stack, void** above)
+    {
+        void* const a = kos_ram_alloc(FS_OFF_STACK_SIZE);
+        void* const b = kos_ram_alloc(FS_OFF_STACK_SIZE);
+        if (a == nullptr or b == nullptr)
+        {
+            return false;
+        }
+        *stack = a;
+        *above = b;
+        if (reinterpret_cast<uintptr_t>(b) < reinterpret_cast<uintptr_t>(a))
+        {
+            *stack = b;
+            *above = a;
+        }
+        return true;
+    }
+}
 #endif
 
 int main(int, char**)
@@ -106,46 +134,29 @@ int main(int, char**)
     stack_size = FS_STACK_SIZE;
 #endif
 #if KICKOS_FS_MODE == 7
-    // Allocation order is the geometry: the bump allocator hands out increasing addresses.
-    stack = kos_ram_alloc(FS_OFF_STACK_SIZE);
-    void* const above = kos_ram_alloc(FS_OFF_SIZE);
-    if (stack == nullptr or above == nullptr)
+    void* above = nullptr;
+    if (not stack_and_above(&stack, &above))
     {
         kos::print("[fs] ERROR: the arena cannot spare the worker's stack and the block above\n");
         return 1;
     }
-    if (reinterpret_cast<uintptr_t>(above)
-        < reinterpret_cast<uintptr_t>(stack) + FS_OFF_STACK_SIZE)
-    {
-        kos::print("[fs] ERROR: the ungranted block is not above the worker's stack\n");
-        return 1;
-    }
     stack_size = FS_OFF_STACK_SIZE;
-    arg = reinterpret_cast<uintptr_t>(above) + FS_OFF_SIZE;
+    arg = reinterpret_cast<uintptr_t>(above) + FS_OFF_STACK_SIZE;
 #endif
 #if KICKOS_FS_MODE == 2 && KICKOS_HAVE_STACK_LIMIT
-    // Allocation order is the geometry: the bump allocator hands out increasing addresses.
-    stack = kos_ram_alloc(FS_OFF_STACK_SIZE);
-    void* const off = kos_ram_alloc(FS_OFF_SIZE);
-    if (stack == nullptr or off == nullptr)
+    void* off = nullptr;
+    if (not stack_and_above(&stack, &off))
     {
         kos::print("[fs] ERROR: the arena cannot spare the worker's stack and its buffer\n");
         return 1;
     }
-    if (reinterpret_cast<uintptr_t>(off)
-        < reinterpret_cast<uintptr_t>(stack) + FS_OFF_STACK_SIZE)
-    {
-        kos::print("[fs] ERROR: the off-stack buffer is not above the worker's stack\n");
-        return 1;
-    }
     stack_size = FS_OFF_STACK_SIZE;
     block = off;
-    block_size = FS_OFF_SIZE;
-    arg = reinterpret_cast<uintptr_t>(off) + FS_OFF_SIZE;
+    block_size = FS_OFF_STACK_SIZE;
+    arg = reinterpret_cast<uintptr_t>(off) + FS_OFF_STACK_SIZE;
 #endif
-    // THE FAULTER IS A PROGRAM OF ITS OWN, and that is the arm rather than a detail of it. A
-    // fault ends the faulting thread's whole task, so a victim in main's task would take main
-    // with it and this would witness the fault reaching main instead of being contained.
+    // THE FAULTER IS A PROGRAM OF ITS OWN: a fault ends the faulting thread's whole task, so a
+    // victim in main's task would take main with it.
     kos_program_t prog = KOS_CAP_NONE;
     if (kos_program_find(KICKOS_FS_PEER, &prog) != 0)
     {

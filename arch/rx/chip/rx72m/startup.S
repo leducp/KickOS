@@ -34,6 +34,7 @@
     .section .rvectors, "a"
     .balign 4
     .global _g_rvectors
+    .type _g_rvectors, %object
 _g_rvectors:
     .word _rx_trap                    /* 0: BRK (unused) */
     .word _kickos_rx_syscall_trap     /* 1: syscall trap (INT #1) */
@@ -45,14 +46,16 @@ _g_rvectors:
     .word _kickos_rx_default_irq      /* 28 */
     .word _kickos_rx_default_irq      /* 29 */
     .word _kickos_rx_timer_isr        /* 30: CMTW0 compare match (CMWI0) */
-    .rept (86 - 31)
-    .word _kickos_rx_default_irq      /* 31..85 */
+    .word _kickos_rx_clock_isr        /* 31: CMTW1 compare match (CMWI1), the clock's wrap */
+    .rept (86 - 32)
+    .word _kickos_rx_default_irq      /* 32..85 */
     .endr
     .word _kickos_rx_sci6_rxi_isr     /* 86: SCI6 RXI6 -> tier-1 line 86 */
     .word _kickos_rx_console_txi_isr  /* 87: SCI6 TXI6 -> console drain, or line 87 */
     .rept (KICKOS_RX_INTB_ENTRIES - 88)
     .word _kickos_rx_default_irq      /* 88..255, incl. the group vectors 106..113 */
     .endr
+    .size _g_rvectors, . - _g_rvectors
 
 /* ------------------------------------------------------------------------- */
 /* Fixed exception vector table @ 0xFFFFFF80 (EXTB reset). Offsets from ISA UM sec.5.5.  */
@@ -60,6 +63,7 @@ _g_rvectors:
     .section .fvectors, "a"
     .balign 4
     .global _g_fvectors
+    .type _g_fvectors, %object
 _g_fvectors:
     .rept 20                          /* 0x00..0x4C: reserved */
     .word _rx_trap
@@ -76,6 +80,7 @@ _g_fvectors:
     .word _rx_trap                    /* 0x74 reserved */
     .word _rx_trap                    /* 0x78 non-maskable interrupt */
     .word _start                      /* 0x7C reset (0xFFFFFFFC) */
+    .size _g_fvectors, . - _g_fvectors
 
 /* ------------------------------------------------------------------------- */
 /* _start: reset entry. Supervisor mode, ISP undefined.                        */

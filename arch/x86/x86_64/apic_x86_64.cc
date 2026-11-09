@@ -65,9 +65,13 @@ namespace kickos::x86_64
         constexpr uint32_t msr_x2apic_icr = 0x830;
         constexpr uint32_t icr_poll_bound = 100000;
 
-        // The measurement window, in the chip reference's own ticks: long enough that one
-        // tick of quantisation error is under a part in forty thousand.
-        constexpr uint32_t calibrate_ticks = 40000;
+        // One round's window, in the chip reference's own ticks.
+        constexpr uint64_t calibrate_ticks = 20000;
+        // Odd, so one round is the median.
+        constexpr uint32_t calibrate_rounds = 3;
+        constexpr uint32_t stamp_tries = 8;
+        // A reference that never moves must cost a refused frequency and not a hang.
+        constexpr uint32_t ref_spin_bound = 20000000;
 
         bool g_x2 = false;
         uintptr_t g_mmio = 0;
@@ -159,57 +163,125 @@ namespace kickos::x86_64
             }
         }
 
-        // One window yields both frequencies, so they stay consistent.
-        void calibrate(void)
-        {
-            // One-shot (mode bits 18:17 clear) and MASKED: the countdown runs whether or not
-            // the entry can deliver, which is what makes a measurement possible before any
-            // vector is armed.
-            apic_write(reg_lvt_timer, lvt_masked | vector_timer);
-            apic_write(reg_ticr, 0xffffffffu);
-
-            uint64_t const tsc0 = rdtsc();
-            uint32_t const count0 = apic_read(reg_tccr);
-            uint32_t const reference = kickos_x86_ref_spin(calibrate_ticks);
-            uint32_t const count1 = apic_read(reg_tccr);
-            uint64_t const tsc1 = rdtsc();
-
-            apic_write(reg_ticr, 0);
-
-            // Each is a divisor or numerator below.
-            if (reference == 0)
-            {
-                refuse("KickOS: x86_64 chip reference timebase did not advance\n");
-            }
-            uint64_t const ref_hz = kickos_x86_ref_hz();
-            if (ref_hz == 0)
-            {
-                refuse("KickOS: x86_64 chip reports no reference rate\n");
-            }
-
-            // This counter is 32 bits wide, starts at its maximum and runs one-shot, so the
-            // window cannot wrap.
-            uint64_t const ticks = static_cast<uint64_t>(count0 - count1);
-            uint64_t const cycles = tsc1 - tsc0;
-            g_timer_hz = (ticks * ref_hz) / reference;
-            g_tsc_hz = (cycles * ref_hz) / reference;
-
-            if (g_timer_hz == 0)
-            {
-                refuse("KickOS: x86_64 local APIC timer did not count\n");
-            }
-            if (g_tsc_hz == 0)
-            {
-                refuse("KickOS: x86_64 timestamp counter did not advance\n");
-            }
-        }
-
         // Exact, and overflow-free for any product of two clock rates a 64-bit register holds.
         uint64_t scale(uint64_t value, uint64_t from_hz, uint64_t to_hz)
         {
             uint64_t const whole = value / from_hz;
             uint64_t const rest = value - (whole * from_hz);
             return (whole * to_hz) + ((rest * to_hz) / from_hz);
+        }
+
+        // Each read is dated by the midpoint of the timestamps around it, kept doubled so no
+        // halving rounds it.
+        struct Stamp
+        {
+            uint64_t ref;
+            uint32_t count;
+            uint64_t ref_at2;
+            uint64_t count_at2;
+        };
+
+        // The guest can stall between any two reads, so only the tightest of several tries
+        // dates both reads.
+        Stamp stamp(void)
+        {
+            Stamp best = {0, 0, 0, 0};
+            uint64_t best_width = UINT64_MAX;
+            for (uint32_t i = 0; i < stamp_tries; i++)
+            {
+                uint64_t const t0 = rdtsc();
+                uint64_t const ref = kickos_x86_ref_ticks();
+                uint64_t const t1 = rdtsc();
+                uint32_t const count = apic_read(reg_tccr);
+                uint64_t const t2 = rdtsc();
+                if (t2 - t0 < best_width)
+                {
+                    best_width = t2 - t0;
+                    best = {ref, count, t0 + t1, t1 + t2};
+                }
+            }
+            return best;
+        }
+
+        struct Rates
+        {
+            uint64_t timer_hz;
+            uint64_t tsc_hz;
+        };
+
+        Rates measure_round(uint64_t ref_hz)
+        {
+            apic_write(reg_ticr, 0xffffffffu);
+            Stamp const a = stamp();
+            uint32_t spin = 0;
+            while (kickos_x86_ref_ticks() - a.ref < calibrate_ticks and spin < ref_spin_bound)
+            {
+                spin++;
+            }
+            Stamp const b = stamp();
+            Rates r = {0, 0};
+            uint64_t const ref = b.ref - a.ref;
+            if (ref == 0)
+            {
+                return r;
+            }
+            r.tsc_hz = scale(b.ref_at2 - a.ref_at2, ref * 2u, ref_hz);
+            uint64_t const count_cycles2 = b.count_at2 - a.count_at2;
+            if (count_cycles2 == 0)
+            {
+                return r;
+            }
+            // Reloaded at its maximum each round and one-shot, so a round cannot wrap it.
+            uint64_t const ticks = static_cast<uint64_t>(a.count - b.count);
+            r.timer_hz = scale(ticks * 2u, count_cycles2, r.tsc_hz);
+            return r;
+        }
+
+        // Both rates come from one round, and the median discards a round whose reference
+        // poll missed a whole period.
+        void calibrate(void)
+        {
+            uint64_t const ref_hz = kickos_x86_ref_hz();
+            if (ref_hz == 0)
+            {
+                refuse("KickOS: x86_64 chip reports no reference rate\n");
+            }
+            kickos_x86_ref_start();
+            // One-shot (mode bits 18:17 clear) and MASKED: the countdown runs whether or not
+            // the entry can deliver, which is what makes a measurement possible before any
+            // vector is armed.
+            apic_write(reg_lvt_timer, lvt_masked | vector_timer);
+
+            Rates rounds[calibrate_rounds];
+            for (uint32_t i = 0; i < calibrate_rounds; i++)
+            {
+                rounds[i] = measure_round(ref_hz);
+                if (rounds[i].tsc_hz == 0)
+                {
+                    refuse("KickOS: x86_64 chip reference timebase or timestamp counter did not "
+                           "advance\n");
+                }
+            }
+            apic_write(reg_ticr, 0);
+
+            for (uint32_t i = 1; i < calibrate_rounds; i++)
+            {
+                Rates const r = rounds[i];
+                uint32_t j = i;
+                while (j > 0 and rounds[j - 1].tsc_hz > r.tsc_hz)
+                {
+                    rounds[j] = rounds[j - 1];
+                    j--;
+                }
+                rounds[j] = r;
+            }
+            g_timer_hz = rounds[calibrate_rounds / 2].timer_hz;
+            g_tsc_hz = rounds[calibrate_rounds / 2].tsc_hz;
+
+            if (g_timer_hz == 0)
+            {
+                refuse("KickOS: x86_64 local APIC timer did not count\n");
+            }
         }
     }
 

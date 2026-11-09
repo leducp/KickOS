@@ -5,11 +5,13 @@
 # mutexbench's rows against the load it states: every row main's THREADS budget seats ran, and
 # each loaded row and the crowd stood at that load. The figures themselves are read, not judged.
 #
-#   check_mutexbench.sh <mutexbench image> [aspace] [coarse-clock]
-#   KOS_CAPTURE=<log> check_mutexbench.sh <board-build> <kickos-source> <cmake> [aspace] [coarse-clock]
+# The crowd may skip for want of heap only where the heap the banner states is smaller than the
+# samples the row says it needs.
 #
-# `aspace`: the board gives each task an address space, so the window row runs. `coarse-clock`:
-# the board's clock may step too coarsely to time the crowd, which may then skip.
+#   check_mutexbench.sh <mutexbench image> [aspace]
+#   KOS_CAPTURE=<log> check_mutexbench.sh <board-build> <kickos-source> <cmake> [aspace]
+#
+# `aspace`: the board gives each task an address space, so the window row runs.
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
@@ -20,16 +22,14 @@ if judging_capture; then
     shift 3
     judge_capture mutexbench
 else
-    run_image "${1:?usage: check_mutexbench.sh <mutexbench image> [aspace] [coarse-clock]}"
+    run_image "${1:?usage: check_mutexbench.sh <mutexbench image> [aspace]}"
     shift
 fi
 aspace=0
-coarse=0
 for posture in "$@"; do
     case $posture in
     aspace) aspace=1 ;;
-    coarse-clock) coarse=1 ;;
-    *) fail "unknown posture '$posture', expected aspace or coarse-clock" ;;
+    *) fail "unknown posture '$posture', expected aspace" ;;
     esac
 done
 
@@ -80,8 +80,17 @@ else
     *"SKIP (main's threads seat no crowd)")
         [ "$crowd" -eq 0 ] || cfail crowd "a crowd of $crowd stated, and none stood"
         ;;
-    *"SKIP (the clock steps "*)
-        [ "$coarse" -eq 1 ] || cfail crowd "the crowd skipped on a board that declares no coarse clock: $line"
+    *"SKIP (no heap for the samples, "*" bytes)")
+        need="$(printf '%s\n' "$line" | sed -n 's/.*SKIP (no heap for the samples, \([0-9]*\) bytes)$/\1/p')"
+        kib="$(printf '%s\n' "$OUT" | sed -n 's/^   heap    \([0-9]*\) KiB available$/\1/p' | head -n 1)"
+        if [ -z "$kib" ] && has_f "   heap    none"; then
+            kib=0
+        fi
+        if [ -z "$need" ] || [ -z "$kib" ]; then
+            cfail crowd "the crowd skipped for want of heap, and the bench or the banner states no size: $line"
+        elif [ $((kib * 1024)) -ge "$need" ]; then
+            cfail crowd "the crowd skipped for want of $need bytes, beside a heap of $kib KiB: $line"
+        fi
         ;;
     *"[$crowd waiters parked, one woken]")
         ;;

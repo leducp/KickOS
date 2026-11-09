@@ -124,6 +124,16 @@ namespace kickos
     // something other than what was last armed comes through here.
     void ktime_disarm(Held held);
 
+    // Settles the landing a booking left owed. On a KICKOS_ARCH_SWITCH_LANDS_LATER arch it stamps
+    // the landed thread's slice and arms the comparator, which that booking left alone; elsewhere
+    // it reprograms the comparator from the clock read here. A no-op when none is owed.
+    void ktime_land(Held held);
+
+    // Where the arch performs a switch booked in an interrupt at that interrupt's exit, the end of
+    // the kernel's handler is its landing; elsewhere the arch's own hook lands it. Takes the lock
+    // only when a landing is owed.
+    void ktime_land_at_isr_exit();
+
     void ktime_on_timer();
 }
 

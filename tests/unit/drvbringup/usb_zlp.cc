@@ -3,8 +3,8 @@
 //
 // The USB CDC class layer's bulk IN pump and the service's flush over a recording fake
 // controller: a transfer that ends on a full packet is closed by a zero-length one, the flush
-// completes only once the host has taken it, and each configuration opens the stream with the
-// identity rows.
+// completes only once the host has taken it, each configuration opens the stream with the
+// identity rows, and output is held until the host's terminal is ready for it.
 
 #include <kickos/sys/usb_cdc_service.h>
 
@@ -25,6 +25,13 @@ extern "C"
 
     void kos_sleep_ns(uint64_t)
     {
+    }
+
+    uint64_t g_now = 1000u;
+
+    uint64_t kos_clock_now(void)
+    {
+        return g_now;
     }
 }
 
@@ -75,7 +82,13 @@ namespace
         void ep_open_all() {}
         void ep0_in(uint8_t const*, uint32_t, uint8_t) {}
         void ep0_out_arm(uint32_t, uint8_t) {}
-        uint32_t ep0_out_read(uint8_t*, uint32_t) { return 0u; }
+        uint32_t ep0_out_read(uint8_t* out, uint32_t max)
+        {
+            uint32_t const n = KOS_CDC_LINE_CODING_LEN;
+            EXPECT_LE(n, max);
+            memset(out, 0, n);
+            return n;
+        }
         void ep0_stall() {}
         void ep_in(uint8_t ep, uint8_t const* p, uint32_t n, uint8_t)
         {
@@ -120,6 +133,38 @@ namespace
             dev.setup.wValue = 1u;
             dev.events = usb::KOS_USB_EV_SETUP;
             cdc.service_irq();
+        }
+
+        void line_state(uint16_t bits)
+        {
+            dev.setup = {};
+            dev.setup.bmRequestType = KOS_USB_REQ_TYPE_CLASS;
+            dev.setup.bRequest = KOS_CDC_SET_CONTROL_LINE_STATE;
+            dev.setup.wValue = bits;
+            dev.events = usb::KOS_USB_EV_SETUP;
+            cdc.service_irq();
+        }
+
+        // SET_LINE_CODING's setup, then its data stage.
+        void line_coding()
+        {
+            dev.setup = {};
+            dev.setup.bmRequestType = KOS_USB_REQ_TYPE_CLASS;
+            dev.setup.bRequest = KOS_CDC_SET_LINE_CODING;
+            dev.setup.wLength = KOS_CDC_LINE_CODING_LEN;
+            dev.events = usb::KOS_USB_EV_SETUP;
+            cdc.service_irq();
+            dev.events = usb::KOS_USB_EV_BUFFER;
+            dev.buff = 1u << 1u; // EP0 OUT
+            cdc.service_irq();
+        }
+
+        // What Linux's cdc_acm sends for an opener that sets its termios: DTR, then the line
+        // coding from inside tcsetattr.
+        void open()
+        {
+            line_state(KOS_CDC_CTRL_DTR | KOS_CDC_CTRL_RTS);
+            line_coding();
         }
 
         // The host takes every buffer until the controller holds none.
@@ -213,10 +258,13 @@ TEST(UsbIdentity, each_configuration_opens_the_stream_with_the_rows_ahead_of_the
     r.pass();
     EXPECT_TRUE(r.dev.in_lens.empty()) << "nothing goes before a host configures the device";
     r.configure();
+    r.open();
     r.drain();
     EXPECT_EQ(r.dev.in_bytes, std::string(IDENTITY) + std::string(10u, 'x'));
     EXPECT_EQ(r.dev.in_lens.back(), 10u) << "the ring's bytes follow in a packet of their own";
     r.configure();
+    r.line_state(0u);
+    r.open();
     r.drain();
     EXPECT_EQ(r.dev.in_bytes, std::string(IDENTITY) + std::string(10u, 'x') + IDENTITY)
         << "a later configuration sends the rows again";
@@ -227,6 +275,7 @@ TEST(UsbIdentity, a_bus_reset_restarts_the_rows_and_counts_them_as_no_lost_byte)
     Rig r;
     ASSERT_EQ(r.cdc.bring_up(), 0);
     r.configure();
+    r.open();
     ASSERT_EQ(r.dev.in_lens.size(), 1u);
     r.dev.events = usb::KOS_USB_EV_BUS_RESET;
     r.pass();
@@ -234,6 +283,74 @@ TEST(UsbIdentity, a_bus_reset_restarts_the_rows_and_counts_them_as_no_lost_byte)
     EXPECT_EQ(usb::Transport::flush(&r.sh), 0);
     r.dev.in_bytes.clear();
     r.configure();
+    r.line_state(0u);
+    r.open();
     r.drain();
     EXPECT_EQ(r.dev.in_bytes, IDENTITY);
+}
+
+TEST(UsbHold, output_waits_for_the_line_coding_sent_after_the_host_raises_dtr)
+{
+    Rig r;
+    ASSERT_EQ(r.cdc.bring_up(), 0);
+    r.queue(10u);
+    r.configure();
+    r.line_coding();
+    EXPECT_TRUE(r.dev.in_lens.empty()) << "a line coding before any open releases nothing";
+    r.line_state(KOS_CDC_CTRL_DTR | KOS_CDC_CTRL_RTS);
+    r.pass();
+    EXPECT_TRUE(r.dev.in_lens.empty()) << "the opener's termios is not set yet";
+    EXPECT_NE(r.cdc.park_us(), KOS_TIMEOUT_NONE) << "a hold must bound the IRQ thread's park";
+    r.line_coding();
+    r.drain();
+    EXPECT_EQ(r.dev.in_bytes, std::string(IDENTITY) + std::string(10u, 'x'));
+    EXPECT_EQ(r.cdc.park_us(), KOS_TIMEOUT_NONE);
+}
+
+TEST(UsbHold, an_opener_that_sets_no_line_coding_is_answered_once_the_hold_expires)
+{
+    Rig r;
+    ASSERT_EQ(r.cdc.bring_up(), 0);
+    r.configure();
+    r.line_state(KOS_CDC_CTRL_DTR);
+    g_now += usb::KOS_USB_HOLD_OPENED_NS - 1u;
+    r.pass();
+    EXPECT_TRUE(r.dev.in_lens.empty());
+    g_now += 1u;
+    EXPECT_EQ(r.cdc.park_us(), 0u);
+    r.pass();
+    r.drain();
+    EXPECT_EQ(r.dev.in_bytes, IDENTITY);
+}
+
+TEST(UsbHold, a_host_that_never_raises_dtr_is_answered_once_the_hold_expires)
+{
+    Rig r;
+    ASSERT_EQ(r.cdc.bring_up(), 0);
+    r.configure();
+    g_now += usb::KOS_USB_HOLD_UNOPENED_NS - 1u;
+    r.pass();
+    EXPECT_TRUE(r.dev.in_lens.empty());
+    g_now += 1u;
+    r.pass();
+    r.drain();
+    EXPECT_EQ(r.dev.in_bytes, IDENTITY);
+}
+
+TEST(UsbHold, every_dtr_rise_holds_again)
+{
+    Rig r;
+    ASSERT_EQ(r.cdc.bring_up(), 0);
+    r.configure();
+    r.open();
+    r.drain();
+    r.dev.in_bytes.clear();
+    r.line_state(0u);
+    r.line_state(KOS_CDC_CTRL_DTR);
+    r.queue(10u);
+    r.pass();
+    EXPECT_TRUE(r.dev.in_bytes.empty()) << "a second opener gets the same hold";
+    r.line_coding();
+    r.drain();
+    EXPECT_EQ(r.dev.in_bytes, std::string(10u, 'x'));
 }

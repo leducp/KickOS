@@ -2,29 +2,37 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# Check lock sampling, per-core totals, statistic labels and maximum/site pairs.
+# Check lock sampling, per-core totals, statistic labels and maximum/site pairs, and the two
+# walks under the lock that grow with the waiters (KOS_BENCH_OP_OWNER_PRINT): three steps each,
+# the most waiters first and one last, every walk handing over as many as were seated.
 # Use the switch counter to decide whether cycle values must be nonzero.
 # --controls checks parser branches with fixed reports and expected failure counts.
 #
-# Usage: check_bench_lock.sh <elf> <kernel cores> | --controls
+# The owner-death and reach-lost-scan rows are required exactly when the build enables
+# KICKOS_BENCH_WALK_SLOTS, and refused when it does not.
+#
+# Usage: check_bench_lock.sh <elf> <kernel cores> <walk slots> | --controls
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
 # Allow time for the call/reply sweep before the first report.
 : "${QEMU_TIMEOUT:=240}"
 
-_usage="usage: check_bench_lock.sh <elf> <kernel cores> | check_bench_lock.sh --controls"
+_usage="usage: check_bench_lock.sh <elf> <kernel cores> <walk slots> | check_bench_lock.sh --controls"
 controls_only=0
 if [ "${1:-}" = "--controls" ]; then
     controls_only=1
     # Initialize before ctl saves and restores want under set -u.
     want=1
+    slots=0
     elf=""
 else
     elf="${1:?$_usage}"
     want="${2:?$_usage}"
+    slots="${3:?$_usage}"
 
     require_number "$want" "the kernel core count"
+    require_number "$slots" "the bench walk slot count"
     [ -f "$elf" ] || fail "no image at $elf"
     need_qemu_machine
 
@@ -308,6 +316,148 @@ ctl_four() {
 '  lock-site: core=3 site=0x40203bb2 max=116736'
 }
 
+# `<blocks> <first k> <last k> <first p50> <last p50> <short> <descending>` for one walk's
+# blocks: a header naming k, then its cycles row and its least/most row. A block is short when
+# a row is missing, carries no sample, or a walk handed other than k.
+read_walk() { # <report text> <header> <cycles label> <count label>
+    printf '%s\n' "$1" | awk -v head="^  $2: k=" -v cyc="^  $3: " -v cnt="^  $4: " '
+        function part(s, i,   f) { split(s, f, "/"); return f[i] + 0 }
+        function tail_n(s,   t) { t = s; sub(/.*n=/, "", t); sub(/[^0-9].*$/, "", t); return t + 0 }
+        function close_block() {
+            if (open == 0) { return }
+            if (got_cyc == 0 || got_cnt == 0 || cyc_n == 0 || cnt_lo != k || cnt_hi != k) { shortb++ }
+            if (blocks == 1) { first_k = k; first50 = cyc50 }
+            if (blocks > 1 && k > prev_k) { desc = 0 }
+            prev_k = k; last_k = k; last50 = cyc50
+            open = 0
+        }
+        BEGIN { desc = 1 }
+        $0 ~ head {
+            close_block()
+            blocks++; open = 1; got_cyc = 0; got_cnt = 0; cyc_n = 0; cyc50 = 0; cnt_lo = -1; cnt_hi = -1
+            k = $0; sub(/^.*: k=/, "", k); sub(/[^0-9].*$/, "", k); k += 0
+            next
+        }
+        open && $0 ~ cyc { got_cyc = 1; cyc50 = part($2, 1); cyc_n = tail_n($0); next }
+        open && $0 ~ cnt { got_cnt = 1; cnt_lo = part($2, 1); cnt_hi = part($2, 2); next }
+        END {
+            close_block()
+            printf "%d %d %d %d %d %d %d\n", blocks + 0, first_k + 0, last_k + 0, first50 + 0,
+                   last50 + 0, shortb + 0, desc + 0
+        }'
+}
+
+read_owner() { # <report text>
+    read -r ob ofk olk of50 ol50 oshort odesc <<WALK
+$(read_walk "$1" owner-death owner-exit owner-exit-n)
+WALK
+    read -r rb rfk rlk rf50 rl50 rshort rdesc <<WALK
+$(read_walk "$1" reach-lost-scan reach-lost reach-lost-n)
+WALK
+    oodd="$(printf '%s\n' "$1" | grep -c '^  owner-death: [0-9]* odd return')"
+    mmu="$(printf '%s\n' "$1" | grep -c '^   mmu')"
+    # The switch row sets whether a cycle figure must be nonzero.
+    oclock="$(printf '%s\n' "$1" | awk '/^  switch:/ { split($2, f, "/"); print f[3] + 0; exit }')"
+    oclock="${oclock:-0}"
+}
+
+# <what> <blocks> <first k> <last k> <first p50> <last p50> <short> <descending>
+walk_arms() {
+    if [ "$2" -ne 3 ]; then
+        bad "$1: $2 block(s) where the app prints three steps, the most waiters, half and one"
+        return
+    fi
+    if [ "$7" -ne 0 ]; then
+        bad "$1: $7 step(s) lack a row or a sample, or hold a walk that handed other than the k its
+  header seated; one that handed fewer left a waiter stranded"
+    fi
+    if [ "$8" -ne 1 ] || [ "$4" -ne 1 ] || [ "$3" -le 1 ]; then
+        bad "$1: the steps seated k=$3 first and k=$4 last, where the first is the most the task
+  could seat, above one, and the last is one"
+    fi
+    if [ "$oclock" -gt 0 ] && [ "$3" -gt 1 ] && [ "$5" -le "$6" ]; then
+        bad "$1: the walk handing $3 records reads p50=$5 cycles against p50=$6 for one; the
+  span is not around the walk, or the walk did not grow with what it handed over"
+    fi
+}
+
+owner_arms() {
+    if [ "$slots" -eq 0 ]; then
+        if [ "$ob" -ne 0 ] || [ "$rb" -ne 0 ]; then
+            bad "owner-death / reach-lost-scan: $ob and $rb block(s) in a build with
+  KICKOS_BENCH_WALK_SLOTS 0, which builds neither row"
+        fi
+        if [ "$oodd" -ne 0 ]; then
+            bad "owner-death: the app reports a return in a build with no walks"
+        fi
+        return
+    fi
+    walk_arms owner-death "$ob" "$ofk" "$olk" "$of50" "$ol50" "$oshort" "$odesc"
+    if [ "$mmu" -gt 0 ]; then
+        walk_arms reach-lost-scan "$rb" "$rfk" "$rlk" "$rf50" "$rl50" "$rshort" "$rdesc"
+    elif [ "$rb" -ne 0 ]; then
+        bad "reach-lost-scan: $rb block(s) on a board whose banner names no mmu, which has no scan"
+    fi
+    if [ "$oodd" -ne 0 ]; then
+        bad "owner-death: the app reports a return no walk explains, so a waiter was not handed
+  its word or a wait was not ended"
+    fi
+}
+
+ctl_owner() {
+    printf '%s\n' \
+'  owner-death: k=16 waiters of S=21 thread slots' \
+'  owner-exit: 36864/487960/487960 cyc  (p50/max/max, n=17)' \
+'  owner-exit-n: 16/16  (least/most per walk)' \
+'  owner-death: k=8 waiters of S=21 thread slots' \
+'  owner-exit: 20480/26020/26020 cyc  (p50/max/max, n=16)' \
+'  owner-exit-n: 8/8  (least/most per walk)' \
+'  owner-death: k=1 waiters of S=21 thread slots' \
+'  owner-exit: 3328/7640/7640 cyc  (p50/max/max, n=16)' \
+'  owner-exit-n: 1/1  (least/most per walk)' \
+'  switch:    1536/1664/9420 cyc  (p50/p99/max, n=40001)'
+}
+
+ctl_owner_mmu() {
+    printf '%s\n' '   mmu     sv39'
+    ctl_owner
+    printf '%s\n' \
+'  reach-lost-scan: k=16 waiters of S=21 thread slots' \
+'  reach-lost: 45056/385680/385680 cyc  (p50/max/max, n=17)' \
+'  reach-lost-n: 16/16  (least/most per walk)' \
+'  reach-lost-scan: k=8 waiters of S=21 thread slots' \
+'  reach-lost: 26624/29100/29100 cyc  (p50/max/max, n=16)' \
+'  reach-lost-n: 8/8  (least/most per walk)' \
+'  reach-lost-scan: k=1 waiters of S=21 thread slots' \
+'  reach-lost: 8192/10500/10500 cyc  (p50/max/max, n=16)' \
+'  reach-lost-n: 1/1  (least/most per walk)'
+}
+
+octl() { # <name> <pass|refuse> <findings expected on a refusal> <walk slots> <report text>
+    _ctl_save=$slots
+    slots=$4
+    _ctl_out="$( ( rc=0; read_owner "$5"; owner_arms; exit "$rc" ) 2>&1 )"
+    _ctl_got=$?
+    slots=$_ctl_save
+    _ctl_n="$(printf '%s\n' "$_ctl_out" | grep -c '^FAIL: ')"
+    if [ "$2" = pass ] && [ "$_ctl_got" -ne 0 ]; then
+        fail "the '$1' control is REFUSED, and it is a report this gate must accept:
+$_ctl_out"
+    fi
+    if [ "$2" = refuse ] && [ "$_ctl_got" -eq 0 ]; then
+        fail "the '$1' control PASSES, so this gate cannot see that class"
+    fi
+    if [ "$2" = refuse ] && [ "$_ctl_n" -ne "$3" ]; then
+        fail "the '$1' control produced $_ctl_n finding(s) where $3 was expected:
+$_ctl_out"
+    fi
+    if [ "$2" = pass ]; then
+        _ctl_pass=$((_ctl_pass + 1))
+    else
+        _ctl_refuse=$((_ctl_refuse + 1))
+    fi
+}
+
 # <name> <kernel cores> <pass|refuse> <findings expected on a refusal> <report text>
 _ctl_pass=0
 _ctl_refuse=0
@@ -418,6 +568,26 @@ $(ctl_window)"
     ctl 'a histogram the percentile walk finds nothing in' 1 refuse 1 \
         "$(ctl_one | sed 's|^\(  lock-hold: \)2560/4096|\10/4096|')"
 
+    octl 'three owner-death steps, no mmu' pass 0 21 "$(ctl_owner)"
+    octl 'both walks, on a translating board' pass 0 21 "$(ctl_owner_mmu)"
+    octl 'no owner-death report' refuse 1 21 "$(ctl_owner | /bin/grep -v '^  owner-')"
+    octl 'a walk that handed fewer records than were seated' refuse 1 21 \
+        "$(ctl_owner | sed 's|^  owner-exit-n: 16/16|  owner-exit-n: 15/16|')"
+    octl 'a step with no sample' refuse 1 21 \
+        "$(ctl_owner | sed 's|^\(  owner-exit: \)20480/26020/26020 cyc  (p50/max/max, n=16)|\10/0/0 cyc  (p50/max/max, n=0)|')"
+    octl 'a walk that does not grow with its records' refuse 1 21 \
+        "$(ctl_owner | sed 's|^\(  owner-exit: \)36864/|\13328/|')"
+    octl 'a first step that seated one' refuse 1 21 \
+        "$(ctl_owner | sed 's|k=16 waiters|k=1 waiters|; s|16/16  (least|1/1  (least|')"
+    octl 'a translating board with no scan' refuse 1 21 \
+        "$(ctl_owner_mmu | /bin/grep -v '^  reach-')"
+    octl 'a scan on a board that does not translate' refuse 1 21 \
+        "$(ctl_owner_mmu | /bin/grep -v '^   mmu')"
+    octl 'an odd return' refuse 1 21 "$(ctl_owner; printf '%s\n' '  owner-death: 2 odd return(s)')"
+
+    octl 'rows in a build with no walk slots' refuse 1 0 "$(ctl_owner_mmu)"
+    octl 'a build with no walk slots and no rows' pass 0 0 "$(ctl_owner | /bin/grep -v '^  owner-')"
+
     echo "PASS: $_ctl_pass planted report(s) accepted and $_ctl_refuse refused, each naming its
   own arm"
     exit 0
@@ -425,6 +595,8 @@ fi
 
 read_report "$OUT"
 lock_arms
+read_owner "$OUT"
+owner_arms
 
 assert_no_panic "the bench image panicked while the sweep ran"
 
@@ -435,5 +607,5 @@ _spread="at one kernel core, which prints no per-core block"
 if [ "$want" -gt 1 ]; then
     _spread="over $spread of $want cores, wait n=$wn"
 fi
-echo "PASS: probe hold+$phold wait+$pwait at depth $pdepth; hold n=$hn p50=$h50 p99=$h99 max=$hmax $_spread; $labrows row(s) naming their own statistic; $sites site line(s)"
+echo "PASS: probe hold+$phold wait+$pwait at depth $pdepth; hold n=$hn p50=$h50 p99=$h99 max=$hmax $_spread; $labrows row(s) naming their own statistic; $sites site line(s); owner-death k=$ofk p50=$of50 against k=1 p50=$ol50"
 exit 0

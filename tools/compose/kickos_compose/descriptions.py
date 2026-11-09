@@ -65,6 +65,7 @@ ADDRESS_BITS = {
 TEXT = re.compile(r"[ -~]*")
 BOARD_FIELDS = (
     "version", "board", "chip", "console", "leds", "parts", "buses", "reserved_pins", "memory", "emulator",
+    "flash",
 )
 EMULATOR_FIELDS = ("qemu", "machine", "gicv3_machine", "options", "ram_global")
 # One word of an emulator's command line, with nothing a shell or a CMake list would split or expand.
@@ -207,6 +208,8 @@ class Board:
         self.buses = []
         # {field: value} of `emulator`, or None where no emulator runs the board.
         self.emulator = None
+        # (size, ref) of the flash a ROM boots the image from, or None where the board states none.
+        self.flash = None
 
 
 class Bus:
@@ -1675,6 +1678,8 @@ def check_board(path, text, report, chips, boards):
         check_board_memory(f, top["memory"], chip, board)
     if "emulator" in top:
         board.emulator = check_emulator(f, top["emulator"])
+    if "flash" in top:
+        board.flash = check_board_flash(f, top["flash"])
     for pin, node, what in used:
         board.wired.setdefault(pin, what)
     if "reserved_pins" in top and reserved is not None:
@@ -1715,6 +1720,20 @@ def check_family(f, node):
         f.refuse(values["sources"], "form.missing", "`family` names no source")
         return None
     return folder, sources
+
+
+def check_board_flash(f, node):
+    """(size, ref) of the board's boot flash, a whole number of 64 KiB, or None once refused."""
+    values = f.fields(node, "`flash`", ("size", "ref"), ("size",))
+    if values is None or "size" not in values:
+        return None
+    size = check_size(f, values["size"], "`flash` size", 32)
+    if size is None:
+        return None
+    if size % 0x10000 != 0:
+        f.refuse(values["size"], "board.flash-size", "`flash` size 0x%X is not a whole number of 64 KiB" % size)
+        return None
+    return (size, check_ref(f, values))
 
 
 def check_emulator(f, node):

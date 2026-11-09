@@ -61,6 +61,17 @@ kickos_add_unit_test(NAME drv_usic_route
            "${PROJECT_BINARY_DIR}/generated/include")
 target_compile_options(drv_usic_route PRIVATE -include "${CMAKE_CURRENT_SOURCE_DIR}/usic_mmap.h")
 
+# The USIC SSC engine's bound on a word whose receive event never comes, over a host buffer for its
+# window. usic_stall.cc answers kos_notify_wait, which is how a case times a word. HOST-ONLY:
+# usic_stall.cc defines public kos_* names.
+kickos_add_unit_test(NAME drv_usic_stall
+  SOURCES usic_stall.cc
+          "${PROJECT_SOURCE_DIR}/system/driver/xmc4800/xmcssc/spi_usic.cc"
+  INCLUDES "${PROJECT_SOURCE_DIR}/arch/arm/chip/xmc4800"
+           "${PROJECT_SOURCE_DIR}/user/include" "${PROJECT_SOURCE_DIR}/system/include"
+           "${PROJECT_BINARY_DIR}/generated/include")
+target_compile_options(drv_usic_stall PRIVATE -include "${CMAKE_CURRENT_SOURCE_DIR}/usic_mmap.h")
+
 # The K64F DSPI engine's bound on a frame that never completes, its open and its close, over host
 # buffers for its window and ports. dspi_stall.cc answers dspi_rx_count, which is how a case
 # times a received frame. HOST-ONLY: dspi_stall.cc defines public kos_* names.

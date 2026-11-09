@@ -10,9 +10,10 @@
 
 #include <kickos/driver/uart.h>
 
-#include <kickos/io/mmio.h>   // r32
-#include <kickos/sys.h>       // kos_periph_clock_hz
-#include <kickos/sys/errno.h> // KOS_ENOTSUP, KOS_ENOSYS, KOS_EBUSY
+#include <kickos/io/mmio.h>    // r32
+#include <kickos/poll_bound.h> // KICKOS_POLL_SPIN_MAX
+#include <kickos/sys.h>        // kos_periph_clock_hz
+#include <kickos/sys/errno.h>  // KOS_ENOTSUP, KOS_ENOSYS, KOS_EBUSY
 
 #include "../../espuart/uart_esp.h"
 
@@ -31,7 +32,7 @@ namespace
     // section 27.5.2.2), so it is waited for on both sides of a _SYNC burst.
     bool sync_idle(uintptr_t base)
     {
-        for (uint32_t i = 0; i < kickos::espuart::POLL_MAX; i++)
+        for (uint32_t i = 0; i < KICKOS_POLL_SPIN_MAX; i++)
         {
             if ((r32(base + ru::OFF_REG_UPDATE) & ru::REG_UPDATE_BIT) == 0u)
             {

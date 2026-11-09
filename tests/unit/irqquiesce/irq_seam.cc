@@ -232,6 +232,11 @@ namespace kickos
         t->on_timer = true;
     }
 
+    // No comparator here: a switch an interrupt books has nothing to reprogram at its exit.
+    void ktime_land_at_isr_exit()
+    {
+    }
+
     void wq_confirm_resume(Thread*, uint32_t)
     {
     }

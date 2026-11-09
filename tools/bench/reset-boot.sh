@@ -16,7 +16,7 @@ RESET_BOOT_ROW_RE='^('\
 '   mpu     (off|enforce)|'\
 '   mmu     enforce|'\
 '   uaccess [a-z0-9]+( [a-z]+)?|'\
-'   witness (uaccess|rewind)|'\
+'   witness (uaccess|rewind|node)|'\
 '   sched   (tickless|periodic tick)|'\
 "   build   $_rb_stamp|"\
 "   app     $_rb_app|"\

@@ -76,5 +76,6 @@ int main(void)
         served++;
         atomic_store_explicit(&row->served, served, memory_order_release);
         (void)kos_reply(opts.info.reply_cap, rep, sizeof(rep));
+        ampping_gate_served(row, served);
     }
 }

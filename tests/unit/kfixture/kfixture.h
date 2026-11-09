@@ -52,6 +52,11 @@ namespace kickos
         extern uint64_t g_now_ns;
         // What installing a thread's MPU set at a switch moves the clock by.
         extern uint64_t g_seat_cost_ns;
+        // Where the real time.cc last programmed the comparator to fire, UINT64_MAX disarmed.
+        extern uint64_t g_timer_due;
+        // Comparator writes, arms and disarms alike, and interrupt saves, since reset().
+        extern uint32_t g_timer_writes;
+        extern uint32_t g_irq_saves;
 
         // Separate creator and member references. Reserve one more domain than task
         // slots so task-pool exhaustion can be tested after successful admission.
@@ -249,6 +254,8 @@ namespace kickos
         WordRecord* plain_word(uint32_t* word);
         // Parked as KOS_SYS_WORD_WAIT parks, through the word's own address.
         void park_word_waiter(Thread* w, WordRecord* m);
+        // Parked as a death wait parks, on `t`, lending nothing: the lend is death_park's.
+        void park_death_waiter(Thread* w, Task* t);
         // At a translating posture every hold of word_seam.cc fails while set, as a vanished
         // page's does. Reset clears it.
         extern bool g_word_fault;

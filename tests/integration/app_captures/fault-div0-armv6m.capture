@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+
+  ==============================================
+   KickOS 0.5.1  -  microkernel RTOS
+  ==============================================
+   board   microbit
+   arch    armv6m
+   cpu     nrf51822
+   mpu     off
+   sched   tickless
+
+[fault] executing a divide by zero (expect a fault dump)
+
+=== HARD FAULT ===
+  PC=0x0000f83c LR=0x0000f573 xPSR=0x41000000 (PSP)
+  R0=0x0 R1=0x0 R2=0xffff0000 R3=0x0 R12=0x20000ef0
+  DIVBYZERO: the UDF of __aeabi_idiv0/__aeabi_ldiv0

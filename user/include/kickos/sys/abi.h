@@ -273,8 +273,8 @@ enum kos_syscall_nr
                                //   released), -KOS_ETIMEDOUT, -KOS_ECANCELED, -KOS_EBADF (never
                                //   created / freed under this handle / an idle or root task, which is
                                //   unnameable), -KOS_EPERM (the caller did not create it),
-                               //   -KOS_EINVAL (a timeout other than 0 from a caller that is
-                               //   itself a member, which would wait on its own death).
+                               //   -KOS_EDEADLK (a timeout other than 0 from a member of the
+                               //   task).
     KOS_SYS_BENCH = 55,        // (kos_bench_op, a0, a1) -> per-op (see enum kos_bench_op),
                                //   -KOS_EINVAL (bad op, bad line, no span open, or an
                                //   argument outside what the op admits), -KOS_ENOSYS (an op
@@ -425,7 +425,8 @@ enum kos_syscall_nr
                                 //   EOVERFLOW (the
                                 //   endpoint's reference count). MINTS a copy carrying `badge`,
                                 //   with the source's SIGNAL and TRANSFER and nothing else
-    KOS_SYS_TASK_CREATE = 85,   // (kos_program_t, struct kos_task_params*, kos_task_t* out) -> 0,
+    KOS_SYS_TASK_CREATE = 85,   // (kos_program_t, struct kos_task_params*, kos_task_t* out,
+                                //   timeout_us) -> 0,
                                 //   or -KOS_E*: EFAULT (the params, a string, the vector or the
                                 //   out-pointer), EBADF (no program handle), ENOENT (no declared
                                 //   instance of that name), EPERM (no KOS_AUTH_TASKS, an `init`
@@ -442,10 +443,13 @@ enum kos_syscall_nr
                                 //   KICKOS_MAX_ARGC strings, a ready endpoint or a lines'
                                 //   notification missing from the caps, windows passed to a
                                 //   packaged driver's declaration, or the rest as a spawn),
-                                //   EAGAIN (a declared line still retiring from its last holder,
-                                //   an IRQ binding the last incarnation released still retiring,
-                                //   or as KOS_SYS_THREAD_CREATE), EACCES, EOVERFLOW, ENOTSUP and
-                                //   EMFILE as KOS_SYS_THREAD_CREATE. A packaged driver's
+                                //   EAGAIN (with a timeout of 0: the last incarnation ended and
+                                //   not yet dead, a declared line still retiring from its last
+                                //   holder, an IRQ binding the last incarnation released still
+                                //   retiring; or as KOS_SYS_THREAD_CREATE), ETIMEDOUT and
+                                //   ECANCELED (a timeout other than 0 parks the caller until
+                                //   those pass; KOS_TIMEOUT_NONE: no bound), EACCES, EOVERFLOW,
+                                //   ENOTSUP and EMFILE as KOS_SYS_THREAD_CREATE. A packaged driver's
                                 //   declaration publishes its console through the creator's
                                 //   capability at `ready`, which keeps WAIT, then claims its
                                 //   lines for the entry thread, bound to the notification at
@@ -460,8 +464,14 @@ enum kos_syscall_nr
     KOS_SYS_CLOCK_REALTIME = 87,  // () -> Unix-epoch nanoseconds (u64, in registers; cannot
                                   //   fail): the monotonic clock plus the offset the last
                                   //   KOS_SYS_CLOCK_SET_REALTIME stored, none before it
-    KOS_SYS_CLOCK_SET_REALTIME = 88 // (ns_lo, ns_hi) -> 0, or -KOS_EPERM (no KOS_AUTH_REALTIME).
+    KOS_SYS_CLOCK_SET_REALTIME = 88, // (ns_lo, ns_hi) -> 0, or -KOS_EPERM (no KOS_AUTH_REALTIME).
                                     //   The wall clock reads ns from now on
+    KOS_SYS_WITNESS_NODE = 89       // RESERVED for the node witness (<kickos/sys/witness.h>):
+                                    //   (op, arg) -> per op, or -KOS_EINVAL (an unknown op
+                                    //   or line), -KOS_EPERM (a line the kernel drives),
+                                    //   -KOS_EBUSY (a line a driver holds), -KOS_ENOSYS (no
+                                    //   software raise). Any kernel not built for the witness
+                                    //   answers -KOS_EINVAL
 };
 // The raw console write's number, refused in an app as kos_kconsole_write is (<kickos/sys.h>).
 #if defined(KICKOS_APP_IMAGE)
@@ -640,11 +650,23 @@ enum kos_bench_op
     KOS_BENCH_OP_E2E_QUIET = 16,  // ()          -> 1 once every other kernel core runs its idle
                                   //   thread and no thread is on its way to any core, else 0.
                                   //   The raiser polls it before a pass's first raise.
-    KOS_BENCH_OP_FASTPATH_WATCH = 17 // ()       -> 0 (kernel prints one line: the register-form
+    KOS_BENCH_OP_FASTPATH_WATCH = 17, // ()      -> 0 (kernel prints one line: the register-form
                                   //   call's taken fastpath entries since boot whose saved or
                                   //   restored DPFPU bank stood at 4 mod 8). -KOS_ENOSYS where
                                   //   no backend keeps that count, which is every one but RXv3.
+    KOS_BENCH_OP_OWNER_PRINT = 18 // (which, waiters) -> 0 (kernel prints a header naming
+                                  //   `waiters`, which it only echoes, and the thread pool's
+                                  //   slot count, then the cycles and count rows `which` names,
+                                  //   and clears them). -KOS_ENOSYS for any `which` in an image
+                                  //   that keeps no rows (KICKOS_BENCH_WALKS 0), and for
+                                  //   KOS_BENCH_OWNER_REACH_LOST on a board that does not
+                                  //   translate; -KOS_EINVAL for any other unknown `which`.
 };
+
+// KOS_BENCH_OP_OWNER_PRINT's rows: a dead holder's hand-over walk, each that handed at least one
+// record; and a lost mapping's scan, each that ended at least one wait.
+#define KOS_BENCH_OWNER_EXIT 0u
+#define KOS_BENCH_OWNER_REACH_LOST 1u
 
 // The largest count the counted ops admit. Raising either raises what a caller can make the
 // kernel do in one syscall, the rounds under an IrqLock.

@@ -12,3 +12,9 @@ void ampping_gate_report(struct ampbook_row* book)
 {
     (void)book;
 }
+
+void ampping_gate_served(struct ampbook_row* row, uint32_t served)
+{
+    (void)row;
+    (void)served;
+}

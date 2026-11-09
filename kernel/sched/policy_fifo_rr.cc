@@ -260,6 +260,21 @@ namespace kickos
         arm_slice(t);
     }
 
+    bool policy_on_switch_in_booked(Thread* t)
+    {
+        if (t->policy != Policy::RR or t->quantum_ns == 0)
+        {
+            t->slice_deadline_ns = UINT64_MAX;
+            return true;
+        }
+        uint64_t const d = t->slice_deadline_ns;
+        if (d == UINT64_MAX or d == 0)
+        {
+            return false;
+        }
+        return ktime_floored(ktime_now(), d) == d;
+    }
+
     uint64_t policy_next_timed_event(Thread const* t)
     {
         if (t == nullptr or t->policy != Policy::RR or t->quantum_ns == 0)

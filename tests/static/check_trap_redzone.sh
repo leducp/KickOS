@@ -2,9 +2,9 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# Trap stack-geometry gate. A trap entry on rv32imac, rxv3, armv7m and armv6m builds a frame
-# and then runs the kernel's C dispatch below it, privileged; this re-measures that descent and
-# fails when it exceeds what the arch header enforces. Which stack the pair lands on is per
+# Trap stack-geometry gate. A trap entry builds a frame and then runs the kernel's C dispatch
+# below it, privileged; this re-measures that descent and fails when it exceeds what the arch
+# header enforces. Which stack the pair lands on is per
 # class, and that is what the failure clauses key on:
 #   thread  the interrupted unprivileged stack. The entry reserves a red zone at the bottom of
 #           it and refuses the trap when less room remains below sp, so the zone is also
@@ -16,6 +16,9 @@
 #           against KICKOS_PANIC_STACK_SIZE.
 #   idle    idle's own stack, the one privileged thread's. Compared against
 #           KICKOS_IDLE_STACK_SIZE.
+#   main    a stack a core boots on and every interrupt it takes nests on, one root per nesting
+#           level summed. The frame plus that measurement is compared against the stack the
+#           image links, or against the macro that reserves it where the class names one.
 #
 # How it measures: tests/lib/scratch_ci.sh configures a scratch tree of its own with
 # -fcallgraph-info=su,da, which makes gcc drop a .ci file next to every object carrying that
@@ -31,11 +34,13 @@
 # default: a gate that defaults its own reference compares a measurement against nothing.
 #
 # One board per run; the console backend is per board. The root set is a declaration: a call
-# switch.S makes is in the number only when the roots file names it, so the roots are what a
-# reader keeps honest against the assembly. The compiler's own frame numbers are taken on
-# trust, per translation unit, for this configuration and this optimization level (MinSizeRel,
-# as the presets build), with inlining already folded in, so the winning chain printed below
-# can be shorter than the source reads.
+# switch.S makes is in the number only when the roots file names it. Every C function the
+# assembly under the arch family's directory names, chips included, must be priced by a root, a
+# calls= edge or a vector record, or carry an asmcall record, or the run fails; WHICH class, the
+# stack that site runs it on, is still the reader's to keep honest against the assembly. The
+# compiler's own frame numbers are taken on trust, per translation unit, for this configuration
+# and this optimization level (MinSizeRel, as the presets build), with inlining already folded
+# in, so the winning chain printed below can be shorter than the source reads.
 #
 # The same tree also bounds the application threads tests/static/app_stack_roots.txt declares,
 # through tests/static/app_stack.py.
@@ -115,6 +120,10 @@ FLOOR="$(sed -n 's/^[[:space:]]*set(KICKOS_MIN_STACK_SIZE[[:space:]]\{1,\}\([0-9
 KCORES="$(sed -n 's/^[[:space:]]*set(KICKOS_KERNEL_CORES[[:space:]]\{1,\}\([0-9]\{1,\}\)).*/\1/p' \
           "$CFGFILE" | head -n1)"
 [ -n "$KCORES" ] || fail "no KICKOS_KERNEL_CORES in $CFGFILE"
+# Whether a secondary core exists to park on a stack of its own, which a secondary class prices.
+NCORES="$(sed -n 's/^[[:space:]]*set(KICKOS_NUM_CORES[[:space:]]\{1,\}\([0-9]\{1,\}\)).*/\1/p' \
+          "$CFGFILE" | head -n1)"
+[ -n "$NCORES" ] || fail "no KICKOS_NUM_CORES in $CFGFILE"
 
 # --- resolve the enforced figures out of the arch header ---------------------
 [ -r "$HEADER" ] || fail "cannot read $HEADER, so the enforced red zone cannot be read;
@@ -130,7 +139,8 @@ KCORES="$(sed -n 's/^[[:space:]]*set(KICKOS_KERNEL_CORES[[:space:]]\{1,\}\([0-9]
 # translation unit of the arch directory the header belongs to (its `include/` parent). That TU
 # static_asserts against these very macros, so the posture is theirs by construction.
 #
-# Only -D, -I, -isystem, -include and -std are carried over: preprocessing needs no more, and
+# Only -D, -I, -isystem, -include, -std and the -m ISA flags are carried over: a figure the
+# header selects on __ARM_FP resolves to the integer posture without the last, and
 # -fcallgraph-info would have the resolution drop a .ci file of its own. -Wundef -Werror is
 # added rather than inherited, and it is load-bearing: cpp takes the 0 branch of `#if KNOB` for
 # an undefined KNOB without saying so.
@@ -178,7 +188,7 @@ keep = []
 i = 1
 while i < len(argv):
     a = argv[i]
-    if a.startswith(('-D', '-I', '-std=')) and len(a) > 2:
+    if a.startswith(('-D', '-I', '-std=', '-m')) and len(a) > 2:
         keep.append(a)
     elif a in ('-D', '-I', '-isystem', '-include') and i + 1 < len(argv):
         keep.append(a)
@@ -208,6 +218,13 @@ if [ "$?" -ne 0 ]; then
     default to fall back on"
 fi
 FIGURES="$TMP/figures.h"
+
+# What the toolchain puts before a C name, out of the same macro dump: the assembly names a C
+# function under it, and the gate refuses one no class roots.
+LABEL_PREFIX="$(awk '$1 == "#define" && $2 == "__USER_LABEL_PREFIX__" { n++; p = $3 }
+                     END { if (n != 1) { exit 1 } print p }' "$FIGURES")" ||
+    fail "the compiler's macro dump carries no single __USER_LABEL_PREFIX__, so a C name in the
+    arch's assembly cannot be told from any other"
 
 # A plain integer only. The arch header's macros are read by the assembler as immediates and
 # the generated board config carries nothing else, so an expression in either means the file
@@ -280,6 +297,16 @@ if awk -F"$TAB" '{ if ($4 == "idle") { found = 1 } } END { exit !found }' "$TMP/
     ISIZE="$(scrape_macro "$BOARDCFG" KICKOS_IDLE_STACK_SIZE)" || exit 1
 fi
 
+# --- the main stack, for the stack=main classes ----------------------------------
+# What the images link, read out of their maps: the linker script sizes it, not Kconfig. A class
+# naming size= is compared against that macro instead, which is what reserves its stack.
+MSIZE=""
+if awk -F"$TAB" '{ if ($4 == "main" && $6 == "-") { found = 1 } } END { exit !found }' "$TMP/classes"; then
+    python3 "$TOOL" --main-stack "$BUILD" > "$TMP/main" || fail "no main stack could be read
+    out of the link maps of $BUILD"
+    IFS="$TAB" read -r MSIZE MMAPS MWHERE < "$TMP/main"
+fi
+
 ENFORCED_ARGS=""
 rc=0
 
@@ -292,6 +319,9 @@ fi
 if [ -n "$ISIZE" ]; then
     echo "trap_redzone: idle    KICKOS_IDLE_STACK_SIZE=$ISIZE (from $BUILD/generated/include/kickos/board_config.h)"
 fi
+if [ -n "$MSIZE" ]; then
+    echo "trap_redzone: main    $MSIZE bytes linked, the least of $MMAPS map(s) ($MWHERE)"
+fi
 if [ -n "$KSIZE" ]; then
     echo "trap_redzone: block   KICKOS_KERNEL_STACK_SIZE=$KSIZE, $KUSABLE usable above the canary"
 elif [ "$KSTACKS" -eq 0 ]; then
@@ -300,13 +330,26 @@ elif [ "$KSTACKS" -eq 0 ]; then
     not compile"
 fi
 NOTCOMPILED_ARGS=""
-while IFS="$TAB" read -r cls frame_macro depth_macro onstack kstacks; do
+while IFS="$TAB" read -r cls frame_macro depth_macro onstack kstacks size_macro cores; do
     [ -n "$cls" ] || continue
     frame="$(scrape_macro "$FIGURES" "$frame_macro")" || exit 1
     depth="$(scrape_macro "$FIGURES" "$depth_macro")" || exit 1
     zone=$((frame + depth))
     echo "trap_redzone: class $cls  $frame_macro=$frame  $depth_macro=$depth  zone=$zone ($onstack stack)"
     ENFORCED_ARGS="$ENFORCED_ARGS --enforced $cls=$frame,$depth"
+    if [ "$size_macro" != - ]; then
+        size="$(scrape_macro "$FIGURES" "$size_macro")" || exit 1
+        echo "trap_redzone: class $cls  sized by $size_macro=$size"
+        ENFORCED_ARGS="$ENFORCED_ARGS --stack-size $cls=$size,$size_macro"
+    fi
+    # A secondary class prices the stack a released core parks on, which a one-core image does
+    # not link. Printed, so a run cannot read as having measured it.
+    if [ "$cores" = secondary ] && [ "$NCORES" -le 1 ]; then
+        echo "trap_redzone: class $cls not measured here (KICKOS_NUM_CORES=$NCORES): no
+    secondary core parks on this image, so the stack it prices does not exist"
+        NOTCOMPILED_ARGS="$NOTCOMPILED_ARGS --absent $cls"
+        continue
+    fi
 # A kstacks= class belongs to one of the two entry designs an arch can compile (armv7m
     # compiles two) while the call graph sees one merged tree. Where KICKOS_KERNEL_STACKS
     # disagrees the image does not contain the path, so both halves go unenforced, and it is
@@ -345,6 +388,11 @@ while IFS="$TAB" read -r cls frame_macro depth_macro onstack kstacks; do
     REMEDY: raise KICKOS_IDLE_STACK_SIZE in this board's defconfig to at least $zone. Do NOT
     shrink the depth to fit: it is a measurement."
         fi
+        continue
+    fi
+    # A stack=main class is compared by trap_redzone.py, against the measured nest: what reserves
+    # its stack is the linker script or the size= macro, never the depth figure.
+    if [ "$onstack" = main ]; then
         continue
     fi
     # A stack=trap class spends a static kernel array, not a thread stack, so the floor says
@@ -401,7 +449,9 @@ if grep -q '^[[:space:]]*set(KICKOS_HAVE_ASPACE[[:space:]]\{1,\}1)' "$CFGFILE"; 
 fi
 # shellcheck disable=SC2086
 python3 "$TOOL" --ci-dir "$BUILD" --src "$SRC" --arch "$ARCH" --preset "$PRESET" --kernel-cores "$KCORES" \
-    --roots "$ROOTS" --indirect "$INDIRECT" $ENFORCED_ARGS $NOTCOMPILED_ARGS ${PRIVATISED:+--privatised "$PRIVATISED"}
+    --roots "$ROOTS" --indirect "$INDIRECT" --label-prefix "$LABEL_PREFIX" \
+    $ENFORCED_ARGS $NOTCOMPILED_ARGS ${PRIVATISED:+--privatised "$PRIVATISED"} \
+    ${MSIZE:+--main-size "$MSIZE" --main-map "$MWHERE"}
 prc=$?
 if [ "$prc" -ne 0 ]; then
     rc="$prc"

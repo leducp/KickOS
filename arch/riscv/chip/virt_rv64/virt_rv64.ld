@@ -30,6 +30,7 @@
 
 #include <sections.ld.h>
 #include "boot_layout.ld.h"
+#include <kickos/arch/rv64_trap_stack.h>
 
 #define KICKOS_RV64_APP_WINDOW (KICKOS_RV64_APPTEXT_SIZE + KICKOS_RV64_APPDATA_SIZE)
 
@@ -348,6 +349,11 @@ SECTIONS
     __kickos_ram_start = .;
     __kickos_ram_end = _estack - _kernel_stack_size;
 
+    /* Hart 0's slice, the size every hart's slice has: the main stack check_trap_redzone.sh
+       reads out of the map. */
+    __kickos_kernel_stack_start = ABSOLUTE(_estack - KICKOS_RV64_HART_STACK_STRIDE);
+    __kickos_kernel_stack_end = ABSOLUTE(_estack);
+
     /* Chip memory extents read by the descriptor-less user-pointer admission
        (arch_ram_common.cc). Symbols only. This chip executes FROM RAM, so the rom range covers
        the kernel's read-only half and the sram range its writable one. The link needs all
@@ -368,8 +374,9 @@ KICKOS_STATIC_RELOC_ASSERT()
 ASSERT(__kickos_ram_start <= __kickos_ram_end,
        "KickOS: static data overflows RAM (no room for the user-RAM pool + boot stack)")
 
-ASSERT(KICKOS_RV64_HART_STACK_STRIDE >= 0x2000,
-       "KickOS: the per-hart boot stack stride is under 8 KiB; a parked secondary builds an interrupt frame on it")
+ASSERT(KICKOS_RV64_HART_STACK_STRIDE >= KICKOS_RV64_TRAP_FRAME_NONE + KICKOS_RV64_MAIN_DEPTH
+       && KICKOS_RV64_HART_STACK_STRIDE >= KICKOS_RV64_TRAP_FRAME + KICKOS_RV64_CORE_DEPTH,
+       "KickOS: a hart's slice of the boot stack cannot hold the boot path, or a secondary's park and the interrupt nested on it (rv64_trap_stack.h)")
 
 /* The root spends ONE level-2 slot on the kernel window, and a level-2 slot spans 1 GiB. */
 ASSERT(_estack <= ORIGIN(KTEXT) + 0x40000000,

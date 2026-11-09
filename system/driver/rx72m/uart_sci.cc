@@ -25,9 +25,10 @@
 
 #include <kickos/driver/uart.h>
 
-#include <kickos/io/mmio.h>   // r8
-#include <kickos/sys.h>       // kos_periph_clock_hz
-#include <kickos/sys/errno.h> // KOS_ENOTSUP, KOS_ENOSYS, KOS_EBUSY
+#include <kickos/io/mmio.h>    // r8
+#include <kickos/poll_bound.h> // KICKOS_POLL_SPIN_MAX
+#include <kickos/sys.h>        // kos_periph_clock_hz
+#include <kickos/sys/errno.h>  // KOS_ENOTSUP, KOS_ENOSYS, KOS_EBUSY
 
 #include <regs/sci.h> // the chip's shared SCI register map, not a local copy
 
@@ -36,10 +37,6 @@
 namespace
 {
     namespace rs = kickos::rx::reg::sci;
-
-    // Per-poll cap: a channel that never reports idle costs a bounded delay, not the
-    // calling thread. One 8N1 frame at 115200 baud is ~87 us.
-    constexpr uint32_t POLL_MAX = 1000000u;
 
     bool tx_idle(uintptr_t base)
     {
@@ -71,7 +68,7 @@ namespace
         // BOUNDED: this runs on the drained-queue path in the only thread servicing the
         // device and the caller has no error channel, so giving up costs spurious wakes
         // rather than bytes, where an unbounded spin costs the console.
-        for (uint32_t i = 0; i < POLL_MAX; i++)
+        for (uint32_t i = 0; i < KICKOS_POLL_SPIN_MAX; i++)
         {
             if ((r8(base + rs::SCR_OFFSET) & rs::SCR_TIE) == 0)
             {
@@ -172,7 +169,7 @@ int32_t kos_uart_open(struct kos_uart* u, struct kos_uart_config const* cfg)
     // Wait out the byte in flight: a divisor or frame change with a frame still shifting
     // corrupts it on the wire, and the kernel banner is normally still draining here.
     bool drained = false;
-    for (uint32_t i = 0; i < POLL_MAX; i++)
+    for (uint32_t i = 0; i < KICKOS_POLL_SPIN_MAX; i++)
     {
         if (tx_idle(u->base))
         {
@@ -308,7 +305,7 @@ int32_t kos_uart_flush(struct kos_uart* u)
 {
     // THE STRONG CONTRACT ON THIS PART: drained means the last stop bit has left the pin.
     // TEND covers the shift register, not just TDR (sec.42.2.11 p.2171).
-    for (uint32_t i = 0; i < POLL_MAX; i++)
+    for (uint32_t i = 0; i < KICKOS_POLL_SPIN_MAX; i++)
     {
         if (tx_idle(u->base))
         {

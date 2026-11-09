@@ -53,6 +53,9 @@ namespace kickos
         bool g_in_isr = false;
         uint64_t g_now_ns = 0;
         uint64_t g_seat_cost_ns = 0;
+        uint64_t g_timer_due = UINT64_MAX;
+        uint32_t g_timer_writes = 0;
+        uint32_t g_irq_saves = 0;
 
         Domain g_domains[FIXTURE_DOMAIN_SLOTS] = {};
         uint16_t g_domain_refs[FIXTURE_DOMAIN_SLOTS] = {};
@@ -355,6 +358,7 @@ namespace kickos
 
         void note_irq_save()
         {
+            g_irq_saves++;
             g_irq_depth++;
         }
 
@@ -472,6 +476,9 @@ namespace kickos
             g_word_fault = false;
             g_now_ns = 0;
             g_seat_cost_ns = 0;
+            g_timer_due = UINT64_MAX;
+            g_timer_writes = 0;
+            g_irq_saves = 0;
             for (int i = 0; i < FIXTURE_DOMAIN_SLOTS; i++)
             {
                 g_domains[i] = Domain{};
@@ -856,6 +863,17 @@ namespace kickos
             w->wait_va = static_cast<uintptr_t>(m->key);
             w->wait_result = WAIT_RESULT_POISON;
             m->waiters.push_back(&w->link);
+        }
+
+        void park_death_waiter(Thread* w, Task* t)
+        {
+            testfix::seat_blocked(w);
+            detach_ready(w);
+            w->wait_queue = nullptr;
+            w->wait_kind = WAIT_TASK_EMPTY;
+            w->wait_obj = t;
+            w->wait_result = WAIT_RESULT_POISON;
+            kernel().death_waiters.push(&w->link);
         }
 
         void run_exit(int code)

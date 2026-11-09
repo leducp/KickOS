@@ -70,24 +70,43 @@ bench_run() {
 }
 
 # One enumeration of the bus. Every presence and serial question reads what this leaves in
-# USB_BUS, so a board is never asked about twice and never asked about on the wrong box.
+# USB_BUS, `<vid:pid> <serial>`, and USB_PORTS, the same devices as `<port> <vid:pid> <serial>`,
+# so a board is never asked about twice and never asked about on the wrong box. A port is the
+# device's sysfs name, its path of hub ports, which a device keeps when it re-enumerates.
 USB_ENUM_SCRIPT='
 for d in /sys/bus/usb/devices/*/; do
   [ -r "$d/idVendor" ] && [ -r "$d/idProduct" ] || continue
   s=""
   [ -r "$d/serial" ] && s=$(cat "$d/serial")
-  printf "%s:%s %s\n" "$(cat "$d/idVendor")" "$(cat "$d/idProduct")" "$s"
+  printf "%s %s:%s %s\n" "$(basename "$d")" "$(cat "$d/idVendor")" "$(cat "$d/idProduct")" "$s"
 done
 '
 USB_BUS=""
+USB_PORTS=""
 
-# bench_bus_read  fills USB_BUS. Returns 1 when the host could not be asked and 2 when it
-# answered nothing, which are different failures: the first is the link, the second a box
+# bench_bus_read  fills USB_BUS and USB_PORTS. Returns 1 when the host could not be asked and 2
+# when it answered nothing, which are different failures: the first is the link, the second a box
 # with no bus at all.
 bench_bus_read() {
-    USB_BUS=$(printf '%s\n' "$USB_ENUM_SCRIPT" | bench_run) || return 1
-    [ -n "$USB_BUS" ] || return 2
+    USB_PORTS=$(printf '%s\n' "$USB_ENUM_SCRIPT" | bench_run) || return 1
+    [ -n "$USB_PORTS" ] || return 2
+    USB_BUS=$(printf '%s\n' "$USB_PORTS" | sed 's/^[^ ]* //')
     return 0
+}
+
+# usb_ports_of <vid:pid> [<serial>]  the port of every device at <vid:pid>, one per line; with
+# <serial>, of those carrying exactly that serial.
+usb_ports_of() {
+    printf '%s\n' "$USB_PORTS" | awk -v k="$1" -v s="${2-}" -v any="$#" '
+        $2 != k { next }
+        {
+            sn = $0
+            sub(/^[^ ]+[ ]+[^ ]+[ ]*/, "", sn)
+            sub(/[ ]+$/, "", sn)
+            if (any == 1 || sn == s) {
+                print $1
+            }
+        }'
 }
 
 usb_present() { # <vid:pid>

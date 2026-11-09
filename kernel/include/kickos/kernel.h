@@ -144,6 +144,9 @@ namespace kickos
     // Break `t` out of whatever it is parked on and hand it `result`, without granting it what
     // it waited for. Every WaitKind is covered. `t` must be BLOCKED.
     void thread_abort_park(Thread* t, intptr_t result, Held held);
+    // The same without the pass, as sched::wake_no_resched: true where `t` was readied, which
+    // then owes the caller's one sched::resched_after_wake, or sched::place_ready.
+    [[nodiscard]] bool thread_abort_park_no_resched(Thread* t, intptr_t result, Held held);
 
     // Raise `t`'s cancellation to `kind` and nothing else: no park is broken, so the caller
     // owes a reason `t` cannot be parked. Answers whether the record moved. Keeps

@@ -7,6 +7,7 @@
 #include <kickos/config.h>
 #include <kickos/sync.h>
 #include <kickos/irqlock.h>
+#include <kickos/klock.h>
 #include <kickos/cap.h>
 #include <kickos/task.h>
 #include <kickos/chip_limits.h> // KICKOS_MAX_IRQ
@@ -16,6 +17,7 @@
 #include <kickos/arch/arch.h>
 #include <kickos/bench.h> // the end-to-end span's taking-core stamp
 #include <kickos/ktrace.h>
+#include <kickos/time.h>
 
 #include <kickos/sys/abi.h>   // KOS_IRQ_LEVEL claim flag
 #include <kickos/sys/errno.h>
@@ -91,6 +93,10 @@ namespace kickos
             // Dispatch nesting depth, touched by the owning core alone. The epoch turns over
             // on this field's zero crossings ONLY.
             uint32_t depth = 0;
+            // The doorbell found this core still inside the dispatch a WAIT_RETIRE waiter waits
+            // out: its exit raises the pass that wakes it. The owning core's alone, written by a
+            // pass nested in its dispatch.
+            Atomic<bool, Order::RELAXED> exit_raise{false};
         };
 
         EpochRow g_epoch_row[KICKOS_KERNEL_CORES];
@@ -1006,6 +1012,60 @@ namespace kickos
     {
         pub_drain();
     }
+
+    bool irq_line_retiring(int line)
+    {
+        return line >= 0 and line < KICKOS_MAX_IRQ
+               and (kernel().irq_table[line].pub.load() & IRQ_PUB_RETIRING) != 0;
+    }
+
+    namespace
+    {
+        // Whether core `core`'s dispatch, entered before the draining batch closed, is still the
+        // one it is in.
+        bool holds_grace(uint32_t core)
+        {
+            return g_drain_open and (g_drain_epoch[core] & 1u) != 0u
+                   and g_epoch_row[core].epoch.load() == g_drain_epoch[core];
+        }
+    }
+
+    void irq_retire_await(Thread* c, Held)
+    {
+        kernel().retire_waiters.push(&c->link);
+        uint32_t cores = 0;
+        for (uint32_t core = 0; core < KICKOS_KERNEL_CORES; core++)
+        {
+            if (holds_grace(core))
+            {
+                cores = cores | (1u << core);
+            }
+        }
+        // Never this core: it is in a system call, outside every dispatch.
+        KICKOS_DEBUG_ASSERT((cores & (1u << kickos_kernel_core())) == 0);
+        // None: the holder left its dispatch after the caller's drain, its exit storing the epoch
+        // outside the lock, so this core's own pass serves the waiter.
+        if (cores == 0u)
+        {
+            klock_resched_self();
+        }
+        else
+        {
+            klock_resched_ask(cores);
+        }
+    }
+
+    bool irq_retire_serve(Held)
+    {
+        pub_drain();
+        uint32_t const me = kickos_kernel_core();
+        if (holds_grace(me))
+        {
+            g_epoch_row[me].exit_raise = true;
+            return false;
+        }
+        return true;
+    }
 #endif
 
     void irq_ref_drop(int obj_handle, [[maybe_unused]] Held held)
@@ -1074,6 +1134,15 @@ extern "C" void kickos_isr_irq(int irq)
     if (row.depth == 0)
     {
         row.epoch = row.epoch.load() + 1u;
+        // A release store lets the compiler hoist the read above it, where a pass nested
+        // between them sets the flag after it was read and finds the epoch still odd.
+        std::atomic_signal_fence(std::memory_order_seq_cst);
+        if (row.exit_raise.load())
+        {
+            row.exit_raise = false;
+            ::kickos::IrqLock lock;
+            ::kickos::klock_resched_self();
+        }
     }
 #else
     ::kickos::Kernel& k = ::kickos::kernel();
@@ -1082,4 +1151,5 @@ extern "C" void kickos_isr_irq(int irq)
     k.irq_table[irq].handler(k.irq_table[irq].arg);
     ::kickos::ktrace_irq_exit(static_cast<uint16_t>(irq));
 #endif
+    ::kickos::ktime_land_at_isr_exit();
 }

@@ -21,8 +21,8 @@
 //
 // SCOPE: privilege state as read back through MRS. Interrupt masking sits outside it,
 // since PRIMASK reads zero from unprivileged Thread mode and the only other observable is
-// interrupt DELIVERY: mps2 derives the monotonic clock from a semihosting SYS_CLOCK call,
-// which advances with interrupts masked.
+// interrupt DELIVERY, and the monotonic clock is a counter that advances with interrupts
+// masked.
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>

@@ -3,7 +3,8 @@
 # Copyright (c) 2026 Philippe Leduc
 #
 # tools/bench/bench-fleet.sh's verdict over planted passes: a stub bench.sh answers the image
-# listings and the captures, and a stub bus says which boards are present.
+# listings and the captures, and a stub bus says which boards are present. Then
+# tools/bench/bench-present.sh's report over a planted sysfs bus and by-id directory.
 #
 #   check_bench_fleet.sh <cmake>
 
@@ -26,7 +27,7 @@ BENCH_WHERE="the planted bus"
 bench_host_select() { :; }
 bench_bus_read() { USB_BUS="$(cat "$FLEET_FIXTURE/bus")"; [ -n "$USB_BUS" ] || return 2; }
 usb_present() { printf '%s\n' "$USB_BUS" | grep -q "^$1 "; }
-usb_serial_of() { return 1; }
+usb_serial_of() { printf '%s\n' "$USB_BUS" | awk -v k="$1:$2" '$1 == k { print $2; f = 1 } END { exit !f }'; }
 EOF
 cat > "$TMP/tools/bench/bench.sh" <<'EOF'
 #!/bin/sh
@@ -45,7 +46,9 @@ if [ "${BUILD_ONLY:-0}" = 1 ]; then
     fi
     exit 0
 fi
+echo "$TREE" >> "$FLEET_FIXTURE/trees"
 echo "$1 ${VARIANT:--} $APP ${AMP_PARTITION:-0} $TAG" >> "$FLEET_FIXTURE/flashed"
+echo "$1 ${2:--}" >> "$FLEET_FIXTURE/serials"
 echo "start $1" >> "$FLEET_FIXTURE/events"
 if [ -f "$FLEET_FIXTURE/$1.peer" ]; then
     n=0
@@ -93,7 +96,7 @@ cat > "$TMP/tree/CMakePresets.json" <<'EOF'
   ]
 }
 EOF
-printf 'RIG_SESSION=%s\nRIG_TREE=%s\n' "$TMP/session" "$TMP/tree" > "$TMP/rig.conf"
+printf 'RIG_SESSION=%s\n' "$TMP/session" > "$TMP/rig.conf"
 mkdir -p "$TMP/tree/boards/esp32-wroom/configs/bench" "$TMP/tree/boards/rx72m/configs/base"
 printf 'CONFIG_KICKOS_BENCH=y\n' > "$TMP/tree/boards/esp32-wroom/configs/bench/defconfig"
 
@@ -112,7 +115,7 @@ printf 'NOT EVALUATED: the planted clause\n' > "$F/ampping_n0.out"
 fleet() {
     printf '%s\n' "$1" > "$F/bus"
     shift
-    rm -f "$F/flashed" "$F/events"
+    rm -f "$F/flashed" "$F/events" "$F/serials" "$F/trees"
     FLEET_FIXTURE="$F" KICKOS_RIG="$TMP/rig.conf" TREE="$TMP/tree" TAG=planted \
         bash "$TMP/tools/bench/bench-fleet.sh" "$@" > "$TMP/fleet.out" 2>&1
 }
@@ -131,6 +134,43 @@ if grep -q '^rx72m flat hello ' "$F/flashed"; then
 fi
 grep -qE '^  rx72m +chaincheck_float \(flat\) +captured$' "$TMP/fleet.out" \
     || bad "the rx72m coverage table does not show chaincheck_float (flat) captured"
+
+# IMAGES names a subset: it applies to the base build and to every variant, and the rest is left.
+IMAGES="chaincheck_float" fleet "$RX_BUS" rx72m
+got=$?
+[ "$got" -eq 0 ] || bad "a subset pass capturing chaincheck_float exits $got, not 0"
+[ "$(cut -d' ' -f1-3 "$F/flashed" | paste -sd ',' -)" = 'rx72m - chaincheck_float,rx72m flat chaincheck_float' ] \
+    || bad "the chaincheck_float subset did not flash that image in the base build and the flat build only: $(paste -sd ',' "$F/flashed")"
+grep -q ' hello' "$TMP/fleet.out" && bad "the subset pass names an image it was not asked for"
+IMAGES="hello" fleet "$RX_BUS" rx72m
+[ "$(cut -d' ' -f1-3 "$F/flashed" | paste -sd ',' -)" = 'rx72m - hello' ] \
+    || bad "the hello subset flashed more than hello: $(paste -sd ',' "$F/flashed")"
+IMAGES="hello nosuch" fleet "$RX_BUS" rx72m
+got=$?
+[ "$got" -eq 2 ] || bad "a subset naming an image the board does not ship exits $got, not 2"
+grep -qF 'IMAGES names nosuch, which rx72m does not ship' "$TMP/fleet.out" \
+    || bad "the unknown image is not refused by name"
+[ ! -e "$F/flashed" ] && [ ! -e "$F/events" ] || bad "a refused subset built or flashed something"
+
+# TREE unset is the checkout the script lives in.
+cp "$TMP/tree/CMakePresets.json" "$TMP/CMakePresets.json"
+printf '%s\n' "$RX_BUS" > "$F/bus"
+rm -f "$F/trees"
+env -u TREE FLEET_FIXTURE="$F" KICKOS_RIG="$TMP/rig.conf" TAG=planted \
+    bash "$TMP/tools/bench/bench-fleet.sh" rx72m > "$TMP/fleet.out" 2>&1
+[ "$(sort -u "$F/trees" 2>/dev/null)" = "$TMP" ] \
+    || bad "an unset TREE is not the checkout the script lives in: $(sort -u "$F/trees" 2>/dev/null)"
+grep -qxE "=== tree $TMP at .+" "$TMP/fleet.out" || bad "the pass does not name its tree and commit"
+
+# bench.sh itself builds the checkout it lives in when TREE is unset.
+mkdir -p "$TMP/real/tools/bench"
+cp tools/bench/bench.sh tools/bench/rig.sh tools/bench/bench-host.sh tools/bench/board-rows.sh \
+    tools/bench/amp_peers.sh tools/bench/banner.sh "$TMP/real/tools/bench/"
+: > "$TMP/session/env.sh"
+env -u TREE BENCH_HOST= KICKOS_RIG="$TMP/rig.conf" bash "$TMP/real/tools/bench/bench.sh" rx72m \
+    > "$TMP/real.out" 2>&1
+grep -qxF "REFUSING: $TMP/real is not a KickOS tree" "$TMP/real.out" \
+    || bad "bench.sh with TREE unset does not take the checkout it lives in: $(cat "$TMP/real.out")"
 
 printf 'NOT EVALUATED: the flat clause\n' > "$F/chaincheck_float-flat.out"
 fleet "$RX_BUS" rx72m
@@ -293,7 +333,7 @@ got=$?
 [ "$got" -eq 0 ] || bad "a pass whose declared jumper echoes every word exits $got, not 0"
 grep -qE '^  f411disco +f411spi +captured$' "$TMP/fleet.out" \
     || bad "f411spi is not captured whole where the rig declares the jumper and the words echo"
-printf 'RIG_SESSION=%s\nRIG_TREE=%s\n' "$TMP/session" "$TMP/tree" > "$TMP/rig.conf"
+printf 'RIG_SESSION=%s\n' "$TMP/session" > "$TMP/rig.conf"
 fleet "$F411_BUS" f411disco
 got=$?
 [ "$got" -eq 3 ] || bad "an echoing f411spi under a rig declaring no jumper exits $got, not 3"
@@ -332,9 +372,174 @@ awk '$1 == "start" { if (open) bad = 1; open = 1 } $1 == "end" { open = 0 } END 
     || bad "two boards sharing a console cable were captured at the same time"
 rm -f "$F/hold"
 
+# blackpill's capture is told the J-Link Pro's serial, read off the bus.
+printf 'hello|kernel|tests/integration/check_qemu_hello.sh|\n' > "$F/blackpill.images"
+printf 'hello|kernel|tests/integration/check_qemu_hello.sh|\n' > "$F/picopi.images"
+cp "$F/picopi.images" "$F/pizero2350.images"
+JLINK_BUS='1366:1020 000177003338'
+RP_BUS='2e8a:0003 E0C9'
+fleet "$JLINK_BUS" blackpill
+got=$?
+[ "$got" -eq 0 ] || bad "a pass capturing blackpill on its J-Link Pro exits $got, not 0"
+grep -qxF 'blackpill 000177003338' "$F/serials" 2>/dev/null \
+    || bad "blackpill's capture is not told the J-Link Pro's serial read off the bus"
+
+# A row a board may present and need not decides nothing: picopi in BOOTSEL is present with no
+# USB console on the bus, and its J-Link Pro alone does not make it present.
+fleet "$RP_BUS" picopi
+got=$?
+[ "$got" -eq 0 ] || bad "a pass over picopi in BOOTSEL exits $got, not 0: $(grep -m1 ABSENT "$TMP/fleet.out")"
+grep -qx 'picopi E0C9' "$F/serials" \
+    || bad "picopi's BOOTSEL serial is not handed to its capture: $(cat "$F/serials")"
+fleet "$RP_BUS
+2e8a:000f 5F04" picopi pizero2350
+got=$?
+[ "$got" -eq 0 ] || bad "a pass over picopi and pizero2350 in BOOTSEL together exits $got, not 0"
+grep -qx 'picopi E0C9' "$F/serials" && grep -qx 'pizero2350 5F04' "$F/serials" \
+    || bad "picopi and pizero2350 in BOOTSEL together are not each given their own serial: $(cat "$F/serials")"
+fleet "$JLINK_BUS" picopi
+got=$?
+[ "$got" -eq 1 ] || bad "a pass over picopi with only its J-Link Pro on the bus exits $got, not 1"
+grep -q '^picopi  *ABSENT (2e8a:0003 ' "$TMP/fleet.out" \
+    || bad "picopi out of BOOTSEL is not reported ABSENT by its BOOTSEL row"
+
+# Two boards on one J-Link Pro and two cables are captured one after the other.
+printf 'RIG_CONSOLE_PICOPI=/dev/planted-c\nRIG_CONSOLE_BLACKPILL=/dev/planted-d\n' >> "$TMP/rig.conf"
+printf '0.3\n' > "$F/hold"
+fleet "$RP_BUS
+$JLINK_BUS" picopi blackpill
+got=$?
+[ "$got" -eq 0 ] || bad "a pass over picopi and blackpill exits $got, not 0"
+[ "$(grep -c '^start ' "$F/events")" -eq 2 ] || bad "the pass over picopi and blackpill did not capture two images"
+awk '$1 == "start" { if (open) bad = 1; open = 1 } $1 == "end" { open = 0 } END { exit bad }' "$F/events" \
+    || bad "picopi and blackpill, sharing the J-Link Pro, were captured at the same time"
+rm -f "$F/hold"
+
+# tools/bench/bench-present.sh over a planted sysfs bus and by-id directory: its own enumeration
+# and glob scripts run, their paths rewritten into the fixture.
+P="$TMP/present"
+mkdir -p "$P/tools/bench"
+for f in bench-present.sh rig.sh board-rows.sh; do
+    cp "tools/bench/$f" "$P/tools/bench/$f"
+done
+cp tools/bench/bench-host.sh "$P/tools/bench/bench-host-real.sh"
+cat > "$P/tools/bench/bench-host.sh" <<EOF
+. "$P/tools/bench/bench-host-real.sh"
+bench_run() {
+    if [ "\$BENCH_REMOTE" = 1 ]; then
+        echo "ssh: the planted bench host answers nothing" >&2
+        return 255
+    fi
+    sed "s|/sys/bus/usb/devices|$P/sys|g; s|/dev/serial/by-id|$P/by-id|g" | bash -s \\
+        | sed "s|$P/by-id|/dev/serial/by-id|g"
+}
+EOF
+cat > "$P/tools/flash.sh" <<'EOF'
+#!/bin/sh
+echo 'BOARD CHIP ARCH BACKEND'
+for b in blackpill f411disco picopi pizero2350 rx72m teensy41; do
+    echo "$b chip arch backend"
+done
+EOF
+chmod +x "$P/tools/flash.sh"
+CABLE=/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_CABLE1
+{
+    printf 'RIG_BENCH_HOST=planted-bench\n'
+    for k in PICOPI PIZERO2350 TEENSY41 BLACKPILL; do
+        printf 'RIG_CONSOLE_%s=%s*\n' "$k" "$CABLE"
+    done
+} > "$P/rig.conf"
+
+# <vid:pid[ serial]>...: the planted bus, one device per argument, with an empty by-id directory.
+plant_bus() {
+    rm -rf "$P/sys" "$P/by-id"
+    mkdir -p "$P/sys" "$P/by-id"
+    n=0
+    for d in "$@"; do
+        n=$((n + 1))
+        mkdir "$P/sys/$n"
+        printf '%s\n' "${d%%:*}" > "$P/sys/$n/idVendor"
+        r=${d#*:}
+        printf '%s\n' "${r%% *}" > "$P/sys/$n/idProduct"
+        if [ "${r#* }" != "$r" ]; then
+            printf '%s\n' "${r#* }" > "$P/sys/$n/serial"
+        fi
+    done
+}
+plant_byid() { # <name>...
+    for d in "$@"; do
+        : > "$P/by-id/$d"
+    done
+}
+# <board>...: bench-present.sh's status asking this box, its output in $P/out.
+present() {
+    BENCH_HOST= KICKOS_RIG="$P/rig.conf" bash "$P/tools/bench/bench-present.sh" "$@" > "$P/out" 2>&1
+}
+has() { # <ERE> <what is wrong without it>
+    grep -qE -e "$1" "$P/out" || bad "$2: $(tr '\n' '~' < "$P/out")"
+}
+
+plant_bus "$RP_BUS"
+env -u BENCH_HOST KICKOS_RIG="$P/rig.conf" bash "$P/tools/bench/bench-present.sh" picopi > "$P/out" 2>&1
+got=$?
+[ "$got" -eq 2 ] || bad "bench-present with BENCH_HOST unset exits $got, not 2, though the rig names a bench host that answers nothing"
+has '^=== bench   planted-bench \(from RIG_BENCH_HOST' "bench-present with BENCH_HOST unset does not ask RIG_BENCH_HOST"
+present picopi
+got=$?
+[ "$got" -eq 0 ] || bad "bench-present with BENCH_HOST set empty exits $got, not 0, over picopi in BOOTSEL"
+has '^=== bench   THIS BOX .*BENCH_HOST is set empty' "BENCH_HOST set empty does not ask this box by name"
+has '^picopi +present +2e8a:0003 ' "picopi in BOOTSEL is not present"
+
+plant_bus '2e8a:000f 5F04'
+present pizero2350
+has '^pizero2350 +present +2e8a:000f ' "pizero2350 in BOOTSEL is not present"
+plant_bus '16c0:0478'
+present teensy41
+has '^teensy41 +present +16c0:0478 ' "teensy41 in HalfKay is not present"
+
+plant_bus '0403:6001 CABLE1' '1d6b:0002'
+plant_byid usb-FTDI_FT232R_USB_UART_CABLE1-if00-port0 usb-KickOS_KickOS_console_0001-if00
+present picopi
+got=$?
+[ "$got" -eq 1 ] || bad "bench-present exits $got, not 1, over picopi out of BOOTSEL"
+has '^ +seen +a KickOS USB CDC console at /dev/serial/by-id/usb-KickOS_KickOS_console_0001-if00; also a row of pizero2350, teensy41,' \
+    "a KickOS USB console is not reported as one any of its boards may present"
+
+rm -f "$P/by-id/usb-KickOS_KickOS_console_0001-if00"
+present picopi pizero2350 teensy41 blackpill
+has '^picopi +ABSENT +2e8a:0003 ' "picopi with no device on the bus is not ABSENT by its BOOTSEL row"
+has '^ +reading +not in BOOTSEL: .* A console cable is not a board\.' \
+    "picopi with only its console cable on the bus is not read as a running or missing board"
+has '^ +reading +not in HalfKay: ' "teensy41 with only its console cable on the bus has no reading"
+has '^blackpill +ABSENT +1366:1020 ' "blackpill with no J-Link Pro on the bus is not ABSENT"
+has "^ +console +$CABLE-if00-port0 \\(pinned by RIG_CONSOLE_PICOPI\\)" "one cable named by four rows does not resolve to its one device"
+has '^ +SHARED with blackpill, pizero2350, teensy41: ' "one cable named by four rows is not reported SHARED"
+if grep -q 'AMBIGUOUS' "$P/out"; then
+    bad "one cable named by four rows reads as AMBIGUOUS"
+fi
+
+plant_bus '1a86:7523'
+present esp32-wroom
+if grep -qE '^ +console +/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0' "$P/out"; then
+    bad "esp32-wroom absent from by-id resolves a console: $(tr '\n' '~' < "$P/out")"
+fi
+plant_byid usb-1a86_USB_Serial-if00-port0
+present esp32-wroom
+has '^ +console +/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0' "esp32-wroom present in by-id does not resolve its console"
+
+plant_bus '0403:6001 CABLE1' "$JLINK_BUS"
+present blackpill
+got=$?
+[ "$got" -eq 0 ] || bad "bench-present exits $got, not 0, over blackpill on the J-Link Pro"
+has '^blackpill +SHARED +1366:1020 the J-Link Pro on its SWD header, serial 000177003338; also a row of picopi,' \
+    "the J-Link Pro is reported as blackpill's alone"
+has '^=== 0 present, 0 absent, 1 not decidable' "blackpill on the shared J-Link Pro is decided"
+
 [ "$rc" -eq 0 ] || exit 1
 echo "PASS: an absent board fails the pass; every declared variant is captured under its own tag"
 echo "  and label, a measurement posture is reported and not flashed; a failure its board allows is"
 echo "  owed and a pass of it fails the pass; a loopback is judged only where the rig declares its"
-echo "  fitting; boards sharing nothing are captured at once and boards sharing a cable one after"
-echo "  the other, every image built first"
+echo "  fitting; boards sharing nothing are captured at once and boards sharing a cable or a probe"
+echo "  one after the other, every image built first; bench-present asks this box when BENCH_HOST"
+echo "  is set empty, reads BOOTSEL, HalfKay, a KickOS console and a bare cable for what each is,"
+echo "  and reports a probe or a cable more than one board names as SHARED"

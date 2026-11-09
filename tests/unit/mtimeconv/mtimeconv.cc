@@ -201,6 +201,24 @@ TEST(MtimeConv, ClockTreeReadings)
     EXPECT_EQ(mtime_shift_of(0u), -1);
 }
 
+// The PLL is selected only where T0 on PLL_F80M / 2 counted 40 MHz against MTIME.
+TEST(MtimeConv, PllProbeVerdict)
+{
+    using kickos::esp32c6::pll_probe_alive;
+    EXPECT_TRUE(pll_probe_alive(40000u, 40000u, 40000000u));
+    EXPECT_TRUE(pll_probe_alive(80000u, 40000u, 20000000u));
+    EXPECT_TRUE(pll_probe_alive(40000u + 625u, 40000u, 40000000u));
+    EXPECT_TRUE(pll_probe_alive(40000u - 625u, 40000u, 40000000u));
+    EXPECT_FALSE(pll_probe_alive(40000u + 626u, 40000u, 40000000u));
+    EXPECT_FALSE(pll_probe_alive(40000u - 626u, 40000u, 40000000u));
+    EXPECT_FALSE(pll_probe_alive(0u, 40000u, 40000000u));
+    EXPECT_FALSE(pll_probe_alive(20000u, 40000u, 40000000u));
+    EXPECT_FALSE(pll_probe_alive(160000u, 40000u, 40000000u));
+    EXPECT_FALSE(pll_probe_alive(40000u, 0u, 40000000u));
+    EXPECT_FALSE(pll_probe_alive(40000u, 40000u, 0u));
+    EXPECT_TRUE(pll_probe_alive(0xFFFFFFFFu, 0xFFFFFFFFu, 40000000u));
+}
+
 // A boot stopped by a clock MTIME cannot count names the rate it decoded and the two words.
 TEST(MtimeConv, ClockRefusalNamesWhatItDecoded)
 {

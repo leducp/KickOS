@@ -26,6 +26,7 @@ namespace
     // forced onto the short-accept retry path.
     constexpr uint32_t TOTAL = 8192;
     constexpr uint32_t CHUNK = 200;
+    constexpr uint32_t PHASES = 26;
     // A zero accept is ordinary back-pressure; only a RUN of them with no progress is a
     // stall. The bound is set by the HOST, not the wire: no IN token is issued until
     // something OPENS the tty, and that node appears about a second after boot, so a
@@ -49,10 +50,12 @@ int main(int, char**)
 {
     say("\n[usbcdcwit] start\n");
 
-    uint8_t chunk[CHUNK];
-    for (uint32_t i = 0; i < CHUNK; i++)
+    // Byte i of the stream is 'a' + i % 26 however the writes split, so the judge can find
+    // a lost or repeated byte on the host: a write starts at the phase `sent` left.
+    uint8_t pattern[CHUNK + PHASES - 1];
+    for (uint32_t i = 0; i < sizeof(pattern); i++)
     {
-        chunk[i] = static_cast<uint8_t>('a' + (i % 26));
+        pattern[i] = static_cast<uint8_t>('a' + (i % PHASES));
     }
 
     // A refused cap must be reported as itself, not counted as a stalled channel.
@@ -77,7 +80,7 @@ int main(int, char**)
             want = CHUNK;
         }
         int const took = kos_uart_call(CH_EP, KOS_UART_WRITE, 0, static_cast<uint16_t>(want),
-                                       chunk, nullptr, 0);
+                                       pattern + (sent % PHASES), nullptr, 0);
         if (took < 0)
         {
             err = took;
@@ -113,7 +116,8 @@ int main(int, char**)
     }
 
     char b[128];
-    ksnprintf(b, sizeof(b), "[usbcdcwit] accepted=%u of %u err=%d maxzero=%u\n",
+    // The stream carries no newline of its own, and the judge reads this line at line start.
+    ksnprintf(b, sizeof(b), "\n[usbcdcwit] accepted=%u of %u err=%d maxzero=%u\n",
               static_cast<unsigned>(sent), static_cast<unsigned>(TOTAL), err,
               static_cast<unsigned>(max_zero_run));
     say(b);
@@ -121,12 +125,35 @@ int main(int, char**)
     // carries no field for that. Delivery is the HOST's byte count against `queued`.
     uint32_t const tx = kos_counter_load(&stats.tx_bytes);
     uint32_t const drop = kos_counter_load(&stats.tx_dropped);
-    ksnprintf(b, sizeof(b), "[usbcdcwit] tx=%u drop=%u queued=%u wakes=%u spurious=%u\n",
+    // rx counts what the host WROTE to the device: a reader in raw mode with no echo writes
+    // nothing, so a nonzero rx is a tty echo or another program probing the port.
+    ksnprintf(b, sizeof(b),
+              "[usbcdcwit] tx=%u drop=%u queued=%u wakes=%u spurious=%u rx=%u\n",
               static_cast<unsigned>(tx), static_cast<unsigned>(drop),
               static_cast<unsigned>(tx - drop),
               static_cast<unsigned>(kos_counter_load(&stats.irq_wakes)),
-              static_cast<unsigned>(kos_counter_load(&stats.irq_spurious)));
+              static_cast<unsigned>(kos_counter_load(&stats.irq_spurious)),
+              static_cast<unsigned>(kos_counter_load(&stats.rx_bytes)
+                                    + kos_counter_load(&stats.rx_dropped)));
     say(b);
+
+    // What the host wrote, escaped, so an echo or a probe names itself.
+    uint8_t rx[24];
+    int const got = kos_uart_call(CH_EP, KOS_UART_READ, 0, sizeof(rx), nullptr, rx, sizeof(rx));
+    if (got > 0)
+    {
+        char line[sizeof(rx) * 4 + 32];
+        size_t at = static_cast<size_t>(ksnprintf(line, sizeof(line), "[usbcdcwit] rx bytes:"));
+        for (int i = 0; i < got; i++)
+        {
+            static char const hex[] = "0123456789abcdef";
+            line[at++] = ' ';
+            line[at++] = hex[rx[i] >> 4];
+            line[at++] = hex[rx[i] & 0xFu];
+        }
+        ksnprintf(line + at, sizeof(line) - at, "\n");
+        say(line);
+    }
 
     if (err != 0 or sent != TOTAL)
     {

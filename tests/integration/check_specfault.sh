@@ -11,11 +11,16 @@
 #
 #   check_specfault.sh <specfault image>
 #   KOS_CAPTURE=<log> check_specfault.sh <board-build> <kickos-source> <cmake>
+#
+# armv6m latches no fault address, so on a capture whose build <board-build>'s CMakeCache names
+# armv6m, main's kill record is pinned to the load the app announced instead.
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
 
+arch=""
 if judging_capture; then
+    arch="$(judged_arch "$1")"
     judge_capture specfault
 else
     run_image "${1:?usage: check_specfault.sh <specfault image>}"
@@ -35,6 +40,11 @@ if [ -z "$_fault" ]; then
 fi
 if [ "$_fault" -le "$_said" ]; then
     cfail order "the fault report at line $_fault precedes the app's read at line $_said"
+fi
+if [ "$arch" = armv6m ]; then
+    require_killed_at_site main "$(announced_site "[specfault] reading 0x")"
+    echo "PASS: the load of the probe address 0x$want faulted cleanly"
+    exit 0
 fi
 _addr="$(reported_fault_addr)"
 if [ -z "$_addr" ]; then

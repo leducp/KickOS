@@ -493,6 +493,16 @@ namespace kickos
     void ktime_wall_shift(int64_t, Held)
     {
     }
+
+    void ktime_land(Held)
+    {
+        kernel().switch_landing_owed[kickos_kernel_core()] = 0;
+    }
+
+    void ktime_land_at_isr_exit()
+    {
+        kernel().switch_landing_owed[kickos_kernel_core()] = 0;
+    }
 #endif
 }
 
@@ -505,12 +515,16 @@ extern "C"
         return kickos::testfix::g_now_ns;
     }
 
-    void arch_timer_arm(uint64_t)
+    void arch_timer_arm(uint64_t deadline_ns)
     {
+        kickos::testfix::g_timer_due = deadline_ns;
+        kickos::testfix::g_timer_writes++;
     }
 
     void arch_timer_disarm(void)
     {
+        kickos::testfix::g_timer_due = UINT64_MAX;
+        kickos::testfix::g_timer_writes++;
     }
 }
 #endif

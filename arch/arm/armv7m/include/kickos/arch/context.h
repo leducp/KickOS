@@ -7,6 +7,9 @@
 #ifndef KICKOS_ARCH_CONTEXT_H
 #define KICKOS_ARCH_CONTEXT_H
 
+// arch_switch pends the switcher exception, which installs the incoming context.
+#define KICKOS_ARCH_SWITCH_LANDS_LATER 1
+
 #ifndef __ASSEMBLER__
 
 // Bytes the TLS carve carries on top of .tdata + .tbss: AAPCS TLS is variant 1, tp pointing at

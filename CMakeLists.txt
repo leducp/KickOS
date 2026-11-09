@@ -289,6 +289,39 @@ if(KICKOS_WITNESS_REWIND)
   add_compile_definitions(KICKOS_WITNESS_REWIND=1)
 endif()
 
+option(KICKOS_WITNESS_CLOCK_FALLBACK "Boot down the clock bring-up's fallback as if the PLL never locked, for the clock-fallback capture" OFF)
+if(KICKOS_WITNESS_CLOCK_FALLBACK)
+  set(_fallback_chips esp32c6 mk64f rp2040 rp2350 rx72m sam3x8e stm32f411 xmc4800)
+  if(NOT KICKOS_CHIP IN_LIST _fallback_chips)
+    string(REPLACE ";" ", " _fallback_named "${_fallback_chips}")
+    message(FATAL_ERROR "KickOS: WITNESS_CLOCK_FALLBACK_REFUSED: chip '${KICKOS_CHIP}' of board "
+      "'${KICKOS_BOARD}' has no PLL fallback for KICKOS_WITNESS_CLOCK_FALLBACK to force; the "
+      "chips that have one: ${_fallback_named}")
+  endif()
+  if(KICKOS_AMP_OWN_IMAGE AND NOT KICKOS_AMP_NODE_ID EQUAL 0)
+    message(FATAL_ERROR "KickOS: WITNESS_CLOCK_FALLBACK_REFUSED: AMP node ${KICKOS_AMP_NODE_ID} "
+      "of board '${KICKOS_BOARD}' runs no clock bring-up; KICKOS_WITNESS_CLOCK_FALLBACK goes on "
+      "node 0's image")
+  endif()
+  add_compile_definitions(KICKOS_WITNESS_CLOCK_FALLBACK=1)
+endif()
+
+# A kernel built with this raises a line no driver holds and reads any word from ring 0 on
+# request, so only the node witness's capture, configured with the marker below, may turn it on.
+option(KICKOS_WITNESS_NODE "Plant a stray line and a ring-0 read on an AMP node, for the node witness" OFF)
+if(KICKOS_WITNESS_NODE)
+  if(NOT "${KICKOS_WITNESS_NODE_SCRATCH}" STREQUAL "check_pizero_amp_gate.sh")
+    message(FATAL_ERROR "KickOS: WITNESS_NODE_REFUSED: KICKOS_WITNESS_NODE builds a kernel that "
+      "raises interrupt lines and reads any address from ring 0 on request. Only the "
+      "pizero2350 partition capture that tests/integration/check_pizero_amp_gate.sh judges "
+      "configures it.")
+  endif()
+  if(NOT KICKOS_CHIP STREQUAL "rp2350" OR NOT KICKOS_AMP_OWN_IMAGE)
+    message(FATAL_ERROR "KICKOS_WITNESS_NODE needs an own-image AMP node of the rp2350")
+  endif()
+  add_compile_definitions(KICKOS_WITNESS_NODE=1)
+endif()
+
 option(KICKOS_SMP_TRACE "Record a per-core park/wake event ring for SMP diagnosis" OFF)
 if(KICKOS_SMP_TRACE)
   add_compile_definitions(KICKOS_SMP_TRACE=1)
@@ -1160,8 +1193,8 @@ install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/tools/compose/pyproject.toml"
 
 # kickos.cmake include()s driver_geometry.cmake, driver_metadata.cmake, heap_symbol.cmake,
 # qemu_cpu.cmake and compose.cmake list-dir-relative, so they must land
-# beside it, as must image_header.c, which KickOS::kernel compiles into every image, and the
-# image link with the names it renames.
+# beside it, as must image_header.c, which KickOS::kernel compiles into every image, the
+# image link with the names it renames, and the esptool image.
 install(FILES
           "${CMAKE_CURRENT_BINARY_DIR}/KickOSConfig.cmake"
           "${CMAKE_CURRENT_BINARY_DIR}/KickOSConfigVersion.cmake"
@@ -1177,6 +1210,7 @@ install(FILES
           "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_names.txt"
           "${CMAKE_CURRENT_SOURCE_DIR}/cmake/image_partial.lds"
           "${CMAKE_CURRENT_SOURCE_DIR}/tools/image-link.py"
+          "${CMAKE_CURRENT_SOURCE_DIR}/tools/esp-image.py"
         DESTINATION "${KICKOS_CMAKE_DIR}")
 
 # Install the toolchain that configured this build, with board.cmake beside it.

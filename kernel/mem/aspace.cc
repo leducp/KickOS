@@ -356,6 +356,14 @@ namespace kickos
                 {
                     return -KOS_EAGAIN;
                 }
+                // Short at the plan, admissible now: a pool holding the run now sends the call
+                // round, and only one that still has none answers.
+                arch_phys_addr_t const run = AspaceUnwritten::alloc_run(data.pages);
+                if (run != 0)
+                {
+                    frame_pool_free_run(run, data.pages, g);
+                    r->refused = true;
+                }
                 return -KOS_ENOMEM;
             }
             if (r != nullptr and r->active)
@@ -654,6 +662,7 @@ namespace kickos
         {
             r->has_params = false;
             r->has_windows = false;
+            r->has_task_params = false;
         }
         return entering;
     }
@@ -825,6 +834,26 @@ namespace kickos
         }
 #endif
         r->edits.count = 0;
+    }
+
+    void presync_park()
+    {
+        PresyncRecord* const r = presync_record();
+        if (r != nullptr and r->active)
+        {
+            presync_unstage(*r);
+        }
+    }
+
+    bool presync_round()
+    {
+        PresyncRecord* const r = presync_record();
+        if (r == nullptr or not r->active)
+        {
+            return false;
+        }
+        r->refused = true;
+        return true;
     }
 
     bool presync_end()

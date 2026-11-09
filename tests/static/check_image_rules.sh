@@ -19,8 +19,6 @@
 #                start, at BASE + 4*i; every target
 #                seats gp with the auipc/addi pair before its first transfer and names gp nowhere
 #                above it; the image writes mtvec once; switch.S's object has no R_RISCV_RELAX
-#   rp_node      g_node_isr_vector holds the park in every slot but the bell line's, which holds
-#                the doorbell service; the park makes no call and branches only into itself
 #   a53_pmcr     kickos_armv8a_percore_init writes PMCR_EL0 as read with D (bit 3) cleared and C
 #                (bit 2) set, which no emulator run tells apart: QEMU resets D clear, and C reads
 #                as 0. bench_cyccnt reads E, D and LC back on the run
@@ -223,29 +221,6 @@ rule_rv32_trap() {
 ctl_rv32_trap() {
     awk '{ print } $2 == "<trap_entry>:" { print "    0:\tlw\tt1,-1444(gp)" }' "$D" > "$TMP/d.p"
     D="$TMP/d.p"
-}
-
-rule_rp_node() {
-    _bell="$(sed -n 's/^#define KICKOS_LAYOUT_LINE_SIO_IRQ_BELL \([0-9][0-9]*\).*/\1/p' "$X")"
-    [ -n "$_bell" ] || { echo "no KICKOS_LAYOUT_LINE_SIO_IRQ_BELL in $X"; return; }
-    awk -v p="$(addr_of kickos_rp2350_node_park)" -v s="$(addr_of kickos_rp2350_doorbell_service)" \
-        -v bell="$_bell" "$AWKLIB"'
-        {
-            x = hex(NR - 1 == 16 + bell ? s : p)
-            want = sprintf("%08x", x - x % 2 + 1)
-            if (p == "" || s == "" || $2 != want) print "slot " NR - 1 " holds " $2 ", not " want
-        }
-        END { if (NR <= 16 + bell) print NR + 0 " slot(s), none for the bell line" }' "$W"
-    awk "$AWKLIB"'
-        /^[0-9a-f]+ <.*>:$/ { f = ($2 == "<kickos_rp2350_node_park>:"); n += f; next }
-        !f || !/^[ \t]*[0-9a-f]+:/ { next }
-        { t = insn($0); m = t; sub(/ .*/, "", m) }
-        m ~ /^(bl|blx|bx)$/ || (m ~ /^b/ && t !~ /<kickos_rp2350_node_park[+>]/) { print "the park leaves: " t }
-        END { if (!n) print "no kickos_rp2350_node_park body" }' "$D"
-}
-ctl_rp_node() {
-    awk 'NR == 1 { $2 = "00000001" } 1' "$W" > "$TMP/w.p"
-    W="$TMP/w.p"
 }
 
 rule_a53_pmcr() {
@@ -479,13 +454,6 @@ case "$RULE" in
         [ -n "$SLOTS" ] || fail "no KICKOS_MAX_IRQ in $_lim"
         tool_out "$TMP/rel" "file format" "$OD" -r "$X"
         X="$TMP/rel" ;;
-    rp_node)
-        X="${1:?rp_node takes the generated chip_layout.h}"
-        _a="$(addr_of g_node_isr_vector)"
-        _z="$(awk '$4 == "g_node_isr_vector" { print $2 }' "$N")"
-        [ -n "$_a" ] && [ -n "$_z" ] || fail "no sized g_node_isr_vector in $ELF"
-        image_words "$OD" "$ELF" 4 --start-address="0x$_a" \
-            --stop-address="$(printf '0x%x' $((0x$_a + 0x$_z)))" > "$W" ;;
     ctor)
         X="$ELF.map"
         [ -r "$X" ] || fail "no link map at $X"

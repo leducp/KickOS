@@ -255,18 +255,16 @@ namespace
             << "every notification a refused start made goes back";
     }
 
-    TEST_F(Driver, a_line_retiring_from_the_instance_before_is_waited_for)
+    TEST_F(Driver, a_line_retiring_from_the_instance_before_is_waited_for_by_the_create)
     {
         use("golden_xmc");
-        fake::refuse_if("kos_task_create", -KOS_EAGAIN, 3,
-                        [](fake::Call const& c)
-                        {
-                            return c.text == "spi0";
-                        });
         fake::script({step::ready_all()});
         Outcome const outcome = run();
         ASSERT_EQ(outcome.kind, Outcome::Kind::IDLE) << outcome.message;
-        EXPECT_EQ(creates_of("spi0").size(), 4u) << "retried while its line retires";
+        std::vector<fake::Call> const creates = creates_of("spi0");
+        ASSERT_EQ(creates.size(), 1u);
+        EXPECT_EQ(creates[0].args.at(6), uint64_t{kickos::init::START_WAIT_US})
+            << "the start does not ask the kernel to wait out a line still retiring";
         EXPECT_EQ(status("spi0").deaths, 0u);
     }
 

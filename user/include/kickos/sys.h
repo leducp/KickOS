@@ -372,16 +372,21 @@ int kos_program_find(char const* name, kos_program_t* out_prog);
 // answers -KOS_EPERM. A create ends the dead incarnation's creator hold, whose handle then answers
 // -KOS_EBADF. A declaration with neither `restart` nor `start: on_request` starts once: a create
 // of it after its first incarnation started answers -KOS_EPERM.
+// An instance whose last incarnation has ended and is not yet dead, its members still running
+// to their deaths or sweeping, a declared line still retiring from its last holder, or an IRQ
+// binding the last incarnation released still retiring: a timeout of 0 answers -KOS_EAGAIN, any
+// other waits at most timeout_us relative microseconds (KOS_TIMEOUT_NONE: forever) for it to
+// pass, then starts the instance.
 // Returns 0 and out_task, or -KOS_ENOENT (no such instance), -KOS_EBUSY (it is live),
-// -KOS_ENOMEM (every instance the caller may start is live, or a pool), -KOS_EAGAIN (a declared
-// line still retiring from its last holder, the last incarnation's members still dying, or an
-// IRQ binding it released still retiring), -KOS_EPERM, -KOS_EINVAL, -KOS_EFAULT and the rest of
+// -KOS_ENOMEM (every instance the caller may start is live, or a pool), -KOS_EAGAIN (as above,
+// with a timeout of 0, or a budget as kos_thread_create's), -KOS_ETIMEDOUT, -KOS_ECANCELED (the
+// caller was cancelled while it waited), -KOS_EPERM, -KOS_EINVAL, -KOS_EFAULT and the rest of
 // kos_thread_create's codes, with KOS_TASK_NONE. With no instance named and none startable:
-// -KOS_EAGAIN where one is still dying, else -KOS_ENOMEM where one the caller may start is live,
-// else the refusal naming the first one answers, and -KOS_ENOENT for a program that declares
-// none.
+// -KOS_EAGAIN, or the wait, where one is still dying, else -KOS_ENOMEM where one the caller may
+// start is live, else the refusal naming the first one answers, and -KOS_ENOENT for a program
+// that declares none.
 int kos_task_create(kos_program_t prog, struct kos_task_params const* params,
-                    kos_task_t* out_task);
+                    uint32_t timeout_us, kos_task_t* out_task);
 
 // Watch a task YOU created: `notify_cap`'s badge is raised when the task ends, when it is dead,
 // every member's teardown done, and the first time a member waits to receive on `ready_ep`
@@ -497,8 +502,8 @@ int kos_port_reg_write(uint16_t base, uint16_t offset, uint8_t value);
 // teardown done, and released.
 // ETIMEDOUT leaves termination pending and the handle valid for another wait. ECANCELED cancels
 // only the wait. Other errors: EBADF for an invalid task, KOS_TASK_NONE included, EPERM
-// for a different creator, EINVAL for a caller that is a member and waits. Error codes are
-// negative.
+// for a different creator, EDEADLK for a timeout other than 0 from a member of the task. Error
+// codes are negative.
 int kos_task_slay(kos_task_t task, uint32_t timeout_us);
 
 // Wait for a thread of the caller's task, or one the caller created, with a relative

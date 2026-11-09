@@ -950,9 +950,8 @@ config KICKOS_MIN_STACK_SIZE
 	default 896 if ARCH_ARMV6M
 	default 960 if ARCH_ARMV7M
 	default 1024 if ARCH_RXV3
-	# Above one core the PREEMPT zone alone is 960 (lx6_trap_stack.h).
-	default 960 if ARCH_LX6 && KICKOS_KERNEL_CORES > 1
-	default 896 if ARCH_LX6
+	default 1088 if ARCH_LX6 && KICKOS_KERNEL_CORES > 1
+	default 1024 if ARCH_LX6
 	default 1024
 	help
 	  The floor for a caller-provided stack: the deepest descent the arch prices on a
@@ -1093,6 +1092,18 @@ config KICKOS_BENCH_SCHED
 	  brackets each pass's switch half, and times the ring deliveries, for the
 	  scheduler's report. Those counters sit on the switch and syscall paths, so
 	  every other figure the bench prints is taken with this off.
+
+config KICKOS_BENCH_WALK_SLOTS
+	int "Thread slots the bench's owner-death and lost-mapping rows fill"
+	depends on KICKOS_BENCH
+	range 0 254
+	default 0
+	help
+	  The bench app's THREADS budget floor for its two walks under the kernel lock
+	  that grow with the waiters: main, a holder and a waiter in every other slot.
+	  Zero builds neither the rows nor their kernel storage, which a board whose
+	  images leave no RAM for either needs. Each slot is a default user stack in
+	  the arena, so the largest value a board takes is what its arena backs.
 
 config KICKOS_SCHED_PERIODIC_TICK
 	bool "Force a classic periodic scheduler tick"

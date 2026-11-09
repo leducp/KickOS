@@ -14,7 +14,6 @@
 #include <kickos/amp.h>
 #include <kickos/sys.h>
 
-#define AMPPING_ROUNDS 4
 #define AMPPING_CALL_US (500u * 1000u)
 #define AMPPING_SETTLE_NS (20ull * 1000ull * 1000ull)
 #define AMPPING_TRIES 40

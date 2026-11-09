@@ -27,14 +27,8 @@ namespace
     // timing, not the death.
     constexpr uint32_t SLAY_TIMEOUT_US = 5000000u;
 
-    __attribute__((noreturn)) void park_forever(void)
-    {
-        static kos_sem_t idle = KOS_SEM_INIT(0);
-        while (true)
-        {
-            (void)kos_sem_wait(&idle, KOS_TIMEOUT_NONE);
-        }
-    }
+    // The park arm's window in which nothing may follow its last line.
+    constexpr uint64_t QUIET_NS = 2000000000ull;
 
     void print_rc(char const* what, int rc)
     {
@@ -75,7 +69,7 @@ int main(int, char**)
     if (ep_rc != 0)
     {
         print_rc("FAIL endpoint_create", ep_rc);
-        park_forever();
+        return 1;
     }
 
     // The driver is a task of its own: the console's death is its task's end, and main's task
@@ -86,7 +80,7 @@ int main(int, char**)
     if (find_rc != 0)
     {
         print_rc("FAIL program_find", find_rc);
-        park_forever();
+        return 1;
     }
     kos_cap_grant const caps[1] = {{ep, KOS_CAP_WAIT | KOS_CAP_TRANSFER}};
     kos_task_params params = {};
@@ -94,12 +88,12 @@ int main(int, char**)
     params.caps = caps;
     params.cap_count = 1;
     kos_task_t drv_task = KOS_TASK_NONE;
-    int const task_rc = kos_task_create(prog, &params, &drv_task);
+    int const task_rc = kos_task_create(prog, &params, 0, &drv_task);
     (void)kos_handle_close(prog);
     if (task_rc != 0)
     {
         print_rc("FAIL task_create", task_rc);
-        park_forever();
+        return 1;
     }
 
     // Main's own WAIT and HANDOUT must go, or the endpoint still receives, or may again, once
@@ -148,13 +142,13 @@ int main(int, char**)
     kos::print("[reclaimwit] line INTACT, sentinel included; a short tail is a drain that\n");
     kos::print("[reclaimwit] did not complete before arch_shutdown stopped the core.\n");
     kos::print("[reclaimwit] DRAINTAIL 0123456789abcdef0123456789abcdef <<<DRAIN-END>>>\n");
+#else
+    kos::print("[reclaimwit] park arm: nothing further is printed, then main returns its verdict\n");
+    kos::sleep_ns(QUIET_NS);
+#endif
     if (ok)
     {
         return 0;
     }
     return 1;
-#else
-    kos::print("[reclaimwit] park arm: the system stays up, nothing further is printed\n");
-    park_forever();
-#endif
 }

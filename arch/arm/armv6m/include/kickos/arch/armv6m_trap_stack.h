@@ -13,15 +13,16 @@
  * bound is on the room REMAINING below the PSP. nrf51 has no MPU, so nothing refuses the
  * hardware frame there either.
  *
- * Four classes, separated by WHICH STACK they land on:
+ * The classes, separated by WHICH STACK they land on:
  *   PENDSV  the switcher's push on the interrupted thread's stack. PendSV_Handler runs in
  *           HANDLER mode, where ARMv6-M forces SP_main (ARMv6-M ARM B1.4.1: the mode is the
  *           selector and CONTROL.SPSEL is RAZ/WI in handler mode), so its kernel-descent
- *           term is 0 by handler mode rather than by measurement.
+ *           term is 0 here and MSP measures it.
  *   SVC     the syscall trap's writes on the interrupted thread's stack.
  *   SVCK    the syscall dispatch on the caller's kernel block, svc_trampoline having
  *           relocated SP to ctx.kernel_sp before it calls anything.
  *   EXIT    the death path, below.
+ *   MSP     the main stack, below: boot and every exception nested on it.
  *
  * tests/static/check_trap_redzone.sh re-measures the descent figures and fails when a worst
  * case exceeds what the class reserves. The measured half and the structural half stay
@@ -91,14 +92,15 @@
      _PENDSV   0  handler mode uses SP_main.
      _SVC      0  svc_trampoline moves SP to ctx.kernel_sp before it calls anything, so the
                   whole dispatch tree is measured as _SVCK.
-     _SVCK   808  528 measured at the deepest preset, a spawn staging KICKOS_MAX_SPAWN_GRANTS 9
-                  grants and seating its windows (the others read 520, the exit path below).
-                  arch_armv6m.cc refuses more than 9 grants.
+     _SVCK   808  616 measured on microbit and picopi, a task create cancelled at its wait:
+                  syscall_dispatch[56] -> task_create_call[152] -> create_wait_death[56]
+                  -> exit_current[48] -> cap_teardown[40] -> ... -> __aeabi_ldivmod[96].
+                  A spawn stages KICKOS_MAX_SPAWN_GRANTS 9 grants; arch_armv6m.cc refuses more.
 
    THE PANIC REPORTER IS NOT ON THIS CHAIN: kpanic leaves this stack before it prints
    (kickos_panic_stack_enter, switch.S).
 
-   808 IS ENFORCED OVER THE 528 ON PURPOSE, as headroom a future change is measured against
+   808 IS ENFORCED OVER THE 616 ON PURPOSE, as headroom a future change is measured against
    rather than slack to spend.
 
    On arm-none-eabi the compiler's reported frame is the prologue push plus the sub, the
@@ -182,6 +184,20 @@
 #define KICKOS_ARMV6M_PANIC_FRAME 32
 #define KICKOS_ARMV6M_PANIC_DEPTH 320
 
+/* THE MAIN STACK, which the image links as _kernel_stack_size below _estack. Boot runs on it in
+ * thread mode with device lines open, sched::start leaves boot's frames on it, and every
+ * exception then nests below them, one per priority level (trap_redzone_roots.txt derives the
+ * levels). DEPTH is boot's deepest chain plus the deepest root of each level: 2056 on picopi,
+ * 1888 on picopi-flat, 1504 on microbit. check_trap_redzone.sh compares FRAME plus the
+ * measurement against the stack each image links, so microbit's 2 KiB holds its own 1620 and
+ * not this figure.
+ *
+ * FRAME: three exception entries stacked on the MSP, one per level above boot, each the frame
+ * of 32 plus the STKALIGN pad of 4, and the 8 bytes PendSV and the SVC fastpath push below
+ * their entry before a call. */
+#define KICKOS_ARMV6M_MSP_FRAME 116
+#define KICKOS_ARMV6M_MSP_DEPTH 2560
+
 /*
  * The trap classes tests/static/check_trap_redzone.sh measures against the figures above,
  * one line each; tests/static/trap_redzone_roots.txt says what each option means and roots
@@ -195,6 +211,7 @@
  * class EXITK  frame=KICKOS_ARMV6M_TRAP_NEST_EXIT depth=KICKOS_ARMV6M_TRAP_KERNEL_DEPTH_EXITK stack=kernel
  * class SVCK   frame=KICKOS_ARMV6M_TRAP_NEST_SVCK depth=KICKOS_ARMV6M_TRAP_KERNEL_DEPTH_SVCK stack=kernel
  * class PANIC  frame=KICKOS_ARMV6M_PANIC_FRAME depth=KICKOS_ARMV6M_PANIC_DEPTH stack=panic
+ * class MSP    frame=KICKOS_ARMV6M_MSP_FRAME depth=KICKOS_ARMV6M_MSP_DEPTH stack=main
  */
 
 #endif /* KICKOS_ARCH_ARMV6M_TRAP_STACK_H */

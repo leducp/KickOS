@@ -19,16 +19,20 @@
 namespace
 {
     constexpr uint64_t BLINK_NS = 200000000ull; // 0.2 s per edge -> ~2.5 Hz
+    constexpr int EDGES = 50; // 10 s, ending with the LED off
+
+    kos::Semaphore g_done;
 
     void blinker(void*)
     {
         bool on = false;
-        while (true)
+        for (int edge = 0; edge < EDGES; edge++)
         {
             on = not on;
             kos_kernel_diag_led_set(on);
             kos_sleep_ns(BLINK_NS);
         }
+        g_done.post();
     }
 }
 
@@ -38,10 +42,7 @@ int main(int, char**)
 
     kos::thread::create(blinker, nullptr, "blink", 10);
 
-    // Main parks so the blinker owns the CPU; blocking here proves the switch.
-    static kos_sem_t idle = KOS_SEM_INIT(0);
-    while (true)
-    {
-        kos_sem_wait(&idle, KOS_TIMEOUT_NONE);
-    }
+    // Main blocks so the blinker owns the CPU, which proves the switch.
+    (void)g_done.wait();
+    return 0;
 }

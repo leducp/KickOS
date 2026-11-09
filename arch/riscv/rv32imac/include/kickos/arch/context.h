@@ -12,6 +12,9 @@
 #ifndef KICKOS_ARCH_CONTEXT_H
 #define KICKOS_ARCH_CONTEXT_H
 
+// arch_switch pends the switcher exception, which installs the incoming context.
+#define KICKOS_ARCH_SWITCH_LANDS_LATER 1
+
 // RISC-V TLS is variant 2: tp IS the block start and the first thread_local sits AT it, so
 // the ABI reserves nothing below the thread pointer.
 #define KICKOS_ARCH_TLS_TCB 0

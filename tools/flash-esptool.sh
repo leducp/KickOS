@@ -10,7 +10,12 @@ flash_resolve "$@"
 esptool=esptool; have esptool || esptool=esptool.py
 have "$esptool" || die "esptool not on PATH: activate the esp-idf env"
 [ -e "$FL_APPBIN" ] || die "no $FL_APPBIN (the esptool image); rebuild with the esp-idf env active"
-off=0x0; [ "$FL_CHIP" = esp32 ] && off=0x1000     # C-series ROM-boots @0; esp32 @0x1000
+off=0x0     # C-series ROM-boots at 0
+if [ "$FL_CHIP" = esp32 ]; then
+    nm=xtensa-esp32-elf-nm; have "$nm" || nm=nm
+    off=$(python3 -I "$FL_ROOT/tools/esp-image.py" --offset "$nm" "$FL_ELF") \
+        || die "no flash offset in $FL_ELF"
+fi
 args=(--chip "$FL_CHIP")
 if p=$(pick_port); then
     args+=(--port "$p")

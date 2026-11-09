@@ -10,6 +10,7 @@
 #   tools/bench/bench.sh rx72m
 #   tools/bench/bench.sh esp32c6-wroom
 #   tools/bench/bench.sh esp32-wroom
+#   tools/bench/bench.sh blackpill     [jlink-sn]
 #
 # THE SERIAL ARGUMENT IS OPTIONAL and exists only to override: with none, a board whose
 # flasher needs one has it read off the bus here. Serials are never quoted from a note,
@@ -18,7 +19,7 @@
 # answer without flashing anything.
 #
 # REMOTE MODE. Set BENCH_HOST and the build happens here, the flashing and capturing
-# happen there:
+# happen there. BENCH_HOST unset or set empty is this box:
 #
 #   BENCH_HOST=<bench-host> BENCH_PORT=<port> TAG=<tag> tools/bench/bench.sh xmc4800-relax <sn>
 #
@@ -84,10 +85,8 @@ fi
 # readlink, because .session/ carries a SYMLINK to this script for muscle memory: without
 # it $0's directory is .session/ and the sibling scripts below are not there.
 HERE=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
-# TREE, not a hardcoded main repo. A caller working in a git worktree would otherwise build
-# and flash the MAIN tree and read the result as its own: a green that means nothing, which
-# is worse than a failure. The rig assets stay where rig.conf points either way; only the
-# tree under build/ and the sources move.
+# TREE defaults to the checkout this script lives in, so a run from a git worktree builds that
+# worktree and never another checkout. The rig assets stay where rig.conf points either way.
 . "$HERE/rig.sh"
 . "$HERE/bench-host.sh"
 . "$HERE/board-rows.sh"
@@ -95,14 +94,13 @@ HERE=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
 . "$HERE/banner.sh"
 rig_load "$(cd "$HERE/../.." && pwd)"
 rig_need RIG_SESSION "the session directory holding env.sh and receiving logs/"
-rig_need RIG_TREE "the tree to build when the caller sets no TREE"
 SESSION="$RIG_SESSION"
 [ -f "$SESSION/env.sh" ] || { echo "REFUSING: no $SESSION/env.sh: the cross toolchains are not on the default PATH and the build would fail as a missing compiler" >&2; exit 2; }
 source "$SESSION/env.sh" >/dev/null 2>&1
-TREE="${TREE:-$RIG_TREE}"
+TREE="${TREE:-$(cd "$HERE/../.." && pwd)}"
 [ -e "$TREE/CMakePresets.json" ] || { echo "REFUSING: $TREE is not a KickOS tree" >&2; exit 2; }
 cd "$TREE" || exit 2
-echo "=== tree $TREE"
+echo "=== tree $TREE at $(git -C "$TREE" describe --dirty --always 2>/dev/null || echo nogit)"
 
 TAG="${TAG:-m475}"
 BOARD="${1:?usage: bench.sh <board> [jlink-sn]}"
@@ -429,11 +427,11 @@ judge() {
 # --- boards here ---------------------------------------------------------------
 if [ -z "${BENCH_HOST:-}" ]; then
   # Selecting the mode is BENCH_HOST's job and not the rig config's: a key must not move a
-  # flashing run from one machine to another.
-  if [ -n "${RIG_BENCH_HOST:-}" ]; then
+  # flashing run from one machine to another. BENCH_HOST set empty asks for this box by name.
+  if [ -z "${BENCH_HOST+set}" ] && [ -n "${RIG_BENCH_HOST:-}" ]; then
     echo "NOTE: BENCH_HOST is unset, so this run flashes on THIS BOX, while $RIG_CONF"
-    echo "  names $RIG_BENCH_HOST as the bench. tools/bench/bench-present.sh says where"
-    echo "  the boards are."
+    echo "  names $RIG_BENCH_HOST as the bench. BENCH_HOST= says this box on purpose;"
+    echo "  tools/bench/bench-present.sh says where the boards are."
   fi
   # KICKOS_RIG is passed explicitly rather than left to the capture script's own
   # discovery: TREE may be a worktree, which has no .session/ to discover.
@@ -508,8 +506,8 @@ rsync -a -s -e "$RSH" "${IMGS[@]}" "$BENCH_HOST:$RRUN/" || { echo "REFUSING: cou
 #
 # EVERY argument is non-empty, and "-" carries "none". ssh joins argv into one string and
 # the remote shell re-splits it, so an EMPTY argument does not arrive at all and every
-# later positional shifts up one. SN is empty on four of the six boards, so passing it raw
-# would hand the capture script a shifted argument list on exactly those boards.
+# later positional shifts up one. SN is empty on the boards with no probe serial, so passing
+# it raw would hand the capture script a shifted argument list on exactly those boards.
 #
 # AND `bash -s --` DOES NOT REACH THE SPLIT, ONLY THE PARSE: the bench host's zsh parses the
 # joined command string before any `bash` in it runs. printf %q is what survives that parse,
@@ -573,12 +571,13 @@ RC=${PIPESTATUS[0]}
 RBYTES=$(sed -n 's/^bytes: *//p' "$ROUT" | head -1)
 rm -f "$ROUT"
 FETCHED=0
-rm -f "$LOG.times"
+rm -f "$LOG.times" "$LOG.bus"
 if rsync -a -s -e "$RSH" "$BENCH_HOST:$RLOG" "$LOG" 2>/dev/null; then
   FETCHED=1
   LBYTES=$(wc -c < "$LOG")
 fi
 rsync -a -s -e "$RSH" "$BENCH_HOST:$RLOG.times" "$LOG.times" 2>/dev/null || true
+rsync -a -s -e "$RSH" "$BENCH_HOST:$RLOG.bus" "$LOG.bus" 2>/dev/null || true
 
 if [ "$RC" -ne 0 ]; then
   # The remote refusal stays the headline and keeps its exit code; whether the log survived

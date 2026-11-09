@@ -10,9 +10,11 @@
 namespace
 {
     constexpr uint64_t BEAT_NS = 400000000ull; // 0.4 s between hits
+    constexpr int ROUNDS = 10;
 
     kos::Semaphore g_ping(1); // ping serves first
     kos::Semaphore g_pong;
+    kos::Semaphore g_done;
 
     void say(char const* who, int n)
     {
@@ -23,41 +25,35 @@ namespace
 
     void ping(void*)
     {
-        int n = 0;
-        while (true)
+        for (int n = 1; n <= ROUNDS; n++)
         {
             g_ping.wait();
             kos::sleep_ns(BEAT_NS);
-            say("ping", ++n);
+            say("ping", n);
             g_pong.post();
         }
     }
     void pong(void*)
     {
-        int n = 0;
-        while (true)
+        for (int n = 1; n <= ROUNDS; n++)
         {
             g_pong.wait();
             kos::sleep_ns(BEAT_NS);
-            say("pong", ++n);
+            say("pong", n);
             g_ping.post();
         }
+        g_done.post();
     }
 }
 
 int main(int, char**)
 {
     kos::print("hello from KickOS userspace!\n");
-    kos::print("two threads play ping-pong; press Ctrl+C to stop.\n\n");
+    kos::print("two threads play ten rounds of ping-pong, then the run ends.\n\n");
 
     kos::thread::create(ping, nullptr, "ping", 10);
     kos::thread::create(pong, nullptr, "pong", 10);
 
-    // A daemon: returning from main would exit, so main parks on a semaphore nobody posts
-    // and the two players run until interrupted.
-    static kos::Semaphore idle;
-    while (true)
-    {
-        idle.wait();
-    }
+    (void)g_done.wait();
+    return 0;
 }

@@ -14,6 +14,8 @@ kickos_add_kseam(kickos_kseam_aspace
           KICKOS_HAVE_ASPACE=1)
 kickos_add_unit_test(NAME leave_space SOURCES leave_space.cc
   LIBRARIES kickos_kseam_aspace)
+kickos_add_unit_test(NAME reach_lost SOURCES reach_lost.cc
+  LIBRARIES kickos_kseam_aspace)
 
 # exit_current's reroot arm is guarded on KICKOS_KERNEL_CORES > 1, so the guard itself needs a
 # translation unit where the macro is 1.
@@ -27,10 +29,14 @@ kickos_add_unit_test(NAME libc_locks_space SOURCES libc_locks_space.cc
   LIBRARIES kickos_kseam_aspace_one)
 kickos_add_unit_test(NAME start_root_one SOURCES start_root_one.cc
   LIBRARIES kickos_kseam_aspace_one)
+kickos_add_unit_test(NAME reach_lost_one SOURCES reach_lost.cc
+  LIBRARIES kickos_kseam_aspace_one)
 target_link_options(leave_space PRIVATE -Wl,--gc-sections)
 target_link_options(leave_space_one PRIVATE -Wl,--gc-sections)
 target_link_options(libc_locks_space PRIVATE -Wl,--gc-sections)
 target_link_options(start_root_one PRIVATE -Wl,--gc-sections)
+target_link_options(reach_lost PRIVATE -Wl,--gc-sections)
+target_link_options(reach_lost_one PRIVATE -Wl,--gc-sections)
 
 # Outside the K-seam: the fixture defines domain_for itself, so the real domain.cc cannot link
 # beside it.

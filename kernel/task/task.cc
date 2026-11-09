@@ -33,6 +33,9 @@ namespace kickos
         constexpr uint8_t TASK_MARK_DEAD = KOS_TASK_DEAD;
         constexpr uint8_t TASK_MARK_ENDED = KOS_TASK_ENDED;
         constexpr uint8_t TASK_MARK_CONSOLE = 1u << 4; // serves the published console
+        // Its death waiters' lend is owed a recompute before the lock is released
+        // (death_leave_batch_end).
+        constexpr uint8_t TASK_MARK_LEND_OWED = 1u << 5;
         // Its ready endpoint was seated at create, so a watch keeps it and its readiness.
         constexpr uint8_t TASK_MARK_READY_SEATED = 1u << 6;
         // A declaration's record: an incarnation of it has been started. Kept across its
@@ -517,7 +520,25 @@ namespace kickos
         return t != nullptr and (t->marks & TASK_MARK_ENDED) != 0;
     }
 
-    bool task_sweep_done(Task* t, uint16_t gen)
+    void task_lend_owe(Task* t)
+    {
+        if (t != nullptr)
+        {
+            t->marks = static_cast<uint8_t>(t->marks | TASK_MARK_LEND_OWED);
+        }
+    }
+
+    bool task_lend_owed_take(Task* t)
+    {
+        if (t == nullptr or (t->marks & TASK_MARK_LEND_OWED) == 0)
+        {
+            return false;
+        }
+        t->marks = static_cast<uint8_t>(t->marks & ~TASK_MARK_LEND_OWED);
+        return true;
+    }
+
+    bool task_sweep_done(Task* t)
     {
         if (t == nullptr or t->sweeping == 0)
         {
@@ -527,7 +548,7 @@ namespace kickos
         // does not seat a slot again until it is back to zero.
         t->sweeping--;
         free_put(t);
-        return t->gen == gen and t->sweeping == 0 and t->refcount == 0;
+        return t->sweeping == 0 and t->refcount == 0;
     }
 
     uint16_t task_gen(Task const* t)
@@ -567,15 +588,32 @@ namespace kickos
         return 0;
     }
 
+    Task* task_decl_dying(size_t decl)
+    {
+        Task& t = decl_slot(decl);
+        if ((t.refcount != 0 or t.sweeping != 0) and task_ended(&t))
+        {
+            return &t;
+        }
+        return nullptr;
+    }
+
+#if KICKOS_KERNEL_CORES > 1
+    bool task_decl_retiring(size_t decl)
+    {
+        return retiring(decl_slot(decl));
+    }
+#endif
+
     int task_decl_state(size_t decl)
     {
         Task const& t = decl_slot(decl);
+        if (task_decl_dying(decl) != nullptr)
+        {
+            return -KOS_EAGAIN;
+        }
         if (t.refcount != 0 or t.sweeping != 0)
         {
-            if (task_ended(&t))
-            {
-                return -KOS_EAGAIN;
-            }
             return -KOS_EBUSY;
         }
         // An instance whose entry thread has not been seated yet holds the record at refcount 0.
@@ -892,6 +930,32 @@ namespace kickos
         {
             runs.unlink(n);
         }
+    }
+
+    ListNode* task_runs(Task const* t)
+    {
+        int const i = slot_of(t);
+        if (i < 0)
+        {
+            return nullptr;
+        }
+        return task_links()[i].cap_runs.head;
+    }
+
+    bool task_has_thread(Task const* t, Thread const* th)
+    {
+        ListNode const* const head = task_runs(t);
+        return head != nullptr and th != nullptr and head == task_run_first(th);
+    }
+
+    ListNode const* task_run_first(Thread const* th)
+    {
+        ListNode const* first = &th->reclaim;
+        while (first->prev != nullptr)
+        {
+            first = first->prev;
+        }
+        return first;
     }
 
     ListNode* task_members(Task const* t)

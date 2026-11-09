@@ -52,24 +52,32 @@ devices:
     ref: "Table 3.3-6 Peripheral Address Mapping and its Notice, p.72-73"
 
 memory:
+  # SRAM0's upper 128 KiB: the kernel's vectors and text. The low 64 KiB is the caches' pools.
   iram:
     base: 0x40080000
     size: 0x20000
     link: { region: IRAM, access: rx }
     ref: "Table 3.3-2 Embedded Memory Address Mapping, p.68"
-  # SRAM1's instruction alias up to the ROM's own data and stacks, which the ROM ELF places at
-  # data 0x3FFE_0000 to 0x3FFE_7E30, the alias of 0x400B_81D0 to 0x400B_FFFF.
-  iram1:
-    base: 0x400A0000
-    size: 0x18000
-    link: { region: IRAM1, access: rx }
-    ref: "Table 3.3-2 Embedded Memory Address Mapping, p.68, and 3.3.2.4 Internal SRAM 1, p.69"
+  # VAddr1 through the cache MMU, from its first page clear of on-chip memory (page 12 meets RTC
+  # FAST at 0x400C_0000) to its end: every task image's text, mapped from flash at boot.
+  flash_text:
+    base: 0x400D0000
+    size: 0x330000
+    link: { region: FLASHTEXT, access: rx }
+    ref: "Table 3.3-1 Address Mapping, p.66, and Table 4.3-9 Virtual Address for External Memory, p.83"
   dram:
     base: 0x3FFB0000
     size: 0x30000
     arena: true
     link: { region: DRAM, access: rw }
     ref: "Table 3.3-2 Embedded Memory Address Mapping, p.68"
+  # SRAM1's data alias above the ROM's data and both CPUs' boot stacks, which the ROM ELF places
+  # at 0x3FFE_0000 to 0x3FFE_7E30 (`__stack_app`): every task image's window and the boot stacks.
+  dram1:
+    base: 0x3FFE8000
+    size: 0x18000
+    link: { region: DRAM1, access: rw }
+    ref: "Table 3.3-2 Embedded Memory Address Mapping, p.68, and 3.3.2.4 Internal SRAM 1, p.69"
 
 # Pins are GPIOn. A selector other than `gpio` is the IO MUX function its MCU_SEL selects.
 pins:

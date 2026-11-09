@@ -6,6 +6,7 @@
 // The one translation unit that reserves: st_ram_seat.
 #define KICKOS_SELFTEST_RAM_SEAT 1
 #include "selftest.h"
+#include <unistd.h>
 
 #include <kickos/config/system.h> // KICKOS_BUDGET_IRQ_BINDINGS
 #include <kickos/config/priorities.h> // KICKOS_PRIO_MIN
@@ -456,9 +457,6 @@ namespace selftest
     {
         RamNode* g_ram_first = nullptr;
         RamNode* g_ram_last = nullptr;
-#if not KICKOS_HAVE_ASPACE and not KICKOS_SELFTEST_FIT
-        size_t g_granule = 0;
-#endif
 
         size_t ram_align(size_t bytes)
         {
@@ -524,7 +522,7 @@ namespace selftest
 #elif KICKOS_SELFTEST_FIT
         return ST_ARENA_GRANULE;
 #else
-        return g_granule;
+        return static_cast<size_t>(sysconf(_SC_PAGESIZE));
 #endif
     }
 
@@ -721,16 +719,6 @@ namespace selftest
             return false;
         }
 #endif
-#if not KICKOS_HAVE_ASPACE and not KICKOS_SELFTEST_FIT
-        void* const p = kos_ram_alloc(1);
-        void* const q = kos_ram_alloc(1);
-        if (p == nullptr or q == nullptr or q <= p)
-        {
-            tap::bail_out("the arena spares no two blocks to measure its granule");
-            return false;
-        }
-        g_granule = static_cast<size_t>(static_cast<char*>(q) - static_cast<char*>(p));
-#endif
 #if KICKOS_HAVE_ASPACE
         uintptr_t const lo = seat_granule();
         if (lo == 0 or not reserve_asks())
@@ -762,16 +750,7 @@ namespace selftest
     {
         int create_waiting(kos_program_t prog, kos_task_params const& p, kos_task_t* t)
         {
-            uint64_t const deadline = kos_clock_now() + 1000ull * STALL_TOLERANT_US;
-            while (true)
-            {
-                int const rc = kos_task_create(prog, &p, t);
-                if (rc != -KOS_EAGAIN or kos_clock_now() > deadline)
-                {
-                    return rc;
-                }
-                kos_sleep_ns(100000ull);
-            }
+            return kos_task_create(prog, &p, STALL_TOLERANT_US, t);
         }
     }
 

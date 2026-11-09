@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+
+  ==============================================
+   KickOS 0.5.1  -  microkernel RTOS
+  ==============================================
+   board   esp32-wroom
+   arch    lx6
+   cpu     lx6
+   mpu     off
+   sched   tickless
+
+[fault] executing a divide by zero (expect a fault dump)
+
+=== XTENSA EXCEPTION (integer divide by zero) ===
+  EXCCAUSE=0x6 EXCVADDR=0x0
+  EPC1=0x400d2f1c PS=0x60020

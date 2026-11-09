@@ -22,10 +22,7 @@ PRESET="$3"
 [ -d "$SRC" ] || fail "source dir does not exist: $SRC"
 command -v "$CMAKE" >/dev/null 2>&1 || [ -x "$CMAKE" ] || fail "cmake not executable: $CMAKE"
 
-KOS_TRASH_DIR="$(mktemp -d "/var/tmp/kickos-amp-fresh-$PRESET.XXXXXX")" \
-    || fail "mktemp -d under /var/tmp failed"
-TMP="$KOS_TRASH_DIR"
-kos_trap
+scratch_dir "/var/tmp/kickos-amp-fresh-$PRESET.XXXXXX"
 
 "$CMAKE" -S "$SRC" -B "$TMP/b" --preset "$PRESET" > "$TMP/cfg.log" 2>&1 \
     || { tail -n 40 "$TMP/cfg.log" >&2; fail "$PRESET does not configure in a fresh tree"; }

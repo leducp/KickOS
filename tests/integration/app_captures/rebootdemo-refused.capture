@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# Written by hand from user/apps/common/rebootdemo/main.cc, on an AMP node that does not own
+# the reset.
+
+  ==============================================
+   KickOS 0.5.1  -  microkernel RTOS
+  ==============================================
+   board   pizero2350
+   arch    armv7m
+   cpu     cortex-m33
+   mpu     enforce
+   sched   tickless
+   build   2026-11-05 12:00:00 +0100
+   app     Nov  5 2026 12:00:01 +0100
+   commit  70a1a9b4
+   heap    64 KiB available
+   kstack  1008 B x 9 = 9072 B
+
+[rebootdemo] KickOS reboot-to-bootloader demo
+[rebootdemo] handing the chip to its bootloader in 3s
+[rebootdemo] reboot declined: rc=-1
+[rebootdemo] reset declined: rc=-1

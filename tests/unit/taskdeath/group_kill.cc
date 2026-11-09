@@ -533,11 +533,7 @@ namespace kickos
             Thread* const c = seat_pool(SLOT_DYING, PRIO_MID);
             Thread* const waiter = seat_pool(SLOT_OTHER, PRIO_LOW);
             join_task(c, group);
-            policy_on_remove(waiter);
-            testfix::seat_blocked(waiter);
-            waiter->wait_kind = WAIT_TASK_EMPTY;
-            waiter->wait_obj = group;
-            waiter->wait_result = WAIT_RESULT_POISON;
+            park_death_waiter(waiter, group);
             kernel().current(kickos_kernel_core()) = c;
 
             run_exit(0);
@@ -558,11 +554,7 @@ namespace kickos
             Thread* const waiter = seat_pool(SLOT_OTHER, PRIO_LOW);
             join_task(c, group);
             join_task(peer, group);
-            policy_on_remove(waiter);
-            testfix::seat_blocked(waiter);
-            waiter->wait_kind = WAIT_TASK_EMPTY;
-            waiter->wait_obj = group;
-            waiter->wait_result = WAIT_RESULT_POISON;
+            park_death_waiter(waiter, group);
             kernel().current(kickos_kernel_core()) = c;
 
             run_exit(0);
@@ -580,11 +572,7 @@ namespace kickos
             Thread* const c = seat_pool(SLOT_DYING, PRIO_MID);
             Thread* const waiter = seat_pool(SLOT_OTHER, PRIO_LOW);
             join_task(c, group);
-            policy_on_remove(waiter);
-            testfix::seat_blocked(waiter);
-            waiter->wait_kind = WAIT_TASK_EMPTY;
-            waiter->wait_obj = other;
-            waiter->wait_result = WAIT_RESULT_POISON;
+            park_death_waiter(waiter, other);
             kernel().current(kickos_kernel_core()) = c;
 
             run_exit(0);

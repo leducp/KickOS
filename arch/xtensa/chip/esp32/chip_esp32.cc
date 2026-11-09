@@ -32,6 +32,8 @@
 #include "regs/dport.h"
 #include "regs/gpio.h"
 #include "regs/system.h"
+#include "regs/cache.h"
+#include "flash_mmu.h"
 
 namespace kickos
 {
@@ -45,6 +47,8 @@ namespace irq = kickos::esp32::irq;
 extern "C"
 {
     void kickos_lx6_init(void);
+    // The ATOMCTL that core read back at its seat; meaningful once the core has arrived.
+    uint32_t kickos_lx6_atomctl_read(uint32_t core);
 #if KICKOS_NUM_CORES > 1
     void _kickos_lx6_core1_entry(void);
     void kfault_terminate(void) __attribute__((noreturn));
@@ -57,6 +61,9 @@ extern "C"
     void kickos_lx6_bind_dev_int(int cpu_int, int line, int core);
 
     extern uint32_t _sidata, _sdata, _edata, _sbss, _ebss;
+    extern unsigned char __kickos_esp32_flash_text_start[];
+    extern unsigned char __kickos_esp32_flash_text_end[];
+    extern unsigned char __kickos_esp32_flash_text_load[];
 
     // The ROM loader leaves the CPU on the 40 MHz crystal; clock_init_240mhz rewrites this.
     uint32_t SystemCoreClock = 40000000u;
@@ -64,6 +71,69 @@ extern "C"
 
 namespace
 {
+    void cache_flush(uintptr_t ctrl)
+    {
+        r32(ctrl) &= ~reg::cache::FLUSH_ENA;
+        r32(ctrl) |= reg::cache::FLUSH_ENA;
+        while ((r32(ctrl) & reg::cache::FLUSH_DONE) == 0u)
+        {
+        }
+        r32(ctrl) &= ~reg::cache::FLUSH_ENA;
+    }
+
+    void mmu_write(uint32_t entry, uint32_t value)
+    {
+        r32(reg::cache::MMU_TABLE + 4u * entry) = value;
+    }
+
+    // Every image's text, mapped from flash on each core that runs threads. The ROM hands over
+    // with the PRO cache ON, having loaded the image through it, so it is closed before its table
+    // is rewritten. Runs once, with one core up and nothing yet run from flash.
+    void flash_text_map()
+    {
+        namespace c = reg::cache;
+        namespace m = kickos::esp32::flash_mmu;
+        uint32_t const modes = c::SINGLE_IRAM_ENA | c::DRAM_SPLIT | c::DRAM_HL;
+        r32(c::PRO_CTRL) &= ~c::ENABLE;
+        r32(c::APP_CTRL) &= ~c::ENABLE;
+        cache_flush(c::PRO_CTRL);
+        r32(c::PRO_CTRL) &= ~modes;
+        r32(c::APP_CTRL) &= ~modes;
+
+        for (uint32_t e = 0; e < m::APP_FIRST; e++)
+        {
+            mmu_write(e, m::INVALID);
+        }
+        // MMU_IA_CLR must be set while the APP half is written and cleared after; a pulse of it
+        // alone invalidates a core's whole table. The TRM leaves the bit undescribed; the
+        // sequence is from bootloader_support/src/esp32/bootloader_esp32.c.
+        r32(c::APP_CTRL1) |= c::MMU_IA_CLR;
+        for (uint32_t e = m::APP_FIRST; e < m::ENTRIES; e++)
+        {
+            mmu_write(e, m::INVALID);
+        }
+        r32(c::APP_CTRL1) &= ~c::MMU_IA_CLR;
+
+        uint32_t const start = reinterpret_cast<uint32_t>(__kickos_esp32_flash_text_start);
+        uint32_t const load = reinterpret_cast<uint32_t>(__kickos_esp32_flash_text_load);
+        uint32_t const end = reinterpret_cast<uint32_t>(__kickos_esp32_flash_text_end);
+        if (not m::map_text(KICKOS_NUM_CORES, start, end, load, mmu_write))
+        {
+            // The link ASSERT on the span's end makes this unreachable.
+            while (true)
+            {
+            }
+        }
+
+        r32(c::MUX_MODE) = c::MUX_MODE_SPLIT;
+        r32(c::PRO_CTRL1) = c::MASK_ALL & ~c::MASK_IRAM0;
+#if KICKOS_NUM_CORES > 1
+        r32(c::APP_CTRL1) = c::MASK_ALL & ~c::MASK_IRAM0;
+#endif
+        r32(c::SPI0_CACHE_FCTRL) |= c::SPI0_CACHE_REQ_EN;
+        r32(c::PRO_CTRL) |= c::ENABLE;
+    }
+
 #if KICKOS_NUM_CORES > 1
     // Sized far over: an expiry means the mechanism failed, not that a core was slow.
     constexpr uint64_t ESP32_ARRIVAL_WAIT_NS = 1000ull * 1000ull * 1000ull;
@@ -588,6 +658,10 @@ uint32_t kickos_esp32_release_secondaries(void)
 {
     uint32_t const entry = reinterpret_cast<uint32_t>(&_kickos_lx6_core1_entry);
 
+    // APP_CPU's cache before APP_CPU runs: every thread it takes may fetch task text from flash.
+    cache_flush(reg::cache::APP_CTRL);
+    r32(reg::cache::APP_CTRL) |= reg::cache::ENABLE;
+
     // 1. The boot address the ROM jumps to (Register 12.8).
     r32(reg::dport::APPCPU_CTRL_D) = entry;
     // 2 and 3. The software stall, both halves (Registers 9.1 and 9.34).
@@ -636,6 +710,11 @@ void arch_init(void)
     // After arrival: the check needs every peer's route live and its mask open.
     kickos_doorbell_boot_check();
 #endif
+    for (uint32_t core = 0; core < KICKOS_NUM_CORES; core++)
+    {
+        kickos::kprintf("# atomctl: core %x 0x%x\n", static_cast<unsigned>(core),
+                        static_cast<unsigned>(kickos_lx6_atomctl_read(core)));
+    }
 }
 
 // The KICKOS_BENCH switch.S timestamps stay on raw CCOUNT: the top-level CMakeLists refuses
@@ -723,6 +802,7 @@ void Reset_Handler(void)
     {
         *b = 0;
     }
+    flash_text_map();
     kickos_crt_images_data();
     kickos_crt_tail();
 }

@@ -18,11 +18,13 @@
 
 namespace kickos::rx::reg::icu
 {
-    // IER byte holding vector 30 (CMWI0): ICU.IER03, IEN6 (UM sec.15.2.2).
+    // IER byte holding vectors 30 (CMWI0) and 31 (CMWI1): ICU.IER03 (UM sec.15.2.2).
     constexpr uintptr_t IER03 = mmap::ICU + 0x203;
     constexpr uint8_t IER03_CMWI0 = 1u << 6; // IER03.IEN6 = vector 30 (CMWI0)
-    // IPR for CMWI0 (UM interrupt table).
+    constexpr uint8_t IER03_CMWI1 = 1u << 7; // IER03.IEN7 = vector 31 (CMWI1)
+    // IPRs for CMWI0 and CMWI1 (UM interrupt table).
     constexpr uintptr_t IPR006 = mmap::ICU + 0x306;
+    constexpr uintptr_t IPR007 = mmap::ICU + 0x307;
 
     // --- Group interrupts (UM sec.15.2.23 p.501, sec.15.2.24 p.503, Table 15.7 p.530) ---
     // Five groups on this part, all LEVEL-detected, each collapsing up to 32 sources onto

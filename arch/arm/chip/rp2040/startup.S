@@ -18,12 +18,14 @@
     .section .isr_vector, "a"
     .align 2
     .global g_isr_vector
+    .type g_isr_vector, %object
 g_isr_vector:
     KICKOS_CORE_VECTORS_V6M
 
     .rept KICKOS_MAX_IRQ
     .word kickos_arm_default_irq
     .endr
+    .size g_isr_vector, . - g_isr_vector
 
     .text
     .thumb_func

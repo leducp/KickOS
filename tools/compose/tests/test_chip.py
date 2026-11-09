@@ -175,6 +175,34 @@ class Generated(unittest.TestCase):
                      "set(KICKOS_QEMU_GICV3_MACHINE \"virt,gic-version=3\")"):
             self.assertIn("\n%s\n" % line, text)
 
+    def test_board_flash_reaches_esptool_layout_and_cmake(self):
+        self.write(self.path, SMALL.replace("protection: { unit: pmsav7, granule: 32, covers_devices: true, "
+                                            "memory_type: true }",
+                                            "protection: { unit: none, privilege: false }\n"
+                                            "esptool_image: [--flash-mode, dio]")
+                   .replace(SMALL_APERTURES, ""))
+        board = os.path.join(self.platform, "small-board.yaml")
+        self.write(board, "version: 1\nboard: small-board\nchip: small\nconsole: { semihosting: true }\n"
+                          "flash: { size: 0x400000, ref: \"datasheet\" }\n")
+        outputs = chip.generate(self.view(board))
+        self.assertIn("\nset(KICKOS_CHIP_ESPTOOL_IMAGE \"--flash-mode;dio;--flash-size;4MB\")\n",
+                      outputs["chip.cmake"])
+        self.assertNotIn("KICKOS_BOARD_FLASH_SIZE", outputs["chip.cmake"])
+        self.assertIn("\n#define KICKOS_LAYOUT_BOARD_FLASH_SIZE 0x400000 /* datasheet */\n",
+                      outputs["chip_layout.h"])
+
+    def test_board_flash_esptool_refuses_what_it_does_not_take(self):
+        self.write(self.path, SMALL.replace("protection: { unit: pmsav7, granule: 32, covers_devices: true, "
+                                            "memory_type: true }",
+                                            "protection: { unit: none, privilege: false }\n"
+                                            "esptool_image: [--flash-mode, dio]")
+                   .replace(SMALL_APERTURES, ""))
+        board = os.path.join(self.platform, "small-board.yaml")
+        self.write(board, "version: 1\nboard: small-board\nchip: small\nconsole: { semihosting: true }\n"
+                          "flash: { size: 0x30000, ref: \"datasheet\" }\n")
+        with self.assertRaisesRegex(chip.Failure, "0x30000 is not one esptool takes"):
+            chip.generate(self.view(board))
+
     def test_tree_privilege(self):
         for name, privilege in (("nrf51", "OFF"), ("esp32", "OFF"), ("rp2040", "ON"), ("esp32c6", "ON"),
                                 ("xmc4800", "ON")):
@@ -222,7 +250,7 @@ class Generated(unittest.TestCase):
                 self.assertNotIn("KICKOS_CHIP_CPU", text, name)
 
     def test_tree_reserved_blocks(self):
-        for name, count, first in (("sim", 0, None), ("mps2", 0, None),
+        for name, count, first in (("sim", 0, None), ("mps2", 1, "0x40002000 0x1000"),
                                    ("xmc4800", 3, "0x4000C000 0x4000"),
                                    ("esp32c6", 14, "0x60091040 0xFC0"), ("rx72m", 7, "0x8C100 0x100")):
             path = os.path.join(TREE, "platform", name, "chip.yaml")
@@ -235,9 +263,9 @@ class Generated(unittest.TestCase):
 
     def test_tree_kernel_lines(self):
         for name, lines, doorbell in (
-                ("sim", "", ""), ("mps2", "", ""), ("stm32f411", "TIM2_IRQ=28", ""),
+                ("sim", "", ""), ("mps2", "DUALTIMER_IRQ=10", ""), ("stm32f411", "TIM2_IRQ=28", ""),
                 ("sam3x8e", "TC0_IRQ=27", ""),
-                ("rx72m", "CMTW_CMWI0=30;ICU_GROUPBL2=107;ICU_GROUPBL0=110;ICU_GROUPBL1=111;"
+                ("rx72m", "CMTW_CMWI0=30;CMTW_CMWI1=31;ICU_GROUPBL2=107;ICU_GROUPBL0=110;ICU_GROUPBL1=111;"
                           "ICU_GROUPAL0=112;ICU_GROUPAL1=113", ""),
                 ("rp2350", "", "SIO_IRQ_BELL=26"), ("virt_arm64", "TIMER_EL1_PHYS=30", ""),
                 ("imx8mp", "MU1_A_TO_A53=120", "")):

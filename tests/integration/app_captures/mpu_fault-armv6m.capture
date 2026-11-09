@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+# Composed: a picopi capture, with the access the app now announces and the kill record's PC at
+# that access as a picopi build of this tree places it.
+
+  ==============================================
+   KickOS 0.5.1  -  microkernel RTOS
+  ==============================================
+   board   picopi
+   arch    armv6m
+   cpu     cortex-m0plus
+   mpu     enforce
+   sched   tickless
+   build   2026-11-05 12:37:34 +0100
+   app     mpu_fault Nov  5 2026 12:19:06 +0100
+   commit  432524be2
+   heap    30 KiB available
+   kstack  896 B x 5 = 4480 B
+
+[domain] expect fault at 0x20019000 by the store at 0x10010d65
+[domain] A: writing my own region
+[domain] A: my region ok; writing domain B (expect fault)
+
+=== THREAD FAULT === thread 'domainA' killed, system continues
+  PC=0x10010d64

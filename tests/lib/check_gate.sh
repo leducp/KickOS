@@ -9,6 +9,8 @@
 #                       bound carries the firmware allowance, a kernel boot's is the image's
 #                       alone, each boot is charged on top of the ones before it, a TIMEOUT a
 #                       boot would reach is refused before it, and with none handed nothing is;
+#   scratch_dir         a subshell that registers the cleanup handler, as poll_image does, and
+#                       run_image under uefi-pe, leaves its parent's scratch directory in place;
 #   after               finds a line whole, carried within one with `part`, or split by a
 #                       foreign line, and refuses a literal ending in a digit, which a foreign
 #                       line ending in that digit completes, and one read off the end of a line
@@ -73,6 +75,17 @@ fi
 admits kernel $((2 * (20 + stop) + 1)) 20 20 >/dev/null \
     || bad "two kernel boots of 20s are refused under a TIMEOUT both fit"
 admits uefi-pe "" 400 >/dev/null || bad "a boot is refused where no TIMEOUT was handed"
+
+# --- scratch_dir ----------------------------------------------------------------------------
+printf '#!/bin/sh\necho "planted: up"\n' > "$TMP/emulator"
+chmod +x "$TMP/emulator"
+: > "$TMP/image"
+(
+    QEMU="$TMP/emulator"
+    QEMU_MACHINE=planted
+    poll_image "$TMP/image" "planted: up" >/dev/null
+) 2>/dev/null
+[ -d "$TMP" ] || fail "a subshell's poll_image removed this shell's scratch directory $TMP"
 
 # --- after and log_holds --------------------------------------------------------------------
 CORES=4
@@ -217,6 +230,6 @@ if ( image_raw_set "$TMP/app.map" "$TMP/raws" ) >/dev/null 2>&1; then
 fi
 
 [ "$rc" -eq 0 ] || exit 1
-echo "PASS: boot_bound charges every boot to its TIMEOUT, and after, log_holds,
-  require_root_depth, require_drivers_up and image_raw_set read the planted inputs as the
-  witnesses need"
+echo "PASS: boot_bound charges every boot to its TIMEOUT, a subshell leaves its parent's scratch
+  directory, and after, log_holds, require_root_depth, require_drivers_up and image_raw_set read
+  the planted inputs as the witnesses need"

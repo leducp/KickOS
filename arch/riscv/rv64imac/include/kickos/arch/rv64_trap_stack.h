@@ -57,14 +57,14 @@
  * arch_rv64imac.cc asserts: the frame term of every class an interrupt can land under. */
 #define KICKOS_RV64_TRAP_NEST 1280
 
-/* The U-mode ecall and the U-mode fault on the block. 2064 on qemu-riscv64-benchsmp and
+/* The U-mode ecall and the U-mode fault on the block. 2176 on qemu-riscv64-benchsmp and
  * -benchsmp2, a task create seeding the child's tables:
- *   syscall_dispatch[160] -> task_create_call[208] -> spawn_locked[448] -> thread_create[144]
- *   -> task_for[32] -> domain_for[64] -> claim_slot[64] -> aspace_image_seed[144]
- *   -> arch_aspace_map[96] -> map_into[112]x4 -> kickos_frame_alloc[48] -> klock_enter
- *   -> ... -> arch_irq_unmask
- * 1856 on qemu-riscv64 and sv48. arch_rv64imac.cc refuses more than 9 grants. Reserved at 2304,
- * above the measurement. */
+ *   syscall_dispatch[176] -> task_create_call[256] -> spawn_locked[448] -> thread_create[144]
+ *   -> task_for[64] -> domain_for[64] -> claim_slot[80] -> aspace_image_seed[144]
+ *   -> arch_aspace_map[96] -> map_into[112]x4 -> kickos_frame_alloc[48] -> klock_enter[32]
+ *   -> ... -> arch_irq_unmask[16]
+ * 2048 on qemu-riscv64. arch_rv64imac.cc refuses more than 9 grants. Reserved at 2304, above
+ * the measurement. */
 #define KICKOS_RV64_TRAP_DEPTH_SYSK 2304
 
 /* An interrupt nested below arch_irq_window, the one place a system call opens interrupts on the
@@ -72,9 +72,9 @@
  * arch_rv64imac.cc asserts. */
 #define KICKOS_RV64_TRAP_WINDOW 1536
 
-/* The system call's descent to arch_irq_window, above SYSWIN's frame. 352 on
- * qemu-riscv64-bench, -benchsmp and -benchsmp2, 320 on qemu-riscv64, sv48 and smp:
- *   syscall_dispatch[144] -> presync_prepare[16] -> presync_run[192] -> arch_irq_window[0]
+/* The system call's descent to arch_irq_window, above SYSWIN's frame. 384 on
+ * qemu-riscv64-bench, -benchsmp and -benchsmp2, 336 on qemu-riscv64:
+ *   syscall_dispatch[160] -> frame_create_call[96] -> presync_run[80] -> arch_irq_window[0]
  * WINDOW + 1024 = 2560 against 4092 above the canary. */
 #define KICKOS_RV64_TRAP_DEPTH_SYSWIN 1024
 
@@ -103,6 +103,22 @@
 #define KICKOS_RV64_PANIC_FRAME 0
 #define KICKOS_RV64_PANIC_DEPTH 576
 
+/* THE BOOT STACKS, one KICKOS_RV64_HART_STACK_STRIDE slice of the boot reservation per hart,
+ * which virt_rv64.ld asserts holds both classes. DEPTH is the deepest root of each level the roots
+ * file declares, summed.
+ *
+ * MAIN, hart 0's boot, on which nothing nests: SIE stays clear to the first sret and an S-mode
+ * exception takes the trap stack. 1616 on the three multicore presets, kmain's idle_build
+ * creating idle's thread, 1424 on qemu-riscv64-bench and 1376 on qemu-riscv64.
+ *
+ * CORE, a secondary's park with the doorbell interrupt nested on it, under the interrupt's
+ * frame: 2016 on qemu-riscv64-benchsmp and -benchsmp2, 1920 on -smp, the hart's seating print
+ * and the unexpected-cause report each waking a console writer.
+ *
+ * Both are reserved at 3072. */
+#define KICKOS_RV64_MAIN_DEPTH 3072
+#define KICKOS_RV64_CORE_DEPTH 3072
+
 /*
  * The trap classes tests/static/check_trap_redzone.sh measures against the figures above,
  * one line each; tests/static/trap_redzone_roots.txt says what each option means and roots
@@ -117,6 +133,8 @@
  * class EXITKSW frame=KICKOS_RV64_TRAP_FRAME_NONE depth=KICKOS_RV64_TRAP_DEPTH_EXITKSW stack=kernel
  * class IDLE    frame=KICKOS_RV64_TRAP_NEST depth=KICKOS_RV64_TRAP_DEPTH_IDLE stack=idle
  * class PANIC   frame=KICKOS_RV64_PANIC_FRAME depth=KICKOS_RV64_PANIC_DEPTH stack=panic
+ * class MAIN    frame=KICKOS_RV64_TRAP_FRAME_NONE depth=KICKOS_RV64_MAIN_DEPTH stack=main
+ * class CORE    frame=KICKOS_RV64_TRAP_FRAME depth=KICKOS_RV64_CORE_DEPTH stack=main core=secondary
  */
 
 #endif
