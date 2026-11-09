@@ -6,8 +6,9 @@
 # that holds a capture to them (tools/bench/banner.sh identity_verdict):
 #   - the rows are kbanner's own: the same formats over the same version, board and app stamp,
 #     and a build time and commit the stamp writes from the values it gives the kernel's;
-#   - user/src/banner_identity.cc, compiled here with and without an app stamp, prints exactly the rows the verdict renders, and the stamps the route reads back
-#     out of that image are the ones it printed;
+#   - user/src/banner_identity.cc, compiled here with and without an app stamp and in either
+#     CRLF posture, prints exactly the rows the verdict renders, each newline as the posture
+#     sends it, and the stamps the route reads back out of that image are the ones it printed;
 #   - every row at its widest renders whole into BANNER_IDENTITY_MAX, the buffer a USB device
 #     console holds the rows in;
 #   - the app stamp kickos/app.h compiles names its image, so two images compiled in the same
@@ -105,6 +106,15 @@ render_main() {
             '    fwrite(out, 1, n, stdout);' '    return kickos_build_time[0] == 0;' '}'
     } > "$TMP/main$1.cc"
 }
+# <crlf 0|1>: each newline of stdin as that posture sends it.
+posture() {
+    if [ "$1" = 1 ]; then
+        sed 's/$/\r/'
+    else
+        cat
+    fi
+}
+for crlf in 0 1; do
 for app in 0 1; do
     render_main "$app"
     stamp=""
@@ -114,7 +124,7 @@ for app in 0 1; do
         stamp_obj="$TMP/stamp_usbcdcwit.o"
     fi
     bin="$TMP/render$app"
-    "$CXX" -std=c++17 -Iinclude -Iuser/include -Ilib/include \
+    "$CXX" -std=c++17 -Iinclude -Iuser/include -Ilib/include "-DKICKOS_CONSOLE_CRLF=$crlf" \
         -DKICKOS_LINKER_WEAK_UNDEF=1 '-DKICKOS_VERSION="0.5.1"' '-DKICKOS_BOARD_NAME="picopi"' \
         "$TMP/main$app.cc" "$RENDER" $stamp_obj -o "$bin" 2> "$TMP/cc.err" \
         || fail "the renderer does not build on this host: $(head -n 5 "$TMP/cc.err")"
@@ -128,9 +138,9 @@ for app in 0 1; do
             printf '%s\n' "$(identity_row "$DIAG" KDIAG_F_BANNER_APP "$stamp")"
         fi
         printf '%s\n' "$(identity_row "$DIAG" KDIAG_F_BANNER_COMMIT 0123abcd-dirty)"
-    } > "$TMP/want$app"
+    } | posture "$crlf" > "$TMP/want$app"
     cmp -s "$TMP/rows$app" "$TMP/want$app" \
-        || bad "app stamp $app: the image prints [$(cat "$TMP/rows$app")], the verdict renders [$(cat "$TMP/want$app")]"
+        || bad "app stamp $app, crlf $crlf: the image prints [$(od -c "$TMP/rows$app" | head -n 4)], the verdict renders [$(od -c "$TMP/want$app" | head -n 4)]"
     # What the route reads back out of the image is what the image printed.
     got=$(image_string "$TMP/render$app" kickos_build_time)
     [ "$got" = "$BUILT" ] || bad "the build stamp read out of the image is [$got], not [$BUILT]"
@@ -139,6 +149,7 @@ for app in 0 1; do
     elif [ -n "$stamp" ]; then
         bad "no app stamp is read out of an image that defines one"
     fi
+done
 done
 
 # --- the longest block fits the USB console's buffer ------------------------------------------
@@ -160,7 +171,8 @@ LONG_STAMP=$(stamp_of "$(widest i 45)")
         '    fwrite(out, 1, n, stdout);' '    if (n != sizeof(out) - 1u)' '    {' \
         '        return 2;' '    }' '    return 0;' '}'
 } > "$TMP/mainlong.cc"
-"$CXX" -std=c++17 -Iinclude -Iuser/include -Ilib/include \
+for crlf in 0 1; do
+"$CXX" -std=c++17 -Iinclude -Iuser/include -Ilib/include "-DKICKOS_CONSOLE_CRLF=$crlf" \
     -DKICKOS_LINKER_WEAK_UNDEF=1 "-DKICKOS_VERSION=\"$LONG_VERSION\"" \
     "-DKICKOS_BOARD_NAME=\"$LONG_BOARD\"" "$TMP/mainlong.cc" "$RENDER" \
     "$TMP/stamp_$(widest i 45).o" -o "$TMP/renderlong" 2> "$TMP/cc.err" \
@@ -174,11 +186,12 @@ long_rc=$?
     printf '%s\n' "$(identity_row "$DIAG" KDIAG_F_BANNER_BUILD "$BUILT")"
     printf '%s\n' "$(identity_row "$DIAG" KDIAG_F_BANNER_APP "$LONG_STAMP")"
     printf '%s\n' "$(identity_row "$DIAG" KDIAG_F_BANNER_COMMIT "$LONG_COMMIT")"
-} > "$TMP/wantlong"
+} | posture "$crlf" > "$TMP/wantlong"
 cmp -s "$TMP/rowslong" "$TMP/wantlong" \
-    || bad "every row at its widest: the image prints [$(cat "$TMP/rowslong")], the verdict renders [$(cat "$TMP/wantlong")]"
+    || bad "every row at its widest, crlf $crlf: the image prints [$(cat "$TMP/rowslong")], the verdict renders [$(cat "$TMP/wantlong")]"
 [ "$long_rc" -eq 0 ] \
-    || bad "the widest rows do not fill BANNER_IDENTITY_MAX to its NUL, so the buffer is not sized from them"
+    || bad "crlf $crlf: the widest rows do not fill BANNER_IDENTITY_MAX to its NUL, so the buffer is not sized from them"
+done
 
 [ "$rc" -eq 0 ] || exit 1
 echo "PASS: a USB console's identity rows are kbanner's, rendered as the route's verdict renders them"

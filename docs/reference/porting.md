@@ -2102,7 +2102,7 @@ each other at once, and only the linker can see it: the pool arithmetic above pr
 stride and never the `.bss` term.
 
 `frdmk64f +MPU` is provisioned at 8 with **+24,576 B**; it links at 9, 10 and 11, and
-FAILS at `-DKICKOS_MAX_THREADS=12` -- at 11 `KICKOS_POOL_TOP` computes to exactly
+FAILS at `-DKICKOS_MAX_THREADS=12` -- at 11 the pool top computes to exactly
 `__kickos_ram_end`, margin zero, which the `<=` accepts. It follows the pure stride model
 where `f302nucleo-st` does not because its 8,192 B root and pool alignment quantizes the
 per-slot `.bss` away, NOT because its base is fixed: the base moves with `.bss` across slot

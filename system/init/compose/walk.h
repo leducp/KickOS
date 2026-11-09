@@ -33,6 +33,9 @@ namespace kickos::init
     // How often, and how far apart, a claim answered -KOS_EAGAIN is tried again (1.6).
     constexpr uint32_t CLAIM_RETRIES = 100u;
     constexpr uint64_t CLAIM_RETRY_NS = 1000000ull;
+    // How long a start waits out its instance's last incarnation, or a line or binding it
+    // released still retiring.
+    constexpr uint32_t START_WAIT_US = CLAIM_RETRIES * static_cast<uint32_t>(CLAIM_RETRY_NS / 1000u);
 
     enum class Phase : uint8_t
     {

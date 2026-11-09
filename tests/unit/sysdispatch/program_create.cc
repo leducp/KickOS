@@ -9,8 +9,10 @@
 #include <kickos/irqlock.h>
 #include <kickos/kernel.h>
 #include <kickos/sched.h>
+#include <kickos/sync.h>
 #include <kickos/task.h>
 #include <kickos/thread.h>
+#include <kickos/time.h>
 
 #include <kickos/sys/image.h>
 
@@ -79,6 +81,164 @@ namespace
 
     void decl_entry(void*) {}
 
+    // What a create's park saw, and the last member of the dying instance it waits on.
+    struct Dying
+    {
+        kickos::Task* record;
+        kickos::Thread* member;
+        kickos::Thread* creator;
+        uint8_t kind;
+        void* obj;
+        uint64_t deadline_ns;
+        bool woken;
+    };
+    Dying g_dying;
+
+    void seen(kickos::Thread* parked)
+    {
+        g_dying.kind = parked->wait_kind;
+        g_dying.obj = parked->wait_obj;
+        g_dying.deadline_ns = parked->deadline_ns;
+    }
+
+    // While the create waits: the member's exit, its sweep done, and exit_current's wake of a
+    // task-empty waiter on the dead group.
+    void the_member_dies(kickos::Thread* parked)
+    {
+        using namespace kickos;
+        seen(parked);
+        {
+            IrqLock lock;
+            Task* const t = g_dying.record;
+            uint16_t const gen = task_gen(t);
+            (void)task_release(t, lock);
+            task_member_leave(g_dying.member, kernel().threads.index_of(g_dying.member));
+            if (task_sweep_done(t))
+            {
+                if (parked->wait_task_target() == t)
+                {
+                    g_dying.woken = true;
+                    thread_abort_park(parked, 0, lock);
+                }
+                task_report_death(t, gen);
+            }
+        }
+        kernel().current(kickos_kernel_core()) = g_dying.creator;
+    }
+
+    // What the death wait's park lent, read where it switched to.
+    struct Lent
+    {
+        kickos::Thread* ran;
+        uint8_t member_prio;
+        uint8_t owner_prio;
+        uint8_t member_recomputed;
+    };
+    Lent g_lent;
+    kickos::Thread* g_owner;
+
+    void lent(kickos::Thread* parked)
+    {
+        using namespace kickos;
+        seen(parked);
+        g_lent.ran = sched::current();
+        g_lent.member_prio = g_dying.member->prio;
+        g_lent.member_recomputed = thread_effective_prio(g_dying.member);
+        if (g_owner != nullptr)
+        {
+            g_lent.owner_prio = g_owner->prio;
+        }
+    }
+
+    // The member runs the rest of its exit only where the switch chose it over the spinner;
+    // otherwise the spinner keeps the CPU until the wait's deadline.
+    void the_member_dies_if_it_runs(kickos::Thread* parked)
+    {
+        using namespace kickos;
+        lent(parked);
+        if (g_lent.ran == g_dying.member)
+        {
+            the_member_dies(parked);
+            return;
+        }
+        {
+            IrqLock lock;
+            thread_abort_park(parked, -KOS_ETIMEDOUT, lock);
+        }
+        kernel().current(kickos_kernel_core()) = g_dying.creator;
+    }
+
+    void the_deadline_passes_lent(kickos::Thread* parked)
+    {
+        lent(parked);
+        {
+            kickos::IrqLock lock;
+            kickos::thread_abort_park(parked, -KOS_ETIMEDOUT, lock);
+        }
+        kickos::kernel().current(kickos_kernel_core()) = g_dying.creator;
+    }
+
+    void the_creator_is_killed_lent(kickos::Thread* parked)
+    {
+        lent(parked);
+        {
+            kickos::IrqLock lock;
+            kickos::thread_cancel_kind(parked, kickos::CANCEL_KILL, lock);
+        }
+        kickos::kernel().current(kickos_kernel_core()) = g_dying.creator;
+    }
+
+    // A second thread already waits on the same death when the create parks; the two leave in
+    // the order `second_first` names.
+    struct TwoWaiters
+    {
+        kickos::Thread* second;
+        bool second_first;
+        uint8_t with_both;
+        uint8_t with_one;
+    };
+    TwoWaiters g_two;
+
+    void two_waiters_leave(kickos::Thread* parked)
+    {
+        using namespace kickos;
+        IrqLock lock;
+        g_two.with_both = g_dying.member->prio;
+        Thread* first = parked;
+        Thread* last = g_two.second;
+        if (g_two.second_first)
+        {
+            first = g_two.second;
+            last = parked;
+        }
+        thread_abort_park(first, -KOS_ETIMEDOUT, lock);
+        g_two.with_one = g_dying.member->prio;
+        thread_abort_park(last, -KOS_ETIMEDOUT, lock);
+        kernel().current(kickos_kernel_core()) = g_dying.creator;
+    }
+
+    void the_deadline_passes(kickos::Thread* parked)
+    {
+        using namespace kickos;
+        seen(parked);
+        {
+            IrqLock lock;
+            thread_abort_park(parked, -KOS_ETIMEDOUT, lock);
+        }
+        kernel().current(kickos_kernel_core()) = g_dying.creator;
+    }
+
+    void the_creator_is_killed(kickos::Thread* parked)
+    {
+        using namespace kickos;
+        seen(parked);
+        {
+            IrqLock lock;
+            thread_cancel_kind(parked, CANCEL_KILL, lock);
+        }
+        kernel().current(kickos_kernel_core()) = g_dying.creator;
+    }
+
     // What a create names, in a region its caller holds.
     struct alignas(kickos::testfix::REGION_MIN) Block
     {
@@ -86,6 +246,7 @@ namespace
         kos_thread_params spawn;
         char const* argv[KICKOS_MAX_ARGC + 2];
         char strings[64];
+        uint32_t lock_word;
     };
     Block g_block;
 
@@ -136,14 +297,15 @@ namespace kickos
                               0);
                 }
 
-                int create(char const* instance, kos_task_t* out)
+                int create(char const* instance, kos_task_t* out, uint32_t timeout_us = 0)
                 {
                     g_block.p.instance = nullptr;
                     if (instance != nullptr)
                     {
                         g_block.p.instance = text(instance, 48);
                     }
-                    return task_create_call(prog_, reinterpret_cast<uintptr_t>(&g_block.p), out);
+                    return task_create_call(prog_, reinterpret_cast<uintptr_t>(&g_block.p),
+                                            timeout_us, out);
                 }
 
                 // The entry thread of task `h`.
@@ -490,6 +652,446 @@ namespace kickos
             run_exit(0);
             kernel().current(kickos_kernel_core()) = c;
             EXPECT_EQ(create("peer0", &again), 0);
+        }
+
+        TEST_F(ProgramCreate, a_start_with_a_timeout_waits_out_the_dying_instance_then_starts_it)
+        {
+            creator(AUTH_TASKS);
+            Thread* const c = sched::current();
+            kos_task_t h = KOS_TASK_NONE;
+            ASSERT_EQ(create("peer0", &h), 0);
+            Thread* const e = entry_of(h);
+            ASSERT_NE(e, nullptr);
+            Task* record = nullptr;
+            {
+                IrqLock lock;
+                record = task_resolve(h);
+            }
+            ASSERT_EQ(task_slay(h, 0), 0);
+            kos_task_t again = KOS_TASK_NONE;
+            ASSERT_EQ(create("peer0", &again), -KOS_EAGAIN) << "fixture: peer0 is not dying";
+            uint32_t const holds = kernel().task_holds;
+            g_dying = Dying{record, e, c, WAIT_NONE, nullptr, 1u, false};
+            wake_next_park(the_member_dies);
+            EXPECT_EQ(create("peer0", &again, KOS_TIMEOUT_NONE), 0);
+            EXPECT_EQ(g_dying.kind, WAIT_TASK_EMPTY) << "the wait is not the death's own park";
+            EXPECT_EQ(g_dying.obj, record) << "the wait parks on another task than the dying one";
+            EXPECT_EQ(g_dying.deadline_ns, 0u) << "a wait with no bound armed a deadline";
+            EXPECT_TRUE(g_dying.woken) << "the last sweep's wake does not find the waiter";
+            ASSERT_NE(again, KOS_TASK_NONE);
+            EXPECT_EQ(handle_index(again), handle_index(h)) << "the start took another record";
+            EXPECT_STREQ(entry_of(again)->name, "peer0");
+            EXPECT_EQ(kernel().task_holds, holds + 1u);
+        }
+
+        TEST_F(ProgramCreate, a_start_with_no_instance_named_waits_out_the_one_still_dying)
+        {
+            creator(AUTH_TASKS | AUTH_IRQ);
+            Thread* const c = sched::current();
+            kos_task_t first = KOS_TASK_NONE;
+            kos_task_t second = KOS_TASK_NONE;
+            ASSERT_EQ(create(nullptr, &first), 0);
+            ASSERT_EQ(create(nullptr, &second), 0);
+            Thread* const e = entry_of(first);
+            ASSERT_NE(e, nullptr);
+            Task* record = nullptr;
+            {
+                IrqLock lock;
+                record = task_resolve(first);
+            }
+            ASSERT_EQ(task_slay(first, 0), 0);
+            g_dying = Dying{record, e, c, WAIT_NONE, nullptr, 0u, false};
+            wake_next_park(the_deadline_passes);
+            kos_task_t h = KOS_TASK_NONE;
+            EXPECT_EQ(create(nullptr, &h, 1000u), -KOS_ETIMEDOUT) << "the create did not wait";
+            EXPECT_EQ(g_dying.kind, WAIT_TASK_EMPTY);
+            EXPECT_EQ(g_dying.obj, record) << "the wait is not on the instance still dying";
+        }
+
+        TEST_F(ProgramCreate, a_wait_on_a_start_ends_at_its_timeout_with_nothing_started)
+        {
+            creator(AUTH_TASKS);
+            Thread* const c = sched::current();
+            kos_task_t h = KOS_TASK_NONE;
+            ASSERT_EQ(create("peer0", &h), 0);
+            ASSERT_EQ(task_slay(h, 0), 0);
+            uint32_t const holds = kernel().task_holds;
+            g_dying = Dying{nullptr, nullptr, c, WAIT_NONE, nullptr, 0u, false};
+            wake_next_park(the_deadline_passes);
+            uint64_t const before = ktime_now();
+            kos_task_t again = KOS_TASK_NONE;
+            EXPECT_EQ(create("peer0", &again, 1000u), -KOS_ETIMEDOUT);
+            EXPECT_EQ(g_dying.kind, WAIT_TASK_EMPTY);
+            EXPECT_GE(g_dying.deadline_ns, before + 1000000u) << "the deadline is not the timeout's";
+            EXPECT_EQ(again, KOS_TASK_NONE);
+            EXPECT_EQ(kernel().task_holds, holds) << "a create that timed out spent a task";
+            EXPECT_EQ(c->wait_kind, WAIT_NONE);
+        }
+
+        TEST_F(ProgramCreate, a_cancel_ends_a_wait_on_a_start_with_nothing_started)
+        {
+            creator(AUTH_TASKS);
+            Thread* const c = sched::current();
+            kos_task_t h = KOS_TASK_NONE;
+            ASSERT_EQ(create("peer0", &h), 0);
+            ASSERT_EQ(task_slay(h, 0), 0);
+            uint32_t const holds = kernel().task_holds;
+            g_dying = Dying{nullptr, nullptr, c, WAIT_NONE, nullptr, 0u, false};
+            wake_next_park(the_creator_is_killed);
+            kos_task_t again = KOS_TASK_NONE;
+            EXPECT_EQ(create("peer0", &again, KOS_TIMEOUT_NONE), -KOS_ECANCELED);
+            EXPECT_EQ(g_dying.kind, WAIT_TASK_EMPTY);
+            EXPECT_EQ(again, KOS_TASK_NONE);
+            EXPECT_EQ(kernel().task_holds, holds) << "a cancelled create spent a task";
+            EXPECT_EQ(c->wait_kind, WAIT_NONE) << "the cancel left the wait edge";
+        }
+
+        // A creator above a medium thread that keeps the CPU waits on a member below both: the
+        // member runs its death out only on the creator's priority.
+        class DeathLend : public ProgramCreate
+        {
+          protected:
+            static constexpr uint8_t PRIO_SPIN = 7;
+            static constexpr uint8_t PRIO_OWNER = 5;
+            static constexpr int SLOT_SPIN = 6;
+            static constexpr int SLOT_OWNER = 7;
+
+            // peer0 slain with its entry still to run its exit, and a spinner ready.
+            void dying_with_spinner()
+            {
+                creator(AUTH_TASKS);
+                c_ = sched::current();
+                ASSERT_EQ(create("peer0", &h_), 0);
+                e_ = entry_of(h_);
+                ASSERT_NE(e_, nullptr);
+                {
+                    IrqLock lock;
+                    record_ = task_resolve(h_);
+                }
+                ASSERT_EQ(task_slay(h_, 0), 0);
+                spin_ = seat_pool(SLOT_SPIN, PRIO_SPIN);
+                g_dying = Dying{record_, e_, c_, WAIT_NONE, nullptr, 0u, false};
+                g_lent = Lent{nullptr, 0u, 0u, 0u};
+                g_owner = nullptr;
+                ASSERT_EQ(e_->prio, PRIO_PEER);
+                ASSERT_LT(PRIO_PEER, PRIO_SPIN);
+                ASSERT_LT(PRIO_SPIN, PRIO_CREATOR);
+            }
+
+            Thread* c_ = nullptr;
+            Thread* e_ = nullptr;
+            Thread* spin_ = nullptr;
+            Task* record_ = nullptr;
+            kos_task_t h_ = KOS_TASK_NONE;
+        };
+
+        TEST_F(DeathLend, a_wait_on_a_start_lends_its_priority_so_the_dying_member_outruns_a_spinner)
+        {
+            dying_with_spinner();
+            wake_next_park(the_member_dies_if_it_runs);
+            kos_task_t again = KOS_TASK_NONE;
+            EXPECT_EQ(create("peer0", &again, 1000u), 0) << "the spinner starved the death";
+            EXPECT_EQ(g_lent.ran, e_) << "the switch away from the waiter chose another thread";
+            EXPECT_EQ(g_lent.member_prio, PRIO_CREATOR);
+            EXPECT_EQ(g_lent.member_recomputed, PRIO_CREATOR)
+                << "a recompute of the member's priority drops the lend";
+        }
+
+        TEST_F(DeathLend, a_wait_on_a_slay_lends_its_priority_to_the_member_it_stops)
+        {
+            creator(AUTH_TASKS);
+            c_ = sched::current();
+            ASSERT_EQ(create("peer0", &h_), 0);
+            e_ = entry_of(h_);
+            ASSERT_NE(e_, nullptr);
+            spin_ = seat_pool(SLOT_SPIN, PRIO_SPIN);
+            g_dying = Dying{nullptr, e_, c_, WAIT_NONE, nullptr, 0u, false};
+            g_lent = Lent{nullptr, 0u, 0u, 0u};
+            g_owner = nullptr;
+            wake_next_park(the_deadline_passes_lent);
+            EXPECT_EQ(task_slay(h_, 1000u), -KOS_ETIMEDOUT);
+            EXPECT_EQ(g_dying.kind, WAIT_TASK_EMPTY);
+            EXPECT_EQ(g_lent.ran, e_) << "the slay's park switched to the spinner";
+            EXPECT_EQ(g_lent.member_prio, PRIO_CREATOR);
+            EXPECT_EQ(e_->prio, PRIO_PEER) << "the slay's timeout left the member lent to";
+        }
+
+        TEST_F(DeathLend, a_timeout_ends_the_lend)
+        {
+            dying_with_spinner();
+            wake_next_park(the_deadline_passes_lent);
+            kos_task_t again = KOS_TASK_NONE;
+            EXPECT_EQ(create("peer0", &again, 1000u), -KOS_ETIMEDOUT);
+            EXPECT_EQ(g_lent.member_prio, PRIO_CREATOR) << "fixture: nothing was lent";
+            EXPECT_EQ(e_->prio, PRIO_PEER) << "the member keeps the priority of a waiter gone";
+            EXPECT_TRUE(kernel().death_waiters.empty());
+        }
+
+        TEST_F(DeathLend, a_cancel_ends_the_lend)
+        {
+            dying_with_spinner();
+            wake_next_park(the_creator_is_killed_lent);
+            kos_task_t again = KOS_TASK_NONE;
+            EXPECT_EQ(create("peer0", &again, KOS_TIMEOUT_NONE), -KOS_ECANCELED);
+            EXPECT_EQ(g_lent.member_prio, PRIO_CREATOR) << "fixture: nothing was lent";
+            EXPECT_EQ(e_->prio, PRIO_PEER) << "the member keeps the priority of a waiter gone";
+            EXPECT_TRUE(kernel().death_waiters.empty());
+        }
+
+        TEST_F(DeathLend, the_lend_passes_through_a_member_parked_on_a_mutex_and_back)
+        {
+            dying_with_spinner();
+            static uint32_t word = 0;
+            Thread* const owner = seat_pool(SLOT_OWNER, PRIO_OWNER);
+            WordRecord* m = nullptr;
+            {
+                IrqLock lock;
+                m = own_mutex(owner, &word);
+                park_mutex_waiter(e_, m);
+                sched::set_prio(owner, thread_effective_prio(owner), lock);
+            }
+            ASSERT_EQ(owner->prio, PRIO_PEER) << "fixture: the member lends the owner nothing";
+            g_owner = owner;
+            wake_next_park(the_deadline_passes_lent);
+            kos_task_t again = KOS_TASK_NONE;
+            EXPECT_EQ(create("peer0", &again, 1000u), -KOS_ETIMEDOUT);
+            EXPECT_EQ(g_lent.member_prio, PRIO_CREATOR);
+            EXPECT_EQ(g_lent.owner_prio, PRIO_CREATOR) << "the lend stops at the member's mutex";
+            EXPECT_EQ(owner->prio, PRIO_PEER) << "the owner keeps a lend the waiter took back";
+        }
+
+        TEST_F(DeathLend, a_lend_crosses_every_death_and_mutex_edge_and_comes_back)
+        {
+            dying_with_spinner();
+            // peer0's member waits on o1's mutex, o1 on the death of t2, whose member waits on
+            // o2's mutex, o2 on the death of t3: two death edges past the creator's own.
+            static uint32_t w1 = 0;
+            static uint32_t w2 = 0;
+            Task* const t2 = task(1);
+            Task* const t3 = task(2);
+            Thread* const o1 = seat_pool(SLOT_OWNER, PRIO_OWNER);
+            Thread* const e2 = seat_pool(SLOT_OWNER + 1, 4);
+            Thread* const o2 = seat_pool(SLOT_OWNER + 2, 4);
+            Thread* const e3 = seat_pool(SLOT_OWNER + 3, 3);
+            attach_caps(e2, KICKOS_SEAM_CAP_WIDTH);
+            attach_caps(e3, KICKOS_SEAM_CAP_WIDTH);
+            join_task(e2, t2);
+            join_task(e3, t3);
+            {
+                IrqLock lock;
+                park_mutex_waiter(e_, own_mutex(o1, &w1));
+                park_mutex_waiter(e2, own_mutex(o2, &w2));
+                park_death_waiter(o1, t2);
+                park_death_waiter(o2, t3);
+                pi_settle(o1, lock);
+                pi_settle(o2, lock);
+            }
+            uint8_t const e3_before = e3->prio;
+            ASSERT_LT(e3_before, PRIO_CREATOR) << "fixture: the far member is lent to already";
+            g_owner = e3;
+            wake_next_park(the_deadline_passes_lent);
+            kos_task_t again = KOS_TASK_NONE;
+            EXPECT_EQ(create("peer0", &again, 1000u), -KOS_ETIMEDOUT);
+            EXPECT_EQ(g_lent.owner_prio, PRIO_CREATOR)
+                << "the lend stops before the second death edge";
+            EXPECT_EQ(e3->prio, e3_before) << "the far member keeps a lend the waiter took back";
+            IrqLock lock;
+            EXPECT_EQ(thread_effective_prio(e3), e3->prio);
+        }
+
+        TEST_F(DeathLend, two_waiters_on_one_death_leave_in_either_order)
+        {
+            for (bool const second_first : {false, true})
+            {
+                SCOPED_TRACE(second_first);
+                if (second_first)
+                {
+                    TearDown();
+                    SetUp();
+                }
+                dying_with_spinner();
+                Thread* const second = seat_pool(SLOT_OWNER, PRIO_SPIN);
+                {
+                    IrqLock lock;
+                    park_death_waiter(second, record_);
+                    pi_settle(e_, lock);
+                }
+                ASSERT_EQ(e_->prio, PRIO_SPIN) << "fixture: the second waiter lends nothing";
+                g_two = TwoWaiters{second, second_first, 0u, 0u};
+                wake_next_park(two_waiters_leave);
+                kos_task_t again = KOS_TASK_NONE;
+                EXPECT_EQ(create("peer0", &again, 1000u), -KOS_ETIMEDOUT);
+                EXPECT_EQ(g_two.with_both, PRIO_CREATOR);
+                if (second_first)
+                {
+                    EXPECT_EQ(g_two.with_one, PRIO_CREATOR) << "the higher waiter's lend went";
+                }
+                else
+                {
+                    EXPECT_EQ(g_two.with_one, PRIO_SPIN) << "the lower waiter's lend did not stand";
+                }
+                EXPECT_EQ(e_->prio, PRIO_PEER);
+                EXPECT_TRUE(kernel().death_waiters.empty());
+            }
+        }
+
+        // The creator locks a mutex a lent member of the dying task holds: the member takes the
+        // creator's priority over the lend, and keeps it while the creator is queued.
+        TEST_F(DeathLend, a_contended_lock_raises_a_lent_member_and_the_lend_does_not_undo_it)
+        {
+            dying_with_spinner();
+            Thread* const slayer = seat_pool(SLOT_OWNER, PRIO_SPIN);
+            g_block.lock_word = 0;
+            {
+                IrqLock lock;
+                park_death_waiter(slayer, record_);
+                pi_settle(e_, lock);
+                (void)own_mutex(e_, &g_block.lock_word);
+            }
+            ASSERT_EQ(e_->prio, PRIO_SPIN) << "fixture: the member is not lent to";
+            wake_next_park(the_deadline_passes_lent);
+            EXPECT_EQ(mutex_lock(reinterpret_cast<uintptr_t>(&g_block.lock_word), 1000u),
+                      -KOS_ETIMEDOUT);
+            EXPECT_EQ(g_lent.member_prio, PRIO_CREATOR)
+                << "the lend's recompute undid the lock's raise of the holder";
+            EXPECT_EQ(e_->prio, PRIO_SPIN) << "the holder keeps the raise of a waiter gone";
+        }
+
+        // A death waiter on an unrelated task, whose member the fixture leaves unlent: a lock
+        // contended elsewhere recomputes nothing of that task, the walk being the lock's own.
+        TEST_F(DeathLend, a_contended_lock_visits_no_task_an_unrelated_death_waiter_awaits)
+        {
+            dying_with_spinner();
+            Task* const other = task(1);
+            Thread* const member = seat_pool(SLOT_OWNER, 3);
+            attach_caps(member, KICKOS_SEAM_CAP_WIDTH);
+            join_task(member, other);
+            Thread* const waiter = seat_pool(SLOT_OWNER + 1, PRIO_SPIN);
+            Thread* const holder = seat_pool(SLOT_OWNER + 2, PRIO_OWNER);
+            g_block.lock_word = 0;
+            {
+                IrqLock lock;
+                park_death_waiter(waiter, other);
+                (void)own_mutex(holder, &g_block.lock_word);
+            }
+            ASSERT_EQ(member->prio, 3) << "fixture: the unrelated member was lent to";
+            g_owner = holder;
+            wake_next_park(the_deadline_passes_lent);
+            EXPECT_EQ(mutex_lock(reinterpret_cast<uintptr_t>(&g_block.lock_word), 1000u),
+                      -KOS_ETIMEDOUT);
+            EXPECT_EQ(g_lent.owner_prio, PRIO_CREATOR) << "fixture: the lock lent nothing";
+            EXPECT_EQ(member->prio, 3) << "the lock recomputed a task nothing it raised awaits";
+        }
+
+        TEST_F(DeathLend, a_slay_of_the_caller_s_own_task_is_refused_as_a_deadlock)
+        {
+            creator(AUTH_TASKS);
+            Thread* const c = sched::current();
+            kos_task_t h = KOS_TASK_NONE;
+            ASSERT_EQ(create("peer0", &h), 0);
+            Task* record = nullptr;
+            {
+                IrqLock lock;
+                record = task_resolve(h);
+            }
+            join_task(c, record);
+            g_dying = Dying{nullptr, nullptr, c, WAIT_NONE, nullptr, 0u, false};
+            wake_next_park(the_deadline_passes);
+            EXPECT_EQ(task_slay(h, 1000u), -KOS_EDEADLK);
+            EXPECT_EQ(g_dying.kind, WAIT_NONE) << "the slay parked on its own task's death";
+        }
+
+        // The creator holds a mutex the member it slays waits on: the stop cuts that wait in the
+        // slay's own lock hold, so the slay waits the death out rather than refusing.
+        TEST_F(DeathLend, a_slay_holding_a_mutex_its_member_waits_on_stops_the_member_and_waits)
+        {
+            creator(AUTH_TASKS);
+            c_ = sched::current();
+            ASSERT_EQ(create("peer0", &h_), 0);
+            e_ = entry_of(h_);
+            ASSERT_NE(e_, nullptr);
+            {
+                IrqLock lock;
+                record_ = task_resolve(h_);
+            }
+            g_block.lock_word = 0;
+            {
+                IrqLock lock;
+                park_mutex_waiter(e_, own_mutex(c_, &g_block.lock_word));
+            }
+            g_dying = Dying{record_, e_, c_, WAIT_NONE, nullptr, 0u, false};
+            wake_next_park(the_member_dies);
+            EXPECT_EQ(task_slay(h_, 1000u), 0) << "a slay its own mutex closed a cycle for";
+            EXPECT_EQ(g_dying.kind, WAIT_TASK_EMPTY);
+            EXPECT_TRUE(g_dying.woken);
+        }
+
+        // peer0's two threads reach a death waiter of t2 directly and through a death waiter of
+        // t3: the lend visits each dying task once and every priority settles both ways.
+        TEST_F(DeathLend, a_waiter_reached_on_two_paths_is_drained_once_and_settles)
+        {
+            creator(AUTH_TASKS);
+            c_ = sched::current();
+            ASSERT_EQ(create("peer0", &h_), 0);
+            e_ = entry_of(h_);
+            ASSERT_NE(e_, nullptr);
+            {
+                IrqLock lock;
+                record_ = task_resolve(h_);
+            }
+            Thread* const m2 = seat_pool(SLOT_OWNER + 4, 2);
+            attach_caps(m2, KICKOS_SEAM_CAP_WIDTH);
+            join_task(m2, record_);
+            ASSERT_EQ(task_slay(h_, 0), 0);
+            g_dying = Dying{record_, e_, c_, WAIT_NONE, nullptr, 0u, false};
+            g_lent = Lent{nullptr, 0u, 0u, 0u};
+            static uint32_t w1 = 0;
+            static uint32_t w2 = 0;
+            static uint32_t w3 = 0;
+            Task* const t2 = task(1);
+            Task* const t3 = task(2);
+            Thread* const a = seat_pool(SLOT_OWNER, 3);
+            Thread* const m4 = seat_pool(SLOT_OWNER + 1, 2);
+            Thread* const b = seat_pool(SLOT_OWNER + 2, 3);
+            Thread* const m3 = seat_pool(SLOT_OWNER + 3, 2);
+            for (Thread* const t : {m4, m3})
+            {
+                attach_caps(t, KICKOS_SEAM_CAP_WIDTH);
+            }
+            join_task(m4, t2);
+            join_task(m3, t3);
+            {
+                IrqLock lock;
+                park_mutex_waiter(e_, own_mutex(a, &w1));
+                park_mutex_waiter(m2, own_mutex(b, &w2));
+                park_mutex_waiter(m3, own_mutex(a, &w3));
+                park_death_waiter(a, t2);
+                park_death_waiter(b, t3);
+                for (Thread* const t : {e_, m2, m3, m4, a, b})
+                {
+                    pi_settle(t, lock);
+                }
+            }
+            uint8_t const m4_before = m4->prio;
+            ASSERT_LT(m4_before, PRIO_CREATOR) << "fixture: t2's thread is lent to already";
+            g_owner = m4;
+            wake_next_park(the_deadline_passes_lent);
+            kos_task_t again = KOS_TASK_NONE;
+            EXPECT_EQ(create("peer0", &again, 1000u), -KOS_ETIMEDOUT);
+            EXPECT_EQ(g_lent.owner_prio, PRIO_CREATOR) << "the lend did not reach t2 through t3";
+            EXPECT_TRUE(kernel().death_dirty.empty());
+            int waiters = 0;
+            for (ListNode* n = kernel().death_waiters.head; n != nullptr; n = n->next)
+            {
+                waiters++;
+            }
+            EXPECT_EQ(waiters, 2) << "a death waiter was lost or linked twice";
+            IrqLock lock;
+            for (Thread* const t : {e_, m2, m3, m4, a, b})
+            {
+                EXPECT_EQ(t->prio, thread_effective_prio(t)) << "thread " << t->id;
+            }
+            EXPECT_EQ(m4->prio, m4_before);
         }
 
         // The transitional calls and fields are gone: the numbers answer as unknown calls, and the

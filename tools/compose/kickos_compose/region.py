@@ -69,3 +69,35 @@ def boot_figures(wants, min_region, pow2, stride, word_bits):
             return None, want
         figures.append((size, align))
     return figures, None
+
+
+def align_up(value, align):
+    return -(-value // align) * align
+
+
+class ArenaModel:
+    """arch/common/ram_arena.h from `base`: the bump cursor and the one kept free range [gs, ge).
+    The cursor is compared with the arena's end by the caller."""
+
+    def __init__(self, base):
+        self.cursor = base
+        self.gs = base
+        self.ge = base
+
+    def place(self, size, align):
+        """The address a block of `size` on `align` lands at."""
+        at = align_up(self.gs, align)
+        if at + size <= self.ge:
+            before = at - self.gs
+            after = self.ge - at - size
+            if after >= before:
+                self.gs = at + size
+            else:
+                self.ge = at
+            return at
+        at = align_up(self.cursor, align)
+        if at - self.cursor > self.ge - self.gs:
+            self.gs = self.cursor
+            self.ge = at
+        self.cursor = at + size
+        return at

@@ -21,6 +21,8 @@ function(faultsurvive_image target mode)
 endfunction()
 
 faultsurvive_image(faultsurvive 0)
+faultsurvive_image(faultsurvive_div0 8)
+faultsurvive_image(faultsurvive_ldiv0 9)
 
 if(NOT KICKOS_ARCH STREQUAL "sim")
   faultsurvive_image(faultsurvive_ovf 1)

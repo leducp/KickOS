@@ -17,8 +17,10 @@
 #if KICKOS_WITNESS_UACCESS
 namespace kickos
 {
-    // syscall_witness.cc: a ring-0 read the witness armed for the thread this interrupt took.
+    // syscall_witness.cc: a ring-0 read the witness armed for the thread this interrupt took,
+    // and the deadline it is due at, UINT64_MAX for any other thread.
     void witness_uaccess_timer(Thread const* c);
+    uint64_t witness_uaccess_due(Thread const* t);
 }
 #endif
 
@@ -93,47 +95,119 @@ namespace kickos
         return arch_clock_now();
     }
 
+    namespace
+    {
+        // The soonest event the core must wake for once `incoming` runs: the sleep queue's
+        // head, or its policy deadline. A booked thread whose switch lands later contributes no
+        // slice until ktime_land stamps it; sched::tick_rr skips it on the same flag.
+        uint64_t next_event(Thread const* incoming)
+        {
+            uint64_t next = UINT64_MAX;
+            if (kernel().sleepq != nullptr)
+            {
+                next = kernel().sleepq->deadline_ns;
+            }
+#if KICKOS_ARCH_SWITCH_LANDS_LATER
+            if (kernel().switch_landing_owed[kickos_kernel_core()] != 0)
+            {
+                incoming = nullptr;
+            }
+#endif
+            uint64_t const event = sched::next_timed_event(incoming);
+            if (event < next)
+            {
+                next = event;
+            }
+#if KICKOS_WITNESS_UACCESS
+            uint64_t const witness = witness_uaccess_due(incoming);
+            if (witness < next)
+            {
+                next = witness;
+            }
+#endif
+#if KICKOS_SCHED_PERIODIC_TICK
+            uint64_t const periodic = ktime_now() + KICKOS_TICK_PERIOD_NS;
+            if (periodic < next)
+            {
+                next = periodic;
+            }
+#endif
+            return next;
+        }
+
+        // Floored against the clock read here: the work between a deadline's birth and this
+        // call can outlast the min delta, and a comparator programmed in the past raises again
+        // before its handler returns, so the handler runs back to back and no thread is ever
+        // resumed.
+        void program(uint64_t next)
+        {
+            kernel().timer_armed_ns[kickos_kernel_core()] = next;
+            if (next == UINT64_MAX)
+            {
+                arch_timer_disarm();
+                return;
+            }
+            arch_timer_arm(ktime_floored(ktime_now(), next));
+        }
+    }
+
     void ktime_rearm(Thread const* incoming, Held)
     {
 #if KICKOS_BENCH
         BenchScope const bench_body(PH_KTIME_REARM);
 #endif
-        uint64_t next = UINT64_MAX;
-        if (kernel().sleepq != nullptr)
+        uint64_t const next = next_event(incoming);
+        // The dedup key is `next` itself, never a value re-derived from the clock: this runs on
+        // every context switch, and a moving key would restart the countdown each time.
+        if (next == kernel().timer_armed_ns[kickos_kernel_core()])
         {
-            next = kernel().sleepq->deadline_ns;
+            return;
         }
+        program(next);
+    }
 
-        uint64_t event = sched::next_timed_event(incoming);
-        if (event < next)
+#if KICKOS_ARCH_SWITCH_LANDS_LATER
+    // Stamped from the clock read here, so the landed thread runs at least the min delta whatever
+    // the switch cost before this point, and armed once for everything: the booking that owed
+    // it armed nothing.
+    void ktime_land(Held held)
+    {
+        KernelCore const me = kickos_kernel_core();
+        if (kernel().switch_landing_owed[me] == 0)
         {
-            next = event;
+            return;
         }
-
-#if KICKOS_SCHED_PERIODIC_TICK
-        uint64_t periodic = ktime_now() + KICKOS_TICK_PERIOD_NS;
-        if (periodic < next)
+        kernel().switch_landing_owed[me] = 0;
+        Thread* const t = sched::current();
+        policy_on_switch_in(t);
+        ktime_rearm(t, held);
+    }
+#else
+    // Reprogrammed unconditionally at the interrupt's exit, so the floor is measured from here
+    // and the landed thread runs at least the min delta whatever the handler cost after booking.
+    void ktime_land(Held)
+    {
+        KernelCore const me = kickos_kernel_core();
+        if (kernel().switch_landing_owed[me] == 0)
         {
-            next = periodic;
+            return;
         }
+        kernel().switch_landing_owed[me] = 0;
+        program(next_event(sched::current()));
+    }
 #endif
 
-        // NO min-delta floor here, deliberately: this runs on EVERY context switch, and a
-        // floor re-derived from the clock would change `next` on every call, which is the
-        // quantity this dedup rests on. The floor belongs where the deadline is BORN, against
-        // ONE clock reading (ktime_floored).
-        uint64_t& armed = kernel().timer_armed_ns[kickos_kernel_core()];
-        if (next == armed)
+    void ktime_land_at_isr_exit()
+    {
+#if not KICKOS_ARCH_SWITCH_LANDS_LATER
+        // Read unlocked: only this core writes it, and ktime_land tests it again under the lock.
+        if (kernel().switch_landing_owed[kickos_kernel_core()] == 0)
         {
             return;
         }
-        armed = next;
-        if (next == UINT64_MAX)
-        {
-            arch_timer_disarm();
-            return;
-        }
-        arch_timer_arm(next);
+        IrqLock lock;
+        ktime_land(lock);
+#endif
     }
 
     // THE ONE PLACE A FIRED OR ABANDONED COMPARATOR IS FORGOTTEN, and the whole correctness of
@@ -283,6 +357,7 @@ namespace kickos
         // as a sleeper wake.
         sched::tick_rr(now, lock);
 
+        death_leave_batch_begin();
         while (kernel().sleepq != nullptr and kernel().sleepq->deadline_ns <= now)
         {
             Thread* t = kernel().sleepq;
@@ -291,6 +366,7 @@ namespace kickos
             // queue at once, and the unwind reads the edge to find the second.
             thread_abort_park(t, -KOS_ETIMEDOUT, lock);
         }
+        death_leave_batch_end(lock);
 
         ktime_rearm(sched::current(), lock);
     }
@@ -310,10 +386,36 @@ extern "C" void kickos_isr_timer(void)
     ::kickos::witness_uaccess_timer(::kickos::sched::current());
 #endif
     ::kickos::ktime_on_timer();
+    ::kickos::ktime_land_at_isr_exit();
 #if KICKOS_BENCH_SCHED_ON
     ::kickos_bench_reason_leave(bench_was);
 #endif
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
     ::kickos::ktrace_irq_exit(static_cast<uint16_t>(::kickos::trace::TRACE_TIMER_LINE));
 #endif
+}
+
+#if KICKOS_ARCH_SWITCH_LANDS_LATER
+static_assert(KICKOS_KERNEL_CORES == 1,
+              "kickos_switch_landed takes no lock, its callers' mask being the exclusion: above "
+              "one kernel core it needs the cross-core one");
+#endif
+
+namespace kickos
+{
+    // The landing hook of a KICKOS_ARCH_SWITCH_LANDS_LATER arch, called masked. A newer booking
+    // taken before this one landed owns the flag, and that booking's own landing settles it.
+    extern "C" void kickos_switch_landed(struct arch_context const* landed)
+    {
+        if (kernel().switch_landing_owed[kickos_kernel_core()] == 0)
+        {
+            return;
+        }
+        Thread const* const t = sched::current();
+        if (t == nullptr or &t->ctx != landed)
+        {
+            return;
+        }
+        ktime_land(Held());
+    }
 }

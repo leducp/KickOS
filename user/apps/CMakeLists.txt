@@ -135,3 +135,17 @@ add_subdirectory(common)
 if(IS_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_BOARD}")
   add_subdirectory("${KICKOS_BOARD}")
 endif()
+
+# Every image of these apps ends in the chip's bootloader, so a bench flashes the next one with no
+# button press; an app outside this tree keeps its own ending.
+if(KICKOS_BOOTLOADER_ENTRY)
+  add_subdirectory(ending)
+  get_property(_kos_images GLOBAL PROPERTY KICKOS_EMITTED_IMAGES)
+  foreach(_kos_image IN LISTS _kos_images)
+    get_target_property(_kos_dir ${_kos_image} SOURCE_DIR)
+    string(FIND "${_kos_dir}/" "${CMAKE_CURRENT_SOURCE_DIR}/" _kos_at)
+    if(_kos_at EQUAL 0)
+      target_link_libraries(${_kos_image} PRIVATE kickos_apps_bootloader)
+    endif()
+  endforeach()
+endif()

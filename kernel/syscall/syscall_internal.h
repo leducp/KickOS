@@ -173,6 +173,9 @@ namespace kickos
 #if KICKOS_WITNESS_REWIND
     int64_t witness_rewinds();
 #endif
+#if KICKOS_WITNESS_NODE
+    int64_t witness_node(uintptr_t op, uintptr_t arg);
+#endif
 
     // How many calls the trap-handler IPC fastpath COMPLETED; a refusal does not count.
     // Reads 0 on a backend with no fastpath.
@@ -252,9 +255,10 @@ namespace kickos
     // (KOS_THREAD_NONE on failure).
     int thread_create_call(kos_thread_params const* p, kos_thread_t* out_thread);
     // Creates an instance of program `prog` from the caller's struct kos_task_params at `params`
-    // and starts its entry thread. *out_task is written on EVERY path. Takes its own IrqLock,
-    // which a console create drops to drain the console's kernel writers.
-    int task_create_call(uint32_t prog, uintptr_t params, kos_task_t* out_task);
+    // and starts its entry thread, a timeout other than 0 first waiting out the instance's last
+    // incarnation. *out_task is written on EVERY path. Takes its own IrqLock, which a console
+    // create drops to drain the console's kernel writers, and a wait drops to park.
+    int task_create_call(uint32_t prog, uintptr_t params, uint32_t timeout_us, kos_task_t* out_task);
     // Mints a program capability for the program named at `name`. *out_prog is written on EVERY
     // path. Takes its own IrqLock.
     int program_find_call(uintptr_t name, uint32_t* out_prog);
@@ -267,7 +271,7 @@ namespace kickos
     // a call it would not refuse at once (aspace.h, presync_begin).
     void spawn_presync_plan();
     // A task create's, as the spawn's two above, `prog` the program it names.
-    void task_spawn_presync_enter(uintptr_t params);
+    void task_spawn_presync_enter(uintptr_t params, uint32_t timeout_us);
     void task_spawn_presync_plan(uint32_t prog);
 #endif
 

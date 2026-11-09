@@ -18,9 +18,9 @@ runs:
     - shell: bash
       env:
         PACKAGES: ${{ inputs.packages }}
-      # A package name is not its command; the four that differ are spelled out. A package
-      # added here whose command differs and is NOT listed reinstalls on every run, which
-      # is slow rather than wrong.
+      # A package name is not its command; the four that differ are spelled out, and ovmf has
+      # no command, so its firmware file stands in. A package
+      # added here whose command differs and is NOT listed reinstalls on every run.
       run: |
         set -eu
         command_for() {
@@ -32,9 +32,15 @@ runs:
             *)                 echo "$1" ;;
           esac
         }
+        present() {
+          case "$1" in
+            ovmf) ls /usr/share/OVMF/OVMF_CODE*.fd > /dev/null 2>&1 ;;
+            *)    command -v "$(command_for "$1")" > /dev/null 2>&1 ;;
+          esac
+        }
         need=""
         for p in $PACKAGES; do
-          if ! command -v "$(command_for "$p")" > /dev/null 2>&1; then
+          if ! present "$p"; then
             need="$need $p"
           fi
         done

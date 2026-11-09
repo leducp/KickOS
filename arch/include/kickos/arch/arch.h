@@ -58,6 +58,12 @@
 // Per-arch `struct arch_context`, opaque to the kernel and sized by the arch.
 #include <kickos/arch/context.h>
 
+// 1 where arch_switch only books the switch, for an exception of the arch's own that installs
+// the incoming context later and then calls kickos_switch_landed. Its context.h defines it.
+#ifndef KICKOS_ARCH_SWITCH_LANDS_LATER
+#define KICKOS_ARCH_SWITCH_LANDS_LATER 0
+#endif
+
 // An arch with I/O ports defines this in its context.h, beside the context's port set.
 #ifndef KICKOS_ARCH_HAS_PORTS
 #define KICKOS_ARCH_HAS_PORTS 0
@@ -888,6 +894,11 @@ void arch_idle_wait(void);
 void kickos_isr_timer(void);
 // Device interrupt line `irq` fired.
 void kickos_isr_irq(int irq);
+// A KICKOS_ARCH_SWITCH_LANDS_LATER arch installed `landed`, after committing its regions and
+// before the return into it, at every point that installs a booked context. Interrupts masked.
+// This call runs on a kernel or interrupt stack, never on `landed`'s own, which may be user
+// memory; the commit and the trace and bench hooks beside it carry no such promise.
+void kickos_switch_landed(struct arch_context const* landed);
 // A thread's entry function returned; the arch trampoline routes here.
 void kickos_thread_return(void) __attribute__((noreturn));
 // Dispatch syscalls. Sign-extend negative errno results; zero-extend other

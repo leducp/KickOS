@@ -9,7 +9,6 @@
 #include <kickos/arch/arch.h>
 #include <kickos/aspace.h>
 #include <kickos/cap.h>
-#include <kickos/instance.h>
 #include <kickos/irqlock.h>
 #include <kickos/kernel.h>
 #include <kickos/sched.h>
@@ -32,10 +31,12 @@ namespace kickos
         Thread const* g_fault_exit_thread = nullptr;
         uintptr_t g_fault_exit_addr = 0;
 
-        // The timer arm's, and the deadline before which an interrupt is not the one it asked.
+        // The timer arm's: the time subsystem keeps g_timer_due armed on whichever core runs
+        // g_timer_thread (witness_uaccess_due).
         Thread const* g_timer_thread = nullptr;
         uintptr_t g_timer_addr = 0;
         uint64_t g_timer_due = 0;
+        uint64_t g_timer_ns = 0;
 
         // The address is announced first, so the gate can hold the fault's address against it.
         __attribute__((noinline)) uint8_t plant_read(uintptr_t uaddr, char const* when)
@@ -111,14 +112,9 @@ namespace kickos
                 IrqLock lock;
                 g_timer_thread = sched::current();
                 g_timer_addr = uaddr;
+                g_timer_ns = ns;
                 g_timer_due = ktime_now() + ns;
-                // An earlier deadline already armed serves as well: the arm waits for the due one.
-                uint64_t& armed = kernel().timer_armed_ns[kickos_kernel_core()];
-                if (g_timer_due < armed)
-                {
-                    armed = g_timer_due;
-                    arch_timer_arm(g_timer_due);
-                }
+                ktime_rearm(sched::current(), lock);
                 return 0;
             }
             default:
@@ -128,20 +124,31 @@ namespace kickos
         }
     }
 
+    uint64_t witness_uaccess_due(Thread const* t)
+    {
+        if (t == nullptr or t != g_timer_thread)
+        {
+            return UINT64_MAX;
+        }
+        return g_timer_due;
+    }
+
+    // Runs ahead of ktime_on_timer, whose rearm then programs whatever due this leaves.
     void witness_uaccess_timer(Thread const* c)
     {
         if (c == nullptr or c != g_timer_thread or ktime_now() < g_timer_due)
         {
             return;
         }
-        uintptr_t const at = g_timer_addr;
-        g_timer_thread = nullptr;
         if (arch_witness_irq_lift_flag() == 0)
         {
-            kprintf("[uaccess] INCONCLUSIVE: the timer interrupt found the flag that lifts the "
-                    "guard clear\n");
+            kprintf("[uaccess] the timer interrupt found the flag that lifts the guard clear: "
+                    "the read waits for the next\n");
+            g_timer_due = ktime_now() + g_timer_ns;
             return;
         }
+        uintptr_t const at = g_timer_addr;
+        g_timer_thread = nullptr;
         uint8_t const seen = plant_read(at, "in a timer interrupt");
         kprintf("[uaccess] ERROR: ring 0 reached 0x%llx in a timer interrupt: read 0x%x\n",
                 static_cast<unsigned long long>(at), static_cast<unsigned>(seen));

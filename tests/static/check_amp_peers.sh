@@ -57,6 +57,7 @@ if [ "$1" = version ]; then
     echo "$STUB_VERSION"
     exit 0
 fi
+[ "$1" = info ] && exit 0
 echo "$*" >> "$STUB_LOG"
 STUB
 chmod +x "$TMP/bin/picotool"

@@ -199,6 +199,15 @@ namespace kickos
     // and its members are still dying, -KOS_EPERM once one started of a declaration with neither
     // KOS_DECL_RESTARTS nor KOS_DECL_ON_REQUEST. Caller holds IrqLock.
     int task_decl_state(size_t decl);
+    // Declaration `decl`'s own record while its last incarnation has ended and a member still
+    // runs or sweeps: the task whose death wakes a WAIT_TASK_EMPTY park on it. Else null. Caller
+    // holds IrqLock.
+    Task* task_decl_dying(size_t decl);
+#if KICKOS_KERNEL_CORES > 1
+    // Whether an IRQ binding declaration `decl`'s last incarnation released still retires at
+    // its record's charge. Caller holds IrqLock.
+    bool task_decl_retiring(size_t decl);
+#endif
 
     // Seats declaration `decl`'s instance in its own record, held by `creator_tag`, running
     // image `image`: domain_for's refusals, a free record being task_decl_state's 0. Caller
@@ -228,15 +237,19 @@ namespace kickos
     void task_stop(Task* t, Held held);
     // Whether `t` has ended, which refuses it a new member. Null-safe: false.
     bool task_ended(Task const* t);
+    // Marks `t` owed a recompute of what its death waiters lend. Caller holds IrqLock.
+    void task_lend_owe(Task* t);
+    // Whether `t` was owed one, which it no longer is. Caller holds IrqLock.
+    bool task_lend_owed_take(Task* t);
     // `t` serves the published console from here on, and no other task does: its end, or its
     // slot going back, is the console's death (cap_console_task_ended). Caller holds IrqLock.
     void task_console_serve(Task* t);
     // Whether `t` serves the published console, its task not yet ended. Null-safe: false.
     bool task_serves_console(Task const* t);
-    // A member released from `t`, of generation `gen`, has swept its capabilities: true when
-    // that leaves the task of generation `gen` empty with no member sweeping, which is its
-    // death and what a WAIT_TASK_EMPTY waiter waits for. Caller holds IrqLock.
-    bool task_sweep_done(Task* t, uint16_t gen);
+    // A member released from `t` has swept its capabilities: true when that leaves the record
+    // empty with no member sweeping, what a WAIT_TASK_EMPTY waiter waits for, also where the
+    // slot was freed during the sweep, its creator's hold gone. Caller holds IrqLock.
+    bool task_sweep_done(Task* t);
     // The task emptied and every member's sweep ran: mark it ended and dead and raise the
     // watch, once, if `t` is still the task of generation `gen`. Caller holds IrqLock.
     void task_report_death(Task* t, uint16_t gen);
@@ -339,6 +352,14 @@ namespace kickos
     // Slot `slot`'s run leaves `t`'s run list; nothing for a run on none. Caller holds IrqLock.
     // O(1).
     void task_run_leave(Task* t, int slot);
+    // `t`'s run list, whose threads are its members and its released members still sweeping:
+    // the first one's Thread::reclaim, nullptr for none or a null `t`.
+    ListNode* task_runs(Task const* t);
+    // The first node of the list `th`'s run is on, which is task_runs of the task whose run list
+    // holds it. O(th's place on its list).
+    ListNode const* task_run_first(Thread const* th);
+    // Whether `th` is on `t`'s run list. Null-safe: false.
+    bool task_has_thread(Task const* t, Thread const* th);
 
     void task_ref(Task* t); // a thread joins; the first one acquires the domain
     // A thread leaves, and counts as sweeping until its task_sweep_done. A created task outlives

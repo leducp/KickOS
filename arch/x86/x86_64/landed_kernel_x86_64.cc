@@ -10,6 +10,7 @@
 #include <kickos/chip_q35.h>
 
 #include <kickos/arch/arch.h>
+#include <kickos/arch/x86_64_trap_stack.h>
 
 #include <stddef.h>
 #include <stdint.h>
@@ -48,8 +49,7 @@ extern "C" [[noreturn]] void kickos_x86_64_fault_report_close(void)
 
 namespace
 {
-    // The one stack the boot path and the idle thread run on.
-    constexpr size_t boot_stack_bytes = 128 * 1024;
+    constexpr size_t boot_stack_bytes = KICKOS_X86_64_BOOT_STACK;
     alignas(16) uint8_t g_boot_stack[boot_stack_bytes];
 
     // The script's absolute __kickos_link_image_base, as an immediate: firmware rewrites the

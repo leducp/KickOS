@@ -120,11 +120,7 @@ namespace kickos
             Thread* light = nullptr;
             Task* const group = slain_pair(&heavy, &light);
             Thread* const waiter = seat_pool(SLOT_WAITER, PRIO_LOW);
-            policy_on_remove(waiter);
-            testfix::seat_blocked(waiter);
-            waiter->wait_kind = WAIT_TASK_EMPTY;
-            waiter->wait_obj = group;
-            waiter->wait_result = WAIT_RESULT_POISON;
+            park_death_waiter(waiter, group);
             g_mid.waiter = waiter;
             run_in_chunk_gap(light_exits, GAP_MID_SWEEP);
 

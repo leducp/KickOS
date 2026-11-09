@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# The default's authority plus bootloader, which the terminal outcome needs, and the peer, a
-# program of its own, which the window leg's handoff creates as its waiter.
+# The default's authority, with the threads the load runs, and the peer, a program of its own,
+# which the window leg's handoff creates as its waiter.
 
 version: 1
 stdout: kernel
@@ -13,7 +13,7 @@ tasks:
     program: main
     priority: 2
     ceiling: 31
-    authority: [memory, system, tasks, bootloader]
+    authority: [memory, system, tasks]
     budgets: { threads: @MUTEXBENCH_THREADS@ }
 
   - name: peer

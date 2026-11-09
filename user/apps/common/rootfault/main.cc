@@ -32,6 +32,15 @@ namespace
     constexpr kos_cap_t CH_DONE = KOS_SPAWN_DELEGATED_CAP0;
     kos_sem_t g_hold = KOS_SEM_INIT(0);
 
+    // armv6m reports the faulting instruction and no address, so its judge holds the fault's PC
+    // to the address main announces for this store: the store must stay the body's first
+    // instruction, and main calls through g_poke so no inlined copy or clone runs instead.
+    __attribute__((noinline)) void poke(volatile int* cell, int value)
+    {
+        *cell = value;
+    }
+    void (*volatile g_poke)(volatile int*, int) = poke;
+
     void report_done()
     {
         uint8_t const mark = 1;
@@ -112,16 +121,16 @@ int main(int, char**)
     kos_reply_recv_opts_init(&opts, done, KOS_RECV_NO_INFO, KOS_TIMEOUT_NONE);
     (void)kos_reply_recv(KOS_CAP_NONE, &mark, kos_call_lens_pack(0, sizeof(mark)), &opts);
 
-    // Announce BEFORE the poke, with the address: the armv7m dump reports MMFAR but
-    // no thread name (kickos_armv7m_fault_report), so a capture cross-checks this line
-    // against the kernel's fault line. %p, not %x: the sim is a 64-bit host, and a
-    // truncated pointer would not match the kernel's address.
-    char msg[96];
+    // %p, not %x: the sim is a 64-bit host, and a truncated pointer would not match the
+    // kernel's address.
+    auto const store = g_poke;
+    char msg[160];
     ksnprintf(msg, sizeof(msg),
-              "[rootfault] main: writing the child's granted region at %p (expect fault)\n",
-              rA);
+              "[rootfault] main: writing the child's granted region at %p (expect fault) by "
+              "the store at %p\n",
+              rA, reinterpret_cast<void*>(store));
     kos::print(msg);
-    *static_cast<volatile int*>(rA) = 0x2222;
+    store(static_cast<volatile int*>(rA), 0x2222);
 
     // Reached ONLY where nothing is enforced; "NOT confined" is the gate's FAIL marker.
     kos::print("[rootfault] cross-domain write completed: main is NOT confined "

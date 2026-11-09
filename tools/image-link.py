@@ -772,17 +772,20 @@ def pe_fragment(kimg, ld, objcopy, program, segments):
              '{',
              '    KEEP(*(.kickos_image0_data))',
              '    . = __kickos_image0_load_start + 0x%x;' % (bss - base),
-             '}',
-             '.kimg0b BLOCK(__section_alignment__) :',
-             '{',
-             '    KEEP(*(.kickos_image0_bss))',
-             '    __kickos_image0_load_end = .;',
-             '}',
-             'ASSERT(ADDR(.kimg0d) == __kickos_image0_load_start + 0x%x' % (data - base)
-             + ' && __kickos_image0_load_end == __kickos_image0_load_start + 0x%x,'
-             % (bss_end - base),
-             '       "KickOS: the kernel\'s link does not hold image 0 at the program\'s own '
-             'offsets")']
+             # In .kimg0d, which the data keeps from being empty: ld -m i386pep drops an empty
+             # .kimg0b and re-bases the symbols assigned in it.
+             '    __kickos_image0_load_end = __kickos_image0_load_start + 0x%x;' % (bss_end - base),
+             '}']
+    placed = 'ADDR(.kimg0d) == __kickos_image0_load_start + 0x%x' % (data - base)
+    if bss_end > bss:
+        lines += ['.kimg0b BLOCK(__section_alignment__) :',
+                  '{',
+                  '    KEEP(*(.kickos_image0_bss))',
+                  '}']
+        placed += ' && ADDR(.kimg0b) + SIZEOF(.kimg0b) == __kickos_image0_load_end'
+    lines += ['ASSERT(' + placed + ',',
+              '       "KickOS: the kernel\'s link does not hold image 0 at the program\'s own '
+              'offsets")']
     return image, lines, base
 
 
@@ -1030,7 +1033,7 @@ def embed(driver, objcopy, nm, names_file, kernel_objects, kernel_only, entries,
             run([objcopy, '-I', 'binary', '-O', 'elf64-x86-64', '-B', 'i386:x86-64',
                  '--strip-all', '--add-symbol', label + '=.kickos_images:0,global',
                  '--rename-section', '.data=.kickos_images,alloc,load,contents,readonly,data',
-                 '--set-section-alignment', '.kickos_images=%d' % PAGE, bin_path, image_obj],
+                 bin_path, image_obj],
                 'objcopy over image %d\'s bytes' % n)
         else:
             image_source = os.path.join(kimg, 'image%d.store.S' % n)

@@ -62,6 +62,9 @@ classify() {
         # A planted capture's arrival stamps: its judge reads only the rows that carry a line.
         *.capture.times)
             printf 'need\n' ;;
+        # A planted capture's record of the bus after the window: its judge skips `#` lines.
+        *.capture.bus)
+            printf 'need\n' ;;
         # objcopy --redefine-syms input: `#` starts a comment there too, which a reader who
         # takes the file for a bare two-column table would not expect.
         *.syms)

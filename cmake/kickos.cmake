@@ -37,13 +37,16 @@ endif()
 # After KICKOS_IN_TREE, which places the host tool.
 include("${CMAKE_CURRENT_LIST_DIR}/compose.cmake")
 
-# The image link (tools/image-link.py) and the bounds it renames, from the source tree or beside
-# this file in an installed package.
+# The image link (tools/image-link.py) and the bounds it renames, and the esptool image
+# (tools/esp-image.py), from the source tree or beside this file in an installed package.
 if(KICKOS_IN_TREE)
   get_filename_component(KICKOS_IMAGE_LINK_TOOL "${CMAKE_CURRENT_LIST_DIR}/../tools/image-link.py"
                          ABSOLUTE)
+  get_filename_component(KICKOS_ESP_IMAGE_TOOL "${CMAKE_CURRENT_LIST_DIR}/../tools/esp-image.py"
+                         ABSOLUTE)
 else()
   set(KICKOS_IMAGE_LINK_TOOL "${CMAKE_CURRENT_LIST_DIR}/image-link.py")
+  set(KICKOS_ESP_IMAGE_TOOL "${CMAKE_CURRENT_LIST_DIR}/esp-image.py")
 endif()
 set(KICKOS_IMAGE_NAMES "${CMAKE_CURRENT_LIST_DIR}/image_names.txt")
 set(KICKOS_IMAGE_EMBED_NAMES "${CMAKE_CURRENT_LIST_DIR}/embed_names.txt")
@@ -405,19 +408,18 @@ function(kickos_emit_image target)
   if(DEFINED KICKOS_CHIP_ESPTOOL_IMAGE)
     find_program(KICKOS_ESPTOOL NAMES esptool esptool.py)
     if(KICKOS_ESPTOOL)
+      find_program(KICKOS_PYTHON3 NAMES python3 REQUIRED)
       add_custom_command(TARGET ${target} POST_BUILD
-        COMMAND ${KICKOS_ESPTOOL} --chip ${KICKOS_CHIP} elf2image ${KICKOS_CHIP_ESPTOOL_IMAGE}
-                --output $<TARGET_FILE_DIR:${target}>/${target}.app.bin
-                $<TARGET_FILE:${target}>
+        COMMAND ${KICKOS_PYTHON3} -I ${KICKOS_ESP_IMAGE_TOOL} ${KICKOS_ESPTOOL} ${KICKOS_CHIP}
+                ${CMAKE_NM} $<TARGET_FILE:${target}>
+                $<TARGET_FILE_DIR:${target}>/${target}.app.bin ${KICKOS_CHIP_ESPTOOL_IMAGE}
         BYPRODUCTS ${target}.app.bin
         COMMENT "esptool elf2image -> ${target}.app.bin (bootable ${KICKOS_CHIP} image)"
         VERBATIM)
     else()
-      list(JOIN KICKOS_CHIP_ESPTOOL_IMAGE " " _kos_img_options)
       message(STATUS "KickOS: esptool not found: ${target}.app.bin (bootable "
-        "${KICKOS_CHIP} image) not produced. Activate the esp-idf env, or run: "
-        "esptool --chip ${KICKOS_CHIP} elf2image ${_kos_img_options} --output ${target}.app.bin "
-        "<elf>  (the raw ${target}.bin is NOT bootable).")
+        "${KICKOS_CHIP} image) not produced. Activate the esp-idf env and rebuild "
+        "(the raw ${target}.bin is NOT bootable).")
     endif()
   endif()
 endfunction()

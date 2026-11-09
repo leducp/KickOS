@@ -18,7 +18,8 @@
 #   fault      a read in the fault-exit stub, which runs on the frame the kill redirect built
 #   fetch      a call into user text on the fresh entry (x86_64)
 #   irq        a read in a timer interrupt taken from user mode by a thread that set RFLAGS.AC
-#              first, which delivery keeps and which lifts SMAP (x86_64)
+#              first, which delivery keeps and which lifts SMAP (x86_64); armed before a park
+#              and, above one core, a move to another core, which it must outlive
 #
 # On x86_64 a CONTROL follows: the read arm on the same processor model less SMEP and SMAP, where
 # the banner must say `none` and the kernel must reach the word. It is what shows the faults
@@ -95,17 +96,16 @@ done
 # --- what every arm owes --------------------------------------------------------------------
 # Sets ADDR, the word the image named.
 arm_common() { # <arm> <verb>
-    if has_f "[uaccess] INCONCLUSIVE"; then
-        printf '%s\n' "$OUT" | grep -F -e '[uaccess] INCONCLUSIVE'
-        fail "$1: inconclusive: the interrupt came before the image set the flag it tests"
-    fi
     if has_f "[uaccess] ERROR"; then
         printf '%s\n' "$OUT" | grep -F -e '[uaccess] ERROR'
         _rc="$(printf '%s\n' "$OUT" | sed -n 's/.*\[uaccess\] ERROR: .*: rc \(-[0-9]*\),.*/\1/p' | tail -n 1)"
         if [ -n "$_rc" ]; then
             fail "$1: the kernel refused the witness call (rc $_rc), so nothing was witnessed"
         fi
-        fail "$1: ring 0 reached the user page and the image ran on: no guard stopped it"
+        if has_f "[uaccess] ERROR: ring 0 reached"; then
+            fail "$1: ring 0 reached the user page and the image ran on: no guard stopped it"
+        fi
+        fail "$1: the image never reached the access it armed, so nothing was witnessed"
     fi
     ADDR="$(printf '%s\n' "$OUT" | sed -n 's/.*\[uaccess\] op [0-9]* names 0x\([0-9a-f]*\).*/\1/p' | tail -n 1)"
     if [ -z "$ADDR" ]; then

@@ -20,7 +20,7 @@
 
 namespace kickos
 {
-    void thread_abort_park(Thread* t, intptr_t result, Held held)
+    bool thread_abort_park_no_resched(Thread* t, intptr_t result, Held held)
     {
         switch (t->wait_kind)
         {
@@ -40,7 +40,7 @@ namespace kickos
                     // Both the unlink and the CALL_NONE above MUST precede this: the funnel
                     // counts a SEND_WAIT donor still linked on send_waiters, so recomputing
                     // first would re-derive the very boost we are reverting.
-                    sched::set_prio(e->server, thread_effective_prio(e->server), held);
+                    pi_settle(e->server, held);
                 }
                 break;
             }
@@ -59,7 +59,7 @@ namespace kickos
                 // resolves to this thread again after exactly 256 further calls.
                 t->call_seq++;
                 // D3, after the unlink and the CALL_NONE for the same reason as above.
-                sched::set_prio(server, thread_effective_prio(server), held);
+                pi_settle(server, held);
                 // The server keeps the reply capability: reclaiming it would reach into
                 // another thread's table. Its eventual reply consumes it and answers
                 // -KOS_ESRCH.
@@ -84,22 +84,11 @@ namespace kickos
                 WordRecord* const m = t->wait_mutex();
                 KICKOS_ASSERT(m != nullptr); // WAIT_MUTEX never parks without one
                 t->wait_queue->unlink(&t->link);
-                Thread* owner = m->owner;
+                Thread* const owner = m->owner;
                 word_waiter_left(m);
-                for (int depth = 0; owner != nullptr and depth <= kernel().threads.count(); depth++)
+                if (owner != nullptr)
                 {
-                    uint8_t const p = thread_effective_prio(owner);
-                    if (p == owner->prio)
-                    {
-                        break;
-                    }
-                    sched::set_prio(owner, p, held);
-                    WordRecord const* const next = owner->wait_mutex();
-                    if (next == nullptr)
-                    {
-                        break;
-                    }
-                    owner = next->owner;
+                    pi_settle(owner, held);
                 }
                 break;
             }
@@ -112,10 +101,21 @@ namespace kickos
                 word_waiter_left(m);
                 break;
             }
+            case WAIT_TASK_EMPTY:
+            {
+                death_wait_leave(t, held);
+                break;
+            }
+            case WAIT_RETIRE:
+            {
+#if KICKOS_KERNEL_CORES > 1
+                kernel().retire_waiters.unlink(&t->link);
+#endif
+                break;
+            }
             case WAIT_NOTIFY:
             case WAIT_SLEEP:
             case WAIT_JOIN:
-            case WAIT_TASK_EMPTY:
             case WAIT_CONSOLE:
             {
                 // On no list at all, and the wake drops any deadline, so clearing the edge is
@@ -131,7 +131,15 @@ namespace kickos
         }
         t->clear_wait_edge();
         t->wait_result = result;
-        sched::wake(t, held);
+        return sched::wake_no_resched(t, held);
+    }
+
+    void thread_abort_park(Thread* t, intptr_t result, Held held)
+    {
+        if (thread_abort_park_no_resched(t, result, held))
+        {
+            sched::resched_after_wake(t, held);
+        }
     }
 
     bool thread_cancel_escalate(Thread* t, uint8_t kind)

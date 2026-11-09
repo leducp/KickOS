@@ -13,7 +13,6 @@
 #include <kickos/kos.h>
 #include <kickos/sys.h>
 #include <kickos/sys/atomic.h>
-#include <kickos/sys/driver_service.h>
 #include <kickos/libc/fmt.h>
 
 #if KICKOS_HAVE_ASPACE
@@ -43,6 +42,7 @@ namespace
     using mutexbench::WindowBlock;
     using mutexbench::HANDOFFS;
     constexpr uint32_t MALLOC_BYTES = 32;
+    constexpr uint32_t SAMPLE_BYTES = HANDOFFS * sizeof(uint32_t);
     // A clock stepping coarser than this cannot time one handoff, so only the round row prints.
     constexpr uint64_t COARSE_CLOCK_NS = 100000;
     // Above one kernel core the holder cannot see the waiter park: it waits this long after the
@@ -476,7 +476,8 @@ namespace
         }
         if (wait == nullptr)
         {
-            ksnprintf(s, sizeof(s), "  %s: SKIP (no heap for the samples)\n", row);
+            ksnprintf(s, sizeof(s), "  %s: SKIP (no heap for the samples, %u bytes)\n", row,
+                      static_cast<unsigned>(SAMPLE_BYTES));
             kos::print(s);
             return false;
         }
@@ -872,7 +873,7 @@ namespace
     {
         if (step <= COARSE_CLOCK_NS)
         {
-            g_wait = static_cast<uint32_t*>(malloc(HANDOFFS * sizeof(uint32_t)));
+            g_wait = static_cast<uint32_t*>(malloc(SAMPLE_BYTES));
         }
         else
         {
@@ -910,19 +911,8 @@ namespace
     }
 }
 
-namespace
-{
-    int finish(int status)
-    {
-        (void)kos_console_flush(kickos::driver::KOS_DRV_HANDOVER_PROBE_US);
-        (void)kos_shutdown(status, KOS_SHUTDOWN_BOOTLOADER);
-        return status;
-    }
-}
-
 int main(int, char**)
 {
-    (void)kos_terminal_outcome(KOS_SHUTDOWN_BOOTLOADER);
     kos::print("mutexbench: the mutex and the C library's locks, as an application pays\n");
     char load[128];
     ksnprintf(load, sizeof(load),
@@ -944,5 +934,5 @@ int main(int, char**)
     handoff(step, reps);
     free(g_wait);
     kos::print("mutexbench: done\n");
-    return finish(0);
+    return 0;
 }

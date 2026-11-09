@@ -244,6 +244,9 @@ PendSV_Handler:
     /* Deferred MPU commit: must run after the physical swap. r4-r11 survive the call, r0-r3
        and r12 reload from the HW frame, and lr is rebuilt below. */
     bl      kickos_arch_mpu_commit
+    ldr     r0, =g_arch_current
+    ldr     r0, [r0]
+    bl      kickos_switch_landed
     cpsie   i                       /* pair consumed; never resume a thread masked */
     ldr     r0, =0xFFFFFFFD         /* EXC_RETURN: thread mode, PSP */
     mov     lr, r0
@@ -386,6 +389,9 @@ SVC_Handler:
     /* Deferred MPU commit for the incoming thread: the physical swap is done and the
        mask is still up. */
     bl      kickos_arch_mpu_commit
+    ldr     r0, =g_arch_current
+    ldr     r0, [r0]
+    bl      kickos_switch_landed
     cpsie   i                       /* the pair is consumed */
     ldr     r0, =0xFFFFFFFD         /* EXC_RETURN: thread mode, PSP */
     mov     lr, r0

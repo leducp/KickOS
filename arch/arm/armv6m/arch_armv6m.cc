@@ -10,6 +10,7 @@
 #include <kickos/arch/armv6m_trap_stack.h>
 #include <kickos/diag.h>
 
+#include "../common/aeabi_div0.h"
 #include "regs.h"
 #include <kickos/trace/record.h>
 
@@ -199,6 +200,10 @@ void kickos_armv6m_fault_report(uint32_t* frame, uint32_t exc_return)
     {
         ::kickos::kprintf(KDIAG_F_ARM_REGS1, frame[6], frame[5], frame[7], stk);
         ::kickos::kprintf(KDIAG_F_ARM_REGS2, frame[0], frame[1], frame[2], frame[3], frame[4]);
+        if (kickos_arm_div0_trap_at(frame[6]))
+        {
+            ::kickos::kprintf(KDIAG_F_ARM_DIV0);
+        }
     }
     else
     {

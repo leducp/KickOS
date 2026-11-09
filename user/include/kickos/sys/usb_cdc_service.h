@@ -34,6 +34,15 @@
 // (<kickos/sys/banner_identity.h>), ahead of anything the ring holds: the kernel's own
 // banner never reaches this console.
 //
+// Output is held from each configuration until the host's terminal is ready, so no byte reaches
+// a host line discipline still in its default (cooked, echoing) mode. Linux's cdc_acm starts
+// reading and raises DTR inside open(), before the opener can change its termios, and sends the
+// changed line coding from inside tcsetattr, whose lock the line discipline's receive path also
+// takes: a byte sent only after that SET_LINE_CODING is received under the new termios. So the
+// hold ends at a SET_LINE_CODING after a DTR rise, KOS_USB_HOLD_OPENED_NS after the rise for a
+// host that sets no line coding, and KOS_USB_HOLD_UNOPENED_NS after configuration for one that
+// never raises DTR. Every DTR rise holds again.
+//
 // Bulk IN completion sends the next packet. If the host stops reading without
 // a bus reset, tx_inflight stays set and the ring can remain full; a software
 // doorbell cannot complete the pending USB transfer.
@@ -84,6 +93,9 @@ enum kos_usb_event
     KOS_USB_EV_SETUP = 1u << 1,
     KOS_USB_EV_BUFFER = 1u << 2
 };
+
+constexpr uint64_t KOS_USB_HOLD_OPENED_NS = 1000000000ull;
+constexpr uint64_t KOS_USB_HOLD_UNOPENED_NS = 5000000000ull;
 
 // One power-of-two naturally-aligned allocation: the RAM arm of grant_region_admissible
 // requires it of every caller, privileged included. TX is larger than the UART's: the dark
@@ -195,6 +207,26 @@ public:
     // Identity bytes still owed to the host, or one of their packets with the controller.
     bool identity_pending() const { return id_left_ != 0u or id_inflight_; }
 
+    // How long the IRQ thread may park: until the output hold ends, or for ever.
+    uint32_t park_us() const
+    {
+        if (hold_until_ == 0u)
+        {
+            return KOS_TIMEOUT_NONE;
+        }
+        uint64_t const now = kos_clock_now();
+        if (now >= hold_until_)
+        {
+            return 0u;
+        }
+        uint64_t const us = (hold_until_ - now + 999u) / 1000u;
+        if (us >= KOS_TIMEOUT_NONE)
+        {
+            return KOS_TIMEOUT_NONE - 1u;
+        }
+        return static_cast<uint32_t>(us);
+    }
+
 private:
     enum ep0_state
     {
@@ -225,6 +257,8 @@ private:
         zlp_inflight_ = false;
         id_left_ = 0;
         id_inflight_ = false;
+        dtr_ = false;
+        hold_until_ = 0u;
         sh_->tx_inflight = 0;
         sh_->tx_zlp = 0;
         sh_->configured = 0;
@@ -310,6 +344,8 @@ private:
                 // host politely retries.
                 dev_.ep_out_arm(KOS_USB_CDC_EP_DATA, bulk_out_pid_);
                 id_left_ = id_len_;
+                dtr_ = false;
+                hold(KOS_USB_HOLD_UNOPENED_NS);
                 sh_->configured = 1;
             }
             else
@@ -443,9 +479,12 @@ private:
         }
         case KOS_CDC_SET_CONTROL_LINE_STATE:
         {
-            // DTR/RTS are accepted and dropped: a console has no modem lines, and gating
-            // output on DTR would silence a board whose host opened the port without
-            // raising it.
+            bool const dtr = (s.wValue & KOS_CDC_CTRL_DTR) != 0u;
+            if (dtr and not dtr_)
+            {
+                hold(KOS_USB_HOLD_OPENED_NS);
+            }
+            dtr_ = dtr;
             ep0_ack();
             return;
         }
@@ -589,6 +628,10 @@ private:
         if (ep0_out_req_ == KOS_CDC_SET_LINE_CODING and n >= KOS_CDC_LINE_CODING_LEN)
         {
             kos_cdc_line_coding_unpack(&line_coding_, scratch_);
+            if (dtr_)
+            {
+                hold_until_ = 0u;
+            }
         }
         ep0_out_req_ = 0;
         ep0_pid_ = 1;
@@ -615,11 +658,41 @@ private:
         dev_.ep_out_arm(KOS_USB_CDC_EP_DATA, bulk_out_pid_);
     }
 
+    // 0 is "not held", so a deadline is never stored as 0.
+    void hold(uint64_t ns)
+    {
+        uint64_t const until = kos_clock_now() + ns;
+        if (until == 0u)
+        {
+            hold_until_ = 1u;
+            return;
+        }
+        hold_until_ = until;
+    }
+
+    bool held()
+    {
+        if (hold_until_ == 0u)
+        {
+            return false;
+        }
+        if (kos_clock_now() < hold_until_)
+        {
+            return true;
+        }
+        hold_until_ = 0u;
+        return false;
+    }
+
     void pump_tx()
     {
         if (sh_->configured == 0u)
         {
             return; // no host has selected a configuration: the bytes wait in the ring
+        }
+        if (held())
+        {
+            return;
         }
         if (sh_->tx_inflight != 0u or zlp_inflight_)
         {
@@ -696,6 +769,9 @@ private:
     uint32_t id_len_ = 0;
     uint32_t id_left_ = 0;
     bool id_inflight_ = false;
+    bool dtr_ = false;
+    // kos_clock_now() at which the output hold ends; 0 while output flows.
+    uint64_t hold_until_ = 0u;
 };
 
 // ---------------------------------------------------------------------------------
@@ -716,8 +792,13 @@ void irq_loop(Cdc<UsbDev>& cdc, Shared* sh)
     {
         // The FIRST wait is also what arms the line: a claim leaves it masked so no
         // window exists in which it is armed and unowned.
-        if (kos_notify_wait(KOS_USB_CAP_NOTIFY, KOS_USB_ACCEPT, KOS_TIMEOUT_NONE, nullptr)
-            != 0)
+        int const rc = kos_notify_wait(KOS_USB_CAP_NOTIFY, KOS_USB_ACCEPT, cdc.park_us(), nullptr);
+        if (rc == -KOS_ETIMEDOUT)
+        {
+            cdc.service_irq(); // the output hold ended
+            continue;
+        }
+        if (rc != 0)
         {
             driver::trap();
         }

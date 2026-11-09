@@ -25,6 +25,8 @@
 #include <kickos/arch/console_poll.h>
 #include "pin_guard.h"
 #include <kickos/arch/clk_anchor.h>
+#include <kickos/arch/clock_fallback.h>
+#include <kickos/arch/wrap_extend.h>
 #include <kickos/board_config.h>
 // A board shipping no board_wiring.h fails here rather than compiling against another board's
 // crystal.
@@ -137,18 +139,26 @@ namespace
         // PLL config bits are writable only while the PLL is off.
         r32(rcc::PLLCFGR) = PLLCFGR_VALUE;
 
-        // Prescalers first, so APB1<=42 / APB2<=84 are never exceeded when SYSCLK switches.
-        r32(rcc::CFGR) = rcc::CFGR_HPRE_DIV1 | rcc::CFGR_PPRE1_DIV2 | rcc::CFGR_PPRE2_DIV1;
-
         r32(rcc::CR) |= rcc::CR_PLLON;
-        if (not kickos::arch::wait_set(r32(rcc::CR), rcc::CR_PLLRDY))
+        if (not kickos::arch::wait_set(r32(rcc::CR), rcc::CR_PLLRDY) or KICKOS_WITNESS_CLOCK_FALLBACK)
         {
             return;
         }
 
+        // After the lock, or a PLL fallback runs the USART at HSI/2 while pclk1_hz names the HSI.
+        // Before the switch, so APB1<=42 / APB2<=84 always hold.
+        r32(rcc::CFGR) = rcc::CFGR_HPRE_DIV1 | rcc::CFGR_PPRE1_DIV2 | rcc::CFGR_PPRE2_DIV1;
+
         r32(rcc::CFGR) = (r32(rcc::CFGR) & ~rcc::CFGR_SW_MASK) | rcc::CFGR_SW_PLL;
         if (not kickos::arch::wait_set(r32(rcc::CFGR), rcc::CFGR_SWS_PLL))
         {
+            // Back to the HSI, then APB1 to /1, the bus clock pclk1_hz still names. APB1 drops
+            // its /2 only once SYSCLK is confirmed off the PLL, or it runs past 42 MHz.
+            r32(rcc::CFGR) = rcc::CFGR_HPRE_DIV1 | rcc::CFGR_PPRE1_DIV2 | rcc::CFGR_PPRE2_DIV1;
+            if (kickos::arch::wait_clear(r32(rcc::CFGR), rcc::CFGR_SWS_MASK))
+            {
+                r32(rcc::CFGR) = 0;
+            }
             return;
         }
 
@@ -160,12 +170,21 @@ namespace
     // Not DWT_CYCCNT: it intermittently reads aliased garbage here, which the 32->64 wrap
     // extension turns into a phantom 2^32 jump that strands every timed wait.
 
-    // 64-bit extension of TIM2_CNT, which wraps every ~51 s. The wrap is folded exactly once, by
-    // whichever comes first of a thread read or the TIM2 overflow ISR; without that ISR a wrap
-    // across a quiescent >51 s idle is lost. The two words are ONE value: the IrqLock in
-    // tim2_ticks keeps them coherent against the ISR.
-    uint32_t g_clk_high = 0;
-    uint32_t g_clk_last = 0;
+    struct tim2_wrap_ops
+    {
+        static uint32_t count() { return r32(tim::CNT); }
+        static bool pending() { return (r32(tim::SR) & tim::SR_UIF) != 0; }
+        static bool take()
+        {
+            if (not pending())
+            {
+                return false;
+            }
+            r32(tim::SR) = ~tim::SR_UIF; // rc_w0
+            return true;
+        }
+    };
+    kickos::arch_wrap_extend<tim2_wrap_ops> g_clk_wrap;
 
     // Sole writer is init() in arch_init; a runtime retune must call reprice() at the rate edge.
     kickos::arch_clk_anchor g_clk;
@@ -185,22 +204,7 @@ namespace
         r32(tim::SR) = ~tim::SR_UIF;   // drop the UG-induced UIF before arming the IRQ
         r32(tim::DIER) = tim::DIER_UIE;
         r32(tim::CR1) = tim::CR1_CEN;
-        // A pend latched here redelivers one benign kickos_isr_timer tick on enable.
         arch_irq_unmask(irq::TIM2_IRQ);
-    }
-
-    uint64_t tim2_ticks()
-    {
-        arch_irq_state_t s = arch_irq_save();
-        uint32_t cur = r32(tim::CNT);
-        if (cur < g_clk_last)
-        {
-            ++g_clk_high;
-        }
-        g_clk_last = cur;
-        uint64_t hi = g_clk_high;
-        arch_irq_restore(s);
-        return (hi << 32) | cur;
     }
 
     void usart2_init()
@@ -256,15 +260,12 @@ void arch_init(void)
 // Must stay a pure read: deriving the rate here would reprice all elapsed history.
 uint64_t arch_clock_now(void)
 {
-    return g_clk.ns_from(tim2_ticks());
+    return g_clk.ns_from(g_clk_wrap.read());
 }
 
-// Observes the wrap while no thread reads the clock. Runs in the maskable band, so an IrqLock
-// defers it harmlessly.
 void kickos_tim2_clock_isr(void)
 {
-    r32(tim::SR) = ~tim::SR_UIF; // ack the update flag (rc_w0)
-    tim2_ticks();
+    g_clk_wrap.on_overflow();
 }
 
 bool arch_console_write_sync(char const* buf, size_t n)

@@ -5,9 +5,9 @@
 // pre-exception privilege, so a kernel-aimed PSP faults as MSTKERR before any handler runs. The
 // {r4-r11, EXC_RETURN} block pushed BELOW that frame is written in handler mode and refused by
 // nothing, so a PSP a few words above a stack's base clears the hardware check and still writes
-// under the stack. Stacks come from a bump allocator with no padding between equal-size pow2
-// blocks, so the word under a stack base is a NEIGHBOUR thread's granted region, and the last
-// word pushed is EXC_RETURN: rewriting it to 0xFFFFFFF1 resumes the victim PRIVILEGED.
+// under the stack. Stacks share one arena, so the word under a stack base can be a NEIGHBOUR
+// thread's granted region, and the last word pushed is EXC_RETURN: rewriting it to 0xFFFFFFF1
+// resumes the victim PRIVILEGED.
 //
 // One image per arm, each arm reachable only through the guard leg it names:
 //   0  PSP 32 bytes above stack_lo: the 32-byte hardware frame fits, the 36-byte software block
@@ -18,10 +18,10 @@
 //   2  the SECOND site: SVC_Handler pushes the same block through the same PSP and its slow path
 //      hands that PSP to svc_trampoline, which runs PRIVILEGED on it until it reaches the
 //      caller's kernel block. Refusal SVCall, need = the whole SVC extent.
-//   3  PSP ABOVE stack_hi, in a granted region allocated after the stack: only the upper-bound
-//      leg can refuse it.
-//   4  PSP BELOW stack_lo, in a granted region allocated before it: only the lower-bound leg
-//      can refuse it. GRANTED, so hardware stacking succeeds and the software push is refused.
+//   3  PSP ABOVE stack_hi, in a granted region above the stack: only the upper-bound leg can
+//      refuse it.
+//   4  PSP BELOW stack_lo, in a granted region below it: only the lower-bound leg can refuse
+//      it. GRANTED, so hardware stacking succeeds and the software push is refused.
 //   5  THE LOW EDGE, the one arm that expects the trap to be ACCEPTED: the PSP is placed with
 //      exactly the room the SVC site asks for, which is legal because svc_trampoline moves SP
 //      onto the caller's kernel block before calling anything. The claim is that the syscall
@@ -102,9 +102,8 @@
 #endif
 
 #if KICKOS_PSPGUARD_MODE == 6
-// The RUNNING thread's kernel block top (arch/arch.h). Already exported for the fault path, so
-// this arm needs no test-only kernel surface; reachable from a thread only because the board
-// this arm runs on does not enforce, which is the same fact the arm exists to exploit.
+// The RUNNING thread's kernel block top (arch/arch.h), callable from a thread only on a board
+// that does not enforce.
 extern "C" uintptr_t kickos_fault_stack_top(void);
 #endif
 
@@ -113,11 +112,10 @@ extern "C" char const __kickos_tls_carve[];
 
 namespace
 {
-    // Power of two and at least KICKOS_MIN_STACK_SIZE: under enforcement the child's stack is
-    // committed as ONE MPU region, and PMSAv7 can only name a naturally aligned pow2.
+    // Power of two and at least KICKOS_MIN_STACK_SIZE: under enforcement the child's stack, and
+    // the landing pad of modes 3 and 4, are each committed as ONE MPU region, and PMSAv7 can
+    // only name a naturally aligned pow2.
     constexpr uint32_t STACK_BYTES = 2048;
-    // Landing pads for modes 3 and 4, granted as the child's domain region, so pow2 too.
-    constexpr uint32_t PAD_BYTES = 512;
 
 #if KICKOS_PSPGUARD_MODE == 0
     constexpr uint32_t SP_OFFSET = 32;
@@ -131,7 +129,7 @@ namespace
     // INNOCENT thread has executed FP is what separates "the offender's pending save was
     // discarded" from "it fired later, through a pointer the offender chose".
     constexpr uint32_t HW_FRAME_FP = 104;  // 8 integer words, {s0-s15}, FPSCR, the pad
-    // s0 sits above the integer words. Verified against the live FPCAR under gdb.
+    // s0 sits above the integer words.
     constexpr uint32_t FP_SAVE_OFF = SP_OFFSET - HW_FRAME_FP + 32u;
     constexpr uint32_t FP_SAVE_LEN = 17u * 4u; // {s0-s15} + FPSCR
     constexpr uint32_t FP_POISON = 0x0FF5A1EDu;
@@ -536,19 +534,32 @@ int main(int argc, char** argv)
 #else
 int main(int, char**)
 {
-    // Allocation order IS the geometry: the bump allocator hands out increasing addresses, so
-    // `pad_lo` lands below the child stack and `pad_hi` above it.
 #if KICKOS_PSPGUARD_MODE == 3 || KICKOS_PSPGUARD_MODE == 4
-    void* const pad_lo = kos_ram_alloc(PAD_BYTES);
-#endif
-    void* const st = kos_ram_alloc(STACK_BYTES);
-#if KICKOS_PSPGUARD_MODE == 3 || KICKOS_PSPGUARD_MODE == 4
-    void* const pad_hi = kos_ram_alloc(PAD_BYTES);
-    if (pad_lo == nullptr or pad_hi == nullptr)
+    // Allocation order does not place a block: the arena fills an earlier alignment run-up
+    // first. The stack and its landing pad are told apart by address.
+    void* const blk_a = kos_ram_alloc(STACK_BYTES);
+    void* const blk_b = kos_ram_alloc(STACK_BYTES);
+    if (blk_a == nullptr or blk_b == nullptr)
     {
-        kos::print("[pspguard] ERROR: arena ram_alloc refused a landing pad\n");
+        kos::print("[pspguard] ERROR: arena ram_alloc refused the stack or its landing pad\n");
         return 1;
     }
+    void* lower = blk_a;
+    void* upper = blk_b;
+    if (reinterpret_cast<uintptr_t>(blk_b) < reinterpret_cast<uintptr_t>(blk_a))
+    {
+        lower = blk_b;
+        upper = blk_a;
+    }
+#if KICKOS_PSPGUARD_MODE == 3
+    void* const st = lower;
+    void* const landing = upper;
+#else
+    void* const st = upper;
+    void* const landing = lower;
+#endif
+#else
+    void* const st = kos_ram_alloc(STACK_BYTES);
 #endif
     if (st == nullptr)
     {
@@ -563,14 +574,10 @@ int main(int, char**)
     // wild thread's own window, or the peer's block.
     void* mem = nullptr;
     uint32_t mem_size = 0;
-#if KICKOS_PSPGUARD_MODE == 3
-    mem = pad_hi;
-    mem_size = PAD_BYTES;
-    g_arm.target = reinterpret_cast<uintptr_t>(pad_hi) + PAD_BYTES;
-#elif KICKOS_PSPGUARD_MODE == 4
-    mem = pad_lo;
-    mem_size = PAD_BYTES;
-    g_arm.target = reinterpret_cast<uintptr_t>(pad_lo) + PAD_BYTES;
+#if KICKOS_PSPGUARD_MODE == 3 || KICKOS_PSPGUARD_MODE == 4
+    mem = landing;
+    mem_size = STACK_BYTES;
+    g_arm.target = reinterpret_cast<uintptr_t>(landing) + STACK_BYTES;
 #else
     g_arm.target = g_arm.stack_lo + SP_OFFSET;
 #endif

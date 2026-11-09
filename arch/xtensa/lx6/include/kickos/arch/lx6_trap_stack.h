@@ -8,39 +8,35 @@
  * on the stack it interrupted, and a KickOS syscall here is a plain call: the interrupt is the
  * only involuntary descent.
  *
- * SPILL_ALL_WINDOWS adds nothing: it flushes each ancestor frame to that frame's own base save
+ * FLUSH_WINDOWS adds nothing: it flushes each ancestor frame to that frame's own base save
  * area, which sits above the interruptee's sp.
  */
 
 #ifndef KICKOS_ARCH_LX6_TRAP_STACK_H
 #define KICKOS_ARCH_LX6_TRAP_STACK_H
 
+#include <kickos/arch/core_stack.ld.h>
+
 /* The interrupt frame: the a-registers, the 16 f-registers with FCR/FSR, PC and PS. Must equal
  * F_SIZE in xtensa_frame.h, which the entry subtracts; arch_xtensa.cc asserts the pair. */
 #define KICKOS_LX6_TRAP_FRAME 256
 
-/* What kickos_lx6_dispatch_l1 descends below that frame, per kernel-core count.
+/* What kickos_lx6_dispatch_l1 descends below that frame: 624 on esp32-wroom-benchsmp, 608 on
+ * esp32-wroom-smp, 512 on -bench and 480 on esp32-wroom, the console's TX drain waking a writer
+ * waiting for ring room. Above one core that wake's switch re-acquires the kernel lock and the
+ * lock's spin polls the doorbell (resched_after_wake -> pick_and_seat -> klock_attach
+ * -> arch_kernel_lock -> kickos_doorbell_poll -> ...); at one core it ends in
+ * kickos_lx6_switch[128].
  *
- * Above one core, 656 on esp32-wroom-benchsmp and 640 on esp32-wroom-smp, the console's TX
- * drain waking the writers waiting for ring room, whose switch re-acquires the kernel lock:
- * console_tx_isr -> console_tx_room_freed -> console_dark_wake -> wake -> resched_after_wake
- * -> pick_and_seat -> klock_attach -> arch_kernel_lock -> kickos_doorbell_poll
- * -> kickos_doorbell_service -> kickos_irq_route_service -> arch_irq_mask
- * -> kickos_lx6_hw_mask -> phys_int_disable.
- * The poll's four frames are charged to every chain that can spin on the kernel lock, pending
- * drain or not. switch_to and switch_book inline into pick_and_seat, so one more value held live
- * across the switch costs that frame 16 bytes, which is the bench's 16 over esp32-wroom-smp.
- * Enforced at 704, the next multiple of 64 above 656.
+ * The same figure bounds the unhandled-exception reporter on the stack that faulted: 608 at one
+ * core, kprintf[336] into the console. Above one core its line waits on the kernel lock and serves
+ * the doorbell there, 816 on esp32-wroom-benchsmp and 784 on esp32-wroom-smp.
  *
- * At one core, 432 on the three one-core presets: resched_after_wake -> pick_and_seat
- * -> arch_switch -> xtensa_switch[128]. Enforced at 512.
- *
- * FRAME + 704 = 960 against a KICKOS_MIN_STACK_SIZE of 960 above one core, and FRAME + 512 = 768
- * against 896 at one. */
+ * FRAME + 768 = 1024, and above one core FRAME + 832 = 1088: the KICKOS_MIN_STACK_SIZE floor. */
 #if KICKOS_KERNEL_CORES > 1
-#define KICKOS_LX6_TRAP_DEPTH 704
+#define KICKOS_LX6_TRAP_DEPTH 832
 #else
-#define KICKOS_LX6_TRAP_DEPTH 512
+#define KICKOS_LX6_TRAP_DEPTH 768
 #endif
 
 /* The panic reporter's own stack. Frame is one trap frame: the entry raises INTLEVEL to 15
@@ -57,14 +53,32 @@
  * 64 on every registered preset. Enforced at 128. */
 #define KICKOS_LX6_TRAP_DEPTH_IDLE 128
 
+/* THE BOOT STACKS, one KICKOS_LX6_CORE_STACK below _estack per core, which arch_xtensa.cc
+ * asserts holds both classes. DEPTH is the deepest root of each level the roots file declares,
+ * summed, and a fault is charged one trap frame, as FAULT charges it.
+ *
+ * MAIN, the PRO_CPU's boot at INTLEVEL 15 with a fault nested on it: 1824 on
+ * esp32-wroom-benchsmp, the boot check's print waking a console writer, 1520 on esp32-wroom.
+ *
+ * CORE, the APP_CPU's park, a level-1 interrupt under its trap frame, and a fault in that, so
+ * two trap frames: 1872 on esp32-wroom-benchsmp, 1824 on esp32-wroom-smp.
+ *
+ * Both are reserved at 2560. */
+#define KICKOS_LX6_CORE_FRAME 512
+#define KICKOS_LX6_MAIN_DEPTH 2560
+#define KICKOS_LX6_CORE_DEPTH 2560
+
 /*
  * The trap classes tests/static/check_trap_redzone.sh measures against the figures above,
  * one line each; tests/static/trap_redzone_roots.txt says what each option means and roots
  * every class.
  *
  * class PREEMPT frame=KICKOS_LX6_TRAP_FRAME depth=KICKOS_LX6_TRAP_DEPTH
+ * class FAULT   frame=KICKOS_LX6_TRAP_FRAME depth=KICKOS_LX6_TRAP_DEPTH
  * class PANIC   frame=KICKOS_LX6_PANIC_FRAME depth=KICKOS_LX6_PANIC_DEPTH stack=panic
  * class IDLE    frame=KICKOS_LX6_TRAP_FRAME depth=KICKOS_LX6_TRAP_DEPTH_IDLE
+ * class MAIN    frame=KICKOS_LX6_TRAP_FRAME depth=KICKOS_LX6_MAIN_DEPTH stack=main size=KICKOS_LX6_CORE_STACK
+ * class CORE    frame=KICKOS_LX6_CORE_FRAME depth=KICKOS_LX6_CORE_DEPTH stack=main size=KICKOS_LX6_CORE_STACK core=secondary
  */
 
 #endif

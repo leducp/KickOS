@@ -187,7 +187,8 @@ TEST(ConsoleBaud, rx72m_baud_select)
     };
     Case const cases[] = {
         {60000000u, BAUD, 0u, BGDM_ABCS, 64u, "PCLKB on the PLL"},
-        {20000000u, BAUD, 0u, BGDM, 10u, "the ceiling N wins when the quotient is past a half"},
+        {20000000u, BAUD, 0u, BGDM, 10u,
+         "the 20 MHz HOCO, the fallback: 113636 baud, the ceiling N winning past a half"},
         {15360000u, 9600u, 0u, BGDM, 99u, "an exact tie goes to 16 base clocks per bit"},
     };
     for (Case const& c : cases)
@@ -206,7 +207,9 @@ TEST(ConsoleBaud, rx72m_baud_select)
         char const* what;
     };
     Refusal const refusals[] = {
-        {240000u, BAUD, "the 240 kHz LOCO, the PLL never came up"},
+        {240000u, BAUD, "the 240 kHz LOCO, the HOCO never came up either"},
+        {16000000u, BAUD, "the 16 MHz HOCO: 117647 baud at best, 2.1% off"},
+        {18000000u, BAUD, "the 18 MHz HOCO: 112500 baud at best, 2.3% off"},
         {60000000u, 4000000u, "nothing within the tolerance"},
         {0u, BAUD, "no clock"},
         {60000000u, 0u, "no baud"},

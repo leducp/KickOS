@@ -11,7 +11,7 @@
    sched   tickless
 
 [rootfault] child: wrote my own granted region
-[rootfault] main: writing the child's granted region at 0xffff9e832000 (expect fault)
+[rootfault] main: writing the child's granted region at 0xffff9e832000 (expect fault) by the store at 0xaaaab4c21a40
 
 [sim] SIGSEGV si_code=2 si_addr=0xffff9e832000 pc=0x0
 

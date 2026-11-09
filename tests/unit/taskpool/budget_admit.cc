@@ -96,7 +96,6 @@ namespace kickos
             Task* const tk = task(0);
             member_of(tk, 1);
             Thread* const leaving = member_of(tk, 2);
-            uint16_t const gen = task_gen(tk);
             {
                 IrqLock lock;
                 (void)task_release(tk, lock);
@@ -105,7 +104,7 @@ namespace kickos
             EXPECT_FALSE(admits(tk, BudgetKind::THREADS, THREADS - 1u));
             {
                 IrqLock lock;
-                (void)task_sweep_done(tk, gen);
+                (void)task_sweep_done(tk);
             }
             EXPECT_EQ(usage(tk, BudgetKind::THREADS), 1u);
             EXPECT_TRUE(admits(tk, BudgetKind::THREADS, THREADS - 1u));

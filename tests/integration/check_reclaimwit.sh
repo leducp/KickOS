@@ -43,7 +43,7 @@ MUTE_LINE='[reclaimwit] MUTE kernel console while the driver holds it'
 LIVE_LINE='[reclaimwit] LIVE kernel console after the driver died'
 SINK_LINE='[reclaimwit] routed through the driver, which discards it'
 PASS_LINE='[reclaimwit] PASS reclaim fired'
-PARK_LINE='[reclaimwit] park arm: the system stays up'
+PARK_LINE='[reclaimwit] park arm: nothing further is printed'
 TAIL_LINE='[reclaimwit] DRAINTAIL 0123456789abcdef0123456789abcdef <<<DRAIN-END>>>'
 
 # grep -c exits 1 on zero matches, which kills a `set -e` caller before its fail message
@@ -65,7 +65,7 @@ else
             # The last line of each terminal path, as one ERE. print_rc's failure prefix is in it
             # because an early failure otherwise burns the whole poll and reports no-progress
             # instead of its cause.
-            poll_image "$elf" '\[reclaimwit\] (park arm: the system stays up|  FAIL )'
+            poll_image "$elf" '\[reclaimwit\] (park arm: nothing further is printed|  FAIL )'
             if [ "$POLL_OK" -ne 1 ]; then
                 fail "no terminal line reached the wire: the image did not boot, or the console never came back after the driver died"
             fi

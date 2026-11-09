@@ -59,7 +59,7 @@ namespace
         }
         kos_task_params params = {};
         kos_task_t t = KOS_TASK_NONE;
-        int const rc = kos_task_create(prog, &params, &t);
+        int const rc = kos_task_create(prog, &params, 0, &t);
         (void)kos_handle_close(prog);
         if (rc != 0)
         {

@@ -16,8 +16,10 @@ namespace kickos::esp32c6::reg::pcr
     constexpr uintptr_t UART0_SCLK_CONF = mmap::PCR_BASE + 0x04u; // Register 8.2
     constexpr uintptr_t RMT_CONF = mmap::PCR_BASE + 0x2Cu;        // CLK_EN bit0, RST_EN bit1
     constexpr uintptr_t RMT_SCLK_CONF = mmap::PCR_BASE + 0x30u;
+    constexpr uintptr_t TG0_TIMER_CLK_CONF = mmap::PCR_BASE + 0x40u; // Register 8.15
     constexpr uintptr_t SYSCLK_CONF = mmap::PCR_BASE + 0x110u;   // Register 8.63
     constexpr uintptr_t CPU_FREQ_CONF = mmap::PCR_BASE + 0x118u; // Register 8.65
+    constexpr uintptr_t AHB_FREQ_CONF = mmap::PCR_BASE + 0x11Cu; // Register 8.66
 
     constexpr uint32_t RMT_CLK_EN = 1u << 0;
     constexpr uint32_t RMT_RST_EN = 1u << 1;
@@ -53,6 +55,18 @@ namespace kickos::esp32c6::reg::pcr
     constexpr uint32_t CPU_HS_DIV_NUM_S = 8u; // [15:8]
     constexpr uint32_t CPU_HS_DIV_NUM_MASK = 0xFFu;
     constexpr uint32_t CPU_HS_120M_FORCE = 1u << 16;
+
+    // AHB_FREQ_CONF (Register 8.66). AHB_CLK may not exceed 40 MHz (Table 8.2-2), which the PLL
+    // root of 160 MHz reaches at divide by 4.
+    constexpr uint32_t AHB_HS_DIV_NUM_S = 8u; // [15:8]
+    constexpr uint32_t AHB_HS_DIV_NUM_MASK = 0xFFu;
+    constexpr uint32_t AHB_HS_DIV_NUM_BY_4 = 3u;
+
+    // TIMERGROUP0_TIMER_CLK_CONF (Register 8.15).
+    constexpr uint32_t TG0_TIMER_CLK_SEL_S = 20u; // [21:20] 0=XTAL 1=PLL_F80M 2=RC_FAST
+    constexpr uint32_t TG0_TIMER_CLK_SEL_MASK = 0x3u;
+    constexpr uint32_t TG0_TIMER_CLK_SEL_PLL_F80M = 1u;
+    constexpr uint32_t TG0_TIMER_CLK_EN = 1u << 22;
 
     // PLL_F80M is the SPLL/6 tap, 80 MHz per TRM Register 8.68. SPLL's own rate
     // (PCR_PLL_FREQ) is HRO and cannot be read back.

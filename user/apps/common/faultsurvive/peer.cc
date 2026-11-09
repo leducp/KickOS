@@ -7,8 +7,11 @@
 
 #include <kickos/apps/peer_run.h>
 #include <kickos/kos.h>
+#include <kickos/libc/fmt.h>
 #include <kickos/sys.h>
 #include <kickos/sys/trap.h>
+
+#include <stdint.h>
 
 // An unset mode compares equal to 0, so it would silently build that arm.
 #ifndef KICKOS_FS_MODE
@@ -108,6 +111,23 @@ namespace
     }
 #endif
 
+#if KICKOS_FS_MODE == 8 || KICKOS_FS_MODE == 9
+#if KICKOS_FS_MODE == 8
+    using fs_div_t = int32_t;
+#else
+    using fs_div_t = int64_t;
+#endif
+
+    // UBSan would report the division before it reached the hardware or the run-time ABI, which
+    // are what this arm judges.
+    __attribute__((noinline, no_sanitize("integer-divide-by-zero"))) fs_div_t divide_by_zero()
+    {
+        fs_div_t volatile dividend = 7;
+        fs_div_t volatile divisor = 0;
+        return dividend / divisor;
+    }
+#endif
+
     // The address main's argument names: the word mode 3 aims at, the stack's low edge of mode 4,
     // or the top of the block mode 2 and 7 aim at.
     uintptr_t g_fs_arg = 0;
@@ -115,7 +135,14 @@ namespace
     void faulter()
     {
         kos::print("[fs] worker about to fault\n");
-#if KICKOS_FS_MODE == 1
+#if KICKOS_FS_MODE == 8 || KICKOS_FS_MODE == 9
+        // Printed where the core returns a quotient instead of faulting, which the judge reads.
+        char line[64];
+        ksnprintf(line, sizeof(line), "[fs] divide by zero returned %lld\n",
+                  static_cast<long long>(divide_by_zero()));
+        kos::print(line);
+        return;
+#elif KICKOS_FS_MODE == 1
         g_sink = burn(4096, nullptr); // deeper than any thread stack in the tree
 #elif KICKOS_FS_MODE == 2
         // Top of the buffer: the frame is pushed DOWNWARDS from here.

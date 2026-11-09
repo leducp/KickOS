@@ -62,23 +62,21 @@
  * arch_x86_64.cc asserts. */
 #define KICKOS_X86_64_TRAP_NEST 888
 
-/* The ring 3 syscall on the block, reserved at 2048. 1944 on qemu-x86_64, a task create seeding
- * the new task's space, and 1976 on qemu-x86_64-bench, whose 32-slot root table widens
- * spawn_locked to 432; arch_x86_64.cc refuses more than 9 grants:
- *   syscall_dispatch[144] -> task_create_call[192] -> spawn_locked[416] -> thread_create[128]
- *   -> task_for[32] -> domain_for[80] -> claim_slot[48] -> aspace_image_seed[112]
+/* The ring 3 syscall on the block. 2072 on qemu-x86_64, a task create seeding the new task's
+ * space; arch_x86_64.cc refuses more than 9 grants:
+ *   syscall_dispatch[176] -> task_create_call[224] -> spawn_locked[432] -> thread_create[128]
+ *   -> task_for[48] -> domain_for[96] -> claim_slot[48] -> aspace_image_seed[128]
  *   -> arch_aspace_map[144] -> map_into[112] x5 -> kickos_frame_alloc[32] -> ... */
-#define KICKOS_X86_64_TRAP_DEPTH_SYSK 2048
+#define KICKOS_X86_64_TRAP_DEPTH_SYSK 2080
 
 /* An interrupt nested below arch_irq_window, the one place a ring 3 syscall opens interrupts on
  * the block: the syscall entry's frame and a ring 0 interrupt's whole extent, FRAME + NEST, which
  * arch_x86_64.cc asserts. */
 #define KICKOS_X86_64_TRAP_WINDOW 1064
 
-/* The syscall's descent to arch_irq_window, above SYSWIN's frame. 376 on qemu-x86_64-bench and
- * the multicore presets, 360 on qemu-x86_64:
- *   syscall_dispatch[144] -> presync_prepare[16] -> presync_run[176]
- *   -> GranuleWindows::granule[32] -> arch_irq_window[8]
+/* The syscall's descent to arch_irq_window, above SYSWIN's frame. 392 on the multicore
+ * presets, 360 on qemu-x86_64 and qemu-x86_64-bench:
+ *   syscall_dispatch[176] -> frame_create_call[96] -> presync_run[80] -> arch_irq_window[8]
  * WINDOW + 512 = 1576 against 4092 above the canary, and 1128 + 512 = 1640 on the multicore
  * presets. */
 #define KICKOS_X86_64_TRAP_DEPTH_SYSWIN 512
@@ -107,8 +105,8 @@
 #define KICKOS_X86_64_PANIC_DEPTH 384
 
 /* The SMP doorbell, lock wait and route service lengthen reachable call chains. These bounds
- * cover qemu-x86_64-smp12's callgraph, the deepest of the SMP presets: SYSK's spawn 2336,
- * IRQ and IST 592 and PANIC 536 under g++ 13, EXITK's teardown 1080 under both. */
+ * cover qemu-x86_64-smp12's callgraph, the deepest of the SMP presets: IRQ and IST 592 and
+ * PANIC 536 under g++ 13, EXITK's teardown 1080 under both. */
 #if KICKOS_KERNEL_CORES > 1
 #undef KICKOS_X86_64_TRAP_DEPTH_IRQ
 #define KICKOS_X86_64_TRAP_DEPTH_IRQ 768
@@ -118,8 +116,10 @@
 #define KICKOS_X86_64_TRAP_WINDOW 1128
 #undef KICKOS_X86_64_TRAP_DEPTH_SYSK
 #define KICKOS_X86_64_TRAP_DEPTH_SYSK 2432
-/* SYSK measures 2104 on qemu-x86_64-smp12, a spawn seeding the new task's space from a 32-slot
- * root table. */
+/* SYSK measures 2288 on qemu-x86_64-smp12, a task create seeding the new task's space, whose
+ * frame allocation waits on the kernel lock and serves the doorbell:
+ *   syscall_dispatch[192] -> task_create_call[224] -> spawn_locked[432] -> ...
+ *   -> kickos_frame_alloc[48] -> klock_enter[48] -> ... -> x86_64::apic_write[8] */
 #undef KICKOS_X86_64_TRAP_DEPTH_IST
 #define KICKOS_X86_64_TRAP_DEPTH_IST 768
 #undef KICKOS_X86_64_TRAP_DEPTH_EXITK
@@ -129,6 +129,26 @@
 #undef KICKOS_X86_64_PANIC_DEPTH
 #define KICKOS_X86_64_PANIC_DEPTH 640
 #endif
+
+/* THE BOOT STACKS. DEPTH is the deepest root of each level the roots file declares, summed, and
+ * each is reserved at 512 or 3072, which arch_x86_64.cc asserts the stack holds.
+ *
+ * UEFI, the stack firmware calls efi_main on, which UEFI 2.11 section 2.3.4 promises at 128 KiB
+ * or more: the handover and a fault through the stopgap gate, 384 on every preset. The frame
+ * term is FRAME_IRQ, above the five words and error code that gate stacks.
+ *
+ * BOOT, g_boot_stack, which kmain runs on with the interrupt flag clear: kmain and a ring 0 fault
+ * nested on it, 2536 on qemu-x86_64-smp4, smp8 and smp12, 2056 on qemu-x86_64.
+ *
+ * AP, an application processor's g_ap_stack row: its park, the doorbell interrupt and a fault
+ * nested in that, 2496 on the same three presets. Its frame term is two FRAME_IRQ. */
+#define KICKOS_X86_64_UEFI_STACK 131072
+#define KICKOS_X86_64_BOOT_STACK 131072
+#define KICKOS_X86_64_AP_STACK 16384
+#define KICKOS_X86_64_AP_FRAME 368
+#define KICKOS_X86_64_UEFI_DEPTH 512
+#define KICKOS_X86_64_BOOT_DEPTH 3072
+#define KICKOS_X86_64_AP_DEPTH 3072
 
 /*
  * The trap classes tests/static/check_trap_redzone.sh measures against the figures above,
@@ -144,6 +164,9 @@
  * class EXITKSW   frame=KICKOS_X86_64_TRAP_FRAME_NONE depth=KICKOS_X86_64_TRAP_DEPTH_EXITKSW stack=kernel
  * class IDLE      frame=KICKOS_X86_64_TRAP_NEST depth=KICKOS_X86_64_TRAP_DEPTH_IDLE stack=idle
  * class PANIC     frame=KICKOS_X86_64_PANIC_FRAME depth=KICKOS_X86_64_PANIC_DEPTH stack=panic
+ * class UEFI      frame=KICKOS_X86_64_TRAP_FRAME_IRQ depth=KICKOS_X86_64_UEFI_DEPTH stack=main size=KICKOS_X86_64_UEFI_STACK
+ * class BOOT      frame=KICKOS_X86_64_TRAP_FRAME_IRQ depth=KICKOS_X86_64_BOOT_DEPTH stack=main size=KICKOS_X86_64_BOOT_STACK
+ * class AP        frame=KICKOS_X86_64_AP_FRAME depth=KICKOS_X86_64_AP_DEPTH stack=main size=KICKOS_X86_64_AP_STACK core=secondary
  */
 
 #endif

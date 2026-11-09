@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The two bases <regs/usic.h> names, forced ahead of every include of drv_usic_route's sources:
-// a host build generates no XMC4800 chip header. The engine is handed a host buffer instead.
+// The two bases <regs/usic.h> names, forced ahead of every include of the USIC host tests'
+// sources: a host build generates no XMC4800 chip header. The engine is handed a host buffer
+// instead.
 
 #ifndef KICKOS_TESTS_UNIT_DRVBRINGUP_USIC_MMAP_H
 #define KICKOS_TESTS_UNIT_DRVBRINGUP_USIC_MMAP_H

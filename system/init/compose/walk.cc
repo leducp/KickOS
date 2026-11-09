@@ -652,7 +652,7 @@ namespace kickos::init
         // A program task runs the program its record names, found for this create alone.
         if (t.program == KOS_TABLE_NO_STRING)
         {
-            return kos_task_create(program_, &p, &s.handle);
+            return kos_task_create(program_, &p, START_WAIT_US, &s.handle);
         }
         kos_program_t program = KOS_CAP_NONE;
         int rc = kos_program_find(strings_ + t.program, &program);
@@ -660,7 +660,7 @@ namespace kickos::init
         {
             return rc;
         }
-        rc = kos_task_create(program, &p, &s.handle);
+        rc = kos_task_create(program, &p, START_WAIT_US, &s.handle);
         (void)kos_handle_close(program);
         return rc;
     }

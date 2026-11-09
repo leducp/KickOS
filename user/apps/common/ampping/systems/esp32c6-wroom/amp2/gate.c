@@ -70,3 +70,9 @@ void ampping_gate_report(struct ampbook_row* book)
            "node 0's timg0\n",
            (unsigned long)own, AMPPING_GATE_NODE, held, foreign);
 }
+
+void ampping_gate_served(struct ampbook_row* row, uint32_t served)
+{
+    (void)row;
+    (void)served;
+}

@@ -19,6 +19,15 @@ namespace
     constexpr uint32_t REGION = 4096; // granted to the worker
     constexpr uint32_t BLOCK = REGION * 2;
 
+    // armv6m reports the faulting instruction and no address, so its judge holds the fault's PC
+    // to the address main announces for this store: the store must stay the body's first
+    // instruction, and the worker calls through g_poke so no inlined copy or clone runs instead.
+    __attribute__((noinline)) void poke(volatile int* cell, int value)
+    {
+        *cell = value;
+    }
+    void (*volatile g_poke)(volatile int*, int) = poke;
+
     void domainA_worker(void*)
     {
         kos_window w = {};
@@ -39,7 +48,7 @@ namespace
             return;
         }
         kos::print("[domain] A: my region ok; writing domain B (expect fault)\n");
-        *reinterpret_cast<volatile int*>(base + REGION) = 0x2222; // not granted -> fault
+        g_poke(reinterpret_cast<volatile int*>(base + REGION), 0x2222); // not granted -> fault
         // Reached only where the MPU is not enforced (privilege-only boards). The
         // wording steers clear of the "did not fault" phrase CTest negative-asserts.
         kos::print("[domain] cross-domain write completed: OK where the MPU is a "
@@ -59,23 +68,19 @@ int main(int, char**)
         return 1;
     }
 
-    // Announced from main, which is not granted A and so may not touch it: the gate pins
-    // the reported fault address to this one, since a grant that never happened faults on
-    // the worker's OWN write instead and prints the same banner.
-    char msg[96];
-    ksnprintf(msg, sizeof(msg), "[domain] expect fault at %p\n",
-              static_cast<char*>(rA) + REGION);
+    // The gate pins the fault to this address: a grant that never happened faults on the
+    // worker's OWN write instead and prints the same banner.
+    char msg[128];
+    ksnprintf(msg, sizeof(msg), "[domain] expect fault at %p by the store at %p\n",
+              static_cast<char*>(rA) + REGION, reinterpret_cast<void*>(g_poke));
     kos::print(msg);
 
     kos_window win = {};
     win.base = reinterpret_cast<uintptr_t>(rA);
     win.size = REGION;
     win.kind = KOS_WINDOW_MEMORY;
-    kos::thread::create(domainA_worker, nullptr, "domainA", 10, KOS_POLICY_FIFO, 0, nullptr, 0,
-                        &win, 1);
-    static kos_sem_t idle = KOS_SEM_INIT(0);
-    while (true)
-    {
-        kos_sem_wait(&idle, KOS_TIMEOUT_NONE);
-    }
+    auto w = kos::thread::create(domainA_worker, nullptr, "domainA", 10, KOS_POLICY_FIFO, 0,
+                                 nullptr, 0, &win, 1);
+    (void)w.join();
+    return 0;
 }

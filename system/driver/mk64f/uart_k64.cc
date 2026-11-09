@@ -17,9 +17,10 @@
 
 #include <kickos/driver/uart.h>
 
-#include <kickos/io/mmio.h>   // r8
-#include <kickos/sys.h>       // kos_periph_enable/disable, kos_periph_clock_hz
-#include <kickos/sys/errno.h> // KOS_EPERM, KOS_ENOTSUP, KOS_EBUSY
+#include <kickos/io/mmio.h>    // r8
+#include <kickos/poll_bound.h> // KICKOS_POLL_SPIN_MAX
+#include <kickos/sys.h>        // kos_periph_enable/disable, kos_periph_clock_hz
+#include <kickos/sys/errno.h>  // KOS_EPERM, KOS_ENOTSUP, KOS_EBUSY
 
 #include <regs/uart.h>
 #include <uart_class.h> // uart0_tx_ready
@@ -29,8 +30,6 @@
 namespace
 {
     namespace ru = kickos::mk64f::reg::uart;
-
-    constexpr uint32_t POLL_MAX = 1000000u;
 
     bool tx_idle(uintptr_t base)
     {
@@ -154,10 +153,16 @@ int32_t kos_uart_open(struct kos_uart* u, struct kos_uart_config const* cfg)
         {
             return -KOS_ENOSYS;
         }
-        sbr = clk / (16u * cfg->baud);
-        if (sbr == 0u or sbr > 8191u)
+        // Refused before the divide: 16 * baud wraps to 0 at every multiple of 2^28, and past
+        // clk / 16 SBR is 0, which disables the generator (RM 52.3.1).
+        if (cfg->baud > clk / 16u)
         {
-            return -KOS_ENOTSUP; // SBR 0 disables the generator (RM 52.3.1); 13 bits is the range
+            return -KOS_ENOTSUP;
+        }
+        sbr = clk / (16u * cfg->baud);
+        if (sbr > 8191u)
+        {
+            return -KOS_ENOTSUP; // 13 bits is the range
         }
         brfa = (clk * 2u) / cfg->baud - sbr * 32u;
     }
@@ -176,7 +181,7 @@ int32_t kos_uart_open(struct kos_uart* u, struct kos_uart_config const* cfg)
     // PFIFO is writable only while TE and RE are clear (RM 52.3.16), and a byte still in the
     // shifter would be truncated on the wire.
     bool drained = false;
-    for (uint32_t i = 0; i < POLL_MAX; i++)
+    for (uint32_t i = 0; i < KICKOS_POLL_SPIN_MAX; i++)
     {
         if (tx_idle(u->base))
         {
@@ -311,7 +316,7 @@ int32_t kos_uart_flush(struct kos_uart* u)
     // THE STRONG CONTRACT ON THIS PART: drained means the last stop bit has left the pin.
     // TDRE alone is only the data register handing off to the shifter; TC is set when the
     // transmitter is idle with nothing pending (RM 52.3.5).
-    for (uint32_t i = 0; i < POLL_MAX; i++)
+    for (uint32_t i = 0; i < KICKOS_POLL_SPIN_MAX; i++)
     {
         if (tx_idle(u->base))
         {

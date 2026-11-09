@@ -2,12 +2,16 @@
  * Copyright (c) 2026 Philippe Leduc
  *
  * NOT a C header: the GNU ld macros of an ESP32 image, which its image template
- * (esp32.image.ld) instantiates, IRAM holding its text and DRAM everything it reads.
+ * (esp32.image.ld) instantiates: its text in FLASHTEXT, what the ROM loads of it in DRAM, and its
+ * window in DRAM1.
  */
 #ifndef KICKOS_ARCH_XTENSA_CHIP_ESP32_ESP32_IMAGE_LD_H
 #define KICKOS_ARCH_XTENSA_CHIP_ESP32_ESP32_IMAGE_LD_H
 
 #include <sections.ld.h>
+
+#define KICKOS_ESP32_IMAGE_TEXT_REGION FLASHTEXT
+#define KICKOS_ESP32_IMAGE_WINDOW_REGION DRAM1
 
 /* Image n's text, its code span. */
 #define KICKOS_ESP32_IMAGE_TEXT(n)                                            \
@@ -18,7 +22,7 @@
         *kickos_image##n.o(.text .text.*)                                     \
         . = ALIGN(4);                                                         \
         KICKOS_LD_IMAGE_SYM(n, code_end) = .;                                 \
-    } > IRAM
+    } > KICKOS_ESP32_IMAGE_TEXT_REGION
 
 /* What the ROM loads of image n, in DRAM: its header, rodata and DWARF EH ended by a zero-length
  * CIE, its constructor window, then the template its window's .data starts from. Each part ends
@@ -54,7 +58,7 @@
         . += SIZEOF(.kickos_image##n##_data);                                 \
     } > DRAM
 
-/* Image n's window at `base`, or where DRAM has room: .data, loaded at its template and copied in
+/* Image n's window at `base`, or where DRAM1 has room: .data, loaded at its template and copied in
  * at every start, .bss, `heap` more bytes, 8-aligned from a base aligned to `align`. The ROM loads
  * nothing here. */
 #define KICKOS_ESP32_WINDOW(n, base, align, heap)                             \
@@ -63,7 +67,7 @@
         KICKOS_LD_IMAGE_SYM(n, window_start) = .;                             \
         *kickos_image##n.o(.data .data.*)                                     \
         . = ALIGN(8);                                                         \
-    } > DRAM                                                                  \
+    } > KICKOS_ESP32_IMAGE_WINDOW_REGION                                      \
     .kickos_image##n##_bss (KICKOS_LD_IMAGE_SYM(n, window_start)              \
                             + SIZEOF(.kickos_image##n##_data)) (NOLOAD) : ALIGN(4) \
     {                                                                         \
@@ -74,7 +78,7 @@
         . += (heap);                                                          \
         KICKOS_IMAGE_WINDOW_END(KICKOS_LD_IMAGE_SYM(n, window_start))         \
         KICKOS_LD_IMAGE_SYM(n, window_end) = .;                               \
-    } > DRAM                                                                  \
+    } > KICKOS_ESP32_IMAGE_WINDOW_REGION                                      \
     KICKOS_LD_IMAGE_SYM(n, data_load) = LOADADDR(.kickos_image##n##_data);    \
     KICKOS_LD_IMAGE_SYM(n, data_start) = ADDR(.kickos_image##n##_data);       \
     KICKOS_LD_IMAGE_SYM(n, data_end) =                                        \

@@ -17,6 +17,10 @@ namespace kickos
         // --- System Control Block (arch-specific: SHPR bytes for the BASEPRI band) ---
         constexpr uintptr_t SCB_SHPR2 = 0xE000ED1C; // System Handler Priority 2 (SVCall)
         constexpr uintptr_t SCB_SHPR3 = 0xE000ED20; // System Handler Priority 3 (PendSV/SysTick)
+        constexpr uintptr_t SCB_CCR = 0xE000ED14;
+        constexpr uint32_t CCR_USERSETMPEND = 1u << 1;
+        constexpr uint32_t CCR_UNALIGN_TRP = 1u << 3;
+        constexpr uint32_t CCR_DIV_0_TRP = 1u << 4;
 
         // --- Fault status and address (v6-M has none) ---
         constexpr uintptr_t SCB_CFSR = 0xE000ED28;

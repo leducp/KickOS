@@ -413,7 +413,7 @@ namespace selftest
             p.argv = nop;
             p.block = reinterpret_cast<void*>(guard);
             p.size = static_cast<uint32_t>(pages * g);
-            last = kos_task_create(prog, &p, &t);
+            last = kos_task_create(prog, &p, 0, &t);
             if (last == 0)
             {
                 admitted++;
@@ -435,7 +435,7 @@ namespace selftest
             p.argv = nop;
             p.block = mine;
             p.size = SNP_BLK;
-            rep->w[4] = kos_task_create(prog, &p, &ok);
+            rep->w[4] = kos_task_create(prog, &p, 0, &ok);
             rep->w[5] = kos_task_slay(ok, STALL_TOLERANT_US);
         }
         (void)kos_handle_close(prog);
@@ -790,7 +790,7 @@ namespace selftest
         p.caps = caps;
         p.cap_count = 5;
         kos_task_t t = KOS_TASK_NONE;
-        if (kos_task_create(prog, &p, &t) == 0)
+        if (kos_task_create(prog, &p, 0, &t) == 0)
         {
             uint32_t bits = 0;
             (void)kos_notify_wait(held, ~0u, KOS_TIMEOUT_NONE, &bits);
@@ -1372,7 +1372,7 @@ namespace selftest
         p.caps = caps;
         p.cap_count = 1;
         kos_task_t tb = KOS_TASK_NONE;
-        int const created = kos_task_create(prog, &p, &tb);
+        int const created = kos_task_create(prog, &p, 0, &tb);
         (void)kos_handle_close(prog);
         if (created != 0)
         {
@@ -1682,7 +1682,7 @@ namespace selftest
             kos_task_t t = KOS_TASK_NONE;
             rep[LR_SPACES0] = mem_count(KOS_MEM_SPACES_HELD);
             rep[LR_FRAMES0] = mem_count(KOS_MEM_FRAMES_FREE);
-            int rc = kos_task_create(prog, &p, &t);
+            int rc = kos_task_create(prog, &p, 0, &t);
             rep[LR_RC] = static_cast<uint64_t>(static_cast<uint32_t>(-rc));
             if (rc == 0)
             {
@@ -1773,7 +1773,7 @@ namespace selftest
             p.cap_dest = &dest;
             p.cap_count = 1;
             kos_task_t t = KOS_TASK_NONE;
-            rc = kos_task_create(prog, &p, &t);
+            rc = kos_task_create(prog, &p, 0, &t);
             if (rc == 0)
             {
                 (void)kos_task_slay(t, STALL_TOLERANT_US);

@@ -34,7 +34,7 @@ enum kos_errno
     KOS_EINVAL = 22,     // malformed argument: bad prio/stack/mask/count/irq line/alignment/size
     KOS_EMFILE = 24,     // capability table full; kos_call refers to the server's table
     KOS_EPIPE = 32,      // the server died holding the request, or a far node could not take it
-    KOS_EDEADLK = 35,    // self/recursive lock, or a lock that would close a wait cycle
+    KOS_EDEADLK = 35,    // self/recursive lock, a cycle-closing lock, a wait on its own task
     KOS_ENOSYS = 38,     // syscall or architecture backend unavailable
     KOS_ENOTIFY = 42,    // IRQ notification without a message; service the notified lines
     KOS_EOVERFLOW = 75,  // a count would exceed its field: a refcount or semaphore at its maximum

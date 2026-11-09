@@ -41,10 +41,11 @@ namespace kickos::x86_64
     void timer_disarm(void);
 }
 
-// The chip's reference timebase, which apic_init measures against. kickos_x86_ref_spin blocks
-// for about `want` of its ticks and returns how many it observed, 0 for a reference that did
-// not move.
+// The chip's reference timebase, which apic_init measures against: its rate, a start that sets
+// it running, and the ticks it has counted since. A gap of a whole reference period between
+// two kickos_x86_ref_ticks calls loses that period's ticks.
 extern "C" uint32_t kickos_x86_ref_hz(void);
-extern "C" uint32_t kickos_x86_ref_spin(uint32_t want);
+extern "C" void kickos_x86_ref_start(void);
+extern "C" uint64_t kickos_x86_ref_ticks(void);
 
 #endif

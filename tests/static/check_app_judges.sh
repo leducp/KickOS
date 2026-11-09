@@ -11,12 +11,14 @@
 # where op `drop` removes every line carrying the literal, `swap` replaces its first occurrence
 # on each line, `after` adds the replacement as a line after each line carrying it, `order`
 # exchanges the first line carrying the literal with the first line carrying the replacement,
-# `cache` judges the fixture whole with the replacement as the cache line instead,
-# `source:<path>` judges it whole over a source tree holding only <path>, the replacement added
-# as a line after each line of it carrying the literal, and `source-swap:<path>` does the same
+# `cut` removes the last line carrying the literal and every line after it, `last-<op>` applies
+# drop, swap or after to the last line carrying the literal alone, `cache` judges the fixture
+# whole with the replacement as the cache line instead, `source:<path>` judges it whole over a
+# source tree holding only <path>, the replacement added as a line after each line of it
+# carrying the literal, and `source-swap:<path>` does the same
 # with the literal's first occurrence on each line replaced instead. An edit
-# applies to the fixture and its arrival stamps alike; `log-<op>` edits the fixture alone and
-# `times-<op>` the stamps alone. A second edit applies to the first's result. A judge refuses as `FAIL: <token>: ...` (gate.sh jfail).
+# applies to the fixture and its arrival stamps alike; `log-<op>` edits the fixture alone,
+# `times-<op>` the stamps alone and `bus-<op>` its record of the bus after the window alone. A second edit applies to the first's result. A judge refuses as `FAIL: <token>: ...` (gate.sh jfail).
 # <judge> is the script, then `;<arg>` for each argument its kickos_app_judge ARGS pass it, and
 # `;@<fitting>` for each bench fitting the rig declares on the board; none declares none.
 # Every judge an app CMake or a gate fragment names must have a passing row, and every app a
@@ -323,10 +325,10 @@ tests/integration/check_inprstorm.sh|inprstorm.capture||panic|after|rerouting IN
 tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||load|drop|load:0x4083c000|
 tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||lp-rtc|drop|# c6amp: LP RTC|
 tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||vectors|swap|vectors=0x4083c001|vectors=0x4083c000
-tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||vectors|swap|self clk=40000000|self clk=120000000
-tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||vectors|swap|self clk=40000000|self clk=160000000
-tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||vectors|swap|self clk=40000000|self clk=80000000
-tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||vectors|swap|self clk=40000000|self clk=312500
+tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||vectors|swap|self clk=160000000|self clk=120000000
+tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||vectors|swap|self clk=160000000|self clk=40000000
+tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||vectors|swap|self clk=160000000|self clk=80000000
+tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||vectors|swap|self clk=160000000|self clk=1600000000
 tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||alive|swap|2 of 2 node app(s)|1 of 2 node app(s)
 tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||gate|swap|and 0x0 from node 0's timg0|and 0x5a3c from node 0's timg0
 tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||call|drop|ampping: node 0 calls node 1 port 3|
@@ -347,6 +349,16 @@ tests/integration/check_pizero_amp_gate.sh|ampping-pizero.capture||alive|swap|2 
 tests/integration/check_pizero_amp_gate.sh|ampping-pizero.capture||call|drop|ampping: node 0 calls node 1 port 3|
 tests/integration/check_pizero_amp_gate.sh|ampping-pizero.capture||round|drop|  ping 2 -> pong 3|
 tests/integration/check_pizero_amp_gate.sh|ampping-pizero.capture||served|swap|its own record says 4|its own record says 3
+tests/integration/check_pizero_amp_gate.sh|ampping-pizero.capture||witness|cache||KICKOS_WITNESS_NODE:BOOL=ON
+tests/integration/check_pizero_amp_gate.sh|ampping-pizero-witness.capture|KICKOS_WITNESS_NODE:BOOL=ON|witness|cache||
+tests/integration/check_pizero_amp_gate.sh|ampping-pizero-witness.capture|KICKOS_WITNESS_NODE:BOOL=ON|witness|drop|   witness node|
+tests/integration/check_pizero_amp_gate.sh|ampping-pizero-witness.capture|KICKOS_WITNESS_NODE:BOOL=ON|stray|swap|counted 1 spurious|counted 0 spurious
+tests/integration/check_pizero_amp_gate.sh|ampping-pizero-witness.capture|KICKOS_WITNESS_NODE:BOOL=ON|read|drop|[node] node 1 on core 1|
+tests/integration/check_pizero_amp_gate.sh|ampping-pizero-witness.capture|KICKOS_WITNESS_NODE:BOOL=ON|refused|drop|=== BUS FAULT ===|
+tests/integration/check_pizero_amp_gate.sh|ampping-pizero-witness.capture|KICKOS_WITNESS_NODE:BOOL=ON|refused|after|ring 0 reads 0x40070fe0|ampping: witness: ERROR: node 1's kernel read 0x11 from node 0's uart0
+tests/integration/check_pizero_amp_gate.sh|ampping-pizero-witness.capture|KICKOS_WITNESS_NODE:BOOL=ON|refused|order|=== BUS FAULT ===|[node] node 1 on core 1
+tests/integration/check_pizero_amp_gate.sh|ampping-pizero-witness.capture|KICKOS_WITNESS_NODE:BOOL=ON|bfar|swap|BFAR=0x40070fe0|BFAR=0x40078fe0
+tests/integration/check_pizero_amp_gate.sh|ampping-pizero-witness.capture|KICKOS_WITNESS_NODE:BOOL=ON|cfsr|swap|CFSR=0x8200|CFSR=0x8282
 tests/integration/check_pizero_amp_gate.sh|ampping-pizero.capture||done|drop|ampping: node 0 done|
 tests/integration/check_pizero_amp_gate.sh|ampping-pizero.capture||panic|after|ampping: node 0 done|KERNEL PANIC: planted
 tests/integration/check_system_default.sh;sysdefault: main returns 3;3|sysdefault.capture||line|drop|sysdefault: main returns 3|
@@ -394,11 +406,14 @@ tests/integration/check_mutexbench.sh|mutexbench.capture||mutex-handoff-window|s
 tests/integration/check_mutexbench.sh;aspace|mutexbench-mmu.capture||mutex-handoff-window|swap|mutex-handoff-window-round: 100949 ns/round  (1000 rounds / 100 ms) [one core; 1 pairs parked; 95 of 96 ranges taken]|mutex-handoff-window: SKIP (no address spaces)
 tests/integration/check_mutexbench.sh;aspace|mutexbench-mmu.capture||mutex-handoff-window|swap|mutex-handoff-window-round: 100949 ns/round  (1000 rounds / 100 ms) [one core; 1 pairs parked; 95 of 96 ranges taken]|mutex-handoff-window: SKIP (no block or no peer program)
 tests/integration/check_mutexbench.sh;aspace|mutexbench-mmu.capture||mutex-handoff-window|swap|1 pairs parked; 95 of 96|2 pairs parked; 95 of 96
-tests/integration/check_mutexbench.sh;coarse-clock|mutexbench-coarse.capture||crowd|swap|sem-wake-crowd: SKIP (the clock steps 10000 us)|sem-wake-crowd: SKIP (no heap for the samples)
+tests/integration/check_mutexbench.sh|mutexbench-small-heap.capture||crowd|swap|sem-wake-crowd: SKIP (no heap for the samples, 4000 bytes)|sem-wake-crowd: SKIP (the clock steps 10000 us)
+tests/integration/check_mutexbench.sh|mutexbench-small-heap.capture||crowd|swap|   heap    1 KiB available|   heap    64 KiB available
+tests/integration/check_mutexbench.sh|mutexbench-small-heap.capture||crowd|drop|   heap    1 KiB available|
+tests/integration/check_mutexbench.sh|mutexbench-small-heap.capture||crowd|swap|sem-wake-crowd: SKIP (no heap for the samples, 4000 bytes)|sem-wake-crowd: SKIP (no heap for the samples, 1000 bytes)
 tests/integration/check_mutexbench.sh|mutexbench.capture||crowd|swap|[2 waiters parked|[1 waiters parked
 tests/integration/check_mutexbench.sh|mutexbench.capture||crowd|swap|a crowd of 2|a crowd of 0
 tests/integration/check_mutexbench.sh|mutexbench.capture||crowd|swap|sem-wake-crowd: 1900/2300/4100 ns  (p50/p99/max, n=200) [2 waiters parked, one woken]|sem-wake-crowd: SKIP (the clock steps 1000 us)
-tests/integration/check_mutexbench.sh|mutexbench.capture||crowd|swap|sem-wake-crowd: 1900/2300/4100 ns  (p50/p99/max, n=200) [2 waiters parked, one woken]|sem-wake-crowd: SKIP (no heap for the samples)
+tests/integration/check_mutexbench.sh|mutexbench.capture||crowd|swap|sem-wake-crowd: 1900/2300/4100 ns  (p50/p99/max, n=200) [2 waiters parked, one woken]|sem-wake-crowd: SKIP (no heap for the samples, 4000 bytes)
 tests/integration/check_qemu_cxxterm.sh|cxxterm.capture||throw|drop|cxxterm: throwing|
 tests/integration/check_qemu_cxxterm.sh|cxxterm.capture||returned|after|cxxterm: throwing|cxxterm: returned
 tests/integration/check_qemu_cxxterm.sh|cxxterm.capture||terminate|swap|[St13runtime_error]|[St9exception]
@@ -588,6 +603,12 @@ tests/integration/check_specfault.sh|specfault.capture||address|swap|ADDR=0x6080
 tests/integration/check_specfault.sh|specfault.capture||address|drop|ADDR=|
 tests/integration/check_specfault.sh|specfault.capture||address|swap|reading 0x60800000|reading 0x60800004
 tests/integration/check_specfault.sh|specfault.capture||order|order|[specfault] reading|=== THREAD FAULT
+tests/integration/check_specfault.sh|specfault-armv6m.capture|KICKOS_ARCH:STRING=armv6m|address|swap|PC=0x10010d64|PC=0x10010d66
+tests/integration/check_specfault.sh|specfault-armv6m.capture|KICKOS_ARCH:STRING=armv6m|address|drop|  PC=0x|
+tests/integration/check_specfault.sh|specfault-armv6m.capture|KICKOS_ARCH:STRING=armv6m|site|swap|by the load at|by the access at
+tests/integration/check_specfault.sh|specfault-armv6m.capture|KICKOS_ARCH:STRING=armv6m|address|swap|by the load at 0x10010d65|by the load at 0x10010d69
+tests/integration/check_specfault.sh|specfault-armv6m.capture|KICKOS_ARCH:STRING=armv6m|address|cache||KICKOS_ARCH:STRING=armv7m
+tests/integration/check_specfault.sh|specfault-armv6m.capture|KICKOS_ARCH:STRING=armv6m|fault|drop|=== THREAD FAULT|
 tests/integration/check_codewindow.sh;below|codewindow-below.capture||error|after|[codewindow] fetching|[codewindow] ERROR: the fetch was permitted
 tests/integration/check_codewindow.sh;below|codewindow-below.capture||words|drop|first and last words read|
 tests/integration/check_codewindow.sh;below|codewindow-below.capture||announce|drop|[codewindow] fetching|
@@ -608,10 +629,15 @@ tests/integration/check_codewindow.sh;past|codewindow-past.capture||kill-address
 tests/integration/check_codewindow.sh;past|codewindow-past.capture||panic|after|ADDR=0x40813dc0|KERNEL PANIC: planted
 tests/integration/check_usbcdcwit.sh|usbcdcwit.capture||no-banner|drop|   KickOS 0.5.1  -  microkernel RTOS|
 tests/integration/check_usbcdcwit.sh|usbcdcwit.capture||no-banner|swap|   KickOS 0.5.1  -  microkernel RTOS|[usbcdcwit] commit 0123abcd
-tests/integration/check_usbcdcwit.sh|usbcdcwit.capture||accepted|swap|accepted=16384 of|accepted=16000 of
+tests/integration/check_usbcdcwit.sh|usbcdcwit.capture||accepted|swap|accepted=8192 of|accepted=8000 of
 tests/integration/check_usbcdcwit.sh|usbcdcwit.capture||accepted|swap|err=0|err=-11
 tests/integration/check_usbcdcwit.sh|usbcdcwit.capture||accepted|drop|accepted=|
-tests/integration/check_usbcdcwit.sh|usbcdcwit.capture||verdict|after|tx=16384|[usbcdcwit] FAIL (the channel stopped and did not recover)
+tests/integration/check_usbcdcwit.sh|usbcdcwit.capture||verdict|after|tx=8213|[usbcdcwit] FAIL (the channel stopped and did not recover)
+tests/integration/check_usbcdcwit.sh|usbcdcwit.capture||stream|swap|abcdefghijklmnopqrstuvwxyzabcdefgh|ab
+tests/integration/check_usbcdcwit.sh|usbcdcwit.capture||stream|swap|abcdefghijklmnopqrstuvwxyz|
+tests/integration/check_usbcdcwit.sh|usbcdcwit.capture||stream|drop|abcdefghijklmnopqrstuvwxyz|
+tests/integration/check_usbcdcwit.sh|usbcdcwit.capture||rx|swap|spurious=0 rx=0|spurious=0 rx=18
+tests/integration/check_usbcdcwit.sh|usbcdcwit.capture||rx|swap| rx=0| rxx=0
 tests/integration/check_usbcdcwit.sh|usbcdcwit.capture||verdict|drop|[usbcdcwit] PASS|
 tests/integration/check_usbcdcwit.sh|usbcdcwit.capture||panic|after|[usbcdcwit] PASS|KERNEL PANIC: planted
 tests/integration/check_reclaimwit.sh;park|reclaimwit.capture||key|drop|HOW TO READ THIS CAPTURE|
@@ -623,7 +649,7 @@ tests/integration/check_reclaimwit.sh;park|reclaimwit.capture||live|drop|LIVE ke
 tests/integration/check_reclaimwit.sh;park|reclaimwit.capture||live|after|LIVE kernel console after|[reclaimwit] LIVE kernel console after the driver died
 tests/integration/check_reclaimwit.sh;park|reclaimwit.capture||verdict|drop|PASS reclaim fired|
 tests/integration/check_reclaimwit.sh;park|reclaimwit.capture||panic|after|park arm:|KERNEL PANIC: planted
-tests/integration/check_reclaimwit.sh;drain|reclaimwit-drain.capture||arm|after|drain arm:|[reclaimwit] park arm: the system stays up, nothing further is printed
+tests/integration/check_reclaimwit.sh;drain|reclaimwit-drain.capture||arm|after|drain arm:|[reclaimwit] park arm: nothing further is printed, then main returns its verdict
 tests/integration/check_reclaimwit.sh;drain|reclaimwit-drain.capture||drain-tail|swap|<<<DRAIN-END>>>|<<<DRAIN-
 tests/integration/check_reclaimwit.sh;drain|reclaimwit-drain.capture||live|drop|LIVE kernel console after|
 tests/integration/check_reclaimwit.sh;drain|reclaimwit-drain.capture||verdict|drop|PASS reclaim fired|
@@ -635,6 +661,13 @@ tests/integration/check_mpu_fault.sh;thread-kill|mpu_fault.capture||announce|dro
 tests/integration/check_mpu_fault.sh;thread-kill|mpu_fault.capture||killed|drop|=== THREAD FAULT|
 tests/integration/check_mpu_fault.sh;thread-kill|mpu_fault.capture||address|swap|ADDR=0x21000|ADDR=0x21004
 tests/integration/check_mpu_fault.sh;thread-kill|mpu_fault.capture||panic|after|ADDR=0x21000|KERNEL PANIC: planted
+tests/integration/check_mpu_fault.sh;thread-kill|mpu_fault-armv6m.capture|KICKOS_ARCH:STRING=armv6m|address|swap|PC=0x10010d64|PC=0x10010d66
+tests/integration/check_mpu_fault.sh;thread-kill|mpu_fault-armv6m.capture|KICKOS_ARCH:STRING=armv6m|address|drop|  PC=0x|
+tests/integration/check_mpu_fault.sh;thread-kill|mpu_fault-armv6m.capture|KICKOS_ARCH:STRING=armv6m|site|swap|by the store at|by the access at
+tests/integration/check_mpu_fault.sh;thread-kill|mpu_fault-armv6m.capture|KICKOS_ARCH:STRING=armv6m|address|swap|by the store at 0x10010d65|by the store at 0x10010d69
+tests/integration/check_mpu_fault.sh;thread-kill|mpu_fault-armv6m.capture|KICKOS_ARCH:STRING=armv6m|address|cache||KICKOS_ARCH:STRING=armv7m
+tests/integration/check_mpu_fault.sh;thread-kill|mpu_fault-armv6m.capture|KICKOS_ARCH:STRING=armv6m|killed|drop|=== THREAD FAULT|
+tests/integration/check_mpu_fault.sh;thread-kill|mpu_fault-armv6m.capture|KICKOS_ARCH:STRING=armv6m|panic|after|  PC=0x10010d64|KERNEL PANIC: planted
 tests/integration/check_rootfault.sh;thread-kill|rootfault.capture||error|after|child: wrote|[rootfault] ERROR: planted
 tests/integration/check_rootfault.sh;thread-kill|rootfault.capture||confined|after|main: writing the child|[rootfault] main: NOT confined
 tests/integration/check_rootfault.sh;thread-kill|rootfault.capture||control|drop|child: wrote my own|
@@ -642,6 +675,13 @@ tests/integration/check_rootfault.sh;thread-kill|rootfault.capture||announce|dro
 tests/integration/check_rootfault.sh;thread-kill|rootfault.capture||killed|drop|=== THREAD FAULT|
 tests/integration/check_rootfault.sh;thread-kill|rootfault.capture||address|swap|ADDR=0x20000|ADDR=0x20004
 tests/integration/check_rootfault.sh;thread-kill|rootfault.capture||panic|after|ADDR=0x20000|KERNEL PANIC: planted
+tests/integration/check_rootfault.sh;thread-kill|rootfault-armv6m.capture|KICKOS_ARCH:STRING=armv6m|address|swap|PC=0x10010d64|PC=0x10010d66
+tests/integration/check_rootfault.sh;thread-kill|rootfault-armv6m.capture|KICKOS_ARCH:STRING=armv6m|address|drop|  PC=0x|
+tests/integration/check_rootfault.sh;thread-kill|rootfault-armv6m.capture|KICKOS_ARCH:STRING=armv6m|site|swap|by the store at|by the access at
+tests/integration/check_rootfault.sh;thread-kill|rootfault-armv6m.capture|KICKOS_ARCH:STRING=armv6m|address|swap|by the store at 0x10010d65|by the store at 0x10010d69
+tests/integration/check_rootfault.sh;thread-kill|rootfault-armv6m.capture|KICKOS_ARCH:STRING=armv6m|address|cache||KICKOS_ARCH:STRING=armv7m
+tests/integration/check_rootfault.sh;thread-kill|rootfault-armv6m.capture|KICKOS_ARCH:STRING=armv6m|killed|drop|=== THREAD FAULT|
+tests/integration/check_rootfault.sh;thread-kill|rootfault-armv6m.capture|KICKOS_ARCH:STRING=armv6m|panic|after|  PC=0x10010d64|KERNEL PANIC: planted
 tests/integration/check_rootfault.sh;panic|rootfault-panic.capture||error|after|child: wrote|[rootfault] ERROR: planted
 tests/integration/check_rootfault.sh;panic|rootfault-panic.capture||confined|after|main: writing the child|[rootfault] main: NOT confined
 tests/integration/check_rootfault.sh;panic|rootfault-panic.capture||control|drop|child: wrote my own|
@@ -737,6 +777,77 @@ tests/integration/check_faultsurvive.sh;overflow;armv6m;terminated|faultsurvive-
 tests/integration/check_faultsurvive.sh;overflow;armv6m;terminated|faultsurvive-armv6m-overflow.capture||cause|after|R12=0x0|  CFSR=0x10 HFSR=0x0
 tests/integration/check_faultsurvive.sh;offstack;armv6m;terminated|faultsurvive-armv6m-offstack.capture||cause|swap|(PSP)|(MSP)
 tests/integration/check_faultsurvive.sh;offstack;armv6m;terminated|faultsurvive-armv6m-offstack.capture||dump|drop|=== HARD FAULT|
+tests/integration/check_faultsurvive.sh;div0;armv7m;killed|faultsurvive-div0-armv7m.capture||reached|drop|[fs] worker about to fault|
+tests/integration/check_faultsurvive.sh;div0;armv7m;killed|faultsurvive-div0-armv7m.capture||killed|drop|=== THREAD FAULT|
+tests/integration/check_faultsurvive.sh;div0;armv7m;killed|faultsurvive-div0-armv7m.capture||order|order|[fs] worker about to fault|=== THREAD FAULT
+tests/integration/check_faultsurvive.sh;div0;armv7m;killed|faultsurvive-div0-armv7m.capture||survived|drop|[fs] survivor ran|
+tests/integration/check_faultsurvive.sh;div0;armv7m;killed|faultsurvive-div0-armv7m.capture||order|order|=== THREAD FAULT|[fs] survivor ran
+tests/integration/check_faultsurvive.sh;div0;armv7m;killed|faultsurvive-div0-armv7m.capture||cause|swap|CFSR=0x2000000|CFSR=0x10000
+tests/integration/check_faultsurvive.sh;div0;armv7m;killed|faultsurvive-div0-armv7m.capture||cause|drop|  PC=0x|
+tests/integration/check_faultsurvive.sh;div0;armv7m;killed|faultsurvive-div0-armv7m.capture||trapped|after|[fs] worker about to fault|[fs] divide by zero returned 0
+tests/integration/check_faultsurvive.sh;div0;armv7m;killed|faultsurvive-div0-armv7m.capture||panic|after|[fs] survivor ran|KERNEL PANIC: planted
+tests/integration/check_faultsurvive.sh;div0;armv6m;killed|faultsurvive-div0-armv6m.capture||reached|drop|[fs] worker about to fault|
+tests/integration/check_faultsurvive.sh;div0;armv6m;killed|faultsurvive-div0-armv6m.capture||killed|drop|=== THREAD FAULT|
+tests/integration/check_faultsurvive.sh;div0;armv6m;killed|faultsurvive-div0-armv6m.capture||order|order|[fs] worker about to fault|=== THREAD FAULT
+tests/integration/check_faultsurvive.sh;div0;armv6m;killed|faultsurvive-div0-armv6m.capture||survived|drop|[fs] survivor ran|
+tests/integration/check_faultsurvive.sh;div0;armv6m;killed|faultsurvive-div0-armv6m.capture||order|order|=== THREAD FAULT|[fs] survivor ran
+tests/integration/check_faultsurvive.sh;div0;armv6m;killed|faultsurvive-div0-armv6m.capture||cause|swap|DIVBYZERO=0x1|DIVBYZERO=0x0
+tests/integration/check_faultsurvive.sh;div0;armv6m;killed|faultsurvive-div0-armv6m.capture||cause|drop|  PC=0x|
+tests/integration/check_faultsurvive.sh;div0;armv6m;killed|faultsurvive-div0-armv6m.capture||trapped|after|[fs] worker about to fault|[fs] divide by zero returned 0
+tests/integration/check_faultsurvive.sh;div0;armv6m;killed|faultsurvive-div0-armv6m.capture||panic|after|[fs] survivor ran|KERNEL PANIC: planted
+tests/integration/check_faultsurvive.sh;div0;rv32imac;returned:-1|faultsurvive-div0-rv32imac.capture||returned|drop|[fs] divide by zero returned|
+tests/integration/check_faultsurvive.sh;div0;rv32imac;returned:-1|faultsurvive-div0-rv32imac.capture||returned|after|[fs] worker about to fault|=== THREAD FAULT === thread 'faulter' killed, system continues
+tests/integration/check_faultsurvive.sh;div0;rv32imac;returned:-1|faultsurvive-div0-rv32imac.capture||order|order|[fs] worker about to fault|[fs] divide by zero returned
+tests/integration/check_faultsurvive.sh;div0;rv32imac;returned:-1|faultsurvive-div0-rv32imac.capture||survived|drop|[fs] survivor ran|
+tests/integration/check_faultsurvive.sh;div0;rv32imac;returned:-1|faultsurvive-div0-rv32imac.capture||order|order|[fs] divide by zero returned|[fs] survivor ran
+tests/integration/check_faultsurvive.sh;div0;rv32imac;returned:-1|faultsurvive-div0-rv32imac.capture||panic|after|[fs] survivor ran|KERNEL PANIC: planted
+tests/integration/check_faultsurvive.sh;div0;rv32imac;returned:-1|faultsurvive-div0-rv32imac.capture||quotient|swap|returned -1|returned 0
+tests/integration/check_faultsurvive.sh;div0;rxv3;returned:any|faultsurvive-div0-rxv3.capture||returned|drop|[fs] divide by zero returned|
+tests/integration/check_faultsurvive.sh;div0;rxv3;returned:any|faultsurvive-div0-rxv3.capture||returned|after|[fs] worker about to fault|=== THREAD FAULT === thread 'faulter' killed, system continues
+tests/integration/check_faultsurvive.sh;div0;rxv3;returned:any|faultsurvive-div0-rxv3.capture||order|order|[fs] worker about to fault|[fs] divide by zero returned
+tests/integration/check_faultsurvive.sh;div0;rxv3;returned:any|faultsurvive-div0-rxv3.capture||survived|drop|[fs] survivor ran|
+tests/integration/check_faultsurvive.sh;div0;rxv3;returned:any|faultsurvive-div0-rxv3.capture||order|order|[fs] divide by zero returned|[fs] survivor ran
+tests/integration/check_faultsurvive.sh;div0;rxv3;returned:any|faultsurvive-div0-rxv3.capture||panic|after|[fs] survivor ran|KERNEL PANIC: planted
+tests/integration/check_faultsurvive.sh;ldiv0;armv7m;killed|faultsurvive-div0-armv7m.capture||reached|drop|[fs] worker about to fault|
+tests/integration/check_faultsurvive.sh;ldiv0;armv7m;killed|faultsurvive-div0-armv7m.capture||killed|drop|=== THREAD FAULT|
+tests/integration/check_faultsurvive.sh;ldiv0;armv7m;killed|faultsurvive-div0-armv7m.capture||order|order|[fs] worker about to fault|=== THREAD FAULT
+tests/integration/check_faultsurvive.sh;ldiv0;armv7m;killed|faultsurvive-div0-armv7m.capture||survived|drop|[fs] survivor ran|
+tests/integration/check_faultsurvive.sh;ldiv0;armv7m;killed|faultsurvive-div0-armv7m.capture||order|order|=== THREAD FAULT|[fs] survivor ran
+tests/integration/check_faultsurvive.sh;ldiv0;armv7m;killed|faultsurvive-div0-armv7m.capture||cause|swap|CFSR=0x2000000|CFSR=0x10000
+tests/integration/check_faultsurvive.sh;ldiv0;armv7m;killed|faultsurvive-div0-armv7m.capture||cause|drop|  PC=0x|
+tests/integration/check_faultsurvive.sh;ldiv0;armv7m;killed|faultsurvive-div0-armv7m.capture||trapped|after|[fs] worker about to fault|[fs] divide by zero returned 0
+tests/integration/check_faultsurvive.sh;ldiv0;armv7m;killed|faultsurvive-div0-armv7m.capture||panic|after|[fs] survivor ran|KERNEL PANIC: planted
+tests/integration/check_faultsurvive.sh;ldiv0;armv6m;killed|faultsurvive-div0-armv6m.capture||reached|drop|[fs] worker about to fault|
+tests/integration/check_faultsurvive.sh;ldiv0;armv6m;killed|faultsurvive-div0-armv6m.capture||killed|drop|=== THREAD FAULT|
+tests/integration/check_faultsurvive.sh;ldiv0;armv6m;killed|faultsurvive-div0-armv6m.capture||order|order|[fs] worker about to fault|=== THREAD FAULT
+tests/integration/check_faultsurvive.sh;ldiv0;armv6m;killed|faultsurvive-div0-armv6m.capture||survived|drop|[fs] survivor ran|
+tests/integration/check_faultsurvive.sh;ldiv0;armv6m;killed|faultsurvive-div0-armv6m.capture||order|order|=== THREAD FAULT|[fs] survivor ran
+tests/integration/check_faultsurvive.sh;ldiv0;armv6m;killed|faultsurvive-div0-armv6m.capture||cause|swap|DIVBYZERO=0x1|DIVBYZERO=0x0
+tests/integration/check_faultsurvive.sh;ldiv0;armv6m;killed|faultsurvive-div0-armv6m.capture||cause|drop|  PC=0x|
+tests/integration/check_faultsurvive.sh;ldiv0;armv6m;killed|faultsurvive-div0-armv6m.capture||trapped|after|[fs] worker about to fault|[fs] divide by zero returned 0
+tests/integration/check_faultsurvive.sh;ldiv0;armv6m;killed|faultsurvive-div0-armv6m.capture||panic|after|[fs] survivor ran|KERNEL PANIC: planted
+tests/integration/check_faultsurvive.sh;ldiv0;rv32imac;returned:any|faultsurvive-div0-rv32imac.capture||returned|drop|[fs] divide by zero returned|
+tests/integration/check_faultsurvive.sh;ldiv0;rv32imac;returned:any|faultsurvive-div0-rv32imac.capture||returned|after|[fs] worker about to fault|=== THREAD FAULT === thread 'faulter' killed, system continues
+tests/integration/check_faultsurvive.sh;ldiv0;rv32imac;returned:any|faultsurvive-div0-rv32imac.capture||order|order|[fs] worker about to fault|[fs] divide by zero returned
+tests/integration/check_faultsurvive.sh;ldiv0;rv32imac;returned:any|faultsurvive-div0-rv32imac.capture||survived|drop|[fs] survivor ran|
+tests/integration/check_faultsurvive.sh;ldiv0;rv32imac;returned:any|faultsurvive-div0-rv32imac.capture||order|order|[fs] divide by zero returned|[fs] survivor ran
+tests/integration/check_faultsurvive.sh;ldiv0;rv32imac;returned:any|faultsurvive-div0-rv32imac.capture||panic|after|[fs] survivor ran|KERNEL PANIC: planted
+tests/integration/check_faultsurvive.sh;ldiv0;rxv3;returned:any|faultsurvive-div0-rxv3.capture||returned|drop|[fs] divide by zero returned|
+tests/integration/check_faultsurvive.sh;ldiv0;rxv3;returned:any|faultsurvive-div0-rxv3.capture||returned|after|[fs] worker about to fault|=== THREAD FAULT === thread 'faulter' killed, system continues
+tests/integration/check_faultsurvive.sh;ldiv0;rxv3;returned:any|faultsurvive-div0-rxv3.capture||order|order|[fs] worker about to fault|[fs] divide by zero returned
+tests/integration/check_faultsurvive.sh;ldiv0;rxv3;returned:any|faultsurvive-div0-rxv3.capture||survived|drop|[fs] survivor ran|
+tests/integration/check_faultsurvive.sh;ldiv0;rxv3;returned:any|faultsurvive-div0-rxv3.capture||order|order|[fs] divide by zero returned|[fs] survivor ran
+tests/integration/check_faultsurvive.sh;ldiv0;rxv3;returned:any|faultsurvive-div0-rxv3.capture||panic|after|[fs] survivor ran|KERNEL PANIC: planted
+tests/integration/check_fault_dump.sh;DIVBYZERO: the UDF of __aeabi_idiv0/__aeabi_ldiv0|fault-div0-armv6m.capture||marker|drop|DIVBYZERO: the UDF of __aeabi_idiv0/__aeabi_ldiv0|
+tests/integration/check_fault_dump.sh;DIVBYZERO: the UDF of __aeabi_idiv0/__aeabi_ldiv0|fault-div0-armv6m.capture||doubled|after|DIVBYZERO: the UDF of __aeabi_idiv0/__aeabi_ldiv0|  DIVBYZERO: the UDF of __aeabi_idiv0/__aeabi_ldiv0
+tests/integration/check_fault_dump.sh;DIVBYZERO: the UDF of __aeabi_idiv0/__aeabi_ldiv0|fault-div0-armv6m.capture||faulted|after|[fault] executing|[fault] ERROR: the divide by zero did not fault
+tests/integration/check_fault_dump.sh;DIVBYZERO: the UDF of __aeabi_idiv0/__aeabi_ldiv0|fault-div0-armv6m.capture||announce|drop|[fault] executing|
+tests/integration/check_fault_dump.sh;DIVBYZERO: the UDF of __aeabi_idiv0/__aeabi_ldiv0|fault-div0-armv6m.capture||order|order|[fault] executing|DIVBYZERO: the UDF of __aeabi_idiv0/__aeabi_ldiv0
+tests/integration/check_fault_dump.sh;XTENSA EXCEPTION (integer divide by zero)|fault-div0-lx6.capture||marker|drop|XTENSA EXCEPTION (integer divide by zero)|
+tests/integration/check_fault_dump.sh;XTENSA EXCEPTION (integer divide by zero)|fault-div0-lx6.capture||doubled|after|XTENSA EXCEPTION (integer divide by zero)|  XTENSA EXCEPTION (integer divide by zero)
+tests/integration/check_fault_dump.sh;XTENSA EXCEPTION (integer divide by zero)|fault-div0-lx6.capture||faulted|after|[fault] executing|[fault] ERROR: the divide by zero did not fault
+tests/integration/check_fault_dump.sh;XTENSA EXCEPTION (integer divide by zero)|fault-div0-lx6.capture||announce|drop|[fault] executing|
+tests/integration/check_fault_dump.sh;XTENSA EXCEPTION (integer divide by zero)|fault-div0-lx6.capture||order|order|[fault] executing|XTENSA EXCEPTION (integer divide by zero)
 tests/integration/check_faultsurvive.sh;survive;rv32imac;terminated|faultsurvive-rv32imac.capture||killed|drop|=== THREAD FAULT|
 tests/integration/check_faultsurvive.sh;survive;rv32imac;terminated|faultsurvive-rv32imac.capture||order|order|=== THREAD FAULT|[fs] survivor ran
 tests/integration/check_faultsurvive.sh;lowedge;rv32imac;terminated|faultsurvive-rv32imac-lowedge.capture||lowband|drop|[lowband] INTACT|
@@ -781,9 +892,66 @@ tests/integration/check_qemu_panicgate.sh;[panicgate] the task ended with KOS_EX
 tests/integration/check_qemu_panicgate.sh;[panicgate] the task ended with KOS_EXIT_PANIC, the system runs on;KERNEL PANIC:;[panicgate] task message|panicgate-task.capture||fault|after|[panicgate] case 6|=== HARD FAULT === planted
 tests/integration/check_mpu_fault.sh;panic|mpu_fault-panic.capture||marker|drop|=== MPU FAULT|
 tests/integration/check_mpu_fault.sh;panic|mpu_fault-panic.capture||address|swap|MMFAR=0x20011000|MMFAR=0x20011004
-tests/integration/check_mpu_fault.sh;panic|mpu_fault-panic.capture||control|drop|A: my region ok|"
+tests/integration/check_mpu_fault.sh;panic|mpu_fault-panic.capture||control|drop|A: my region ok|
+tests/integration/check_reboot.sh;reset|rebootdemo-reset.capture||panic|after|[rebootdemo] reboot declined: rc=-38|=== HARD FAULT === planted
+tests/integration/check_reboot.sh;reset|rebootdemo-reset.capture||fault|after|[rebootdemo] reboot declined: rc=-38|=== THREAD FAULT === thread 'main' killed, system continues
+tests/integration/check_reboot.sh;reset|rebootdemo-reset.capture||fault|after|[rebootdemo] reboot declined: rc=-38|arch_reboot: the reset was requested and did not take
+tests/integration/check_reboot.sh;reset|rebootdemo-reset.capture||announce|drop|[rebootdemo] KickOS reboot-to-bootloader demo|
+tests/integration/check_reboot.sh;reset|rebootdemo-reset.capture||announce|last-drop|[rebootdemo] KickOS reboot-to-bootloader demo|
+tests/integration/check_reboot.sh;reset|rebootdemo-reset.capture||countdown|drop|[rebootdemo] handing the chip to its bootloader in 3s|
+tests/integration/check_reboot.sh;reset|rebootdemo-reset.capture||countdown|last-drop|[rebootdemo] handing the chip to its bootloader in 3s|
+tests/integration/check_reboot.sh;reset|rebootdemo-reset.capture||decline|drop|[rebootdemo] reboot declined: rc=-38|
+tests/integration/check_reboot.sh;reset|rebootdemo-reset.capture||decline|last-drop|[rebootdemo] reboot declined: rc=-38|
+tests/integration/check_reboot.sh;reset|rebootdemo-reset.capture||decline|swap|rc=-38|rc=-1
+tests/integration/check_reboot.sh;reset|rebootdemo-reset.capture||decline|last-swap|rc=-38|rc=-5
+tests/integration/check_reboot.sh;reset|rebootdemo-reset.capture||reset|after|[rebootdemo] reboot declined: rc=-38|[rebootdemo] reset declined: rc=-38
+tests/integration/check_reboot.sh;reset|rebootdemo-reset.capture||order|order|[rebootdemo] handing the chip to its bootloader in 3s|[rebootdemo] reboot declined: rc=-38
+tests/integration/check_reboot.sh;reset|rebootdemo-reset.capture||second-boot|cut|   KickOS 0.5.1  -  microkernel RTOS||cut|   KickOS 0.5.1  -  microkernel RTOS|
+tests/integration/check_reboot.sh;reset|rebootdemo-reset.capture||second-boot|cut|   KickOS 0.5.1  -  microkernel RTOS||last-drop|   KickOS 0.5.1  -  microkernel RTOS|
+tests/integration/check_reboot.sh;reset|rebootdemo-reset.capture||same-image|last-swap|commit  70a1a9b4|commit  70a1a9b5
+tests/integration/check_reboot.sh;reset|rebootdemo-reset.capture||same-image|drop|   commit  |
+tests/integration/check_reboot.sh;reset|rebootdemo-reset.capture||no-banner|drop|   KickOS 0.5.1  -  microkernel RTOS|
+tests/integration/check_reboot.sh;reset|rebootdemo-reset-truncated.capture||same-image|last-swap|2026-11-05 13:24:|2026-11-04 13:24:44 +0100
+tests/integration/check_reboot.sh;reset|rebootdemo-reset-cutline-truncated.capture||same-image|last-swap|commit  70a1a9b4|commit  70a1a9b5
+tests/integration/check_reboot.sh;bootloader|rebootdemo-bootloader.capture|KICKOS_BOARD:STRING=picopi|announce|drop|[rebootdemo] KickOS reboot-to-bootloader demo|
+tests/integration/check_reboot.sh;bootloader|rebootdemo-bootloader.capture|KICKOS_BOARD:STRING=picopi|countdown|drop|[rebootdemo] handing the chip to its bootloader in 3s|
+tests/integration/check_reboot.sh;bootloader|rebootdemo-bootloader.capture|KICKOS_BOARD:STRING=picopi|order|order|[rebootdemo] KickOS reboot-to-bootloader demo|[rebootdemo] handing the chip to its bootloader in 3s
+tests/integration/check_reboot.sh;bootloader|rebootdemo-bootloader.capture|KICKOS_BOARD:STRING=picopi|decline|after|[rebootdemo] handing the chip to its bootloader in 3s|[rebootdemo] reboot declined: rc=-38
+tests/integration/check_reboot.sh;bootloader|rebootdemo-bootloader.capture|KICKOS_BOARD:STRING=picopi|reset|after|[rebootdemo] handing the chip to its bootloader in 3s|[rebootdemo] reset declined: rc=-38
+tests/integration/check_reboot.sh;bootloader|rebootdemo-bootloader.capture|KICKOS_BOARD:STRING=picopi|reboot|after|[rebootdemo] handing the chip to its bootloader in 3s|   KickOS 0.5.1  -  microkernel RTOS
+tests/integration/check_reboot.sh;bootloader|rebootdemo-bootloader.capture|KICKOS_BOARD:STRING=picopi|panic|after|[rebootdemo] handing the chip to its bootloader in 3s|KERNEL PANIC: planted
+tests/integration/check_reboot.sh;bootloader|rebootdemo-bootloader.capture|KICKOS_BOARD:STRING=picopi|fault|after|[rebootdemo] handing the chip to its bootloader in 3s|arch_reboot: rp2040 _reset_to_usb_boot returned
+tests/integration/check_reboot.sh;bootloader|rebootdemo-bootloader.capture|KICKOS_BOARD:STRING=picopi|loader|bus-swap|present|absent
+tests/integration/check_reboot.sh;bootloader|rebootdemo-bootloader.capture|KICKOS_BOARD:STRING=picopi|no-bus|bus-drop|2e8a:0003|
+tests/integration/check_reboot.sh;bootloader|rebootdemo-bootloader.capture|KICKOS_BOARD:STRING=picopi|unrelated|bus-swap|2e8a:0003|ffff:ffff
+tests/integration/check_reboot.sh;bootloader|rebootdemo-bootloader.capture|KICKOS_BOARD:STRING=picopi|ambiguous|bus-swap|present|ambiguous
+tests/integration/check_reboot.sh;bootloader|rebootdemo-bootloader.capture|KICKOS_BOARD:STRING=picopi|identity|bus-swap|serial E0C9125B0D9B|none: no serial was given to select it by
+tests/integration/check_reboot.sh;bootloader|rebootdemo-bootloader.capture|KICKOS_BOARD:STRING=picopi|identity|bus-swap|serial E0C9125B0D9B|port 1-1
+tests/integration/check_reboot.sh;bootloader|rebootdemo-bootloader.capture|KICKOS_BOARD:STRING=picopi|identity|bus-swap|serial E0C9125B0D9B|serial
+tests/integration/check_reboot.sh;bootloader|rebootdemo-bootloader.capture|KICKOS_BOARD:STRING=picopi|unrelated|cache||KICKOS_BOARD:STRING=teensy41
+tests/integration/check_reboot.sh;bootloader|rebootdemo-bootloader.capture|KICKOS_BOARD:STRING=picopi|no-loader|cache||KICKOS_BOARD:STRING=frdmk64f
+tests/integration/check_reboot.sh;bootloader|rebootdemo-bootloader.capture|KICKOS_BOARD:STRING=picopi|no-board|cache||KICKOS_ARCH:STRING=armv6m
+tests/integration/check_reboot.sh;bootloader|rebootdemo-bootloader.capture|KICKOS_BOARD:STRING=picopi|unrelated|source-swap:tools/bench/board-rows.sh|2e8a:0003|2e8a:0004
+tests/integration/check_reboot.sh;refused|rebootdemo-refused.capture||announce|drop|[rebootdemo] KickOS reboot-to-bootloader demo|
+tests/integration/check_reboot.sh;refused|rebootdemo-refused.capture||countdown|drop|[rebootdemo] handing the chip to its bootloader in 3s|
+tests/integration/check_reboot.sh;refused|rebootdemo-refused.capture||decline|drop|reboot declined: rc=-1|
+tests/integration/check_reboot.sh;refused|rebootdemo-refused.capture||decline|swap|reboot declined: rc=-1|reboot declined: rc=-38
+tests/integration/check_reboot.sh;refused|rebootdemo-refused.capture||reset|drop|reset declined: rc=-1|
+tests/integration/check_reboot.sh;refused|rebootdemo-refused.capture||reboot|after|reset declined: rc=-1|   KickOS 0.5.1  -  microkernel RTOS
+tests/integration/check_reboot.sh;refused|rebootdemo-refused.capture||panic|after|reset declined: rc=-1|KERNEL PANIC: planted
+tests/integration/check_reboot.sh;refused|rebootdemo-refused.capture||fault|after|[rebootdemo] handing the chip to its bootloader in 3s|=== THREAD FAULT === thread 'main' killed, system continues"
 
 OWED="tests/integration/check_fault_dump.sh;HARD FAULT|the fault ended the system with the status its marker implies
+tests/integration/check_faultsurvive.sh;div0;armv7m;killed|the system exited 0 once main returned
+tests/integration/check_faultsurvive.sh;div0;armv6m;killed|the system exited 0 once main returned
+tests/integration/check_faultsurvive.sh;div0;rv32imac;returned:-1|the system exited 0 once main returned
+tests/integration/check_faultsurvive.sh;div0;rxv3;returned:any|the system exited 0 once main returned
+tests/integration/check_faultsurvive.sh;ldiv0;armv7m;killed|the system exited 0 once main returned
+tests/integration/check_faultsurvive.sh;ldiv0;armv6m;killed|the system exited 0 once main returned
+tests/integration/check_faultsurvive.sh;ldiv0;rv32imac;returned:any|the system exited 0 once main returned
+tests/integration/check_faultsurvive.sh;ldiv0;rxv3;returned:any|the system exited 0 once main returned
+tests/integration/check_fault_dump.sh;DIVBYZERO: the UDF of __aeabi_idiv0/__aeabi_ldiv0|the fault ended the system with the status its marker implies
+tests/integration/check_fault_dump.sh;XTENSA EXCEPTION (integer divide by zero)|the fault ended the system with the status its marker implies
 tests/integration/check_fault_dump.sh;RX EXCEPTION (trap)|the fault ended the system with the status its marker implies
 tests/integration/check_fault_dump.sh;SIM FAULT|the fault ended the system with the status its marker implies
 tests/integration/check_fault_dump.sh;THREAD FAULT|the fault ended the system with the status its marker implies
@@ -818,10 +986,10 @@ tests/integration/check_uatomic.sh|main's return ended the system with status 0
 tests/integration/check_libcrace.sh|main returned 0
 tests/integration/check_mutexbench.sh|the bench ended
 tests/integration/check_mutexbench.sh;aspace|the bench ended
-tests/integration/check_mutexbench.sh;coarse-clock|the bench ended
 tests/integration/check_qemu_cxxterm.sh|terminate stopped the image
 tests/integration/check_qemu_cxxterm.sh;--worker|the creator ended the system cleanly
 tests/integration/check_reclaimwit.sh;drain|the drain arm shut the system down with status 0
+tests/integration/check_reboot.sh;refused|the app shut down cleanly with status 0
 tests/integration/check_rootfault.sh;thread-kill|main's fault ended the system with KOS_EXIT_FAULT (139)
 tests/integration/check_sched_exit.sh|main's exit with a child alive ended the system with status 7
 tests/integration/check_slaypeer.sh|the system exited 0 once main returned past PASS
@@ -858,15 +1026,30 @@ fi
 require_repo_root
 scratch_dir
 
-# <in> <op> <literal> <replacement> <out>: <in> with one edit, with CRLF line ends.
+# <in> <op> <literal> <replacement> <out>: <in> with one edit, with CRLF line ends. A fixture
+# named *-truncated.capture loses the newline of its last line, unless the edit changes that line.
 plant() {
-    KOS_PLANT_LIT="$3" KOS_PLANT_NEW="$4" awk -v op="$2" '
-        BEGIN { lit = ENVIRON["KOS_PLANT_LIT"]; rep = ENVIRON["KOS_PLANT_NEW"] }
+    _pl_open=0
+    case "$1" in
+        *-truncated.capture) _pl_open=1 ;;
+        *) ;;
+    esac
+    KOS_PLANT_LIT="$3" KOS_PLANT_NEW="$4" awk -v op="$2" -v open="$_pl_open" '
+        BEGIN {
+            lit = ENVIRON["KOS_PLANT_LIT"]
+            rep = ENVIRON["KOS_PLANT_NEW"]
+            last = 0
+            if (substr(op, 1, 5) == "last-") {
+                op = substr(op, 6)
+                last = 1
+            }
+        }
         {
             sub(/\r/, "")
             n++
             line[n] = $0
             if (lit != "" && a == 0 && index($0, lit) > 0) { a = n }
+            if (lit != "" && index($0, lit) > 0) { z = n }
             if (rep != "" && b == 0 && index($0, rep) > 0) { b = n }
         }
         END {
@@ -876,11 +1059,17 @@ plant() {
                 line[b] = t
             }
             for (i = 1; i <= n; i++) {
+                if (op == "cut" && z > 0 && i >= z) { break }
                 at = 0
                 if (lit != "") { at = index(line[i], lit) }
+                if (last && i != z) { at = 0 }
                 if (op == "drop" && at > 0) { continue }
                 if (op == "swap" && at > 0) {
                     line[i] = substr(line[i], 1, at - 1) rep substr(line[i], at + length(lit))
+                }
+                if (open && i == n && at == 0) {
+                    printf "%s", line[i]
+                    continue
                 }
                 printf "%s\r\n", line[i]
                 if (op == "after" && at > 0) { printf "%s\r\n", rep }
@@ -888,10 +1077,12 @@ plant() {
         }' "$1" > "$5"
 }
 
-# <in> <op> <literal> <replacement> <out>: plant over <in> and <in>.times, where it exists.
+# <in> <op> <literal> <replacement> <out>: plant over <in>, and over <in>.times and <in>.bus where
+# they exist.
 plant_pair() {
     _pp_log="$2"
     _pp_times="$2"
+    _pp_bus=none
     case "$2" in
         log-*)
             _pp_log="${2#log-}"
@@ -901,20 +1092,32 @@ plant_pair() {
             _pp_log=none
             _pp_times="${2#times-}"
             ;;
+        bus-*)
+            _pp_log=none
+            _pp_times=none
+            _pp_bus="${2#bus-}"
+            ;;
     esac
     plant "$1" "$_pp_log" "$3" "$4" "$5"
-    rm -f "$5.times"
+    for _pp_side in times bus; do
+        rm -f "$5.$_pp_side"
+    done
     if [ -f "$1.times" ]; then
         plant "$1.times" "$_pp_times" "$3" "$4" "$5.times"
     fi
+    if [ -f "$1.bus" ]; then
+        plant "$1.bus" "$_pp_bus" "$3" "$4" "$5.bus"
+    fi
 }
 
-# <a> <b>: the two captures and their arrival stamps are the same bytes.
+# <a> <b>: the two captures, their arrival stamps and their bus records are the same bytes.
 same_pair() {
     cmp -s "$1" "$2" || return 1
-    if [ -f "$1.times" ] || [ -f "$2.times" ]; then
-        cmp -s "$1.times" "$2.times" || return 1
-    fi
+    for _sp_side in times bus; do
+        if [ -f "$1.$_sp_side" ] || [ -f "$2.$_sp_side" ]; then
+            cmp -s "$1.$_sp_side" "$2.$_sp_side" || return 1
+        fi
+    done
     return 0
 }
 
@@ -1007,10 +1210,12 @@ while IFS='|' read -r judge fixture cache token op lit rep op2 lit2 rep2; do
             what="$what and the $op2 of '$lit2'"
             plant_pair "$TMP/bad.log" "$op2" "$lit2" "$rep2" "$TMP/bad2.log"
             mv "$TMP/bad2.log" "$TMP/bad.log"
-            rm -f "$TMP/bad.log.times"
-            if [ -f "$TMP/bad2.log.times" ]; then
-                mv "$TMP/bad2.log.times" "$TMP/bad.log.times"
-            fi
+            for side in times bus; do
+                rm -f "$TMP/bad.log.$side"
+                if [ -f "$TMP/bad2.log.$side" ]; then
+                    mv "$TMP/bad2.log.$side" "$TMP/bad.log.$side"
+                fi
+            done
         fi
         if same_pair "$good" "$TMP/bad.log"; then
             bad "$what leaves $fixture unchanged"
@@ -1027,6 +1232,15 @@ while IFS='|' read -r judge fixture cache token op lit rep op2 lit2 rep2; do
 done <<ROWS
 $ROWS
 ROWS
+
+# A bus record holding nothing but an unrelated device in the old three-field shape is refused.
+plant tests/integration/app_captures/rebootdemo-bootloader.capture none "" "" "$TMP/bad.log"
+printf 'ffff:ffff|present|an unrelated USB device\n' > "$TMP/bad.log.bus"
+if judged "tests/integration/check_reboot.sh;bootloader" "KICKOS_BOARD:STRING=picopi" "$TMP/bad.log"; then
+    bad "check_reboot.sh passes a bus record naming only an unrelated device"
+elif ! grep -qF "FAIL: unrelated:" "$TMP/judge.out"; then
+    bad "check_reboot.sh refuses an unrelated device's record, but not as unrelated: $(tail -n 1 "$TMP/judge.out")"
+fi
 
 NAMED="$(git ls-files user/apps tests/integration/gates | grep -E '(CMakeLists\.txt|\.cmake)$' \
     | while read -r f; do

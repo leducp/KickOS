@@ -39,7 +39,7 @@ RULES = (
     "board.chip-folder", "board.device-unknown",
     "board.pin-unknown", "board.pin-function", "board.pin-not-gpio", "board.reserved-pin-used",
     "board.memory-overlap", "board.link-duplicate", "board.symbol-collision", "board.pin-reused",
-    "board.pin-signal", "board.led-owner", "board.led-kind",
+    "board.pin-signal", "board.led-owner", "board.led-kind", "board.flash-size",
     "form.duplicate-entry", "form.scope",
     "name.board-unknown", "name.board-ambiguous", "name.cluster-unknown", "name.device-unknown",
     "name.line-unknown", "name.namespace", "name.reserved", "name.duplicate",

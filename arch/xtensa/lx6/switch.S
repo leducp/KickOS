@@ -1,24 +1,12 @@
 /* SPDX-License-Identifier: CECILL-C
  * Copyright (c) 2026 Philippe Leduc
  *
- * Xtensa LX6 context switch (WINDOWED ABI). The windowed ABI keeps most of a
- * thread's live register state in the physical AR window file (64 ARs on LX6),
- * reachable only through the sliding a0-a15 window. So the cooperative switch first
- * FLUSHES every live window of the outgoing thread to that thread's OWN stack
- * (SPILL_ALL_WINDOWS, a controlled walk around the whole register file that forces
- * each ancestor frame to overflow to its base save area), then swaps the stack
- * pointer, then resumes the incoming thread with a windowed return (retw), whose
- * underflow handler lazily reloads the incoming caller's window from ITS stack.
+ * Xtensa LX6 context switch, windowed ABI.
  *
- * Why 3 saved words (sp/ps/pc) suffice: after SPILL_ALL_WINDOWS the register
- * file holds only the current (switch) window; WindowStart has a single bit set.
- * The base-save-area convention (Xtensa ISA, Windowed Register Option) puts each
- * frame's a0-a3, including its a1 (SP), at [callee_sp - 16 .. callee_sp - 4].
- * A `retw` therefore rebuilds the entire incoming call chain from the incoming
- * thread's stack via the window-underflow vectors (startup.S). The physical
- * WindowBase value is irrelevant once the file is spilled, so resuming a thread
- * that suspended under a DIFFERENT WindowBase is safe. See the window vectors in
- * arch/xtensa/chip/esp32/startup.S.
+ * A cooperative switch saves only sp, ps and pc: once FLUSH_WINDOWS has stored every ancestor
+ * window to its base save area, the incoming thread's retw rebuilds its call chain from its own
+ * stack through the underflow vectors (arch/xtensa/chip/esp32/startup.S), whatever WindowBase
+ * it suspended under.
  *
  * arch_context layout (context.h, offsets hard-coded here): sp@0, ps@4, pc@8.
  *
@@ -47,40 +35,19 @@
 #include <kickos/arch/xtensa_frame.h>
 #include <kickos/arch/lx6_switch_unlock.inc>
 #include <kickos/arch/lx6_percpu.inc>
-
-
-/* SPILL_ALL_WINDOWS: XCHAL_NUM_AREGS == 64 on LX6, so rotate the window a full
- * 360 degrees (total rotw = 16 == 64/4). Each `and a12,a12,a12` is a no-op write
- * that, when a12 belongs to a still-live ancestor window, triggers a window
- * overflow that spills that frame to its stack; the walk guarantees every frame
- * but the current one is flushed. Requires PS as above. The 64-AR rotw-based spill
- * is the sequence the Xtensa ISA Reference Manual mandates (Windowed Register
- * Option). */
-    .macro SPILL_ALL_WINDOWS
-    and     a12, a12, a12
-    rotw    3
-    and     a12, a12, a12
-    rotw    3
-    and     a12, a12, a12
-    rotw    3
-    and     a12, a12, a12
-    rotw    3
-    and     a12, a12, a12
-    rotw    4
-    .endm
+#include <kickos/arch/lx6_flush_windows.inc>
 
     .text
 
 /* ------------------------------------------------------------------------- */
-/* xtensa_switch(from=a2, to=a3): cooperative windowed swap. THREAD CONTEXT ONLY. */
-/* Saves `from`'s resume state, flushes its windows, then resumes `to`. Returns    */
-/* through the windowed underflow chain on the incoming thread's stack, inside its */
-/* arch_switch call.                                                              */
+/* kickos_lx6_switch(from=a2, to=a3): cooperative windowed swap. THREAD CONTEXT ONLY.   */
+/* Returns through the windowed underflow chain on the incoming thread's stack, inside */
+/* its arch_switch call.                                                               */
 /* ------------------------------------------------------------------------- */
     .align 4
-    .global xtensa_switch
-    .type xtensa_switch, @function
-xtensa_switch:
+    .global kickos_lx6_switch
+    .type kickos_lx6_switch, @function
+kickos_lx6_switch:
     entry   a1, 32
 #if KICKOS_BENCH
     /* Bench: bank the PREVIOUS switch's cost (end-start), then stamp this switch's
@@ -140,7 +107,7 @@ xtensa_switch:
     movi    a3, PS_SPILL
     wsr.ps  a3
     rsync
-    SPILL_ALL_WINDOWS
+    FLUSH_WINDOWS
 
     /* Resume the incoming thread. A COOP thread (the common case) loads sp/ps/pc
        and returns into its saved continuation: the retw rotates the window back
@@ -164,7 +131,7 @@ xtensa_switch:
     rsync
     retw
 .Lsw_resume_irq:
-    /* The window file is spilled to a single frame here (SPILL_ALL_WINDOWS above),
+    /* The window file is spilled to a single frame here (FLUSH_WINDOWS above),
        which is the precondition _kickos_lx6_irq_restore assumes. Hand it the frame
        base in a1 and let it reload the full context and rfe. jx (not j) so the
        cross-section reach to startup.S is range-independent. */
@@ -172,14 +139,14 @@ xtensa_switch:
     SWITCH_UNLOCK
     movi    a2, _kickos_lx6_irq_restore
     jx      a2
-    .size xtensa_switch, .-xtensa_switch
+    .size kickos_lx6_switch, .-kickos_lx6_switch
 
 /* ------------------------------------------------------------------------- */
 /* arch_start(boot=a2, first=a3): enter the first thread from the boot context.    */
 /* `boot` is ignored and the boot stack abandoned (the system always terminates    */
 /* via arch_shutdown, never by unwinding to boot). Records g_arch_current, spills   */
 /* the boot windows, then resumes `first` by the path its resume_kind selects, as   */
-/* xtensa_switch does. A fresh thread (arch_context_init) is always                 */
+/* kickos_lx6_switch does. A fresh thread (arch_context_init) is always             */
 /* KICKOS_RESUME_IRQ, so the first thread is entered via the rfe restore.           */
 /* ------------------------------------------------------------------------- */
     .align 4
@@ -201,7 +168,7 @@ arch_start:
     movi    a4, PS_SPILL
     wsr.ps  a4
     rsync
-    SPILL_ALL_WINDOWS
+    FLUSH_WINDOWS
 
     l32i    a3, a1, 0
     SEAT_THREADPTR a3, a4
@@ -215,7 +182,7 @@ arch_start:
     rsync
     retw
 .Lstart_resume_irq:
-    /* Single-frame window here (SPILL_ALL_WINDOWS), the precondition the shared rfe
+    /* Single-frame window here (FLUSH_WINDOWS), the precondition the shared rfe
        epilogue assumes. Hand it the interrupt-frame base and let it rfe into `first`. */
     l32i    a1, a3, CTX_SP       /* a1 = first->sp (interrupt frame base) */
     movi    a2, _kickos_lx6_irq_restore

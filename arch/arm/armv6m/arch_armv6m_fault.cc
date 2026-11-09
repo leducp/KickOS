@@ -7,6 +7,7 @@
 #include <kickos/arch/arch.h>
 #include <kickos/arch/armv6m_fault_frame.h>
 
+#include "../common/aeabi_div0.h"
 #include "../common/fault_resume.h"
 
 extern "C"
@@ -56,8 +57,16 @@ __attribute__((naked, noreturn)) void kickos_armv6m_fault_stack_reset(void)
 void arch_fault_redirect_to_exit(void* frame)
 {
     uint32_t* const f = static_cast<uint32_t*>(frame);
-    // A null name tells the printer there is no status word.
-    kickos_fault_record(nullptr, 0, f[6], 0, 0);
+    // A null name tells the printer there is no status word: v6-M latches none, and a divide by
+    // zero is known by the hook's UDF alone.
+    if (kickos_arm_div0_trap_at(f[6]))
+    {
+        kickos_fault_record("DIVBYZERO", 1, f[6], 0, 0);
+    }
+    else
+    {
+        kickos_fault_record(nullptr, 0, f[6], 0, 0);
+    }
     kickos_arm_fault_resume_at(f, &kickos_armv6m_fault_stack_reset);
     // v6-M has no IT/ICI state to clear. Forcing T is not redundant: a cleared T bit is
     // itself one of the ways a thread arrives here.

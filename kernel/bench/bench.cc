@@ -272,6 +272,12 @@ namespace
         BENCH_DIST_ENTRY_NONE(),
         BENCH_DIST_ENTRY_NONE(),
 #endif
+#if KICKOS_BENCH_WALKS
+        BENCH_DIST_ENTRY("owner-exit:"),
+#if KICKOS_HAVE_ASPACE
+        BENCH_DIST_ENTRY("reach-lost:"),
+#endif
+#endif
         BENCH_DIST_ENTRY("irq:      "),
         // WCASE_FMT selects the span label without adding a printf argument.
         BENCH_DIST_ENTRY_NONE(),
@@ -333,6 +339,8 @@ namespace
     constexpr uint32_t DIST_SWEPT_COUNT = kickos::BD_COUNT - DIST_SWEPT_FIRST;
 #if KICKOS_BENCH_SCHED_ON
     constexpr uint32_t DIST_ORDINARY_END = kickos::BD_CALL_RT;
+#elif KICKOS_BENCH_WALKS
+    constexpr uint32_t DIST_ORDINARY_END = kickos::BD_OWNER_EXIT;
 #else
     constexpr uint32_t DIST_ORDINARY_END = DIST_SWEPT_FIRST;
 #endif
@@ -460,6 +468,21 @@ namespace
             dist_slot(c, d) = DistSlot{};
         }
     }
+
+#if KICKOS_BENCH_WALKS
+    // The records a walk handed or the waits it ended, beside the walk's own row.
+    struct WalkItems
+    {
+        uint32_t least;
+        uint32_t most;
+    };
+#if KICKOS_HAVE_ASPACE
+    constexpr uint32_t WALK_KINDS = 2;
+#else
+    constexpr uint32_t WALK_KINDS = 1;
+#endif
+    constinit WalkItems g_walk[KICKOS_KERNEL_CORES][WALK_KINDS] = {};
+#endif
 }
 
 extern "C"
@@ -988,6 +1011,12 @@ namespace kickos
             r.lock_site.store(0, std::memory_order_relaxed);
             r.lock_site_max.store(0, std::memory_order_relaxed);
             r.lock_site_gen.store(0, std::memory_order_relaxed);
+#if KICKOS_BENCH_WALKS
+            for (uint32_t w = 0; w < WALK_KINDS; w++)
+            {
+                g_walk[c][w] = WalkItems{};
+            }
+#endif
         }
 #if KICKOS_BENCH_SCHED_ON
         // The counts only: a core's reason in force and its open pass stay as they are.
@@ -1214,6 +1243,79 @@ namespace kickos
     {
         dist_print_fmt(BD_SWITCH, SWITCH_VEC_FMT);
         return dist_total(BD_SWITCH).count;
+    }
+
+#if KICKOS_BENCH_WALKS
+    void bench_walk_add(uint32_t dist, BenchTick delta, uint32_t items)
+    {
+        if (dist < BD_OWNER_EXIT or dist - BD_OWNER_EXIT >= WALK_KINDS)
+        {
+            return;
+        }
+        dist_add_row(row(), dist, delta);
+        WalkItems& w = g_walk[kickos_kernel_core()][dist - BD_OWNER_EXIT];
+        if (w.most == 0 or items < w.least)
+        {
+            w.least = items;
+        }
+        if (items > w.most)
+        {
+            w.most = items;
+        }
+    }
+#endif
+
+    int bench_owner_print(uint32_t which, uint32_t waiters)
+    {
+#if not KICKOS_BENCH_WALKS
+        (void)which;
+        (void)waiters;
+        return -KOS_ENOSYS;
+#else
+        uint32_t d = BD_OWNER_EXIT;
+        char const* what = "owner-death";
+        char const* items = "owner-exit-n";
+        if (which == KOS_BENCH_OWNER_REACH_LOST)
+        {
+#if KICKOS_HAVE_ASPACE
+            d = BD_REACH_LOST;
+            what = "reach-lost-scan";
+            items = "reach-lost-n";
+#else
+            return -KOS_ENOSYS;
+#endif
+        }
+        else if (which != KOS_BENCH_OWNER_EXIT)
+        {
+            return -KOS_EINVAL;
+        }
+        kprintf_paced("  %s: k=%u waiters of S=%u thread slots\n", what,
+                      static_cast<unsigned>(waiters),
+                      static_cast<unsigned>(kernel().threads.count()));
+        dist_print_fmt(d, DIST_FMT[d]);
+        uint32_t least = 0;
+        uint32_t most = 0;
+        {
+            IrqLock lock;
+            for (uint32_t c = 0; c < KICKOS_KERNEL_CORES; c++)
+            {
+                WalkItems& w = g_walk[c][d - BD_OWNER_EXIT];
+                if (w.most != 0 and (most == 0 or w.least < least))
+                {
+                    least = w.least;
+                }
+                if (w.most > most)
+                {
+                    most = w.most;
+                }
+                w = WalkItems{};
+            }
+        }
+        kprintf_paced("  %s: %u/%u  (least/most per walk)\n", items, static_cast<unsigned>(least),
+                      static_cast<unsigned>(most));
+        dist_reset_one(d);
+        return 0;
+#endif
     }
 
     void bench_lock_probe_print()

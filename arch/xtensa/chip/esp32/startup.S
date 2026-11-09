@@ -1,10 +1,9 @@
 /* SPDX-License-Identifier: CECILL-C
  * Copyright (c) 2026 Philippe Leduc
  *
- * The six window over/underflow vectors are mandatory: any call4/8/12 that outruns
- * the physical register file traps into them. Their s32e/l32e offsets and rfwo/rfwu
- * returns are the ISA-canonical handlers, and the VECBASE offsets are the fixed LX6
- * layout (XCHAL_*_VECOFS).
+ * The six window vectors are the handlers the Xtensa ISA Summary (Cadence, 2022) lists in
+ * 6.1.6, "Window Overflow and Underflow to and from the Program Stack", pp. 252-254, and the
+ * VECBASE offsets are the fixed LX6 layout (XCHAL_*_VECOFS).
  */
 
 /* PS bit fields (corebits.h): INTLEVEL[3:0], EXCM=bit4(0x10), UM=bit5(0x20),
@@ -26,27 +25,10 @@
     .set CTX_TID,   16             /* trace_tid (telemetry builds only) */
     .set RESUME_IRQ, 1
 
-/* SPILL_ALL_WINDOWS: flush every live ancestor window of the current call chain
-   to its stack, leaving WindowStart with a single live frame. Requires WOE=1,
-   EXCM=0, INTLEVEL>=EXCM_LEVEL (PS_SPILL). The 64-AR rotw sequence is the one the
-   Xtensa ISA Reference Manual mandates. Must stay identical to the copy in
-   arch/xtensa/lx6/switch.S. */
-    .macro SPILL_ALL_WINDOWS
-    and     a12, a12, a12
-    rotw    3
-    and     a12, a12, a12
-    rotw    3
-    and     a12, a12, a12
-    rotw    3
-    and     a12, a12, a12
-    rotw    3
-    and     a12, a12, a12
-    rotw    4
-    .endm
-
 #include <kickos/arch/xtensa_frame.h>
 #include <kickos/arch/lx6_switch_unlock.inc>
 #include <kickos/arch/lx6_percpu.inc>
+#include <kickos/arch/lx6_flush_windows.inc>
 
     .text
 
@@ -219,7 +201,7 @@ _kickos_int_level1:
     movi    a2, PS_SPILL
     wsr.ps  a2
     rsync
-    SPILL_ALL_WINDOWS
+    FLUSH_WINDOWS
     movi    a2, F_SIZE
     sub     a1, a1, a2            /* a1 = frame base (orig sp - F_SIZE) */
 
@@ -268,7 +250,7 @@ _kickos_int_level1:
     PERCPU_CELL a2, g_arch_current, a4
     s32i    a3, a2, 0
 
-    /* An interrupt-decided switch never enters xtensa_switch: without this seat the
+    /* An interrupt-decided switch never enters kickos_lx6_switch: without this seat the
        incoming thread runs on the outgoing thread's THREADPTR until its next
        cooperative switch. */
     SEAT_THREADPTR a3, a2
@@ -367,7 +349,12 @@ _kickos_lx6_irq_restore:
 /* ------------------------------------------------------------------------- */
     .section .vectors, "ax"
 
-/* --- WindowOverflow4 @ 0x000: spill a0-a3 to the callee frame base save area. --- */
+/* Window vectors. An overflow runs in the window being evicted, whose a0-a3 go below the SP
+   of the frame it called; an 8- or 12-register window puts the rest at the top of its own
+   frame, found through its caller's SP, which the earlier eviction of that caller stored at
+   a1-12. ORDER IS LOAD-BEARING: overflow reuses a0 as that pointer only after storing a0,
+   and underflow must reload a1 before it can fetch the pointer through it, and reloads the
+   pointer register itself last. */
     .org 0x000
 _WindowOverflow4:
     s32e    a0, a5, -16
@@ -376,7 +363,6 @@ _WindowOverflow4:
     s32e    a3, a5, -4
     rfwo
 
-/* --- WindowUnderflow4 @ 0x040: reload a0-a3 from the base save area. ---------- */
     .org 0x040
 _WindowUnderflow4:
     l32e    a0, a5, -16
@@ -385,11 +371,10 @@ _WindowUnderflow4:
     l32e    a3, a5, -4
     rfwu
 
-/* --- WindowOverflow8 @ 0x080: a0-a3 to callee frame, a4-a7 to caller frame. --- */
     .org 0x080
 _WindowOverflow8:
     s32e    a0, a9, -16
-    l32e    a0, a1, -12           /* a0 <- caller's caller SP (to reach a4-a7 area) */
+    l32e    a0, a1, -12
     s32e    a1, a9, -12
     s32e    a2, a9, -8
     s32e    a3, a9, -4
@@ -399,7 +384,6 @@ _WindowOverflow8:
     s32e    a7, a0, -20
     rfwo
 
-/* --- WindowUnderflow8 @ 0x0C0. ------------------------------------------------ */
     .org 0x0C0
 _WindowUnderflow8:
     l32e    a0, a9, -16
@@ -413,7 +397,6 @@ _WindowUnderflow8:
     l32e    a7, a7, -20
     rfwu
 
-/* --- WindowOverflow12 @ 0x100: a0-a3 to callee frame, a4-a11 to caller frame. - */
     .org 0x100
 _WindowOverflow12:
     s32e    a0, a13, -16
@@ -431,7 +414,6 @@ _WindowOverflow12:
     s32e    a11, a0, -20
     rfwo
 
-/* --- WindowUnderflow12 @ 0x140. ----------------------------------------------- */
     .org 0x140
 _WindowUnderflow12:
     l32e    a0, a13, -16

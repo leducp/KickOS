@@ -9,6 +9,8 @@
 #include "pin_guard.h"
 #include <kickos/config/limits.h>
 #include <kickos/arch/clk_anchor.h>
+#include <kickos/arch/clock_fallback.h>
+#include <kickos/arch/wrap_extend.h>
 #include <kickos/console_tx.h>
 #include <kickos/io/mmio.h>
 #include <kickos/sys/abi.h>
@@ -190,7 +192,7 @@ namespace
 
         // 4. PLLA. If it never locks, MCK is already stable on the crystal, so stay there.
         r32(CKGR_PLLAR) = PLLAR_ONE | PLLAR_MULA | PLLAR_COUNT | PLLAR_DIVA;
-        if (not pmc_wait(SR_LOCKA))
+        if (not pmc_wait(SR_LOCKA) or KICKOS_WITNESS_CLOCK_FALLBACK)
         {
             return;
         }
@@ -303,12 +305,20 @@ namespace
     constexpr uint32_t TC_SR_COVFS = 1u << 0;
     constexpr uint32_t PID_TC0 = 1u << 27;    // TC0 channel 0 = peripheral ID 27
 
-    // 64-bit extension of TC_CV0, which wraps every ~102 s. The wrap is folded exactly once, by
-    // whichever comes first of a thread read or the COVFS ISR; without that ISR a wrap across a
-    // quiescent >102 s idle is lost. The two words are ONE value: the IrqLock in tc_ticks keeps
-    // them coherent against the ISR.
-    uint32_t g_clk_high = 0;
-    uint32_t g_clk_last = 0;
+    // Reading TC_SR clears COVFS, so the latch a reader may look at is the line's NVIC pend
+    // bit. That pend clears as the ISR is entered, before take(): sound only while no reader
+    // can preempt this ISR, which every device line sharing PRIO_DEVICE guarantees.
+    struct tc0_wrap_ops
+    {
+        static uint32_t count() { return r32(TC0_CV0); }
+        static bool pending()
+        {
+            constexpr unsigned line = static_cast<unsigned>(irq::TC0_IRQ);
+            return (r32(kickos::arm::NVIC_ISPR0 + (line >> 5) * 4) & (1u << (line & 31))) != 0;
+        }
+        static bool take() { return (r32(TC0_SR0) & TC_SR_COVFS) != 0; }
+    };
+    kickos::arch_wrap_extend<tc0_wrap_ops> g_clk_wrap;
 
     // Sole writer is init() in arch_init; a runtime retune must call reprice() at the rate edge.
     kickos::arch_clk_anchor g_clk;
@@ -325,22 +335,7 @@ namespace
         uint32_t drop = r32(TC0_SR0);             // read-to-clear
         (void)drop;                               // ((void)r32) would elide the access
         r32(TC0_IER0) = TC_SR_COVFS;
-        // A pend latched here redelivers one benign kickos_isr_timer tick on enable.
         arch_irq_unmask(irq::TC0_IRQ);
-    }
-
-    uint64_t tc_ticks()
-    {
-        arch_irq_state_t s = arch_irq_save();
-        uint32_t cur = r32(TC0_CV0);
-        if (cur < g_clk_last)
-        {
-            ++g_clk_high;
-        }
-        g_clk_last = cur;
-        uint64_t hi = g_clk_high;
-        arch_irq_restore(s);
-        return (hi << 32) | cur;
     }
 
     void uart_init()
@@ -382,16 +377,12 @@ void arch_init(void)
 // Must stay a pure read: deriving the rate here would reprice all elapsed history.
 uint64_t arch_clock_now(void)
 {
-    return g_clk.ns_from(tc_ticks());
+    return g_clk.ns_from(g_clk_wrap.read());
 }
 
-// Observes the wrap while no thread reads the clock. Runs in the maskable band, so an IrqLock
-// defers it harmlessly.
 void kickos_tc0_clock_isr(void)
 {
-    uint32_t drop = r32(TC0_SR0); // read-to-clear acks COVFS
-    (void)drop;
-    tc_ticks();
+    g_clk_wrap.on_overflow();
 }
 
 bool arch_console_write_sync(char const* buf, size_t n)

@@ -6,6 +6,7 @@
 
 #include <kickos/arch/arch.h>
 #include <kickos/arch/bounded_wait.h>
+#include <kickos/arch/clock_fallback.h>
 #include <kickos/arch/console_poll.h>
 #include <kickos/arch/console_retry.h>
 #include <kickos/console_tx.h>
@@ -99,9 +100,9 @@ namespace kickos::rp2xxx
         wait_mask(reg::resets::RESET_DONE, mask);
     }
 
-    // Bring PLL_SYS up to the chip's clk_sys target. Returns false (PLL left powered down) if
-    // the VCO never locks, so the caller can stay on the crystal instead of switching clk_sys
-    // onto a dead PLL. Datasheet 2.18.2 / 8.6.4 sequence.
+    // Bring PLL_SYS up to the chip's clk_sys target. Returns false, its post-divider left powered
+    // down, if the VCO never locks, so the caller stays on the crystal instead of switching
+    // clk_sys onto a dead PLL. Datasheet 2.18.2 / 8.6.4 sequence.
     bool pll_sys_lock()
     {
         // Reset the block first so a warm reboot can't run this off stale dividers.
@@ -115,7 +116,7 @@ namespace kickos::rp2xxx
         // Power up main regulator + VCO (clear PD, VCOPD). DSMPD stays set (integer FBDIV, no
         // delta-sigma); POSTDIVPD stays set until after lock.
         r32(reg::pll::PWR + ATOMIC_CLR) = reg::pll::PWR_PD | reg::pll::PWR_VCOPD;
-        if (not wait_mask(reg::pll::CS, reg::pll::CS_LOCK))
+        if (not wait_mask(reg::pll::CS, reg::pll::CS_LOCK) or KICKOS_WITNESS_CLOCK_FALLBACK)
         {
             return false;
         }

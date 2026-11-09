@@ -63,7 +63,9 @@ devices:
     owner: kernel
     symbol: CMTW0
     ref: "Table 5.1 List of I/O Registers (Address Order), p.255"
-    lines: { cmwi0: { number: 30, ref: "Table 15.5 Interrupt Vector Table (1/6), p.521" } }
+    lines:
+      cmwi0: { number: 30, ref: "Table 15.5 Interrupt Vector Table (1/6), p.521" }
+      cmwi1: { number: 31, ref: "Table 15.5 Interrupt Vector Table (1/6), p.521" }
   # Reaches SLIARn and SLIPRCR past the group registers: they route a source onto vectors 208
   # to 255.
   # The level groups' parent vectors, armed by the kernel while any source of the group is.

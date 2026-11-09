@@ -21,9 +21,10 @@
 
 #include <kickos/driver/uart.h>
 
-#include <kickos/io/mmio.h>   // r32
-#include <kickos/sys.h>       // kos_periph_clock_hz
-#include <kickos/sys/errno.h> // KOS_ENOTSUP, KOS_ENOSYS, KOS_EBUSY
+#include <kickos/io/mmio.h>    // r32
+#include <kickos/poll_bound.h> // KICKOS_POLL_SPIN_MAX
+#include <kickos/sys.h>        // kos_periph_clock_hz
+#include <kickos/sys/errno.h>  // KOS_ENOTSUP, KOS_ENOSYS, KOS_EBUSY
 
 #include <regs/usart.h>
 #include <usart_class.h> // usart_tx_ready
@@ -33,8 +34,6 @@
 namespace
 {
     namespace ru = kickos::stm32f411::reg::usart;
-
-    constexpr uint32_t POLL_MAX = 1000000u;
 
     bool tx_idle(uintptr_t base)
     {
@@ -150,7 +149,7 @@ int32_t kos_uart_open(struct kos_uart* u, struct kos_uart_config const* cfg)
     // A divisor or frame change with a byte still in the shifter corrupts it on the wire,
     // and TC is what says the shifter is idle (RM0383 sec.19.3.2).
     bool drained = false;
-    for (uint32_t i = 0; i < POLL_MAX; i++)
+    for (uint32_t i = 0; i < KICKOS_POLL_SPIN_MAX; i++)
     {
         if (tx_idle(u->base))
         {
@@ -286,7 +285,7 @@ int32_t kos_uart_flush(struct kos_uart* u)
     // THE STRONG CONTRACT ON THIS PART: drained means the last stop bit has left the pin.
     // TXE alone is only DR handing off to the shift register; TC is set after the stop bit
     // with TXE already set (RM0383 sec.19.3.2).
-    for (uint32_t i = 0; i < POLL_MAX; i++)
+    for (uint32_t i = 0; i < KICKOS_POLL_SPIN_MAX; i++)
     {
         if (tx_idle(u->base))
         {

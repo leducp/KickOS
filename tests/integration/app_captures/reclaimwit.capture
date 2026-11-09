@@ -27,4 +27,4 @@
 [reclaimwit]   slay rc=0
 [reclaimwit]   post-death send (want -KOS_ECONNREFUSED) rc=-111
 [reclaimwit] PASS reclaim fired: driver slain, endpoint refused, wire back
-[reclaimwit] park arm: the system stays up, nothing further is printed
+[reclaimwit] park arm: nothing further is printed, then main returns its verdict

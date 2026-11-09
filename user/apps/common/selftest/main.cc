@@ -579,8 +579,7 @@ namespace
             }
         }
     }
-    // The monotonic clock's step. Never hardcode a fine clock: the QEMU semihosting clock is
-    // coarse. The probe must SPIN; a WFI would not advance the clock.
+    // The monotonic clock's step, never assumed fine.
     uint64_t clock_granule_ns()
     {
         uint64_t e0 = kos_clock_now();
@@ -719,6 +718,93 @@ namespace
         TAP_CHECK(g_ucas_misses[0] + g_ucas_misses[1] > 0);
         TAP_CHECK(g_ucas_word == adds);
     }
+
+#if defined(__XTENSA__)
+    // --- SCOMPARE1 across a switch -------------------------------------------------
+    // One RR thread compares a word holding 0 against 1 while a peer of its priority on its
+    // core compares another word holding 0 against 0, leaving SCOMPARE1 at 0. A resume between
+    // the first thread's wsr.scompare1 and its S32C1I on anything but its own SCOMPARE1 stores
+    // 2 into a word that never held 1.
+    uint32_t g_sc1_w = 0;
+    uint32_t g_sc1_z = 0;
+    Atomic<uint32_t, Order::RELAXED> g_sc1_peer_loops{0};
+    volatile uint32_t g_sc1_advanced = 0;
+    volatile uint32_t g_sc1_answer = 0;
+
+    // arg null: the thread comparing w against 1, else the peer.
+    void sc1_compare(void* arg)
+    {
+        kos_sem_post(&g_done);
+        stage_wait();
+        uint64_t const start = kos_clock_now();
+        uint32_t const before = g_sc1_peer_loops.load();
+        uint32_t i = 0;
+        while (true)
+        {
+            if (arg != nullptr)
+            {
+                (void)kickos_user_cas(&g_sc1_z, 0u, 0u);
+                g_sc1_peer_loops = g_sc1_peer_loops.load() + 1u;
+            }
+            else
+            {
+                uint32_t const got = kickos_user_cas(&g_sc1_w, 1u, 2u);
+                if (got != 0u)
+                {
+                    g_sc1_answer = got;
+                }
+            }
+            i = i + 1u;
+            if ((i & 1023u) == 0u and kos_clock_now() - start >= g_ucas_run_ns)
+            {
+                break;
+            }
+        }
+        if (arg == nullptr)
+        {
+            g_sc1_advanced = g_sc1_peer_loops.load() - before;
+        }
+    }
+    void t_user_cas_scompare1()
+    {
+        TAP_ASK(.workers = 2);
+        uint64_t const quantum = clock_granule_ns();
+        uint64_t run = UCAS_RUN_NS;
+        if (run < quantum * 64)
+        {
+            run = quantum * 64;
+        }
+        g_ucas_run_ns = run;
+        g_sc1_w = 0;
+        g_sc1_z = 0;
+        g_sc1_peer_loops = 0;
+        g_sc1_advanced = 0;
+        g_sc1_answer = 0;
+        kos::thread::Handle a;
+        kos::thread::Handle b;
+        ArmHold hold;
+        TAP_HOLD(hold.thread(&a) and hold.thread(&b));
+        TAP_CHECK(kos_sem_init(&g_gate, 0) == 0);
+        a = kos::thread::create_caps(sc1_compare, nullptr, "sc1W", 10, nullptr, 0,
+                                     KOS_POLICY_RR, static_cast<uint32_t>(quantum), 0, nullptr,
+                                     nullptr, 0, TAP_PIN_CORE);
+        b = kos::thread::create_caps(sc1_compare, &g_sc1_z, "sc1Z", 10, nullptr, 0,
+                                     KOS_POLICY_RR, static_cast<uint32_t>(quantum), 0, nullptr,
+                                     nullptr, 0, TAP_PIN_CORE);
+        TAP_CHECK(a.valid() and b.valid());
+        TAP_CHECK(kos_sem_wait(&g_done, STALL_TOLERANT_US) == 0);
+        TAP_CHECK(kos_sem_wait(&g_done, STALL_TOLERANT_US) == 0);
+        stage_release();
+        TAP_CHECK(hold.joined());
+        tap::diag("scompare1: quantum %u ns, the peer looped %u during the compares, w %u, "
+                  "last nonzero answer %u",
+                  static_cast<unsigned>(quantum), static_cast<unsigned>(g_sc1_advanced),
+                  static_cast<unsigned>(g_sc1_w), static_cast<unsigned>(g_sc1_answer));
+        // The peer ran inside the compares, so a switch could land in the window.
+        TAP_CHECK(g_sc1_advanced > 0);
+        TAP_CHECK(g_sc1_w == 0);
+    }
+#endif
 
     // --- Sleep ordering (tickless timer) ---------------------------------------
     // main spawns the 40 ms sleeper FIRST, so the two deadlines land in the intended order
@@ -2692,7 +2778,7 @@ namespace
             p.block = arg;
             p.size = XG_STK;
             kos_task_t t = KOS_TASK_NONE;
-            rep[XG_MEMBASE] = kos_task_create(prog, &p, &t);
+            rep[XG_MEMBASE] = kos_task_create(prog, &p, 0, &t);
             if (rep[XG_MEMBASE] == 0)
             {
                 (void)kos_task_slay(t, STALL_TOLERANT_US);
@@ -3035,6 +3121,48 @@ namespace
         TAP_CHECK(hold.joined());
         TAP_CHECK(g_mmio_unpriv_rc == -KOS_EPERM);
     }
+
+#if defined(__XTENSA__)
+    // --- a buffer only the instruction bus reaches is refused, not read ----------
+    // ESP32: a byte or unaligned load from the instruction bus raises an exception (TRM v5.8
+    // 3.3.1), so the kernel refuses such a buffer before it reads one. Each subject is odd, so an
+    // admitted one faults the kernel on its read: the worker's own text in flash, the kernel's
+    // text in SRAM0, and SRAM1's instruction alias.
+    constexpr int IBUS_SUBJECTS = 3;
+    long g_ibus_rc[IBUS_SUBJECTS] = {};
+    void ibus_worker(void*)
+    {
+        uintptr_t const at[IBUS_SUBJECTS] = {reinterpret_cast<uintptr_t>(&ibus_worker) + 1u,
+                                             0x40080001u, 0x400A0001u};
+        for (int i = 0; i < IBUS_SUBJECTS; i++)
+        {
+            g_ibus_rc[i] =
+                KICKOS_KCONSOLE_MEASURED(ANSWER, reinterpret_cast<void const*>(at[i]), 3u);
+        }
+    }
+    void t_ibus_buffer_refused()
+    {
+        TAP_ASK(.workers = 1);
+        for (int i = 0; i < IBUS_SUBJECTS; i++)
+        {
+            g_ibus_rc[i] = 1;
+        }
+        kos::thread::Handle w;
+        ArmHold hold;
+        TAP_HOLD(hold.thread(&w));
+        w = kos::thread::create(ibus_worker, nullptr, "ibusW", 10);
+        if (not w.valid())
+        {
+            TAP_CHECK(w.valid());
+            return;
+        }
+        // The kernel lived through the reads: it ran the worker to its end and joins it.
+        TAP_CHECK(hold.joined());
+        TAP_CHECK(g_ibus_rc[0] == -KOS_EFAULT);
+        TAP_CHECK(g_ibus_rc[1] == -KOS_EFAULT);
+        TAP_CHECK(g_ibus_rc[2] == -KOS_EFAULT);
+    }
+#endif
 
     // --- stack_base arena containment (unprivileged self-grant) -----------------
     // The stack_base grant is the ONE unprivileged path that reaches an MPU region. Without
@@ -6417,7 +6545,6 @@ namespace
 
     // --- A shutdown's outcome answers to the caller's authority: refusals only ---------
     // An admitted outcome ends the run on a chip with that entry, truncating the TAP stream.
-    int g_terminal_set = -99; // selftest_main's, before any arm
     struct OutcomeAsk
     {
         uint32_t authority;
@@ -6472,12 +6599,17 @@ namespace
         if (SELFTEST_OWNS_RESET)
         {
             TAP_CHECK(g_outcome[2].reboot == -KOS_EPERM);
-            TAP_CHECK(g_terminal_set == 0);
+#if KICKOS_BOOTLOADER_ENTRY
+            // The image's init set it before main (user/apps/ending).
+            TAP_CHECK(kos_terminal_outcome(KOS_SHUTDOWN_BOOTLOADER) == -KOS_EALREADY);
+#else
+            TAP_CHECK(kos_terminal_outcome(KOS_SHUTDOWN_BOOTLOADER) == 0);
+#endif
             TAP_CHECK(kos_terminal_outcome(KOS_SHUTDOWN_HALT) == -KOS_EALREADY);
         }
         else
         {
-            TAP_CHECK(g_terminal_set == -KOS_EPERM);
+            TAP_CHECK(kos_terminal_outcome(KOS_SHUTDOWN_BOOTLOADER) == -KOS_EPERM);
         }
     }
 
@@ -7332,7 +7464,7 @@ namespace
         char const* hold_argv[] = {"peer", "hold", nullptr};
         kos_task_params p{};
         p.argv = hold_argv;
-        TAP_CHECK(kos_task_create(g_peer_prog, &p, nullptr) == -KOS_EINVAL);
+        TAP_CHECK(kos_task_create(g_peer_prog, &p, 0, nullptr) == -KOS_EINVAL);
         TAP_CHECK(PeerRun("hold").start(&task) == 0);
         TAP_CHECK(task != KOS_TASK_NONE); // the bias is what makes this assertion possible
         // The two words nothing can mint: the sentinel, and a generation the slot never held.
@@ -7731,8 +7863,9 @@ namespace
 
     // --- A start waits out a peer still dying ---------------------------------------------
     // peer0's entry returns while its worker, below main on main's core, has not run its
-    // teardown: the task has ended and is not dead. The next start still lands on peer0, whose
-    // budget seats the worker it spawns.
+    // teardown: the task has ended and is not dead. A start of peer0 with no timeout is refused;
+    // one with a timeout parks main until the worker is dead and lands on peer0, whose budget
+    // seats the worker it spawns.
 #if KICKOS_SELFTEST_PEER
     constexpr uint8_t PD_WORKER_PRIO = 9;
     void pd_parks(void*)
@@ -7783,7 +7916,13 @@ namespace
         uint32_t bits = 0;
         int const ended = kos_notify_wait(n, mask, TX_WAIT_US, &bits);
         int const state = kos_task_state(t, nullptr);
-        int const started = PeerRun("pdspawn").start(&next);
+        PeerRun spawn("pdspawn");
+        int const refused = spawn.try_start("peer0", &next);
+        int started = refused;
+        if (refused == -KOS_EAGAIN)
+        {
+            started = spawn.start(&next);
+        }
         // A create of peer0 ends its dead incarnation's hold.
         int const stale = kos_task_state(t, nullptr);
         if (stale == -KOS_EBADF)
@@ -7802,8 +7941,129 @@ namespace
             return;
         }
         TAP_CHECK((state & KOS_TASK_ENDED) != 0);
+        TAP_CHECK(refused == -KOS_EAGAIN);
         TAP_CHECK(started == 0 and stale == -KOS_EBADF);
         TAP_CHECK(status == 0);
+    }
+
+    // --- A death wait lends its priority -------------------------------------------------
+    // peer0's entry returns while its worker, at the lowest priority, sits below a spinner on
+    // main's core. A creator above both starts peer0 again with a timeout shorter than the spin:
+    // the worker runs its death out on the creator's priority, so the start lands while the
+    // spinner still spins.
+    constexpr uint8_t DL_SPIN_PRIO = 8;
+    constexpr uint8_t DL_CREATOR_PRIO = 14;
+    constexpr uint32_t DL_WAIT_US = CREATOR_US / 4;
+    struct DlRun
+    {
+        int pre, state, started, stale;
+    };
+    DlRun g_dl;
+    Atomic<int32_t, Order::RELAXED> g_dl_done{0};
+    Atomic<int32_t, Order::RELAXED> g_dl_spun_out{0};
+    void dl_spinner(void*)
+    {
+        uint64_t const until = deadline_in(2u * DL_WAIT_US);
+        while (g_dl_done.load() == 0 and kos_clock_now() < until)
+        {
+        }
+        if (g_dl_done.load() == 0)
+        {
+            g_dl_spun_out.store(1);
+        }
+    }
+    void dl_creator(void*)
+    {
+        kos_cap_t n = KOS_CAP_NONE;
+        kos_program_t prog = KOS_CAP_NONE;
+        kos_task_t t = KOS_TASK_NONE;
+        kos_task_t next = KOS_TASK_NONE;
+        int pre = kos_program_find("stpeer", &prog);
+        if (pre == 0)
+        {
+            pre = kos_notify_create(&n);
+        }
+        if (pre == 0)
+        {
+            pre = kos_notify_bind(n);
+        }
+        auto const spinner = kos::thread::create(dl_spinner, nullptr, "dls", DL_SPIN_PRIO,
+                                                 KOS_POLICY_FIFO, 0, nullptr, 0, nullptr, 0,
+                                                 nullptr, 0, 0, nullptr, TAP_PIN_CORE);
+        if (pre == 0)
+        {
+            pre = spinner.error();
+        }
+        if (pre == 0)
+        {
+            pre = PeerRun("pdslow").start(&t, prog);
+        }
+        if (pre == 0)
+        {
+            kos_cap_t badged = KOS_CAP_NONE;
+            pre = kos_notify_badge(n, TW_BIT, &badged);
+            if (pre == 0)
+            {
+                pre = kos_task_watch(t, badged, KOS_CAP_NONE);
+            }
+            (void)kos_handle_close(badged);
+        }
+        if (pre == 0)
+        {
+            uint32_t bits = 0;
+            pre = kos_notify_wait(n, 1u << TW_BIT, TX_WAIT_US, &bits);
+        }
+        g_dl.pre = pre;
+        if (pre == 0)
+        {
+            g_dl.state = kos_task_state(t, nullptr);
+            char const* argv[] = {"peer", "nop", nullptr};
+            kos_task_params p{};
+            p.argv = argv;
+            p.instance = "peer0";
+            g_dl.started = kos_task_create(prog, &p, DL_WAIT_US, &next);
+            g_dl.stale = kos_task_state(t, nullptr);
+        }
+        g_dl_done.store(1);
+        if (spinner.valid())
+        {
+            (void)kos_thread_join(spinner.id(), STALL_TOLERANT_US);
+        }
+        if (g_dl.started == 0)
+        {
+            (void)kos_task_slay(next, STALL_TOLERANT_US);
+        }
+        if (g_dl.stale != -KOS_EBADF)
+        {
+            (void)kos_task_slay(t, STALL_TOLERANT_US);
+        }
+        (void)kos_handle_close(n);
+        (void)kos_handle_close(prog);
+    }
+    void t_death_wait_lends_priority()
+    {
+        TAP_ASK(.workers = 2, .tasks = 1, .notifies = 1, .peer_workers = 1);
+        g_dl = {-99, -99, -99, -99};
+        g_dl_done.store(0);
+        g_dl_spun_out.store(0);
+        kos::thread::Handle w;
+        ArmHold hold(CREATOR_HOLD_US);
+        TAP_HOLD(hold.thread(&w));
+        w = kos::thread::create(dl_creator, nullptr, "dlc", DL_CREATOR_PRIO, KOS_POLICY_FIFO, 0,
+                                nullptr, 0, nullptr, 0, nullptr, 0, PEER_CREATOR, nullptr,
+                                TAP_PIN_CORE);
+        TAP_CHECK(w.valid());
+        TAP_CHECK(hold.joined());
+        DlRun const r = g_dl;
+        TAP_CHECK(r.pre == 0);
+        if (r.state < 0 or (r.state & KOS_TASK_DEAD) != 0)
+        {
+            TAP_SKIP_VACUOUS("peer0 was dead before the next start");
+            return;
+        }
+        TAP_CHECK((r.state & KOS_TASK_ENDED) != 0);
+        TAP_CHECK(r.started == 0 and r.stale == -KOS_EBADF);
+        TAP_CHECK(g_dl_spun_out.load() == 0);
     }
 
     // --- A task is dead only once its members' teardown is done --------------------------
@@ -9225,10 +9485,11 @@ namespace
     // --- A slay returns once EVERY member's teardown is done ---------------------------------
     // The entry returns at once and its end cancels the sibling, which leaves at its first
     // system call. The sibling holds the only receive right of the endpoint the creator calls
-    // in its first slot, and of the probe a watcher calls in its last. Its sweep ends the
-    // creator's call first, and the creator slays the task in the middle of that sweep, the task
-    // empty and still sweeping. The watcher's call ends when the sweep reaches the last slot, so
-    // its stamp has to come before the slay's return, and the restart takes the slot back.
+    // in its first slot, and of the probe a watcher above the creator calls in its last. Its
+    // sweep ends the creator's call first, and the creator slays the task in the middle of that
+    // sweep, the task empty and still sweeping. The watcher's call ends when the sweep reaches
+    // the last slot, so its stamp has to come before the slay's return, and the restart takes
+    // the slot back. The watcher outranks the sweep the slay lends the creator's priority to.
     struct TsRun
     {
         int setup, called, slain, watcher_seq, slay_seq, restarted, same_slot;
@@ -9293,7 +9554,7 @@ namespace
         if (pre == 0)
         {
             kos_cap_grant const wcaps[] = {{probe, KOS_CAP_SIGNAL}};
-            auto const watcher = kos::thread::create(ts_watcher, nullptr, "tsw", 13,
+            auto const watcher = kos::thread::create(ts_watcher, nullptr, "tsw", 15,
                                                      KOS_POLICY_FIFO, 0, nullptr, 0, nullptr, 0,
                                                      wcaps, 1, 0, nullptr, 1u);
             g_ts.watcher_rc = watcher.error();
@@ -9590,83 +9851,139 @@ namespace
         TAP_CHECK(rep.readback == 0x5A5A and rep.badsize == -KOS_EINVAL);
     }
 
-    // Self-grant three-granule blocks on backends that allow non-power-of-two
-    // regions. Two blocks reserved back to back cannot both sit on four granules,
-    // exposing an invalid size-minus-one alignment check. Bitmap allocators may
-    // return aligned bases, so they test the size but not this alignment case.
+    // Self-grant a three-granule block whose base is not four-granule aligned, on backends that
+    // allow non-power-of-two regions: an invalid size-minus-one alignment check refuses it.
+    // Where every block lands aligned the arm asserts nothing about alignment and says so.
     Atomic<int32_t, Order::RELAXED> g_sgnp_rc{-1};
     Atomic<int, Order::RELAXED> g_sgnp_ran{0};
-    constexpr RamAsk SGNP_RAM = {ST_GRANULES(3), ST_GRANULES(3)};
-    void sgnp_worker(void*)
+    constexpr RamAsk SGNP_RAM = {ST_GRANULES(3), ST_GRANULES(3), ST_GRANULES(3),
+                                 ST_GRANULES(3)};
+    void* sgnp_pick()
     {
         size_t const g = arena_granule();
-        size_t const want = 3u * g;
-        void* pick = st_ram<SGNP_RAM, 0>();
-        if ((reinterpret_cast<uintptr_t>(pick) & (4u * g - 1u)) == 0)
+        void* const all[] = {st_ram<SGNP_RAM, 0>(), st_ram<SGNP_RAM, 1>(),
+                             st_ram<SGNP_RAM, 2>(), st_ram<SGNP_RAM, 3>()};
+        void* any = nullptr;
+        for (void* const b : all)
         {
-            pick = st_ram<SGNP_RAM, 1>();
+            if (b == nullptr)
+            {
+                continue;
+            }
+            any = b;
+            if ((reinterpret_cast<uintptr_t>(b) & (4u * g - 1u)) != 0)
+            {
+                return b;
+            }
         }
+        return any;
+    }
+    void sgnp_worker(void*)
+    {
+        void* const pick = sgnp_pick();
         if (pick != nullptr)
         {
-            g_sgnp_rc = kos_mem_self_grant(pick, want, 0);
+            g_sgnp_rc = kos_mem_self_grant(pick, 3u * arena_granule(), 0);
             g_sgnp_ran = 1;
         }
     }
     // --- Which region-encoding mode is live on this board ----------------------
-    // The bump allocator's step for a 3-granule request IS the mode: a base+limit backend
-    // reserves 3 granules, a pow2 backend rounds to 4. Two equal blocks of one ask are reserved
-    // back to back, and so are two one-byte ones, whose step is the granule. A bump arena only:
-    // under translation reservations come out of a first-fit bitmap, whose order is not public
-    // API, so the arm is not registered.
+    // A 3-granule block is recorded at the extent the backend reserved: 3 granules on a
+    // base+limit backend, 4 on a pow2 one. A self-grant of 4 granules from its base is owned
+    // only in the second case. A self-grant of one granule over a 1-byte block is owned and one
+    // byte more is not, whatever the neighbours, which is what checks the granule the selftest
+    // assumes against the allocator. Without enforcement the grant answers "already reachable"
+    // for any address. Not registered under translation, whose reservations come out of a
+    // first-fit bitmap.
 #if not KICKOS_HAVE_ASPACE
-    constexpr RamAsk RM_RAM = {ST_GRANULES(3), ST_GRANULES(3), 1, 1};
+    constexpr RamAsk RM_RAM = {ST_GRANULES(3), 1};
+#if KICKOS_MEMORY_ENFORCED and KICKOS_HAVE_MPU
+    Atomic<int32_t, Order::RELAXED> g_rm_rc{-1};
+    Atomic<int, Order::RELAXED> g_rm_ran{0};
+    Atomic<int32_t, Order::RELAXED> g_rm_exact_rc{-1};
+    Atomic<int32_t, Order::RELAXED> g_rm_over_rc{0};
+    Atomic<int, Order::RELAXED> g_rm_granule_ran{0};
+    void rm_worker(void*)
+    {
+        void* const blk = st_ram<RM_RAM, 0>();
+        if (blk != nullptr)
+        {
+            g_rm_rc = kos_mem_self_grant(blk, 4u * arena_granule(), 0);
+            g_rm_ran = 1;
+        }
+    }
+    // Its own thread: the granted granule takes a region slot the 4-granule probe may need.
+    void rm_granule_worker(void*)
+    {
+        void* const one = st_ram<RM_RAM, 1>();
+        if (one != nullptr)
+        {
+            g_rm_over_rc = kos_mem_self_grant(one, arena_granule() + 1u, 0);
+            g_rm_exact_rc = kos_mem_self_grant(one, arena_granule(), 0);
+            g_rm_granule_ran = 1;
+        }
+    }
+#endif
     void t_region_mode()
     {
-        void* const p = st_ram<RM_RAM, 0>();
-        void* const q = st_ram<RM_RAM, 1>();
-        void* const u = st_ram<RM_RAM, 2>();
-        void* const v = st_ram<RM_RAM, 3>();
-        TAP_CHECK(p != nullptr and q != nullptr and u != nullptr and v != nullptr);
-        size_t const g = static_cast<size_t>(reinterpret_cast<uintptr_t>(v)
-                                             - reinterpret_cast<uintptr_t>(u));
-        TAP_CHECK(g == arena_granule());
-        uintptr_t const a = reinterpret_cast<uintptr_t>(p);
-        uintptr_t const b = reinterpret_cast<uintptr_t>(q);
-        size_t const step = static_cast<size_t>(b - a);
-        // Userspace cannot separate the granular enforcing mode from the no-MPU mode:
-        // both allocate granule multiples. The report names the observed shaping only.
-        if (step == 3u * g)
+#if KICKOS_MEMORY_ENFORCED and KICKOS_HAVE_MPU
+        size_t const g = arena_granule();
+        void* const blk = st_ram<RM_RAM, 0>();
+        void* const one = st_ram<RM_RAM, 1>();
+        TAP_CHECK(blk != nullptr and one != nullptr);
+        // Unprivileged with AUTH_MEMORY: a privileged caller is answered "already reachable".
+        TAP_ASK(.workers = 1);
         {
-            tap::diag("region shaping: GRANULE-MULTIPLE (granule %lu, 3-granule request reserved %lu)",
-                      static_cast<unsigned long>(g), static_cast<unsigned long>(step));
+            kos::thread::Handle w;
+            ArmHold hold;
+            TAP_HOLD(hold.thread(&w));
+            w = kos::thread::create(rm_granule_worker, nullptr, "rmG", 10, KOS_POLICY_FIFO, 0,
+                                    nullptr, 0, nullptr, 0, nullptr, 0,
+                                    /*authority=*/KOS_AUTH_MEMORY);
+            TAP_CHECK(w.valid());
+            TAP_CHECK(hold.joined());
         }
-        else if (step == 4u * g)
+        TAP_CHECK(g_rm_granule_ran == 1);
+        int32_t const exact = g_rm_exact_rc;
+        int32_t const over = g_rm_over_rc;
+        TAP_CHECK(exact == 0);
+        TAP_CHECK(over == -KOS_EPERM or over == -KOS_EINVAL);
+        kos::thread::Handle w;
+        ArmHold hold;
+        TAP_HOLD(hold.thread(&w));
+        w = kos::thread::create(rm_worker, nullptr, "rmW", 10, KOS_POLICY_FIFO, 0, nullptr, 0,
+                                nullptr, 0, nullptr, 0, /*authority=*/KOS_AUTH_MEMORY);
+        TAP_CHECK(w.valid());
+        TAP_CHECK(hold.joined());
+        TAP_CHECK(g_rm_ran == 1);
+        int32_t const rc = g_rm_rc;
+        bool pow2 = false;
+        if (rc == 0)
         {
+            pow2 = true;
             tap::diag("region shaping: POWER-OF-TWO (granule %lu, 3-granule request reserved %lu)",
-                      static_cast<unsigned long>(g), static_cast<unsigned long>(step));
+                      static_cast<unsigned long>(g), static_cast<unsigned long>(4u * g));
+        }
+        else
+        {
+            TAP_CHECK(rc == -KOS_EPERM);
+            tap::diag("region shaping: GRANULE-MULTIPLE (granule %lu, 3-granule request reserved %lu)",
+                      static_cast<unsigned long>(g), static_cast<unsigned long>(3u * g));
         }
 #if defined(KICKOS_MPU_MIN_REGION_CFG) and defined(KICKOS_MPU_REGION_POW2_CFG)
-        // The allocator applying the chip file's region rule: its step and granule against
-        // the rule as the build hands it over. The seams answer that same rule, so this is no
-        // check of the rule itself; the static_asserts beside each encoder hold it.
-        // Undefined on the sim, whose granule is the host page; the #else branch is the
-        // weaker self-consistency check.
-        size_t expect = 4u * g;
-        if (KICKOS_MPU_MIN_REGION_CFG == 0)
+        // The chip file's region rule as the build hands it over; the seams answer that same
+        // rule, so this does not check the rule itself.
+        bool expect = true;
+        if (KICKOS_MPU_MIN_REGION_CFG == 0 or KICKOS_MPU_REGION_POW2_CFG == 0)
         {
-            expect = 3u * g; // no MPU: granule multiples
+            expect = false;
         }
-        else if (KICKOS_MPU_REGION_POW2_CFG == 0)
-        {
-            expect = 3u * g;
-        }
-        TAP_CHECK(step == expect);
-        if (KICKOS_MPU_MIN_REGION_CFG != 0)
-        {
-            TAP_CHECK(g == static_cast<size_t>(KICKOS_MPU_MIN_REGION_CFG));
-        }
+        TAP_CHECK(pow2 == expect);
 #else
-        TAP_CHECK(step == 3u * g or step == 4u * g);
+        (void)pow2;
+#endif
+#else
+        TAP_SKIP_VACUOUS("no enforcement: every self-grant is already reachable");
 #endif
     }
 #endif
@@ -9686,6 +10003,18 @@ namespace
         TAP_CHECK(g_sgnp_ran == 1);
         int32_t const sgnp_rc = g_sgnp_rc;
         TAP_CHECK(sgnp_rc == 0);
+#if KICKOS_SELFTEST_FIT
+        if (KICKOS_MPU_MIN_REGION_CFG != 0 and KICKOS_MPU_REGION_POW2_CFG == 0)
+        {
+            size_t const g = arena_granule();
+            void* const pick = sgnp_pick();
+            if ((reinterpret_cast<uintptr_t>(pick) & (4u * g - 1u)) == 0)
+            {
+                TAP_SKIP_VACUOUS("every block is 4-granule aligned");
+                return;
+            }
+        }
+#endif
     }
 }
 
@@ -10078,7 +10407,7 @@ namespace
             kos_task_params p{};
             p.instance = "peer0";
             kos_task_t t = KOS_TASK_NONE;
-            rc = kos_task_create(prog, &p, &t);
+            rc = kos_task_create(prog, &p, 0, &t);
             (void)kos_handle_close(prog);
         }
         g_pa_helper.store(rc);
@@ -10110,11 +10439,11 @@ namespace
         kos_task_params p{};
         kos_task_t t = KOS_TASK_NONE;
         p.instance = "nosuch";
-        TAP_CHECK(kos_task_create(prog, &p, &t) == -KOS_ENOENT);
+        TAP_CHECK(kos_task_create(prog, &p, 0, &t) == -KOS_ENOENT);
         // main is the init's to start, and an instance of main's own program, not stpeer's.
         p.instance = "main";
-        TAP_CHECK(kos_task_create(own, &p, &t) == -KOS_EPERM);
-        TAP_CHECK(kos_task_create(prog, &p, &t) == -KOS_ENOENT);
+        TAP_CHECK(kos_task_create(own, &p, 0, &t) == -KOS_EPERM);
+        TAP_CHECK(kos_task_create(prog, &p, 0, &t) == -KOS_ENOENT);
 
         // The instance field: peer0 starts, its argv and its capability arrive.
         char const* argv[] = {"peer0", "argv", "hello", nullptr};
@@ -10123,24 +10452,24 @@ namespace
         p.argv = argv;
         p.caps = caps;
         p.cap_count = 2;
-        TAP_CHECK(kos_task_create(prog, &p, &t) == 0);
+        TAP_CHECK(kos_task_create(prog, &p, 0, &t) == 0);
         uint32_t bits = 0;
         TAP_CHECK(kos_notify_wait(n, 0xFFFFFFFFu, STALL_TOLERANT_US, &bits) == 0);
 
         // Live: by name it is busy, and once every other instance is live too none is left to
         // this creator.
         kos_task_t again = KOS_TASK_NONE;
-        TAP_CHECK(kos_task_create(prog, &p, &again) == -KOS_EBUSY);
+        TAP_CHECK(kos_task_create(prog, &p, 0, &again) == -KOS_EBUSY);
         kos_task_t rest[SELFTEST_PEERS] = {};
         char const* hold[] = {"peer", "hold", nullptr};
         kos_task_params q{};
         q.argv = hold;
         for (int i = 1; i < KICKOS_SELFTEST_PEERS; i++)
         {
-            TAP_CHECK(kos_task_create(prog, &q, &rest[i]) == 0);
+            TAP_CHECK(kos_task_create(prog, &q, 0, &rest[i]) == 0);
         }
         p.instance = nullptr;
-        TAP_CHECK(kos_task_create(prog, &p, &again) == -KOS_ENOMEM);
+        TAP_CHECK(kos_task_create(prog, &p, 0, &again) == -KOS_ENOMEM);
         TAP_CHECK(again == KOS_TASK_NONE);
         for (int i = 1; i < KICKOS_SELFTEST_PEERS; i++)
         {
@@ -10363,8 +10692,6 @@ namespace
 #if not KICKOS_SELFTEST_PEER
 int main(int, char**)
 {
-    // A run that panics or faults hands the board back to its bootloader too.
-    g_terminal_set = kos_terminal_outcome(KOS_SHUTDOWN_BOOTLOADER);
     g_self = kos_self();
     g_main = kos_thread_self();
     if (KICKOS_SELFTEST_PEERS > 0 and kos_program_find("stpeer", &g_peer_prog) != 0)
@@ -10404,6 +10731,9 @@ int main(int, char**)
 #define TAP_ADD(name, ...) TAP_ADD_ELIDED(name, __VA_ARGS__)
 #endif
     TAP_ADD("user_cas_switched_out", t_user_cas_switched_out);
+#if defined(__XTENSA__)
+    TAP_ADD("user_cas_scompare1", t_user_cas_scompare1);
+#endif
     TAP_ADD("sleep_order", t_sleep);
     TAP_ADD_PINNED("multi_wait", t_multi);
     TAP_ADD_PINNED("sem_timed_wait", t_sem_timed);
@@ -10512,6 +10842,7 @@ int main(int, char**)
     TAP_ADD_PINNED("task_exit_entry_return", t_task_exit_entry_return);
     TAP_ADD("task_exit_member_exit", t_task_exit_member_exit);
     TAP_ADD_PINNED("peer_start_waits_out_dying", t_peer_start_waits_out_dying);
+    TAP_ADD_PINNED("death_wait_lends_priority", t_death_wait_lends_priority);
     TAP_ADD("prio_ceiling_refused", t_prio_ceiling_refused);
     TAP_ADD("task_dead_after_sweep", t_task_dead_after_sweep);
     TAP_ADD("task_handles", t_task_handles);
@@ -10649,6 +10980,9 @@ int main(int, char**)
 #endif
 #endif
     TAP_ADD_IRQ("irq_kernel_line_reserved", t_irq_kernel_line_reserved);
+#if defined(__XTENSA__)
+    TAP_ADD("ibus_buffer_refused", t_ibus_buffer_refused);
+#endif
 #if KICKOS_KERNEL_CORES > 1
     TAP_ADD("pin_places", t_pin_places);
     TAP_ADD("unpin_restores", t_unpin_restores);
@@ -10735,12 +11069,8 @@ int main(int, char**)
     {
         exit(1);
     }
-    // The failure count is the system's exit status. A chip with a bootloader entry is handed
-    // back to it, so a bench reflashes the next image without a button press.
-    int const failures = tap::run_all();
-    (void)kos_console_flush(kickos::driver::KOS_DRV_HANDOVER_PROBE_US);
-    (void)kos_shutdown(failures, KOS_SHUTDOWN_BOOTLOADER);
-    exit(failures);
+    // The failure count is the system's exit status.
+    exit(tap::run_all());
 }
 #endif
 

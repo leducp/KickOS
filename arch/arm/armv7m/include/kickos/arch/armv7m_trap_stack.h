@@ -19,13 +19,14 @@
  *   0  THE RED ZONE. svc_trampoline dispatches on the caller's PSP and the SVC site refuses
  *      a PSP without room for all of it. sam3x8e, which has no MPU.
  *
- * Four classes, separated by WHICH STACK they land on:
+ * The classes, separated by WHICH STACK they land on:
  *   PENDSV  the switcher's push on the interrupted thread's stack. PendSV_Handler runs in
- *           HANDLER mode, where ARMv7-M forces SP_main, so its kernel-descent term is 0 by
- *           handler mode rather than by measurement.
+ *           HANDLER mode, where ARMv7-M forces SP_main, so its kernel-descent term is 0 here
+ *           and MSP measures it.
  *   SVC     the syscall trap's writes on the interrupted thread's stack.
  *   SVCK    the syscall dispatch on the caller's kernel block, at KICKOS_KERNEL_STACKS 1.
  *   EXIT    the death path, below.
+ *   MSP     the main stack, below: boot and every exception nested on it.
  *
  * tests/static/check_trap_redzone.sh re-measures the descent figures and fails when a worst
  * case exceeds what the class reserves. The measured half and the structural half stay
@@ -140,10 +141,11 @@
 /* Worst-case bytes the kernel's C dispatch descends BELOW all of that, per class.
  *
  *   _PENDSV   0  handler mode uses SP_main.
- *   _SVC    576  KICKOS_KERNEL_STACKS 0 ONLY: the whole dispatch tree runs on the caller's
+ *   _SVC    640  KICKOS_KERNEL_STACKS 0 ONLY: the whole dispatch tree runs on the caller's
  *                PSP. The spawn stages its grant list on this stack and its parameter copies
- *                in the kernel instance: 9 grants measure 548 through kos_task_create on due;
- *                arch_armv7m.cc refuses more than 9. Not zeroed at
+ *                in the kernel instance: 9 grants measure 600 through kos_task_create on due,
+ *                rounded up to 64 as the other classes' are; arch_armv7m.cc refuses more than 9.
+ *                Not zeroed at
  *                KICKOS_KERNEL_STACKS 1: the gate scrapes it on every preset.
  *   _SVCK        the same dispatch on the kernel block, posture-dependent, below.
  *
@@ -153,22 +155,21 @@
  * tests/static/trap_redzone_indirect.txt binds every reachable indirect site to the one slot
  * that call reaches, and the gate refuses to answer while a reachable site is unbound. */
 #define KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_PENDSV 0
-#define KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_SVC 576
+#define KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_SVC 640
 
 /* KICKOS_TELEMETRY is the knob: the trace emitters and arch_shutdown's ring drain are compiled
  * by nothing else, and one fleet-wide figure would make every non-telemetry board reserve
  * a block per thread slot of a tail its image does not contain.
  *
  * KICKOS_BENCH is a smaller knob of the same kind, its arm printing from inside the dispatch:
- * 832 enforced against 672 measured. Off both, 768 enforced against 568 on the ordinary
- * presets and 600 on the partition nodes. 1240 enforced against 992 measured through
- * arch_shutdown's telemetry tail. Bench and telemetry presets stage at most 9 spawn grants
- * and the partition nodes 12; arch_armv7m.cc refuses more.
- *
- * On a partition node what wins is an ordinary far reply publication, endpoint_reply_recv ->
- * endpoint_reply_locked -> inbound_reply -> send. The doorbell's service body runs in handler
- * mode on SP_main and is UNMEASURED, per the PENDSV reason in
- * tests/static/trap_redzone_roots.txt.
+ * 832 enforced against 728 measured on f411disco-bench. Off both, 768 enforced against 600 on
+ * qemu and 640 on pizero2350-amp2-n0, a task create staging its grants:
+ *   syscall_dispatch[48] -> task_create_call[144] -> spawn_locked[272] -> ThreadPool::alloc[16]
+ *   -> task_admit[24] -> task_usage[8] -> task_object_usage[40] -> task_object_holds[48] -> ...
+ * 1240 enforced against 1088 measured on qemu-telem, a create cancelled at its wait whose exit
+ * ends the system through arch_shutdown's telemetry tail. Bench and telemetry presets stage at
+ * most 9 spawn grants and the partition nodes 12; arch_armv7m.cc refuses more. The doorbell's
+ * service body runs in handler mode on SP_main, where the MSP class prices it.
  *
  * NO FALLBACK #define: with -Wundef -Werror an image that lost KICKOS_TELEMETRY or KICKOS_BENCH
  * fails to build, where a fallback would silently reserve the smaller figure. */
@@ -314,6 +315,27 @@
 #define KICKOS_ARMV7M_STKOF_DEPTH 768
 #endif
 
+/* THE MAIN STACK, which the image links as _kernel_stack_size below _estack. Boot runs on it in
+ * thread mode with device lines open, sched::start leaves boot's frames on it, and every
+ * exception then nests below them, one per priority level (trap_redzone_roots.txt derives the
+ * levels). DEPTH is boot's deepest chain plus the deepest root of each level: 1888 to 2360 off
+ * telemetry, the partition nodes deepest, and 2968 on qemu-telem. check_trap_redzone.sh compares
+ * FRAME plus the measurement against the stack each image links, 8 or 16 KiB on every chip.
+ *
+ * FRAME: four exception entries stacked on the MSP, one per level above boot, each the FP
+ * frame of 104 plus the STKALIGN pad of 4, and 24 bytes of PendSV's own pushes below its entry
+ * at the bench and telemetry posture. 4 x 36 + 24 without an FPU. */
+#if defined(__ARM_FP)
+#define KICKOS_ARMV7M_MSP_FRAME 456
+#else
+#define KICKOS_ARMV7M_MSP_FRAME 168
+#endif
+#if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
+#define KICKOS_ARMV7M_MSP_DEPTH 3584
+#else
+#define KICKOS_ARMV7M_MSP_DEPTH 3072
+#endif
+
 /*
  * The trap classes tests/static/check_trap_redzone.sh measures against the figures above,
  * one line each; tests/static/trap_redzone_roots.txt says what each option means and roots
@@ -343,6 +365,7 @@
  *
  * class PANIC  frame=KICKOS_ARMV7M_PANIC_FRAME depth=KICKOS_ARMV7M_PANIC_DEPTH stack=panic
  * class STKOF  frame=KICKOS_ARMV7M_STKOF_FRAME depth=KICKOS_ARMV7M_STKOF_DEPTH stack=trap
+ * class MSP    frame=KICKOS_ARMV7M_MSP_FRAME depth=KICKOS_ARMV7M_MSP_DEPTH stack=main
  */
 
 #endif /* KICKOS_ARCH_ARMV7M_TRAP_STACK_H */

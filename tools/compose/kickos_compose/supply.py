@@ -3,7 +3,7 @@
 #
 # docs/design-m10-composition.md, "What one task costs", counted against the manifest.
 
-from .region import ram_align, ram_size
+from .region import ArenaModel, ram_align, ram_size
 
 U32 = 0xFFFFFFFF
 # The ranges every address space opens with, its image's text and data
@@ -753,12 +753,12 @@ def check_arena(f, root, shared, tasks, chip, cluster, manifest):
             base = 0
         else:
             where = "the arena at 0x%X" % base
-        cursor = base
+        arena = ArenaModel(base)
         for want in blocks:
             if not want:
                 continue
-            align = ram_align(want, manifest)
-            cursor = -(-cursor // align) * align + ram_size(want, manifest)
+            arena.place(ram_size(want, manifest), ram_align(want, manifest))
+        cursor = arena.cursor
         if cursor > base + size:
             f.refuse(root, "supply.arena",
                      "the composition carves 0x%X bytes from %s, its boot stacks, the init's "

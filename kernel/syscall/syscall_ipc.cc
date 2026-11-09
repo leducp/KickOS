@@ -855,17 +855,20 @@ namespace kickos
                 c->call_rx_cap = recv_cap;
                 c->call_seq++; // Packed when the receiver removes this call.
                 c->call_state = CALL_SEND_WAIT;
+                // Same wait kind as a plain sender; call_state is what separates the two. On
+                // send_waiters before the donation, whose recomputes count it there.
+                epoch = wq_park(ask)(e->send_waiters, WAIT_EP_SEND, e, lock);
                 if (e->server != nullptr and c->prio > e->server->prio)
                 {
                     KICKOS_BENCH_MARK(bm_sdonate);
-                    sched::set_prio(e->server, c->prio, lock);
+                    pi_raise(e->server, c->prio, lock);
                     KICKOS_BENCH_SPAN(PH_CALL_SLOW_DONATE, bm_sdonate);
                 }
+                // From here, so CALL_SLOW_PARK and CALL_SLOW_DONATE do not overlap.
                 KICKOS_BENCH_MARK(bm_spark);
                 // Keep this deadline when the caller moves from send_waiters to reply_waiters.
                 ktime_deadline_arm(c, timeout_us, lock);
-                // Same wait kind as a plain sender; call_state is what separates the two.
-                epoch = wq_block(ask)(e->send_waiters, WAIT_EP_SEND, e, nullptr, lock);
+                sched::reschedule(nullptr, lock);
                 KICKOS_BENCH_SPAN(PH_CALL_SLOW_PARK, bm_spark);
                 KICKOS_BENCH_SPAN(PH_CALL_SLOW_LOCKED, bm_locked);
                 KICKOS_BENCH_SPAN(PH_CALL_SLOW_TOTAL, bm_total);

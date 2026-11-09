@@ -57,7 +57,11 @@ devices:
   wdog2: { window: [0x400D0000, 0x4000], ref: "Table 3-2 AIPS-1 memory map, p.37" }
   rtwdog: { window: [0x400BC000, 0x4000], ref: "Table 3-2 AIPS-1 memory map, p.37" }
 
-  gpt1: { window: [0x401EC000, 0x4000], owner: kernel, ref: "Table 3-3 AIPS-2 memory map, p.38" }
+  gpt1:
+    window: [0x401EC000, 0x4000]
+    owner: kernel
+    ref: "Table 3-3 AIPS-2 memory map, p.38"
+    lines: { irq: { number: 100, symbol: GPT1_IRQ, ref: "Table 4-2 CM7 domain interrupt summary, p.48" } }
   ccm: { window: [0x400FC000, 0x4000], owner: kernel, ref: "Table 3-2 AIPS-1 memory map, p.36" }
   # The PLLs, PLL_USB1 among them.
   ccm_analog: { window: [0x400D8000, 0x1000], owner: kernel, ref: "14.8 CCM Analog Memory Map/Register Definition, p.1089" }

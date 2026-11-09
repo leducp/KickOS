@@ -13,6 +13,12 @@
 
 #include <stddef.h>
 
+// The board's CRLF posture (kickos/sys/console_ring.h): the rows go out under it as the ring's
+// bytes do, each '\n' as "\r\n".
+#ifndef KICKOS_CONSOLE_CRLF
+#define KICKOS_CONSOLE_CRLF 0
+#endif
+
 namespace kickos
 {
 
@@ -42,13 +48,35 @@ constexpr size_t banner_identity_text(char const* f)
     return n;
 }
 
+// The CRs the CRLF posture adds to a text: one per newline, or none.
+constexpr size_t banner_identity_crs(char const* f)
+{
+    size_t n = 0;
+    if (KICKOS_CONSOLE_CRLF == 0)
+    {
+        return n;
+    }
+    while (*f != '\0')
+    {
+        if (*f == '\n')
+        {
+            n++;
+        }
+        f++;
+    }
+    return n;
+}
+
+// The leading newline and every row's format.
+constexpr char BANNER_IDENTITY_FORMATS[] = "\n" KDIAG_F_BANNER_NAME KDIAG_F_BANNER_BOARD
+    KDIAG_F_BANNER_BUILD KDIAG_F_BANNER_APP KDIAG_F_BANNER_COMMIT;
+
 // The longest block banner_identity renders, its leading newline and its NUL included.
 constexpr size_t BANNER_IDENTITY_MAX
-    = 1u
-      + banner_identity_text(KDIAG_F_BANNER_NAME KDIAG_F_BANNER_BOARD KDIAG_F_BANNER_BUILD
-                             KDIAG_F_BANNER_APP KDIAG_F_BANNER_COMMIT)
-      + BANNER_IDENTITY_VERSION_MAX + BANNER_IDENTITY_BOARD_MAX + BANNER_IDENTITY_TIME_MAX
-      + BANNER_IDENTITY_APP_MAX + BANNER_IDENTITY_COMMIT_MAX + 1u;
+    = banner_identity_text(BANNER_IDENTITY_FORMATS)
+      + banner_identity_crs(BANNER_IDENTITY_FORMATS) + BANNER_IDENTITY_VERSION_MAX
+      + BANNER_IDENTITY_BOARD_MAX + BANNER_IDENTITY_TIME_MAX + BANNER_IDENTITY_APP_MAX
+      + BANNER_IDENTITY_COMMIT_MAX + 1u;
 
 // The rows after a newline, NUL-terminated, cut short where `cap` is too small. Returns the
 // length written.

@@ -18,7 +18,7 @@
  * not optional: RX has no way to leave user mode but RTE, RTE pops PC then PSW from R0, and
  * R0 is the USP while PSW.U is set, so the resume USP IS the head's address plus eight.
  *
- * Four classes, separated by WHICH STACK they land on:
+ * The classes, separated by WHICH STACK they land on:
  *   PENDSW    the deferred switcher's context save on the interrupted thread's own stack; it
  *             is that thread's saved context and ctx.sp names it, so it does not move.
  *   SYS       the generic arm's leavings on that same stack: the head above plus the switcher
@@ -26,6 +26,7 @@
  *   SYS_FAST  the fastpath arm's 236-byte save on the caller's own USP, that frame BEING the
  *             caller's saved context, plus the restore descent it pays on resume.
  *   SYSK      both C dispatches on the caller's kernel block.
+ *   ISP       the interrupt stack, below: boot and every interrupt and exception nested on it.
  *
  * tests/static/check_trap_redzone.sh re-measures the descent figures below and fails when a
  * worst case exceeds what the class reserves. The measured half and the structural half stay
@@ -111,19 +112,14 @@
  *                    -> console_chip_writer_leave[12] -> console_dark_wake[24] -> wake[8]
  *                    -> resched_after_wake[4] -> pick_and_seat[32] -> ktime_rearm[28]
  *                    -> arch_timer_arm[24] -> arch_clock_now[32] -> __divdi3[32].
- *                    rx72m reads 544, a spawn of 9 grants seating its default
+ *                    rx72m reads 636, a task create of 9 grants seating its default
  *                    capabilities; arch_rxv3.cc refuses more than 9:
- *                    syscall_dispatch[44] -> thread_create_call[4] -> spawn_masked[300]
- *                    -> cap_install_defaults[20] -> cap_seat_stdout[40] -> obj_ref_drop[20]
- *                    -> irq_ref_drop[24] -> irq_detach[12] -> irq_line_op[4]
+ *                    syscall_dispatch[44] -> task_create_call[132] -> spawn_locked[240]
+ *                    -> cap_install_defaults[20] -> cap_seat_stdout[52] -> obj_ref_drop[28]
+ *                    -> irq_ref_drop[28] -> irq_detach[12] -> irq_line_op[4]
  *                    -> arch_irq_mask[12] -> kickos_rx_group_arm[32]
  *                    -> kickos_rx_icu_line_arm[4] -> icu_ier_set[24] -> arch_irq_restore[4].
- *                    rx72m-flat reads 496, the exit path:
- *                    syscall_dispatch[44] -> endpoint_reply_recv[116] -> exit_current[40]
- *                    -> cap_teardown[40] -> teardown_entry[40] -> obj_close_protocol[24]
- *                    -> endpoint_rights_dropped[28] -> refuse_senders[20] -> wake[8]
- *                    -> resched_after_wake[4] -> pick_and_seat[20] -> ktime_rearm[24]
- *                    -> arch_timer_arm[24] -> arch_clock_now[32] -> __divdi3[32].
+ *                    rx72m-flat reads 596, the same create, spawn_locked[200].
  *                    ONE FIGURE COVERS EVERY POSTURE, as rv32imac's _SYS does.
  *
  * ENFORCED figures are those measurements rounded up to 64, or above them as headroom where a
@@ -260,6 +256,17 @@
 #define KICKOS_RX_PANIC_FRAME 0
 #define KICKOS_RX_PANIC_DEPTH 320
 
+/* THE INTERRUPT STACK, which the image links as _kernel_stack_size below _istack. Boot runs on
+ * it, arch_start leaves boot's frames on it, and an interrupt and then an exception nest below
+ * them (trap_redzone_roots.txt derives the levels). DEPTH is boot's deepest chain plus the
+ * deepest root of each level: 1868 on rx72m-bench, 1792 on rx72m, 1600 on rx72m-flat, against
+ * the 8 KiB rx72m.ld links.
+ *
+ * FRAME: the PC and PSW an acceptance pushes, twice, and the R15 kickos_rx_pendsw still holds
+ * on the ISP when it calls the refusal. */
+#define KICKOS_RX_ISP_FRAME 20
+#define KICKOS_RX_ISP_DEPTH 2304
+
 /*
  * The trap classes tests/static/check_trap_redzone.sh measures against the figures above,
  * one line each; tests/static/trap_redzone_roots.txt says what each option means and roots
@@ -276,6 +283,7 @@
  *
  * class EXITK    frame=KICKOS_RX_TRAP_NEST_EXIT depth=KICKOS_RX_TRAP_KERNEL_DEPTH_EXITK stack=kernel
  * class PANIC    frame=KICKOS_RX_PANIC_FRAME depth=KICKOS_RX_PANIC_DEPTH stack=panic
+ * class ISP      frame=KICKOS_RX_ISP_FRAME depth=KICKOS_RX_ISP_DEPTH stack=main
  */
 
 #endif /* KICKOS_ARCH_RX_TRAP_STACK_H */

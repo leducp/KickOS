@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+# Composed: a picopi capture, with the access the app now announces and the kill record's PC at
+# that access as a picopi build of this tree places it.
+
+  ==============================================
+   KickOS 0.5.1  -  microkernel RTOS
+  ==============================================
+   board   picopi
+   arch    armv6m
+   cpu     cortex-m0plus
+   mpu     enforce
+   sched   tickless
+   build   2026-11-05 12:38:05 +0100
+   app     specfault Nov  5 2026 12:19:09 +0100
+   commit  432524be2
+   heap    30 KiB available
+   kstack  896 B x 5 = 4480 B
+
+[specfault] reading 0x60800000: expect a clean MPU FAULT by the load at 0x10010d65
+
+=== THREAD FAULT === thread 'main' killed, system continues
+  PC=0x10010d64

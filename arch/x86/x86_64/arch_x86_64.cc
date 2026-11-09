@@ -144,6 +144,16 @@ namespace
                   "a ring 0 interrupt does not fit this board's idle stack");
     static_assert(KICKOS_PANIC_STACK_SIZE >= KICKOS_X86_64_PANIC_FRAME + KICKOS_X86_64_PANIC_DEPTH,
                   "KICKOS_PANIC_STACK_SIZE is below what this arch's panic reporter descends");
+    static_assert(KICKOS_X86_64_AP_FRAME == 2 * KICKOS_X86_64_TRAP_FRAME_IRQ,
+                  "an AP's frame term is an interrupt's frame and a fault's below it");
+    static_assert(KICKOS_X86_64_UEFI_STACK
+                      >= KICKOS_X86_64_TRAP_FRAME_IRQ + KICKOS_X86_64_UEFI_DEPTH,
+                  "the stack firmware promises cannot hold the handover and a fault on it");
+    static_assert(KICKOS_X86_64_BOOT_STACK
+                      >= KICKOS_X86_64_TRAP_FRAME_IRQ + KICKOS_X86_64_BOOT_DEPTH,
+                  "the boot stack cannot hold kmain and a fault nested on it");
+    static_assert(KICKOS_X86_64_AP_STACK >= KICKOS_X86_64_AP_FRAME + KICKOS_X86_64_AP_DEPTH,
+                  "an AP's stack cannot hold its park and the interrupt nested on it");
 
     constexpr uint64_t RFLAGS_IF = KICKOS_X86_64_RFLAGS_IF;
     // Bit 1 reads as one on every x86 processor; a resumed frame with it clear is one nothing

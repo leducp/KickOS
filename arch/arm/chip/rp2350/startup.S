@@ -23,6 +23,7 @@
     .section .isr_vector, "a"
     .align 9
     .global g_isr_vector
+    .type g_isr_vector, %object
 g_isr_vector:
     KICKOS_CORE_VECTORS_V8M
 
@@ -42,6 +43,7 @@ g_isr_vector:
     .word kickos_arm_default_irq
     .endr
 #endif
+    .size g_isr_vector, . - g_isr_vector
 
     /* The datasheet 5.9.5.1 "Minimum Arm IMAGE_DEF": the 20-byte block the bootrom accepts for
      * an UNSIGNED image on a chip with CRIT1.SECURE_BOOT_ENABLE clear. image_type_flags 0x1021 =

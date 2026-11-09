@@ -48,6 +48,13 @@ static_assert(KICKOS_PANIC_STACK_SIZE >= KICKOS_LX6_PANIC_FRAME + KICKOS_LX6_PAN
 static_assert(F_SIZE == KICKOS_LX6_TRAP_FRAME,
               "_kickos_int_level1 subtracts F_SIZE; the gate enforces KICKOS_LX6_TRAP_FRAME");
 
+static_assert(KICKOS_LX6_CORE_FRAME == 2 * KICKOS_LX6_TRAP_FRAME,
+              "the APP_CPU's frame term is an interrupt's frame and a fault's below it");
+static_assert(KICKOS_LX6_CORE_STACK >= KICKOS_LX6_TRAP_FRAME + KICKOS_LX6_MAIN_DEPTH,
+              "a core's boot stack cannot hold the boot path and a fault nested on it");
+static_assert(KICKOS_LX6_CORE_STACK >= KICKOS_LX6_CORE_FRAME + KICKOS_LX6_CORE_DEPTH,
+              "the APP_CPU's boot stack cannot hold its park and the interrupt nested on it");
+
 // Idle never enters a syscall, so KICKOS_MIN_STACK_SIZE does not bind it. The link checks the
 // same floor above idle's thread-local carve.
 static_assert(KICKOS_IDLE_STACK_SIZE >= KICKOS_ARCH_IDLE_FLOOR,
@@ -141,6 +148,9 @@ namespace
     char const ATOMCTL_REFUSED[] =
         "KickOS: lx6 ATOMCTL does not select the RCW bus transaction, read 0x";
 
+    // Written by its own core before its arrival is published, and read after it.
+    uint32_t g_atomctl_read[KICKOS_NUM_CORES] = {};
+
     // Must run on every core before it can reach a kernel lock. The read-back refuses a part
     // whose ATOMCTL fields are not writable, where S32C1I would silently exclude nothing.
     void atomctl_seat_or_refuse(void)
@@ -148,6 +158,7 @@ namespace
         __asm volatile("wsr.atomctl %0; rsync" ::"a"(ATOMCTL_ALL_RCW) : "memory");
         uint32_t got = 0;
         __asm volatile("rsr.atomctl %0" : "=a"(got));
+        g_atomctl_read[arch_cpu_id()] = got;
         if ((got & ATOMCTL_S32C1I_FIELDS) != ATOMCTL_ALL_RCW)
         {
             // Unlocked: the kernel lock excludes nothing on this core yet.
@@ -273,7 +284,7 @@ extern "C"
 {
     extern uint32_t SystemCoreClock;
 
-    void xtensa_switch(struct arch_context* from, struct arch_context* to);
+    void kickos_lx6_switch(struct arch_context* from, struct arch_context* to);
     void _thread_trampoline(void);
     void kickos_thread_return(void);
     extern void (*kickos_image_thread_return)(void);
@@ -529,7 +540,7 @@ void arch_switch(struct arch_context* from, struct arch_context* to)
         return;
     }
     g_arch_current[core] = to;
-    xtensa_switch(from, to);
+    kickos_lx6_switch(from, to);
 #if KICKOS_BENCH
     // Closes the switch window that RESUMED this thread; switch.S cannot, since the close must
     // stand past the retw. The count is read first so the windowed return and its underflow are
@@ -1112,6 +1123,15 @@ uint32_t kickos_lx6_core_arrived(uint32_t core)
     return g_core_arrived[core].load();
 }
 #endif
+
+uint32_t kickos_lx6_atomctl_read(uint32_t core)
+{
+    if (core >= KICKOS_NUM_CORES)
+    {
+        return 0u;
+    }
+    return g_atomctl_read[core];
+}
 
 // Every core runs this ON ITSELF: every register it writes is per core. It must run before
 // this core's interrupts open, which is what the assembly core index rests on (chip_cpuid.h).

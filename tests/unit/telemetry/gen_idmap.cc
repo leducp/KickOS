@@ -64,6 +64,7 @@ int main()
     KOS_SYS_PROGRAM_FIND,
     KOS_SYS_CLOCK_REALTIME,
     KOS_SYS_CLOCK_SET_REALTIME,
+    KOS_SYS_WITNESS_NODE,
     };
     for (kos_syscall_nr s : calls)
     {

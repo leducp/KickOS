@@ -31,10 +31,11 @@
  *          kickos_rv_ext_dispatch -> console_tx_isr -> console_tx_room_freed
  *          -> console_dark_wake -> sched::wake -> pick_and_seat -> arch_ctx_redirect[32]
  *          -> arch_context_init[32]
- *   _SYS   768 on qemu-riscv-bench and 752 on esp32c6-wroom-bench, the arm that prints:
+ *   _SYS   832 on qemu-riscv-bench and esp32c6-wroom-bench, the arm that prints:
  *          syscall_dispatch[80]
- *          -> bench_irq_sweep[112] -> dist_print_fmt -> kprintf_paced[320] -> the console.
- *          576 off KICKOS_BENCH, 512 on the two flat presets.
+ *          -> bench_irq_sweep[112] -> dist_print_fmt[80] -> kprintf_paced[320] -> the console.
+ *          720 off KICKOS_BENCH on qemu-riscv, a task create staging its grants:
+ *          syscall_dispatch[64] -> task_create_call[160] -> spawn_locked[256] -> ...
  *
  * FRAME_SYS + _SYS = 1168, and the lowest word of a block is its overflow canary, so
  * KICKOS_KERNEL_STACK_SIZE is 1184 here: 12 bytes above the canary word.
@@ -128,6 +129,13 @@
 #define KICKOS_RV_PANIC_FRAME 0
 #define KICKOS_RV_PANIC_DEPTH 448
 
+/* THE BOOT STACK, _kernel_stack_size below _estack, on which nothing nests: MIE stays clear to
+ * arch_start's mret and an M-mode exception takes the trap stack. Reset_Handler's deepest chain,
+ * kmain's image record print into the console, measures 848 on esp32c6-wroom-bench and 752 on
+ * qemu-riscv. check_trap_redzone.sh compares it against the stack each image links, 4 KiB. */
+#define KICKOS_RV_TRAP_FRAME_NONE 0
+#define KICKOS_RV_MAIN_DEPTH 1024
+
 /*
  * The trap classes tests/static/check_trap_redzone.sh measures against the figures above,
  * one line each; tests/static/trap_redzone_roots.txt says what each option means and roots
@@ -141,6 +149,7 @@
  * class EXITK   frame=KICKOS_RV_TRAP_NEST_EXIT depth=KICKOS_RV_TRAP_KERNEL_DEPTH_EXITK stack=kernel
  * class PANIC   frame=KICKOS_RV_PANIC_FRAME depth=KICKOS_RV_PANIC_DEPTH stack=panic
  * class IDLE    frame=KICKOS_RV_TRAP_FRAME depth=KICKOS_RV_TRAP_DEPTH_IDLE stack=idle
+ * class MAIN    frame=KICKOS_RV_TRAP_FRAME_NONE depth=KICKOS_RV_MAIN_DEPTH stack=main
  */
 
 #endif /* KICKOS_ARCH_RV_TRAP_STACK_H */

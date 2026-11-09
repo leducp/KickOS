@@ -17,15 +17,19 @@
 #
 #   check_rootfault.sh <rootfault.elf> <outcome>
 #   KOS_CAPTURE=<log> check_rootfault.sh <board-build> <kickos-source> <cmake> <outcome>
+#
+# A capture judge reads the arch from <board-build>'s CMakeCache.
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
 
 _usage="usage: check_rootfault.sh <rootfault.elf> <outcome: panic|thread-kill>"
 if judging_capture; then
+    arch="$(judged_arch "$1")"
     shift 3
     outcome="${1:?$_usage}"
 else
+    arch=""
     elf="${1:?$_usage}"
     outcome="${2:?$_usage}"
 fi
@@ -58,7 +62,8 @@ fi
 
 # Main must have reached the poke, so a fault cannot be credited to an earlier unrelated
 # trap during ctors or the init's walk; and the trap must be AT the region, not merely
-# somewhere.
+# somewhere. armv6m latches no fault address, so there the fault's PC is pinned to the store
+# main announced instead.
 want="$(printf '%s\n' "$OUT" \
     | sed -n "s/.*main: writing the child's granted region at 0x\([0-9a-fA-F]*\).*/\1/p" \
     | head -n1)"
@@ -79,6 +84,11 @@ if [ "$outcome" = "thread-kill" ]; then
     status_clause "main's fault ended the system with KOS_EXIT_FAULT (139)" 139
 elif ! has_e "MPU FAULT: thread 'main'|=== MPU FAULT ==="; then
     cfail marker "MPU FAULT marker missing (crash / hang / truncated run?)"
+fi
+if [ "$arch" = armv6m ]; then
+    require_killed_at_site main "$(announced_site "main: writing the child's granted region")"
+    echo "PASS: main took a memory trap at its store to the child's region at 0x$want ($outcome)"
+    exit 0
 fi
 got="$(reported_fault_addr)"
 if [ -z "$got" ]; then

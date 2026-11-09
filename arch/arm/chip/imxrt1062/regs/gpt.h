@@ -31,6 +31,9 @@ namespace kickos::imxrt1062::reg::gpt
     constexpr uint32_t CR_EN_24M = 1u << 10;    // enable the 24 MHz osc input
     constexpr uint32_t CR_SWR = 1u << 15;       // software reset (self-clears)
 
+    constexpr uint32_t SR_ROV = 1u << 5; // W1C
+    constexpr uint32_t IR_ROVIE = 1u << 5;
+
     constexpr uint32_t GPT_HZ = 24000000u;
 }
 

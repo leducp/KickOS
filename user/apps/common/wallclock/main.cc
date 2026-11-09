@@ -4,7 +4,8 @@
 // The kernel clock held against a clock outside the chip: three marks a requested sleep apart,
 // which tests/integration/check_wallclock.sh times between the second and third by the capture
 // host's own arrival stamps. A USB device console loses the first. Then the steady clock across a
-// wall-clock set a day ahead, made between its two reads: it advances by the sleep alone.
+// wall-clock set a day ahead, made between its two reads: it advances by the sleep alone. Last, the
+// CPU clock as a static constructor read it and as main reads it.
 
 #include <kickos/kos.h>
 #include <kickos/libc/fmt.h>
@@ -48,6 +49,13 @@ namespace
             std::chrono::duration_cast<std::chrono::nanoseconds>(to - from).count());
         return r;
     }
+
+    struct CtorClock
+    {
+        uint64_t hz;
+        CtorClock() : hz(kos::cpu_clock_hz()) {}
+    };
+    CtorClock const g_ctor_clock;
 }
 
 int main(int, char**)
@@ -72,6 +80,11 @@ int main(int, char**)
               across.set, static_cast<unsigned long long>(across.steady),
               static_cast<unsigned long long>(SET_SLEEP_NS),
               static_cast<unsigned long long>(across.wall));
+    kos::print(line);
+    ksnprintf(line, sizeof(line),
+              "[wallclock] the CPU clock: %llu Hz read by a constructor, %llu Hz by main\n",
+              static_cast<unsigned long long>(g_ctor_clock.hz),
+              static_cast<unsigned long long>(kos::cpu_clock_hz()));
     kos::print(line);
     kos::print("[wallclock] done\n");
     return 0;

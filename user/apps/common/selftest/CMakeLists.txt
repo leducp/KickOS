@@ -66,16 +66,16 @@ set(_selftest_regions 8)
 # the 256 KiB pow2 PMP code window (`_code_size` in
 # arch/riscv/chip/esp32c6/esp32c6.ld) on an enforcing ESP32-C6, whose next step up would take 256
 # KiB straight off the thread arena, the 240 KiB node slice on the ESP32-C6's own-image AMP
-# partition, and the arena that follows .bss on nrf51. The bench probes take the C6's code window
-# past one more cut. On the SMP ESP32 it is the 128 KiB of SRAM0 the task images share. None of these is a number
-# the build can read back from the board, so the cut is stated here and nowhere else: the chip,
-# KICKOS_HAVE_MPU, KICKOS_AMP_OWN_IMAGE and KICKOS_BENCH come from the board's own config, and
-# every gate takes the image list and each image's arm count off the targets below rather than
-# restating either.
+# partition, and the arena that follows .bss on nrf51 and on the SMP bench ESP32, whose bench
+# tables in kernel .bss leave the arena short of the one-image thread budget. The bench probes
+# take the C6's code window past one more cut. None of these is a number the build can read back
+# from the board, so the cut is stated here and nowhere else: the chip, KICKOS_HAVE_MPU,
+# KICKOS_AMP_OWN_IMAGE and KICKOS_BENCH come from the board's own config, and every gate takes
+# the image list and each image's arm count off the targets below rather than restating either.
 set(_selftest_firsts 1)
 if(KICKOS_CHIP STREQUAL "nrf51")
   set(_selftest_firsts 1 2 5 6 7 8)
-elseif(KICKOS_CHIP STREQUAL "esp32" AND KICKOS_KERNEL_CORES GREATER 1)
+elseif(KICKOS_CHIP STREQUAL "esp32" AND KICKOS_KERNEL_CORES GREATER 1 AND KICKOS_BENCH)
   set(_selftest_firsts 1 8)
 elseif(KICKOS_CHIP STREQUAL "esp32c6" AND KICKOS_HAVE_MPU AND KICKOS_BENCH)
   set(_selftest_firsts 1 3 5 6 8)
@@ -299,6 +299,11 @@ if(KICKOS_ARCH STREQUAL "x86_64")
   list(APPEND _selftest_count --config __x86_64__)
 else()
   list(APPEND _selftest_count --undefined __x86_64__)
+endif()
+if(KICKOS_ARCH STREQUAL "lx6")
+  list(APPEND _selftest_count --config __XTENSA__)
+else()
+  list(APPEND _selftest_count --undefined __XTENSA__)
 endif()
 get_directory_property(_selftest_dir_defs COMPILE_DEFINITIONS)
 foreach(_def IN LISTS _selftest_dir_defs _selftest_defs)

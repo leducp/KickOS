@@ -72,13 +72,19 @@
 # The refusal arms share the negative claim of no kill banner. A contained refusal leaves the
 # system running; a terminated one ends in a panic dump and exit 132.
 #
-# QEMU, machine from kickos_add_qemu_test; the survive arm also runs natively on the sim. With
-# KOS_CAPTURE it reads a silicon capture, which carries no exit status.
+# `div0' and `ldiv0' (faultsurvive_div0 and faultsurvive_ldiv0, KICKOS_FS_MODE 8 and 9): the
+# worker divides by zero in 32 and in 64 bits. The outcome is the arch's: `killed' where the core
+# or the run-time ABI traps it, the kill record naming the division as this arch's status says
+# so, and `returned:<quotient>' where the ISA defines a quotient instead, `any' where it leaves
+# the quotient undefined or no instruction of it divides at that width. Main runs after either.
+#
+# QEMU, machine from kickos_add_qemu_test; the survive and divide arms also run natively on the
+# sim. With KOS_CAPTURE it reads a silicon capture, which carries no exit status.
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
 
-_usage="usage: check_faultsurvive.sh <elf> <arm: survive|overflow|stkof|offstack|kwrite|lowedge|misalign|unread> <arch> <outcome: contained|terminated>
+_usage="usage: check_faultsurvive.sh <elf> <arm: survive|overflow|stkof|offstack|kwrite|lowedge|misalign|unread|div0|ldiv0> <arch> <outcome: contained|terminated|killed|returned:<quotient|any>>
        KOS_CAPTURE=<log> check_faultsurvive.sh <board-build> <kickos-source> <cmake> <arm> <arch> <outcome>"
 if judging_capture; then
     shift 3
@@ -168,6 +174,95 @@ case "$arm" in
         fi
         status_clause "the system exited 0 once main returned" 0
         echo "PASS: 'faulter' died at line $killed and main ran at line $survived"
+        ;;
+    div0 | ldiv0)
+        survived="$(line_of "\[fs\] survivor ran after the fault")"
+        if [ -z "$survived" ]; then
+            cfail survived "$arm: main never ran again after the worker divided by zero"
+        fi
+        assert_no_panic "$arm: the divide by zero ended the system"
+        quotient="$(line_of "\[fs\] divide by zero returned ")"
+        case "$outcome" in
+            killed)
+                if [ -n "$quotient" ]; then
+                    cfail trapped "$arm: the division returned a quotient where $arch traps it"
+                fi
+                killed="$(line_of "$(thread_fault_re faulter)")"
+                if [ -z "$killed" ]; then
+                    cfail killed "$arm: no thread-kill for 'faulter'"
+                fi
+                after_about "$killed" "the kill"
+                if [ "$survived" -le "$killed" ]; then
+                    cfail order "$arm: main's line is at $survived, not after the kill at $killed"
+                fi
+                # <status name>: the hex the kill record carries after it, searched from the kill.
+                record_status() {
+                    printf '%s\n' "$OUT" | sed -n "$killed,\$p" \
+                        | sed -n "s/.* $1=0x\([0-9a-fA-F]*\).*/\1/p" | head -n1
+                }
+                case "$arch" in
+                    armv7m)
+                        # UFSR.DIVBYZERO, CFSR bit 25, for the hardware divide and the hook's alike.
+                        st="$(record_status CFSR)"
+                        if [ -z "$st" ] || [ $(( 0x$st & 0x2000000 )) -eq 0 ]; then
+                            cfail cause "$arm: the kill record's CFSR=0x$st carries no DIVBYZERO"
+                        fi
+                        why="CFSR=0x$st"
+                        ;;
+                    armv6m)
+                        st="$(record_status DIVBYZERO)"
+                        if [ "$st" != 1 ]; then
+                            cfail cause "$arm: the kill record does not name the hook's UDF (DIVBYZERO=0x$st)"
+                        fi
+                        why="DIVBYZERO=0x1"
+                        ;;
+                    x86_64)
+                        # Vector 0, #DE, in the high half, and no error code.
+                        st="$(record_status vec:err)"
+                        if [ -z "$st" ] || [ $(( 0x$st )) -ne 0 ]; then
+                            cfail cause "$arm: the kill record's vec:err=0x$st is not #DE"
+                        fi
+                        why="vec:err=0x0"
+                        ;;
+                    sim)
+                        # FPE_INTDIV.
+                        st="$(record_status "SIGFPE si_code")"
+                        if [ "$st" != 1 ]; then
+                            cfail cause "$arm: the kill record is not SIGFPE FPE_INTDIV (si_code=0x$st)"
+                        fi
+                        why="SIGFPE si_code=0x1"
+                        ;;
+                    *)
+                        fail "$arm: no divide-by-zero record is defined for arch '$arch'"
+                        ;;
+                esac
+                status_clause "the system exited 0 once main returned" 0
+                echo "PASS: 'faulter' died dividing by zero ($why) at line $killed and main ran at line $survived"
+                ;;
+            returned:*)
+                want="${outcome#returned:}"
+                if has_e "$(thread_fault_re faulter)"; then
+                    cfail returned "$arm: the worker was killed, where $arch returns a quotient"
+                fi
+                if [ -z "$quotient" ]; then
+                    cfail returned "$arm: the worker printed no quotient"
+                fi
+                after_about "$quotient" "the quotient"
+                if [ "$survived" -le "$quotient" ]; then
+                    cfail order "$arm: main's line is at $survived, not after the quotient at $quotient"
+                fi
+                got="$(printf '%s\n' "$OUT" | sed -n "${quotient}p" \
+                    | sed -n 's/.*divide by zero returned \(-\{0,1\}[0-9][0-9]*\).*/\1/p')"
+                if [ "$want" != any ] && [ "$got" != "$want" ]; then
+                    cfail quotient "$arm: the quotient is '$got', where $arch defines $want"
+                fi
+                status_clause "the system exited 0 once main returned" 0
+                echo "PASS: 'faulter' divided by zero to $got on $arch and main ran at line $survived"
+                ;;
+            *)
+                fail "unknown outcome '$outcome': expected 'killed' or 'returned:<quotient|any>'"
+                ;;
+        esac
         ;;
     stkof)
         # The overflow on a core with stack limit registers: the recursion's own push, or the

@@ -68,8 +68,8 @@ namespace kickos
 
     // What a parked thread waits for, and the object owning the list it is on. Set at every park
     // and cleared at every unpark: a cancel dispatches on it, and a mis-tagged park unwinds the
-    // wrong list. WAIT_JOIN, WAIT_TASK_EMPTY and WAIT_CONSOLE are on no list at all, so the tag
-    // is the only thing that finds them.
+    // wrong list. WAIT_JOIN and WAIT_CONSOLE are on no list at all, so the tag is the only thing
+    // that finds them.
     enum WaitKind : uint8_t
     {
         WAIT_NONE = 0,
@@ -83,9 +83,13 @@ namespace kickos
         WAIT_EP_FAR_REPLY,
         WAIT_SLEEP,     // wait_obj: none; on the timer delta list
         WAIT_JOIN,      // wait_obj: the TARGET thread; queue-less on no list at all
-        WAIT_TASK_EMPTY, // wait_obj: the TASK; queue-less on no list at all
+        // wait_obj: the TASK; on Kernel::death_waiters or death_dirty, wait_queue null
+        WAIT_TASK_EMPTY,
         WAIT_CONSOLE,    // wait_obj: none; queue-less, a user kernel console write waiting to offer again
         WAIT_WORD,       // wait_obj: the word's PLAIN WordRecord; on its waiters
+        // wait_obj: none; on Kernel::retire_waiters, wait_queue null, until a released IRQ
+        // binding's grace period ends
+        WAIT_RETIRE,
     };
 
     // Has this thread been asked to die, and how. Zero == CANCEL_NONE, so the thread_create

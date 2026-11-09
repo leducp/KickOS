@@ -13,6 +13,7 @@
 #include <kickos/debug.h>
 #include <kickos/kernel.h>
 #include <kickos/instance.h>
+#include <kickos/irq.h>
 #include <kickos/domain.h>
 #include <kickos/image.h>
 #include <kickos/sync.h>
@@ -452,11 +453,32 @@ namespace kickos
             seat_level(next, me, held);
             KICKOS_BENCH_DECIDE_CLOSE();
 #endif
+#if KICKOS_ARCH_SWITCH_LANDS_LATER
+            // A slice the switch must stamp is stamped, and the comparator armed, where the arch
+            // lands it (kickos_switch_landed): what runs before that point, the switcher
+            // exception included, is charged to no slice.
+            if (policy_on_switch_in_booked(next))
+            {
+                kernel().switch_landing_owed[me] = 0;
+                ktime_rearm(next, held);
+            }
+            else
+            {
+                kernel().switch_landing_owed[me] = 1;
+            }
+#else
             // Stamp after the seating, or its cost eats the slice.
             policy_on_switch_in(next);
             // Must arm for the incoming thread before the jump: nothing else programs its
             // policy deadline (RR slice).
             ktime_rearm(next, held);
+            if (arch_in_isr() != 0)
+            {
+                // Deferred to this interrupt's exit, whose handler tail reprograms the
+                // comparator (ktime_land_at_isr_exit).
+                kernel().switch_landing_owed[me] = 1;
+            }
+#endif
             // Redirect only the incoming context before arch_switch; deferred switches
             // overwrite the outgoing context with live registers. dying prevents
             // restarting cap_teardown after it releases IrqLock between chunks.
@@ -1116,7 +1138,7 @@ namespace kickos
                 }
                 // By the last member to finish its sweep, so a slay it wakes and a restart the
                 // report prompts find everything the task's threads held already free.
-                bool const task_dead = task_sweep_done(left_task, left_gen);
+                bool const task_dead = task_sweep_done(left_task);
                 // EXITED suppresses switching while this loop scans ThreadPool for join and
                 // task-empty waiters.
                 for (int s = 0; s < k.threads.next; s++)
@@ -1193,6 +1215,14 @@ namespace kickos
             {
                 return;
             }
+#if KICKOS_ARCH_SWITCH_LANDS_LATER
+            // A booked thread is stamped where its switch lands (ktime_land); until then its
+            // deadline is a stale one, or a fresh TCB's 0.
+            if (kernel().switch_landing_owed[kickos_kernel_core()] != 0)
+            {
+                return;
+            }
+#endif
             if (now < policy_next_timed_event(c))
             {
                 return;
@@ -1205,6 +1235,41 @@ namespace kickos
 }
 
 #if KICKOS_KERNEL_CORES > 1
+namespace kickos
+{
+    namespace
+    {
+        // Every WAIT_RETIRE waiter asks again, and one whose grace period is still open parks
+        // again. All are readied before the one pass that may switch away.
+        void retire_waiters_wake(Held held)
+        {
+            Thread* top = nullptr;
+            while (not kernel().retire_waiters.empty())
+            {
+                Thread* const w = thread_of(kernel().retire_waiters.head);
+                if (not thread_abort_park_no_resched(w, 0, held))
+                {
+                    continue;
+                }
+                if (top == nullptr or w->prio > top->prio)
+                {
+                    if (top != nullptr)
+                    {
+                        sched::place_ready(top, held);
+                    }
+                    top = w;
+                    continue;
+                }
+                sched::place_ready(w, held);
+            }
+            if (top != nullptr)
+            {
+                sched::resched_after_wake(top, held);
+            }
+        }
+    }
+}
+
 // Runs in the doorbell's interrupt, so the switch this books is performed at the exception
 // exit. A core still in bring-up reaches this before its scheduler exists.
 extern "C" void kickos_kernel_core_resched_if_owed(void)
@@ -1222,6 +1287,10 @@ extern "C" void kickos_kernel_core_resched_if_owed(void)
     if (::kickos::kernel().current(me) == nullptr)
     {
         return;
+    }
+    if (not ::kickos::kernel().retire_waiters.empty() and ::kickos::irq_retire_serve(lock))
+    {
+        ::kickos::retire_waiters_wake(lock);
     }
     // The drain lives here and nowhere a pass can be mid-walk, and what it leaves is owed to
     // this core's next dispatch.
@@ -1242,6 +1311,9 @@ extern "C" void kickos_kernel_core_resched_if_owed(void)
     ::kickos::sched::reschedule(nullptr, lock);
 #if defined(KICKOS_WITNESS_REPASS) && KICKOS_WITNESS_REPASS
     ::kickos::witness_repass(interrupted, me, lock);
+#endif
+#if not KICKOS_ARCH_SWITCH_LANDS_LATER
+    ::kickos::ktime_land(lock);
 #endif
 }
 #endif

@@ -95,6 +95,7 @@ namespace kickos
 #define KDIAG_F_BANNER_UGUARD "   uaccess %s\n"
 #define KDIAG_F_BANNER_WITNESS "   witness uaccess\n"
 #define KDIAG_F_BANNER_WITNESS_REWIND "   witness rewind\n"
+#define KDIAG_F_BANNER_WITNESS_NODE "   witness node\n"
 #define KDIAG_F_BANNER_SCHED "   sched   %s\n"
 #define KDIAG_F_BANNER_BUILD "   build   %s\n"
 #define KDIAG_F_BANNER_APP   "   app     %s\n"
@@ -150,6 +151,7 @@ namespace kickos
 #define KDIAG_F_ARM_FRAME_FOREIGN \
     "  frame not read: 0x%x (%s) is not on MSP or a stack this thread owns\n"
 #define KDIAG_F_ARM_CFSR  "  CFSR=0x%x HFSR=0x%x\n"
+#define KDIAG_F_ARM_DIV0  "  DIVBYZERO: the UDF of __aeabi_idiv0/__aeabi_ldiv0\n"
 #define KDIAG_F_ARM_MMFAR "  MMFAR=0x%x\n"
 #define KDIAG_F_ARM_BFAR  "  BFAR=0x%x\n"
 #define KDIAG_F_ARM_IMPRECISE "  (imprecise bus fault: PC/regs are post-fault, not the culprit)\n"

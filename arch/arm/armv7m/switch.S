@@ -225,6 +225,9 @@ PendSV_Handler:
        EXC_RETURN and survives the bl through the push; r0 pads MSP to 8 bytes. */
     push    {r0, lr}
     bl      kickos_arch_mpu_commit
+    ldr     r0, =g_arch_current
+    ldr     r0, [r0]
+    bl      kickos_switch_landed
     pop     {r0, lr}
     clrex                           /* the incoming thread's cut STREX fails (DDI0403E A3.4.4) */
     cpsie   i                       /* pair consumed; never resume a thread masked */
@@ -329,6 +332,9 @@ PendSV_Handler:
     isb
     push    {r0, lr}
     bl      kickos_arch_mpu_commit
+    ldr     r0, =g_arch_current
+    ldr     r0, [r0]
+    bl      kickos_switch_landed
     pop     {r0, lr}
     clrex
     cpsie   i
@@ -456,6 +462,9 @@ SVC_Handler:
        is still up. */
     push    {r0, lr}
     bl      kickos_arch_mpu_commit
+    ldr     r0, =g_arch_current
+    ldr     r0, [r0]
+    bl      kickos_switch_landed
     pop     {r0, lr}
     clrex
     cpsie   i                       /* the pair is consumed */

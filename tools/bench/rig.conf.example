@@ -19,11 +19,8 @@
 # still find the one real session directory.
 RIG_SESSION=/path/to/checkout/.session
 
-# The tree built and flashed when the caller sets no TREE. Absolute.
-RIG_TREE=/path/to/checkout
-
-# A python carrying pyserial, for the Espressif capture on THIS box. Optional:
-# empty means fall back to $PY as exported by env.sh.
+# A python carrying pyserial, for the Espressif capture on THIS box; a USB CDC console
+# capture needs only its standard library. Empty means fall back to $PY as exported by env.sh.
 RIG_PYBIN=
 
 # --- consoles -----------------------------------------------------------------
@@ -45,15 +42,19 @@ RIG_CONSOLE_PIZERO2350=/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_YYYYYYYY*
 #   picopi      GP0/GP1, UART0. FTDI RX on GP0.
 #   pizero2350  GP4/GP5, UART1. FTDI RX on GP4; UART0 is not on the Pi-Zero header.
 #   teensy41    LPUART6 ("Serial1"). FTDI RX on PIN 1; pin 0 is the board's own RX.
+#   blackpill   USART2 on PA2/PA3. FTDI RX on PA2.
 RIG_CONSOLE_TEENSY41=/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_YYYYYYYY*
+RIG_CONSOLE_BLACKPILL=/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_YYYYYYYY*
 # f411disco's ST-Link is a V2 with no VCP, so its console is a separate FTDI rather than the
 # probe's own VCOM.
 RIG_CONSOLE_F411DISCO=/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_ZZZZZZZZ*
 #
-# SEVERAL ROWS MAY NAME ONE CABLE, as the two above do: a bench with fewer FTDIs than
-# boards moves one between them. That is fine while only one of those boards is attached,
-# and wrong the moment two are: the pattern resolves for both and the capture is of
-# whichever board happens to be wired. Re-point the row when the cable moves.
+# SEVERAL ROWS MAY NAME ONE CABLE, as the YYYYYYYY rows above do: a bench with fewer FTDIs
+# than boards moves one between them. That is fine while only one of those boards is attached,
+# and wrong the moment two are: the pattern resolves for both and the capture is of whichever
+# board happens to be wired. Spell the pattern identically in each row, so
+# tools/bench/bench-present.sh reports the cable SHARED and bench-fleet.sh never captures two
+# of those boards at once. Re-point the row when the cable moves.
 
 # --- the bench host, when the boards are not on this box -----------------------
 # WHICH box is the bench. tools/bench/bench-present.sh takes the host from here when the
@@ -80,7 +81,7 @@ RIG_REMOTE_ROOT=kickos_bench
 
 # A python carrying pyserial ON THE BENCH HOST, absolute and NOT $HOME-relative: it
 # is passed through as a literal, so a `$HOME` here would not expand. Required there
-# for the Espressif boards only.
+# for the Espressif boards and for every USB CDC console capture.
 RIG_REMOTE_PYBIN=/home/USER/.local/share/uv/tools/esptool/bin/python
 
 # --- ST-Link probes ---------------------------------------------------------------
@@ -93,7 +94,7 @@ RIG_REMOTE_PYBIN=/home/USER/.local/share/uv/tools/esptool/bin/python
 # --- which unit a probe vid:pid means -----------------------------------------
 # Only needed once MORE THAN ONE DEVICE shares a vid:pid, which is what makes the serial a
 # guess: more than one XMC and more than one K64F are in rotation, every unit of a kind
-# presents the same vid:pid, and a first-match hands the capture to the wrong board -- a
+# presents the same vid:pid, and a first-match hands the capture to the wrong board: a
 # complete, plausible, wrong log. tools/bench/ refuses that bus instead and names this key.
 # Key is RIG_PROBE_<VID>_<PID>, the vid:pid upper-cased with ':' as '_'. The pin is checked
 # against what is actually enumerated, so a stale one is refused rather than believed.

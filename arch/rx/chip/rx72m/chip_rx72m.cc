@@ -16,6 +16,7 @@
 // is the SCI + CMTW clock.
 
 #include <kickos/arch/arch.h>
+#include <kickos/arch/clock_fallback.h>
 #include <arch_reboot_tail.h>
 #include <kickos/diag.h>
 #include <kickos/arch/console_poll.h>
@@ -146,7 +147,8 @@ namespace
         (void)memwait_rb;
         r16(cgc::PLLCR) = cgc::PLLCR_PLL_240MHZ;
         r8(cgc::PLLCR2) = cgc::PLLCR2_PLL_RUN;
-        if (not poll_flag(cgc::OSCOVFSR, cgc::OSCOVFSR_PLOVF, CLOCK_POLL_LIMIT))
+        if (not poll_flag(cgc::OSCOVFSR, cgc::OSCOVFSR_PLOVF, CLOCK_POLL_LIMIT)
+            or KICKOS_WITNESS_CLOCK_FALLBACK)
         {
             return false;
         }
@@ -155,6 +157,23 @@ namespace
         // becomes the source on the next write.
         r32(cgc::SCKCR) = cgc::SCKCR_240MHZ;
         r16(cgc::SCKCR3) = cgc::SCKCR3_CKSEL_PLL;
+        return true;
+    }
+
+    // The fallback for a dead crystal or PLL: the 20 MHz HOCO, on the reset SCKCR dividers (all
+    // /1), per UM sec.9.6 (4). False leaves the chip on the LOCO, where no console baud lands.
+    bool clock_to_hoco()
+    {
+        if ((r8(cgc::HOCOCR) & cgc::HOCOCR_HCSTP) != 0)
+        {
+            r8(cgc::HOCOCR2) = cgc::HOCOCR2_HCFRQ_20MHZ;
+            r8(cgc::HOCOCR) = 0;
+        }
+        if (not poll_flag(cgc::OSCOVFSR, cgc::OSCOVFSR_HCOVF, CLOCK_POLL_LIMIT))
+        {
+            return false;
+        }
+        r16(cgc::SCKCR3) = static_cast<uint16_t>(cgc::CKSEL_HOCO << cgc::SCKCR3_CKSEL_S);
         return true;
     }
 
@@ -280,9 +299,9 @@ namespace
         r8(sci::SCR) = 0;
         r8(sci::SCMR) = sci::SCMR_UART;
 
-        // The divisor comes from the LIVE clock tree, so a bring-up that fell back to the
-        // LOCO still lands a usable console instead of a rate off by three orders of
-        // magnitude. A tree pclkb_hz() cannot describe leaves the reset divisor alone.
+        // The divisor comes from the LIVE clock tree, which a fallback moves to the HOCO. A
+        // tree pclkb_hz() cannot describe, or no divisor within tolerance (the LOCO), leaves
+        // the reset divisor alone.
         sci::BaudSetting bs;
         if (sci::baud_select(pclkb_hz(), CONSOLE_BAUD, &bs))
         {
@@ -345,15 +364,19 @@ extern "C"
 void arch_init(void)
 {
     unlock_registers(true);
-    (void)clock_to_pll_240mhz(); // the landed tree is read back below, not assumed here
+    // The landed tree is read back below, not assumed here.
+    if (not clock_to_pll_240mhz())
+    {
+        (void)clock_to_hoco();
+    }
     r32(cgc::MSTPCRA) &= ~(cgc::MSTPA_CMTW0 | cgc::MSTPA_CMTW1);
     r32(cgc::MSTPCRB) &= ~cgc::MSTPB_SCI6;
     unlock_registers(false);
 
     rom_cache_enable(); // MEMWAIT set above; ROM cache is not PRCR-gated
 
-    // Read back: a bring-up that degraded to the LOCO prices ticks and baud at the rate it
-    // landed on. An undescribable tree leaves both at their reset nominals, not zero.
+    // Read back: a bring-up that degraded to the HOCO or the LOCO prices ticks and baud at the
+    // rate it landed on. An undescribable tree leaves both at their reset nominals, not zero.
     uint32_t const src = clock_source_hz();
     uint32_t const ick = (r32(cgc::SCKCR) >> cgc::SCKCR_ICK_S) & cgc::SCKCR_DIV_MASK;
     if (src != 0u and ick <= cgc::SCKCR_DIV_MAX)
@@ -371,6 +394,9 @@ void arch_init(void)
     // CMWI0, vector 30. The CMTW's own CMWIE is set per arm (arch_timer_arm).
     r8(icu::IPR006) = 4; // IPL_DEVICE (< IPL_LOCK)
     r8(icu::IER03) |= icu::IER03_CMWI0;
+    // CMWI1, vector 31: the clock's wrap.
+    r8(icu::IPR007) = 4;
+    r8(icu::IER03) |= icu::IER03_CMWI1;
 
     kickos_rxv3_init();
 }
@@ -574,8 +600,8 @@ void arch_console_reclaim(void)
     // NFCS = 000b, the asynchronous-mode setting (UM sec.42.2.16 p.2198).
     r8(sci::SNFR) = 0;
 
-    // Priced off the LIVE clock tree, NOT folded to a 60 MHz constant: clock_to_pll_240mhz
-    // can fail and leave the part on the ~240 kHz LOCO.
+    // Priced off the LIVE clock tree, NOT folded to a 60 MHz constant: a bring-up can land on
+    // the HOCO or the LOCO.
     sci::BaudSetting bs;
     if (not sci::baud_select(pclkb_hz(), CONSOLE_BAUD, &bs))
     {

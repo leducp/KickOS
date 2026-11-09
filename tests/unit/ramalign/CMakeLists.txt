@@ -30,3 +30,24 @@ kickos_add_unit_test(NAME ram_align_copies_unstrided TEST_PREFIX unstrided_
   SOURCES align_copies.cc "${_ra_table}" "${PROJECT_SOURCE_DIR}/tests/unit/common/region_seam.cc"
   INCLUDES "${CMAKE_CURRENT_BINARY_DIR}" "${PROJECT_SOURCE_DIR}/tests/unit/common"
   POSTURE KICKOS_TLS=0)
+
+# The allocator under arch_ram_alloc, and the composition tool's copy of it
+# (kickos_compose/region.py ArenaModel) over seeded block sequences.
+set(_ra_gap "${CMAKE_CURRENT_BINARY_DIR}/gap_table.h")
+add_custom_command(
+  OUTPUT "${_ra_gap}"
+  COMMAND "${CMAKE_COMMAND}" -DSOURCE=${PROJECT_SOURCE_DIR}
+          -DSTATE=${CMAKE_CURRENT_BINARY_DIR}/compose
+          "-DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/emit_gap.py"
+          "-DFIXTURES=${_ra_gap}"
+          -P "${PROJECT_SOURCE_DIR}/tests/unit/grantlookup/emit_fixture.cmake"
+  DEPENDS "${PROJECT_SOURCE_DIR}/tests/unit/grantlookup/emit_fixture.cmake"
+          "${CMAKE_CURRENT_SOURCE_DIR}/emit_gap.py" ${_ra_tool}
+          "${PROJECT_SOURCE_DIR}/tools/compose/pyproject.toml"
+          "${PROJECT_SOURCE_DIR}/tools/compose/uv.lock"
+  COMMENT "Placing seeded block sequences with the composition tool's arena model"
+  VERBATIM)
+
+kickos_add_unit_test(NAME ram_arena
+  SOURCES ram_arena.cc "${_ra_gap}"
+  INCLUDES "${CMAKE_CURRENT_BINARY_DIR}" "${PROJECT_SOURCE_DIR}/arch/common")

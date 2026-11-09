@@ -29,7 +29,9 @@ linked at. So over every application image the tree links this refuses:
     references;
   - a symbol the linker script assigns whose value in the image is not the one the map states:
     ld -m i386pep drops an empty output section after assigning its symbols and re-bases them
-    onto the image's first section.
+    onto the image's first section; and one assigned in an output section holding nothing but
+    image 0's bss, the later images' stores or the constructors, which a link without them
+    drops.
 
 A PE32+ symbol table holds no 64-bit value, so the program addresses the kernel's link states
 are read from the fragment that states them, <image>.kimg/kickos_image0.ld, and any other symbol
@@ -133,7 +135,7 @@ def judge_embed(parts, segments, prog_lo, prog_hi):
     """parts: {name: (vma, size, bytes or None)} of the PE image; segments: [(vaddr, filesz,
     bytes)] of the program's loadable segments, text first. Answers the findings."""
     findings = []
-    missing = [p for p in PARTS if p not in parts]
+    missing = [p for p in PARTS[:2] if p not in parts]
     if missing:
         return [f"the image holds no {' '.join(missing)}, so it embeds no program"]
     load = parts[PARTS[0]][0]
@@ -147,7 +149,7 @@ def judge_embed(parts, segments, prog_lo, prog_hi):
         elif raw is None or raw[:filesz] != data:
             findings.append(f"{name} does not hold the program's {filesz:#x} byte(s) at "
                             f"{vaddr:#x}")
-    vma, size, _ = parts[PARTS[2]]
+    vma, size, _ = parts.get(PARTS[2], parts[PARTS[1]])
     if vma + size - load < prog_hi - prog_lo:
         findings.append(f"the embedded program ends {vma + size - load:#x} past its first byte, "
                         f"short of the {prog_hi - prog_lo:#x} its data, bss and heap span")
@@ -390,7 +392,7 @@ def image_relocs(readelf, placed, syms, programs, win, cache, assigned=None, abs
                                    f"{sym} {addend:+#x}"))
             elif sym in relatives:
                 # Stated relative to the image and dropped from the PE32+ symbol table as no
-                # 32-bit value (the fragment's __kickos_app_load_delta): moved by firmware.
+                # 32-bit value: moved by firmware.
                 relocs.append((site, rtype, win.image_lo, "addr", sym))
             else:
                 relocs.append((site, rtype, 0, "undefined", sym or "(none)"))
@@ -399,7 +401,8 @@ def image_relocs(readelf, placed, syms, programs, win, cache, assigned=None, abs
 
 def check_image(args, image, allow, cache):
     absolute = set()
-    placed, assigned = parse_map(open(image + ".map", errors="replace").read(), absolute)
+    map_text = open(image + ".map", errors="replace").read()
+    placed, assigned = parse_map(map_text, absolute)
     program = image + ".kimg/image0.elf"
     fragment = image + ".kimg/kickos_image0.ld"
     for path in (program, fragment):
@@ -414,7 +417,7 @@ def check_image(args, image, allow, cache):
         if sym not in assigned:
             return [f"the map states no {sym}, so the embedded programs have no bounds"], set()
     syms = image_symbols(args.nm, image)
-    moved = moved_symbols(assigned, syms)
+    moved = moved_symbols(assigned, syms) + unanchored_symbols(map_text)
     if moved:
         return moved, set()
     prog_lo, prog_hi = psyms["__kickos_app_rom_start"][0], psyms["__kickos_app_sram_end"][0]
@@ -455,6 +458,62 @@ def moved_symbols(assigned, syms):
             f"its section was dropped and the symbol re-based"
             for name, addr in sorted(assigned.items())
             if name in syms and syms[name][1] not in "Aa" and syms[name][0] != addr]
+
+
+DATA_RE = re.compile(r"^\s+0x[0-9a-f]+\s+0x[0-9a-f]+\s+(QUAD|SQUAD|LONG|SHORT|BYTE)\b")
+# What one link has and another lacks: image 0's bss, the later images' stores and the
+# constructors.
+OPTIONAL_INPUT_RE = re.compile(r"^(\.kickos_image0_bss|\.kickos_images|\.init_array(\..*)?"
+                               r"|\.kickos\.kernel\.init_array)$")
+
+
+def unanchored_symbols(text):
+    """The script's section-relative symbols assigned in an output section that holds nothing
+    but inputs some link lacks: that link drops the section and re-bases them, so a window
+    bound would not mean the same where its window is empty."""
+    absolute = set()
+    out = None
+    held = {}
+    where = {}
+    pending = False
+    for line in text.splitlines():
+        m = OUT_RE.match(line)
+        if m:
+            out = m.group(1)
+            held.setdefault(out, False)
+            pending = False
+            continue
+        if line.startswith("/DISCARD/"):
+            out = None
+            continue
+        if out is None:
+            continue
+        if DATA_RE.match(line):
+            held[out] = True
+            continue
+        m = IN_RE.match(line)
+        if m:
+            pending = False
+            if int(m.group(3), 16) and not OPTIONAL_INPUT_RE.match(m.group(1)):
+                held[out] = True
+            continue
+        m = IN_NAME_RE.match(line)
+        if m:
+            pending = not OPTIONAL_INPUT_RE.match(m.group(1))
+            continue
+        m = IN_CONT_RE.match(line)
+        if m and pending:
+            pending = False
+            if int(m.group(2), 16):
+                held[out] = True
+            continue
+        pending = False
+        m = ASSIGN_RE.match(line)
+        if m and not ABS_EXPR_RE.match(m.group(3)):
+            where[m.group(2)] = out
+    return [f"the script assigns {name} in {sec}, which holds only inputs some link lacks: "
+            f"that link drops {sec} and re-bases {name}"
+            for name, sec in sorted(where.items()) if not held[sec]]
 
 
 def load_allow(path):
@@ -551,6 +610,24 @@ def controls():
                       "__kickos_frame_pool_delta": (0, "A")}):
         print("FAIL: control 'a symbol where the map put it': refused")
         bad += 1
+    stores = (".kimgs          0x466000     0x8000\n"
+              " .kickos_images\n"
+              "                0x466000     0x8000 /x/kickos_image1.o\n")
+    if not unanchored_symbols(stores + "                0x46e000                "
+                              "__kickos_images_load_end = ALIGN (0x1000)\n"):
+        print("FAIL: control 'a window bound only the stores hold up': not refused")
+        bad += 1
+    if not unanchored_symbols(".kimg0b         0x465000     0x4268\n"
+                              " .kickos_image0_bss\n"
+                              "                0x465000     0x4268 /x/kickos_image0.o\n"
+                              "                0x469268                __kickos_image0_load_end = .\n"):
+        print("FAIL: control 'image 0's end only its bss holds up': not refused")
+        bad += 1
+    if unanchored_symbols(stores + ".rdata          0x46e000     0x2600\n"
+                          "                0x46e000                __kickos_images_load_end = .\n"
+                          "                0x46e000        0x8 QUAD 0x7f0000000000\n"):
+        print("FAIL: control 'a window bound the image table holds up': refused")
+        bad += 1
     # A named symbol's addend counts: a kernel pointer to a kernel symbol plus an offset that
     # lands in the embedded program still asks a record, and its twin as well.
     inp = os.path.abspath(__file__)
@@ -569,7 +646,7 @@ def controls():
             print(f"FAIL: control '{name}': expected {'a refusal' if refused else 'a pass'}, "
                   f"got {findings or 'none'}")
             bad += 1
-    total = len(cases) + len(embeds) + 6
+    total = len(cases) + len(embeds) + 9
     print(f"== controls: {total - bad} of {total} as expected ==")
     return bad
 

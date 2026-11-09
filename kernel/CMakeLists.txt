@@ -62,6 +62,9 @@ endif()
 if(KICKOS_WITNESS_REWIND)
   list(APPEND KICKOS_KERNEL_SOURCES syscall/syscall_witness_rewind.cc)
 endif()
+if(KICKOS_WITNESS_NODE)
+  list(APPEND KICKOS_KERNEL_SOURCES syscall/syscall_witness_node.cc)
+endif()
 
 # The kernel's own copies of the runtime, under the private names cmake/kernel_runtime.syms lists.
 # ONLY where a translating backend splits the image in two: a region backend serves both

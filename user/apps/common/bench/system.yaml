@@ -2,8 +2,8 @@
 # Copyright (c) 2026 Philippe Leduc
 #
 # Irq beside the default's authority, for the lines the bench raises past KICKOS_IRQ_FREE_BASE,
-# claimed at run time, and bootloader for the terminal outcome, and the peer program's two tasks,
-# which main creates for the cross-task rows.
+# claimed at run time, and the peer program's two tasks, which main creates for the cross-task
+# rows.
 
 version: 1
 stdout: kernel
@@ -14,7 +14,7 @@ tasks:
     program: main
     priority: 2
     ceiling: 31
-    authority: [memory, system, tasks, irq, bootloader]
+    authority: [memory, system, tasks, irq]
     budgets: { threads: @BENCH_MAIN_THREADS@ }
 
   # Two tasks over one program, started by main's cross-task rows.

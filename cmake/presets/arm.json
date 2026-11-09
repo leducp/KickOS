@@ -116,7 +116,6 @@
     { "name": "picopi-flat", "displayName": "RP2040 Pico with no PMSA enforcement", "inherits": "picopi", "cacheVariables": { "KICKOS_CONFIG_VARIANT": "flat" } },
     { "name": "pizero2350-flat", "displayName": "RP2350 Pi-Zero with no PMSAv8 enforcement", "inherits": "pizero2350", "cacheVariables": { "KICKOS_CONFIG_VARIANT": "flat" } },
     { "name": "xmc4800-relax-flat", "displayName": "XMC4800 Relax with no PMSA enforcement", "inherits": "xmc4800-relax", "cacheVariables": { "KICKOS_CONFIG_VARIANT": "flat", "KICKOS_GOLDEN_COMPOSITION": null, "KICKOS_RESTART_WITNESS_SYSTEM": null, "KICKOS_WITNESS_ROOT_DEPTH": null } },
-    { "name": "pizero2350-amp", "displayName": "RP2350 Pi-Zero AMP scaffolding (provisional)", "inherits": "pizero2350", "cacheVariables": { "KICKOS_CONFIG_VARIANT": "amp" } },
     { "name": "pizero2350-amp2-n0", "displayName": "RP2350 Pi-Zero, node 0 of a two-image AMP partition", "inherits": "pizero2350", "cacheVariables": { "KICKOS_CONFIG_VARIANT": "amp2", "KICKOS_AMP_NODE_ID": "0" } },
     { "name": "pizero2350-amp2-n1", "displayName": "RP2350 Pi-Zero, node 1 of a two-image AMP partition", "inherits": "pizero2350", "cacheVariables": { "KICKOS_CONFIG_VARIANT": "amp2", "KICKOS_AMP_NODE_ID": "1" } }
   ],
@@ -149,7 +148,6 @@
     { "name": "picopi-flat", "configurePreset": "picopi-flat" },
     { "name": "pizero2350-flat", "configurePreset": "pizero2350-flat" },
     { "name": "xmc4800-relax-flat", "configurePreset": "xmc4800-relax-flat" },
-    { "name": "pizero2350-amp", "configurePreset": "pizero2350-amp" },
     { "name": "pizero2350-amp2-n0", "configurePreset": "pizero2350-amp2-n0" },
     { "name": "pizero2350-amp2-n1", "configurePreset": "pizero2350-amp2-n1" }
   ],
@@ -165,7 +163,6 @@
     { "name": "qemu-telem", "configurePreset": "qemu-telem", "output": { "outputOnFailure": true } },
     { "name": "qemu-tick",  "configurePreset": "qemu-tick",  "output": { "outputOnFailure": true } },
     { "name": "microbit",   "configurePreset": "microbit",   "output": { "outputOnFailure": true } },
-    { "name": "pizero2350-amp", "configurePreset": "pizero2350-amp", "output": { "outputOnFailure": true } },
     { "name": "pizero2350-amp2-n0", "configurePreset": "pizero2350-amp2-n0", "output": { "outputOnFailure": true } },
     { "name": "pizero2350-amp2-n1", "configurePreset": "pizero2350-amp2-n1", "output": { "outputOnFailure": true } }
   ]

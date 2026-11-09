@@ -345,6 +345,13 @@ _kickos_rx_restore:
        survives the call and the C function pushes BELOW the incoming frame; the pops that
        follow reload every register the call clobbers. */
     bsr.a   _kickos_arch_mpu_commit
+    /* The landing is C with a frame, so it runs on the ISP: every entry here has dropped its
+       trap words off it and I is 0, so nothing on it is live. R0 is the USP again after. */
+    clrpsw  u
+    mov.l   #_g_arch_current, r1
+    mov.l   [r1], r1
+    bsr.a   _kickos_switch_landed
+    setpsw  u
     mov.l   #_g_arch_current, r15
     mov.l   [r15], r15
     mov.l   [r15], r0          /* R0 = incoming->sp (frame base for the pops) */

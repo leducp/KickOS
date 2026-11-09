@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The RP2350's doorbell under the shared protocol, the core identity it is keyed on, and the AMP
-// partition's launch of its peer. A SIO doorbell flag carries only the wake.
+// The RP2350's doorbell under the shared protocol, and the AMP partition's launch of its peer. A
+// SIO doorbell flag carries only the wake.
 
 #include <kickos/arch/arch.h>
 #include <kickos/chip_limits.h>
@@ -187,22 +187,7 @@ kickos::doorbell::Fenced kickos::doorbell::service_fence(Observed)
 extern "C"
 {
 
-#if KICKOS_NUM_CORES > 1
-uint32_t arch_cpu_id(void)
-{
-    // 0 on core 0, 1 on core 1 (datasheet 3.1.2), read through this core's own SIO bank.
-    uint32_t const id = r32(reg::sio::CPUID);
-    if (id >= KICKOS_NUM_CORES)
-    {
-        return KICKOS_NUM_CORES - 1u;
-    }
-    return id;
-}
-#endif
-
-// The vector's entry to the shared service, in handler mode on SP_main. ITS DEPTH IS UNMEASURED:
-// tests/static/trap_redzone_roots.txt roots no armv7m class on the MSP, so the descent through
-// kickos_amp_node_service is bounded only by the _kernel_stack_size rp2350.ld reserves.
+// In handler mode on SP_main, a device-level root of the MSP class in trap_redzone_roots.txt.
 void kickos_rp2350_doorbell_service(void)
 {
     Part::clear();

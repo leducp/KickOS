@@ -2,9 +2,9 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# Smoke test for the hello ping-pong demo: it runs until interrupted, so let it
-# play for a couple of seconds, send Ctrl+C, and assert it bounced the token and
-# halted cleanly (exit 0).
+# Smoke test for the hello ping-pong demo: let it play a couple of its rounds, send
+# Ctrl+C, and assert it bounced the token and ended cleanly (exit 0): halted by the Ctrl+C,
+# or, on a box slow enough that the ten rounds finish first, by playing them all.
 
 import subprocess
 import sys
@@ -55,12 +55,14 @@ def main():
             fail(f"forbidden marker present: {bad!r}")
     if "ping 1" not in out or "pong 1" not in out:
         fail("ping-pong was not observed")
-    if "[KickOS] halted." not in out:
-        fail("no graceful halt message on Ctrl+C")
     if proc.returncode != 0:
-        fail(f"non-zero exit after Ctrl+C: {proc.returncode}")
-
-    print("PASS: hello ping-ponged and halted cleanly on Ctrl+C")
+        fail(f"non-zero exit: {proc.returncode}")
+    if "[KickOS] halted." in out:
+        print("PASS: hello ping-ponged and halted cleanly on Ctrl+C")
+    elif "pong 10" in out:
+        print("PASS: hello played its ten rounds and ended cleanly before Ctrl+C")
+    else:
+        fail("neither a graceful halt on Ctrl+C nor the ten rounds")
 
 
 if __name__ == "__main__":

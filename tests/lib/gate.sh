@@ -58,6 +58,7 @@ TAB="$(printf '\t')"
 # TIMEOUT is a SIGKILL, which no trap sees. Each signal arm exits, and the EXIT arm then runs the
 # handler a second time, so the handler clears every record it acts on.
 KOS_TRASH_DIR=""
+KOS_TRASH_OWNER=""
 KOS_TRASH_FILE=""
 KOS_CHILD_PID=""
 KOS_BOOT_DIR=""
@@ -70,6 +71,13 @@ kos_drop_boot_dir() {
     fi
 }
 
+# The PID of the shell running it, a subshell's own where `$$` names its parent's. The builtin
+# opens /proc/self in this process; a command substitution would read its own.
+kos_shell_pid() {
+    KOS_SHELL_PID=""
+    read -r KOS_SHELL_PID _ksp_rest 2>/dev/null < /proc/self/stat
+}
+
 kos_cleanup() {
     kos_stop_child
     kos_drop_boot_dir
@@ -78,7 +86,9 @@ kos_cleanup() {
         KOS_TRASH_FILE=""
         rm -f "$_kc_f" "$_kc_f.whole"
     fi
-    if [ -n "$KOS_TRASH_DIR" ]; then
+    # A subshell that registers the handler inherits the record, not the directory.
+    kos_shell_pid
+    if [ -n "$KOS_TRASH_DIR" ] && [ "$KOS_SHELL_PID" = "$KOS_TRASH_OWNER" ]; then
         _kc_d="$KOS_TRASH_DIR"
         KOS_TRASH_DIR=""
         rm -rf "$_kc_d"
@@ -119,10 +129,12 @@ kos_stop_child() {
     wait "$_sc" 2>/dev/null
 }
 
-# TMP: a fresh directory, removed on exit.
-scratch_dir() {
-    TMP="$(mktemp -d)" || fail "mktemp -d failed"
+# TMP: a fresh directory, removed on exit, from the mktemp template <template> if given.
+scratch_dir() { # [<template>]
+    TMP="$(mktemp -d ${1:+"$1"})" || fail "mktemp -d ${1:-} failed"
     KOS_TRASH_DIR="$TMP"
+    kos_shell_pid
+    KOS_TRASH_OWNER="$KOS_SHELL_PID"
     kos_trap
 }
 
@@ -1408,13 +1420,24 @@ require_drivers_up() { # <system> <before>
     done
 }
 
+# The line of OUT each boot's banner title is on, one per line, first boot first.
+boot_starts() {
+    printf '%s\n' "$OUT" | awk '/^   KickOS [^ ]+  -  microkernel RTOS$/ || /^K [0-9]/ { print NR }'
+}
+
+# OUT: a silicon capture whole, CR stripped, holding at least one banner title.
+capture_whole() { # <log>
+    [ -s "$1" ] || jfail no-capture "no capture at $1"
+    OUT="$(tr -d '\r' < "$1")"
+    [ -n "$(boot_starts)" ] || jfail no-banner "$1 carries no banner, so no boot in it can be read"
+}
+
 # OUT: a silicon capture's last boot, from its last banner title on, CR stripped. A flash that
 # starts the image before the capture's own reset leaves an earlier boot ahead of it.
 capture_out() { # <log>
-    [ -s "$1" ] || jfail no-capture "no capture at $1"
-    _co_at="$(tr -d '\r' < "$1" | awk '/^   KickOS [^ ]+  -  microkernel RTOS$/ || /^K [0-9]/ { at = NR } END { print at }')"
-    [ -n "$_co_at" ] || jfail no-banner "$1 carries no banner, so no boot in it can be read"
-    OUT="$(tr -d '\r' < "$1" | sed -n "${_co_at},\$p")"
+    capture_whole "$1"
+    _co_at="$(boot_starts | tail -n 1)"
+    OUT="$(printf '%s\n' "$OUT" | sed -n "${_co_at},\$p")"
 }
 
 # A weak check by nature above one core, and it cannot be made otherwise: a shuffle hides text
@@ -1437,6 +1460,46 @@ reported_fault_addr() {
                  -e 's/.*ADDR=0x\([0-9a-fA-F]*\).*/\1/p' \
                  -e 's/.*attempted [a-z]* at 0x\([0-9a-fA-F]*\).*/\1/p' \
         | head -n1
+}
+
+# The KICKOS_ARCH of the build a capture judge is handed; empty for a run that boots its image.
+judged_arch() { # <board-build>
+    if judging_capture; then
+        sed -n 's/^KICKOS_ARCH:[A-Z]*=//p' "$1/CMakeCache.txt" 2>/dev/null
+    fi
+}
+
+# The access the app's first line carrying <literal> announces as `by the store at 0x<hex>` or
+# `by the load at 0x<hex>`, as bare hex digits.
+announced_site() { # <literal>
+    printf '%s\n' "$OUT" | grep -F -- "$1" | head -n1 \
+        | sed -n -e 's/.* by the store at 0x\([0-9a-fA-F]*\).*/\1/p' \
+                 -e 's/.* by the load at 0x\([0-9a-fA-F]*\).*/\1/p'
+}
+
+# The PC of the record under <thread-name>'s kill banner, as bare hex digits.
+killed_pc() { # <thread-name>
+    printf '%s\n' "$OUT" | KOS_KP_BANNER="$(thread_fault_re "$1")" awk '
+        on && /^=== / { exit }
+        on && match($0, /^  PC=0x[0-9a-fA-F]+/) { print substr($0, 8, RLENGTH - 7); exit }
+        index($0, ENVIRON["KOS_KP_BANNER"]) > 0 { on = 1 }'
+}
+
+# armv6m latches no fault address, so its kill record names the faulting instruction alone: the
+# record under <thread-name>'s kill banner must carry <site>, the access the app announced, with
+# its Thumb bit cleared. Refuses with the tokens site and address.
+require_killed_at_site() { # <thread-name> <site hex digits, or empty>
+    if [ -z "$2" ]; then
+        cfail site "the app announced no access, and an armv6m fault report names only the
+      faulting instruction"
+    fi
+    _ks_pc="$(killed_pc "$1")"
+    if [ -z "$_ks_pc" ]; then
+        cfail address "the fault report of '$1' carries no PC"
+    fi
+    if [ "$((0x$_ks_pc))" -ne "$((0x$2 & ~1))" ]; then
+        cfail address "'$1' faulted at 0x$_ks_pc, not at the access it announced at 0x$2"
+    fi
 }
 
 # The thread-kill dump's banner for a named thread, as an ERE; kernel/init/fault.cc owns

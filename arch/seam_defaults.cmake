@@ -142,8 +142,6 @@ int arch_bitband_present(void)
     return 0;
 }]])
 
-# A QEMU semihosting-clock chip (mps2, nrf51) must spin instead: QEMU 10 and older freeze
-# SYS_CLOCK while the core sits in WFI, so a timed sleep with every thread idle never wakes.
 kickos_seam_default(arch_idle_wait [[
 void arch_idle_wait(void)
 {

@@ -1,0 +1,33 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+# Captured on QEMU microbit; the build, app, commit and kstack banner lines are cut.
+
+  ==============================================
+   KickOS 0.5.1  -  microkernel RTOS
+  ==============================================
+   board   microbit
+   arch    armv6m
+   cpu     cortex-m0
+   mpu     off
+   sched   tickless
+   heap    1 KiB available
+
+mutexbench: the mutex and the C library's locks, as an application pays
+mutexbench: load: 5 threads, 1 load pairs, a crowd of 2
+  mutex: lock+unlock 107 ns/pair  (20000 pairs / 2 ms)
+  libc-lock: malloc+free 923 ns/pair  (20000 pairs / 18 ms)
+  libc-lock: getenv 504 ns/call  (20000 calls / 10 ms)
+  syscall: thread_self 40 ns/call  (20000 calls / 0 ms)
+  syscall: cpu_clock_hz 1347 ns/call  (20000 calls / 26 ms)
+  syscall: clock_now 2213 ns/call  (20000 calls / 44 ms)
+  syscall: core_current 19 ns/call  (20000 calls / 0 ms)
+  sem: post+wait 96 ns/pair  (20000 pairs / 1 ms)
+  mutex-handoff-round: 26718 ns/round  (1000 rounds / 26 ms) [one core]
+  mutex-handoff: SKIP (no heap for the samples, 4000 bytes)
+  mutex-handoff-loaded-round: 33869 ns/round  (1000 rounds / 33 ms) [one core; 1 pairs parked]
+  mutex-handoff-loaded: SKIP (no heap for the samples, 4000 bytes)
+  sem-handoff-round: 21007 ns/round  (1000 rounds / 21 ms) [one core]
+  sem-handoff: SKIP (no heap for the samples, 4000 bytes)
+  sem-wake-crowd: SKIP (no heap for the samples, 4000 bytes)
+  mutex-handoff-window: SKIP (no address spaces)
+mutexbench: done

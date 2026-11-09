@@ -1311,10 +1311,12 @@ int kos_program_find(char const* name, kos_program_t* out_prog)
 
 // kernel/syscall/syscall_thread.cc, task_create_call: the named declaration, an empty task from it,
 // and its entry thread spawned into it at the declared priority with the declared authority.
-int kos_task_create(kos_program_t prog, struct kos_task_params const* params, kos_task_t* out_task)
+int kos_task_create(kos_program_t prog, struct kos_task_params const* params, uint32_t timeout_us,
+                    kos_task_t* out_task)
 {
     size_t const call = record("kos_task_create", {reinterpret_cast<uintptr_t>(params->block), params->size, prog,
-                                                   params->cap_count, params->window_count, params->flags});
+                                                   params->cap_count, params->window_count, params->flags,
+                                                   timeout_us});
     if (params->instance != nullptr)
     {
         g_calls[call].text = params->instance;

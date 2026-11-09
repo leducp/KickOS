@@ -271,6 +271,9 @@ def emit_layout(view):
         region, access = entry.link
         lines.append("#define KICKOS_LINK_%s %s (%s) : ORIGIN = 0x%X, LENGTH = 0x%X\n"
                      % (region, region, access, base, entry.size))
+    if view.board is not None and view.board.flash is not None:
+        size, ref = view.board.flash
+        lines.append("#define KICKOS_LAYOUT_BOARD_FLASH_SIZE 0x%X%s\n" % (size, comment(ref, "c")))
     lines.append("\n#endif\n")
     return "".join(lines)
 
@@ -401,6 +404,15 @@ def emit_buses(view):
     return "".join(lines)
 
 
+def esptool_size(size):
+    """esptool's spelling of a flash size: a power of two from 1 to 128 MiB."""
+    megabytes = size >> 20
+    if size % (1 << 20) != 0 or megabytes not in (1, 2, 4, 8, 16, 32, 64, 128):
+        raise Failure("the board's flash size 0x%X is not one esptool takes: 1, 2, 4, 8, 16, 32, 64 or 128 MiB"
+                      % size)
+    return "%dMB" % megabytes
+
+
 def emit_cmake(view):
     units = view.units()
     regions = sorted({unit.unit for unit in units if unit.unit not in ("mmu", "none") and unit.driven is not False})
@@ -436,7 +448,10 @@ def emit_cmake(view):
     facts.append("set(KICKOS_CHIP_DOORBELL_KERNEL_LINES \"%s\")\n"
                  % ";".join(kernel_lines(view, "doorbell")))
     if view.chip.esptool_image is not None:
-        facts.append("set(KICKOS_CHIP_ESPTOOL_IMAGE \"%s\")\n" % ";".join(view.chip.esptool_image))
+        esptool = list(view.chip.esptool_image)
+        if view.board is not None and view.board.flash is not None:
+            esptool.extend(["--flash-size", esptool_size(view.board.flash[0])])
+        facts.append("set(KICKOS_CHIP_ESPTOOL_IMAGE \"%s\")\n" % ";".join(esptool))
     exits = "OFF"
     if view.chip.exits_on_fault:
         exits = "ON"

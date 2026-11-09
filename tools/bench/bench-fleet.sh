@@ -10,6 +10,15 @@
 #   TAG=<tag> tools/bench/bench-fleet.sh              # everything enumerated
 #   TAG=<tag> tools/bench/bench-fleet.sh rx72m xmc4800-relax
 #
+# IMAGES="<image> ..." runs only the named images of each board asked, in the base build and in
+# every variant that ships them, with the same build-first, worker, judge and summary behaviour:
+# the way a fix round reruns the images whose bytes changed.
+#
+#   IMAGES="selftest hello mpu_fault" TAG=<tag> tools/bench/bench-fleet.sh frdmk64f
+#
+# A name some board asked does not ship in any of its builds is refused by name, with exit status
+# 2 and before anything is built. The coverage table then lists the named images only.
+#
 # Exit status: 0 when every image is captured and nothing is owed; 1 on a failed capture, an absent
 # board, or an image not run or one no judge names; 3 when every capture passed and the pass still
 # owes a witness: an emulator-judged image on a board with no emulator, a human-judged one, or a
@@ -17,6 +26,11 @@
 #
 # REMOTE MODE, when the bench is not on this box:
 #   BENCH_HOST=<bench-host> BENCH_PORT=<port> TAG=<tag> tools/bench/bench-fleet.sh
+#
+# ONE PASS ASKS ONE MACHINE, so boards split between the bench host and this box are two passes,
+# each naming its own boards (BENCH_HOST set empty is this box):
+#   BENCH_HOST=<bench-host> TAG=<tag> tools/bench/bench-fleet.sh rx72m xmc4800-relax
+#   BENCH_HOST= TAG=<tag> tools/bench/bench-fleet.sh blackpill pizero2350
 #
 # WHY THIS EXISTS, and the rule it enforces: a caller must NEVER pair a board with a
 # probe serial by hand. Writing `for b in "xmc4800-relax 000591165808"; do bench.sh $b`
@@ -42,8 +56,13 @@ BENCH="$HERE/bench.sh"
 . "$HERE/board-rows.sh"
 rig_load "$(cd "$HERE/../.." && pwd)"
 rig_need RIG_SESSION "the session directory receiving logs/"
-rig_need RIG_TREE "the tree to build when the caller sets no TREE"
+# The checkout this script lives in, unless the caller names another; bench.sh takes it from here.
+TREE="${TREE:-$(cd "$HERE/../.." && pwd)}"
+export TREE
+echo "=== tree $TREE at $(git -C "$TREE" describe --dirty --always 2>/dev/null || echo nogit)"
 TAG="${TAG:-m475}"
+SUBSET="${IMAGES:-}"
+unset IMAGES
 OUTDIR="$RIG_SESSION/logs"
 mkdir -p "$OUTDIR"
 
@@ -60,6 +79,26 @@ WANT="${*:-$ALL}"
 # TAP numbering RESTARTS at 1 in each image, so a lone first plan line is a FRACTION of a run and
 # not a short one, and the pass read green for two splits.
 #
+# Whether <image> is one the pass was asked for: every image when IMAGES names none.
+wanted() { # <image>
+  local n
+  [ -n "$SUBSET" ] || return 0
+  for n in $SUBSET; do
+    [ "$n" != "$1" ] || return 0
+  done
+  return 1
+}
+# Notes every image of <rows> as shipped by <board>.
+note_shipped() { # <board> <rows>
+  local img
+  while IFS='|' read -r img _; do
+    [ -z "$img" ] || SHIPPED="$SHIPPED$1 $img
+"
+  done <<ROWS
+$2
+ROWS
+}
+
 # The configure this does is the one the runs below reuse: same tag, same board, same variant,
 # so it lands in the same build dir and costs nothing twice.
 images_for() { # <board> <stderr out> [variant]
@@ -76,7 +115,7 @@ images_for() { # <board> <stderr out> [variant]
 # variant's tag, so two builds' logs of one image never share a name.
 variants_of() { # <board>
   local presets
-  presets=$(cd "${TREE:-$RIG_TREE}" && cmake --list-presets=configure 2>/dev/null) || return 1
+  presets=$(cd "$TREE" && cmake --list-presets=configure 2>/dev/null) || return 1
   printf '%s\n' "$presets" | sed -n "s/^ *\"$1-\([A-Za-z0-9_-]*\)\".*/\1/p"
 }
 # A partition is the variants `<p>-n0` to `<p>-n<k>`, and its node 0 build assembles the whole
@@ -97,7 +136,7 @@ variant_tag() { # <variant>
 # A variant that turns KICKOS_BENCH on is the microbenchmark's posture, which the bench sweep
 # measures; its images are not judged here.
 measurement_variant() { # <board> <variant>
-  grep -qx 'CONFIG_KICKOS_BENCH=y' "${TREE:-$RIG_TREE}/boards/$1/configs/$2/defconfig" 2>/dev/null
+  grep -qx 'CONFIG_KICKOS_BENCH=y' "$TREE/boards/$1/configs/$2/defconfig" 2>/dev/null
 }
 
 # The board's AMP partition is the image a node 0 build of its amp2 preset assembles.
@@ -114,10 +153,11 @@ flat_also() { # <board> <image>
 # ONE enumeration of the bus, taken once, wherever the boards are.
 bench_host_select "${BENCH_HOST:-}"
 # Selecting the mode is BENCH_HOST's job and not the rig config's: a key must not move a
-# flashing run from one machine to another.
-if [ -z "${BENCH_HOST:-}" ] && [ -n "${RIG_BENCH_HOST:-}" ]; then
+# flashing run from one machine to another. BENCH_HOST set empty asks for this box by name.
+if [ -z "${BENCH_HOST+set}" ] && [ -n "${RIG_BENCH_HOST:-}" ]; then
   echo "NOTE: BENCH_HOST is unset, so this pass reads THIS BOX, while $RIG_CONF names"
-  echo "  $RIG_BENCH_HOST as the bench. tools/bench/bench-present.sh says where the boards are."
+  echo "  $RIG_BENCH_HOST as the bench. BENCH_HOST= says this box on purpose;"
+  echo "  tools/bench/bench-present.sh says where the boards are."
 fi
 echo "=== $BENCH_WHERE"
 # DRY_RUN=1 asks WHICH IMAGES A PASS WOULD FLASH and flashes none. That is a question about the
@@ -323,21 +363,19 @@ VOID=""
 PARTLY=""
 MEASURED=""
 JOBS=""
+SHIPPED=""
+ENUMERATED=""
 for board in $WANT; do
   SN=""
   if [ "$DRY_RUN" != "1" ]; then
-    ROWS=$(board_probe_rows "$board")
-    case $? in
-      1) record "$board" "REFUSED (no row; add one to tools/bench/board-rows.sh rather than guessing its probe)"
-         FAILED=1
-         continue ;;
-      2) record "$board" "REFUSED ($ROWS)"
-         FAILED=1
-         continue ;;
-    esac
+    if ! ROWS=$(board_probe_rows "$board"); then
+      record "$board" "REFUSED (no row; add one to tools/bench/board-rows.sh rather than guessing its probe)"
+      FAILED=1
+      continue
+    fi
     MISS=""
     while IFS='|' read -r id flag what; do
-      [ -n "$id" ] || continue
+      [ -n "$id" ] && [ "$flag" != seen ] || continue
       if ! usb_present "$id"; then
         MISS="$id is not on the bus: $what"
         break
@@ -358,8 +396,8 @@ EOF
   echo "=== $board${SN:+  SN $SN}"
   join_worker "$board" "$SN"
   LERR=$(mktemp)
-  IMAGES=$(images_for "$board" "$LERR")
-  if [ -z "$IMAGES" ]; then
+  BASE_ROWS=$(images_for "$board" "$LERR")
+  if [ -z "$BASE_ROWS" ]; then
     record "$board" "REFUSED (the tree was not able to say which images this board ships): $(grep -m1 REFUSING "$LERR" || echo 'see the configure output')"
     grep -E 'REFUSING|Error|error:' "$LERR" | head -5 | sed 's/^/    /'
     rm -f "$LERR"
@@ -367,15 +405,17 @@ EOF
     continue
   fi
   rm -f "$LERR"
+  note_shipped "$board" "$BASE_ROWS"
   # EVERY IMAGE, AND THE LABEL SAYS WHICH ONE. Each selftest image carries its own plan starting
   # at 1, so a figure in the table below belongs to an image rather than to the board. A console
   # driver is only in the images whose composition names it, so a green kernel-console run says
   # nothing about the driver.
   while IFS='|' read -r img _stdout judge args <&4; do
     [ -n "$img" ] || continue
+    wanted "$img" || continue
     take_image "$board" "$img" "$img" "$judge" "$args"
   done 4<<ROWS
-$IMAGES
+$BASE_ROWS
 ROWS
   if ! VARIANTS=$(variants_of "$board"); then
     record "$board" "REFUSED (the tree was not able to list its presets, so this board's variants are unknown)"
@@ -400,6 +440,8 @@ ROWS
         continue
       fi
       rm -f "$LERR"
+      note_shipped "$board" "$AMP_IMAGES"
+      wanted ampping_n0 || continue
       judge=$(printf '%s\n' "$AMP_IMAGES" | awk -F '|' '$1 == "ampping_n0" { print $3; exit }')
       if [ -z "$judge" ] || [ "$judge" = "-" ]; then
         UNJUDGED="$UNJUDGED$board $img
@@ -410,6 +452,9 @@ ROWS
       continue
     fi
     if measurement_variant "$board" "$variant"; then
+      if [ -n "$SUBSET" ]; then
+        continue
+      fi
       MEASURED="$MEASURED$board $variant
 "
       continue
@@ -421,10 +466,12 @@ ROWS
       FAILED=1
     fi
     rm -f "$LERR"
+    note_shipped "$board" "$VAR_IMAGES"
     while IFS='|' read -r img _stdout judge args <&4; do
       [ -n "$img" ] || continue
+      wanted "$img" || continue
       if [ "$variant" = "$FLAT_VARIANT" ] \
-        && printf '%s\n' "$IMAGES" | awk -F '|' -v i="$img" '$1 == i { f = 1 } END { exit !f }' \
+        && printf '%s\n' "$BASE_ROWS" | awk -F '|' -v i="$img" '$1 == i { f = 1 } END { exit !f }' \
         && ! flat_also "$board" "$img"; then
         continue
       fi
@@ -433,7 +480,27 @@ ROWS
 $VAR_IMAGES
 ROWS
   done
+  ENUMERATED="$ENUMERATED$board
+"
 done
+
+# A NAME NO BUILD OF A BOARD SHIPS is refused before anything is built, so a typo never reads as a
+# short pass.
+UNKNOWN=0
+while read -r board; do
+  [ -n "$board" ] || continue
+  for name in $SUBSET; do
+    if ! printf '%s' "$SHIPPED" | grep -qxF "$board $name"; then
+      echo "REFUSING: IMAGES names $name, which $board does not ship in any build." >&2
+      UNKNOWN=1
+    fi
+  done
+done <<ENUM
+$ENUMERATED
+ENUM
+if [ "$UNKNOWN" -ne 0 ]; then
+  exit 2
+fi
 
 # EVERY IMAGE IS BUILT BEFORE THE FIRST FLASH, so no capture waits on the compiler. An image that
 # does not build is a failed capture, and its worker never flashes it.

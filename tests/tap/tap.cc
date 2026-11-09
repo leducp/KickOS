@@ -7,6 +7,7 @@
 
 #include <kickos/sys.h>
 #include <kickos/sys/emit.h>
+#include <kickos/sys/errno.h>
 #include <kickos/libc/fmt.h>
 #include <kickos/libc/string.h>
 
@@ -143,6 +144,23 @@ namespace tap
         {
             return kos_send(0, "", 0, KOS_TIMEOUT_NONE) >= 0;
         }
+
+        // A USB CDC console has no reader until the host opens the port, and drops what its
+        // ring cannot hold until then; each drain answers -KOS_EBUSY while nothing reads.
+        constexpr uint64_t READER_WAIT_NS = 10000000000ull;
+
+        bool wait_for_reader()
+        {
+            uint64_t const start = kos_clock_now();
+            while (kos_console_flush(KOS_TIMEOUT_NONE) == -KOS_EBUSY)
+            {
+                if (kos_clock_now() - start >= READER_WAIT_NS)
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
     }
 
     void add_named(char const* name, TestFn fn)
@@ -265,6 +283,10 @@ namespace tap
         else
         {
             diag("tap route: kernel debug console (stdout not published)");
+        }
+        if (not wait_for_reader())
+        {
+            diag("console: nothing read the plan within 10 s, so lines may be missing");
         }
         int failed = 0;
         int skipped = 0;

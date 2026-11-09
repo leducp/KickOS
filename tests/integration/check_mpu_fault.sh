@@ -22,15 +22,19 @@
 #
 #   check_mpu_fault.sh <mpu_fault.elf> <outcome>
 #   KOS_CAPTURE=<log> check_mpu_fault.sh <board-build> <kickos-source> <cmake> <outcome>
+#
+# A capture judge reads the arch from <board-build>'s CMakeCache.
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
 
 _usage="usage: check_mpu_fault.sh <mpu_fault.elf> <outcome: panic|thread-kill>"
 if judging_capture; then
+    arch="$(judged_arch "$1")"
     shift 3
     outcome="${1:?$_usage}"
 else
+    arch=""
     elf="${1:?$_usage}"
     outcome="${2:?$_usage}"
 fi
@@ -71,7 +75,8 @@ fi
 # Pin the trap to the address the app announced, which is what the banner cannot say. The
 # reporters differ in wording, RISC-V and the sim naming the thread from the kernel-reported
 # path while ARM's panic dump names none and labels itself "MPU FAULT" only when the CFSR
-# MMFSR byte is set, and every one of them records the faulting address.
+# MMFSR byte is set. Every one records the faulting address except armv6m's, which latches
+# none, so there the fault's PC is pinned to the store the app announced instead.
 want="$(printf '%s\n' "$OUT" \
     | sed -n 's/.*\[domain\] expect fault at 0x\([0-9a-fA-F]*\).*/\1/p' | head -n1)"
 if [ -z "$want" ]; then
@@ -86,6 +91,11 @@ if [ "$outcome" = "thread-kill" ]; then
     assert_no_panic "the domain violation killed the thread AND panicked the system"
 elif ! has_e "MPU FAULT: thread 'domainA'|=== MPU FAULT ==="; then
     cfail marker "MPU FAULT marker missing (crash / hang / truncated run?)"
+fi
+if [ "$arch" = armv6m ]; then
+    require_killed_at_site domainA "$(announced_site "[domain] expect fault at")"
+    echo "PASS: the unprivileged cross-domain store to 0x$want trapped ($outcome)"
+    exit 0
 fi
 got="$(reported_fault_addr)"
 if [ -z "$got" ]; then

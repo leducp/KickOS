@@ -34,22 +34,6 @@ namespace kickos::init::driver_path
             }
         }
 
-        int create(Walk& walk, kos_task_params const& p, kos_task_t* out)
-        {
-            uint32_t retries = 0;
-            while (true)
-            {
-                int const rc = kos_task_create(walk.program(), &p, out);
-                if (rc != -KOS_EAGAIN or retries == CLAIM_RETRIES)
-                {
-                    return rc;
-                }
-                // A declared line is retiring from the instance before.
-                retries++;
-                kos_sleep_ns(CLAIM_RETRY_NS);
-            }
-        }
-
         void say(char const* s)
         {
             (void)kickos::kconsole_offer(s, strlen(s));
@@ -151,7 +135,7 @@ namespace kickos::init::driver_path
             p.caps = caps;
             p.cap_dest = dest;
             p.cap_count = n;
-            rc = create(walk, p, &handle);
+            rc = kos_task_create(walk.program(), &p, START_WAIT_US, &handle);
         }
         drop(walk, passed, task);
         if (rc == 0)

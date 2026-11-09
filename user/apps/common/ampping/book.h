@@ -38,9 +38,14 @@ _Static_assert(sizeof(struct ampbook_row) == 64u, "a row is its own 64 bytes");
 // /amp name; KOS_AMP_NO_ENTRY where it holds none.
 uint32_t ampping_crossing(uint8_t right, uint32_t node, kos_cap_t* cap);
 
-// The board's gate witness: the serving node's reads, made before it serves, and node 0's report
-// of them. Each is empty on a board whose partition states no gate.
+// The rounds node 0 calls across.
+#define AMPPING_ROUNDS 4
+
+// The board's gate witness: the serving node's reads, made before it serves, node 0's report of
+// them, and the serving node's step after each answer, `served` answers in. Each is empty on a
+// board whose partition states no gate.
 void ampping_gate_serve(struct ampbook_row* row);
 void ampping_gate_report(struct ampbook_row* book);
+void ampping_gate_served(struct ampbook_row* row, uint32_t served);
 
 #endif

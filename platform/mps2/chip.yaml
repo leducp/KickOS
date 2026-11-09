@@ -9,11 +9,11 @@ manual: "QEMU 11.1 `mps2-an385`, `mps2-an386` and `mps2-an500` machines (hw/arm/
 arch: armv7m
 protection: { unit: pmsav7, granule: 32, covers_devices: true, memory_type: true }
 data_cache: false
-reserved: none
 family: { dir: common, sources: [common/semihost_console.cc] }
 exits_on_fault: true
+timebase: { hz: { value: 25000000, ref: "DAI0385D Table 4-2 SYSCLK" } }
 
-interrupts: { count: { value: 48, ref: "QEMU 11.1 `info qtree`: armv7m_nvic num-irq" } }
+interrupts: { count: { value: 48, ref: "QEMU 11.1 `info qtree`: armv7m_nvic num-irq" }, free_from: 11 }
 
 # QEMU's `info mtree`: the CMSDK APB and AHB, extra peripheral and RESERVED 4 regions, the
 # LAN9118 of an385 and an386, VGA, and the LAN9118 of an500.
@@ -23,7 +23,13 @@ apertures:
   - { window: [0x41000000, 0x200000] }
   - { window: [0xA0000000, 0x100] }
 
-devices: {}
+devices:
+  # The kernel's clock.
+  dualtimer:
+    window: [0x40002000, 0x1000]
+    owner: kernel
+    ref: "DAI0385D Table 3-4, DAI0386C and DAI0500B Table 3-3"
+    lines: { global: { number: 10, symbol: DUALTIMER_IRQ, ref: "DAI0385D, DAI0386C and DAI0500B Table 5-1" } }
 
 memory:
   code: { base: 0x00000000, size: 0x400000, link: { region: FLASH, access: rx } }

@@ -65,6 +65,52 @@ namespace
     constexpr unsigned PROG_SCTR = 0u;
     constexpr unsigned PROG_PCR = 1u;
 
+    // One word's longest duration in shift clocks: its bits, plus the four slave-select delays
+    // (leading, trailing, inter-word, next-frame) at their longest, each at most 4 x 32 periods
+    // of an fCTQIN no slower than fSCLK (RM eq.18.9, PCR.CTQSEL1 and BRG.CTQSEL).
+    constexpr uint64_t WORD_CLOCKS_MAX = FRAME_WORD_BITS + 4u * 4u * 32u;
+
+    // Covers the timer's granularity and the line's latency on top of the word itself.
+    constexpr uint64_t WORD_SLACK_US = 10000u;
+
+    static_assert(WORD_CLOCKS_MAX * 1000000u + WORD_SLACK_US < KOS_TIMEOUT_NONE,
+                  "the bound at 1 Hz must stay a finite wait");
+
+    // How long a word at `hz` may take to raise its receive event before the line counts as
+    // stalled. `hz` is the device's achieved rate, rounded down, so the bound never undershoots.
+    uint32_t word_bound_us(uint32_t hz)
+    {
+        uint64_t const frame_us = (WORD_CLOCKS_MAX * 1000000u + hz - 1u) / hz;
+        return static_cast<uint32_t>(frame_us + WORD_SLACK_US);
+    }
+
+    // Stops the shift clock and every receive source, drops a word not yet shifted, releases
+    // whatever was received and puts the chip select idle. 0, or -KOS_EPERM where the seam
+    // refused CCR.
+    int32_t stop_channel(uintptr_t win)
+    {
+        // CCR = 0 in ONE word: MODE[3:0] = 0 leaves the SSC protocol, and the same store clears
+        // RIEN/AIEN. Absolute rather than read-modify-write because the seam stores whole words.
+        if (kos_periph_reg_write(win, ru::off::CCR, 0u) != 0)
+        {
+            return -KOS_EPERM;
+        }
+        if (r32(win + ru::off::CCR) != 0u)
+        {
+            return -KOS_EPERM;
+        }
+        r32(win + ru::off::FMR) = ru::FMR_MTDV_CLEAR;
+        // The receive side is two words deep and an RBUF read releases the older: a word left
+        // there would shift every later transfer's data by one.
+        for (unsigned i = 0; i < 2u; i++)
+        {
+            uint32_t const released = r32(win + ru::off::RBUF);
+            __asm volatile("" : : "r"(released) : "memory");
+        }
+        r32(win + ru::off::PSCR) = ru::PSCR_MSLS | PSCR_CLEAR_RX;
+        return 0;
+    }
+
     // A dropped store leaves the register at its previous value with NO fault, so the
     // read-back is the only evidence either way.
     bool priv_write_verify(uintptr_t win, uintptr_t offset, uint32_t value, uint32_t care)
@@ -304,7 +350,7 @@ int32_t kos_spi_transfer(struct kos_spi_device* d, struct kos_bus_seg const* seg
         return bad;
     }
     struct kos_spi_bus* const b = d->bus;
-    if (b == nullptr or b->base == 0u)
+    if (b == nullptr or b->base == 0u or d->hz == 0u)
     {
         return -KOS_EINVAL;
     }
@@ -314,6 +360,16 @@ int32_t kos_spi_transfer(struct kos_spi_device* d, struct kos_bus_seg const* seg
     kos_cap_t const note = b->notify;
     uint32_t const note_bit = 1u << b->notify_bit;
     bool const cs_hw = (d->cs_policy == KOS_BUS_CS_HW);
+    uint32_t const bound_us = word_bound_us(d->hz);
+
+    // A stalled transfer left the channel stopped.
+    if (r32(win + ru::off::CCR) != CCR_WORD)
+    {
+        if (not priv_write_verify(win, ru::off::CCR, CCR_WORD, 0xFFFFFFFFu))
+        {
+            return -KOS_EPERM;
+        }
+    }
 
     r32(win + ru::off::SCTR) = d->prog[PROG_SCTR];
     r32(win + ru::off::PCR) = d->prog[PROG_PCR];
@@ -343,9 +399,25 @@ int32_t kos_spi_transfer(struct kos_spi_device* d, struct kos_bus_seg const* seg
 
         *tbuf0 = static_cast<uint32_t>(buf[i]) & 0xFFu; // TDV=1 -> clock one frame
 
-        // Block until AIF/RIF raises the line. The wait rearms the line itself, so the ack below
-        // is the EARLY rearm and not the only one.
-        (void)kos_notify_wait(note, note_bit, KOS_TIMEOUT_NONE, nullptr);
+        // The wait rearms the line itself, so the ack below is the EARLY rearm and not the only
+        // one. A failed wait whose word did land, its event racing the expiry, is still progress.
+        int const waited = kos_notify_wait(note, note_bit, bound_us, nullptr);
+        if (waited != 0 and (r32(win + ru::off::PSR) & (ru::PSR_RIF | ru::PSR_AIF)) == 0u)
+        {
+            int32_t const stopped = stop_channel(win);
+            // A word landing between the expiry and the stop banked a bit the next transfer
+            // would take for its own first word.
+            (void)kos_notify_wait(note, note_bit, 0u, nullptr);
+            if (stopped != 0)
+            {
+                return stopped;
+            }
+            if (waited != -KOS_ETIMEDOUT)
+            {
+                return waited;
+            }
+            return -KOS_EIO;
+        }
         buf[i] = static_cast<unsigned char>(*rbuf & 0xFFu); // read releases RBUF
 
         *pscr = PSCR_CLEAR_RX; // W1C AIF/RIF BEFORE re-arm: an un-cleared level re-asserts
@@ -366,20 +438,11 @@ int32_t kos_spi_bus_close(struct kos_spi_bus* b)
     {
         return 0; // never opened, or already closed
     }
-    uintptr_t const win = b->base;
-
-    // CCR = 0 in ONE word: MODE[3:0] = 0 leaves the SSC protocol, stopping the shift clock,
-    // and the same store clears RIEN/AIEN so no receive source stays armed. Absolute rather
-    // than read-modify-write because the seam stores whole words.
-    if (kos_periph_reg_write(win, ru::off::CCR, 0u) != 0)
+    int32_t const stopped = stop_channel(b->base);
+    if (stopped != 0)
     {
-        return -KOS_EPERM;
+        return stopped;
     }
-    if (r32(win + ru::off::CCR) != 0u)
-    {
-        return -KOS_EPERM;
-    }
-    r32(win + ru::off::PSCR) = ru::PSCR_MSLS | PSCR_CLEAR_RX; // CS idle, flags clear
     b->base = 0u;
     return 0;
 }

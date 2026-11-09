@@ -325,7 +325,7 @@ namespace
             }
             if (nr == KOS_SYS_TASK_CREATE and entering)
             {
-                task_spawn_presync_enter(a1);
+                task_spawn_presync_enter(a1, static_cast<uint32_t>(a3));
             }
             if (c != nullptr and c->task != nullptr)
             {
@@ -635,13 +635,14 @@ uint64_t syscall_body(uintptr_t nr,
         }
         case KOS_SYS_TASK_CREATE:
         {
+            // Blocks for a timeout other than 0.
             int rc = cap_out_check(a2);
             if (rc != 0)
             {
                 return static_cast<uint64_t>(rc);
             }
             kos_task_t h = KOS_TASK_NONE;
-            rc = task_create_call(static_cast<uint32_t>(a0), a1, &h);
+            rc = task_create_call(static_cast<uint32_t>(a0), a1, static_cast<uint32_t>(a3), &h);
             return created(cap_out_deliver(a2, rc, h));
         }
         case KOS_SYS_PROGRAM_FIND:
@@ -843,7 +844,6 @@ uint64_t syscall_body(uintptr_t nr,
         }
         case KOS_SYS_RAM_ALLOC:
         {
-            // arch_ram_alloc does an unguarded read-modify-write of the bump pointer.
             // POINTER return, OUT of the -KOS_E* scheme: a negative errno cast to void* would
             // be a non-NULL pointer, so EVERY failure path returns 0 (NULL).
 #if KICKOS_HAVE_ASPACE
@@ -1249,6 +1249,12 @@ uint64_t syscall_body(uintptr_t nr,
             return static_cast<uint64_t>(witness_rewinds());
         }
 #endif
+#if KICKOS_WITNESS_NODE
+        case KOS_SYS_WITNESS_NODE:
+        {
+            return static_cast<uint64_t>(witness_node(a0, a1));
+        }
+#endif
 #if KICKOS_BENCH
         case KOS_SYS_BENCH:
         {
@@ -1370,6 +1376,11 @@ uint64_t syscall_body(uintptr_t nr,
                 {
                     bench_phase_print();
                     return 0;
+                }
+                case KOS_BENCH_OP_OWNER_PRINT:
+                {
+                    return static_cast<uint64_t>(static_cast<int64_t>(
+                        bench_owner_print(static_cast<uint32_t>(a1), static_cast<uint32_t>(a2))));
                 }
                 case KOS_BENCH_OP_LOCK_PROBE:
                 {

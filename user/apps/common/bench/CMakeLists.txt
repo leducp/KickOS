@@ -1,17 +1,31 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 
-add_executable(bench main.cc)
+add_executable(bench main.cc owner.cc)
 target_include_directories(bench PRIVATE "${PROJECT_SOURCE_DIR}/user/apps/common/include")
+# The walk slots hold main and the holder beside the waiters, and the first step needs two.
+set(BENCH_OD_WAITERS_MAX 0)
+if(KICKOS_BENCH_WALK_SLOTS GREATER 0)
+  if(KICKOS_BENCH_WALK_SLOTS LESS 4)
+    message(FATAL_ERROR "KICKOS_BENCH_WALK_SLOTS is ${KICKOS_BENCH_WALK_SLOTS}: the walk rows need "
+      "main, a holder and two waiters at least, so 4 or more, or 0 for no rows")
+  endif()
+  math(EXPR BENCH_OD_WAITERS_MAX "${KICKOS_BENCH_WALK_SLOTS} - 2")
+endif()
+target_compile_definitions(bench PRIVATE BENCH_OD_WAITERS_MAX=${BENCH_OD_WAITERS_MAX})
 add_executable(bench_peer peer.cc)
 target_link_libraries(bench_peer PRIVATE kickos)
 # main's THREADS: its entry, the two players and the end-to-end pair, and a spinner on each core
-# past the second, at most three; on the SMP images two IPC peers per core.
+# past the second, at most three; or the walk slots, if more; on the SMP images two IPC peers
+# per core.
 math(EXPR BENCH_MAIN_THREADS "${KICKOS_KERNEL_CORES} + 3")
 if(BENCH_MAIN_THREADS LESS 5)
   set(BENCH_MAIN_THREADS 5)
 elseif(BENCH_MAIN_THREADS GREATER 8)
   set(BENCH_MAIN_THREADS 8)
+endif()
+if(BENCH_MAIN_THREADS LESS KICKOS_BENCH_WALK_SLOTS)
+  set(BENCH_MAIN_THREADS ${KICKOS_BENCH_WALK_SLOTS})
 endif()
 configure_file(system.yaml "${CMAKE_CURRENT_BINARY_DIR}/system.yaml" @ONLY)
 math(EXPR BENCH_MAIN_THREADS "2 * ${KICKOS_KERNEL_CORES} + 1")

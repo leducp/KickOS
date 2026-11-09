@@ -9,10 +9,16 @@
 // declining ENOSYS fallback.
 
 #include <kickos/arch/arch.h>
+#include <kickos/arch/wrap_extend.h>
+#include <kickos/chip_limits.h>
+#include <kickos/io/mmio.h>
+#include <kickos/units.h>
+#include <chip_layout.h>
 #include "crt_tail.h"
 #include "semihost.h"
 
 #include "regs.h"
+#include "regs/dualtimer.h"
 
 #include <stdint.h>
 
@@ -28,9 +34,44 @@ extern "C"
     void kickos_arm_pmsav8_init(void);
 #endif
 
-    // Read only by the SysTick ns-to-cycles conversion, which needs a consistent value and no
-    // real PLL. 25 MHz is the MPS2 default.
-    uint32_t SystemCoreClock = 25000000u;
+    // SysTick counts the SYSCLK the dual timer counts.
+    uint32_t SystemCoreClock = KICKOS_CHIP_TIMEBASE_HZ;
+}
+
+namespace
+{
+    namespace dt = kickos::mps2::reg::dualtimer;
+    using namespace kickos::units;
+
+    static_assert(1_s % KICKOS_CHIP_TIMEBASE_HZ == 0, "arch_clock_now scales by whole ns per tick");
+    constexpr uint64_t NS_PER_TICK = 1_s / KICKOS_CHIP_TIMEBASE_HZ;
+
+    // A down-counter, so the count is its complement. The interrupt latches as the count
+    // reaches zero, one tick before the wrap.
+    struct dualtimer_wrap_ops
+    {
+        static uint32_t count() { return ~r32(dt::TIMER1VALUE); }
+        static bool pending() { return (r32(dt::TIMER1RIS) & dt::RIS_INT) != 0; }
+        static bool take()
+        {
+            if (not pending())
+            {
+                return false;
+            }
+            r32(dt::TIMER1INTCLR) = 1u;
+            return true;
+        }
+    };
+    kickos::arch_wrap_extend<dualtimer_wrap_ops> g_clk_wrap;
+
+    void dualtimer_clock_init()
+    {
+        r32(dt::TIMER1CONTROL) = 0u;
+        r32(dt::TIMER1LOAD) = 0xFFFFFFFFu;
+        r32(dt::TIMER1INTCLR) = 1u;
+        r32(dt::TIMER1CONTROL) = dt::CONTROL_ENABLE | dt::CONTROL_INTENABLE | dt::CONTROL_SIZE32;
+        arch_irq_unmask(KICKOS_LAYOUT_LINE_DUALTIMER_IRQ);
+    }
 }
 
 extern "C"
@@ -44,27 +85,24 @@ void arch_init(void)
     // PMSAv7 commit fallback stands and writes RASR values into what is RLAR on v8-M.
     kickos_arm_pmsav8_init();
 #endif
+    dualtimer_clock_init();
     kickos_armv7m_init();
 }
 
-// QEMU's DWT cycle counter reads frozen, so both clocks come from SYS_CLOCK and telemetry
-// timestamps here carry no latency information.
 uint64_t arch_clock_now(void)
 {
-    static uint64_t last = 0;
-    return kickos::semihost::clock_now(last);
+    return g_clk_wrap.read() * NS_PER_TICK;
 }
 
+void kickos_mps2_clock_isr(void)
+{
+    g_clk_wrap.on_overflow();
+}
+
+// QEMU's DWT reads zero, so the trace clock is the low word of the clock's own count.
 uint32_t arch_trace_now(void)
 {
-    return static_cast<uint32_t>(arch_clock_now() / 1000ull);
-}
-
-// Replaces the WFI idle fallback: QEMU <= 10 stops the SYS_CLOCK clock while the core halts in
-// WFI, so a sleep with every thread idle never wakes.
-void arch_idle_wait(void)
-{
-    __asm volatile("nop");
+    return dualtimer_wrap_ops::count();
 }
 
 void arch_shutdown(int status)

@@ -13,8 +13,7 @@ constexpr uint32_t FS_STACK_SIZE = 2048;
 constexpr uint32_t FS_BAND_SIZE = 512;
 constexpr uint32_t FS_BAND_POISON = 0x5AFEBA5Eu;
 
-// Modes 2 and 7: the worker's stack and the block its SP is aimed at.
+// Modes 2 and 7: the worker's stack and the block its SP is aimed at, each this size.
 constexpr uint32_t FS_OFF_STACK_SIZE = 2048;
-constexpr uint32_t FS_OFF_SIZE = 512;
 
 #endif

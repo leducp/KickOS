@@ -121,6 +121,11 @@ namespace
             EXPECT_EQ(uart_.base, 0u) << "a refused open keeps no base";
         }
 
+        static uint32_t clk_over_16_plus_one()
+        {
+            return g_clock_hz / 16u + 1u;
+        }
+
         struct kos_uart_stats stats_ = {};
     };
 }
@@ -145,6 +150,15 @@ TEST_F(UartK64Open, a_rate_the_divisor_cannot_reach_is_refused_with_its_slot_shu
 {
     g_window[S1] = S1_IDLE;
     EXPECT_EQ(open(1u), -KOS_ENOTSUP) << "60 MHz / (16 x 1) is past SBR's 13 bits";
+    expect_slot_shut();
+}
+
+TEST_F(UartK64Open, a_rate_whose_divisor_wraps_to_zero_is_refused_with_its_slot_shut)
+{
+    g_window[S1] = S1_IDLE;
+    EXPECT_EQ(open(0x10000000u), -KOS_ENOTSUP) << "16 x 2^28 is 0 in 32 bits";
+    expect_slot_shut();
+    EXPECT_EQ(open(clk_over_16_plus_one()), -KOS_ENOTSUP) << "past clk / 16 SBR is 0";
     expect_slot_shut();
 }
 

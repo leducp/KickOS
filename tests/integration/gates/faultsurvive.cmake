@@ -34,6 +34,20 @@ set(_fs_stklim OFF)
 if(KICKOS_HAVE_STACK_LIMIT AND KICKOS_FAULT_ISOLATION)
   set(_fs_stklim ON)
 endif()
+# A divide by zero: killed where the core or the run-time ABI traps it, otherwise the quotient
+# the ISA defines (ARMv8-A SDIV/UDIV: 0; RISC-V M DIV: all bits set), `any' where the ISA leaves
+# it undefined (RXv3 DIV) or the width is libgcc's software division.
+foreach(_fs_w div0 ldiv0)
+  set(_fs_${_fs_w}_outcome killed)
+  if(KICKOS_ARCH STREQUAL "armv8a")
+    set(_fs_${_fs_w}_outcome returned:0)
+  elseif(KICKOS_ARCH STREQUAL "rv64imac"
+         OR (KICKOS_ARCH STREQUAL "rv32imac" AND _fs_w STREQUAL "div0"))
+    set(_fs_${_fs_w}_outcome returned:-1)
+  elseif(KICKOS_ARCH MATCHES "^(rv32imac|rxv3)$")
+    set(_fs_${_fs_w}_outcome returned:any)
+  endif()
+endforeach()
 set(_fs_privileged_why "faults are not isolated")
 if(KICKOS_FAULT_ISOLATION)
   set(_fs_privileged_why "tasks run privileged, so the privilege test refuses the frame first")
@@ -85,6 +99,10 @@ if(_fs_judged)
     kickos_app_judge(faultsurvive_unread tests/integration/check_faultsurvive.sh
       ARGS unread ${KICKOS_ARCH} terminated)
   endif()
+  foreach(_fs_w div0 ldiv0)
+    kickos_app_judge(faultsurvive_${_fs_w} tests/integration/check_faultsurvive.sh
+      ARGS ${_fs_w} ${KICKOS_ARCH} ${_fs_${_fs_w}_outcome})
+  endforeach()
   # Every image of the family names its judge or why none applies.
   get_property(_fs_targets DIRECTORY "${PROJECT_SOURCE_DIR}/user/apps/common/faultsurvive"
                PROPERTY BUILDSYSTEM_TARGETS)
@@ -113,6 +131,12 @@ if(KICKOS_ARCH STREQUAL "sim")
     COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_faultsurvive.sh"
             "$<TARGET_FILE:faultsurvive>" survive ${KICKOS_ARCH} terminated)
   set_tests_properties(${_tag}_faultsurvive PROPERTIES TIMEOUT 30)
+  foreach(_fs_w div0 ldiv0)
+    add_test(NAME ${_tag}_fault${_fs_w}
+      COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_faultsurvive.sh"
+              "$<TARGET_FILE:faultsurvive_${_fs_w}>" ${_fs_w} ${KICKOS_ARCH} ${_fs_${_fs_w}_outcome})
+    set_tests_properties(${_tag}_fault${_fs_w} PROPERTIES TIMEOUT 30)
+  endforeach()
   add_test(NAME ${_tag}_faultsurvive_published
     COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_sim_faultsurvive_pub.sh"
             "$<TARGET_FILE:faultsurvive_published>")
@@ -122,6 +146,11 @@ endif()
 kickos_add_qemu_test(TARGET faultsurvive
   SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_faultsurvive.sh"
   ARGS survive ${KICKOS_ARCH} terminated)
+foreach(_fs_w div0 ldiv0)
+  kickos_add_qemu_test(NAME ${_tag}_fault${_fs_w} TARGET faultsurvive_${_fs_w}
+    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_faultsurvive.sh"
+    ARGS ${_fs_w} ${KICKOS_ARCH} ${_fs_${_fs_w}_outcome})
+endforeach()
 
 if(_fs_stklim)
   kickos_add_qemu_test(NAME ${_tag}_faultoverflow TARGET faultsurvive_ovf

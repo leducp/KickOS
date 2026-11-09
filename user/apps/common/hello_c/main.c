@@ -5,16 +5,15 @@
 // or including a C++-only header, leaves the C claim those headers make resting on
 // check_public_headers.sh's standalone compile alone.
 
-#include <stdbool.h>
-
 #include <kickos/sys.h>
 #include <kickos/libc/fmt.h>
 
 static uint64_t const BEAT_NS = 400000000ull; // 0.4 s between hits
+static int const ROUNDS = 10;
 
 static kos_sem_t g_ping = KOS_SEM_INIT(1); // ping serves first
 static kos_sem_t g_pong = KOS_SEM_INIT(0);
-static kos_sem_t g_idle = KOS_SEM_INIT(0);
+static kos_sem_t g_done = KOS_SEM_INIT(0);
 
 static void say(char const* who, int n)
 {
@@ -25,28 +24,27 @@ static void say(char const* who, int n)
 
 static void ping(void* arg)
 {
-    int n = 0;
     (void)arg;
-    while (true)
+    for (int n = 1; n <= ROUNDS; n++)
     {
         kos_sem_wait(&g_ping, KOS_TIMEOUT_NONE);
         kos_sleep_ns(BEAT_NS);
-        say("ping", ++n);
+        say("ping", n);
         kos_sem_post(&g_pong);
     }
 }
 
 static void pong(void* arg)
 {
-    int n = 0;
     (void)arg;
-    while (true)
+    for (int n = 1; n <= ROUNDS; n++)
     {
         kos_sem_wait(&g_pong, KOS_TIMEOUT_NONE);
         kos_sleep_ns(BEAT_NS);
-        say("pong", ++n);
+        say("pong", n);
         kos_sem_post(&g_ping);
     }
+    kos_sem_post(&g_done);
 }
 
 static int spawn(void (*entry)(void*), char const* name)
@@ -67,14 +65,11 @@ int main(int argc, char** argv)
     (void)argv;
 
     kos_print("hello from KickOS userspace!\n");
-    kos_print("two threads play ping-pong. Press Ctrl+C to stop.\n\n");
+    kos_print("two threads play ten rounds of ping-pong, then the run ends.\n\n");
 
     spawn(ping, "ping");
     spawn(pong, "pong");
 
-    // A daemon: main never returns.
-    while (true)
-    {
-        kos_sem_wait(&g_idle, KOS_TIMEOUT_NONE);
-    }
+    kos_sem_wait(&g_done, KOS_TIMEOUT_NONE);
+    return 0;
 }

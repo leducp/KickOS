@@ -10,12 +10,14 @@
 #include <kickos/arch/apic.h>
 #include <kickos/arch/arch.h>
 #include <arch_reboot_tail.h>
+#include <ram_arena.h>
 #include <kickos/diag.h>
 #include <kickos/arch/aspace.h>
 #include <kickos/arch/console_poll.h>
 #include <kickos/arch/desc.h>
 #include <kickos/arch/portio.h>
 #include <kickos/arch/ring3.h>
+#include <kickos/arch/x86_64_trap_stack.h>
 #include <kickos/chip_com1.h>
 #include <kickos/chip_mmap.h>
 #include <kickos/chip_q35.h>
@@ -57,9 +59,6 @@ namespace
     constexpr uint8_t pit_mode2_ch0 = 0x34;
     constexpr uint32_t pit_hz = 1193182;
     constexpr uint32_t pit_period = 0x10000;
-    // A bound on the calibration spin, in poll iterations: a reference that never moves must
-    // cost a refused frequency and not a hang.
-    constexpr uint32_t pit_spin_bound = 20000000;
 
     // QEMU's `isa-debug-exit` device. The exit code it produces is (status << 1) | 1.
     constexpr uint16_t debug_exit_port = 0xf4;
@@ -77,13 +76,13 @@ namespace
 
     uintptr_t g_ram_base = 0;
     size_t g_ram_size = 0;
-    uintptr_t g_ram_next = 0;
+    kickos::RamArena g_arena;
     // Set once the frame pool has taken the arena's remainder: arch_ram_alloc refuses from then
     // on, so the kernel's bump carve and the frame pool never own the same byte.
     bool g_ram_sealed = false;
 
 #if KICKOS_KERNEL_CORES > 1
-    constexpr size_t ap_stack_bytes = 16384;
+    constexpr size_t ap_stack_bytes = KICKOS_X86_64_AP_STACK;
     alignas(16) uint8_t g_ap_stack[KICKOS_KERNEL_CORES - 1][ap_stack_bytes];
     uint32_t g_ap_arrived[KICKOS_KERNEL_CORES] = {};
     uint32_t g_online_mask = 1u;
@@ -147,6 +146,9 @@ namespace
         outb(pic2_data, pic_mask_all);
     }
 
+    uint32_t g_pit_last = 0;
+    uint64_t g_pit_ticks = 0;
+
     uint32_t pit_count(void)
     {
         outb(pit_command, pit_latch_ch0);
@@ -185,26 +187,23 @@ uint32_t kickos_x86_ref_hz(void)
     return pit_hz;
 }
 
-uint32_t kickos_x86_ref_spin(uint32_t want)
+void kickos_x86_ref_start(void)
 {
     outb(pit_command, pit_mode2_ch0);
     // A count of zero programs the full period.
     outb(pit_channel0, 0);
     outb(pit_channel0, 0);
+    g_pit_last = pit_count();
+    g_pit_ticks = 0;
+}
 
-    uint32_t last = pit_count();
-    uint32_t seen = 0;
-    uint32_t spin = 0;
-    while (seen < want and spin < pit_spin_bound)
-    {
-        uint32_t const now = pit_count();
-        // Counts DOWN and reloads, so the step is the wrapped difference. Valid only while
-        // the poll is faster than one full period.
-        seen += (last - now) & (pit_period - 1);
-        last = now;
-        spin++;
-    }
-    return seen;
+uint64_t kickos_x86_ref_ticks(void)
+{
+    uint32_t const now = pit_count();
+    // Counts DOWN and reloads, so the step is the wrapped difference.
+    g_pit_ticks += (g_pit_last - now) & (pit_period - 1);
+    g_pit_last = now;
+    return g_pit_ticks;
 }
 
 // --- One-time bring-up ------------------------------------------------------
@@ -300,15 +299,8 @@ void* arch_ram_alloc(size_t size)
     size_t const rsz = arch_ram_region_size(size);
     size_t const ralign = arch_ram_region_align(size);
     arch_irq_state_t const state = arch_irq_save();
-    void* out = nullptr;
-    // A region's base is aligned to its own size.
-    uintptr_t const aligned = (g_ram_next + (ralign - 1)) & ~static_cast<uintptr_t>(ralign - 1);
-    size_t const off = static_cast<size_t>(aligned - g_ram_base);
-    if (aligned >= g_ram_next and off <= g_ram_size and rsz <= g_ram_size - off)
-    {
-        g_ram_next = aligned + rsz;
-        out = reinterpret_cast<void*>(aligned);
-    }
+    void* const out =
+        kickos::ram_arena_alloc(g_arena, g_ram_base, g_ram_size, rsz, ralign);
     arch_irq_restore(state);
     return out;
 }
@@ -319,7 +311,7 @@ void arch_frame_pool_bounds(uintptr_t* base, uintptr_t* top)
 {
     constexpr uintptr_t granule = 4096;
     arch_irq_state_t const state = arch_irq_save();
-    uintptr_t const lo = (g_ram_next + (granule - 1)) & ~(granule - 1);
+    uintptr_t const lo = (g_ram_base + g_arena.used + (granule - 1)) & ~(granule - 1);
     uintptr_t const hi = (g_ram_base + g_ram_size) & ~(granule - 1);
     g_ram_sealed = true;
     arch_irq_restore(state);
@@ -385,6 +377,6 @@ namespace kickos::q35
     {
         g_ram_base = base;
         g_ram_size = size;
-        g_ram_next = base;
+        g_arena = kickos::RamArena{};
     }
 }

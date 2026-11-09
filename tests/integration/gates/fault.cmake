@@ -56,3 +56,22 @@ endif()
 kickos_add_qemu_test(NAME ${_tag}_fault_dump TARGET fault
   SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_fault_dump.sh"
   ARGS "${_fault_marker}" ${_fault_status})
+
+# The divide by zero where no fault is isolated: the dump names the division, and the marker is
+# that name rather than the banner, which every fault on these cores shares.
+foreach(_fault_div fault_div0 fault_ldiv0)
+  if(NOT TARGET ${_fault_div})
+    continue()
+  endif()
+  if(KICKOS_ARCH STREQUAL "armv6m")
+    set(_div_marker "DIVBYZERO: the UDF of __aeabi_idiv0/__aeabi_ldiv0")
+  elseif(KICKOS_ARCH STREQUAL "lx6")
+    set(_div_marker "XTENSA EXCEPTION (integer divide by zero)")
+  else()
+    message(FATAL_ERROR "${_fault_div}: no divide-by-zero dump is defined for ${KICKOS_ARCH}")
+  endif()
+  kickos_app_judge(${_fault_div} tests/integration/check_fault_dump.sh ARGS "${_div_marker}")
+  kickos_add_qemu_test(NAME ${_tag}_${_fault_div} TARGET ${_fault_div}
+    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_fault_dump.sh"
+    ARGS "${_div_marker}" 132)
+endforeach()

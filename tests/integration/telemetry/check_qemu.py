@@ -3,7 +3,7 @@
 # Copyright (c) 2026 Philippe Leduc
 #
 # CI gate 4: QEMU structural run. Boots a self-terminating telemetry image on a
-# QEMU Cortex-M4 (mps2-an386, semihosting trace clock); at exit the mps2 backend
+# QEMU Cortex-M4 (mps2-an386, dual-timer trace clock); at exit the mps2 backend
 # writes the ch1 ring to kicktrace.bin via semihosting. This is the ONLY automated
 # coverage of the PendSV-tail switch-hook ASM. Decode + structurally assert.
 #

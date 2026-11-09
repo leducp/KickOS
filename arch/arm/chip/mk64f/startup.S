@@ -14,12 +14,14 @@
     .section .isr_vector, "a"
     .align 9
     .global g_isr_vector
+    .type g_isr_vector, %object
 g_isr_vector:
     KICKOS_CORE_VECTORS_V7M
 
     .rept KICKOS_MAX_IRQ
     .word kickos_arm_default_irq
     .endr
+    .size g_isr_vector, . - g_isr_vector
 
     /* Flash Configuration Field @ 0x400 (placed by mk64f.ld .fcf): all-ones except FSEC = 0xFE
        (unsecured). Zeroing this bricks debug access. */

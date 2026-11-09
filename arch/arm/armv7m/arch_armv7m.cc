@@ -681,6 +681,16 @@ extern "C" void kickos_splim_plant(void)
 // --- One-time core bring-up ------------------------------------------------
 void kickos_armv7m_init(void)
 {
+    // Cleared whatever the boot ROM left (XMC4800 enters with UNALIGN_TRP set): the prebuilt libc
+    // makes unaligned accesses, and USERSETMPEND lets an unprivileged STIR write pend any line.
+    constexpr uint32_t CCR_CLEARED = CCR_USERSETMPEND | CCR_UNALIGN_TRP;
+#if defined(KICKOS_CCR_PLANT_BOOT)
+    reg32(SCB_CCR) = (reg32(SCB_CCR) | CCR_CLEARED) & ~CCR_DIV_0_TRP;
+#endif
+    reg32(SCB_CCR) = (reg32(SCB_CCR) & ~CCR_CLEARED) | CCR_DIV_0_TRP;
+#if defined(KICKOS_CCR_PLANT_KEPT)
+    reg32(SCB_CCR) = (reg32(SCB_CCR) | CCR_CLEARED) & ~CCR_DIV_0_TRP;
+#endif
     reg32(SCB_SHCSR) |= SHCSR_USGFAULTENA | SHCSR_BUSFAULTENA;
 #if KICKOS_ARMV7M_SPLIM
     {

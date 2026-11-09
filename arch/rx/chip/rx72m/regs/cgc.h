@@ -42,6 +42,7 @@ namespace kickos::rx::reg::cgc
     constexpr uintptr_t PLLCR = mmap::SYSTEM + 0x0028;    // 16-bit PLL control (sec.9.2.5)
     constexpr uintptr_t PLLCR2 = mmap::SYSTEM + 0x002A;   // 8-bit PLL stop control (sec.9.2.6)
     constexpr uintptr_t MOSCCR = mmap::SYSTEM + 0x0032;   // 8-bit main osc control (sec.9.2.8)
+    constexpr uintptr_t HOCOCR = mmap::SYSTEM + 0x0036;   // 8-bit HOCO stop (sec.9.2.12)
     constexpr uintptr_t HOCOCR2 = mmap::SYSTEM + 0x0037;  // 8-bit HOCO frequency select (sec.9.2.13)
     constexpr uintptr_t OSCOVFSR = mmap::SYSTEM + 0x003C; // 8-bit stabilization flags (sec.9.2.14)
     constexpr uintptr_t MOSCWTCR = mmap::SYSTEM + 0x00A2; // 8-bit main osc wait control (sec.9.2.17)
@@ -49,6 +50,13 @@ namespace kickos::rx::reg::cgc
 
     constexpr uint8_t OSCOVFSR_MOOVF = 1u << 0; // main clock oscillation stabilized
     constexpr uint8_t OSCOVFSR_PLOVF = 1u << 2; // PLL clock oscillation stabilized
+    constexpr uint8_t OSCOVFSR_HCOVF = 1u << 3; // HOCO clock oscillation stabilized
+
+    // HCSTP resets to 1 under the OFS1 startup.S emits (HOCOEN = 1), and HOCOCR2 is writable
+    // only while it is 1 (sec.9.2.12, 9.2.13).
+    constexpr uint8_t HOCOCR_HCSTP = 1u << 0;
+    // 20 MHz is the one HCFRQ setting baud_select lands 115200 off within its tolerance.
+    constexpr uint8_t HOCOCR2_HCFRQ_20MHZ = 0x02;
 
     // MODRV2[1:0]=00 selects the 20.1..24 MHz crystal drive range (sec.9.2.19);
     // the board crystal is 24 MHz. MOFXIN=0 (no forced oscillation).

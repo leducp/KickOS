@@ -19,31 +19,36 @@ A milestone's own section leaves this file once the milestone after it merges, a
 
 ## Where we are
 
-**M10 HAS MERGED THROUGH M10.6.7, AND M10.6, THE CLEANUP PASS, IS OPEN.** M9's answer is that
+**M10 HAS MERGED THROUGH M10.6.10, AND M10.6, THE CLEANUP PASS, IS OPEN.** M9's answer is that
 the one big kernel lock stays, with per-core ready queues and per-pair rings under it and CLH
 arbitration on x86_64 alone. M10 is static composition: a declared system, admitted on the host,
 and an init provider that stays resident. `roadmap.md`'s `### M10` section is the ledger and the
 only place its numbers are assigned; the sections at the bottom of this file say what each
 milestone's green runs do not.
 
-**M10.6.10, C++ AND LIBC CONFORMANCE, IS CLOSED AND READY TO MERGE; NEXT IS M10.6.11.** Its
-record is the M10.6.10 entry of `TODO.md`, and the M10.6.10 section at the bottom of this file
-says what its green runs do not. **The tree requires toolchain 1.2.0, and its release
-`toolchain-1.2.0-1` must be published from this tree's recipe before the merge:** CI downloads
-it, and every green run of the milestone was on a local build of that recipe.
+**M10.6.11, THE HARDWARE TAIL AND THE BENCH, IS CLOSED AND READY TO MERGE; NEXT IS M10.6.12.** Its
+record is the M10.6.11 entries of `TODO.md`, and the M10.6.11 section at the bottom of this file
+says what its green runs do not. The bench items it could not witness moved to M10.6.12's
+"THE BENCH ITEMS M10.6.11 LEFT OPEN" (maintainer, 2026-11-08). M10.6.12's prepared branches are
+being integrated on a branch of that name ahead of the merge.
 
-**THE ORDER IS LOCKED: M10.6.11, THEN M10.7** (maintainer, 2026-10-13, M10.6.9 and M10.6.10
-inserted 2026-10-21). M10.6.9 made a task on a region board the MPU equivalent of the
-MMU process, with its own libc state, nonblocking flag included, and closed the kernel's isolation
-holes; a board too small for that holds one task rather than lie about the isolation. M10.6.10 is
-C++ and libc conformance: a toolchain release giving GCC a KickOS threads model, the C++ exception
-state per thread, and the libc semantics a worker thread, the wall clock and entropy get wrong.
-M10.6.9's images ran on the boards the bench reached; M10.6.11's pass, `TODO.md`'s "THE BENCH
-PASS, BOARD BY BOARD", still captures every board, the absent ones and M10.6.10's images included,
-with the ESP32 IRAM, the interrupt stacks and the C6 PLL riding the same passes. M10.7, the exit
-record, reconciles the references against what shipped, so it waits for the bench. The KickOS
-journey, its PL022 capstone and the docs site land as a maintainer PR outside the numbering; the
-lock-free yield and the shared sleep deadline are measure-first and carry no number.
+**THE ORDER IS LOCKED: M10.6.11, THEN M10.6.12, THEN M10.7** (maintainer, 2026-10-13, M10.6.9 and
+M10.6.10 inserted 2026-10-21, M10.6.12 on 2026-11-05 and numbered so on 2026-11-07: "no need for
+sub milestone when there is only one"). M10.6.9 made a task on a region board the MPU equivalent of
+the MMU process, with its own libc state, nonblocking flag included, and closed the kernel's
+isolation holes; a board too small for that holds one task rather than lie about the isolation.
+M10.6.10 is C++ and libc conformance: a toolchain release giving GCC a KickOS threads model, the
+C++ exception state per thread, and the libc semantics a worker thread, the wall clock and entropy
+get wrong. M10.6.11 captured every board the bench holds, bounded the boot and interrupt stacks on every
+arch, and traps an integer divide by zero wherever the core or its ABI can. M10.6.12 takes the live
+bugs the TODO sweep found, per-core sleep queues and the bench items M10.6.11 left open, as its
+`TODO.md` entry lists. M10.7, the exit record, reconciles the references against what shipped.
+**It opens with a cross-family audit** (maintainer, 2026-11-06): GPT-6 Astra, through the Codex
+plugin, audits ten areas from a prompt the maintainer keeps, and a Claude agent verifies each
+finding before it reaches the maintainer. It runs once, on M10.6.12's finished code (maintainer,
+2026-11-09: its tokens are not cheap). The KickOS journey, its PL022 capstone and the docs site
+land as a maintainer PR outside the numbering; the lock-free yield is measure-first and carries no
+number.
 
 M7 is the multicore milestone and `docs/design-multicore.md` is its contract; every ruling and every
 freeze lives there, `roadmap.md` assigns the numbers, and `git log` carries the order things landed
@@ -1141,26 +1146,40 @@ missing from one of those QEMU captures under load is this, not a flake to re-ru
   and one TX_IDLE_NUM, the reset 256: the field reads 2 while the line shifts and 0 once the last
   frame is out. No other baud or idle count was run.
 
-## M10.6.10: C++ and libc conformance, and what these green runs do NOT say
+## M10.6.11: the hardware tail and the bench, and what these green runs do NOT say
 
-- **EVERY GREEN RUN WAS ON A LOCAL BUILD OF THE 1.2.0 RECIPE, NOT ON THE RELEASE.** The release
-  must be built from the same recipe; a recipe edit after the runs orphans them.
-- **NO BENCH PASS REACHED FRDMK64F, PICOPI, PIZERO2350, TEENSY41, BLACKPILL OR DUE.** Their
-  M10.6.10 images are built and, where an emulator exists, run there only. microbit has no unit.
+- **THE DIVIDE-BY-ZERO TRAP HAS NO SILICON WITNESS ON TEENSY41, DUE OR MICROBIT.** teensy41 was
+  off the bench after the trap went on, due is absent, and microbit has no unit, so its v6-M
+  dump runs on QEMU only. picopi is the one silicon witness of the v6-M decode, from flash.
+- **A DIVIDE BY ZERO INSIDE THE PREBUILT NEWLIB, LIBSTDC++ OR LIBGCC NOW TRAPS ON ARMV7-M,** and
+  none of their divisions was audited. Where the core does not trap (RISC-V, AArch64, RX) a
+  quotient comes back; the compiler check that would trap there is a ruling in `TODO.md`.
+- **THE BOOT AND INTERRUPT STACK CLASSES CHANGED NO IMAGE BYTE.** Built images differ from the
+  last silicon pass only in their commit, date and image id stamps, so no capture was retaken
+  for them. The firmware's own descent on the x86_64 UEFI stack is priced by no graph: it rests
+  on UEFI's 128 KiB promise.
+- **THE QEMU M-PROFILE CLOCK, THE X86_64 TIMER CALIBRATION AND THE CLEAN-ROOM PE LINKER SCRIPT
+  RAN ON QEMU ONLY.** No x86_64 silicon exists here, and the mps2, an505 and nrf51 timers are
+  QEMU models.
+- **THE USB CONSOLE HOLDS ITS OUTPUT UNTIL THE HOST SETS A LINE CODING, ELSE A FALLBACK.** teensy41
+  and pizero2350 witnessed the host path; the fallbacks fire only for a host that never sets
+  one, and no capture takes them. Unplug is still owed with M10.6.12's bench items.
+- **THE PREBUILT LIBC STILL MAKES UNALIGNED ACCESSES**, so a K64F access across its two SRAM
+  banks can still fault. The toolchain rebuild and its measurement are M10.6.12's.
+
+Carried from M10.6.10, still true:
+
 - **ON THE C6 AMP PAIR, NODE 1'S IMAGES RAN ON SILICON ONLY AS NODE 0'S PEER.** Node 0 releases
   node 1, so no capture boots node 1 alone: node 1's cxxtest and libcmix are linked, never run,
   and its RAM margin is a link figure.
 - **A WALL-CLOCK SET MOVING A WAITER RUNS ON QEMU ONLY.** The cross-node arm (`amp_far_wall`)
-  ran on qemu-arm64; pizero2350-amp2 was not reached. wallwait is built only where an emulator runs, and the silicon cxxtest timed lines
-  never set the clock.
+  ran on qemu-arm64; pizero2350-amp2 has no capture of it.
 - **RX'S ATOMICS HAVE ONLY A SILICON WITNESS.** No emulator runs RX: the proof is rx72m's cxxtest
   failing its shared_ptr line on the old toolchain and passing on 1.2.0, and uatomic's lost
   update count.
-- **`getentropy` FROM RDSEED RAN ON QEMU ONLY**, with and without the feature; no x86_64 silicon
-  exists here.
+- **`getentropy` FROM RDSEED RAN ON QEMU ONLY**, with and without the feature.
 - **NO ARM HOLDS THE SHARED WALL CLOCK'S READ BOUND ITSELF, NOR `quick_exit`, NOR AN `exit()`
-  THAT FINDS A SIBLING ALREADY CANCELLED.** No seam forces a peer to move under every read, no
-  app calls `quick_exit`, and the dispatch fixture exposes no armed park for the last.
+  THAT FINDS A SIBLING ALREADY CANCELLED.**
 - **THE DOCS PASS IS OWED AT THE END OF M10.** The stale lines are listed under the M10.7 exit
   record in `TODO.md`.
 

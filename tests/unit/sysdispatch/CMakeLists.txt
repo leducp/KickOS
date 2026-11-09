@@ -67,6 +67,21 @@ kickos_add_unit_test(NAME sys_budget_race SOURCES budget_race.cc
   LIBRARIES kickos_kseam_sysdispatch)
 kickos_sysdispatch_link(sys_budget_race g_sys_image 0)
 
+# The translating posture at two kernel cores: a driver's create waiting out its line's IRQ grace
+# period, which only a peer core's dispatch holds open.
+kickos_add_kseam(kickos_kseam_sysdispatch_smp
+  EXTRA sys_seam.cc stub_seam.cc "${_common}/host_aspace.cc" "${_common}/host_frame_pool.cc"
+        ${_sys_aspace}
+  INCLUDES "${_k}/syscall" "${_common}" "${CMAKE_CURRENT_SOURCE_DIR}"
+  POSTURE KICKOS_HAVE_ASPACE=1
+          KICKOS_ARCH_ALIAS_DCACHE=1 KICKOS_ARCH_IRQ_WINDOW=1
+          KSEAM_REAL_DOMAIN=1
+          KICKOS_NUM_CORES=2 KICKOS_KERNEL_CORES=2 KICKOS_MULTICORE_MODEL_SHARED=1)
+kickos_add_unit_test(NAME sys_presync_grace SOURCES presync_grace.cc
+  DEFINITIONS SYS_IMAGE_BYTES=${_image_bytes}
+  LIBRARIES kickos_kseam_sysdispatch_smp)
+kickos_sysdispatch_link(sys_presync_grace g_sys_image 0)
+
 kickos_add_kseam(kickos_kseam_sysdispatch_region
   EXTRA region_seam.cc stub_seam.cc ${_sys_region}
   INCLUDES "${_k}/syscall" "${CMAKE_CURRENT_SOURCE_DIR}")

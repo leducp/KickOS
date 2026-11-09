@@ -14,10 +14,17 @@ family: { dir: common, sources: [common/semihost_console.cc] }
 # The board has a diag LED, and CI runs the same binary under QEMU, where a blink would spin to
 # the harness timeout: arch_shutdown is a semihosting exit carrying the status it reads.
 exits_on_fault: true
+timebase: { hz: { value: 1000000, ref: "nRF51 RM v3.0 sec.18.1, 16 MHz / 2^PRESCALER at PRESCALER 4" } }
 
-interrupts: { count: 32 }
+interrupts: { count: 32, free_from: 9 }
 
-devices: {}
+devices:
+  # The kernel's clock.
+  timer0:
+    window: [0x40008000, 0x1000]
+    owner: kernel
+    ref: "nRF51 RM v3.0 Table 2"
+    lines: { global: { number: 8, symbol: TIMER0_IRQ, ref: "nRF51 RM v3.0 sec.10.1.6 and Table 2" } }
 
 memory:
   flash: { base: 0x00000000, size: 0x40000, link: { region: FLASH, access: rx } }

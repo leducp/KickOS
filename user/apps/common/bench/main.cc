@@ -7,7 +7,6 @@
 #include <kickos/kos.h>
 #include <kickos/sys.h>
 #include <kickos/sys/atomic.h>
-#include <kickos/sys/driver_service.h>
 #include <kickos/sys/irq_free.h>
 #include <kickos/sys/init.h>
 #include <kickos/libc/fmt.h>
@@ -16,6 +15,7 @@
 #include <kickos/apps/peer_run.h>
 
 #include "callreply.h"
+#include "owner.h"
 
 #ifndef KICKOS_KERNEL_CORES
 #define KICKOS_KERNEL_CORES 1
@@ -44,6 +44,34 @@ __asm__(".pushsection .text, \"ax\", @progbits\n"
         ".popsection\n");
 #else
 #define BENCH_VEC_DIRTY 0
+#endif
+
+#if defined(__XTENSA__)
+#define BENCH_FLASH_TEXT 1
+// Eight functions one cache way apart (16 KiB, half the 32 KiB two-way cache, ESP32 TRM v5.8
+// 3.3.4): all eight share a set, so calling them in turn misses on six of eight calls at least,
+// whatever the undocumented replacement.
+#define BENCH_FLASH_ALIAS(n)                                                                      \
+    "    .balign 16384\n"                                                                        \
+    "    .globl bench_flash_alias" #n "\n"                                                       \
+    "    .type bench_flash_alias" #n ", @function\n"                                             \
+    "bench_flash_alias" #n ":\n"                                                                 \
+    "    entry a1, 16\n"                                                                         \
+    "    retw.n\n"
+extern "C" void bench_flash_alias0(void);
+extern "C" void bench_flash_alias1(void);
+extern "C" void bench_flash_alias2(void);
+extern "C" void bench_flash_alias3(void);
+extern "C" void bench_flash_alias4(void);
+extern "C" void bench_flash_alias5(void);
+extern "C" void bench_flash_alias6(void);
+extern "C" void bench_flash_alias7(void);
+__asm__(".pushsection .text.bench_flash_alias, \"ax\", @progbits\n"
+        BENCH_FLASH_ALIAS(0) BENCH_FLASH_ALIAS(1) BENCH_FLASH_ALIAS(2) BENCH_FLASH_ALIAS(3)
+        BENCH_FLASH_ALIAS(4) BENCH_FLASH_ALIAS(5) BENCH_FLASH_ALIAS(6) BENCH_FLASH_ALIAS(7)
+        ".popsection\n");
+#else
+#define BENCH_FLASH_TEXT 0
 #endif
 
 // THE RX SWITCH ROW IS SAMPLED IN A BURST OF ITS OWN (KICKOS_BENCH_SWITCH_MEAN in
@@ -93,8 +121,7 @@ namespace
     constexpr uint32_t DOORBELL_ROUNDS = KOS_BENCH_ROUNDS_MAX;
     // Bounds the walk only; the kernel's refusal ends it. A core set is a 32-bit mask.
     constexpr uint32_t CORE_WALK_MAX = 32;
-    // Bounded so main RETURNS, through finish: a board with a bootloader entry then re-enters
-    // it without a button press.
+    // Bounded so main returns, which ends the run.
     constexpr unsigned THROUGHPUT_REPORTS = 3;
 #if KICKOS_KERNEL_CORES > 1
     constexpr uint32_t TAG_CALLREPLY = 0;
@@ -865,6 +892,44 @@ namespace
     }
 }
 
+#if BENCH_FLASH_TEXT
+namespace
+{
+    constexpr uint32_t FLASH_ROUNDS = 2000;
+    constexpr uint32_t FLASH_CALLS = FLASH_ROUNDS * 8u;
+    void (*const g_flash_alias[8])(void) = {
+        bench_flash_alias0, bench_flash_alias1, bench_flash_alias2, bench_flash_alias3,
+        bench_flash_alias4, bench_flash_alias5, bench_flash_alias6, bench_flash_alias7,
+    };
+    uint32_t volatile g_flash_mask;
+
+    // The same loop twice: once calling one function, whose line stays cached, once calling the
+    // eight in turn.
+    uint64_t flash_calls_ns(uint32_t mask)
+    {
+        g_flash_mask = mask;
+        uint64_t const t0 = kos::clock_now();
+        for (uint32_t i = 0; i < FLASH_CALLS; i++)
+        {
+            g_flash_alias[i & g_flash_mask]();
+        }
+        return kos::clock_now() - t0;
+    }
+
+    // Task text runs from flash through the cache: the cost of a call whose line misses.
+    void flash_text()
+    {
+        uint64_t const hit = flash_calls_ns(0u);
+        uint64_t const miss = flash_calls_ns(7u);
+        char s[160];
+        ksnprintf(s, sizeof(s), "  flash text: hit %u ns, miss %u ns per call  (%u calls each)\n",
+                  static_cast<unsigned>(hit / FLASH_CALLS), static_cast<unsigned>(miss / FLASH_CALLS),
+                  static_cast<unsigned>(FLASH_CALLS));
+        row(s);
+    }
+}
+#endif
+
 #if KICKOS_KERNEL_CORES > 1
 namespace
 {
@@ -1229,22 +1294,8 @@ namespace
 }
 #endif
 
-namespace
-{
-    // A chip with a bootloader entry is handed back to it, so a bench reflashes the next image
-    // without a button press.
-    int finish(int status)
-    {
-        (void)kos_console_flush(kickos::driver::KOS_DRV_HANDOVER_PROBE_US);
-        (void)kos_shutdown(status, KOS_SHUTDOWN_BOOTLOADER);
-        return status;
-    }
-}
-
 int main(int, char**)
 {
-    // A run that panics or faults hands the board back to its bootloader too.
-    (void)kos_terminal_outcome(KOS_SHUTDOWN_BOOTLOADER);
     kos::print("microbenchmark: context-switch throughput (all arches) + per-switch cost\n");
     kos::print("+ IRQ-entry latency where a cycle counter exists. Reporter woken by the\n");
     kos::print("workload, not a timer. Telemetry OFF for clean numbers.\n");
@@ -1263,6 +1314,7 @@ int main(int, char**)
 
     // BEFORE the reset: the probe's own three brackets are then not in the sweep's numbers.
     (void)kos_bench(KOS_BENCH_OP_LOCK_PROBE, 0, 0);
+    bench::owner_death();
     (void)kos_bench(KOS_BENCH_OP_RESET, 0, 0); // the phase table below covers the sweep only
 
     // Each step joins BOTH its peers before the next starts, so two pool slots beside
@@ -1300,7 +1352,7 @@ int main(int, char**)
         // Do not park here: on a board that returns to its bootloader a parked app costs a
         // physical button press, which the bounded reporter exists to avoid.
         kos::print("bench: FAILED to spawn players (thread pool too small?)\n");
-        return finish(1);
+        return 1;
     }
 
     reporter_loop();
@@ -1313,8 +1365,11 @@ int main(int, char**)
     xt_pingpong();
     xt_callreply();
     spawn_exit();
+#if BENCH_FLASH_TEXT
+    flash_text();
+#endif
     // The kernel refuses it, and prints nothing, where no backend keeps the watch.
     (void)kos_bench(KOS_BENCH_OP_FASTPATH_WATCH, 0, 0);
     kos::print("bench: done\n");
-    return finish(0);
+    return 0;
 }

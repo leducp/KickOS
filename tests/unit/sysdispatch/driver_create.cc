@@ -154,7 +154,7 @@ namespace kickos
             void create_con()
             {
                 kos_task_t h = KOS_TASK_NONE;
-                (void)task_create_call(g_prog, reinterpret_cast<uintptr_t>(&g_block.p), &h);
+                (void)task_create_call(g_prog, reinterpret_cast<uintptr_t>(&g_block.p), 0, &h);
             }
 
             class DriverCreate : public KSeam
@@ -195,7 +195,7 @@ namespace kickos
                 int create(char const* instance, kos_task_t* out)
                 {
                     g_block.p.instance = text(instance, 16);
-                    return task_create_call(prog_, reinterpret_cast<uintptr_t>(&g_block.p), out);
+                    return task_create_call(prog_, reinterpret_cast<uintptr_t>(&g_block.p), 0, out);
                 }
 
                 Thread* entry_of(kos_task_t h)

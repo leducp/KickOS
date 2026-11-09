@@ -259,6 +259,11 @@ config KICKOS_CLOCK_USER
 	bool
 	default y if ARCH_ARMV8A || ARCH_RV64IMAC || ARCH_X86_64 || ARCH_SIM
 
+# arch_reboot answers KOS_SHUTDOWN_BOOTLOADER: a reset hands the board to a loader that takes the
+# next image with no button press.
+config KICKOS_BOOTLOADER_ENTRY
+	bool
+
 config KICKOS_ARCH
 	string
 	default "armv6m" if ARCH_ARMV6M
@@ -328,6 +333,7 @@ config CHIP_IMXRT1062
 	bool
 	select ARCH_ARMV7M
 	select HAS_MPU
+	select KICKOS_BOOTLOADER_ENTRY
 
 config CHIP_MK64F
 	bool
@@ -349,12 +355,14 @@ config CHIP_RP2040
 	select ARCH_ARMV6M
 	select HAS_MPU
 	select HAS_TRACE_CLOCK
+	select KICKOS_BOOTLOADER_ENTRY
 
 config CHIP_RP2350
 	bool
 	select ARCH_ARMV7M
 	select HAS_MPU
 	select CHIP_AMP_CONSOLE_CLAIM
+	select KICKOS_BOOTLOADER_ENTRY
 
 config CHIP_SAM3X8E
 	bool

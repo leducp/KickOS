@@ -24,8 +24,9 @@ kickos_tree_scripts(doc_names extern_c_linkage ascii spdx include_guards shell_s
 kickos_tree_scripts(dash_punct amp_no_xip_pin TIMEOUT 300)
 # app_judges runs one judge per planted capture, and has taken 46 s at load 22.
 kickos_tree_scripts(app_judges TIMEOUT 300)
-kickos_tree_scripts(tap_stream_sets capture_teardown amp_peers sweep_checkout rig_shells
-                    TIMEOUT 60)
+kickos_tree_scripts(tap_stream_sets amp_peers sweep_checkout rig_shells TIMEOUT 60)
+# capture_teardown waits out each planted capture's window in real time.
+kickos_tree_scripts(capture_teardown TIMEOUT 180)
 set_tests_properties(rig_shells PROPERTIES SKIP_RETURN_CODE 77)
 
 _add_test(NAME bench_banner_controls COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/check_bench_banner.sh"
@@ -45,6 +46,7 @@ _add_test(NAME board_predicates
                   ${_kos_gate_fragments} "${PROJECT_SOURCE_DIR}/user/apps/common/CMakeLists.txt"
           WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
 _add_test(NAME stamp_lines COMMAND python3 -B "${PROJECT_SOURCE_DIR}/tools/bench/test_stamp_lines.py")
+_add_test(NAME esp_image COMMAND python3 -B "${PROJECT_SOURCE_DIR}/tools/test_esp_image.py")
 foreach(_check no_eh_runtime no_libnosys ctors_kept image_listing esp_segments libc_profile)
   _add_test(NAME ${_check}_controls
             COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_${_check}.sh" --self-test)
@@ -53,7 +55,7 @@ _add_test(NAME string_provider_controls
           COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_string_provider.sh"
                   --self-test "${CMAKE_C_COMPILER}" "${CMAKE_AR}" "${CMAKE_NM}")
 kickos_tree_gate(bench_banner_controls stlink_capture_controls selftest_demands_controls
-                 boot_tp_controls board_predicates stamp_lines no_eh_runtime_controls
+                 boot_tp_controls board_predicates stamp_lines esp_image no_eh_runtime_controls
                  no_libnosys_controls ctors_kept_controls image_listing_controls
                  esp_segments_controls string_provider_controls libc_profile_controls
                  TIMEOUT 60)

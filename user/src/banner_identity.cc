@@ -28,6 +28,16 @@ namespace
 
         void put(char c)
         {
+            if (KICKOS_CONSOLE_CRLF != 0 and c == '\n')
+            {
+                // Whole or not at all: a lone CR would leave the row unended.
+                if (at + 2u < cap)
+                {
+                    out[at++] = '\r';
+                    out[at++] = '\n';
+                }
+                return;
+            }
             if (at + 1u < cap)
             {
                 out[at++] = c;

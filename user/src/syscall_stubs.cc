@@ -218,7 +218,7 @@ int kos_thread_set_priority(uint8_t priority)
 }
 
 int kos_task_create(kos_program_t prog, struct kos_task_params const* params,
-                    kos_task_t* out_task)
+                    uint32_t timeout_us, kos_task_t* out_task)
 {
     if (out_task != NULL)
     {
@@ -226,7 +226,8 @@ int kos_task_create(kos_program_t prog, struct kos_task_params const* params,
     }
     return static_cast<int>(arch_syscall(KOS_SYS_TASK_CREATE, static_cast<uintptr_t>(prog),
                                          reinterpret_cast<uintptr_t>(params),
-                                         reinterpret_cast<uintptr_t>(out_task), 0));
+                                         reinterpret_cast<uintptr_t>(out_task),
+                                         static_cast<uintptr_t>(timeout_us)));
 }
 
 int kos_program_find(char const* name, kos_program_t* out_prog)

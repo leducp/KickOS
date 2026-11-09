@@ -13,6 +13,7 @@
 #include <kickos/chip_limits.h>
 
 #include "chip_layout.h"
+#include "ram_arena.h"
 #include "irq.h"
 #include "sim_mpu.h"
 
@@ -113,7 +114,7 @@ namespace
         long pagesize = 0;
         unsigned char* arena = nullptr;
         size_t arena_size = 0;
-        size_t arena_used = 0;
+        kickos::RamArena arena_state;
         // SIM_PVREG_SPAN bytes outside the arena. Null: the host refused the fixed mapping, so no
         // DEV window is encodable and the privileged-write seam declines.
         unsigned char* pvreg = nullptr;
@@ -573,6 +574,8 @@ namespace
         uintptr_t addr;
         int code;
         bool addr_valid;
+        // si_code's meaning is per signal: SEGV_MAPERR and FPE_INTDIV are both 1.
+        char const* code_name;
     };
     kickos::InstanceLocal<SimFaultInfo> g_sim_fault = {};
 
@@ -586,7 +589,7 @@ namespace
         uintptr_t addr = reinterpret_cast<uintptr_t>(si->si_addr);
         // Before isr_frame_enter: arch_fault_is_user_thread reads isr_depth to tell a fault in
         // an ISR body from one in the thread it interrupted.
-        sim_fault() = {addr, si->si_code, true};
+        sim_fault() = {addr, si->si_code, true, "si_code"};
         if (kickos_fault_kill_thread(ucontext))
         {
             return; // sigreturn resumes at kickos_thread_fault_exit
@@ -620,7 +623,7 @@ namespace
     void on_sigill(int, siginfo_t* si, void* ucontext)
     {
         // si_addr is the faulting PC here, not a data address.
-        sim_fault() = {0, si->si_code, false};
+        sim_fault() = {0, si->si_code, false, "si_code"};
         if (kickos_fault_kill_thread(ucontext))
         {
             return;
@@ -629,6 +632,22 @@ namespace
         isr_frame_enter();
         kpanic_enter();
         ::kickos::kprintf("\n=== SIM FAULT (illegal instruction) at %p ===\n", si->si_addr);
+        kfault_terminate();
+    }
+
+    // Host x86 #DE: an integer divide by zero, or a quotient that overflows.
+    void on_sigfpe(int, siginfo_t* si, void* ucontext)
+    {
+        sim_fault() = {0, si->si_code, false, "SIGFPE si_code"};
+        if (kickos_fault_kill_thread(ucontext))
+        {
+            return;
+        }
+        kickos_fault_report_begin();
+        isr_frame_enter();
+        kpanic_enter();
+        ::kickos::kprintf("\n=== SIM FAULT (integer divide, si_code=%d) at %p ===\n", si->si_code,
+                          si->si_addr);
         kfault_terminate();
     }
 
@@ -662,7 +681,7 @@ void arch_init(void)
         sim().arena = nullptr;
         sim().arena_size = 0;
     }
-    sim().arena_used = 0;
+    sim().arena_state = kickos::RamArena{};
     sim().applied_n = 0;
 
     // The fake register block lies outside the arena: it must not be reachable as a RAM grant.
@@ -723,6 +742,8 @@ void arch_init(void)
     sigaction(SIGSEGV, &fa, nullptr);
     fa.sa_sigaction = on_sigill;
     sigaction(SIGILL, &fa, nullptr);
+    fa.sa_sigaction = on_sigfpe;
+    sigaction(SIGFPE, &fa, nullptr);
 
     struct sigaction ta{};
     ta.sa_flags = SA_SIGINFO;
@@ -1189,7 +1210,7 @@ void arch_fault_redirect_to_exit(void* frame)
     ucontext_t* const uc = static_cast<ucontext_t*>(frame);
     uintptr_t const pc = static_cast<uintptr_t>(uc->uc_mcontext.gregs[REG_RIP]);
     SimFaultInfo const& f = sim_fault();
-    kickos_fault_record("si_code", static_cast<uint32_t>(f.code), pc, f.addr,
+    kickos_fault_record(f.code_name, static_cast<uint32_t>(f.code), pc, f.addr,
                         static_cast<int>(f.addr_valid));
     // The stub is kernel code reaching outside the resting grant: raise as arch_syscall does,
     // never unwound, the stub never returning.
@@ -1318,17 +1339,8 @@ void* arch_ram_alloc(size_t size)
     }
     size_t const rsz = arch_ram_region_size(size);
     size_t const ralign = arch_ram_region_align(size);
-    uintptr_t const base = reinterpret_cast<uintptr_t>(sim().arena);
-    uintptr_t const cur = base + sim().arena_used;
-    // The subtract-form bounds are immune to the size_t wrap that (used + rsz) has.
-    uintptr_t const aligned = (cur + (ralign - 1)) & ~static_cast<uintptr_t>(ralign - 1);
-    size_t const off = static_cast<size_t>(aligned - base);
-    if (aligned < cur or off > sim().arena_size or rsz > sim().arena_size - off)
-    {
-        return nullptr;
-    }
-    sim().arena_used = off + rsz;
-    return reinterpret_cast<void*>(aligned);
+    return kickos::ram_arena_alloc(sim().arena_state, reinterpret_cast<uintptr_t>(sim().arena),
+                                   sim().arena_size, rsz, ralign);
 }
 
 // arch_domain_static_regions (kernel/domain/domain.cc) returns 0 here: start.cc states the app

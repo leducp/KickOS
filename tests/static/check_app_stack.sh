@@ -327,7 +327,9 @@ print('app_stack control: %s parses for %s' % (os.path.basename(real), ', '.join
 # exactly its need passes and one a byte deeper than its stack fails.
 for arch in sorted(arches):
     need = app_stack.Decl(real, arch).need
-    plant(stack='(PLANT_BASE + 100000)', need=need)
+    # Every unit of the arch compiles with its include root, which a header may include from.
+    inc = '-I' + os.path.join(repo, need[0].split('/include/', 1)[0], 'include')
+    plant(stack='(PLANT_BASE + 100000)', need=need, fflag=inc)
     rc, out = run('p1', repo)
     figure = None
     for line in out.splitlines():
@@ -335,11 +337,11 @@ for arch in sorted(arches):
             figure = int(line.split(' = ')[1].split(' ')[0])
     if rc != 0 or figure is None:
         die('%s: the need record does not bound a planted thread\n%s' % (arch, out))
-    plant(stack=str(figure), need=need)
+    plant(stack=str(figure), need=need, fflag=inc)
     rc, out = run('p1', repo)
     if rc != 0 or 'headroom 0' not in out:
         die('%s: a thread at exactly its need of %d fails\n%s' % (arch, figure, out))
-    plant(stack=str(figure - 1), need=need)
+    plant(stack=str(figure - 1), need=need, fflag=inc)
     rc, out = run('p1', repo)
     if rc != 1 or 'STACK BELOW ITS THREAD' not in out:
         die('%s: a thread one byte deeper than its stack passes\n%s' % (arch, out))

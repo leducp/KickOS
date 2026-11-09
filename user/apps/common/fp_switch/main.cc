@@ -21,6 +21,18 @@
 namespace
 {
     constexpr uint32_t BLOCK_NS = 100000000u; // 0.1 s: the trasher runs and clobbers the state
+    constexpr int ATTEMPTS = 50;
+
+    // Raised once the checker is done. The trasher outranks main and never blocks, so main runs
+    // again only once the trasher has seen it and returned.
+    bool g_stop = false;
+    bool g_failed = false;
+    kos::Semaphore g_done;
+
+    bool stopping()
+    {
+        return __atomic_load_n(&g_stop, __ATOMIC_ACQUIRE);
+    }
 
 #if defined(__aarch64__)
     constexpr bool HAS_BANK = true;
@@ -310,7 +322,7 @@ namespace
         {
             junk[i] = 0x7F000000u + static_cast<fp_word>(i);
         }
-        while (true)
+        while (not stopping())
         {
             __asm volatile(
                 "lsi f0, %[in], 0\n\t"
@@ -377,7 +389,7 @@ namespace
         {
             junk[i] = static_cast<fp_word>(0x9000000000000000ull) + static_cast<fp_word>(i);
         }
-        while (true)
+        while (not stopping())
         {
             fp_bank_load(junk);
             fp_ctl_write(RMODE_TRASH, false);
@@ -409,7 +421,7 @@ namespace
             sent[i] = static_cast<fp_word>(0x0123456789ab0000ull) + static_cast<fp_word>(i);
         }
         int rounds = 0;
-        while (true)
+        for (int attempt = 0; attempt < ATTEMPTS; attempt++)
         {
             fp_ctl_write(RMODE_SEED, true);
             unsigned long long const ctl_sent = fp_ctl_read();
@@ -434,6 +446,7 @@ namespace
                           rounds);
 #endif
                 kos::print(b);
+                g_failed = true;
                 continue;
             }
             if (HAS_CTL and ctl_read != ctl_sent)
@@ -442,6 +455,7 @@ namespace
                           static_cast<unsigned>(ctl_read), static_cast<unsigned>(ctl_sent),
                           rounds);
                 kos::print(b);
+                g_failed = true;
                 continue;
             }
 #if defined(__XTENSA__)
@@ -452,6 +466,7 @@ namespace
                 ksnprintf(b, sizeof(b), "  FP FAIL: no preemption landed in the spin (round %d)\n",
                           rounds);
                 kos::print(b);
+                g_failed = true;
                 continue;
             }
             bad = first_bad(rd, sent);
@@ -460,6 +475,7 @@ namespace
                 ksnprintf(b, sizeof(b), "  FP FAIL: f%d across a preemption (round %d)\n", bad,
                           rounds);
                 kos::print(b);
+                g_failed = true;
                 continue;
             }
 #endif
@@ -471,6 +487,8 @@ namespace
                 kos::print(b);
             }
         }
+        __atomic_store_n(&g_stop, true, __ATOMIC_RELEASE);
+        g_done.post();
     }
 }
 
@@ -513,9 +531,10 @@ int main(int, char**)
         return 1;
     }
 
-    static kos::Semaphore idle(0);
-    while (true)
+    (void)g_done.wait();
+    if (g_failed)
     {
-        idle.wait();
+        return 1;
     }
+    return 0;
 }

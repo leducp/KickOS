@@ -22,3 +22,6 @@ reserved_pins:
   GPIO9: flash
   GPIO10: flash
   GPIO11: flash
+
+# The module's SPI flash, which the ROM boots from and the cache maps task text out of.
+flash: { size: 0x400000, ref: "ESP32-WROOM-32 datasheet, 1.2 Ordering Information, Table 1" }

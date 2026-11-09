@@ -1,0 +1,54 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# Written by hand from user/apps/common/rebootdemo/main.cc: the head is the tail of a boot the
+# capture's own reset cut, two boots decline and reset, and the window ends in a third's banner.
+
+otloader in 3s
+  ==============================================
+   KickOS 0.5.1  -  microkernel RTOS
+  ==============================================
+   board   frdmk64f
+   arch    armv7m
+   cpu     cortex-m4
+   mpu     enforce
+   sched   tickless
+   build   2026-11-05 12:00:00 +0100
+   app     Nov  5 2026 12:00:01 +0100
+   commit  70a1a9b4
+   heap    15 KiB available
+   kstack  1008 B x 9 = 9072 B
+
+[rebootdemo] KickOS reboot-to-bootloader demo
+[rebootdemo] handing the chip to its bootloader in 3s
+[rebootdemo] reboot declined: rc=-38
+  ==============================================
+   KickOS 0.5.1  -  microkernel RTOS
+  ==============================================
+   board   frdmk64f
+   arch    armv7m
+   cpu     cortex-m4
+   mpu     enforce
+   sched   tickless
+   build   2026-11-05 12:00:00 +0100
+   app     Nov  5 2026 12:00:01 +0100
+   commit  70a1a9b4
+   heap    15 KiB available
+   kstack  1008 B x 9 = 9072 B
+
+[rebootdemo] KickOS reboot-to-bootloader demo
+[rebootdemo] handing the chip to its bootloader in 3s
+[rebootdemo] reboot declined: rc=-38
+  ==============================================
+   KickOS 0.5.1  -  microkernel RTOS
+  ==============================================
+   board   frdmk64f
+   arch    armv7m
+   cpu     cortex-m4
+   mpu     enforce
+   sched   tickless
+   build   2026-11-05 12:00:00 +0100
+   app     Nov  5 2026 12:00:01 +0100
+   commit  70a1a9b4
+   heap    15 KiB available
+   kstack  1008 B x 9 = 9072 B

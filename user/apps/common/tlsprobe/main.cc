@@ -294,22 +294,14 @@ namespace
 
 namespace
 {
-    // The peer's exit status, retried while its last incarnation's members are still dying, or a
-    // value no status takes. Main writes its own thread-local storage while the peer runs.
+    // The peer's exit status, started once its last incarnation's members are dead, or a value no
+    // status takes. Main writes its own thread-local storage while the peer runs.
     int run_peer(kos_program_t prog)
     {
         kos_task_params p{};
         p.instance = "peer";
         kos_task_t t = KOS_TASK_NONE;
-        int rc = -KOS_EAGAIN;
-        for (int tries = 0; rc == -KOS_EAGAIN and tries < 1000; tries++)
-        {
-            rc = kos_task_create(prog, &p, &t);
-            if (rc == -KOS_EAGAIN)
-            {
-                kos::sleep_ns(100000ull);
-            }
-        }
+        int const rc = kos_task_create(prog, &p, 100000u, &t);
         if (rc != 0)
         {
             return -1000 + rc;

@@ -11,11 +11,15 @@ kickos_apply_freestanding(kickos_lib)
 # errno.h / strerror.h live in the kickos_system header home.
 target_include_directories(kickos_lib PRIVATE "${PROJECT_SOURCE_DIR}/system/include")
 
-# Only where the kernel calls these under the app's names (kickos/kruntime.h). An object, never
-# an archive member: beside the libc's archive, the link order would choose the copy.
+# Only where the kernel calls these under the app's names (kickos/kruntime.h), and on M-profile
+# Arm the run-time ABI's divide-by-zero hooks. Objects, never archive members: beside the libc's
+# and libgcc's archives, the link order would choose the copy.
 # kickos_string_scan holds the same objects for the gates that read archives.
 if(NOT KICKOS_ARCH STREQUAL "sim" AND NOT KICKOS_HAVE_ASPACE)
   add_library(kickos_string OBJECT libc/string.cc)
+  if(KICKOS_ARCH MATCHES "^armv[67]m$")
+    target_sources(kickos_string PRIVATE "${PROJECT_SOURCE_DIR}/arch/arm/common/aeabi_div0.cc")
+  endif()
   kickos_apply_freestanding(kickos_string)
   target_include_directories(kickos_string PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
   # The word loops in string.cc are the memcpy/memset idiom, and the pass that rewrites

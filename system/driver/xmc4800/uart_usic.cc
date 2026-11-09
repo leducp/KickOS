@@ -10,9 +10,10 @@
 
 #include <kickos/driver/uart.h>
 
-#include <kickos/io/mmio.h>   // r32
-#include <kickos/sys.h>       // kos_periph_reg_write, kos_periph_clock_hz
-#include <kickos/sys/errno.h> // KOS_EPERM, KOS_ENOSYS, KOS_ENOTSUP, KOS_EBUSY
+#include <kickos/io/mmio.h>    // r32
+#include <kickos/poll_bound.h> // KICKOS_POLL_SPIN_MAX
+#include <kickos/sys.h>        // kos_periph_reg_write, kos_periph_clock_hz
+#include <kickos/sys/errno.h>  // KOS_EPERM, KOS_ENOSYS, KOS_ENOTSUP, KOS_EBUSY
 
 #include <regs/usic.h>
 #include <usic_class.h> // usic_tx_ready
@@ -32,8 +33,6 @@ namespace
     // one stop bit).
     constexpr uint8_t FRAME_DATA_BITS = 8u;
     constexpr uint8_t FRAME_STOP_BITS = 1u;
-
-    constexpr uint32_t FLUSH_POLL_MAX = 1000000u;
 
     // fASC = fPERIPH * STEP/1024 / ((PDIV+1) * (PCTQ+1) * (DCTQ+1)) (RM eq.18.6, RM 18.3.3.2
     // p.18-60; fractional divider RM eq.18.2 p.18-27). That form holds only for DM =
@@ -165,7 +164,7 @@ int32_t kos_uart_flush(struct kos_uart* u)
     //
     // BOTH BITS ARE REQUIRED: BUSY's window starts at the start bit, so a word already in
     // TBUF that has not begun shifting reads BUSY=0 while TCSR.TDV=1.
-    for (uint32_t i = 0; i < FLUSH_POLL_MAX; i++)
+    for (uint32_t i = 0; i < KICKOS_POLL_SPIN_MAX; i++)
     {
         uint32_t const tcsr = r32(u->base + ru::off::TCSR);
         uint32_t const psr = r32(u->base + ru::off::PSR);

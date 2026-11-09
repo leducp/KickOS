@@ -17,8 +17,9 @@
 
 #include <kickos/driver/uart.h>
 
-#include <kickos/io/mmio.h>   // r32
-#include <kickos/sys/errno.h> // KOS_EBUSY
+#include <kickos/io/mmio.h>    // r32
+#include <kickos/poll_bound.h> // KICKOS_POLL_SPIN_MAX
+#include <kickos/sys/errno.h>  // KOS_EBUSY
 
 #include "uart_esp.h"
 
@@ -125,7 +126,7 @@ int32_t kos_uart_flush(struct kos_uart* u)
 {
     // Drained means the last stop bit has left the pin: the FIFO is empty AND the transmitter's
     // state machine is idle, since an empty FIFO still leaves one frame in the shifter.
-    for (uint32_t i = 0; i < kickos::espuart::POLL_MAX; i++)
+    for (uint32_t i = 0; i < KICKOS_POLL_SPIN_MAX; i++)
     {
         uint32_t const fsm = (r32(u->base + ru::OFF_TX_FSM) >> ru::ST_UTX_OUT_S) & ru::ST_UTX_OUT_MASK;
         if (txfifo_cnt(u->base) == 0u and fsm == ru::ST_UTX_OUT_IDLE)

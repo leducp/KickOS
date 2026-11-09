@@ -11,6 +11,17 @@
 
 #include <kickos/arch/arch.h>
 
+#if defined(__has_include) && __has_include(<kickos/board_config.h>)
+#include <kickos/board_config.h>
+#endif
+
+// The owner-death and lost-mapping rows, and their kernel storage (KICKOS_BENCH_WALK_SLOTS).
+#if defined(KICKOS_BENCH_WALK_SLOTS) && KICKOS_BENCH_WALK_SLOTS > 0
+#define KICKOS_BENCH_WALKS 1
+#else
+#define KICKOS_BENCH_WALKS 0
+#endif
+
 #if (defined(__riscv) && __riscv_xlen == 64) || defined(__aarch64__) || defined(__x86_64__)
 #define KICKOS_BENCH_TICK_BITS 64
 #else
@@ -102,6 +113,15 @@ namespace kickos
         // the thread it moved or re-seated, on that thread's core.
         BD_PUSH_E2E,
         BD_RESEAT_E2E,
+#endif
+        // Fed through bench_walk_add and printed only by KOS_BENCH_OP_OWNER_PRINT, which clears
+        // them: a dead holder's hand-over walk (mutex_owner_exit) that handed at least one
+        // record, and a lost mapping's scan (word_reach_lost) that ended at least one wait.
+#if KICKOS_BENCH_WALKS
+        BD_OWNER_EXIT,
+#if KICKOS_HAVE_ASPACE
+        BD_REACH_LOST,
+#endif
 #endif
         // Populated and printed by explicit sweeps, outside ordinary workload reporting. These
         // stay last: they live in a row of their own, apart from the slots the workload feeds.
@@ -360,6 +380,11 @@ namespace kickos
     void bench_phase_add(uint32_t phase, BenchTick delta);
     // Both take a slot below BD_IRQ_ENTRY and refuse a swept one.
     void bench_dist_add(uint32_t dist, BenchTick delta);
+#if KICKOS_BENCH_WALKS
+    // One walk of BD_OWNER_EXIT or BD_REACH_LOST: its cycles, and how many records it handed
+    // or waits it ended, kept as a least and a most beside the row.
+    void bench_walk_add(uint32_t dist, BenchTick delta, uint32_t items);
+#endif
     // Record the outermost lock interval and retain the release address of its maximum.
     void bench_lock_hold_add(BenchTick delta, void* site);
     uint32_t bench_dist_count(uint32_t dist); // Current core only.
@@ -374,6 +399,10 @@ namespace kickos
 #endif
     // The switch row alone, labelled as the dirty-vector variant. Returns its count.
     uint32_t bench_dist_print_switch_vec();
+    // One KOS_BENCH_OP_OWNER_PRINT report, `waiters` being what the caller seated; clears the
+    // rows it prints. -KOS_EINVAL for an unknown `which`, -KOS_ENOSYS for rows this image
+    // does not keep.
+    int bench_owner_print(uint32_t which, uint32_t waiters);
     void bench_phase_print();
 
     // Three nested IrqLocks must produce one sample on the calling core.

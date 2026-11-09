@@ -949,26 +949,61 @@ def stack_asserts(admitted, name):
     return out
 
 
+def arena_step(tag, prev, size, align):
+    """The ld statements of one allocation of `size` on `align` through the allocator's rule
+    (arch/common/ram_arena.h, region.py ArenaModel), the state after tag `tag` from the state
+    after `prev`: the bump cursor and the kept free range [gs, ge). A comparison is ld's 0 or 1,
+    so a choice is a product."""
+    def sym(kind, name):
+        return "__kickos_system_arena_%s_%s" % (kind, name)
+
+    def state(name):
+        if name == "start":
+            return sym("c", name), sym("gs", name), sym("ge", name)
+        return "__kickos_system_arena_%s" % name, sym("gs", name), sym("ge", name)
+
+    c0, gs0, ge0 = state(prev)
+    c1, gs1, ge1 = state(tag)
+    fit, at, bump = sym("f", tag), sym("a", tag), sym("b", tag)
+    keep_after, keep_before, replace = sym("ak", tag), sym("kb", tag), sym("rp", tag)
+    return [
+        "%s = (ALIGN(%s, 0x%X) + 0x%X) <= %s;" % (fit, gs0, align, size, ge0),
+        "%s = ALIGN(%s, 0x%X);" % (at, gs0, align),
+        "%s = ALIGN(%s, 0x%X);" % (bump, c0, align),
+        "%s = %s * ((%s - %s - 0x%X) >= (%s - %s));" % (keep_after, fit, ge0, at, size, at, gs0),
+        "%s = %s - %s;" % (keep_before, fit, keep_after),
+        "%s = (1 - %s) * ((%s - %s) > (%s - %s));" % (replace, fit, bump, c0, ge0, gs0),
+        "%s = %s * %s + (1 - %s) * (%s + 0x%X);" % (c1, fit, c0, fit, bump, size),
+        "%s = %s * %s + %s * (%s + 0x%X) + (1 - %s - %s) * %s;" % (
+            gs1, replace, c0, keep_after, at, size, replace, keep_after, gs0),
+        "%s = %s * %s + %s * %s + (1 - %s - %s) * %s;" % (
+            ge1, replace, bump, keep_before, at, replace, keep_before, ge0),
+    ]
+
+
 def arena_asserts(admitted):
     """On a region board, each block arch_ram_alloc places, from the linked arena's start, ends at or
-    below its end; the cursor is a symbol of this script."""
+    below its end; the cursor and the kept free range are symbols of this script."""
     manifest = admitted.manifest
     out = []
     if admitted.translating:
         return out
-    cursor = c_symbol(manifest, "__kickos_ram_start")
+    start = c_symbol(manifest, "__kickos_ram_start")
     end = c_symbol(manifest, "__kickos_ram_end")
+    out.append("__kickos_system_arena_c_start = %s;" % start)
+    out.append("__kickos_system_arena_gs_start = %s;" % start)
+    out.append("__kickos_system_arena_ge_start = %s;" % start)
+    prev = "start"
     for n, (what, want, figure) in enumerate(arena_blocks(admitted.tasks, admitted.shared, manifest)):
         if not want:
             continue
         placed = "__kickos_system_arena_%d" % n
-        out.append("%s = ALIGN(%s, 0x%X) + 0x%X;" % (placed, cursor, ram_align(want, manifest),
-                                                  ram_size(want, manifest)))
+        out.extend(arena_step(str(n), prev, ram_size(want, manifest), ram_align(want, manifest)))
         out.append("ASSERT(%s <= %s," % (placed, end))
         out.append("       \"KickOS: the arena cannot hold %s, placed as arch_ram_alloc places it after every "
                    "block before it, from __kickos_ram_start to __kickos_ram_end; %s, or a block before it, "
                    "would have to shrink, or the image's static footprint\")" % (ld_text(what), ld_text(figure)))
-        cursor = placed
+        prev = str(n)
     return out
 
 

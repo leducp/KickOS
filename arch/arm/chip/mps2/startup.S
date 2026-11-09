@@ -4,9 +4,11 @@
  * The QEMU MPS2 machines' startup: the reset vector table. vector[0] = the
  * initial MSP (_estack), vector[1] = Reset_Handler. The kernel exception
  * handlers (SVC/PendSV/SysTick) come from the armv7m arch layer; every external
- * NVIC line routes to the generic kickos_arm_default_irq (line = IPSR-16).
+ * NVIC line routes to the generic kickos_arm_default_irq (line = IPSR-16), except the
+ * dual timer's, which carries the monotonic-clock wrap observer (chip_mps2.cc).
  */
 
+#include <chip_layout.h>
 #include <kickos/chip_limits.h>   /* KICKOS_MAX_IRQ: the NVIC line count */
 #include "core_vectors.inc"        /* shared core-exception vector block */
 
@@ -16,6 +18,7 @@
     .section .isr_vector, "a"
     .align 8                         /* 256-byte aligned (VTOR requirement) */
     .global g_isr_vector
+    .type g_isr_vector, %object
 g_isr_vector:
 #if defined(__ARM_ARCH_8M_MAIN__)
     KICKOS_CORE_VECTORS_V8M
@@ -23,10 +26,14 @@ g_isr_vector:
     KICKOS_CORE_VECTORS_V7M
 #endif
 
-    /* External interrupts 0..47 -> the generic IRQ-as-event entry. */
-    .rept KICKOS_MAX_IRQ
+    .rept KICKOS_LAYOUT_LINE_DUALTIMER_IRQ
     .word kickos_arm_default_irq
     .endr
+    .word kickos_mps2_clock_isr      /* dual timer 1 (clock wrap) */
+    .rept KICKOS_MAX_IRQ - KICKOS_LAYOUT_LINE_DUALTIMER_IRQ - 1
+    .word kickos_arm_default_irq
+    .endr
+    .size g_isr_vector, . - g_isr_vector
 
     .text
     .thumb_func

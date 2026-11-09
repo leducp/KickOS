@@ -91,7 +91,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/build-tools
         with:
-          packages: build-essential m4 curl xz-utils bzip2
+          packages: build-essential m4 curl
       - uses: ./.github/actions/kickos-toolchain
         with:
           family: arm-none-eabi
@@ -107,7 +107,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/build-tools
         with:
-          packages: build-essential m4 curl xz-utils bzip2
+          packages: build-essential m4 curl
       - uses: ./.github/actions/kickos-toolchain
         with:
           family: aarch64-none-elf
@@ -123,7 +123,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/build-tools
         with:
-          packages: build-essential m4 curl xz-utils bzip2
+          packages: build-essential m4 curl
       - uses: ./.github/actions/kickos-toolchain
         with:
           family: riscv64-none-elf
@@ -139,7 +139,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/build-tools
         with:
-          packages: build-essential m4 curl xz-utils bzip2
+          packages: build-essential m4 curl
       - uses: ./.github/actions/kickos-toolchain
         with:
           family: x86_64-elf
@@ -156,7 +156,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/build-tools
         with:
-          packages: build-essential m4 curl xz-utils bzip2 flex bison
+          packages: build-essential m4 curl flex bison
       - uses: ./.github/actions/kickos-toolchain
         with:
           family: xtensa-esp32-elf
@@ -173,7 +173,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/build-tools
         with:
-          packages: build-essential m4 curl xz-utils bzip2
+          packages: build-essential m4 curl
       - uses: ./.github/actions/kickos-toolchain
         with:
           family: rx-elf
@@ -190,13 +190,17 @@ jobs:
       - uses: ./.github/actions/kconfiglib
       - uses: ./.github/actions/build-tools
         with:
-          packages: cmake ninja-build g++
+          packages: cmake ninja-build g++ zsh
       - run: cmake --preset sim
       - run: ctest --preset sim -L tree --no-tests=error --output-on-failure
       - name: the description, composition and judge gates, by name
         run: |
-          tests/ci/ctest_named.sh '^app_judges$|^amp_share$|^chip_kconfig$|^chip_protection$|^platform_descriptions$|^platform_compositions$|^platform_arms$|^platform_coverage$|^platform_tables$|^no_eh_runtime_controls$' \
-            --preset sim -L tree --no-tests=error --output-on-failure
+          out=$(tests/ci/ctest_named.sh '^app_judges$|^amp_share$|^chip_kconfig$|^chip_protection$|^platform_descriptions$|^platform_compositions$|^platform_arms$|^platform_coverage$|^platform_tables$|^no_eh_runtime_controls$|^rig_shells$' \
+            --preset sim -L tree --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
+          printf '%s\n' "$out"
+          case "$out" in
+            *Skipped*) echo "a named gate SKIPPED, which ctest reports as success"; exit 1 ;;
+          esac
 
   # Run the host suite, excluding the source-only checks above.
   sim:
@@ -263,8 +267,7 @@ jobs:
       matrix:
         part: [an386, an386-tick, m33, m7, m3, flat-qemu, flat-qemu-m33, flat-qemu-m7,
                flat-qemu-m3, microbit]
-    # Allow timeout headroom for loaded runners. These QEMU targets use a coarse
-    # semihosting clock; arch_idle_wait spins to keep it advancing.
+    # Allow timeout headroom for loaded runners.
     env:
       # Match the selftest timeout and provide a default for other scripts.
       QEMU_TIMEOUT: "180"
@@ -275,7 +278,7 @@ jobs:
       - uses: ./.github/actions/kconfiglib
       - uses: ./.github/actions/build-tools
         with:
-          packages: cmake ninja-build qemu-system-arm curl xz-utils gdb-multiarch
+          packages: cmake ninja-build qemu-system-arm gdb-multiarch
       - uses: ./.github/actions/kickos-toolchain
         with:
           family: arm-none-eabi
@@ -413,7 +416,7 @@ jobs:
       - uses: ./.github/actions/kconfiglib
       - uses: ./.github/actions/build-tools
         with:
-          packages: cmake ninja-build qemu-system-arm curl xz-utils gdb-multiarch
+          packages: cmake ninja-build qemu-system-arm gdb-multiarch
       - uses: ./.github/actions/kickos-toolchain
         with:
           family: aarch64-none-elf
@@ -464,7 +467,7 @@ jobs:
       - uses: ./.github/actions/kconfiglib
       - uses: ./.github/actions/build-tools
         with:
-          packages: cmake ninja-build qemu-system-arm curl xz-utils
+          packages: cmake ninja-build qemu-system-arm
       - uses: ./.github/actions/kickos-toolchain
         with:
           family: aarch64-none-elf
@@ -476,7 +479,7 @@ jobs:
         run: |
           cmake --preset qemu-arm64-smp
           cmake --build --preset qemu-arm64-smp
-          ctest --preset qemu-arm64-smp -LE tree --no-tests=error --output-on-failure
+          ctest --preset qemu-arm64-smp -E "_gdb_(main|space)$" -LE tree --no-tests=error --output-on-failure
           # Require tests that depend on the configured core count, and the default system's.
           out=$(tests/ci/ctest_named.sh 'qemu_arm64_uaccess|qemu_arm64_smp_arrival|qemu_arm64_smp_doorbell|qemu_arm64_smp_threads|qemu_arm64_slaypeer|qemu_arm64_deadstack|qemu_arm64_golden_system|qemu_arm64_restart_witness|qemu_arm64_line_taker|qemu_arm64_driver_restart|qemu_arm64_driver_line|qemu_arm64_console_restart|^qemu_arm64_sysdefault$|qemu_arm64_sysdefault_spin|qemu_arm64_sysdefault_fault|qemu_arm64_system_link_none|qemu_arm64_system_link_two|qemu_arm64_system_link_program|qemu_arm64_system_link_refused|qemu_arm64_system_link_notool|qemu_arm64_system_link_nocc|qemu_arm64_system_link_rerun|qemu_arm64_system_link_noheap|qemu_arm64_system_link_stack' \
             --preset qemu-arm64-smp --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
@@ -495,7 +498,7 @@ jobs:
             exit 1
           fi
           cmake --build --preset qemu-arm64-smpiso
-          ctest --preset qemu-arm64-smpiso -LE tree --no-tests=error --output-on-failure
+          ctest --preset qemu-arm64-smpiso -E "_gdb_(main|space)$" -LE tree --no-tests=error --output-on-failure
           out=$(tests/ci/ctest_named.sh 'isolated_cores|qemu_arm64_selftest|^qemu_arm64_sysdefault$|qemu_arm64_sysdefault_spin|qemu_arm64_sysdefault_fault|qemu_arm64_system_link_none|qemu_arm64_system_link_two|qemu_arm64_system_link_program|qemu_arm64_system_link_refused|qemu_arm64_system_link_notool|qemu_arm64_system_link_nocc|qemu_arm64_system_link_rerun|qemu_arm64_system_link_noheap|qemu_arm64_system_link_stack' \
             --preset qemu-arm64-smpiso --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
@@ -518,7 +521,7 @@ jobs:
       - uses: ./.github/actions/kconfiglib
       - uses: ./.github/actions/build-tools
         with:
-          packages: cmake ninja-build qemu-system-arm curl xz-utils
+          packages: cmake ninja-build qemu-system-arm
       - uses: ./.github/actions/kickos-toolchain
         with:
           family: aarch64-none-elf
@@ -534,7 +537,7 @@ jobs:
         run: |
           cmake --preset qemu-arm64-a710
           cmake --build --preset qemu-arm64-a710
-          ctest --preset qemu-arm64-a710 -LE tree --no-tests=error --output-on-failure
+          ctest --preset qemu-arm64-a710 -E "_gdb_(main|space)$" -LE tree --no-tests=error --output-on-failure
           out=$(tests/ci/ctest_named.sh 'qemu_arm64_uaccess|qemu_arm64_selftest|qemu_arm64_smp_arrival|qemu_arm64_smp_threads|qemu_arm64_fault_dump|qemu_arm64_kernel_half' \
             --preset qemu-arm64-a710 --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
@@ -557,7 +560,7 @@ jobs:
       - uses: ./.github/actions/kconfiglib
       - uses: ./.github/actions/build-tools
         with:
-          packages: cmake ninja-build qemu-system-arm curl xz-utils
+          packages: cmake ninja-build qemu-system-arm
       - uses: ./.github/actions/kickos-toolchain
         with:
           family: aarch64-none-elf
@@ -576,7 +579,7 @@ jobs:
             exit 1
           fi
           cmake --build --preset qemu-arm64-gicv3
-          ctest --preset qemu-arm64-gicv3 -LE tree --no-tests=error --output-on-failure
+          ctest --preset qemu-arm64-gicv3 -E "_gdb_(main|space)$" -LE tree --no-tests=error --output-on-failure
           # Require tests that depend on the configured kernel-core count, and the default system's.
           out=$(tests/ci/ctest_named.sh 'qemu_arm64_uaccess|qemu_arm64_smp_arrival|qemu_arm64_smp_doorbell|qemu_arm64_smp_threads|qemu_arm64_slaypeer|^qemu_arm64_sysdefault$|qemu_arm64_sysdefault_spin|qemu_arm64_sysdefault_fault|qemu_arm64_system_link_none|qemu_arm64_system_link_two|qemu_arm64_system_link_program|qemu_arm64_system_link_refused|qemu_arm64_system_link_notool|qemu_arm64_system_link_nocc|qemu_arm64_system_link_rerun|qemu_arm64_system_link_noheap|qemu_arm64_system_link_stack' \
             --preset qemu-arm64-gicv3 --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
@@ -601,7 +604,7 @@ jobs:
       - uses: ./.github/actions/kconfiglib
       - uses: ./.github/actions/build-tools
         with:
-          packages: cmake ninja-build qemu-system-arm curl xz-utils
+          packages: cmake ninja-build qemu-system-arm
       - uses: ./.github/actions/kickos-toolchain
         with:
           family: aarch64-none-elf
@@ -615,7 +618,7 @@ jobs:
           # Check the resolved AMP configuration before running its conditional tests.
           . ./.github/scripts/amp-pin.sh build/qemu-arm64-amp 0 shared 4
           cmake --build --preset qemu-arm64-amp
-          ctest --preset qemu-arm64-amp -LE tree --no-tests=error --output-on-failure
+          ctest --preset qemu-arm64-amp -E "_gdb_(main|space)$" -LE tree --no-tests=error --output-on-failure
           out=$(tests/ci/ctest_named.sh 'ipi_fence|qemu_arm64_selftest|^qemu_arm64_sysdefault$|qemu_arm64_sysdefault_spin|qemu_arm64_sysdefault_fault|qemu_arm64_system_link_none|qemu_arm64_system_link_two|qemu_arm64_system_link_program|qemu_arm64_system_link_refused|qemu_arm64_system_link_notool|qemu_arm64_system_link_nocc|qemu_arm64_system_link_rerun|qemu_arm64_system_link_noheap|qemu_arm64_system_link_stack' \
             --preset qemu-arm64-amp --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
@@ -628,7 +631,7 @@ jobs:
           . ./.github/scripts/amp-pin.sh build/qemu-arm64-amp2-n0 0 own 2
           cmake --build --preset qemu-arm64-amp2-n0
           # These tests build the peer and merged partition, then run both kernels.
-          ctest --preset qemu-arm64-amp2-n0 -LE tree --no-tests=error --output-on-failure
+          ctest --preset qemu-arm64-amp2-n0 -E "_gdb_(main|space)$" -LE tree --no-tests=error --output-on-failure
           out=$(tests/ci/ctest_named.sh '^amp_partition$|^amp_peer_arms$|amp_peer_arms_controls|ipi_fence|^qemu_arm64_sysdefault$|qemu_arm64_sysdefault_spin|qemu_arm64_sysdefault_fault|qemu_arm64_system_link_none|qemu_arm64_system_link_two|qemu_arm64_system_link_program|qemu_arm64_system_link_refused|qemu_arm64_system_link_notool|qemu_arm64_system_link_nocc|qemu_arm64_system_link_rerun|qemu_arm64_system_link_noheap|qemu_arm64_system_link_stack' \
             --preset qemu-arm64-amp2-n0 --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
@@ -641,7 +644,7 @@ jobs:
           # Build node 1 to catch accidental reuse of node 0's configuration.
           . ./.github/scripts/amp-pin.sh build/qemu-arm64-amp2-n1 1 own 2
           cmake --build --preset qemu-arm64-amp2-n1
-          ctest --preset qemu-arm64-amp2-n1 -LE tree --no-tests=error --output-on-failure
+          ctest --preset qemu-arm64-amp2-n1 -E "_gdb_(main|space)$" -LE tree --no-tests=error --output-on-failure
           out=$(tests/ci/ctest_named.sh '^qemu_arm64_sysdefault$|qemu_arm64_sysdefault_spin|qemu_arm64_sysdefault_fault|qemu_arm64_system_link_none|qemu_arm64_system_link_two|qemu_arm64_system_link_program|qemu_arm64_system_link_refused|qemu_arm64_system_link_notool|qemu_arm64_system_link_nocc|qemu_arm64_system_link_rerun|qemu_arm64_system_link_noheap|qemu_arm64_system_link_stack' \
             --preset qemu-arm64-amp2-n1 --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
@@ -681,7 +684,7 @@ jobs:
       - uses: ./.github/actions/kconfiglib
       - uses: ./.github/actions/build-tools
         with:
-          packages: cmake ninja-build qemu-system-riscv curl xz-utils
+          packages: cmake ninja-build qemu-system-riscv
       - uses: ./.github/actions/kickos-toolchain
         with:
           family: riscv64-none-elf
@@ -694,7 +697,7 @@ jobs:
         run: |
           cmake --preset qemu-riscv-flat
           cmake --build --preset qemu-riscv-flat
-          ctest --preset qemu-riscv-flat -LE tree --no-tests=error --output-on-failure
+          ctest --preset qemu-riscv-flat -E "_gdb_(main|space)$" -LE tree --no-tests=error --output-on-failure
           out=$(tests/ci/ctest_named.sh '^qemu_riscv_sysdefault$|qemu_riscv_sysdefault_spin|qemu_riscv_sysdefault_fault|qemu_riscv_sysdefault_no_eh_runtime|qemu_riscv_sysdefault_no_driver_path|^qemu_riscv_cxxterm$|qemu_riscv_cxxterm_eh_control|qemu_riscv_system_link_none|qemu_riscv_system_link_two|qemu_riscv_system_link_program|qemu_riscv_system_link_refused|qemu_riscv_system_link_notool|qemu_riscv_system_link_nocc|qemu_riscv_system_link_rerun|qemu_riscv_system_link_noheap|qemu_riscv_system_link_stack|qemu_riscv_system_link_arena' \
             --preset qemu-riscv-flat --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
@@ -778,7 +781,7 @@ jobs:
       - uses: ./.github/actions/kconfiglib
       - uses: ./.github/actions/build-tools
         with:
-          packages: cmake ninja-build qemu-system-riscv curl xz-utils gdb-multiarch
+          packages: cmake ninja-build qemu-system-riscv gdb-multiarch
       - uses: ./.github/actions/kickos-toolchain
         with:
           family: riscv64-none-elf
@@ -815,7 +818,7 @@ jobs:
       - uses: ./.github/actions/kconfiglib
       - uses: ./.github/actions/build-tools
         with:
-          packages: cmake ninja-build qemu-system-riscv curl xz-utils gdb-multiarch
+          packages: cmake ninja-build qemu-system-riscv gdb-multiarch
       - uses: ./.github/actions/kickos-toolchain
         with:
           family: riscv64-none-elf
@@ -959,7 +962,7 @@ jobs:
             || { echo "qemu-system-x86_64 is absent: every image gate below would SKIP and ctest would still exit 0"; exit 1; }
           cmake --preset qemu-x86_64-smp2
           cmake --build build/qemu-x86_64-smp2
-          ctest --test-dir build/qemu-x86_64-smp2 -LE tree --no-tests=error --output-on-failure
+          ctest --test-dir build/qemu-x86_64-smp2 -E "_gdb_(main|space)$" -LE tree --no-tests=error --output-on-failure
           # Require the golden system, the default system's and the out-of-tree app's gates, and the
           # peer-core read of a dead thread's stack.
           out=$(tests/ci/ctest_named.sh 'qemu_x86_64_golden_system|qemu_x86_64_deadstack|qemu_x86_64_restart_witness|^qemu_x86_64_sysdefault$|qemu_x86_64_sysdefault_spin|qemu_x86_64_sysdefault_fault|qemu_x86_64_oot_mcu_app|qemu_x86_64_system_link_none|qemu_x86_64_system_link_two|qemu_x86_64_system_link_program|qemu_x86_64_system_link_refused|qemu_x86_64_system_link_notool|qemu_x86_64_system_link_nocc|qemu_x86_64_system_link_rerun|qemu_x86_64_system_link_noheap' \
@@ -1020,15 +1023,29 @@ jobs:
       - uses: ./.github/actions/kconfiglib
       - uses: ./.github/actions/build-tools
         with:
-          packages: cmake ninja-build curl xz-utils file
+          packages: cmake ninja-build
       - uses: ./.github/actions/kickos-toolchain
         with:
           family: xtensa-esp32-elf
+      # The ROM boots esptool's image format alone: without esptool no .app.bin is built and
+      # the flash text image goes unjudged.
+      - name: esptool
+        run: |
+          uv tool install esptool==5.3.1
+          echo "$(uv tool dir --bin)" >> "$GITHUB_PATH"
       - name: xtensa lx6 (esp32-wroom) build gate
         run: |
+          esptool version
           cmake --preset esp32-wroom
           cmake --build --preset esp32-wroom
           ctest --test-dir build/esp32-wroom -L host -LE tree --no-tests=error --output-on-failure
+          find build/esp32-wroom -name '*.app.bin' | grep -q . || { echo "no .app.bin was built"; exit 1; }
+          out=$(tests/ci/ctest_named.sh '^esp32_wroom_images_esp_segments$' --test-dir build/esp32-wroom --no-tests=error --output-on-failure 2>&1) \
+            || { printf '%s\n' "$out"; exit 1; }
+          printf '%s\n' "$out"
+          case "$out" in
+            *Skipped*) echo "the esp segments gate SKIPPED, which ctest reports as success"; exit 1 ;;
+          esac
           tests/ci/ctest_named.sh 'esp32_wroom_system_link_none|esp32_wroom_system_link_two|esp32_wroom_system_link_program|esp32_wroom_system_link_refused|esp32_wroom_system_link_notool|esp32_wroom_system_link_nocc|esp32_wroom_system_link_rerun|esp32_wroom_system_link_noheap' --test-dir build/esp32-wroom --no-tests=error --output-on-failure
       - name: xtensa lx6 on both cores
         run: |
@@ -1061,7 +1078,7 @@ jobs:
       - uses: ./.github/actions/kconfiglib
       - uses: ./.github/actions/build-tools
         with:
-          packages: cmake ninja-build curl xz-utils file
+          packages: cmake ninja-build
       - uses: ./.github/actions/kickos-toolchain
         with:
           family: rx-elf
@@ -1090,13 +1107,16 @@ jobs:
       matrix:
         preset: [frdmk64f-flat, f411disco-flat, blackpill-flat, picopi-flat, due,
                  xmc4800-relax-flat, qemu-telem, teensy41-flat, pizero2350-flat]
+        include:
+          - preset: qemu-telem
+            emulator: qemu-system-arm
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/kconfiglib
       - uses: ./.github/actions/build-tools
         with:
-          # qemu-telem needs the emulator for its image tests.
-          packages: cmake ninja-build qemu-system-arm curl xz-utils
+          # Only qemu-telem boots an emulator; the other entries leave matrix.emulator empty.
+          packages: cmake ninja-build ${{ matrix.emulator }}
       - uses: ./.github/actions/kickos-toolchain
         with:
           family: arm-none-eabi
@@ -1154,7 +1174,7 @@ jobs:
       - uses: ./.github/actions/kconfiglib
       - uses: ./.github/actions/build-tools
         with:
-          packages: cmake ninja-build curl xz-utils
+          packages: cmake ninja-build
       - uses: ./.github/actions/kickos-toolchain
         with:
           family: arm-none-eabi
@@ -1185,8 +1205,8 @@ jobs:
           fi
           tests/ci/ctest_named.sh "$names" --test-dir build/${{ matrix.preset }} --no-tests=error --output-on-failure
 
-  # Build RP2350 shared-image and separate-image configurations.
-  pizero2350-amp:
+  # Build the RP2350's own-image AMP partition.
+  pizero2350-amp2:
     needs: [changes, toolchain-arm-none-eabi]
     if: needs.changes.outputs.arm == 'true'
     runs-on: ubuntu-26.04
@@ -1196,19 +1216,10 @@ jobs:
       - uses: ./.github/actions/kconfiglib
       - uses: ./.github/actions/build-tools
         with:
-          packages: cmake ninja-build curl xz-utils
+          packages: cmake ninja-build
       - uses: ./.github/actions/kickos-toolchain
         with:
           family: arm-none-eabi
-      - name: armv8-M shared-image AMP, the provisional scaffolding
-        run: |
-          # The shared image uses two cores but declares no AMP crossings, so amp-pin
-          # does not apply. Separate-image nodes below each use one core.
-          cmake --preset pizero2350-amp
-          cmake --build --preset pizero2350-amp
-          ctest --test-dir build/pizero2350-amp -L host -LE tree --no-tests=error --output-on-failure
-          tests/ci/ctest_named.sh 'pizero2350_system_link_none|pizero2350_system_link_two|pizero2350_system_link_program|pizero2350_system_link_refused|pizero2350_system_link_notool|pizero2350_system_link_nocc|pizero2350_system_link_rerun|pizero2350_system_link_noheap|pizero2350_system_link_heap' \
-            --test-dir build/pizero2350-amp --no-tests=error --output-on-failure
       - name: armv8-M own-image partition, both nodes
         run: |
           for node in 0 1; do
@@ -1238,7 +1249,7 @@ jobs:
       - uses: ./.github/actions/kconfiglib
       - uses: ./.github/actions/build-tools
         with:
-          packages: cmake ninja-build qemu-system-arm qemu-system-riscv curl xz-utils
+          packages: cmake ninja-build qemu-system-arm qemu-system-riscv
       - uses: ./.github/actions/kickos-toolchain
         with:
           family: aarch64-none-elf

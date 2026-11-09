@@ -14,6 +14,7 @@
 #include "pin_guard.h"
 #include <kickos/diag.h>
 #include <kickos/arch/clk_q32.h>
+#include <kickos/arch/wrap_extend.h>
 #include <kickos/console_tx.h>
 #include <kickos/io/mmio.h>
 #include <kickos/sys/abi.h>
@@ -40,6 +41,9 @@
 namespace mmap = kickos::imxrt1062::mmap;
 namespace reg = kickos::imxrt1062::reg;
 namespace irq = kickos::imxrt1062::irq;
+
+static_assert(irq::GPT1_IRQ == KICKOS_LAYOUT_LINE_GPT1_IRQ,
+              "startup.S vectors the clock-wrap ISR at KICKOS_LAYOUT_LINE_GPT1_IRQ");
 
 namespace kickos
 {
@@ -140,9 +144,10 @@ namespace
     };
     static_assert(sizeof(flexspi_nor_config) == 0x200, "serial-NOR FCB must be 512 B");
 
-    // Single-pad 0x03 normal read at 30 MHz, no quad-mode enable. LUT instruction =
-    // (opcode<<10)|(pads<<8)|operand, two per word (RM Table 9-16). The LUT and serialClkFreq
-    // are specific to the board's NOR part.
+    // Fast Read Quad I/O (0xEB) at 60 MHz: command on one pad, then address, mode bits, dummy
+    // cycles and data on four. It needs the W25Q64JV's non-volatile QE bit set, which nothing
+    // here writes. LUT instruction = (opcode<<10)|(pads<<8)|operand, two per word (RM Table
+    // 9-16). The LUT and serialClkFreq are specific to the board's NOR part.
     __attribute__((section(".boot_fcb"), used))
     const flexspi_nor_config g_flexspi_config = {
         // memConfig
@@ -150,7 +155,7 @@ namespace
             0x42464346u,   // tag 'FCFB'
             0x56010000u,   // version 'V' 1.0.0
             0,
-            0,             // readSampleClkSrc = internal loopback
+            1,             // readSampleClkSrc = loopback from the DQS pad
             3,             // csHoldTime
             3,             // csSetupTime
             0,             // columnAddressWidth
@@ -160,8 +165,8 @@ namespace
             {0, 0, 0}, 0, {0, 0, 0}, 0, // configCmdSeqs, cfgCmdArgs (+reserved)
             0,             // controllerMiscOption
             1,             // deviceType = Serial NOR
-            1,             // sflashPadType = single pad
-            1,             // serialClkFreq = 30 MHz
+            4,             // sflashPadType = quad
+            3,             // serialClkFreq = 60 MHz
             0,             // lutCustomSeqEnable
             {0, 0},
             KICKOS_LAYOUT_FLEXSPI_FLASH_SIZE, // sflashA1Size, the board file's flash
@@ -170,8 +175,8 @@ namespace
             0, 0, 0,       // timeoutInMs, commandInterval, dataValidTime
             0, 0,          // busyOffset, busyBitPolarity
             {
-                0x08180403u, // [0] CMD_SDR 1p 0x03 | RADDR_SDR 1p 0x18(24b)
-                0x00002404u, // [1] READ_SDR 1p 0x04 | STOP
+                0x0A1804EBu, // [0] CMD_SDR 1p 0xEB | RADDR_SDR 4p 0x18 (24b)
+                0x26043206u, // [1] DUMMY_SDR 4p 6 (mode + dummy) | READ_SDR 4p 0x04
             },
             {0},           // lutCustomSeq (unused)
             {0},           // reserved6
@@ -274,25 +279,22 @@ namespace
     void clock_init() {}
 
     // Monotonic clock: GPT1 free-running, not the DWT, which is debug-domain on the M7. Sourced
-    // from ipg_clk_24M, so it stays 24 MHz across an ARM-PLL retune. The 32-bit counter is
-    // extended to 64 bits in software and must be read at least once per wrap (~179 s).
-    uint32_t g_gpt_hi = 0;   // under the crit section
-    uint32_t g_gpt_last = 0;
-
-    uint64_t gpt_ticks()
+    // from ipg_clk_24M, so it stays 24 MHz across an ARM-PLL retune.
+    struct gpt1_wrap_ops
     {
-        // Thread and ISR context: the wrap extension must be atomic against a concurrent reader.
-        arch_irq_state_t s = arch_irq_save();
-        uint32_t cur = r32(reg::gpt::GPT1_CNT);
-        if (cur < g_gpt_last)
+        static uint32_t count() { return r32(reg::gpt::GPT1_CNT); }
+        static bool pending() { return (r32(reg::gpt::GPT1_SR) & reg::gpt::SR_ROV) != 0; }
+        static bool take()
         {
-            g_gpt_hi++;
+            if (not pending())
+            {
+                return false;
+            }
+            r32(reg::gpt::GPT1_SR) = reg::gpt::SR_ROV;
+            return true;
         }
-        g_gpt_last = cur;
-        uint64_t hi = g_gpt_hi;
-        arch_irq_restore(s);
-        return (hi << 32) | cur;
-    }
+    };
+    kickos::arch_wrap_extend<gpt1_wrap_ops> g_clk_wrap;
 
     void gpt_clock_init()
     {
@@ -310,7 +312,9 @@ namespace
                           | reg::gpt::CR_ENMOD | reg::gpt::CR_DBGEN | reg::gpt::CR_WAITEN
                           | reg::gpt::CR_DOZEEN | reg::gpt::CR_STOPEN;
         r32(reg::gpt::GPT1_CR) = cr;
+        r32(reg::gpt::GPT1_IR) = reg::gpt::IR_ROVIE;
         r32(reg::gpt::GPT1_CR) = cr | reg::gpt::CR_EN;
+        arch_irq_unmask(irq::GPT1_IRQ);
     }
 
     static_assert(KICKOS_BOARD_CONSOLE_BASE == mmap::LPUART6_BASE,
@@ -622,9 +626,14 @@ int arch_pinmux_set(uint32_t port, uint32_t pin, uint32_t func)
 
 uint64_t arch_clock_now(void)
 {
-    uint64_t ticks = gpt_ticks();
+    uint64_t ticks = g_clk_wrap.read();
     constexpr uint64_t MULT = kickos::arch_clk_recip_q32(reg::gpt::GPT_HZ);
     return kickos::arch_clk_mul_q32(ticks, MULT);
+}
+
+void kickos_gpt1_clock_isr(void)
+{
+    g_clk_wrap.on_overflow();
 }
 
 // No WFI: the core clock halts under it, and with it SysTick, the wakeup source, so a sleep

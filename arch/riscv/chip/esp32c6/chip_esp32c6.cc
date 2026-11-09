@@ -22,6 +22,7 @@
 #include "crt_tail.h"
 #include "pin_guard.h"
 #include <kickos/arch/amp_shared.h>
+#include <kickos/arch/clock_fallback.h>
 #include <kickos/arch/rv_trap_ids.h>
 #include <kickos/config/limits.h> // KICKOS_POLL_SPIN_MAX
 #include <kickos/console_tx.h>
@@ -47,6 +48,7 @@
 #include "regs/plic.h"
 #include "regs/rmt.h"
 #include "regs/pcr.h"
+#include "regs/timg.h"
 #include "regs/gpio.h"
 #include "regs/io_mux.h"
 
@@ -72,8 +74,8 @@ extern "C"
     extern kickos::Atomic<uint32_t, kickos::Order::RELAXED> kickos_c6_amp_rtc_hz;
 #endif
 
-    // CPU_CLK, read off PCR before the constructors run (mtime_conv.h); the ROM's PLL until then.
-    uint32_t SystemCoreClock = kickos::esp32c6::PLL_ROOT_HZ;
+    // CPU_CLK, read off PCR before the constructors run (mtime_conv.h).
+    uint32_t SystemCoreClock = 0;
 }
 
 namespace
@@ -702,6 +704,110 @@ static void apm_program_gate(void)
     __asm volatile("fence" ::: "memory");
 }
 
+// T0's latch completes in its own clock domain, so a stopped clock leaves T0UPDATE set.
+static bool timg0_t0_latch(uint32_t& lo)
+{
+    r32(mmap::TIMG0_BASE + reg::timg::T0UPDATE) = reg::timg::T0_UPDATE;
+    for (uint32_t i = 0; i < REG_UPDATE_SPIN_MAX; i++)
+    {
+        if ((r32(mmap::TIMG0_BASE + reg::timg::T0UPDATE) & reg::timg::T0_UPDATE) == 0u)
+        {
+            lo = r32(mmap::TIMG0_BASE + reg::timg::T0LO);
+            return true;
+        }
+    }
+    return false;
+}
+
+// Counts PLL_F80M_CLK on TIMG0's T0 for 1 ms of MTIME at cpu_hz, then hands T0 and its clock
+// back as found. The TRM names no PLL lock bit, and a PLL selected while it does not run stops
+// the core.
+static bool pll_f80m_runs(uint32_t cpu_hz)
+{
+    namespace timg = reg::timg;
+    uintptr_t const t0 = mmap::TIMG0_BASE;
+    uint32_t const clk_found = r32(reg::pcr::TG0_TIMER_CLK_CONF);
+    uint32_t const t0_found = r32(t0 + timg::T0CONFIG);
+    uint32_t const t0_div2 = timg::T0_INCREASE | (1u << timg::T0_DIVIDER_S);
+
+    r32(t0 + timg::T0CONFIG) = t0_div2; // the prescaler is rewritten only with T0 stopped
+    r32(t0 + timg::T0CONFIG) = t0_div2 | timg::T0_DIVCNT_RST;
+    uint32_t clk = clk_found & ~(reg::pcr::TG0_TIMER_CLK_SEL_MASK << reg::pcr::TG0_TIMER_CLK_SEL_S);
+    clk |= (reg::pcr::TG0_TIMER_CLK_SEL_PLL_F80M << reg::pcr::TG0_TIMER_CLK_SEL_S)
+           | reg::pcr::TG0_TIMER_CLK_EN;
+    if (KICKOS_WITNESS_CLOCK_FALLBACK)
+    {
+        // The probe's clock gated off: the count a dead PLL leaves.
+        clk &= ~reg::pcr::TG0_TIMER_CLK_EN;
+    }
+    r32(reg::pcr::TG0_TIMER_CLK_CONF) = clk;
+    r32(t0 + timg::T0CONFIG) = t0_div2 | timg::T0_EN;
+    r32(reg::clint::MTIMECTL) |= reg::clint::MTIMECTL_MTCE;
+
+    uint32_t probe_from = 0;
+    uint32_t probe_to = 0;
+    bool latched = timg0_t0_latch(probe_from);
+    uint32_t const mtime_from = r32(reg::clint::MTIME);
+    uint32_t const window = cpu_hz / 1000u;
+    for (uint32_t i = 0; i < KICKOS_POLL_SPIN_MAX; i++)
+    {
+        if (r32(reg::clint::MTIME) - mtime_from >= window)
+        {
+            break;
+        }
+    }
+    latched = timg0_t0_latch(probe_to) and latched;
+    uint32_t const mtime_to = r32(reg::clint::MTIME);
+
+    r32(t0 + timg::T0CONFIG) = t0_div2;
+    r32(reg::pcr::TG0_TIMER_CLK_CONF) = clk_found;
+    r32(t0 + timg::T0CONFIG) = (t0_found & ~timg::T0_EN) | timg::T0_DIVCNT_RST;
+    r32(t0 + timg::T0CONFIG) = t0_found;
+
+    return latched
+           and kickos::esp32c6::pll_probe_alive(probe_to - probe_from, mtime_to - mtime_from, cpu_hz);
+}
+
+// CPU_CLK to the PLL at 160 MHz, AHB_CLK at 40 MHz. A crystal boot switches only once the PLL is
+// seen running, and otherwise stays on the crystal. The UART's function clock is its own PCR
+// selection, which no step here moves.
+static void pll_bring_up(void)
+{
+    namespace kc = kickos::esp32c6;
+    uint32_t const sys = r32(reg::pcr::SYSCLK_CONF);
+    uint32_t const sel = (sys >> reg::pcr::SOC_CLK_SEL_S) & reg::pcr::SOC_CLK_SEL_MASK;
+    if (sel == kc::SOC_CLK_SEL_XTAL)
+    {
+        uint32_t const cpu = r32(reg::pcr::CPU_FREQ_CONF);
+        uint32_t const xtal_hz = kc::cpu_clk_hz(
+            kc::SOC_CLK_SEL_XTAL,
+            (sys >> reg::pcr::CLK_XTAL_FREQ_S) & reg::pcr::CLK_XTAL_FREQ_MASK,
+            (cpu >> reg::pcr::CPU_LS_DIV_NUM_S) & reg::pcr::CPU_LS_DIV_NUM_MASK, 0u, false);
+        if (not pll_f80m_runs(xtal_hz))
+        {
+            return;
+        }
+    }
+    else if (sel != kc::SOC_CLK_SEL_PLL)
+    {
+        return;
+    }
+    // The AHB divider first: CPU_CLK must stay a multiple of AHB_CLK at every step.
+    uint32_t ahb = r32(reg::pcr::AHB_FREQ_CONF);
+    ahb &= ~(reg::pcr::AHB_HS_DIV_NUM_MASK << reg::pcr::AHB_HS_DIV_NUM_S);
+    r32(reg::pcr::AHB_FREQ_CONF) = ahb | (reg::pcr::AHB_HS_DIV_NUM_BY_4 << reg::pcr::AHB_HS_DIV_NUM_S);
+    uint32_t cpu = r32(reg::pcr::CPU_FREQ_CONF);
+    cpu &= ~((reg::pcr::CPU_HS_DIV_NUM_MASK << reg::pcr::CPU_HS_DIV_NUM_S)
+             | reg::pcr::CPU_HS_120M_FORCE);
+    r32(reg::pcr::CPU_FREQ_CONF) = cpu;
+    if (sel == kc::SOC_CLK_SEL_XTAL)
+    {
+        arch_console_flush_sync();
+        uint32_t const to_pll = sys & ~(reg::pcr::SOC_CLK_SEL_MASK << reg::pcr::SOC_CLK_SEL_S);
+        r32(reg::pcr::SYSCLK_CONF) = to_pll | (kc::SOC_CLK_SEL_PLL << reg::pcr::SOC_CLK_SEL_S);
+    }
+}
+
 // MTIME counts CPU_CLK, so a CPU clock that is not 160 MHz >> n stops the boot.
 //
 // noinline: tests/static/check_image_rules.sh (c6_hp) finds its call in Reset_Handler.
@@ -814,6 +920,7 @@ void Reset_Handler(void)
     c6_early_mark('B'); // .data copied + .bss zeroed
     kickos_crt_images_data();
     c6_early_mark('C'); // every image's .data copied and the rest of its window zeroed
+    pll_bring_up();
     mtime_rate_init(); // a constructor may read SystemCoreClock
     kickos_crt_ctors();
     c6_early_mark('D'); // C++ static constructors (init_array) ran

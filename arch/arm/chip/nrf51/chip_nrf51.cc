@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // nRF51822 (BBC micro:bit v1, Cortex-M0) chip backend, the armv6m verification target under QEMU
-// (-M microbit), with ARM semihosting for console, clock and exit.
+// (-M microbit), with ARM semihosting for console and exit.
 //
 // SCOPE: a QEMU validation vehicle for the armv6m arch layer. QEMU models two things the real
 // nRF51 M0 lacks:
@@ -14,8 +14,15 @@
 // Routing is per-peripheral PSEL, so arch_pinmux_set is the declining ENOSYS fallback.
 
 #include <kickos/arch/arch.h>
+#include <kickos/arch/wrap_extend.h>
+#include <kickos/chip_limits.h>
+#include <kickos/io/mmio.h>
+#include <kickos/units.h>
+#include <chip_layout.h>
 #include "crt_tail.h"
 #include "semihost.h"
+
+#include "regs/timer.h"
 
 #include <stdint.h>
 
@@ -29,31 +36,76 @@ extern "C"
     uint32_t SystemCoreClock = 16000000u;
 }
 
+namespace
+{
+    namespace tmr = kickos::nrf51::reg::timer;
+    using namespace kickos::units;
+
+    static_assert(1_s % KICKOS_CHIP_TIMEBASE_HZ == 0, "arch_clock_now scales by whole ns per tick");
+    constexpr uint64_t NS_PER_TICK = 1_s / KICKOS_CHIP_TIMEBASE_HZ;
+
+    // The counter has no register of its own: a capture copies it into CC[0]. A reader
+    // preempted between the two accesses reads the preempter's later capture, which is still a
+    // count taken inside its own read. COMPARE[3] against a CC[3] of 0 is the wrap.
+    struct timer0_wrap_ops
+    {
+        static uint32_t count()
+        {
+            r32(tmr::TASKS_CAPTURE0) = 1u;
+            return r32(tmr::CC0);
+        }
+        static bool pending() { return r32(tmr::EVENTS_COMPARE3) != 0; }
+        static bool take()
+        {
+            if (not pending())
+            {
+                return false;
+            }
+            r32(tmr::EVENTS_COMPARE3) = 0u;
+            return true;
+        }
+    };
+    kickos::arch_wrap_extend<timer0_wrap_ops> g_clk_wrap;
+
+    // PRESCALER and BITMODE are written only while the timer is stopped (sec.18.1).
+    void timer0_clock_init()
+    {
+        r32(tmr::TASKS_STOP) = 1u;
+        r32(tmr::MODE) = tmr::MODE_TIMER;
+        r32(tmr::BITMODE) = tmr::BITMODE_32;
+        r32(tmr::PRESCALER) = tmr::PRESCALER_1MHZ;
+        r32(tmr::CC3) = 0u;
+        r32(tmr::TASKS_CLEAR) = 1u;
+        r32(tmr::EVENTS_COMPARE3) = 0u;
+        r32(tmr::INTENSET) = tmr::INTEN_COMPARE3;
+        r32(tmr::TASKS_START) = 1u;
+        arch_irq_unmask(KICKOS_LAYOUT_LINE_TIMER0_IRQ);
+    }
+}
+
 extern "C"
 {
 
 void arch_init(void)
 {
+    timer0_clock_init();
     kickos_armv6m_init();
 }
 
-// v6-M has no DWT, so both clocks come from SYS_CLOCK.
 uint64_t arch_clock_now(void)
 {
-    static uint64_t last = 0;
-    return kickos::semihost::clock_now(last);
+    return g_clk_wrap.read() * NS_PER_TICK;
 }
 
+void kickos_nrf51_clock_isr(void)
+{
+    g_clk_wrap.on_overflow();
+}
+
+// v6-M has no DWT, so the trace clock is the low word of the clock's own count.
 uint32_t arch_trace_now(void)
 {
-    return static_cast<uint32_t>(arch_clock_now() / 1000ull);
-}
-
-// Replaces the WFI idle fallback: QEMU <= 10 stops the SYS_CLOCK clock while the core halts in
-// WFI, so a sleep with every thread idle never wakes.
-void arch_idle_wait(void)
-{
-    __asm volatile("nop");
+    return timer0_wrap_ops::count();
 }
 
 void arch_shutdown(int status)

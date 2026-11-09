@@ -13,3 +13,5 @@ kickos_add_kseam(kickos_kseam_irq_smp
           KICKOS_SEAM_BUDGET_IRQ_BINDINGS=1 KICKOS_SEAM_BUDGET_NOTIFICATIONS=1)
 kickos_add_unit_test(NAME irq_retire_charge SOURCES retire_charge.cc
   LIBRARIES kickos_kseam_irq_smp)
+kickos_add_unit_test(NAME irq_retire_wait SOURCES retire_wait.cc
+  LIBRARIES kickos_kseam_irq_smp)

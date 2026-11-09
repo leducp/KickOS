@@ -108,7 +108,6 @@ thread  lx6 reclaimwit_drain rwsink root=kickos_driver_task stack=KICKOS_USER_ST
                reason: the declared console driver, from its task's entry through its start and bring-up to its service body, on the stack the kernel gives a driver's entry
 unsized lx6 _free_r 64 calls=__retarget_lock_acquire_recursive,__retarget_lock_release_recursive \
                reason: newlib, measured on the linked images: entry a1 32 and call8 into its __malloc_lock or __malloc_unlock, each entry a1 32 and a callx8 into the hook
-unsized lx6 __umoddi3 32 reason: libgcc's _umoddi3.o, entry a1 32, and it references no other symbol
 unsized lx6 kickos_user_cas 32 reason: user_cas.S, entry a1 32 and an S32C1I loop, calling nothing
 
 # --- armv8a ------------------------------------------------------------------------------

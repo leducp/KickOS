@@ -28,9 +28,6 @@ namespace kickos::espuart
     // TX-empty is armed on demand by kos_uart_write; an open arms the RX sources alone.
     constexpr uint32_t RX_INT_MASK = reg::uart::RXFIFO_FULL_INT | reg::uart::RXFIFO_OVF_INT
                                      | reg::uart::FRM_ERR_INT | reg::uart::PARITY_ERR_INT;
-
-    // Bounds every register poll in the family, far longer than any legitimate wait.
-    constexpr uint32_t POLL_MAX = 1000000u;
 }
 
 #endif

@@ -112,6 +112,10 @@ namespace kickos
     // rather than the current one: the switch path knows the incoming thread before it is seated.
     void policy_on_switch_in(Thread* t);
     uint64_t policy_next_timed_event(Thread const* t);
+    // on_switch_in where a switch is booked to land later: true when the booking settled it, with
+    // no slice to stamp or a live deadline the switch keeps; false, writing nothing, when the
+    // stamp waits for the landing.
+    bool policy_on_switch_in_booked(Thread* t);
 
 #if KICKOS_KERNEL_CORES > 1
     // Cross-core placement, answered over the policy's own ready structure. `place` names where

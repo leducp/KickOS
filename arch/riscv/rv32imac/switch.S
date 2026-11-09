@@ -412,7 +412,7 @@ trap_entry:
     /* Deferred PMP commit: after the physical swap and before mret, with MIE=0, so it is
        atomic with the swap. Every caller-saved clobber is reloaded by .Lrestore. */
     call    kickos_arch_mpu_commit
-    j       .Lrestore
+    j       .Lland
 
 /* --- ecall. The frame keeps the USER mstatus (MPP = caller priv) for the eventual return. */
 .Lecall:
@@ -447,7 +447,7 @@ trap_entry:
 #endif
     /* Deferred PMP commit, the same seam as .Lswitch. */
     call    kickos_arch_mpu_commit
-    j       .Lrestore
+    j       .Lland
 .Lecall_slow:
     lw      a0, F_A0(sp)            /* nr */
     lw      a1, F_A1(sp)
@@ -480,6 +480,18 @@ svc_trampoline:
     addi    t0, t0, 4
     sw      t0, F_MEPC(sp)
     j       .Lrestore
+
+/* --- A booked switch lands, sp on the incoming frame. The landing is C with a frame, so it
+   runs on the trap stack, which no path to this label holds a frame on: on sp it would stand on
+   the user stack of a thread that has never trapped. */
+.Lland:
+    csrr    sp, mscratch            /* the trap-stack top */
+    la      t0, g_arch_current
+    lw      a0, 0(t0)
+    call    kickos_switch_landed
+    la      t0, g_arch_current
+    lw      t0, 0(t0)
+    lw      sp, 0(t0)               /* back on the incoming frame */
 
 /* --- Shared restore epilogue: pop the frame at sp, mret. */
 .Lrestore:
@@ -611,7 +623,7 @@ svc_trampoline:
     call    kickos_trace_switch_done
 #endif
     call    kickos_arch_mpu_commit
-    j       .Lrestore
+    j       .Lland
 
 /* --- Unhandled exception. mcause/mepc/mtval/mstatus are still live, no trap having been
    taken since the vector. A NON-ZERO return means fault isolation claimed this fault and
@@ -652,7 +664,7 @@ arch_start:
     /* Deferred PMP commit, the same seam as .Lswitch. MIE is still 0 here; the fabricated
        mstatus enables it on the mret. */
     call    kickos_arch_mpu_commit
-    j       .Lrestore
+    j       .Lland
 
 /* kickos_panic_stack_enter(msg, file, line, top): leave the interrupted stack for the
    reporter's own (arch.h). a0-a2 pass through untouched; a3 is the seat.
