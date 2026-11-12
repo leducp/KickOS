@@ -25,7 +25,9 @@ function(pspguard_image target mode)
   target_include_directories(${target} PRIVATE "${PROJECT_SOURCE_DIR}/user/apps/common/include")
   target_compile_definitions(${target} PRIVATE KICKOS_PSPGUARD_MODE=${mode}
                              "KICKOS_PSPGUARD_PEER_NAME=\"${target}_peer\"")
-  if(KICKOS_HAVE_STACK_LIMIT)
+  if(mode EQUAL 8)
+    kickos_app_system(${target} COMPOSITION "${CMAKE_CURRENT_SOURCE_DIR}/race.yaml")
+  elseif(KICKOS_HAVE_STACK_LIMIT)
     add_executable(${target}_peer main.cc)
     target_include_directories(${target}_peer PRIVATE
                                "${PROJECT_SOURCE_DIR}/user/apps/common/include")
@@ -46,8 +48,8 @@ endfunction()
 pspguard_image(pspguard_svc 2)
 
 # THE LOW EDGE, and the one arm here that expects the trap to be ACCEPTED: the PSP is parked
-# with exactly the room the SVC site asks for, which is legal once svc_trampoline moves SP
-# onto the caller's own kernel block before it calls anything. What it witnesses is the
+# with exactly the room the SVC site asks for, which is legal once the SVC handler starts the
+# dispatch on the caller's own kernel block. What it witnesses is the
 # stronger statement, that the syscall returns AND the band the child poisoned below that PSP,
 # inside its own stack, is intact.
 #
@@ -57,6 +59,12 @@ pspguard_image(pspguard_svc 2)
 # preset it is registered for. main.cc #errors if this arm is built without the blocks.
 if(KICKOS_KERNEL_STACKS)
   pspguard_image(pspguard_svcdepth 5)
+endif()
+
+# Mode 2 with a waker parked on a line the gate's debugger pends inside the containment. Both
+# backends and every core: the refusal is contained, so the wild thread stays in main's task.
+if(KICKOS_KERNEL_STACKS)
+  pspguard_image(pspguard_race 8)
 endif()
 
 # The PendSV arms, armv7m only. They provoke an ASYNCHRONOUS switch, so each needs a
@@ -80,6 +88,10 @@ if(KICKOS_KERNEL_STACKS AND NOT KICKOS_HAVE_MPU)
   pspguard_image(pspguard_block 6 kickos_fault_stack_top)
 endif()
 
+# The upper leg against a basic frame whose top words cross stack_hi. Both arches scrub that
+# frame at the switch-in, so both carry the arm.
+pspguard_image(pspguard_framehi 10)
+
 if(KICKOS_ARCH STREQUAL "armv7m")
   pspguard_image(pspguard 0)
 
@@ -88,6 +100,7 @@ if(KICKOS_ARCH STREQUAL "armv7m")
   string(FIND "${KICKOS_MCPU}" "mfpu" _pg_has_fpu)
   if(_pg_has_fpu GREATER -1)
     pspguard_image(pspguard_fp 1)
+    pspguard_image(pspguard_fphi 9)
   endif()
 
   # The two bound legs the in-stack arms above cannot reach: a PSP with room to spare BELOW

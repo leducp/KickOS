@@ -2,7 +2,8 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // The values the RP2xxx bring-up computes, free of the chips' register headers so a host unit
-// test can pin them: the system timer's tick divisor and the pad side of a pin function.
+// test can pin them: the alias offsets, the system timer's tick divisor and the pad side of a pin
+// function.
 
 #ifndef KICKOS_ARCH_ARM_CHIP_RP2XXX_BRINGUP_VALUES_H
 #define KICKOS_ARCH_ARM_CHIP_RP2XXX_BRINGUP_VALUES_H
@@ -11,6 +12,10 @@
 
 namespace kickos::rp2xxx
 {
+    // Every APB register is mirrored at these offsets from its own address; SIO is not.
+    constexpr uintptr_t ATOMIC_SET = 0x2000u;
+    constexpr uintptr_t ATOMIC_CLR = 0x3000u;
+
     // arch_clock_now reads the system timer as microseconds.
     constexpr uint32_t TICK_HZ = 1000000u;
     // CYCLES is 9 bits on both parts (RP2040 WATCHDOG TICK, RP2350 DS 8.5.1).
@@ -37,6 +42,13 @@ namespace kickos::rp2xxx
     constexpr uint32_t PIN_INPUT = 1u << 8;
     constexpr uint32_t PIN_DRIVE = 1u << 9;
     constexpr uint32_t PIN_SIO_OUT = 1u << 16;
+    static_assert(((PIN_INPUT | PIN_DRIVE | PIN_SIO_OUT) & PIN_FUNCSEL_MASK) == 0u
+                      and (PIN_INPUT & PIN_DRIVE) == 0u
+                      and ((PIN_INPUT | PIN_DRIVE) & PIN_SIO_OUT) == 0u,
+                  "each flag of the func word is a bit of its own, outside the funcsel");
+    static_assert(PIN_FUNCSEL_MASK == 0x0000001fu and PIN_INPUT == 0x00000100u
+                      and PIN_DRIVE == 0x00000200u and PIN_SIO_OUT == 0x00010000u,
+                  "a moved bit changes KOS_SYS_PINMUX_SET's func word for every caller");
 
     // The pad bits `func` clears in one store: the part's `release` bits always, its output
     // disable `od` on PIN_DRIVE.

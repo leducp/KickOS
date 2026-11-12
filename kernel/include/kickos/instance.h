@@ -162,8 +162,9 @@ namespace kickos
         SchedSeq head[KICKOS_KERNEL_CORES] = {};       // entries published toward each core
         uint32_t staged[KICKOS_KERNEL_CORES] = {};     // entries written toward each core
         SchedSeq drop_asked[KICKOS_KERNEL_CORES] = {}; // drops p has asked of each holder
-        // Every core staged toward or drop-asked since the last flush: the flush reads nothing
-        // else while it is zero, so a stage or an ask that misses it is never published.
+        // Every core staged toward, drop-asked or asked a dispatch since the last flush: the
+        // flush reads nothing else while it is zero, so a stage or an ask that misses it is never
+        // published.
         uint32_t raise = 0;
         // p's level plus one, published at every change of p's bitmap once p has started: zero
         // is "not started", and a non-zero initialiser would move Kernel out of .bss.
@@ -230,6 +231,12 @@ namespace kickos
         {
             return boots.cells[c];
         }
+        // Core c's deadlines, sorted ascending by deadline_ns. A parked thread's deadline is on
+        // the queue its queue_core names, which is the core it parked on.
+        Thread*& sleepq(KernelCore c)
+        {
+            return sleepqs.cells[c];
+        }
 
         // --- scheduler mechanism (sched.cc, policy_fifo_rr.cc) ---
         // One set per core. A thread sits on exactly one core's structure, named by its
@@ -264,13 +271,13 @@ namespace kickos
 #endif
 
         // Tasks currently holding a creator hold (task.cc). Declared here, away from the
-        // task pool below, because the two bytes before `sleepq` are padding on every
+        // task pool below, because the two bytes before `sleepqs` are padding on every
         // 32-bit target regardless of telemetry posture: microbit's `_ebss` is its arena
         // base, so a byte that grows the struct costs a whole allocation granule.
         uint16_t task_holds = 0;
 
         // --- tickless time (time.cc) ---
-        Thread* sleepq = nullptr; // sorted ascending by deadline_ns
+        PerCore<Thread*> sleepqs;
         // What each core's one-shot comparator is programmed for, and the sole authority for
         // it. UINT64_MAX means disarmed. Zero-initialised deliberately: 0 is a value no
         // computation here can produce (arm_slice answers UINT64_MAX for a FIFO thread,
@@ -406,12 +413,12 @@ namespace kickos
     };
 
     // `task_holds` costs nothing only while it occupies the two bytes of padding that a
-    // 32-bit target leaves before `sleepq`; this pins that adjacency. 32-bit only: a 64-bit
-    // host aligns `sleepq` to 8, so six bytes follow `task_holds` there.
+    // 32-bit target leaves before `sleepqs`; this pins that adjacency. 32-bit only: a 64-bit
+    // host aligns `sleepqs` to 8, so six bytes follow `task_holds` there.
     static_assert(sizeof(void*) != 4
-                      or offsetof(Kernel, sleepq)
+                      or offsetof(Kernel, sleepqs)
                              == offsetof(Kernel, task_holds) + sizeof(Kernel::task_holds),
-                  "task_holds no longer abuts sleepq on a 32-bit target, so the free-padding "
+                  "task_holds no longer abuts sleepqs on a 32-bit target, so the free-padding "
                   "claim needs re-measuring: microbit's arena base moves with Kernel's size");
 
     namespace detail
@@ -428,6 +435,14 @@ namespace kickos
 #if KICKOS_KERNEL_CORES > 1
     void sched_flush_owed(uint32_t me);
 
+    // Asks each core in `cores` for a dispatch where the caller's lock span ends. Never the
+    // caller's own bit: the flush hands the mask to klock_resched_ask, which strips it.
+    inline void sched_ask_at_span_end(uint32_t cores)
+    {
+        SchedOut& out = kernel().sched_out[kickos_kernel_core()];
+        out.raise = out.raise | cores;
+    }
+
     // Publishes what core `me` staged toward each peer, then asks each peer that gained an entry
     // and each holder it drop-asked. Called where `me`'s lock span ends, and never while a switch
     // it booked still has the outgoing frame live: a target could then link a thread whose
@@ -441,6 +456,10 @@ namespace kickos
         }
         sched_flush_owed(me);
         return true;
+    }
+#else
+    inline void sched_ask_at_span_end(uint32_t)
+    {
     }
 #endif
 }

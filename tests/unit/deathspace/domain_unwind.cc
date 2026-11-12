@@ -46,6 +46,7 @@ extern "C"
 
     uintptr_t arch_ram_base(void) { return 0; }
     size_t arch_ram_size(void) { return 0; }
+    struct arch_reserved_span arch_window_apertures(void) { return arch_reserved_span(); }
 
     arch_irq_state_t arch_irq_save(void) { return arch_irq_state_t{}; }
     void arch_irq_restore(arch_irq_state_t) {}

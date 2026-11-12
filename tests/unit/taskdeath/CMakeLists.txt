@@ -7,6 +7,7 @@
 # the claim is about ORDER, which has no on-target observable. sweep_wait.cc runs one member's
 # whole exit inside another's sweep gap, an interleaving one core reaches only through a wake.
 kickos_add_unit_test(NAME task_death SOURCES group_kill.cc creator_hold.cc sweep_wait.cc
+  slay_walk.cc
   LIBRARIES kickos_kseam)
 
 # A lend's drain at its pop bound, which the posture lowers to one pop so a two-hop chain reaches

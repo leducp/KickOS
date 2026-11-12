@@ -34,7 +34,7 @@ namespace kickos
             Thread* const victim = cancelled_thread();
             Sweep const parked = sweep_of(sleep_a_while);
             expect_same_sweep(reference, parked, victim);
-            EXPECT_EQ(kernel().sleepq, nullptr) << "the cancelled sleeper was queued";
+            EXPECT_EQ(kernel().sleepq(kickos_kernel_core()), nullptr) << "the cancelled sleeper was queued";
         }
     }
 }

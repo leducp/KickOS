@@ -3,7 +3,7 @@
 # Copyright (c) 2026 Philippe Leduc
 #
 # PSP-BOUNDS gate: boot a `pspguard` image and assert the guarded site REFUSED to write
-# through a PSP with no room below it for the {r4-r11, EXC_RETURN} block.
+# through a PSP with no room below it for the {r4-r11} block.
 #
 # The absence of a refusal is the failure, and the arm's own announce is checked first: a boot
 # that never reached the arm otherwise reads the same as one whose PSP was accepted.
@@ -14,16 +14,15 @@
 # changes its call site, so this gate never silently accepts the weaker outcome.
 #
 # MODE 5 IS THE OPPOSITE CLAIM and has its own clause set below. Its PSP is parked with
-# exactly the room the SVC site asks for, which svc_trampoline's transfer onto the caller's
+# exactly the room the SVC site asks for, which the SVC handler's transfer onto the caller's
 # kernel block makes legal, so what this gate requires there is an ACCEPTANCE plus an intact
 # poison band under stack_lo, ordered after the acceptance so a compiled-out readback cannot
 # pass. <need>, <site>, <why> and <outcome> are unused on that arm; they stay in the argv so a
 # call site cannot become the wrong arm by dropping arguments.
 #
-# <need> is passed in, because only the reported byte count says which figure fired: 36 is the
-# switcher's plain push, 100 is that push with the FP callee block under it, and the SVC site
-# reports its whole extent, the trampoline's scratch push plus the exception pair that can
-# preempt the window it spends on this PSP before it reaches the caller's kernel block.
+# <need> is passed in, because only the reported byte count says which figure fired: 32 is the
+# switcher's plain push, 96 is that push with the FP callee block under it, and the SVC site
+# reports its whole extent, the exception pair that can preempt its return's window.
 #
 # <site> comes from ICSR.VECTACTIVE, read by the refusal itself. Both guarded pushes print
 # through one helper, so only the named exception separates "the switcher refused" from "the
@@ -44,7 +43,13 @@
 # stacking abort, no software refusal reaches the wire, and main outlives it. <need>, <site>
 # and <why> are unused there.
 #
-# usage: check_pspguard.sh <pspguard.elf> <mode> <need> <site> <why> <banner> <outcome>
+# MODE 8 TAKES A DEBUGGER as an eighth argument. gdb stops the run inside the containment once it
+# holds the kernel lock and pends the line the app's higher-priority waker is parked on, so the
+# interrupt is delivered the moment the lock drops: a device firing in that window, placed
+# exactly. The waker must then be what runs; the slain thread's exit stub running in its place
+# is the defect.
+#
+# usage: check_pspguard.sh <pspguard.elf> <mode> <need> <site> <why> <banner> <outcome> [<gdb>]
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
@@ -59,7 +64,35 @@ banner="${6:?$_usage}"
 outcome="${7:?$_usage}"
 
 need_qemu_machine
-run_image "$elf"
+if [ "$mode" = 8 ]; then
+    gdb="${8:?mode 8 needs the debugger: $_usage <gdb>}"
+    if ! command -v "$gdb" >/dev/null 2>&1; then
+        echo "SKIP: $gdb not found"
+        exit 77
+    fi
+    scratch_dir
+    mkfifo "$TMP/gdb.in" "$TMP/gdb.out" || fail "mkfifo failed in $TMP"
+    # Bounded as the boot it rides on, which run_image charges. thread_cancel_kind is the first
+    # call the containment makes under its lock.
+    timeout "${QEMU_TIMEOUT:-20}" "$gdb" -nx -batch -ex 'set pagination off' -ex 'set confirm off' \
+        -ex "file $elf" -ex "target remote | sh -c 'cat $TMP/gdb.out & exec cat > $TMP/gdb.in'" \
+        -ex 'break kickos_thread_contain_wild_stack' -ex 'continue' -ex 'delete' \
+        -ex 'break kickos::thread_cancel_kind' -ex 'continue' -ex 'delete' \
+        -ex "set \$line = '(anonymous namespace)::RACE_LINE'" \
+        -ex 'set {unsigned int}(0xE000E200 + 4 * ($line / 32)) = 1 << ($line % 32)' \
+        -ex 'printf "INJECTED line %d\n", $line' \
+        -ex 'bt 2' -ex 'detach' > "$TMP/gdb.log" 2>&1 &
+    QEMU_EXTRA="${QEMU_EXTRA:-} -chardev pipe,id=kosgdb,path=$TMP/gdb -gdb chardev:kosgdb -S"
+    run_image "$elf"
+    wait
+    if ! grep -q "^INJECTED line" "$TMP/gdb.log" \
+        || ! grep -q "^#1 .*kickos_thread_contain_wild_stack" "$TMP/gdb.log"; then
+        fail "mode=8: the debugger never pended the line inside the containment:
+$(tail -n 8 "$TMP/gdb.log")"
+    fi
+else
+    run_image "$elf"
+fi
 
 if has "\[pspguard\] ERROR"; then
     fail "pspguard reported a failed arm (the PSP was accepted, or the arm never ran)"
@@ -173,6 +206,23 @@ if [ "$mode" = 1 ]; then
     if ! has "\[pspguard\] \[lazyfp\] INTACT"; then
         fail "mode=1: no lazy-FP verdict reached the wire, so nothing here witnessed the
     reservation: the checker never ran, or this is not the mode 1 image"
+    fi
+fi
+
+# MODE 8: the waker woken by the line pended inside the containment must have run before main
+# saw the wild thread gone. CORRUPTED names a waker that never ran; NOT ASSERTED names a line
+# that did not fire during the refusal, so main had to raise it and nothing was witnessed.
+if [ "$mode" = 8 ]; then
+    assert_no_panic "mode=8: a thread installed in the woken waker's place ran as it"
+    if has "race\] CORRUPTED"; then
+        fail "mode=8: the waker woken during the containment never ran"
+    fi
+    if has "race\] NOT ASSERTED"; then
+        fail "mode=8: the line pended inside the containment did not wake the waker before the
+    wild thread was gone, so this run witnessed nothing"
+    fi
+    if ! has "\[pspguard\] \[race\] INTACT"; then
+        fail "mode=8: no race verdict reached the wire"
     fi
 fi
 

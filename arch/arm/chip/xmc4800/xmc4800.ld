@@ -33,7 +33,7 @@ SECTIONS
 {
     .text :
     {
-        KEEP(*(.isr_vector))
+        KICKOS_KERNEL_KEEP(.isr_vector)
         KICKOS_CORTEXM_TEXT
     } > FLASH
 

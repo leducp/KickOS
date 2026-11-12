@@ -36,6 +36,24 @@ inline Atomic<uint32_t, Order::RELAXED>& stdout_nonblock()
     return flag;
 }
 
+// This task's console fds still open, bit n for fd n of 0 to 2: fd 0 reads, fds 1 and 2 write.
+// close() clears a bit and nothing sets one again, since no call opens an fd. One word per
+// image, as stdout_nonblock.
+inline uint32_t& console_fds()
+{
+    static uint32_t fds = 0x7u;
+    return fds;
+}
+
+inline bool console_fd_open(int fd)
+{
+    if (fd < 0 or fd > 2)
+    {
+        return false;
+    }
+    return (__atomic_load_n(&console_fds(), __ATOMIC_ACQUIRE) & (1u << fd)) != 0u;
+}
+
 // The bytes a write took, and where that is short of them all, the kernel's answer that stopped
 // it; error is 0 once every byte went.
 struct WriteResult

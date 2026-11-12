@@ -8,9 +8,8 @@
 #
 # Run as: cmake -DSRC=<repo root> -DOUT=<file> -P tests/static/preset_boards.cmake
 #
-# KICKOS_BOARD is set on a handful of base presets and INHERITED by every -flat,
-# -telem and -bench variant, so a line-shaped scan finds a board for a third of the file
-# and none for the rest. The inherit walk below is where a variant's board comes from,
+# KICKOS_BOARD is set on a handful of base presets and INHERITED by every -flat and
+# -telem variant, so a line-shaped scan finds a board for only part of the file. The inherit walk below is where a variant's board comes from,
 # and KICKOS_CONFIG_VARIANT and KICKOS_AMP_NODE_ID come the same way.
 #
 # A preset whose board never resolves is emitted as @none rather than dropped: the

@@ -49,36 +49,6 @@
     .type kickos_lx6_switch, @function
 kickos_lx6_switch:
     entry   a1, 32
-#if KICKOS_BENCH
-    /* Bench: bank the PREVIOUS switch's cost (end-start), then stamp this switch's
-       start. Done here in `from`'s windowed context, where a call is safe; the windowed
-       exit below cannot host a call, so the cost lands one switch late. a2=from/a3=to
-       survive the call4 (they sit below the callee window).
-
-       THE END CELL IS CONSUMED ON READ. Only arch_switch refreshes it, past the retw at
-       the COOP exit below: an IRQ-frame resume never returns there and leaves the cell
-       holding a stamp OLDER than the start written a few instructions further down, and the
-       next entry would subtract the two and bank a delta near 2^32 as a switch cost. Cleared
-       here, a switch that resumed a preempted thread contributes no sample rather than a
-       wrong one.
-
-       BOTH CELLS ARE THIS CORE'S. CCOUNT is per core on this die, so a pair read across
-       cores is not a duration at all, and a shared cell would also bank one core's switch
-       onto the other's row. */
-    PERCPU_CELL a6, g_bench_sw_end, a5
-    l32i    a4, a6, 0
-    beqz    a4, .Lbench_prime         /* no previous switch yet */
-    movi    a7, 0
-    s32i    a7, a6, 0
-    PERCPU_CELL a6, g_bench_sw_start, a5
-    l32i    a6, a6, 0
-    sub     a6, a4, a6                /* a6 = delta = end - start (call4 arg0) */
-    call4   kickos_bench_switch_done
-.Lbench_prime:
-    rsr.ccount a7
-    PERCPU_CELL a6, g_bench_sw_start, a5
-    s32i    a7, a6, 0                 /* stamp this switch's start */
-#endif
 #if KICKOS_TELEMETRY
     /* SWITCH record, emitted before any state save while still in `from`'s windowed
        context. from=a2 / to=a3 are the definitive switch args (no shared-state
@@ -124,9 +94,6 @@ kickos_lx6_switch:
     COOP_FP_CTL_RESTORE a4
     l32i    a4, a3, CTX_PS        /* to->ps */
     l32i    a0, a3, CTX_PC        /* to->pc (return addr, carries CALLINC) */
-    /* The bench window is NOT closed here. arch_switch stamps the end cell where this retw
-       lands, so the ps write, the windowed return and the underflow that reloads the
-       incoming frame from its base save area are all inside the measured span. */
     wsr.ps  a4
     rsync
     retw

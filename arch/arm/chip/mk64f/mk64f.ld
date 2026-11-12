@@ -5,22 +5,21 @@
  * (K64 Sub-Family Reference Manual K64P144M120SF5RM.)
  *
  *   Flash : 1 MiB  @ 0x0000_0000
- *   SRAM  : 256 KiB, contiguous: SRAM_L 64 KiB @ 0x1FFF_0000 + SRAM_U 192 KiB
- *           @ 0x2000_0000  ->  0x1FFF_0000 .. 0x2003_0000
+ *   SRAM  : SRAM_L 64 KiB @ 0x1FFF_0000, SRAM_U 192 KiB @ 0x2000_0000
  *
  * CRITICAL: the 16-byte Flash Configuration Field at 0x0000_0400 (FSEC/FOPT/
  * FPROT) is loaded at reset. A wrong/zeroed FSEC secures or mass-erase-disables
  * the part (bricks debug access), so .fcf is placed here explicitly and KEPT.
  */
 
+/* No object may straddle 0x2000_0000: an unaligned or multi-word access across it is
+ * unsupported (RM 3.5.3.1, ARMv7-M ARM B3.1), and so is a backdoor burst (RM 3.5.3.3). chip.yaml
+ * states it as the arena's bank line, which cortexm.ld.h keeps every linked object off. */
 #include <chip_layout.h>
 #include <cortexm.ld.h>
 
 ENTRY(Reset_Handler)
 
-/* SRAM is two banks joined at 0x2000_0000. Aligned CPU word accesses cross the seam;
- * unaligned and burst accesses across it are unsupported (RM 3.5.3.1), hence
- * -mno-unaligned-access in the toolchain, and a DMA or burst buffer must not straddle it. */
 MEMORY
 {
     KICKOS_LINK_FLASH
@@ -34,13 +33,13 @@ SECTIONS
 {
     .isr_vector ORIGIN(FLASH) :
     {
-        KEEP(*(.isr_vector))
+        KICKOS_KERNEL_KEEP(.isr_vector)
     } > FLASH
 
     /* The vector table (0x198 bytes) fits below the field; code follows above 0x410. */
     .fcf 0x00000400 :
     {
-        KEEP(*(.fcf))
+        KICKOS_KERNEL_KEEP(.fcf)
     } > FLASH
 
     .text :

@@ -3,8 +3,8 @@
 //
 // Infineon XMC4800 (XMC4800 Relax Kit, Cortex-M4F) chip backend (XMC4700/XMC4800 RM V1.3).
 //
-// clock_init() runs the SCU from the 12 MHz crystal PLL: the uncalibrated fOFI (~24 MHz) is too
-// inaccurate for a stable UART baud.
+// The SCU runs from the 12 MHz crystal PLL: the uncalibrated fOFI (~24 MHz) is too inaccurate for
+// a stable UART baud.
 
 #include "regs.h"
 #include <kickos/chip_mmap.h>
@@ -14,12 +14,12 @@
 #include "regs/port.h"
 #include "regs/scu.h"
 #include "regs/usic.h"
+#include "clock_bringup.h"
 
 #include <kickos/arch/arch.h>
 #include <kickos/arch/bounded_wait.h>
 #include "pin_guard.h"
 #include <kickos/arch/clk_anchor.h>
-#include <kickos/arch/clock_fallback.h>
 #include <kickos/console_tx.h>
 #include <kickos/io/mmio.h>
 
@@ -32,6 +32,7 @@ namespace scu = kickos::xmc::reg::scu;
 namespace ccu4 = kickos::xmc::reg::ccu4;
 namespace flash = kickos::xmc::reg::flash;
 namespace rp = kickos::xmc::reg::port;
+namespace clocktree = kickos::xmc::clocktree;
 
 namespace
 {
@@ -46,6 +47,7 @@ namespace kickos
 
 extern "C"
 {
+    void kickos_armv7m_ccr_init(void);
     void kickos_armv7m_init(void);
     void kickos_xmc_usic_init(void);
     bool kickos_xmc_usic_write(char const* buf, size_t n);
@@ -53,21 +55,11 @@ extern "C"
     extern void (*__init_array_start[])();
     extern void (*__init_array_end[])();
 
-    uint32_t SystemCoreClock = 144000000u; // fCPU after clock_init (drives SysTick)
+    uint32_t SystemCoreClock = 144000000u; // fCPU after the bring-up (drives SysTick)
 }
 
 namespace
 {
-    // ---- Clock tree: 12 MHz XTAL -> system PLL -> fSYS=fCPU=144 MHz -----------
-    // fVCO = 12 MHz * NDIV/PDIV = 288 MHz; fPLL = fVCO/K2DIV. Each PLLCON1 field is written as
-    // (value-1).
-    uint32_t pllcon1_value(uint32_t k2div)
-    {
-        return ((scu::PLL_NDIV - 1u) << scu::PLLCON1_NDIV_SHIFT)
-             | ((k2div - 1u) << scu::PLLCON1_K2DIV_SHIFT)
-             | ((scu::PLL_PDIV - 1u) << scu::PLLCON1_PDIV_SHIFT);
-    }
-
     // --- CCU40: the monotonic time base (RM ch.23) ------------------------------
     // Not DWT_CYCCNT: its reads are unreliable on this silicon (observed returning DWT_CTRL's
     // value), and a 32->64 wrap extension turns one bad read into a phantom 2^32 jump that
@@ -143,121 +135,9 @@ namespace
                | lo;
     }
 
-    // Lets a K2DIV step settle (~50 us).
-    void clock_delay()
-    {
-        // Volatile so -Os keeps the wait.
-        for (volatile uint32_t i = 0; i < 8000u;)
-        {
-            i = i + 1;
-            __asm volatile("nop");
-        }
-    }
-
     // Written ONLY at a rate edge: init() in arch_init and reprice() in arch_cpu_clock_set. The
     // rate is fCCU = fSYS = SystemCoreClock.
     kickos::arch_clk_anchor g_clk;
-
-    // Flash read wait-states: an fCPU increase past the current setting's access window makes a
-    // fetch return before the data is valid, a fault and not merely wrong timing (RM 8.4.4).
-    // Widen before a rise, relax after a fall.
-    void set_flash_ws(uint32_t ws)
-    {
-        uint32_t fcon = r32(flash::FCON);
-        fcon &= ~flash::FCON_WSPFLASH_MASK;
-        fcon |= (ws << 0) & flash::FCON_WSPFLASH_MASK;
-        r32(flash::FCON) = fcon;
-    }
-
-    // Walks K2DIV one step at a time: a large K2DIV DECREASE (a frequency RISE) draws a current
-    // step the core supply cannot service in one edge (a VDDC droop), so never jump. The PLL
-    // stays locked across a K2DIV change.
-    void pll_k2div_staircase(uint32_t from_k2, uint32_t to_k2)
-    {
-        uint32_t k = from_k2;
-        while (k > to_k2)
-        {
-            k--;
-            r32(scu::PLLCON1) = pllcon1_value(k);
-            clock_delay();
-        }
-        while (k < to_k2)
-        {
-            k++;
-            r32(scu::PLLCON1) = pllcon1_value(k);
-            clock_delay();
-        }
-    }
-
-    void clock_init()
-    {
-        // Wait-states MUST be raised BEFORE the CPU clock scales up, else flash fetches fault.
-        uint32_t fcon = r32(flash::FCON);
-        fcon &= ~flash::FCON_WSPFLASH_MASK;
-        fcon |= flash::FCON_WSPFLASH_4CYC;
-        r32(flash::FCON) = fcon;
-
-        // Bring-up transients must not trap.
-        uint32_t traps = scu::TRAP_SOSCWDGT | scu::TRAP_SVCOLCKT | scu::TRAP_UVCOLCKT;
-        r32(scu::TRAPDIS) |= traps;
-        r32(scu::TRAPCLR) = traps;
-
-        r32(scu::PLLCON0) &= ~(scu::PLLCON0_VCOPWD | scu::PLLCON0_PLLPWD);
-
-        if ((r32(scu::OSCHPCTRL) & scu::OSCHPCTRL_MODE_MASK) != 0)
-        {
-            uint32_t osc = r32(scu::OSCHPCTRL);
-            osc &= ~(scu::OSCHPCTRL_MODE_MASK | scu::OSCHPCTRL_OSCVAL_MASK);
-            osc |= scu::OSCHPCTRL_OSCVAL;
-            r32(scu::OSCHPCTRL) = osc;
-
-            r32(scu::PLLCON2) &= ~scu::PLLCON2_PINSEL;
-            r32(scu::PLLCON0) &= ~scu::PLLCON0_OSCRES;
-
-            if (not kickos::arch::wait_set(r32(scu::PLLSTAT), scu::PLLSTAT_OSC_USABLE))
-            {
-                SystemCoreClock = 24000000u; // no usable crystal: the CPU stays on fOFI
-                return;
-            }
-            r32(scu::TRAPDIS) &= ~scu::TRAP_SOSCWDGT;
-        }
-
-        // Lock first at a low K2DIV, then ramp.
-        r32(scu::PLLCON0) |= scu::PLLCON0_VCOBYP;
-        r32(scu::PLLCON0) |= scu::PLLCON0_FINDIS;
-        r32(scu::PLLCON1) = pllcon1_value(12); // 288/12 = 24 MHz
-        r32(scu::PLLCON0) |= scu::PLLCON0_OSCDISCDIS;
-        r32(scu::PLLCON0) &= ~scu::PLLCON0_FINDIS;
-        r32(scu::PLLCON0) |= scu::PLLCON0_RESLD;
-
-        if (not kickos::arch::wait_set(r32(scu::PLLSTAT), scu::PLLSTAT_VCOLOCK)
-            or KICKOS_WITNESS_CLOCK_FALLBACK)
-        {
-            SystemCoreClock = 24000000u; // PLL never locked: the CPU stays on fOFI
-            return;
-        }
-
-        r32(scu::PLLCON0) &= ~scu::PLLCON0_VCOBYP;
-        (void)kickos::arch::wait_clear(r32(scu::PLLSTAT), scu::PLLSTAT_VCOBYST);
-        // Re-arm the trap for the system VCO, not the USB VCO (never powered here).
-        r32(scu::TRAPDIS) &= ~scu::TRAP_SVCOLCKT;
-
-        // fSYS = fPLL, fCPU = fSYS, fPERIPH = fCPU/2.
-        r32(scu::SYSCLKCR) = scu::SYSCLKCR_SYSSEL_PLL;
-        r32(scu::CPUCLKCR) = 0;
-        r32(scu::PBCLKCR) = scu::PBCLKCR_PBDIV_DIV2;
-
-        // Stepped, to avoid a VDDC droop.
-        r32(scu::PLLCON0) &= ~scu::PLLCON0_OSCDISCDIS;
-        r32(scu::PLLCON1) = pllcon1_value(6); clock_delay(); // 288/6 = 48 MHz
-        r32(scu::PLLCON1) = pllcon1_value(4); clock_delay(); // 288/4 = 72 MHz
-        r32(scu::PLLCON1) = pllcon1_value(3); clock_delay(); // 288/3 = 96 MHz
-        r32(scu::PLLCON1) = pllcon1_value(2); clock_delay(); // 288/2 = 144 MHz
-
-        // fPLL stays the system clock through SLEEP, or a post-print WFI rescales the USIC baud
-        // mid-shift.
-        r32(scu::SLEEPCR) |= scu::SLEEPCR_SYSSEL_PLL;
-    }
 
     // Privileged-write allowlist for KOS_SYS_PERIPH_REG_WRITE, keyed on the EXACT register
     // address, never on a block or a range.
@@ -326,8 +206,8 @@ extern "C"
 
 void arch_init(void)
 {
-    // clock_init FIRST: the baud follows the live fPERIPH and SysTick derives from fCPU.
-    clock_init();
+    // The clock FIRST: the baud follows the live fPERIPH and SysTick derives from fCPU.
+    SystemCoreClock = clocktree::bring_up();
     ccu4_clock_init();
     g_clk.init(SystemCoreClock);
     kickos_xmc_usic_init();
@@ -387,14 +267,14 @@ uint64_t arch_cpu_clock_set(uint32_t target)
     {
         // Wait-states BEFORE the frequency climbs; every intermediate point is <= want_hz, so
         // want_ws covers them all.
-        set_flash_ws(want_ws);
-        pll_k2div_staircase(cur_k2, want_k2);
+        clocktree::set_flash_ws(want_ws);
+        clocktree::pll_k2div_staircase(cur_k2, want_k2);
     }
     else
     {
         // Frequency first, then relax the wait-states: the old ones are safe across the descent.
-        pll_k2div_staircase(cur_k2, want_k2);
-        set_flash_ws(want_ws);
+        clocktree::pll_k2div_staircase(cur_k2, want_k2);
+        clocktree::set_flash_ws(want_ws);
     }
 
     SystemCoreClock = want_hz;
@@ -404,9 +284,7 @@ uint64_t arch_cpu_clock_set(uint32_t target)
     return want_hz;
 }
 
-// Every USIC runs at fPERIPH = fCPU / PBCLKCR.PBDIV. BOTH TERMS ARE READ LIVE: clock_init
-// writes PBCLKCR only after its two degrade returns, so on the fOFI path PBDIV is still 0 and
-// fPERIPH equals fCPU. Any other block returns 0.
+// A USIC's fPERIPH; any other block returns 0.
 uint32_t arch_periph_clock_hz(uintptr_t base)
 {
     bool in_usic = base >= mmap::USIC0_CH0_BASE and base < mmap::USIC0_CH0_BASE + USIC_MODULE_SPAN;
@@ -420,11 +298,7 @@ uint32_t arch_periph_clock_hz(uintptr_t base)
     }
     if (in_usic)
     {
-        if ((r32(scu::PBCLKCR) & scu::PBCLKCR_PBDIV_DIV2) != 0u)
-        {
-            return SystemCoreClock / 2u;
-        }
-        return SystemCoreClock;
+        return clocktree::fperiph_hz(SystemCoreClock);
     }
     return 0;
 }
@@ -506,6 +380,7 @@ int arch_bitband_present(void)
 
 void Reset_Handler(void)
 {
+    kickos_armv7m_ccr_init();
     kickos_armv7m_enable_fpu();
     r32(kickos::arm::SCB_VTOR) = mmap::FLASH_CACHED_BASE;
 

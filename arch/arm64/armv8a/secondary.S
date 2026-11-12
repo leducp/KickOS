@@ -83,7 +83,7 @@ kickos_armv8a_secondary_entry:
     msr     vbar_el1, x0
     isb
 
-    msr     sctlr_el1, x7                   /* M, C and I as the primary runs with them */
+    msr     sctlr_el1, x7                   /* the primary's whole SCTLR_EL1 */
     isb                                     /* the next instruction is fetched translated */
 
     /* Through a register: the displacement to the high half exceeds every branch's. */

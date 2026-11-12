@@ -11,6 +11,9 @@
 #                       boot would reach is refused before it, and with none handed nothing is;
 #   scratch_dir         a subshell that registers the cleanup handler, as poll_image does, and
 #                       run_image under uefi-pe, leaves its parent's scratch directory in place;
+#   KOS_SILENCE_S       run_image lets a run that keeps printing outlive the bound and keeps its
+#                       exit status, stops one gone quiet at 124 with its lines in OUT, and
+#                       refuses a ctest TIMEOUT;
 #   after               finds a line whole, carried within one with `part`, or split by a
 #                       foreign line, and refuses a literal ending in a digit, which a foreign
 #                       line ending in that digit completes, and one read off the end of a line
@@ -86,6 +89,38 @@ chmod +x "$TMP/emulator"
     poll_image "$TMP/image" "planted: up" >/dev/null
 ) 2>/dev/null
 [ -d "$TMP" ] || fail "a subshell's poll_image removed this shell's scratch directory $TMP"
+
+# --- KOS_SILENCE_S --------------------------------------------------------------------------
+cat > "$TMP/slow" <<'EOF'
+#!/bin/sh
+for l in 1 2 3 4 5 6 7; do echo "planted: $l"; sleep 0.5; done
+exit 5
+EOF
+printf '#!/bin/sh\necho "planted: 1"\necho "planted: 2"\nexec sleep 30\n' > "$TMP/quiet"
+chmod +x "$TMP/slow" "$TMP/quiet"
+# Prints RC and OUT's line count.
+silent_run() { # <emulator> <silence> [<ctest timeout>]
+    (
+        QEMU="$1"
+        QEMU_MACHINE=planted
+        KOS_SILENCE_S="$2"
+        KOS_CTEST_TIMEOUT_S="${3:-}"
+        if [ -z "$KOS_CTEST_TIMEOUT_S" ]; then
+            unset KOS_CTEST_TIMEOUT_S
+        fi
+        run_image "$TMP/image" >/dev/null
+        echo "$RC $(printf '%s\n' "$OUT" | grep -c '^planted: ')"
+    ) 2>/dev/null
+}
+ran="$(silent_run "$TMP/slow" 2)"
+[ "$ran" = "5 7" ] \
+    || bad "a run printing every 0.5s for 3.5s under a 2s silence bound ended as '$ran', not '5 7'"
+ran="$(silent_run "$TMP/quiet" 2)"
+[ "$ran" = "124 2" ] \
+    || bad "a run quiet after two lines ended as '$ran' under a 2s silence bound, not '124 2'"
+if silent_run "$TMP/slow" 2 60 >/dev/null; then
+    bad "run_image admits a silence bound under a ctest TIMEOUT"
+fi
 
 # --- after and log_holds --------------------------------------------------------------------
 CORES=4
@@ -231,5 +266,5 @@ fi
 
 [ "$rc" -eq 0 ] || exit 1
 echo "PASS: boot_bound charges every boot to its TIMEOUT, a subshell leaves its parent's scratch
-  directory, and after, log_holds, require_root_depth, require_drivers_up and image_raw_set read
-  the planted inputs as the witnesses need"
+  directory, a silence bound stops only a quiet run, and after, log_holds, require_root_depth,
+  require_drivers_up and image_raw_set read the planted inputs as the witnesses need"

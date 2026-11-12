@@ -4,7 +4,8 @@
 // The USB CDC class layer's bulk IN pump and the service's flush over a recording fake
 // controller: a transfer that ends on a full packet is closed by a zero-length one, the flush
 // completes only once the host has taken it, each configuration opens the stream with the
-// identity rows, and output is held until the host's terminal is ready for it.
+// identity rows, output is held until the host's terminal is ready for it, and nothing leaves
+// the ring while the bus is suspended, an unplug included.
 
 #include <kickos/sys/usb_cdc_service.h>
 
@@ -112,7 +113,8 @@ namespace
         Rig()
         {
             kickos::console::shared_init<usb::Transport>(&sh);
-            sh.configured = 1;
+            configure();
+            open();
         }
 
         void queue(uint32_t n)
@@ -175,6 +177,12 @@ namespace
                 before = dev.in_lens.size();
                 complete();
             }
+        }
+
+        void bus(uint32_t event)
+        {
+            dev.events = event;
+            cdc.service_irq();
         }
 
         // The host takes the bulk IN buffer the controller holds.
@@ -244,7 +252,8 @@ TEST(UsbZlp, a_bus_reset_owes_no_zero_length_packet)
     r.dev.events = usb::KOS_USB_EV_BUS_RESET;
     r.pass();
     EXPECT_EQ(usb::Transport::flush(&r.sh), 0);
-    r.sh.configured = 1;
+    r.configure();
+    r.open();
     r.pass();
     std::vector<uint32_t> const want = {KOS_USB_CDC_BULK_MAX_PACKET};
     EXPECT_EQ(r.dev.in_lens, want);
@@ -300,11 +309,11 @@ TEST(UsbHold, output_waits_for_the_line_coding_sent_after_the_host_raises_dtr)
     r.line_state(KOS_CDC_CTRL_DTR | KOS_CDC_CTRL_RTS);
     r.pass();
     EXPECT_TRUE(r.dev.in_lens.empty()) << "the opener's termios is not set yet";
-    EXPECT_NE(r.cdc.park_us(), KOS_TIMEOUT_NONE) << "a hold must bound the IRQ thread's park";
+    EXPECT_NE(r.cdc.max_irq_wait_us(), KOS_TIMEOUT_NONE) << "a hold must bound the IRQ thread's wait";
     r.line_coding();
     r.drain();
     EXPECT_EQ(r.dev.in_bytes, std::string(IDENTITY) + std::string(10u, 'x'));
-    EXPECT_EQ(r.cdc.park_us(), KOS_TIMEOUT_NONE);
+    EXPECT_EQ(r.cdc.max_irq_wait_us(), KOS_TIMEOUT_NONE);
 }
 
 TEST(UsbHold, an_opener_that_sets_no_line_coding_is_answered_once_the_hold_expires)
@@ -317,7 +326,7 @@ TEST(UsbHold, an_opener_that_sets_no_line_coding_is_answered_once_the_hold_expir
     r.pass();
     EXPECT_TRUE(r.dev.in_lens.empty());
     g_now += 1u;
-    EXPECT_EQ(r.cdc.park_us(), 0u);
+    EXPECT_EQ(r.cdc.max_irq_wait_us(), 0u);
     r.pass();
     r.drain();
     EXPECT_EQ(r.dev.in_bytes, IDENTITY);
@@ -353,4 +362,95 @@ TEST(UsbHold, every_dtr_rise_holds_again)
     r.line_coding();
     r.drain();
     EXPECT_EQ(r.dev.in_bytes, std::string(10u, 'x'));
+}
+
+TEST(UsbHold, a_hold_that_ends_while_the_bus_sleeps_lets_the_irq_thread_park)
+{
+    Rig r;
+    ASSERT_EQ(r.cdc.bring_up(), 0);
+    r.configure();
+    r.bus(usb::KOS_USB_EV_SUSPEND);
+    g_now += usb::KOS_USB_HOLD_UNOPENED_NS;
+    r.pass();
+    EXPECT_EQ(r.cdc.max_irq_wait_us(), KOS_TIMEOUT_NONE) << "the IRQ thread polls a sleeping bus";
+}
+
+TEST(UsbHold, a_hold_that_ends_with_no_configuration_lets_the_irq_thread_park)
+{
+    Rig r;
+    ASSERT_EQ(r.cdc.bring_up(), 0);
+    r.configure();
+    r.dev.setup = {};
+    r.dev.setup.bmRequestType = KOS_USB_REQ_TYPE_STANDARD;
+    r.dev.setup.bRequest = KOS_USB_SET_CONFIGURATION;
+    r.dev.setup.wValue = 0u;
+    r.bus(usb::KOS_USB_EV_SETUP);
+    g_now += usb::KOS_USB_HOLD_UNOPENED_NS;
+    r.pass();
+    EXPECT_EQ(r.cdc.max_irq_wait_us(), KOS_TIMEOUT_NONE) << "the IRQ thread polls an unconfigured bus";
+}
+
+TEST(UsbUnplug, an_unplug_holds_the_ring_and_the_replug_opens_with_the_rows)
+{
+    Rig r;
+    ASSERT_EQ(r.cdc.bring_up(), 0);
+    r.configure();
+    r.open();
+    r.drain();
+    ASSERT_EQ(r.dev.in_bytes, IDENTITY);
+    size_t const sent = r.dev.in_lens.size();
+    r.bus(usb::KOS_USB_EV_SUSPEND);
+    r.queue(10u);
+    r.pass();
+    EXPECT_EQ(r.dev.in_lens.size(), sent) << "a packet went to a bus with no host";
+    r.bus(usb::KOS_USB_EV_BUS_RESET);
+    EXPECT_EQ(static_cast<uint32_t>(r.sh.tx_lost_link), 0u) << "the replug lost the held bytes";
+    r.pass();
+    EXPECT_EQ(r.dev.in_lens.size(), sent) << "nothing goes before the new host configures";
+    r.configure();
+    r.open();
+    r.drain();
+    EXPECT_EQ(r.dev.in_bytes, std::string(IDENTITY) + IDENTITY + std::string(10u, 'x'))
+        << "the replug's stream opens with the rows, then the bytes held across the unplug";
+}
+
+TEST(UsbUnplug, a_resume_continues_the_stream_without_the_rows)
+{
+    Rig r;
+    ASSERT_EQ(r.cdc.bring_up(), 0);
+    r.configure();
+    r.open();
+    r.drain();
+    r.bus(usb::KOS_USB_EV_SUSPEND);
+    r.queue(10u);
+    r.pass();
+    size_t const sent = r.dev.in_lens.size();
+    r.bus(usb::KOS_USB_EV_RESUME);
+    ASSERT_EQ(r.dev.in_lens.size(), sent + 1u) << "the resume itself restarts the pump";
+    r.drain();
+    EXPECT_EQ(r.dev.in_bytes, std::string(IDENTITY) + std::string(10u, 'x'));
+}
+
+TEST(UsbUnplug, a_setup_proves_a_bus_awake_that_was_last_read_suspended)
+{
+    Rig r;
+    r.bus(usb::KOS_USB_EV_SUSPEND);
+    r.queue(10u);
+    r.configure();
+    r.open();
+    r.drain();
+    EXPECT_EQ(r.dev.in_bytes, std::string(10u, 'x'));
+}
+
+TEST(UsbUnplug, a_suspend_read_after_a_setup_in_the_same_pass_holds)
+{
+    Rig r;
+    r.queue(10u);
+    // DTR already high: this setup starts no output hold.
+    r.dev.setup = {};
+    r.dev.setup.bmRequestType = KOS_USB_REQ_TYPE_CLASS;
+    r.dev.setup.bRequest = KOS_CDC_SET_CONTROL_LINE_STATE;
+    r.dev.setup.wValue = KOS_CDC_CTRL_DTR | KOS_CDC_CTRL_RTS;
+    r.bus(usb::KOS_USB_EV_SETUP | usb::KOS_USB_EV_SUSPEND);
+    EXPECT_TRUE(r.dev.in_lens.empty()) << "the state read last is the bus's now";
 }

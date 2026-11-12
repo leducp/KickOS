@@ -3,7 +3,8 @@
  *
  * NOT a C header: the GNU ld macros of an RV32IMAC image, which each chip's image template
  * (image.ld, or <chip>.image.ld beside its script) instantiates. KICKOS_RV32_IMAGE_PAD, which a
- * template may define first, is the boundary every part of a code span ends on.
+ * template may define first, is the boundary every part of a code span ends on, and
+ * KICKOS_RV32_IMAGE_CODE_REGION the region the span links in, RAM unless the template says.
  */
 #ifndef KICKOS_ARCH_RISCV_COMMON_RV32IMAC_IMAGE_LD_H
 #define KICKOS_ARCH_RISCV_COMMON_RV32IMAC_IMAGE_LD_H
@@ -12,6 +13,9 @@
 
 #ifndef KICKOS_RV32_IMAGE_PAD
 #define KICKOS_RV32_IMAGE_PAD 4
+#endif
+#ifndef KICKOS_RV32_IMAGE_CODE_REGION
+#define KICKOS_RV32_IMAGE_CODE_REGION RAM
 #endif
 
 /* Image n's code span: header, text and rodata, its DWARF EH ended by a zero-length CIE, its
@@ -25,7 +29,7 @@
         KICKOS_LD_IMAGE_SYM(n, code_start) = .;                               \
         KEEP(*kickos_image##n.o(.kickos_image_header))                        \
         . = ALIGN(KICKOS_RV32_IMAGE_PAD);                                     \
-    } > RAM                                                                   \
+    } > KICKOS_RV32_IMAGE_CODE_REGION                                         \
     .kickos_image##n##_text : ALIGN(4)                                        \
     {                                                                         \
         *kickos_image##n.o(.text .text.*)                                     \
@@ -37,7 +41,7 @@
         KEEP(*kickos_image##n.o(.eh_frame))                                   \
         LONG(0)                                                               \
         . = ALIGN(KICKOS_RV32_IMAGE_PAD);                                     \
-    } > RAM                                                                   \
+    } > KICKOS_RV32_IMAGE_CODE_REGION                                         \
     .kickos_image##n##_init_array : ALIGN(4)                                  \
     {                                                                         \
         KICKOS_LD_IMAGE_SYM(n, ctor_start) = .;                               \
@@ -45,12 +49,12 @@
         KEEP(*kickos_image##n.o(.init_array))                                 \
         KICKOS_LD_IMAGE_SYM(n, ctor_end) = .;                                 \
         . = ALIGN(KICKOS_RV32_IMAGE_PAD);                                     \
-    } > RAM                                                                   \
+    } > KICKOS_RV32_IMAGE_CODE_REGION                                         \
     .kickos_image##n##_dtpl (NOLOAD) : ALIGN(4 + 4 * (tpl))                   \
     {                                                                         \
         . += (tpl) * SIZEOF(.kickos_image##n##_data);                         \
         . = ALIGN(4);                                                         \
-    } > RAM                                                                   \
+    } > KICKOS_RV32_IMAGE_CODE_REGION                                         \
     KICKOS_LD_IMAGE_SYM(n, code_end) = .;
 
 /* Image n's window at `base`, or where RAM has room, aligned to `align`: gp small data and .data,

@@ -187,6 +187,8 @@ namespace kickos
         // Defer resched_after_wake until current() is no longer needed, using the
         // highest-priority thread woken. Place other woken threads separately.
         [[nodiscard]] bool wake_no_resched(Thread* t, Held held);
+        // Takes no pass from a parked current: its own reschedule, which every park site ends its
+        // span with, is the one switch away.
         void resched_after_wake(Thread* t, Held held);
 
 #if KICKOS_KERNEL_CORES > 1
@@ -194,6 +196,26 @@ namespace kickos
         // Required for each thread made ready that is not passed to the deferred reschedule.
         void place_ready(Thread* t, Held held);
 #endif
+
+        // `t`, readied without a pass by a walk that takes one pass at its end: *top keeps the
+        // highest readied, the first on a tie, for that pass, and the other is placed.
+        inline void keep_top(Thread* t, Thread** top, [[maybe_unused]] Held held)
+        {
+            Thread* placed = t;
+            if (*top == nullptr or t->prio > (*top)->prio)
+            {
+                placed = *top;
+                *top = t;
+            }
+#if KICKOS_KERNEL_CORES > 1
+            if (placed != nullptr)
+            {
+                place_ready(placed, held);
+            }
+#else
+            (void)placed;
+#endif
+        }
 
 #if KICKOS_ARCH_HAS_IPC_FASTPATH
         // The bookkeeping half of switch_to, for the IPC fastpath, which runs inside the

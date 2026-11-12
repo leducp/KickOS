@@ -346,9 +346,9 @@ namespace kickos
             args[0] = KOS_SYS_CALL_REG;
             args[1] = badged;
             args[2] = static_cast<uint32_t>(kos_call_lens_pack(4, KOS_CALL_REG_BYTES));
-            uint32_t const taken = ipc_fast_taken_count();
+            uint16_t const seq = c->call_seq;
             ASSERT_NE(kickos_ipc_fastpath(args), nullptr) << "the fastpath refused the call";
-            EXPECT_EQ(ipc_fast_taken_count(), taken + 1u);
+            EXPECT_EQ(c->call_seq, static_cast<uint16_t>(seq + 1u)) << "the call opened no epoch";
             EXPECT_NE(info.reply_cap, KOS_CAP_NONE);
             EXPECT_EQ(info.badge, BADGE) << "the fastpath dropped the caller's badge";
         }

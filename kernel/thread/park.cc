@@ -376,15 +376,43 @@ namespace kickos
         }
     }
 
-    void task_cancel_group(Task* t, Held held)
+    void task_cancel_mark(Task* t, [[maybe_unused]] Held held)
     {
         if (t == nullptr)
         {
             return;
         }
         Kernel& k = kernel();
-        // thread_cancel_kind refuses a dying thread, so a task holding one thread matches
-        // only itself.
+        // escalate refuses a dying thread, so a task holding one thread matches only itself.
+        for (int s = 0; s < k.threads.next; s++)
+        {
+            Thread* const p = &k.threads.slots()[s];
+            if (p->task != t or not thread_cancel_escalate(p, CANCEL_SLAY))
+            {
+                continue;
+            }
+            // No walker is a live member, and a member a pass booked after its mark is claimed.
+            KICKOS_DEBUG_ASSERT(p != sched::current());
+#if KICKOS_KERNEL_CORES > 1
+            // On a peer core, which alone can take it off. A ring stage or a self-ask, no pass.
+            if (p->state == ThreadState::RUNNING)
+            {
+                sched::reseat(p, held);
+            }
+#endif
+        }
+    }
+
+    void task_cancel_parks(Task* t, Held held)
+    {
+        if (t == nullptr)
+        {
+            return;
+        }
+        Kernel& k = kernel();
+        Thread* top = nullptr;
+        // Every pending claim and not only this call's marks: a walker switched out between its
+        // marks and its aborts may never run again.
         for (int s = 0; s < k.threads.next; s++)
         {
             Thread* const p = &k.threads.slots()[s];
@@ -392,7 +420,27 @@ namespace kickos
             {
                 continue;
             }
-            thread_cancel_kind(p, CANCEL_SLAY, held);
+            KICKOS_DEBUG_ASSERT(p->cancel_kind == CANCEL_SLAY or p->dying
+                                or p->state == ThreadState::EXITED
+                                or p->state == ThreadState::INACTIVE);
+            if (not thread_slay_claim_pending(p) or p->state != ThreadState::BLOCKED)
+            {
+                continue;
+            }
+            if (thread_abort_park_no_resched(p, -KOS_ECANCELED, held))
+            {
+                sched::keep_top(p, &top, held);
+            }
         }
+        if (top != nullptr)
+        {
+            sched::resched_after_wake(top, held);
+        }
+    }
+
+    void task_cancel_group(Task* t, Held held)
+    {
+        task_cancel_mark(t, held);
+        task_cancel_parks(t, held);
     }
 }

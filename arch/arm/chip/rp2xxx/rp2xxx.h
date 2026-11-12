@@ -16,6 +16,8 @@
 #include <kickos/console_tx.h>
 #include <kickos/io/mmio.h>
 
+#include "bringup_values.h"
+
 // A bootrom routine and its four arguments; fn carries the Thumb bit the ROM table gives it.
 struct kickos_rp_rom_args
 {
@@ -31,14 +33,9 @@ extern "C" uintptr_t kickos_rp_rom_call(kickos_rp_rom_args const* args);
 
 namespace kickos::rp2xxx
 {
-    // Every APB register is mirrored at these offsets from its own address; SIO is not.
-    constexpr uintptr_t ATOMIC_SET = 0x2000u;
-    constexpr uintptr_t ATOMIC_CLR = 0x3000u;
-
     // True once every bit of `mask` reads set, false once the poll's bound runs out.
     bool wait_mask(uintptr_t addr, uint32_t mask);
     void unreset(uint32_t mask);
-    bool pll_sys_lock();
 
     // The crystal, clk_ref and clk_sys on PLL_SYS, falling back to the ROSC without the crystal and
     // to the crystal without the PLL; SystemCoreClock follows every switch, and the system

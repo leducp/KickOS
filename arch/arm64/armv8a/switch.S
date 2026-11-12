@@ -32,7 +32,6 @@
    TPIDR_EL1 above one (percpu.h). static_asserted against offsetof in arch_armv8a.cc. */
 #define PERCPU_CTX_CURRENT  8
 #define PERCPU_SWITCH_TO    16
-#define PERCPU_BENCH_SW_START 28
 #define PERCPU_USER_TTBR0   32
 
 /* Ends the kernel lock's span over the swap. CALL ONLY where the outgoing frame is parked and
@@ -54,30 +53,6 @@
     add     \reg, \reg, #:lo12:kickos_armv8a_percpu + \disp
 #endif
     .endm
-
-#if KICKOS_BENCH
-/* The switch window (kernel/bench/bench.cc): the register save and the stack-pointer swap,
-   not the restore, which reloads every register before the eret and is shared with every
-   non-switch return.
-
-   The stamp is this core's cell: a word shared with a peer wraps near 2^32 whenever the peer
-   opened later. PMCCNTR_EL0 is 64 bits; the low word is exact for any delta under 2^32. */
-    .macro  BENCH_SW_OPEN
-    mrs     x2, pmccntr_el0
-    PERCPU_CELL x3, PERCPU_BENCH_SW_START
-    str     w2, [x3]
-    .endm
-
-/* CALL ONLY where SWITCH_UNLOCK may be called, and above it so the lock's release falls
-   outside the window. */
-    .macro  BENCH_SW_CLOSE
-    mrs     x2, pmccntr_el0
-    PERCPU_CELL x3, PERCPU_BENCH_SW_START
-    ldr     w3, [x3]
-    sub     w0, w2, w3
-    bl      kickos_bench_switch_done
-    .endm
-#endif
 
     .macro  SAVE_FRAME
     sub     sp, sp, #FRAME_SIZE
@@ -301,9 +276,6 @@ kickos_armv8a_el0_irq_entry:
  */
     .global kickos_armv8a_switch_now
 kickos_armv8a_switch_now:
-#if KICKOS_BENCH
-    BENCH_SW_OPEN
-#endif
     SAVE_FRAME
     str     x30, [sp, #F_ELR]               /* resume where our caller expects to continue */
     mrs     x2, daif                        /* keep the caller's interrupt state exactly */
@@ -315,9 +287,6 @@ kickos_armv8a_switch_now:
     str     x2, [x0, #CTX_SP]
     ldr     x2, [x1, #CTX_SP]
     mov     sp, x2
-#if KICKOS_BENCH
-    BENCH_SW_CLOSE
-#endif
     SWITCH_UNLOCK
     RESTORE_FRAME_AND_ERET
 

@@ -42,11 +42,6 @@ struct alignas(KICKOS_RV64_PERCPU_BLOCK_SIZE) rv64_percpu_block
     // The dense index this hart answers arch_cpu_id with, seated by kickos_rv64_init.
     uint32_t id;
 
-#if KICKOS_BENCH
-    // The cycle CSR at the switch window's open, read back at its close by the same hart.
-    uint32_t bench_sw_start;
-#endif
-
     // The software controller's cells may not be keyed here. A line's state belongs to the hart
     // the line is routed to, never to the hart touching it, or a driver that unmasks on one and
     // an injector that raises on another never meet (arch_rv64imac.cc).

@@ -71,10 +71,14 @@ extern "C"
     // stands in where no thread_local registers one.
     void kickos_thread_dtors_run(void);
 
-    // User side, defined only where libc builds per-thread scratch on the heap on first use.
-    // The exit stub runs it before the trap because nothing after that can: the kernel reaches
-    // neither the heap nor the allocator, and the next prime overwrites the pointers.
+    // User side: frees the scratch libc built on the heap into the calling thread's state, once
+    // kickos_reent_heap_used has run. The exit stub runs it before the trap because nothing
+    // after that can: the kernel reaches neither the heap nor the allocator, and the next prime
+    // overwrites the pointers.
     void kickos_reent_release(void);
+    // User side: the heap seat (user/src/newlib_sbrk.cc) runs it before the image's first
+    // allocation, so only an image that allocates links the release's allocator calls.
+    void kickos_reent_heap_used(void);
 }
 
 struct kos_image_header;

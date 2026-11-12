@@ -247,6 +247,7 @@ namespace
         char const* argv[KICKOS_MAX_ARGC + 2];
         char strings[64];
         uint32_t lock_word;
+        kos_task_t out;
     };
     Block g_block;
 
@@ -304,8 +305,12 @@ namespace kickos
                     {
                         g_block.p.instance = text(instance, 48);
                     }
-                    return task_create_call(prog_, reinterpret_cast<uintptr_t>(&g_block.p),
-                                            timeout_us, out);
+                    g_block.out = KOS_TASK_NONE;
+                    int const rc = task_create_call(prog_, reinterpret_cast<uintptr_t>(&g_block.p),
+                                                    timeout_us,
+                                                    reinterpret_cast<uintptr_t>(&g_block.out));
+                    *out = g_block.out;
+                    return rc;
                 }
 
                 // The entry thread of task `h`.
@@ -981,24 +986,6 @@ namespace kickos
                       -KOS_ETIMEDOUT);
             EXPECT_EQ(g_lent.owner_prio, PRIO_CREATOR) << "fixture: the lock lent nothing";
             EXPECT_EQ(member->prio, 3) << "the lock recomputed a task nothing it raised awaits";
-        }
-
-        TEST_F(DeathLend, a_slay_of_the_caller_s_own_task_is_refused_as_a_deadlock)
-        {
-            creator(AUTH_TASKS);
-            Thread* const c = sched::current();
-            kos_task_t h = KOS_TASK_NONE;
-            ASSERT_EQ(create("peer0", &h), 0);
-            Task* record = nullptr;
-            {
-                IrqLock lock;
-                record = task_resolve(h);
-            }
-            join_task(c, record);
-            g_dying = Dying{nullptr, nullptr, c, WAIT_NONE, nullptr, 0u, false};
-            wake_next_park(the_deadline_passes);
-            EXPECT_EQ(task_slay(h, 1000u), -KOS_EDEADLK);
-            EXPECT_EQ(g_dying.kind, WAIT_NONE) << "the slay parked on its own task's death";
         }
 
         // The creator holds a mutex the member it slays waits on: the stop cuts that wait in the

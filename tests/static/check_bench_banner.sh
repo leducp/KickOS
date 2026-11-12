@@ -3,11 +3,10 @@
 # Copyright (c) 2026 Philippe Leduc
 #
 # The bench chain's banner reader (tools/bench/banner.sh) over planted logs: the label it reads
-# out of the banner, what it recovers out of a damaged one, where it starts
-# the last boot, and the identity rows a USB device console opens with (identity_verdict): a
-# good capture is accepted, a missing or wrong row is refused, and a capture of an image that
-# prints no rows, of another build, or of another image of the same build and commit, the same
-# second's included, is refused.
+# out of the banner, what it recovers out of a damaged one, and the identity rows a USB device
+# console opens with (identity_verdict): a good capture is accepted, a missing or wrong row is
+# refused, and a capture of an image that prints no rows, of another build, or of another image
+# of the same build and commit, the same second's included, is refused.
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
@@ -56,26 +55,6 @@ label_is nolabel ''
 boot "$TMP/rowlessprose" "$PROSE" '   commit  6c3ce8c7'
 boot "$TMP/rowlessprose" "$PROSE" ''
 label_is rowlessprose 6c3ce8c7-UNVERIFIED
-
-# The last boot starts at the later of its title and its commit row, so either one lost leaves
-# the other as the anchor; an earlier boot's rows never stand in.
-# <name> <pattern of the line it must start at>
-starts_at() {
-    _bs=$(bench_boot_start "$TMP/$1")
-    _want=$(grep -an "$2" "$TMP/$1" | tail -n 1 | cut -d: -f1)
-    if [ "$_bs" != "$_want" ]; then
-        bad "the last boot of the planted '$1' log is read to start at line [$_bs], not at $_want"
-    fi
-}
-boot "$TMP/twoboots" "$PROSE" '   commit  6c3ce8c7'
-boot "$TMP/twoboots" "$PROSE" '   commit  6c3ce8c7'
-starts_at twoboots '^   commit  6'
-boot "$TMP/rowless" "$PROSE" '   commit  6c3ce8c7'
-boot "$TMP/rowless" "$PROSE" ''
-starts_at rowless '^   KickOS 0'
-boot "$TMP/titleless" "$PROSE" '   commit  6c3ce8c7'
-boot "$TMP/titleless" '' '   commit  6c3ce8c7'
-starts_at titleless '^   commit  6'
 
 # --- the identity verdict over planted captures -------------------------------------------------
 DIAG=include/kickos/diag.h

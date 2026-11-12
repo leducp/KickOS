@@ -121,7 +121,7 @@ refuses() {
     local name=$1 board=$2 script=$3 word=$4
     shift 4
     if env ROOT="$TMP/root" KICKOS_RIG="$TMP/rig.conf" PATH="$TMP/bin:$PATH" CAP_SECS=1 \
-           EXPECT_COMMIT=0123abcd EXPECT_ARCH=armv6m BENCH_HOST= PEER_ERASE= "$@" \
+           EXPECT_COMMIT=0123abcd BENCH_HOST= PEER_ERASE= "$@" \
            bash "$script" "$board" planted "$TMP/image" "$TMP/$name.log" ${SN:+"$SN"} \
            > "$TMP/$name.out" 2>&1; then
         bad "$name: the capture is accepted"
@@ -169,14 +169,13 @@ bus_records picopi "2e8a:0003|unidentified|none: no serial was given to select i
     "picopi in BOOTSEL with no serial to select it by"
 halfkay='HalfKay, the bootloader teensy_loader_cli loads'
 plant_bus 16c0:0478@1-4
-bus_records teensy41 "16c0:0478|present|port 1-4|$halfkay" "teensy41 back in HalfKay on its port" \
-    EXPECT_ARCH=armv7m
+bus_records teensy41 "16c0:0478|present|port 1-4|$halfkay" "teensy41 back in HalfKay on its port"
 bus_records teensy41 "16c0:0478|absent|port 1-4|$halfkay" \
-    "teensy41 off the bus with another Teensy in HalfKay on another port" EXPECT_ARCH=armv7m \
+    "teensy41 off the bus with another Teensy in HalfKay on another port" \
     "STUB_REPLUG=mv $TMP/sys/1-4 $TMP/sys/1-5"
 plant_bus 16c0:0478@1-4 16c0:0478@1-5
 bus_records teensy41 "16c0:0478|unidentified|none: 2 devices at 16c0:0478 before the flash|$halfkay" \
-    "two Teensys in HalfKay before the flash" EXPECT_ARCH=armv7m
+    "two Teensys in HalfKay before the flash"
 # The connect, the load and the reset.
 calls=$(awk '/-device STM32F411CE / && /-SelectEmuBySN 000177003338( |$)/' "$TMP/jlink.calls" 2>/dev/null | wc -l)
 [ "$calls" -eq 3 ] \
@@ -232,7 +231,7 @@ until [ -L "$TMP/cdcdev/usb-KickOS_KickOS_console_planted-if00" ]; do
 done
 plant_bus 2e8a:0003
 if ! env ROOT="$TMP/root" KICKOS_RIG="$TMP/rig.conf" PATH="$TMP/bin:$PATH" CAP_SECS=1 \
-       CONSOLE_USB_CDC=1 EXPECT_COMMIT=0123abcd EXPECT_ARCH=armv6m BENCH_HOST= PEER_ERASE= \
+       CONSOLE_USB_CDC=1 EXPECT_COMMIT=0123abcd BENCH_HOST= PEER_ERASE= \
        PYBIN=python3 bash "$TMP/cdc/bench-capture.sh" picopi planted "$TMP/image" "$TMP/cdc.log" \
        > "$TMP/cdc.out" 2>&1; then
     bad "the USB CDC capture is refused: $(grep REFUSING "$TMP/cdc.out")"

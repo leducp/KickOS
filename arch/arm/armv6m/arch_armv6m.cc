@@ -11,6 +11,7 @@
 #include <kickos/diag.h>
 
 #include "../common/aeabi_div0.h"
+#include "../common/fault_resume.h"
 #include "regs.h"
 #include <kickos/trace/record.h>
 
@@ -43,7 +44,7 @@ static_assert(offsetof(struct arch_context, stack_lo) == KICKOS_ARMV6M_CTX_OFF_S
 static_assert(offsetof(struct arch_context, stack_hi) == KICKOS_ARMV6M_CTX_OFF_STACK_HI,
               "switch.S reads ctx.stack_hi at F_CTX_STACK_HI");
 static_assert(offsetof(struct arch_context, kernel_sp) == KICKOS_ARMV6M_CTX_OFF_KERNEL_SP,
-              "svc_trampoline and PendSV_Handler load ctx.kernel_sp at F_CTX_KERNEL_SP");
+              "SVC_Handler and PendSV_Handler load ctx.kernel_sp at F_CTX_KERNEL_SP");
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
 static_assert(offsetof(struct arch_context, trace_tid) == KICKOS_ARMV6M_CTX_OFF_TRACE_TID,
               "switch.S telemetry hook expects ctx.trace_tid at F_CTX_TRACE_TID");
@@ -54,26 +55,31 @@ namespace
     // gas cannot count the registers in an stmia, so F_TRAP_FRAME is priced against this.
     constexpr size_t CALLEE_BLOCK_WORDS = 8;
 }
-// The reporter's own array (kernel/init/console.cc); the frame term is the hardware frame a
-// HardFault stacks there.
-static_assert(KICKOS_ARMV6M_PANIC_FRAME == KICKOS_ARMV6M_TRAP_FRAME,
-              "the panic frame term is the hardware frame, which switch.S cannot compute");
 static_assert(KICKOS_PANIC_STACK_SIZE >= KICKOS_ARMV6M_PANIC_FRAME + KICKOS_ARMV6M_PANIC_DEPTH,
               "KICKOS_PANIC_STACK_SIZE is below what this arch's panic reporter descends");
+static_assert(KICKOS_ARMV6M_IDLE_FRAME
+                  == 4 + KICKOS_ARMV6M_TRAP_ENTRY_FRAME + KICKOS_ARMV6M_TRAP_FRAME,
+              "idle's frame term is the STKALIGN pad, a hardware frame and the PendSV block");
+static_assert(KICKOS_IDLE_STACK_SIZE % 8 == 0,
+              "arch_context_init rounds the stack top down to 8, which the idle figure does "
+              "not price");
+static_assert(KICKOS_IDLE_STACK_SIZE >= KICKOS_ARMV6M_IDLE_FRAME + KICKOS_ARMV6M_IDLE_DEPTH,
+              "KICKOS_IDLE_STACK_SIZE cannot hold an interrupt and the switch it pends below "
+              "idle's own frames");
 
 static_assert(CALLEE_BLOCK_WORDS * sizeof(uint32_t) == KICKOS_ARMV6M_TRAP_FRAME,
               "PSP_GUARD's F_TRAP_FRAME prices {r4-r11}: eight words");
 // The SVC class's structural half, scraped by the red-zone gate and derived in
 // armv6m_trap_stack.h.
 static_assert(KICKOS_ARMV6M_TRAP_NEST_SVC
-                  == 8 + 32 + KICKOS_ARMV6M_TRAP_FRAME - 32,
-              "the SVC window is the unstack credit, the trampoline's scratch push, a "
-              "preempting hardware frame and the PendSV block that tail-chains below it");
+                  == 32 + KICKOS_ARMV6M_TRAP_FRAME - KICKOS_ARMV6M_TRAP_ENTRY_FRAME,
+              "the SVC window is a preempting hardware frame and the PendSV block that "
+              "tail-chains below it, less the entry frame the return pops first");
 static_assert(KICKOS_ARMV6M_TRAP_NEST_SVCK
                   == 16 + 4 + 32 + KICKOS_ARMV6M_TRAP_FRAME,
               "the SVCK structural half is the continuation header, the STKALIGN pad, a "
               "preempting hardware frame and the PendSV block that tail-chains below it");
-// svc_trampoline moves SP to ctx.kernel_sp before any call, so the SVC class declares no roots.
+// The SVC handler starts svc_trampoline on ctx.kernel_sp, so the SVC class declares no roots.
 static_assert(KICKOS_ARMV6M_TRAP_KERNEL_DEPTH_SVC == 0,
               "a nonzero SVC descent needs roots in tests/static/trap_redzone_roots.txt");
 static_assert(KICKOS_MAX_SPAWN_GRANTS <= 9,
@@ -82,7 +88,7 @@ static_assert(KICKOS_MAX_SPAWN_GRANTS <= 9,
 // Handler mode forces SP_main, so everything PendSV_Handler calls runs on the MSP.
 static_assert(KICKOS_ARMV6M_TRAP_KERNEL_DEPTH_PENDSV == 0,
               "a nonzero PendSV descent needs roots in tests/static/trap_redzone_roots.txt");
-static_assert(KICKOS_ARMV6M_TRAP_NEED_SVC > KICKOS_ARMV6M_TRAP_NEED_PENDSV,
+static_assert(KICKOS_ARMV6M_TRAP_NEED_SVC >= KICKOS_ARMV6M_TRAP_NEED_PENDSV,
               "SVC_Handler charges the larger of the two figures for both of its arms, so "
               "it must dominate the fastpath arm's own {r4-r11} push");
 // The fault and slay stubs run on the thread's kernel block.
@@ -178,14 +184,15 @@ void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),
 
 // --- Fault reporting. HardFault is the whole fault taxonomy on v6-M and there are no
 // fault-status registers, so the stacked frame is the entire dump. ------------
-void kickos_armv6m_fault_report(uint32_t* frame, uint32_t exc_return)
+// Returns only when the faulting thread was contained, with the EXC_RETURN the handler's
+// exception return must take.
+uint32_t kickos_armv6m_fault_report(uint32_t* frame, uint32_t exc_return)
 {
-    // The naked handler reaches here by `bx`, so this function's own return IS the
-    // exception return. Nothing may print above this: kpanic_enter's console reclaim is
-    // permanent and this fault is survivable.
-    if (kickos_fault_kill_thread(frame))
+    // Nothing may print above this: kpanic_enter's console reclaim is permanent and this fault
+    // is survivable.
+    if ((exc_return & KICKOS_ARM_EXC_RETURN_THREAD) != 0u and kickos_fault_kill_thread(frame))
     {
-        return;
+        return kickos_arm_fault_exit_exc_return(exc_return);
     }
     kickos_fault_report_begin();
     kpanic_enter();
@@ -229,10 +236,8 @@ __attribute__((naked)) void HardFault_Handler(void)
         "1:                   \n"
         "mrs  r0, msp         \n"
         "2:                   \n"
-        // ldr+bx, not b: the Thumb-1 unconditional branch is +-2 KB, and with
-        // --gc-sections the reporter can land farther than that from this handler.
-        "ldr  r2, =kickos_armv6m_fault_report \n"
-        "bx   r2              \n");
+        "bl   kickos_armv6m_fault_report \n"
+        "bx   r0              \n");
 }
 
 // SHPR is word-access only on v6-M.

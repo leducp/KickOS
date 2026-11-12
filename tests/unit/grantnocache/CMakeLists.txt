@@ -22,3 +22,12 @@ target_compile_options(grant_nocache PRIVATE -ffunction-sections -fdata-sections
 target_link_options(grant_nocache PRIVATE -Wl,--gc-sections)
 set_source_files_properties("${PROJECT_SOURCE_DIR}/kernel/thread/thread.cc" PROPERTIES
   COMPILE_OPTIONS "-ffreestanding;-fno-exceptions;-fno-rtti;-fno-threadsafe-statics")
+
+# The translating board's per-address memory type, over the REAL kernel/grant/grant.cc at an
+# address-space posture.
+kickos_add_unit_test(NAME grant_memtype_at
+  SOURCES memtype_at.cc "${PROJECT_SOURCE_DIR}/tests/unit/common/kpanic_seam.cc"
+          "${PROJECT_SOURCE_DIR}/kernel/grant/grant.cc"
+  POSTURE KICKOS_HAVE_ASPACE=1)
+target_compile_options(grant_memtype_at PRIVATE -ffunction-sections -fdata-sections)
+target_link_options(grant_memtype_at PRIVATE -Wl,--gc-sections)

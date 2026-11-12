@@ -36,8 +36,8 @@ extern "C" void kickos_isr_fault(uintptr_t addr, int is_write);
 #define KICKOS_PANIC_DUMP 1
 #endif
 
-// switch.S hard-codes the save-frame layout. The frame (on the thread's own stack,
-// ctx.sp = its base, low to high) is 32 words / 128 bytes:
+// switch.S hard-codes the save-frame layout. The frame (on an unprivileged thread's kernel
+// block, on idle's own stack; ctx.sp = its base, low to high) is 32 words / 128 bytes:
 //   [0 mepc][1 mstatus][2 ra][3 t0][4 t1][5 t2][6 s0][7 s1][8 a0]..[15 a7]
 //   [16 s2]..[25 s11][26 t3][27 t4][28 t5][29 t6][30 sp][31 pad]
 // gp and tp are not in the frame: .Lrestore writes both on every resume.
@@ -45,7 +45,8 @@ namespace
 {
     enum : uint32_t
     {
-        F_MEPC = 0, F_MSTATUS = 1, F_RA = 2, F_A0 = 8, // word indices
+        F_MEPC = KICKOS_RV_TRAP_F_MEPC / 4, F_MSTATUS = KICKOS_RV_TRAP_F_MSTATUS / 4,
+        F_RA = 2, F_A0 = 8, // word indices
         F_SP = KICKOS_RV_TRAP_F_SP / 4,
         FRAME_WORDS = 32
     };
@@ -55,6 +56,9 @@ namespace
     // MIE is KICKOS_RV32_MSTATUS_MIE (kickos/arch/irq_inline.h).
     constexpr uint32_t MSTATUS_MPIE = 1u << 7;
     constexpr uint32_t MSTATUS_MPP_M = 3u << 11; // MPP = machine (U = 0)
+
+    // pmpcfg0 of the permissive bootstrap: entry 0 TOR | X | W | R, entries 1-3 off.
+    constexpr uint32_t PMP_BOOT_CFG0 = 0x0Fu;
 
 }
 
@@ -158,12 +162,6 @@ extern "C"
     uint32_t g_lp_switch_pending = 0;
 #endif
 
-#if KICKOS_BENCH
-    // Null means `rdcycle`. A core whose `rdcycle` traps (the ESP32-C6 HP core has no Zicntr)
-    // points this at a free-running MMIO counter before the first switch.
-    volatile uint32_t* g_bench_cycle_src = nullptr;
-#endif
-
     void trap_entry(void);
     void kickos_rv_mtvec(void);
     void kickos_thread_return(void);
@@ -192,7 +190,15 @@ void arch_context_init(struct arch_context* ctx,
 {
     uintptr_t top = reinterpret_cast<uintptr_t>(stack_base) + stack_size;
     top &= ~static_cast<uintptr_t>(15); // 16-byte stack alignment (RISC-V psABI)
-    uint32_t* f = reinterpret_cast<uint32_t*>(top - FRAME_WORDS * 4);
+    // The frame's mstatus and mepc pick the mret's privilege and pc, so an unprivileged thread's
+    // goes on its kernel block and never where its task can write. Nonzero: thread_create
+    // asserts it.
+    uintptr_t frame_top = top;
+    if (privileged == 0)
+    {
+        frame_top = ctx->kernel_sp;
+    }
+    uint32_t* f = reinterpret_cast<uint32_t*>(frame_top - FRAME_WORDS * 4);
     for (uint32_t i = 0; i < FRAME_WORDS; i++)
     {
         f[i] = 0;
@@ -221,8 +227,7 @@ void arch_context_init(struct arch_context* ctx,
     // stores a frame through it.
     ctx->stack_lo = reinterpret_cast<uint32_t>(stack_base);
     ctx->stack_hi = static_cast<uint32_t>(top);
-    // ctx->kernel_sp IS DELIBERATELY UNTOUCHED: thread_create seats it before this call, and
-    // its zero (no block seated) is what the trusted entry's refusal path keys on.
+    // ctx->kernel_sp is read and never written: thread_create seats it before this call.
 }
 
 #if KICKOS_TLS
@@ -301,28 +306,9 @@ uint32_t arch_mpu_encode(struct arch_mpu_region const* regions, size_t n,
 // arch/common/arch_mpu_stash.cc.
 extern "C" struct arch_mpu_encoded const* g_pend_image;
 
-#if KICKOS_BENCH
-extern "C" void kickos_bench_mpu_commit(uint32_t delta);
-
-// always_inline: a call would add to the measured delta.
-static __attribute__((always_inline)) inline uint32_t mpu_bench_cyc(void)
-{
-    if (::g_bench_cycle_src != nullptr)
-    {
-        return *::g_bench_cycle_src;
-    }
-    uint32_t v;
-    __asm volatile("rdcycle %0" : "=r"(v));
-    return v;
-}
-#endif
-
 // Runs in the M-mode trap with MIE=0, so it must NOT toggle MIE.
 void kickos_arch_mpu_commit(void)
 {
-#if KICKOS_BENCH
-    uint32_t const bench_start = mpu_bench_cyc();
-#endif
     struct arch_mpu_encoded const* const img = g_pend_image;
     if (img == nullptr)
     {
@@ -348,9 +334,6 @@ void kickos_arch_mpu_commit(void)
     // Orders the PMP update before the mret to U-mode; the priv spec only promises the
     // writing hart sees it on its next access.
     __asm volatile("fence" ::: "memory");
-#if KICKOS_BENCH
-    kickos_bench_mpu_commit(mpu_bench_cyc() - bench_start);
-#endif
 }
 #else
 // KICKOS_HAVE_MPU=0: the permissive bootstrap PMP stays in place for the life of the image.
@@ -364,8 +347,9 @@ extern "C"
     extern unsigned char __kickos_pmp_code_end[];
 }
 
-// Entries 8 and 9: every image's code, the kernel's text below it. Read back, since a core
-// with fewer entries ignores the writes.
+// Entries 8 and 9: every image's code, the kernel's text below it. Every entry the kernel does
+// not program is turned off, 4-7 until the first commit. Read back: a core with fewer entries
+// ignores the writes, and an entry a boot stage locked refuses them until reset.
 static void pmp_code_window_seat(void)
 {
     kickos::rv32::PmpCodeWindow const w = kickos::rv32::pmp_code_window(
@@ -373,17 +357,29 @@ static void pmp_code_window_seat(void)
         reinterpret_cast<uintptr_t>(__kickos_pmp_code_end));
     uint32_t base_back = 0;
     uint32_t top_back = 0;
+    uint32_t cfg0_back = 0;
+    uint32_t cfg1_back = 0;
     uint32_t cfg2_back = 0;
+    uint32_t cfg3_back = 0;
     __asm volatile("csrw pmpaddr8, %0" ::"r"(w.base_addr) : "memory");
     __asm volatile("csrw pmpaddr9, %0" ::"r"(w.top_addr) : "memory");
+    __asm volatile("csrw pmpcfg1, zero" ::: "memory");
     __asm volatile("csrw pmpcfg2, %0" ::"r"(w.cfg2) : "memory");
+    __asm volatile("csrw pmpcfg3, zero" ::: "memory");
     __asm volatile("csrr %0, pmpaddr8" : "=r"(base_back));
     __asm volatile("csrr %0, pmpaddr9" : "=r"(top_back));
+    __asm volatile("csrr %0, pmpcfg0" : "=r"(cfg0_back));
+    __asm volatile("csrr %0, pmpcfg1" : "=r"(cfg1_back));
     __asm volatile("csrr %0, pmpcfg2" : "=r"(cfg2_back));
+    __asm volatile("csrr %0, pmpcfg3" : "=r"(cfg3_back));
     __asm volatile("fence" ::: "memory");
     if (base_back != w.base_addr or top_back != w.top_addr or cfg2_back != w.cfg2)
     {
         kickos::kpanic(kickos::diag::kPmpCodeWindow);
+    }
+    if (cfg0_back != PMP_BOOT_CFG0 or cfg1_back != 0 or cfg3_back != 0)
+    {
+        kickos::kpanic(kickos::diag::kPmpStaleEntry);
     }
 }
 
@@ -767,7 +763,7 @@ void kickos_rv32_init(void)
     // address on both it and QEMU virt. pmpcfg0 byte0 = TOR(0x08)|X(0x4)|W(0x2)|R(0x1).
 #if !KICKOS_RV32_LP
     __asm volatile("csrw pmpaddr0, %0" ::"r"(0xFFFFFFFFu) : "memory");
-    __asm volatile("csrw pmpcfg0, %0" ::"r"(0x0Fu) : "memory");
+    __asm volatile("csrw pmpcfg0, %0" ::"r"(PMP_BOOT_CFG0) : "memory");
 #if KICKOS_HAVE_MPU
     pmp_code_window_seat();
 #endif

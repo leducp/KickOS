@@ -736,13 +736,14 @@ namespace kickos
 
     // The single authority chokepoint: may thread `c` ask the kernel to do `need` (one or more
     // AUTH_* bits)? True if its authority word carries every requested bit. nullptr is
-    // false. The ONE cap.h entry point that does NOT require IrqLock: it reads
-    // `c`'s own TCB word, written only by that thread or by its parent before it first runs.
+    // false. The ONE cap.h entry point that does NOT require IrqLock: once `c` has first run,
+    // only cap_narrow writes its word, and only to clear bits, so a read racing it from
+    // another core, stale or torn, can show a bit `c` has since given up but none it never held.
     bool cap_check_authority(Thread* c, uint32_t need);
 
-    // Seat (or re-seat) thread t's authority word. Non-delegable: it is TCB state, not a
-    // capability, so there is no entry a cap_grant could copy. The kernel is its only
-    // writer. auth == 0 clears it.
+    // Seat thread t's authority word, before t first runs: a later seat could set a bit under
+    // cap_check_authority's unlocked read. Non-delegable: it is TCB state, not a capability, so
+    // there is no entry a cap_grant could copy. auth == 0 clears it.
     void cap_seat_authority(Thread* t, uint32_t auth);
 
     // Narrow in place, never widening (the rule a cap_grant mask and

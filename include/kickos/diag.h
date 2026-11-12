@@ -76,6 +76,8 @@ namespace kickos
             "unreachable: a word waiter found every record in use";
         inline constexpr char const kPmpCodeWindow[] =
             "rv32imac: the PMP did not take the user code window";
+        inline constexpr char const kPmpStaleEntry[] =
+            "rv32imac: a boot stage left a PMP entry the kernel cannot clear";
         inline constexpr char const kBannerRule[] =
             "  ==============================================\n";
     }
@@ -95,7 +97,6 @@ namespace kickos
 #define KDIAG_F_BANNER_UGUARD "   uaccess %s\n"
 #define KDIAG_F_BANNER_WITNESS "   witness uaccess\n"
 #define KDIAG_F_BANNER_WITNESS_REWIND "   witness rewind\n"
-#define KDIAG_F_BANNER_WITNESS_NODE "   witness node\n"
 #define KDIAG_F_BANNER_SCHED "   sched   %s\n"
 #define KDIAG_F_BANNER_BUILD "   build   %s\n"
 #define KDIAG_F_BANNER_APP   "   app     %s\n"

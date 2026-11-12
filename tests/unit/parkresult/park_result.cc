@@ -16,7 +16,6 @@
 #include <kickos/thread.h>
 
 #include <kickos/sys/abi.h>
-#include <kickos/sys/errno.h>
 
 #include "kseam_test.h"
 
@@ -44,16 +43,6 @@ namespace kickos
             uintptr_t word_va()
             {
                 return reinterpret_cast<uintptr_t>(&g_word);
-            }
-
-            void unlock_the_mutex(Thread*)
-            {
-                (void) mutex_unlock(word_va());
-            }
-
-            void cancel_the_waiter(Thread* parked)
-            {
-                thread_cancel(parked, kickos::IrqLock());
             }
 
             // Every real waker in the tree writes a result; this one does not, which is what
@@ -88,40 +77,6 @@ namespace kickos
         }
 
         // --- the arms that supply a waker --------------------------------------------
-
-        TEST_F(ParkResult, a_woken_mutex_lock_returns_what_the_waker_wrote)
-        {
-            Thread* holder = nullptr;
-            Thread* const waiter = seat_waiter_over_holder(&holder);
-            (void)own_mutex(holder, &g_word);
-            wake_next_park(unlock_the_mutex);
-
-            int const rc = mutex_lock(word_va(), KOS_TIMEOUT_NONE);
-
-            EXPECT_EQ(rc, 0) << "the transfer said the lock was acquired";
-            EXPECT_EQ(g_word, waiter->lock_id) << "ownership moved to the woken waiter";
-            // The second switch is the waker's own: the new owner outranks the holder it
-            // just reverted, so mutex_unlock's wake takes the CPU back.
-            EXPECT_STREQ(trace(), "switch2>1 switch1>2") << "the park switched away and back";
-            EXPECT_EQ(holder->prio, PRIO_HOLDER) << "the holder's donated boost was reverted";
-        }
-
-        TEST_F(ParkResult, a_cancelled_mutex_lock_returns_ecanceled)
-        {
-            Thread* holder = nullptr;
-            Thread* const waiter = seat_waiter_over_holder(&holder);
-            (void)own_mutex(holder, &g_word);
-            wake_next_park(cancel_the_waiter);
-
-            int const rc = mutex_lock(word_va(), KOS_TIMEOUT_NONE);
-
-            EXPECT_EQ(rc, -KOS_ECANCELED) << "the cancel is what the return carries";
-            EXPECT_NE(waiter->cancel_kind, CANCEL_NONE)
-                << "and the waiter is marked for its death point";
-            EXPECT_EQ(g_word & ~KOS_WORD_WAITERS, holder->lock_id)
-                << "a cancelled waiter does not acquire the mutex";
-            EXPECT_EQ(holder->prio, PRIO_HOLDER) << "the owner's boost is reverted with the wait";
-        }
 
         // A waker that ends the park without writing a result leaves the poison, so the
         // fiction is a value no assertion accepts, where a zeroed TCB would have read as

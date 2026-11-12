@@ -404,12 +404,14 @@
  * KICKOS_APP_SECTIONS its inputs.
  *
  * EXCLUDE_FILE in front of the pattern, never inside its section list: there it binds only the
- * one section name that follows it.
+ * one section name that follows it. A section only the kernel may supply is KEPT through
+ * KICKOS_KERNEL_KEEP: an image's section of that name is then an orphan, which the link refuses.
  */
 #if KICKOS_IMAGES_PLACED
 #define KICKOS_IMAGE0_SECTIONS(...) *kickos_image0.o(__VA_ARGS__)
 #define KICKOS_IMAGE1_SECTIONS(...) *kickos_image1.o(__VA_ARGS__)
 #define KICKOS_KERNEL_SECTIONS(...) EXCLUDE_FILE(*kickos_image*.o) *(__VA_ARGS__)
+#define KICKOS_KERNEL_KEEP(...) KEEP(EXCLUDE_FILE(*kickos_image*.o) *(__VA_ARGS__))
 #define KICKOS_APP_IMAGE_N 1
 #define KICKOS_APP_SECTIONS KICKOS_IMAGE1_SECTIONS
 #else
@@ -419,6 +421,11 @@
     *KICKOS_LD_ARCH_LIB:*(__VA_ARGS__)                                        \
     *KICKOS_LD_CHIP_LIB:*(__VA_ARGS__)                                        \
     *libkickos_lib.a:*(__VA_ARGS__)
+#define KICKOS_KERNEL_KEEP(...)                                               \
+    KEEP(*libkickos_kernel.a:*(__VA_ARGS__))                                  \
+    KEEP(*KICKOS_LD_ARCH_LIB:*(__VA_ARGS__))                                  \
+    KEEP(*KICKOS_LD_CHIP_LIB:*(__VA_ARGS__))                                  \
+    KEEP(*libkickos_lib.a:*(__VA_ARGS__))
 #endif
 #ifndef KICKOS_APP_IMAGE_N
 #define KICKOS_APP_IMAGE_N 0

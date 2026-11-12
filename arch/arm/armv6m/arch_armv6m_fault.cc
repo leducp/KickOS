@@ -14,9 +14,8 @@ extern "C"
 {
 
 // CONTROL.nPRIV and NOT ctx.resting_npriv: syscall dispatch runs PRIVILEGED in thread mode on
-// the thread's KERNEL block (switch.S svc_trampoline), so a fault there is a kernel bug. A
-// non-zero stacked IPSR means the fault escalated from inside another handler: also a kernel
-// bug.
+// the thread's KERNEL block (switch.S svc_trampoline), so a fault there is a kernel bug. Thread
+// mode is the reporter's EXC_RETURN test, never the stacked IPSR, which a task-mate writes.
 //
 // THE FRAME IS ALWAYS ON THE USER STACK on this arch, so the test below is the thread-stack
 // one, not its kernel-block twin.
@@ -31,27 +30,7 @@ bool arch_fault_is_user_thread(void* frame)
     {
         return false;
     }
-    if (not kickos_fault_frame_trusted(frame, ARMV6M_BASIC_FRAME_BYTES))
-    {
-        return false;
-    }
-    uint32_t const* const f = static_cast<uint32_t const*>(frame);
-    return (f[7] & 0x3Fu) == 0u; // stacked xPSR IPSR field (6 bits on v6-M)
-}
-
-// Entered by the exception return with r0 = the SP the stub must run on. The SP move must be
-// the first instruction: anything before it would run on the stack this exists to leave.
-// Thread mode does not change SPSEL, so this writes the PSP.
-__attribute__((naked, noreturn)) void kickos_armv6m_fault_stack_reset(void)
-{
-    // A literal and `bx`, not `b`: the T2 `b` reaches +/-2 KB and the target is in another
-    // archive member (R_ARM_THM_JUMP11 truncation).
-    __asm volatile("mov  sp, r0\n\t"
-                   "ldr  r1, 1f\n\t"
-                   "bx   r1\n\t"
-                   ".align 2\n"
-                   "1:\n\t"
-                   ".word kickos_thread_fault_exit");
+    return kickos_fault_frame_trusted(frame, ARMV6M_BASIC_FRAME_BYTES);
 }
 
 void arch_fault_redirect_to_exit(void* frame)
@@ -67,10 +46,15 @@ void arch_fault_redirect_to_exit(void* frame)
     {
         kickos_fault_record(nullptr, 0, f[6], 0, 0);
     }
-    kickos_arm_fault_resume_at(f, &kickos_armv6m_fault_stack_reset);
-    // v6-M has no IT/ICI state to clear. Forcing T is not redundant: a cleared T bit is
-    // itself one of the ways a thread arrives here.
-    f[7] = f[7] | (1u << 24);
+    uint32_t const top = kickos_arm_fault_exit_top();
+    if (top == 0)
+    {
+        kickos_arm_fault_frame_in_place(f);
+    }
+    else
+    {
+        kickos_arm_fault_frame_at(top);
+    }
     kickos_arm_fault_resume_privileged();
 }
 

@@ -18,6 +18,7 @@ namespace kickos::testfix
 {
     uintptr_t g_ipc_seam_refuse_rw = 0;
     uintptr_t g_ipc_seam_refuse_write = 0;
+    uintptr_t g_ipc_seam_refuse_write_from_copy = 0;
 }
 
 namespace kickos
@@ -56,6 +57,11 @@ namespace kickos
 
     bool ep_copy(UserOwner, uintptr_t dst, UserOwner, uintptr_t src, size_t n)
     {
+        if (testfix::g_ipc_seam_refuse_write_from_copy != 0)
+        {
+            testfix::g_ipc_seam_refuse_write = testfix::g_ipc_seam_refuse_write_from_copy;
+            testfix::g_ipc_seam_refuse_write_from_copy = 0;
+        }
         if (n != 0)
         {
             memcpy(reinterpret_cast<void*>(dst), reinterpret_cast<void const*>(src), n);

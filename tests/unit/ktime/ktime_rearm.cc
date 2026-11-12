@@ -44,6 +44,8 @@ namespace
     uint64_t g_slice = UINT64_MAX; // the policy deadline next_timed_event answers for a thread
     uint32_t g_switch_ins = 0;
     uint32_t g_irq_saves = 0;
+    bool g_expiry_staged = false; // an arm that expects ktime_on_timer to unwind a park
+    kickos::Thread* g_expired = nullptr;
 }
 
 // --- the seam under the unit: a fake clock and a recording timer ---
@@ -98,12 +100,16 @@ namespace kickos
     }
 
     // ktime_on_timer delegates every park's unwind to park.cc, which this gate does not link.
-    // Reaching this means an arm let a deadline expire, which no arm here stages, so abort for
+    // Reaching this unstaged means an arm let a deadline expire it did not expect, so abort for
     // the same reason as kpanic above.
-    void thread_abort_park(Thread*, intptr_t, Held)
+    void thread_abort_park(Thread* t, intptr_t, Held)
     {
-        fprintf(stderr, "thread_abort_park: no park layer in this gate\n");
-        abort();
+        if (not g_expiry_staged)
+        {
+            fprintf(stderr, "thread_abort_park: no park layer in this gate\n");
+            abort();
+        }
+        g_expired = t;
     }
 
 
@@ -199,7 +205,7 @@ namespace
 
     void reset()
     {
-        kernel().sleepq = nullptr;
+        kernel().sleepq(kickos_kernel_core()) = nullptr;
         kernel().current(kickos_kernel_core()) = &g_sleeper;
         g_sleeper.tnext = nullptr;
         g_sleeper.on_timer = false;
@@ -213,6 +219,8 @@ namespace
         g_disarms = 0;
         g_slice = UINT64_MAX;
         g_switch_ins = 0;
+        g_expiry_staged = false;
+        g_expired = nullptr;
         kernel().switch_landing_owed[kickos_kernel_core()] = 0;
         // What boot leaves: a value no computation can produce, so the first rearm of an arm
         // always programs.
@@ -224,7 +232,7 @@ namespace
         g_sleeper.deadline_ns = deadline_ns;
         g_sleeper.on_timer = true;
         g_sleeper.tnext = nullptr;
-        kernel().sleepq = &g_sleeper;
+        kernel().sleepq(kickos_kernel_core()) = &g_sleeper;
     }
 }
 
@@ -301,14 +309,14 @@ TEST(KTime, floor_is_applied_at_birth)
     reset();
     g_now = 5000000;
     ktime_sleep_until(g_now); // a deadline already due at the moment of the call
-    EXPECT_EQ(kernel().sleepq, &g_sleeper) << "sleeper not parked";
+    EXPECT_EQ(kernel().sleepq(kickos_kernel_core()), &g_sleeper) << "sleeper not parked";
     EXPECT_EQ(g_sleeper.deadline_ns, g_now + KICKOS_TIMER_MIN_DELTA_NS)
         << "an already-due sleep was not floored at birth";
 
     reset();
     g_now = 5000000;
     ktime_sleep_ns(1); // 1 ns: below the floor, and not the sleep(0) yield case
-    EXPECT_EQ(kernel().sleepq, &g_sleeper) << "sub-floor sleeper not parked";
+    EXPECT_EQ(kernel().sleepq(kickos_kernel_core()), &g_sleeper) << "sub-floor sleeper not parked";
     EXPECT_EQ(g_sleeper.deadline_ns, g_now + KICKOS_TIMER_MIN_DELTA_NS)
         << "a sub-min-delta sleep did not round up to the min slice";
 
@@ -336,7 +344,7 @@ TEST(KTime, a_cancelled_sleeper_dies_before_it_touches_anything)
     }
     sched::g_exit_pad_armed = false;
     EXPECT_TRUE(sched::g_exited) << "the sleep did not reach the death point at all";
-    EXPECT_EQ(kernel().sleepq, nullptr)
+    EXPECT_EQ(kernel().sleepq(kickos_kernel_core()), nullptr)
         << "the dying thread was left on the sleep queue, which sched::exit_current does not "
            "sweep, so the list keeps a pointer into a slot the pool will re-hand";
     EXPECT_EQ(g_arms, 0u) << "a one-shot was armed for a thread that is not going to wake";
@@ -361,7 +369,7 @@ TEST(KTime, a_cancelled_saturated_sleep_does_not_park_forever)
     }
     sched::g_exit_pad_armed = false;
     EXPECT_TRUE(sched::g_exited);
-    EXPECT_EQ(kernel().sleepq, nullptr);
+    EXPECT_EQ(kernel().sleepq(kickos_kernel_core()), nullptr);
 }
 
 // The paired control, without which both arms above pass on a sleep that stopped working.
@@ -371,7 +379,7 @@ TEST(KTime, an_uncancelled_sleeper_still_parks)
     g_now = 5000000;
     ktime_sleep_until(g_now + 1000000);
     EXPECT_FALSE(sched::g_exited) << "an uncancelled sleeper was ended at the death point";
-    EXPECT_EQ(kernel().sleepq, &g_sleeper) << "an uncancelled sleeper did not park";
+    EXPECT_EQ(kernel().sleepq(kickos_kernel_core()), &g_sleeper) << "an uncancelled sleeper did not park";
     EXPECT_EQ(g_arms, 1u) << "an uncancelled sleeper armed no one-shot";
 }
 
@@ -432,7 +440,7 @@ TEST(KTime, a_fired_comparator_is_reprogrammed_for_the_same_deadline)
     g_now = deadline / 2;
     ktime_on_timer();
 
-    EXPECT_EQ(kernel().sleepq, &g_sleeper) << "an early fire woke a sleeper that is not due";
+    EXPECT_EQ(kernel().sleepq(kickos_kernel_core()), &g_sleeper) << "an early fire woke a sleeper that is not due";
     EXPECT_EQ(g_armed, deadline) << "the remainder was armed for something other than the "
                                     "deadline that is still pending";
     EXPECT_EQ(g_arms, 2u) << "a fired comparator was left holding nothing: the rearm behind "
@@ -512,3 +520,53 @@ TEST(KTime, an_interrupt_exit_with_no_landing_owed_takes_no_lock)
     EXPECT_EQ(g_armed, g_slice) << "an owed landing was not settled at the exit";
 }
 #endif
+
+// Switches landing closer together than the min delta while a sleeper's deadline is inside the
+// window, as a cross-core ping-pong or a fast device interrupt drives them. A landing that
+// reprograms the comparator from its own clock read pushes the expiry out by the min delta each
+// time, and the sleeper waits for as long as the landings keep coming.
+TEST(KTime, landings_inside_the_window_do_not_postpone_a_sleeper)
+{
+    reset();
+    g_now = 0;
+    uint64_t const deadline = 1000000;
+    park(deadline);
+    {
+        IrqLock lock;
+        ktime_rearm(sched::current(), lock);
+    }
+    ASSERT_EQ(g_armed, deadline);
+
+    constexpr uint64_t LANDING_GAP_NS = KICKOS_TIMER_MIN_DELTA_NS / 4;
+    constexpr uint32_t LANDINGS = 64;
+    g_now = deadline - 3 * LANDING_GAP_NS;
+    uint64_t latest = g_armed;
+    uint32_t landings = 0;
+    while (landings < LANDINGS and g_armed > g_now)
+    {
+        g_now += LANDING_GAP_NS;
+        kernel().switch_landing_owed[kickos_kernel_core()] = 1;
+#if KICKOS_ARCH_SWITCH_LANDS_LATER
+        {
+            IrqLock lock;
+            ktime_land(lock);
+        }
+#else
+        ktime_land_at_isr_exit();
+#endif
+        landings++;
+        if (g_armed > latest)
+        {
+            latest = g_armed;
+        }
+    }
+    EXPECT_LE(latest, deadline) << "a landing moved the comparator " << (latest - deadline)
+                                << " ns past the sleeper's deadline";
+    ASSERT_LE(g_armed, g_now) << "the comparator never came due across " << landings
+                              << " landings " << LANDING_GAP_NS << " ns apart";
+
+    g_expiry_staged = true;
+    ktime_on_timer();
+    EXPECT_EQ(g_expired, &g_sleeper) << "the comparator fired and the sleeper did not expire";
+    EXPECT_EQ(kernel().sleepq(kickos_kernel_core()), nullptr);
+}

@@ -15,12 +15,30 @@ kickos_add_unit_test(NAME amp_share_admission
           KICKOS_AMP_USER_SHARE_ADDR=0x2007C000
           KICKOS_AMP_USER_SHARE_SIZE=0x4000)
 
+# A caller-named thread stack over the share on a region board, over the REAL
+# kernel/thread/thread.cc and the grant and ownership rules it asks.
+kickos_add_unit_test(NAME amp_share_stack
+  SOURCES share_stack.cc "${PROJECT_SOURCE_DIR}/tests/unit/common/kpanic_seam.cc"
+          "${PROJECT_SOURCE_DIR}/kernel/thread/thread.cc"
+          "${PROJECT_SOURCE_DIR}/kernel/grant/grant.cc"
+          "${PROJECT_SOURCE_DIR}/kernel/mem/ramown.cc"
+          "${PROJECT_SOURCE_DIR}/kernel/init/instance.cc"
+          "${PROJECT_SOURCE_DIR}/tests/unit/common/region_seam.cc"
+          "${PROJECT_SOURCE_DIR}/tests/unit/common/pools_seam.cc"
+  INCLUDES "${PROJECT_SOURCE_DIR}/tests/unit/common"
+  POSTURE KICKOS_AMP_OWN_IMAGE=1
+          KICKOS_AMP_USER_SHARE_ADDR=0x2007C000
+          KICKOS_AMP_USER_SHARE_SIZE=0x4000)
+target_compile_options(amp_share_stack PRIVATE -ffunction-sections -fdata-sections)
+target_link_options(amp_share_stack PRIVATE -Wl,--gc-sections)
+
 # The translating board's admission of a window over the share its holder reserves, over the REAL
-# kernel/amp/ampshare.cc and kernel/mem/vrange.cc. The share's holder is the init, which no image
-# arm can be.
+# kernel/amp/ampshare.cc, kernel/grant/grant.cc and kernel/mem/vrange.cc. The share's holder is
+# the init, which no image arm can be.
 kickos_add_unit_test(NAME amp_share_window
   SOURCES share_window.cc "${PROJECT_SOURCE_DIR}/tests/unit/common/kpanic_seam.cc"
           "${PROJECT_SOURCE_DIR}/kernel/amp/ampshare.cc"
+          "${PROJECT_SOURCE_DIR}/kernel/grant/grant.cc"
           "${PROJECT_SOURCE_DIR}/kernel/mem/vrange.cc"
           "${PROJECT_SOURCE_DIR}/kernel/init/instance.cc"
   POSTURE KICKOS_HAVE_ASPACE=1
@@ -32,6 +50,8 @@ kickos_add_unit_test(NAME amp_share_window
           KICKOS_AMP_SHARED_SIZE=0x20000
           KICKOS_AMP_USER_SHARE_ADDR=0x40210000
           KICKOS_AMP_USER_SHARE_SIZE=0x10000)
+target_compile_options(amp_share_window PRIVATE -ffunction-sections -fdata-sections)
+target_link_options(amp_share_window PRIVATE -Wl,--gc-sections)
 
 # A word in the share refused by every route a translating space maps it, over the REAL
 # kernel/syscall/word.cc and the write predicate in kernel/syscall/syscall_mem.cc. Linked with

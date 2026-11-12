@@ -34,7 +34,6 @@ namespace kickos
     struct Task;
     struct Thread;
     struct WordRecord;
-    struct BenchMoveStamp;
     struct ListNode;
     struct TaskLinks;
 
@@ -99,10 +98,6 @@ namespace kickos
         // [producer][consumer][sched_ring_depth] pool slot indices.
         uint16_t* sched_rings;
         uint32_t sched_ring_depth;
-#endif
-#if KICKOS_BENCH
-        // One per machine, and null where the scheduler's own counters are off.
-        BenchMoveStamp* bench_moves;
 #endif
         int thread_slots;
 

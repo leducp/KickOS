@@ -77,6 +77,13 @@ address-space abstraction, MPU *or* MMU behind it" is the shape the tree has; se
 `../design-m6-mmu.md` for what each backend actually does and `boards.md` for what is witnessed
 where.
 
+**Per-task kernel memory is the recorded direction, and is not built** (maintainer, 2026-10-22).
+Today each kernel pool is sized from the task budgets the composition declares (*Object model,
+capabilities & IPC* below). The direction: memory records with generations, revocation both
+immediate and lazy, physical reuse after a grace period, mapped frames held by their mappings, and
+the payer an instance identity with a generation; no derivation tree and no sweep of holders.
+Nothing in today's pool sizing may be hard-wired so that this becomes a rework.
+
 ### Non-goals -- seL4 machinery deliberately NOT adopted
 
 "In the seL4 tradition" is a statement about the *shape* of the system, not a commitment to its
@@ -107,8 +114,8 @@ because "we are seL4-like" otherwise reads as a promise that these are coming.
   the space it organises. What actually keeps tables small is not the field width but the
   **static** allocation: one slab holds a run per possible thread. A run is NOT one width -- root
   gets the init's width, every spawned thread its task's -- so the
-  slab is `((KICKOS_BUDGET_THREADS + 2) x child chunks + root's extra chunks) x 8 x 16` bytes of
-  `.bss`. Re-derive it from the `KickOS: cap table =` line at configure rather than from this
+  slab is the sum of every task's capability-slot budget, the init's and the reserve's, in whole
+  chunks of 8 entries of 16 bytes, in `.bss`. Re-derive it from the `KickOS: cap table =` line at configure rather than from this
   formula.
 - **No derivation tree and no recursive revoke.** Refcounted last-close plus cap-generation
   staling already gives the property that matters (a revoked capability stops working, and a stale
@@ -124,9 +131,9 @@ because "we are seL4-like" otherwise reads as a promise that these are coming.
   that a run is **statically reserved for every possible thread**, in whole chunks: 100 slots rounds
   to 13 chunks = 104 reserved slots per run. Per-thread width does not rescue this -- the pins would
   be held by a driver thread, and a thread that holds them needs the width -- so at
-  `(KICKOS_BUDGET_THREADS + 2) x 104 x 8` bytes the table is **14,976 bytes** of
-  `.bss` at the fleet's `KICKOS_BUDGET_THREADS` of 16, and still 3,328 bytes on the two-thread tiny
-  boards, against a measured boot arena of 6,560 bytes on `bluepill-c8` -- which those boards would
+  104 slots for each of 18 threads the table is **14,976 bytes** of
+  `.bss`, and still 3,328 bytes for the four threads of a tiny
+  board, against a measured boot arena of 6,560 bytes on `bluepill-c8` -- which those boards would
   never reach anyway, since their supply is 7 and configure refuses the sum outright. Worse, the
   requirement is per *thread*: a bring-up body
   muxing thirty pins needs thirty live slots in its own table, so the cost scales with
@@ -380,9 +387,9 @@ KickOS/
     src/                            # syscall stubs + newlib stubs
     lib/spi_proxy/                  # vendor-neutral proxy backend of the SPI class
     apps/common/                    # fleet-wide apps; a sample, not the list: hello, selftest
-                                    #   (TAP gate), stress, sched_exit, mpu_fault, fault,
+                                    #   (TAP gate), stress, mpu_fault, fault,
                                     #   fp_switch, blink, bench, cxxtest, tele_*
-    apps/<board>/                   # that board's own demos (xmcspi, k64drv, rxdrv, c6blink, ...)
+    apps/<board>/                   # that board's own demos (pvprobe, k64drv, rxdrv, c6blink, ...)
   boards/
     Kconfig                        # one stanza per board: the board choice + `select` of its chip
     <board>/                       # board.cmake (arch/chip, + a CPU flag only where the board
@@ -521,6 +528,12 @@ commit too. A quantum shorter than that path starves the thread that carries it.
 the caller's own, per thread, so the cost stays with that thread: a same-priority peer with a
 longer quantum still gets its whole slice, higher priorities and interrupts are untouched, and
 lower priorities starve as they do under any CPU-bound thread at that priority.
+No progress guarantee is given for a very small slice either (maintainer, 2026-11-05: "really
+small slice is not a thing in real life"): a progress token per thread over a growing window was
+rejected. Two limits stay: a slice close to the cost of the switch and the timer handler makes
+slow progress, and a live slice's remainder shorter than the switch may expire before its thread
+runs. A fresh slice never expires against a thread that has not run, since it is stamped and
+armed where its switch lands.
 
 **Thread lifecycle past the exit: cancel, join, wait-until-last.** `KOS_SYS_THREAD_CANCEL` takes
 a kind. `KOS_CANCEL_KILL` is a COOPERATIVE cancel: it marks the target and wakes it out of WHATEVER park it is in; the abort is
@@ -686,6 +699,20 @@ implied); ThreadX Modules and ChibiOS/SB are the loadable-code cousins.
 - **Cross-domain sharing = a region deliberately mapped into two domains.** This is the basis for
   shared-memory IPC (roadmap). Absent an explicit shared region, domains cannot see each other.
 
+**On a region board a task is the MPU equivalent of the MMU process** (maintainer, 2026-10-21: "I
+would rather prefer the system with low RAM to hold only one task rather than lie to them about
+the isolation"). Each task is an image of its own, and no consent ever shares statics between
+tasks: a board too small holds one task. Two other shapes were declined:
+
+- **A per-task copy of the statics through a base register** (maintainer, 2026-10-21). GCC offers
+  it on ARM only (r9 with `-msingle-pic-base`), RX's `-mpid` covers constant data only, and rv32
+  and Xtensa have nothing, so it would split the region boards by ISA.
+- **One copy of libc's code shared by every image** (maintainer, 2026-11-01: "libc stays linked
+  into each image"). It took a 1.5 kline newlib patch carried across every newlib upgrade, made
+  malloc and free 21% and printf 5% slower on silicon, put the union of every image's libc state
+  in each task's block (+1 to +3 KiB on a light image), and held the isolation of libc state by
+  the patch's completeness instead of by separate links.
+
 **Region-set contract (portability keystone).** `arch_mpu_apply(regions, n)` **replaces the
 whole active set** for the running thread, and `arch_mpu_region.attr` is the **unprivileged**
 access (supervisor access comes from the background region / SYSMPU RGD0, not from these
@@ -737,7 +764,7 @@ buffer of a kernel copy: a system call's pointer into one answers `-KOS_EFAULT`.
 
 | Chip / unit | MPU covers MMIO? | Separate peripheral gate | Per-thread MMIO isolation | Evidence |
 |---|---|---|---|---|
-| XMC4800 -- ARM v7-M PMSA (CPU-side) | yes | none per-thread (some peripheral registers are PV-write-only at the bus -- a kernel/user split, not a per-master gate) | **yes** | silicon-proven: a granted USIC-SSC DEV window works + an ungranted peripheral poke faults MemManage (xmcspi loopback, 2026-07-17) |
+| XMC4800 -- ARM v7-M PMSA (CPU-side) | yes | none per-thread (some peripheral registers are PV-write-only at the bus -- a kernel/user split, not a per-master gate) | **yes** | silicon-proven: a granted USIC-SSC DEV window works + an ungranted peripheral poke faults MemManage (`pvprobe`, and the `xmcssc` loopback) |
 | RISC-V PMP (qemu-riscv; ESP32-C6) | yes | ESP32-C6 APM/PMS (per security-mode, default-deny user; opened at boot over each device a composition grants) | **yes** (PMP discriminates per thread; APM per node) | PMP path proven on qemu-riscv; **C6 SRAM enforcement + per-thread peripheral isolation PROVEN on silicon** (18/18 + mpu_fault; `c6blink` drives GPIO10 through the 64 B pin bank its composition grants, the APM opened over it, and a windowless thread's write to the matrix out-sel past the bank PMP-faults) |
 | RX72M, RXv3 MPU (CPU-side) | yes | none (PRCR is an unrelated write-latch, not a privilege gate) | **yes** | silicon-proven: SRAM/domain enforcement (selftest + mpu_fault cross-domain trap, 2026-07-17) AND a real granted peripheral window: `rxdrv` blinks LED6 through the 256-byte port window its composition grants while a windowless thread's write to the console pin's `PB1PFS` in the ungranted MPC faults (thread `rxpoke` killed) |
 | K64F -- SYSMPU (bus-slave-side) | **no** | **AIPS PACR** (by privilege+master, per 4 KB slot, NOT per-thread) | **no** | silicon-proven: an unprivileged PIT access faults via AIPS while SYSMPU latches no error; clearing the slot's PACR SP bit then admits ALL user code |
@@ -1132,6 +1159,9 @@ feeds the slave app.
   stub whose link fails on a required symbol naming the remedy. Every exported target
   is named `KickOS::<name>`: installed through the export's namespace, in tree through an `ALIAS`
   of the same name, so the package's own CMake names one target either way.
+  A flag or link mode the kernel needs is set where inheritance carries it to a library added
+  later, the kernel's interface target `KickOS::kernel`, never on a list of libraries
+  (maintainer, 2026-10-07).
   Those two lines are the whole supported path **on MCU targets too**, not just the sim: the
   bare-metal link recipe, the chip linker script and -- via `INTERFACE_LINK_DEPENDS` -- a real
   build-system dependency on that script all ride the exported target, so an edited `.ld` relinks
@@ -1159,7 +1189,10 @@ feeds the slave app.
   KickOS's own warning flags are **never** part of that interface -- they are this project's
   hygiene policy, applied `PRIVATE` to targets we own, and a consumer's diagnostics stay theirs.
 - **Programs.** A composition's task runs `program: <target>` or `driver:`. A program is an executable whose
-  `main(argc, argv)` is the task's entry, its return passed to `exit()`. A program links `KickOS::kickos` (`kickos` in
+  `main(argc, argv)` is the task's entry, its return passed to `exit()`. `exit()` from any thread
+  ends its task (ruling D4, 2026-10-29). A signal whose default action ends a process ends the
+  task with 128 + sig, so `abort`, a failed `assert` and `std::terminate` in any thread end it with
+  134 (ruling D5). A program links `KickOS::kickos` (`kickos` in
   tree): the user headers and runtime, without the kernel. A program's `main` stays `main`;
   any other target linking `KickOS::kernel` is compiled with `-Dmain=the renamed app main`.
   `program: main` is the executable
@@ -1308,7 +1341,7 @@ and `CAP_KIND_MAX` is what a third kind would fail against. Each object pool was
 via the recipe in Book ch.8.2, and `CAP_ASPACE` adds none and holds no reference: its handle goes
 stale at its task's end, and the space gives back every run it maps at its task's death. A frame run is charged to the
 task that minted it for the run's whole life (`invariants.md`,
-`object-pool-keeps-a-slot-from-any-one-task`). When the minter dies, a task that holds a capability
+`task-within-its-budget-finds-its-slot`). When the minter dies, a task that holds a capability
 to the run or maps it keeps the run and is charged nothing for it; its capability table, its range
 list and the run pool bound what it can keep. The per-task admission walks the asking task's
 members' tables with interrupts masked: one compare per thread slot, then each member's table width
@@ -1317,6 +1350,9 @@ resolve and a `SlotPool::index_of`. That last one divides on the 64-bit targets,
 `sizeof(Notification)` is 24, and not on the 32-bit ones, where it is 16. An attach pays the walk
 once per task slot (the task pool size). The contract below is code-synced to `kernel/include/kickos/cap.h`,
 `kernel/syscall/cap.cc`, `kernel/syscall/syscall.cc`.
+
+**Every budget is a ceiling, and a pool's budgets sum to at most the pool**, checked on the host
+by the composer (maintainer, 2026-10-22; `tools/compose/kickos_compose/supply.py`).
 
 - **Per-thread typed handle table, not global ids or fds.** A global object id every thread can name
   is ambient authority -- the opposite of the isolation pillar. Each `Thread` holds a `CapRun`,

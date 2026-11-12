@@ -1,20 +1,17 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// RP2040 / RP2350 USB device controller register map. ONE header for both parts: the two
-// blocks are the same IP and the RP2350 is a documented superset. Citations are
-// "RP2350 DS <sec> / RP2040 DS <sec>" where the two documents number the same fact
-// differently. Offsets only, no code; hand-rolled from the datasheets, no vendor SDK.
-// RESETS, CLOCKS and PLL_USB are the kernel's and stay in arch/arm/chip/<chip>/.
+// RP2040 / RP2350 USB device controller register map, one for both parts: the RP2350 block
+// is a documented superset. Citations read "RP2350 DS <sec> / RP2040 DS <sec>" where the two
+// documents number the same fact differently. RESETS, CLOCKS and PLL_USB are the kernel's
+// (arch/arm/chip/<chip>/).
 //
-// TWO ACCESS RULES that are not visible in the offsets and will corrupt a transfer if
-// forgotten:
+// Two access rules; breaking either corrupts a transfer:
 //   - The DPRAM has NO set/clear/xor aliases (RP2350 DS 12.7.3.7 / RP2040 DS 4.1.2.7).
 //     Only the register block at +0x10000 has them.
 //   - A buffer control word must be written in TWO steps: the length/PID/FULL bits
 //     first, then AVAILABLE after at least one clk_usb cycle has passed (RP2350 DS
-//     12.7.3.7.1 / RP2040 DS 4.1.2.7.1). The RP2350 has a double-read fix that makes
-//     this unnecessary, the RP2040 does not.
+//     12.7.3.7.1 / RP2040 DS 4.1.2.7.1). Mandatory on the RP2040.
 
 #ifndef KICKOS_DRIVER_RP2XXX_RP_USB_REGS_H
 #define KICKOS_DRIVER_RP2XXX_RP_USB_REGS_H
@@ -53,8 +50,8 @@ namespace kickos::rpusb::reg
     constexpr uint32_t EPC_INT_NAK = 1u << 16;
     constexpr uint32_t EPC_ADDR_MASK = 0xFFC0u; // bits 15:6, the buffer offset in DPRAM
 
-    // Buffer control word, buffer 0 half (RP2350 DS 12.7.3.7.4 Table 1194). The upper
-    // half is buffer 1 and is unused here: every endpoint is single-buffered.
+    // Buffer control word, buffer 0 half (RP2350 DS 12.7.3.7.4 Table 1194): every endpoint
+    // is single-buffered.
     constexpr uint32_t BUF_FULL = 1u << 15;      // CPU sets for IN, clears for OUT
     constexpr uint32_t BUF_LAST = 1u << 14;
     constexpr uint32_t BUF_PID_DATA1 = 1u << 13; // software-owned: the SIE never toggles it
@@ -102,6 +99,9 @@ namespace kickos::rpusb::reg
     constexpr uint32_t SIE_STATUS_SETUP_REC = 1u << 17;
     constexpr uint32_t SIE_STATUS_CONNECTED = 1u << 16;
     constexpr uint32_t SIE_STATUS_RESUME = 1u << 11;
+    // The live bus state on both parts, not a latch: writing it clears only INT_DEV_SUSPEND. The
+    // RP2040 types it WC as it does SPEED, the RP2350 RO (RP2040 DS 4.1.4 Table 404 / RP2350 DS
+    // 12.7.5 Table 1202).
     constexpr uint32_t SIE_STATUS_SUSPENDED = 1u << 4;
 
     // USB_MUXING: connect the controller to the on-chip PHY. TO_PHY resets SET on the
@@ -117,6 +117,11 @@ namespace kickos::rpusb::reg
     // used here is cleared AT ITS SOURCE, not by writing the interrupt register, which is
     // why the line is claimed KOS_IRQ_LEVEL.
     constexpr uint32_t INT_SETUP_REQ = 1u << 16;  // mirrors SIE_STATUS.SETUP_REC (bit 17)
+    // Cleared by writing SIE_STATUS.RESUME.
+    constexpr uint32_t INT_DEV_RESUME_FROM_HOST = 1u << 15;
+    // Raised on EITHER suspend edge; cleared by writing SIE_STATUS.SUSPENDED on both parts, the
+    // RP2350's read-only typing of that bit notwithstanding (RP2350 DS 12.7.5 Table 1217 /
+    // RP2040 DS 4.1.4 Table 418).
     constexpr uint32_t INT_DEV_SUSPEND = 1u << 14;
     constexpr uint32_t INT_DEV_CONN_DIS = 1u << 13;
     constexpr uint32_t INT_BUS_RESET = 1u << 12;

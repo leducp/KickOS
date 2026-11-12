@@ -22,6 +22,8 @@
 
 #include "mpu.h"
 #include "regs.h"
+#include "aipstz_gate.h"
+#include "mpu_rows.h"
 #include <kickos/chip_mmap.h>
 #include "board_pins.h"
 #include "chip_layout.h"
@@ -53,6 +55,7 @@ namespace kickos
 
 extern "C"
 {
+    void kickos_armv7m_ccr_init(void);
     void kickos_armv7m_init(void);
     void kickos_armv7m_icache_enable(void);
     void kickos_armv7m_dcache_enable(void);
@@ -456,10 +459,8 @@ int arch_mpu_nocache_support(void)
 void arch_init(void)
 {
 #if KICKOS_HAVE_MPU
-    // ORDER IS LOAD-BEARING (ERR011573): the fixed MPU regions mark the unbacked external
-    // bands as Device so the M7 cannot speculatively prefetch into an AHB slave that never
-    // responds. They must be LIVE BEFORE the cache is enabled; a cache is what arms that
-    // speculation.
+    // ORDER IS LOAD-BEARING (ERR011573): the fixed rows must be live before a cache is
+    // enabled, since the cache arms the speculation into unbacked space they deny.
     kickos_arm_mpu_fixed_init();
     kickos_armv7m_icache_enable();
 #if defined(KICKOS_IMXRT_DCACHE) && KICKOS_IMXRT_DCACHE
@@ -480,36 +481,20 @@ void arch_init(void)
 }
 
 #if KICKOS_HAVE_MPU
-// Chip fixed MPU regions, in the LOW slots; per-thread grants sit above them. ERR011573 /
-// Arm 1013783-B: the default map leaves 0x6000_0000-0x9FFF_FFFF Normal, so M7 speculation
-// past the populated flash, or into the unbacked SEMC aperture, hits an AHB slave that never
-// responds and stalls the core with NO fault. Both external bands, and their aliases in the
-// Code region (IMXRT1060RM Table 3-1, p.36), are wrapped Device + XN + no-access, and the
-// populated flash overlaid as Normal cacheable priv-RO+X.
 extern "C"
 {
     size_t kickos_arm_mpu_fixed(struct kickos_arm_mpu_fixed_region const** out)
     {
-        using namespace kickos::arm;
-        constexpr uint32_t FLASH = KICKOS_LAYOUT_FLEXSPI_FLASH_BASE;
-        static_assert((KICKOS_LAYOUT_FLEXSPI_FLASH_SIZE & (KICKOS_LAYOUT_FLEXSPI_FLASH_SIZE - 1)) == 0,
-                      "a PMSAv7 region is a power of two");
-        // RASR.SIZE: a region of 2^(SIZE + 1) bytes.
-        constexpr uint32_t SZ_512M = (29u - 1u) << 1;
-        constexpr uint32_t SZ_256M = (28u - 1u) << 1;
-        constexpr uint32_t SZ_128M = (27u - 1u) << 1;
-        constexpr uint32_t SZ_FLASH = (__builtin_ctz(KICKOS_LAYOUT_FLEXSPI_FLASH_SIZE) - 1u) << 1;
-        constexpr uint32_t WRAP_ATTR = MPU_RASR_ENABLE | MPU_RASR_AP_NONE | MPU_RASR_XN | MPU_RASR_MEM_DEVICE;
-        constexpr uint32_t WRAP = WRAP_ATTR | SZ_512M;
-        static kickos_arm_mpu_fixed_region const rows[] = {
-            {FLASH, WRAP},                                                               // FlexSPI aperture wrap
-            {FLASH, MPU_RASR_ENABLE | SZ_FLASH | MPU_RASR_AP_PRO | MPU_RASR_MEM_NORMAL}, // populated flash, RO+X
-            {0x80000000u, WRAP},                                                         // SEMC aperture wrap
-            {0x08000000u, WRAP_ATTR | SZ_128M},                                          // FlexSPI alias wrap
-            {0x10000000u, WRAP_ATTR | SZ_256M},                                          // SEMC alias wrap
-        };
-        *out = rows;
-        return sizeof(rows) / sizeof(rows[0]);
+        namespace mr = kickos::imxrt1062::mpu_rows;
+        static_assert(mr::is_region(KICKOS_LAYOUT_FLEXSPI_FLASH_BASE, KICKOS_LAYOUT_FLEXSPI_FLASH_SIZE),
+                      "the populated flash is one PMSAv7 region");
+        static_assert(mr::is_region(KICKOS_LAYOUT_OCRAM2_BASE, KICKOS_LAYOUT_OCRAM2_SIZE),
+                      "OCRAM2 is one PMSAv7 region");
+        static constexpr mr::Rows table = mr::rows(KICKOS_LAYOUT_FLEXSPI_FLASH_BASE,
+                                                   KICKOS_LAYOUT_FLEXSPI_FLASH_SIZE,
+                                                   KICKOS_LAYOUT_OCRAM2_BASE, KICKOS_LAYOUT_OCRAM2_SIZE);
+        *out = table.row;
+        return mr::COUNT;
     }
 }
 #endif
@@ -643,23 +628,15 @@ void arch_idle_wait(void)
     __asm volatile("nop");
 }
 
-// Bridge access only; usb_clock_init did USB1's clock half. Exact base match, never a range: a
-// base earns an entry only once the rest of its 16 KiB AIPS slot is reserved in
-// arch_reserved_blocks.
+// Bridge access only; usb_clock_init did USB1's clock half.
 int arch_periph_enable(uintptr_t base)
 {
-    if (base != mmap::USB1_BASE)
-    {
-        return -KOS_EINVAL;
-    }
-    uintptr_t const bridge = reg::aipstz::bridge_of(base);
-    if (bridge == 0u)
-    {
-        return -KOS_EINVAL; // outside all four AIPS regions: refuse rather than pick a word
-    }
-    r32(reg::aipstz::opacr_of(bridge, reg::aipstz::USB1_SLOT)) &=
-        ~reg::aipstz::sp_bit_of(reg::aipstz::USB1_SLOT);
-    return 0;
+    return kickos::imxrt1062::aipstz_gate::open(base, r32);
+}
+
+int arch_periph_disable(uintptr_t base)
+{
+    return kickos::imxrt1062::aipstz_gate::close(base, r32);
 }
 
 // The bootloader is HalfKay: the MKL02 companion owns the SWD port, catches the halt and
@@ -687,6 +664,7 @@ void Reset_Handler(void)
     // MSP was set by _boot_entry: the ROM enters via IVT.entry, not the reset vector. VTOR must
     // name our table (0x6000_2000, not the flash base) before any interrupt path runs.
     watchdog_disable(); // FIRST: the ROM hands off a running RTWDOG (RM 58.4)
+    kickos_armv7m_ccr_init();
     kickos_armv7m_enable_fpu(); // before ANY later code that could emit FP
     r32(kickos::arm::SCB_VTOR) = reinterpret_cast<uintptr_t>(g_isr_vector);
     __asm volatile("dsb" ::: "memory");

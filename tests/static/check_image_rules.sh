@@ -19,13 +19,14 @@
 #                start, at BASE + 4*i; every target
 #                seats gp with the auipc/addi pair before its first transfer and names gp nowhere
 #                above it; the image writes mtvec once; switch.S's object has no R_RISCV_RELAX
-#   a53_pmcr     kickos_armv8a_percore_init writes PMCR_EL0 as read with D (bit 3) cleared and C
-#                (bit 2) set, which no emulator run tells apart: QEMU resets D clear, and C reads
-#                as 0. bench_cyccnt reads E, D and LC back on the run
 #   arm64_entry  _start selects SP_ELx before its first write to SP; arch_timer_disarm and
 #                kickos_armv8a_percore_init take an ISB between the CNTP_CTL_EL0 disable and
 #                their next Device write or branch
 #   c6_hp        Reset_Handler calls mtime_rate_init before it names an init_array bound
+#   rv_entry     _start executes fence.i before its first mret, jal or jalr: a loader's stores
+#                reach a hart's fetch only after that hart's own FENCE.I
+#   c6_lp_stub   the LP reset stub HP copies (kickos_c6_amp_lp_stub_start to _end) executes
+#                fence.i before its jr t0 into node 1's image, which another hart stored
 #   ctor         every .init_array input the map places lies in __init_array_start/_end,
 #                __kickos_app_init_array_start/_end or one image's __kickos_image<n>_ctor_start
 #                /_end, and none comes from a KickOS-owned object,
@@ -33,12 +34,18 @@
 #                .init_array inputs add up to what the final map places of the image's object;
 #                a map stating either output section of the two windows nowhere is refused
 #   cpu_id       at one core no image defines arch_cpu_id
+#   no_alloc     an image whose programs never allocate defines no _malloc_r or _free_r in its
+#                ELF or any embedded program's, read where kos_exit is defined: newlib's
+#                allocator is in every link's archive members, and --gc-sections alone drops it
 #   arm64_share  in both boot roots' level-2 tables (kickos_arm64_ram_table and
 #                kickos_arm64_kernel_ram_table) every valid block holding part of the AMP user
 #                share selects the MAIR_EL1 slot given, and those blocks cover the whole share
 #   rx_user_psw  no .kickos_image<n>_text instruction is clrpsw i, setpsw i or an mvtc to psw:
 #                user mode ignores a write to PSW.I without a trap, so an interrupt mask
 #                there masks nothing
+#   armv7m_kernel_fp  no instruction outside the .kickos_image<n> sections is an FP one but the
+#                switcher's own, in PendSV_Handler and SVC_Handler: any other fires a thread's
+#                pending lazy FP save before a PSP guard has bounded the frame it writes
 #
 # usage: check_image_rules.sh <rule> <objdump> <elf> [arg]...
 #   The nm and readelf beside <objdump> read the symbols and sections.
@@ -223,28 +230,6 @@ ctl_rv32_trap() {
     D="$TMP/d.p"
 }
 
-rule_a53_pmcr() {
-    awk "$AWKLIB"'
-        /^[0-9a-f]+ <.*>:$/ { f = ($2 == "<kickos_armv8a_percore_init>:"); n += f; next }
-        !f || !/^[ \t]*[0-9a-f]+:/ { next }
-        { t = insn($0); gsub(/ x[0-9]+/, " x", t); body = body t ";" }
-        END {
-            if (!n) print "no kickos_armv8a_percore_init body"
-            if (!match(body, /mrs x, pmcr_el0;and x, x, #0x[0-9a-f]+;mov x, #0x[0-9a-f]+;orr x, x, x;msr pmcr_el0, x;/)) {
-                print "PMCR_EL0 is not written as read, masked, then ORed with an immediate"
-                exit
-            }
-            split(substr(body, RSTART, RLENGTH), part, /#|;/)
-            # The low nibble alone: a 64-bit mask is past what an awk number holds exactly.
-            if (bit(hex(substr(part[3], length(part[3]))), 3)) print "the PMCR_EL0 write keeps D (bit 3)"
-            if (!bit(hex(substr(part[5], length(part[5]))), 2)) print "the PMCR_EL0 write sets no C (bit 2)"
-        }' "$D"
-}
-ctl_a53_pmcr() {
-    sed -e 's/#0x45/#0x41/' -e 's/#0xfffffffffffffff7/#0xffffffffffffffff/' "$D" > "$TMP/d.p"
-    D="$TMP/d.p"
-}
-
 rule_arm64_entry() {
     order _start "" '^msr spsel,' '^(mov|add|sub|and|orr|eor|mvn) sp,'
     for _s in arch_timer_disarm kickos_armv8a_percore_init; do
@@ -271,6 +256,32 @@ rule_c6_hp() {
 ctl_c6_hp() {
     grep -v 'mtime_rate_init[^>]*>$' "$D" > "$TMP/d.p"
     D="$TMP/d.p"
+}
+
+rule_rv_entry() {
+    order _start "" '^fence[.]i$' '^(mret|jal|jalr)( |$)'
+}
+ctl_rv_entry() {
+    grep -v "${TAB}fence[.]i" "$D" > "$TMP/d.p" || true
+    D="$TMP/d.p"
+}
+
+# fence.i is 0x0000100f and jr t0 (jalr zero, 0(t0)) 0x00028067; the stub is norvc.
+rule_c6_lp_stub() {
+    awk -v lo="$LP_LO" -v hi="$LP_HI" "$AWKLIB"'
+        hex($1) < hex(lo) || hex($1) >= hex(hi) { next }
+        { n++ }
+        !f && $2 == "0000100f" { f = n }
+        !j && $2 == "00028067" { j = n }
+        END {
+            if (!n) print "no word between kickos_c6_amp_lp_stub_start and _end"
+            else if (!j) print "the stub holds no jr t0"
+            else if (!f || f > j) print "fence.i at word #" f + 0 ", jr t0 at #" j
+        }' "$W"
+}
+ctl_c6_lp_stub() {
+    sed 's/ 0000100f$/ 00000013/' "$W" > "$TMP/w.p"
+    W="$TMP/w.p"
 }
 
 rule_ctor() {
@@ -364,6 +375,16 @@ ctl_cpu_id() {
     N="$TMP/n.p"
 }
 
+rule_no_alloc() {
+    awk '$NF ~ /^_?kos_exit$/ { e = 1 }
+        $NF ~ /^_?_(malloc|free)_r$/ { print "an image that never allocates defines " $NF }
+        END { if (!e) print "no kos_exit defined, so no program of the image was read" }' "$N"
+}
+ctl_no_alloc() {
+    { cat "$N"; echo "00000000 00000004 t _free_r"; } > "$TMP/n.p"
+    N="$TMP/n.p"
+}
+
 rule_arm64_share() {
     awk -v t1="$T1" -v t2="$T2" -v base="$SHARE_BASE" -v size="$SHARE_SIZE" -v want="$SHARE_ATTR" \
         "$AWKLIB"'
@@ -430,6 +451,32 @@ ctl_rx_user_psw() {
     D="$TMP/d.p"
 }
 
+rule_armv7m_kernel_fp() {
+    awk "$AWKLIB"'
+        /^Disassembly of section / {
+            s = $4
+            sub(/:$/, "", s)
+            k = (s !~ /^\.kickos_image[0-9]+_/)
+            b = ""
+            next
+        }
+        /^[0-9a-f]+ <.*>:$/ { x = $2; gsub(/[<>:]/, "", x); if (x !~ /^\.L/) b = x; next }
+        !k || !/^[ \t]*[0-9a-f]+:/ { next }
+        { t = insn($0); n++ }
+        # A data run inside code (a $d span) dumps as `addr:<TAB>sixteen characters`; an
+        # instruction is `addr:<TAB>mnemonic<TAB>operands`.
+        $0 ~ /:\tv[a-z0-9.]+\t/ && b != "PendSV_Handler" && b != "SVC_Handler" {
+            print s ": " b ": " t
+        }
+        END { if (!n) print "no instruction outside the .kickos_image<n> sections" }' "$D"
+}
+ctl_armv7m_kernel_fp() {
+    awk '{ print }
+        !p && /^Disassembly of section \.text:/ { print "00000000 <kickos_planted>:"
+            print "    0:\tvmov\ts0, r0"; p = 1 }' "$D" > "$TMP/d.p"
+    D="$TMP/d.p"
+}
+
 judge() { # <rule>
     "rule_$RULE" > "$TMP/found"
     if [ -s "$TMP/found" ]; then
@@ -476,7 +523,19 @@ case "$RULE" in
     rv64_gp)
         X="$ELF.map"
         [ -r "$X" ] || fail "no link map at $X" ;;
-    a53_pmcr | arm64_entry | c6_hp | cpu_id | rx_user_psw) ;;
+    c6_lp_stub)
+        LP_LO="$(addr_of kickos_c6_amp_lp_stub_start)"
+        LP_HI="$(addr_of kickos_c6_amp_lp_stub_end)"
+        [ -n "$LP_LO" ] && [ -n "$LP_HI" ] || fail "no LP stub bounds in $ELF"
+        image_words "$OD" "$ELF" 4 --start-address="0x$LP_LO" --stop-address="0x$LP_HI" > "$W" ;;
+    no_alloc)
+        image_elf_set "$ELF" "$ELF.map" "$TMP/elfs"
+        sed 1d "$TMP/elfs" > "$TMP/progs"
+        while IFS= read -r _p; do
+            tool_out "$TMP/nm.prog" "[0-9a-fA-F]" "$NM" -S --defined-only "$_p"
+            cat "$TMP/nm.prog" >> "$N"
+        done < "$TMP/progs" ;;
+    arm64_entry | c6_hp | cpu_id | rx_user_psw | rv_entry | armv7m_kernel_fp) ;;
     *) fail "unknown rule '$RULE'. $_usage" ;;
 esac
 judge

@@ -218,7 +218,7 @@ and the syscall door sits beside them.
 | `kernel/syscall/` | The door; IPC | `syscall_dispatch` (`syscall.cc`), which routes each syscall number; the capability table (`cap.cc`), each thread's list of the kernel objects it may use, which every object-naming syscall checks; one file per syscall family, among them the message endpoints (`syscall_ipc.cc`) | 02, 05, 08 |
 | `kernel/init/` | Boot | `kmain` (`kmain.cc`: the boot sequence and the banner), the kernel console and its TX ring, the fault and panic reporter, the diagnostic LED | 01, 09 |
 | `kernel/klib/` | - | `kprintf` formatting and string helpers for the kernel | - |
-| `kernel/ktrace/`, `kernel/bench/` | - | Telemetry records and benchmark counters | - |
+| `kernel/ktrace/` | - | Telemetry records | - |
 | `kernel/amp/` | - | Asymmetric multiprocessing: several kernels sharing one chip | 11 |
 | `kernel/include/kickos/` | - | The kernel's own headers: `thread.h`, `sched.h`, `cap.h`, `instance.h` (the `Kernel` object) and the rest | all |
 

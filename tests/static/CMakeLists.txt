@@ -2,8 +2,8 @@
 # Copyright (c) 2026 Philippe Leduc
 #
 # The static gates. Each registers through _add_test, so none requires the build fixture.
-# A `tree` gate reads only the source tree; the host gates at the end read this configure's
-# own output. A script run bare expects the repository root as its working directory.
+# The host gates first read this configure's own output; a `tree` gate after them reads only the
+# source tree. A script run bare expects the repository root as its working directory.
 
 kickos_arm_timeouts()
 
@@ -16,10 +16,98 @@ function(kickos_tree_scripts)
   kickos_tree_gate(${TS_UNPARSED_ARGUMENTS} TIMEOUT ${TS_TIMEOUT})
 endfunction()
 
+# A gate stating no working directory runs in the build root.
+function(_kickos_static_workdirs)
+  get_property(_tests DIRECTORY PROPERTY TESTS)
+  foreach(_test IN LISTS _tests)
+    get_test_property(${_test} WORKING_DIRECTORY _wd)
+    if(NOT _wd)
+      set_tests_properties(${_test} PROPERTIES WORKING_DIRECTORY "${PROJECT_BINARY_DIR}")
+    endif()
+  endforeach()
+endfunction()
+cmake_language(DEFER CALL _kickos_static_workdirs)
+
+# Every preset of an arch with a trap-stack header measures its trap descent, and a translating
+# one walks the fault-record console route as a clause of it.
+file(GLOB _trap_stack_header
+     "${PROJECT_SOURCE_DIR}/arch/*/${KICKOS_ARCH}/include/kickos/arch/*_trap_stack.h")
+if(_trap_stack_header)
+  _add_test(NAME trap_redzone
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/check_trap_redzone.sh" "${PROJECT_SOURCE_DIR}"
+                    "${CMAKE_COMMAND}" "${_fs_preset_key}" "${KICKOS_ARCH}")
+  kickos_host_gate(trap_redzone TIMEOUT 1800)
+  if(KICKOS_HAVE_ASPACE)
+    set_property(TEST trap_redzone APPEND PROPERTY ENVIRONMENT "KICKOS_CONSOLE_REACH=1")
+  endif()
+endif()
+
+# Several arch directories provide the same kickos/arch/context.h, so the gate takes the one
+# this board builds.
+if(NOT CMAKE_C_COMPILER)
+  message(FATAL_ERROR "No CMAKE_C_COMPILER, so the C-facing headers cannot be compiled as C "
+                      "and check_public_headers.sh --tree would have nothing to run. project() "
+                      "declares LANGUAGES C; a toolchain file that unsets the C compiler must "
+                      "be fixed.")
+endif()
+set(_c_hdr_roots "${PROJECT_BINARY_DIR}/generated/include")
+foreach(_d KICKOS_ARCH_INCLUDE_DIR KICKOS_CHIP_INCLUDE_DIR KICKOS_BOARD_INCLUDE_DIR)
+  if(${_d})
+    list(APPEND _c_hdr_roots "${${_d}}")
+  endif()
+endforeach()
+_add_test(NAME c_headers
+          COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/check_public_headers.sh" --tree
+                  "${CMAKE_C_COMPILER}" ${_c_hdr_roots}
+          WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
+kickos_host_gate(c_headers)
+
+set(_manifest "${PROJECT_BINARY_DIR}/export/manifest.yaml")
+_add_test(NAME platform_manifest
+          COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/check_platform.sh" "${PROJECT_BINARY_DIR}" manifest
+                  "${_manifest}"
+          WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
+# Each packaged driver of this build's catalogue in a composition the board admits.
+_add_test(NAME platform_drivers
+          COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/check_platform.sh" "${PROJECT_BINARY_DIR}" drivers
+                  "${_manifest}" "${KICKOS_BOARD}"
+          WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
+kickos_host_gate(platform_manifest platform_drivers TIMEOUT 300)
+set(KICKOS_GOLDEN_COMPOSITION "" CACHE STRING
+    "A golden composition this build targets, relative to the source root, admitted against its manifest")
+if(NOT KICKOS_GOLDEN_COMPOSITION STREQUAL "")
+  set(_golden "${PROJECT_SOURCE_DIR}/${KICKOS_GOLDEN_COMPOSITION}")
+  _add_test(NAME platform_golden
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/check_platform.sh" "${PROJECT_BINARY_DIR}" golden
+                    "${_manifest}" "${_golden}"
+            WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
+  _add_test(NAME platform_golden_table
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/check_platform.sh" "${PROJECT_BINARY_DIR}" table
+                    "${_manifest}" "${_golden}" "${CMAKE_C_COMPILER}"
+                    "${PROJECT_BINARY_DIR}/generated/include"
+            WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
+  kickos_host_gate(platform_golden platform_golden_table TIMEOUT 300)
+endif()
+
+# The walker runs, so the compiler must be the host's, which only the sim builds with.
+if(KICKOS_ARCH STREQUAL "sim")
+  _add_test(NAME platform_tables
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/check_platform.sh" "${PROJECT_BINARY_DIR}" tables
+                    "${CMAKE_C_COMPILER}" "${PROJECT_BINARY_DIR}/generated/include"
+            WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
+  kickos_tree_gate(platform_tables TIMEOUT 300)
+endif()
+
+# One preset registers the tree gates, which read the source tree alone; CI's tree job runs it.
+if(NOT _fs_preset_key STREQUAL "sim")
+  return()
+endif()
+
 kickos_tree_scripts(doc_names extern_c_linkage ascii spdx include_guards shell_special_names
                     ternary panic_banners syscall_return_codes death_stack_seating
                     panic_stack_seat mpu_record park_death_point geometry_emitted atomic_rmw
-                    amp_slot_snapshot ci_named_lists awk_portable poll_stop_lines kernel_core_index)
+                    amp_slot_snapshot ci_named_lists awk_portable poll_stop_lines kernel_core_index
+                    route_service_order esp_tx_latch_ack irq_line_op_sole)
 # dash_punct, the heaviest corpus scan, has taken 117 s on a contended box.
 kickos_tree_scripts(dash_punct amp_no_xip_pin TIMEOUT 300)
 # app_judges runs one judge per planted capture, and has taken 46 s at load 22.
@@ -91,10 +179,7 @@ _add_test(NAME chip_protection
           COMMAND "${CMAKE_COMMAND}" "-DKICKOS_SOURCE_DIR=${PROJECT_SOURCE_DIR}"
                   "-DKICKOS_SCRATCH=${PROJECT_BINARY_DIR}/chip_protection"
                   -P "${CMAKE_CURRENT_SOURCE_DIR}/check_chip_protection.cmake")
-_add_test(NAME selftest_partials
-          COMMAND "${CMAKE_COMMAND}" "-DKICKOS_SOURCE_DIR=${PROJECT_SOURCE_DIR}"
-                  -P "${CMAKE_CURRENT_SOURCE_DIR}/check_selftest_partials.cmake")
-kickos_tree_gate(chip_protection selftest_partials TIMEOUT 60)
+kickos_tree_gate(chip_protection TIMEOUT 60)
 
 kickos_find_kconfig(_kconfig_py _kconfig_found)
 _add_test(NAME kconfig_gen
@@ -113,13 +198,7 @@ foreach(_mode descriptions compositions arms coverage)
             WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
   kickos_tree_gate(platform_${_mode} TIMEOUT 300)
 endforeach()
-# The walker runs, so the compiler must be the host's, which only the sim builds with.
 if(KICKOS_ARCH STREQUAL "sim")
-  _add_test(NAME platform_tables
-            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/check_platform.sh" "${PROJECT_BINARY_DIR}" tables
-                    "${CMAKE_C_COMPILER}" "${PROJECT_BINARY_DIR}/generated/include"
-            WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
-  kickos_tree_gate(platform_tables TIMEOUT 300)
   _add_test(NAME usb_identity_controls
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/check_usb_identity.sh" "${CMAKE_CXX_COMPILER}"
             WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
@@ -127,73 +206,3 @@ if(KICKOS_ARCH STREQUAL "sim")
 endif()
 
 include("${CMAKE_CURRENT_SOURCE_DIR}/check_isolated_cores.cmake")
-
-# Every preset of an arch with a trap-stack header measures its trap descent, and a translating
-# one walks the fault-record console route as a clause of it.
-file(GLOB _trap_stack_header
-     "${PROJECT_SOURCE_DIR}/arch/*/${KICKOS_ARCH}/include/kickos/arch/*_trap_stack.h")
-if(_trap_stack_header)
-  _add_test(NAME trap_redzone
-            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/check_trap_redzone.sh" "${PROJECT_SOURCE_DIR}"
-                    "${CMAKE_COMMAND}" "${_fs_preset_key}" "${KICKOS_ARCH}")
-  kickos_host_gate(trap_redzone TIMEOUT 1800)
-  if(KICKOS_HAVE_ASPACE)
-    set_property(TEST trap_redzone APPEND PROPERTY ENVIRONMENT "KICKOS_CONSOLE_REACH=1")
-  endif()
-endif()
-
-# Several arch directories provide the same kickos/arch/context.h, so the gate takes the one
-# this board builds.
-if(NOT CMAKE_C_COMPILER)
-  message(FATAL_ERROR "No CMAKE_C_COMPILER, so the C-facing headers cannot be compiled as C "
-                      "and check_public_headers.sh --tree would have nothing to run. project() "
-                      "declares LANGUAGES C; a toolchain file that unsets the C compiler must "
-                      "be fixed.")
-endif()
-set(_c_hdr_roots "${PROJECT_BINARY_DIR}/generated/include")
-foreach(_d KICKOS_ARCH_INCLUDE_DIR KICKOS_CHIP_INCLUDE_DIR KICKOS_BOARD_INCLUDE_DIR)
-  if(${_d})
-    list(APPEND _c_hdr_roots "${${_d}}")
-  endif()
-endforeach()
-_add_test(NAME c_headers
-          COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/check_public_headers.sh" --tree
-                  "${CMAKE_C_COMPILER}" ${_c_hdr_roots}
-          WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
-kickos_host_gate(c_headers)
-
-set(_manifest "${PROJECT_BINARY_DIR}/export/manifest.yaml")
-_add_test(NAME platform_manifest
-          COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/check_platform.sh" "${PROJECT_BINARY_DIR}" manifest
-                  "${_manifest}"
-          WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
-# Each packaged driver of this build's catalogue in a composition the board admits.
-_add_test(NAME platform_drivers
-          COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/check_platform.sh" "${PROJECT_BINARY_DIR}" drivers
-                  "${_manifest}" "${KICKOS_BOARD}"
-          WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
-kickos_host_gate(platform_manifest platform_drivers TIMEOUT 300)
-set(KICKOS_GOLDEN_COMPOSITION "" CACHE STRING
-    "A golden composition this build targets, relative to the source root, admitted against its manifest")
-if(NOT KICKOS_GOLDEN_COMPOSITION STREQUAL "")
-  set(_golden "${PROJECT_SOURCE_DIR}/${KICKOS_GOLDEN_COMPOSITION}")
-  _add_test(NAME platform_golden
-            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/check_platform.sh" "${PROJECT_BINARY_DIR}" golden
-                    "${_manifest}" "${_golden}"
-            WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
-  _add_test(NAME platform_golden_table
-            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/check_platform.sh" "${PROJECT_BINARY_DIR}" table
-                    "${_manifest}" "${_golden}" "${CMAKE_C_COMPILER}"
-                    "${PROJECT_BINARY_DIR}/generated/include"
-            WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
-  kickos_host_gate(platform_golden platform_golden_table TIMEOUT 300)
-endif()
-
-# A gate stating no working directory runs in the build root.
-get_property(_tests DIRECTORY PROPERTY TESTS)
-foreach(_test IN LISTS _tests)
-  get_test_property(${_test} WORKING_DIRECTORY _wd)
-  if(NOT _wd)
-    set_tests_properties(${_test} PROPERTIES WORKING_DIRECTORY "${PROJECT_BINARY_DIR}")
-  endif()
-endforeach()

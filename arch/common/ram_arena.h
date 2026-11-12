@@ -22,9 +22,13 @@ namespace kickos
     // A block of `rsz` bytes on `ralign` out of [base, base + total), or nullptr, the arena then
     // unchanged. The kept range takes it when it fits; else it is bumped, and the run-up it
     // leaves replaces the kept range only when strictly larger. Taking from the kept range keeps
-    // the larger of the two pieces, the upper one on a tie. Caller serialises.
+    // the larger of the two pieces, the upper one on a tie. A bumped block that would run across
+    // `line` (0: none) starts at the line instead. Caller serialises.
+    //
+    // The kept range never runs across the line only because the line sits on every block's
+    // alignment, which the composition tool requires of a chip's `bank_line`.
     inline void* ram_arena_alloc(RamArena& a, uintptr_t base, size_t total, size_t rsz,
-                                 size_t ralign)
+                                 size_t ralign, uintptr_t line = 0)
     {
         uintptr_t const mask = ~static_cast<uintptr_t>(ralign - 1);
         if (a.gap_len != 0)
@@ -49,7 +53,11 @@ namespace kickos
             }
         }
         uintptr_t const cur = base + a.used;
-        uintptr_t const at = (cur + (ralign - 1)) & mask;
+        uintptr_t at = (cur + (ralign - 1)) & mask;
+        if (line != 0 and at < line and rsz > line - at)
+        {
+            at = (line + (ralign - 1)) & mask;
+        }
         size_t const off = static_cast<size_t>(at - base);
         if (at < cur or off > total or rsz > total - off)
         {

@@ -3,42 +3,50 @@
 //
 // PSP-BOUNDS security gate. Exception entry stacks the HARDWARE frame ABOVE the PSP with the
 // pre-exception privilege, so a kernel-aimed PSP faults as MSTKERR before any handler runs. The
-// {r4-r11, EXC_RETURN} block pushed BELOW that frame is written in handler mode and refused by
-// nothing, so a PSP a few words above a stack's base clears the hardware check and still writes
-// under the stack. Stacks share one arena, so the word under a stack base can be a NEIGHBOUR
-// thread's granted region, and the last word pushed is EXC_RETURN: rewriting it to 0xFFFFFFF1
-// resumes the victim PRIVILEGED.
+// {r4-r11} block pushed BELOW that frame is written in handler mode and refused by nothing, so a
+// PSP a few words above a stack's base clears the hardware check and still writes under the
+// stack. Stacks share one arena, so the words under a stack base can be a NEIGHBOUR thread's
+// granted region.
 //
 // One image per arm, each arm reachable only through the guard leg it names:
-//   0  PSP 32 bytes above stack_lo: the 32-byte hardware frame fits, the 36-byte software block
-//      does not. Refusal PendSV, need=36.
-//   1  the same hole through the FP window: with FPCA live the frame is 104 and the block 100,
-//      so 64 bytes above stack_lo satisfies a bound written for 36 alone. Refusal PendSV,
-//      need=100, and a guard that ignores EXC_RETURN bit 4 passes it outright.
-//   2  the SECOND site: SVC_Handler pushes the same block through the same PSP and its slow path
-//      hands that PSP to svc_trampoline, which runs PRIVILEGED on it until it reaches the
-//      caller's kernel block. Refusal SVCall, need = the whole SVC extent.
+//   0  PSP 32 bytes above stack_lo: the 32-byte hardware frame fits, the 32-byte software block
+//      does not. Refusal PendSV, need=32.
+//   1  the same hole through the FP window: with FPCA live the frame is 104 and the block 96,
+//      so 64 bytes above stack_lo satisfies a bound written for 32 alone. Refusal PendSV,
+//      need=96, and a guard that ignores EXC_RETURN bit 4 passes it outright.
+//   2  the SECOND site: SVC_Handler pushes the same block through the same PSP, and the slow
+//      path's return comes back to it privileged. Refusal SVCall, need = the whole SVC extent;
+//      under a stack limit the PSP parks above stack_hi instead, the lower leg being the
+//      limit's.
 //   3  PSP ABOVE stack_hi, in a granted region above the stack: only the upper-bound leg can
 //      refuse it.
 //   4  PSP BELOW stack_lo, in a granted region below it: only the lower-bound leg can refuse
 //      it. GRANTED, so hardware stacking succeeds and the software push is refused.
 //   5  THE LOW EDGE, the one arm that expects the trap to be ACCEPTED: the PSP is placed with
-//      exactly the room the SVC site asks for, which is legal because svc_trampoline moves SP
-//      onto the caller's kernel block before calling anything. The claim is that the syscall
-//      RETURNS and the poisoned band below the parked PSP is intact.
+//      exactly the room the SVC site asks for, which is legal because the SVC handler starts
+//      the dispatch on the caller's kernel block. The claim is that the syscall RETURNS and the
+//      poisoned band below the parked PSP is intact.
 //
 //   7  a core with a stack limit only: the SVC's own entry stacking violates the limit, and the
 //      SVCall that entry left pending must not run in the dying thread's place.
+//   8  mode 2 with a higher-priority waker parked on a claimed line, which a debugger asserts
+//      while the containment holds the kernel lock. The waker must be what runs next, and the
+//      slain thread's exit must not run as it.
+//   9  an FP frame that crosses stack_hi: the PSP sits under it, so the integer words land in
+//      the stack, and the {s0-s15, FPSCR} words the entry only reserved lie above it, where the
+//      lazy save the switcher's own FP push fires would write them. Refusal PendSV.
+//  10  a basic frame that crosses stack_hi, its PC and xPSR words above it in a granted pad,
+//      where the switch-in's handler-mode scrub would write them. Refusal PendSV.
 // On such a core modes 0, 1, 4 and 6 die by STKOF instead, and the wild thread is the entry of a
 // program of its own (the same file, KICKOS_PSPGUARD_PEER) so that the fault ends it and not main.
 //
-// Modes 0, 1, 3 and 4 provoke the switch with a HIGHER-priority ticker and not with a fault,
+// Modes 0, 1, 3, 4, 6, 9 and 10 provoke the switch with a HIGHER-priority ticker, not a fault,
 // the store under test being the SWITCHER's; the ticker's counter advancing separates "PendSV
 // took the wild PSP" from "the loop merely spun". Modes 2 and 5 trap synchronously.
 //
-// ARMV6M CARRIES MODES 2 AND 5 AND NOTHING ELSE: its switch residual is {r4-r11} with no
-// EXC_RETURN, rebuilt by the epilogue from a literal, so no PSP a thread writes steers an
-// exception return, and mode 1 needs an FP frame Cortex-M0 cannot make.
+// ARMV6M CARRIES MODES 2, 5, 6, 8 AND 10: its switch residual is {r4-r11} with no EXC_RETURN,
+// rebuilt by the epilogue from a literal, so no PSP a thread writes steers an exception return,
+// and mode 1 needs an FP frame Cortex-M0 cannot make.
 
 #if defined(__ARM_ARCH) && (__ARM_ARCH >= 7)
 #include <kickos/arch/armv7m_trap_stack.h>
@@ -57,6 +65,7 @@
 #include <kickos/apps/peer_run.h>
 #include <kickos/kos.h>
 #include <kickos/sys.h>
+#include <kickos/sys/irq_free.h>
 #include <kickos/libc/fmt.h>
 
 #if defined(KICKOS_ARMV7M_SPLIM) && KICKOS_ARMV7M_SPLIM
@@ -72,7 +81,7 @@
 #ifndef KICKOS_PSPGUARD_PEER_NAME
 #error "KICKOS_PSPGUARD_PEER_NAME must be set by this app's CMakeLists"
 #endif
-#define PG_WILD_HERE (!PG_SPLIM || KICKOS_PSPGUARD_PEER)
+#define PG_WILD_HERE (!PG_SPLIM || KICKOS_PSPGUARD_PEER || KICKOS_PSPGUARD_MODE == 8)
 #if KICKOS_PSPGUARD_MODE == 7 && !PG_SPLIM
 #error "pspguard mode 7 needs a stack limit register for the SVC entry to violate"
 #endif
@@ -84,15 +93,19 @@
 #if !defined(__arm__) && !defined(__thumb__)
 #error "pspguard moves SP with ARM asm; it must not be built for another ISA"
 #endif
-#if KICKOS_PSPGUARD_MODE == 1 && !defined(__ARM_FP)
-#error "pspguard mode 1 needs an FP frame to place; it must not be built soft-float"
+#if (KICKOS_PSPGUARD_MODE == 1 || KICKOS_PSPGUARD_MODE == 9) && !defined(__ARM_FP)
+#error "pspguard modes 1 and 9 need an FP frame to place; they must not be built soft-float"
 #endif
 #if KICKOS_PSPGUARD_MODE == 5 && !KICKOS_KERNEL_STACKS
 #error "pspguard mode 5 witnesses the transfer onto the kernel block; without the blocks the same sp is refused"
 #endif
 #if (!defined(__ARM_ARCH) || (__ARM_ARCH < 7)) && KICKOS_PSPGUARD_MODE != 2 \
-    && KICKOS_PSPGUARD_MODE != 5 && KICKOS_PSPGUARD_MODE != 6
-#error "pspguard on armv6m has the synchronous SVC arms and the block arm (modes 2, 5 and 6)"
+    && KICKOS_PSPGUARD_MODE != 5 && KICKOS_PSPGUARD_MODE != 6 && KICKOS_PSPGUARD_MODE != 8 \
+    && KICKOS_PSPGUARD_MODE != 10
+#error "pspguard on armv6m has the synchronous SVC arms, the block arm and the frame-top arm (modes 2, 5, 6, 8 and 10)"
+#endif
+#if KICKOS_PSPGUARD_MODE == 8 && !KICKOS_KERNEL_STACKS
+#error "pspguard mode 8 needs a contained refusal; without the blocks it ends the system"
 #endif
 #if KICKOS_PSPGUARD_MODE == 6 && !KICKOS_KERNEL_STACKS
 #error "pspguard mode 6 parks inside a kernel block; without the blocks there is none to park in"
@@ -120,7 +133,7 @@ namespace
 #if KICKOS_PSPGUARD_MODE == 0
     constexpr uint32_t SP_OFFSET = 32;
 #elif KICKOS_PSPGUARD_MODE == 1
-    // 104 (the extended hardware frame) + 64, which a bound written for the 36-byte push takes.
+    // 104 (the extended hardware frame) + 64, which a bound written for the 32-byte push takes.
     constexpr uint32_t SP_OFFSET = 168;
     // WHERE A DEFERRED LAZY FP SAVE WOULD LAND. Exception entry from an FPCA-live thread
     // allocates the extended frame below the parked sp and only RESERVES {s0-s15,FPSCR} inside
@@ -144,6 +157,13 @@ namespace
 #else
     constexpr uint32_t FP_CHECK_LEN = FP_SAVE_LEN;
 #endif
+#elif KICKOS_PSPGUARD_MODE == 9
+    // How far above stack_hi the SP parks: the extended frame's integer words under stack_hi,
+    // its reserved FP words above.
+    constexpr uint32_t ABOVE_HI = 104u - 32u;
+#elif KICKOS_PSPGUARD_MODE == 10
+    // The basic frame lands at stack_hi - 24, its PC word at stack_hi and its xPSR word above.
+    constexpr uint32_t ABOVE_HI = 8u;
 #elif KICKOS_PSPGUARD_MODE == 6
     // THE BLOCK LEG'S ROOM BOUND, and the one arm whose target is not an offset from stack_lo:
     // it parks the PSP inside the thread's OWN KERNEL BLOCK, four bytes above the block's
@@ -190,17 +210,13 @@ namespace
     static_assert(SP_OFFSET >= KICKOS_ARMV7M_SPLIM_ROOM
                       and SP_OFFSET - 32u < KICKOS_ARMV7M_SPLIM_ROOM,
                   "the move must clear the limit and the SVC entry must not");
-#elif KICKOS_PSPGUARD_MODE == 2
+#elif KICKOS_PSPGUARD_MODE == 2 || KICKOS_PSPGUARD_MODE == 8
 #if PG_SPLIM
-    // The hardware frame (32) above a PSP between the limit and the SVC site's need, so the
-    // entry stacks and the guard refuses.
-    constexpr uint32_t SP_OFFSET =
-        32u + (((KICKOS_ARMV7M_SPLIM_ROOM + KICKOS_ARMV7M_TRAP_NEED_SVC) / 2u + 7u) / 8u) * 8u;
-    static_assert(SP_OFFSET - 32u >= KICKOS_ARMV7M_SPLIM_ROOM
-                      and SP_OFFSET - 32u < KICKOS_ARMV7M_TRAP_NEED_SVC,
-                  "the SVC entry must clear the limit and leave the guard short of its need");
+    // Every entry stacks at or above the limit, so the SVC guard keeps only its upper leg:
+    // the PSP parks at the top of a granted pad above stack_hi, as mode 3's does.
+#define PG_SVC_ABOVE 1
 #elif defined(__ARM_ARCH) && (__ARM_ARCH >= 7)
-    // 32 (the hardware frame the SVC stacks) + 32 (less than the 36 the push needs).
+    // 32 (the hardware frame the SVC stacks) + 32, short of what the SVC site asks.
     constexpr uint32_t SP_OFFSET = 64;
 #else
     // The same placement against the 32-byte v6-M block: 32 (the hardware frame) + 24, written
@@ -257,7 +273,8 @@ namespace
     // own failure instead of hanging the runner out to the ctest timeout.
     constexpr uint32_t SPIN_LIMIT = 20000000u;
 
-#if PG_WILD_HERE && KICKOS_PSPGUARD_MODE != 2 && KICKOS_PSPGUARD_MODE != 5 && KICKOS_PSPGUARD_MODE != 7
+#if PG_WILD_HERE && KICKOS_PSPGUARD_MODE != 2 && KICKOS_PSPGUARD_MODE != 5 \
+    && KICKOS_PSPGUARD_MODE != 7 && KICKOS_PSPGUARD_MODE != 8
     volatile uint32_t g_ticks = 0;
 
     void ticker(void*)
@@ -384,7 +401,8 @@ namespace
             band[i] = BAND_POISON;
         }
 #endif
-#if KICKOS_PSPGUARD_MODE == 2 || KICKOS_PSPGUARD_MODE == 5 || KICKOS_PSPGUARD_MODE == 7
+#if KICKOS_PSPGUARD_MODE == 2 || KICKOS_PSPGUARD_MODE == 5 || KICKOS_PSPGUARD_MODE == 7 \
+    || KICKOS_PSPGUARD_MODE == 8
         // svc_trampoline exits to the STACKED LR, so the return address is arranged here the way
         // arch_syscall_reg does. Nothing may touch memory between the SP move and its restore.
         uint32_t saved = 0;
@@ -455,14 +473,14 @@ namespace
             // ADDS does not assemble. The same line the two v6-M blocks below carry.
             ".syntax unified         \n\t"
 #endif
-#if KICKOS_PSPGUARD_MODE == 1
+#if KICKOS_PSPGUARD_MODE == 1 || KICKOS_PSPGUARD_MODE == 9
             "vmov   s16, %[bf]       \n\t"
 #endif
             "mov    %[sv], sp        \n\t"
             "mov    sp, %[low]       \n\t"
             "movs   %[sn], #0        \n\t"
             "1:                      \n\t"
-#if KICKOS_PSPGUARD_MODE == 1
+#if KICKOS_PSPGUARD_MODE == 1 || KICKOS_PSPGUARD_MODE == 9
             "vmov   s16, %[sn]       \n\t" // FPCA must still be set when the tick lands
 #endif
             "ldr    %[ob], [%[ad]]   \n\t"
@@ -483,7 +501,7 @@ namespace
             : [low] "l"(target), [ad] "l"(addr), [bf] "l"(before), [lim] "l"(SPIN_LIMIT)
 #endif
             : "cc", "memory"
-#if KICKOS_PSPGUARD_MODE == 1
+#if KICKOS_PSPGUARD_MODE == 1 || KICKOS_PSPGUARD_MODE == 9
             , "s16"
 #endif
         );
@@ -520,6 +538,12 @@ int main(int argc, char** argv)
     arm->stack_lo = kickos::apps::hex_arg(argv[1]);
     arm->stack_hi = kickos::apps::hex_arg(argv[2]);
     arm->target = kickos::apps::hex_arg(argv[3]);
+#if KICKOS_PSPGUARD_MODE == 9 || KICKOS_PSPGUARD_MODE == 10
+    // The entry's stack ends where the argv block the kernel lays at its top begins, three words
+    // under argv itself, and the arm has to straddle that end and not the block's.
+    arm->stack_hi = (reinterpret_cast<uintptr_t>(argv) - 3u * sizeof(uintptr_t)) & ~uintptr_t{7};
+    arm->target = arm->stack_hi + ABOVE_HI;
+#endif
 #if KICKOS_PSPGUARD_MODE != 2 && KICKOS_PSPGUARD_MODE != 5 && KICKOS_PSPGUARD_MODE != 7
     kos::thread::Handle const tk = kos::thread::create(ticker, nullptr, "ticker", 20);
     if (not tk.valid())
@@ -531,10 +555,139 @@ int main(int argc, char** argv)
     wild(arm);
     return 0;
 }
+#elif KICKOS_PSPGUARD_MODE == 8
+namespace
+{
+    // Masked except while the waker sits in its wait, so nothing on the board fires it. The
+    // gate's debugger reads it by this name.
+    constexpr int RACE_LINE = KICKOS_IRQ_FREE_BASE;
+
+    volatile uint32_t g_woke = 0;
+
+    void waker(void*)
+    {
+        kos_cap_t const note = kos::child_cap(0);
+        if (kos_notify_bind(note) != 0)
+        {
+            kos::print("[pspguard] ERROR: the waker cannot bind the notification\n");
+            return;
+        }
+        uint32_t bits = 0;
+        (void)kos_notify_wait(note, 1u, KOS_TIMEOUT_NONE, &bits);
+        g_woke = 1u;
+    }
+}
+
+int main(int, char**)
+{
+#if defined(PG_SVC_ABOVE)
+    void* const blk_a = kos_ram_alloc(STACK_BYTES);
+    void* const blk_b = kos_ram_alloc(STACK_BYTES);
+    if (blk_a == nullptr or blk_b == nullptr)
+    {
+        kos::print("[pspguard] ERROR: arena ram_alloc refused the stack or its landing pad\n");
+        return 1;
+    }
+    void* st = blk_a;
+    void* landing = blk_b;
+    if (reinterpret_cast<uintptr_t>(blk_b) < reinterpret_cast<uintptr_t>(blk_a))
+    {
+        st = blk_b;
+        landing = blk_a;
+    }
+    kos_window pad = {reinterpret_cast<uintptr_t>(landing), STACK_BYTES, KOS_WINDOW_MEMORY, 0};
+    uint16_t const pad_count = 1;
+#else
+    void* const st = kos_ram_alloc(STACK_BYTES);
+    if (st == nullptr)
+    {
+        kos::print("[pspguard] ERROR: arena ram_alloc refused (main AUTH_MEMORY seat?)\n");
+        return 1;
+    }
+    kos_window const* const pad_list = nullptr;
+    uint16_t const pad_count = 0;
+#endif
+    g_arm.stack_lo =
+        reinterpret_cast<uintptr_t>(st) + reinterpret_cast<uintptr_t>(__kickos_tls_carve);
+    g_arm.stack_hi = reinterpret_cast<uintptr_t>(st) + STACK_BYTES;
+#if defined(PG_SVC_ABOVE)
+    kos_window const* const pad_list = &pad;
+    g_arm.target = reinterpret_cast<uintptr_t>(landing) + STACK_BYTES;
+#else
+    g_arm.target = g_arm.stack_lo + SP_OFFSET;
+#endif
+
+    kos::Irq line = kos::Irq::claim(RACE_LINE);
+    kos::Notification note = kos::Notification::create();
+    if (not line.valid() or not note.valid())
+    {
+        kos::print("[pspguard] ERROR: no line or notification for the waker\n");
+        return 1;
+    }
+    kos::Notification badged = kos::Notification::badge(note.handle(), 0);
+    if (not badged.valid() or line.bind_notify(badged.handle()) != 0)
+    {
+        kos::print("[pspguard] ERROR: the line cannot signal the notification\n");
+        return 1;
+    }
+    kos_cap_grant const grant = {note.handle(), KOS_CAP_WAIT};
+    kos::thread::Handle const wk =
+        kos::thread::create_caps(waker, nullptr, "waker", 20, &grant, 1);
+    if (not wk.valid())
+    {
+        kos::print("[pspguard] ERROR: waker spawn refused\n");
+        return 1;
+    }
+    char msg[96];
+    ksnprintf(msg, sizeof(msg), "[pspguard] [race] waker parked on line %d\n", RACE_LINE);
+    kos::print(msg);
+    kos::thread::Handle const w = kos::thread::create(wild, &g_arm, "wild", 10, KOS_POLICY_FIFO, 0,
+                                                      st, STACK_BYTES, pad_list, pad_count);
+    if (not w.valid())
+    {
+        kos::print("[pspguard] ERROR: wild spawn refused\n");
+        return 1;
+    }
+    (void)w.join();
+    // Read before the raise below, which would otherwise answer the question it settles.
+    uint32_t const woke_by_then = g_woke;
+    if (woke_by_then == 0u)
+    {
+        (void)line.raise();
+    }
+    (void)wk.join();
+    if (g_woke == 0u)
+    {
+        kos::print("[pspguard] [race] CORRUPTED: the woken waker never ran\n");
+        return 1;
+    }
+    if (woke_by_then == 0u)
+    {
+        kos::print("[pspguard] [race] NOT ASSERTED: nothing raised the line during the refusal, "
+                   "so main raised it\n");
+    }
+    else
+    {
+        kos::print("[pspguard] [race] INTACT: the line taken during the refusal woke the waker "
+                   "before the wild thread was gone\n");
+    }
+    kos::print("[pspguard] contained: the wild thread was slain and main outlived it\n");
+    return 0;
+}
 #else
 int main(int, char**)
 {
-#if KICKOS_PSPGUARD_MODE == 3 || KICKOS_PSPGUARD_MODE == 4
+#if KICKOS_PSPGUARD_MODE == 10 && !PG_SPLIM
+    // ONE block, so the pad lies directly above the stack: the frame's top words land in it.
+    void* const blk = kos_ram_alloc(2u * STACK_BYTES);
+    if (blk == nullptr)
+    {
+        kos::print("[pspguard] ERROR: arena ram_alloc refused the stack and its pad\n");
+        return 1;
+    }
+    void* const st = blk;
+    void* const landing = static_cast<char*>(blk) + STACK_BYTES;
+#elif KICKOS_PSPGUARD_MODE == 3 || KICKOS_PSPGUARD_MODE == 4 || defined(PG_SVC_ABOVE)
     // Allocation order does not place a block: the arena fills an earlier alignment run-up
     // first. The stack and its landing pad are told apart by address.
     void* const blk_a = kos_ram_alloc(STACK_BYTES);
@@ -551,7 +704,7 @@ int main(int, char**)
         lower = blk_b;
         upper = blk_a;
     }
-#if KICKOS_PSPGUARD_MODE == 3
+#if KICKOS_PSPGUARD_MODE == 3 || defined(PG_SVC_ABOVE)
     void* const st = lower;
     void* const landing = upper;
 #else
@@ -574,10 +727,16 @@ int main(int, char**)
     // wild thread's own window, or the peer's block.
     void* mem = nullptr;
     uint32_t mem_size = 0;
-#if KICKOS_PSPGUARD_MODE == 3 || KICKOS_PSPGUARD_MODE == 4
+#if KICKOS_PSPGUARD_MODE == 3 || KICKOS_PSPGUARD_MODE == 4 || defined(PG_SVC_ABOVE)
     mem = landing;
     mem_size = STACK_BYTES;
     g_arm.target = reinterpret_cast<uintptr_t>(landing) + STACK_BYTES;
+#elif KICKOS_PSPGUARD_MODE == 10 && !PG_SPLIM
+    mem = landing;
+    mem_size = STACK_BYTES;
+    g_arm.target = g_arm.stack_hi + ABOVE_HI;
+#elif KICKOS_PSPGUARD_MODE == 9 || KICKOS_PSPGUARD_MODE == 10
+    g_arm.target = g_arm.stack_hi + ABOVE_HI;
 #else
     g_arm.target = g_arm.stack_lo + SP_OFFSET;
 #endif

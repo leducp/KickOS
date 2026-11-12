@@ -7,9 +7,10 @@ if(NOT TARGET uartloop)
   return()
 endif()
 
-# The gate builds a tree of its own per knob of simuart, so register it only in a tree that sets
-# none; registering it in the trees the script configures would recurse.
-if(DEFINED KICKOS_SIMUART_READY AND NOT KICKOS_SIMUART_READY STREQUAL "")
+# The gate builds a tree of its own per knob of simuart, so register it only in the sim preset's
+# tree, which sets none; registering it in the trees the script configures would recurse.
+if(NOT _fs_preset_key STREQUAL "sim"
+   OR (DEFINED KICKOS_SIMUART_READY AND NOT KICKOS_SIMUART_READY STREQUAL ""))
   return()
 endif()
 add_test(

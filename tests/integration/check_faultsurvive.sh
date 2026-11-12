@@ -3,7 +3,8 @@
 # Copyright (c) 2026 Philippe Leduc
 #
 # Fault-isolation witness. One arm per image: survive and lowedge keep the system up, the four
-# refusal arms turn on what a REFUSED sp costs, which <outcome> carries.
+# refusal arms turn on what a REFUSED sp costs, which <outcome> carries, and `killed' is the
+# outcome of a backend that refuses no sp at all.
 #
 # THE FOUR REFUSAL ARMS ARE NOT ALL ONE CLAIM ANY MORE. Where the sp is refused by the TRAP
 # ENTRY, that entry now contains the offending thread and the system runs on (`contained`);
@@ -20,8 +21,8 @@
 # survivor's line coming after the kill banner is causal.
 #
 # `overflow' (faultsurvive_ovf, KICKOS_FS_MODE 1): the worker recurses off its stack, and
-# the fault must reach the PANIC dump (design 4.2) rather than the thread kill. Keyed on
-# the MPU BACKEND, since armv7m does not imply the ARM MemManage unit:
+# the fault must reach the PANIC dump (design 4.2) rather than the thread kill, except on
+# rxv3. Keyed on the MPU BACKEND, since armv7m does not imply the ARM MemManage unit:
 #   armv7m   hardware stacking aborts before the handler runs, so no frame is written.
 #            Through the ARM MemManage unit that is CFSR MSTKERR (xmc4800-relax,
 #            CFSR=0x92). Through a BUS-level slave-port unit it is BusFault STKERR with
@@ -34,9 +35,9 @@
 #            recursion's own push is the tell. The sp it interrupts is far below stack_lo, so
 #            the entry refuses it, leaves the frame on the per-hart trap stack, and the
 #            frame-on-the-kernel-stack test is what refuses that frame.
-#   rxv3     the same shape as rv32imac. Supervisor bypasses the RX MPU, and RXv3 CANCELS
-#            the faulting instruction and restores SP, so kickos_fault_below_stack is what
-#            refuses it and no SP-based test can see the overflow.
+#   rxv3     `killed': the frame is on the ISP and the exit stub runs on the thread's kernel
+#            block, so nothing privileged touches the exhausted USP and the worker dies alone.
+#            The kill record's MPESTS names a denied operand write.
 #
 # `offstack' (faultsurvive_off, KICKOS_FS_MODE 2): the worker points SP at a buffer
 # outside its stack and faults there. The frame is complete and the thread really is
@@ -44,7 +45,9 @@
 # bit is set on any backend: the stack-bounds test alone can refuse it. Delete that test
 # and this arm reports a thread kill instead of a panic, which is what makes it the
 # witness that the backend calls kickos_fault_frame_trusted at all, or on rv32imac its
-# kernel-stack twin, the entry having moved off the interrupted thread stack.
+# kernel-stack twin, the entry having moved off the interrupted thread stack. On rxv3 no frame
+# lies at the USP and the stub never runs on it, so the arm is `killed', on the deliberate
+# privileged instruction's cause.
 #
 # `lowedge' (faultsurvive_lowedge, KICKOS_FS_MODE 4): the LOW EDGE, and the one arm here that
 # expects a KILL. The worker runs on a caller-owned stack and parks its sp inside that stack
@@ -78,13 +81,36 @@
 # so, and `returned:<quotient>' where the ISA defines a quotient instead, `any' where it leaves
 # the quotient undefined or no instruction of it divides at that width. Main runs after either.
 #
+# `swtrap' (faultsurvive_swtrap, KICKOS_FS_MODE 10, rxv3): the worker is spawned once per software
+# trap, an INT #n or BRK through an INTB slot that is not the syscall's, brk last. INT is not
+# privileged on RX, so each one reaches a first-level handler unless the entry tells a trap from an
+# acceptance: every spawn must end in a kill naming the software-trap cause (0x100), alternating
+# with its announcement, and the clock main reads around the loop must not have jumped.
+#
+# `forge' (faultsurvive_forge, KICKOS_FS_MODE 11, rxv3): the worker writes a PSW with PM clear
+# wherever its task can, the staged syscall return (`head`), a thread's first frame (`first`) and
+# a preempted thread's saved context (`preempt`), each against a thread of its own, and each target
+# prints the mode it runs in afterwards. The outcome `user` is all three running unprivileged.
+#
+# `wildspin' (faultsurvive_wildspin, KICKOS_FS_MODE 13, rxv3): a thread of the faulter points its
+# USP just above a word of main's and spins until preempted, so the SWINT switcher meets the USP
+# with no syscall or fault before it. Judged as kwrite: a contained refusal by the bounds leg and
+# main's word intact. Containment slays that thread alone, so the faulter must also report it
+# gone between the refusal and main's line.
+#
+# `mppforge' (faultsurvive_mppforge, KICKOS_FS_MODE 12, rv32imac): the faulter plants MPP=M in
+# every frame of a READY child it finds on a block it can write, then lets the child run. The
+# child's first instruction reads mstatus, so the claim is that the child 'forged' dies from U-mode
+# at that instruction, illegal-instruction cause, after the scan found no frame to plant, and never
+# prints ESCALATED. <outcome> is `killed'.
+#
 # QEMU, machine from kickos_add_qemu_test; the survive and divide arms also run natively on the
 # sim. With KOS_CAPTURE it reads a silicon capture, which carries no exit status.
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
 
-_usage="usage: check_faultsurvive.sh <elf> <arm: survive|overflow|stkof|offstack|kwrite|lowedge|misalign|unread|div0|ldiv0> <arch> <outcome: contained|terminated|killed|returned:<quotient|any>>
+_usage="usage: check_faultsurvive.sh <elf> <arm: survive|overflow|stkof|offstack|kwrite|lowedge|misalign|unread|div0|ldiv0|swtrap|forge|mppforge|wildspin> <arch> <outcome: contained|terminated|killed|user|returned:<quotient|any>>
        KOS_CAPTURE=<log> check_faultsurvive.sh <board-build> <kickos-source> <cmake> <arm> <arch> <outcome>"
 if judging_capture; then
     shift 3
@@ -105,6 +131,9 @@ fi
 line_of() { printf '%s\n' "$OUT" | grep -nE "$1" | head -n1 | cut -d: -f1; }
 
 about="$(line_of "\[fs\] worker about to fault")"
+if [ "$arm" = forge ]; then
+    about="$(line_of "\[fs\] forger running")"
+fi
 if [ -z "$about" ]; then
     cfail reached "the worker never reached its deliberate fault"
 fi
@@ -141,6 +170,56 @@ wild_refusal_re() { # <arch> <outcome>
 }
 
 case "$arm" in
+    swtrap)
+        [ "$arch:$outcome" = rxv3:killed ] || fail "swtrap: the only verdict this arm has is rxv3 'killed'"
+        if has "\[fs\] \[clock\] JUMPED"; then
+            cfail clock "swtrap: a software trap moved the clock"
+        fi
+        runs="$(printf '%s\n' "$OUT" | sed -n 's/.*\[fs\] \[clock\] STEADY: \([0-9][0-9]*\) traps.*/\1/p' | head -n1)"
+        [ -n "$runs" ] || cfail clock "swtrap: main printed no steady clock verdict naming the trap count"
+        # Each announcement, then its trap, then its kill, then the next announcement.
+        kre="$(thread_fault_re faulter)"
+        seq="$(printf '%s\n' "$OUT" | awk -v K="$kre" '
+            /\[fs\] worker about to fault/ { printf "a"; next }
+            /\[fs\] trap / { printf "t"; next }
+            index($0, K) { printf "k"; next }
+            /cause=0x100/ { printf "c"; next }
+            /\[fs\] survivor ran after the fault/ { printf "s"; next }')"
+        want="$(awk -v n="$runs" 'BEGIN { for (i = 0; i < n; i++) printf "atkc"; printf "s" }')"
+        if [ "$seq" != "$want" ]; then
+            cfail killed "swtrap: the events read '$seq', where $runs traps each killed with the
+    software-trap cause and then main read '$want'"
+        fi
+        assert_no_panic "swtrap: a software trap ended the system"
+        status_clause "the system exited 0 once main returned" 0
+        echo "PASS: $runs software traps each killed 'faulter' alone and the clock held"
+        ;;
+    forge)
+        [ "$arch:$outcome" = rxv3:user ] || fail "forge: the only verdict this arm has is rxv3 'user'"
+        if has "\] SUPERVISOR"; then
+            cfail forged "forge: a PSW the task wrote ran a thread supervisor"
+        fi
+        if has_e "$(thread_fault_re 'fs_[a-z]*')"; then
+            cfail killed "forge: a thread of the forger was killed"
+        fi
+        survived="$(line_of "\[fs\] survivor ran after the fault")"
+        if [ -z "$survived" ]; then
+            cfail survived "forge: main never ran again after the forger"
+        fi
+        for a in head first preempt; do
+            v="$(line_of "\[fs\] \[$a\] USER")"
+            if [ -z "$v" ]; then
+                cfail "$a" "forge: the $a arm printed no verdict"
+            fi
+            after_about "$v" "the $a verdict"
+            if [ "$survived" -le "$v" ]; then
+                cfail order "forge: main's line is at $survived, not after the $a verdict at $v"
+            fi
+        done
+        assert_no_panic "forge: the forger ended the system"
+        status_clause "the system exited 0 once main returned" 0
+        echo "PASS: each forged PSW left its thread unprivileged and main ran at line $survived"
+        ;;
     survive | lowedge)
         killed="$(line_of "$(thread_fault_re faulter)")"
         if [ -z "$killed" ]; then
@@ -174,6 +253,52 @@ case "$arm" in
         fi
         status_clause "the system exited 0 once main returned" 0
         echo "PASS: 'faulter' died at line $killed and main ran at line $survived"
+        ;;
+    mppforge)
+        entry="$(printf '%s\n' "$OUT" \
+            | sed -n 's/^\[fs\] \[forge\] child entry 0x\([0-9a-fA-F]*\)$/\1/p' | head -n1)"
+        if [ -z "$entry" ]; then
+            cfail entry "mppforge: the faulter announced no child, so none ran on its block"
+        fi
+        if has "\[fs\] \[forge\] ESCALATED"; then
+            cfail escalated "mppforge: the child executed its first instruction in M-mode"
+        fi
+        if has "\[fs\] \[forge\] first frame on the child's user stack"; then
+            cfail frame "mppforge: the child's first frame, mstatus included, lay where its task writes"
+        fi
+        verdict="$(line_of "\[fs\] \[forge\] no first frame on the child's user stack")"
+        if [ -z "$verdict" ]; then
+            cfail verdict "mppforge: the faulter printed no scan verdict"
+        fi
+        killed="$(line_of "$(thread_fault_re forged)")"
+        if [ -z "$killed" ]; then
+            cfail killed "mppforge: no thread-kill for the child 'forged'"
+        fi
+        if [ "$killed" -le "$verdict" ]; then
+            cfail order "mppforge: the kill at $killed is not after the scan verdict at $verdict"
+        fi
+        survived="$(line_of "\[fs\] survivor ran after the fault")"
+        if [ -z "$survived" ]; then
+            cfail survived "mppforge: main never ran again after the child died"
+        fi
+        if [ "$survived" -le "$killed" ]; then
+            cfail order "mppforge: main's line is at $survived, not after the kill at $killed"
+        fi
+        record="$(printf '%s\n' "$OUT" | KOS_KP_BANNER="$(thread_fault_re forged)" awk '
+            on && /^=== / { exit }
+            on && /^  PC=0x[0-9a-fA-F]+ mcause=0x[0-9a-fA-F]+$/ { print; exit }
+            index($0, ENVIRON["KOS_KP_BANNER"]) > 0 { on = 1 }')"
+        pc="$(printf '%s' "$record" | sed -n 's/^  PC=0x\([0-9a-fA-F]*\) .*/\1/p')"
+        cause="$(printf '%s' "$record" | sed -n 's/.* mcause=0x\([0-9a-fA-F]*\)$/\1/p')"
+        if [ -z "$pc" ] || [ "$((0x$pc))" -ne "$((0x$entry))" ]; then
+            cfail kill-pc "mppforge: 'forged' was killed at PC 0x$pc, not at its entry 0x$entry"
+        fi
+        if [ -z "$cause" ] || [ "$((0x$cause))" -ne 2 ]; then
+            cfail kill-cause "mppforge: 'forged' was killed on mcause 0x$cause, not an illegal instruction"
+        fi
+        assert_no_panic "mppforge: the child was killed AND the system panicked"
+        status_clause "the system exited 0 once main returned" 0
+        echo "PASS: 'forged' died from U-mode at its entry 0x$entry, line $killed; main ran at line $survived"
         ;;
     div0 | ldiv0)
         survived="$(line_of "\[fs\] survivor ran after the fault")"
@@ -294,16 +419,56 @@ case "$arm" in
         status_clause "the system exited 0 once main returned" 0
         echo "PASS: 'faulter' overflowed into STKOF (CFSR=0x$cfsr), died at line $killed, main ran at line $survived"
         ;;
-    overflow | offstack | kwrite | misalign | unread)
-        if has_e "$(thread_fault_re faulter)"; then
+    overflow | offstack | kwrite | misalign | unread | wildspin)
+        if [ "$outcome" = killed ]; then
+            killed="$(line_of "$(thread_fault_re faulter)")"
+            if [ -z "$killed" ]; then
+                cfail killed "$arm: no thread-kill for 'faulter' (the fault ended the system?)"
+            fi
+            after_about "$killed" "the kill"
+            survived="$(line_of "\[fs\] survivor ran after the fault")"
+            if [ -z "$survived" ]; then
+                cfail survived "$arm: main never ran again after the worker faulted"
+            fi
+            if [ "$survived" -le "$killed" ]; then
+                cfail order "$arm: main's line is at $survived, not after the kill at $killed"
+            fi
+            assert_no_panic "$arm: the worker was killed AND the system panicked"
+            # Read off the kill record, so an unrelated fault killing the worker cannot pass.
+            record="$(printf '%s\n' "$OUT" | sed -n "$killed,\$p")"
+            case "$arch:$arm" in
+                rxv3:overflow)
+                    sts="$(printf '%s\n' "$record" | sed -n 's/.*MPESTS=0x\([0-9a-fA-F]*\).*/\1/p' | head -n1)"
+                    [ -n "$sts" ] || cfail cause "overflow: the kill record carries no MPESTS, so no RX MPU error killed the worker"
+                    if [ $(( 0x$sts & 0x6 )) -ne 6 ]; then
+                        cfail cause "overflow: MPESTS=0x$sts is not a denied operand write (DMPER and DRW)"
+                    fi
+                    why="MPESTS=0x$sts, a denied write"
+                    ;;
+                rxv3:offstack)
+                    cause="$(printf '%s\n' "$record" | sed -n 's/.*cause=0x\([0-9a-fA-F]*\).*/\1/p' | head -n1)"
+                    if [ "$cause" != 50 ]; then
+                        cfail cause "offstack: the kill record names cause=0x$cause, not the deliberate privileged instruction (0x50)"
+                    fi
+                    why="cause=0x50, the privileged instruction"
+                    ;;
+                *)
+                    fail "$arm: no killed outcome is defined for arch '$arch'"
+                    ;;
+            esac
+            status_clause "the system exited 0 once main returned" 0
+            echo "PASS: $arm killed 'faulter' alone ($why) at line $killed and main ran at line $survived"
+            exit 0
+        fi
+        if has_e "$(thread_fault_re faulter)" || has_e "$(thread_fault_re fs_wild)"; then
             cfail redirected "$arm: the fault was redirected to the exit stub instead of escalating"
         fi
         # kwrite is the trap-stack security regression: the worker aimed its SP at a word of
         # main's data. A backend that stored the frame through the U-mode SP changed that word,
         # and main says so once it outlives the refusal. Claimed under BOTH outcomes: it is
         # about what the prologue wrote, not about what it did next.
-        if [ "$arm" = kwrite ] && has "kword] CORRUPTED"; then
-            cfail kwrite "kwrite: the trap prologue stored through the U-mode SP into main's word"
+        if { [ "$arm" = kwrite ] || [ "$arm" = wildspin ]; } && has "kword] CORRUPTED"; then
+            cfail kwrite "$arm: the kernel stored through the U-mode SP into main's word"
         fi
         if [ "$outcome" = contained ]; then
             # assert_no_panic IS available on this path now: a contained refusal spells its
@@ -325,16 +490,26 @@ case "$arm" in
             if [ "$survived" -le "$refused" ]; then
                 cfail order "$arm: main's line is at $survived, not after the refusal at $refused"
             fi
+            if [ "$arm" = wildspin ]; then
+                gone="$(line_of "\[fs\] \[wildspin\] the spinner is gone")"
+                if [ -z "$gone" ]; then
+                    cfail gone "wildspin: the faulter never saw its spinner end"
+                fi
+                if [ "$gone" -le "$refused" ] || [ "$gone" -ge "$survived" ]; then
+                    cfail order "wildspin: the spinner's end at $gone is not between the refusal at
+    $refused and main's line at $survived"
+                fi
+            fi
             # A missing verdict is main reaching the readback and printing neither, the silent
             # arm this pair exists to refuse.
-            if [ "$arm" = kwrite ]; then
+            if [ "$arm" = kwrite ] || [ "$arm" = wildspin ]; then
                 intact="$(line_of "\[fs\] \[kword\] INTACT")"
                 if [ -z "$intact" ]; then
-                    cfail kwrite "kwrite: main printed no verdict on its word, so nothing here
+                    cfail kwrite "$arm: main printed no verdict on its word, so nothing here
     read it"
                 fi
                 if [ "$intact" -le "$survived" ]; then
-                    cfail order "kwrite: the word's verdict at $intact is not after main's line at
+                    cfail order "$arm: the word's verdict at $intact is not after main's line at
     $survived, so it was read before the fault it is meant to judge"
                 fi
             fi
@@ -350,8 +525,8 @@ case "$arm" in
                         cfail usp "USP=0x$usp is 4-byte aligned, so the alignment leg did not
     refuse it"
                         ;;
-                    kwrite:*[048cC]) ;;
-                    kwrite:*)
+                    kwrite:*[048cC] | wildspin:*[048cC]) ;;
+                    kwrite:* | wildspin:*)
                         cfail usp "USP=0x$usp is misaligned, so the alignment leg refused it, not the
     bounds leg"
                         ;;
@@ -379,7 +554,7 @@ case "$arm" in
             exit 0
         fi
         if [ "$outcome" != terminated ]; then
-            fail "unknown outcome '$outcome': expected 'contained' or 'terminated'"
+            fail "unknown outcome '$outcome': expected 'contained', 'terminated' or 'killed'"
         fi
         dumped="$(line_of "$KOS_PANIC_RE")"
         if [ -z "$dumped" ]; then
@@ -420,28 +595,6 @@ case "$arm" in
                 # the region that overflowed, so no clause here asserts a plausible PC. A PC
                 # of 0xffffffff with a zero xPSR is the signature and the ISA promises no
                 # exact value.
-                ;;
-            rxv3:overflow)
-                # The RX MPU denies the recursion's own push and the report credits it to the
-                # thread. Supervisor bypasses that MPU, so kickos_fault_below_stack is what
-                # refuses this and not the frame's own store.
-                if ! has "MPU FAULT: thread 'faulter' attempted write"; then
-                    cfail cause "no denied write credited to 'faulter': the recursion never ran off its granted stack"
-                fi
-                why="RX-MPU-denied write by 'faulter'"
-                ;;
-            rxv3:offstack)
-                has "RX EXCEPTION (privileged instruction)" \
-                  || cfail cause "the dump names a cause other than the deliberate privileged instruction"
-                # PSW.PM (bit 20) is the privilege clause reporting that it said YES. RXv3
-                # CANCELS the faulting instruction and restores SP, so the bounds test is the
-                # only thing left that can refuse this.
-                psw="$(printf '%s\n' "$OUT" | sed -n 's/.*PSW=0x\([0-9a-fA-F]*\).*/\1/p' | head -n1)"
-                [ -n "$psw" ] || cfail cause "the dump carries no PSW (KICKOS_PANIC_DUMP off?)"
-                if [ $(( 0x$psw & 0x100000 )) -eq 0 ]; then
-                    cfail cause "PSW=0x$psw has PM clear: the fault was not taken in user mode, so the privilege clause refused it and the arm proves nothing about the bounds test"
-                fi
-                why="PSW=0x$psw, PM=1 (user)"
                 ;;
             armv7m:unread)
                 cfsr="$(printf '%s\n' "$OUT" | sed -n 's/.*CFSR=0x\([0-9a-fA-F]*\).*/\1/p' | head -n1)"

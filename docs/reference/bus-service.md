@@ -161,8 +161,9 @@ refuse the probe unless it reads this.
 
 ## Chip-select policy (SPI, driver-internal)
 
-CS is chosen per DEVICE in `kos_bus_cfg.cs_policy`; the client NEVER sees CS. The service
-picks a mechanism it can realise on its controller:
+CS is chosen per DEVICE in `kos_bus_cfg.cs_policy` and `cs_index`, which the slot's owner sends in
+its CONFIG; the client never drives CS itself. The service picks a mechanism it can realise on
+its controller:
 
 - **`CS_HW`** -- the controller's own chip-select line spanning the message. The XMC USIC
   service holds MSLS/SELO0 across the software-paced multi-word frame via `PCR.FEM = 1`
@@ -192,6 +193,11 @@ of the `kos_recv_info` of every request and checks `req.device` against it
 (`kickos::spi::slot_granted`) before it reads anything else of the request's op, so a client
 naming a slot outside its mask is refused whatever it sends, and an unbadged client reaches no
 slot at all. The device byte still selects the profile: the badge decides who may name it.
+
+**A SLOT IS A PROFILE ITS OWNER NAMES AND CONFIGURES, NOT AN ISOLATED PHYSICAL DEVICE.** The owner
+picks the chip select in its CONFIG, so two slot owners can select the same physical device;
+isolating mutually untrusting owners needs the device grant `TODO.md` plans for M11, where the
+slot's chip select comes from the board and composition rather than from the client.
 
 The composition hands out the masks. A use of a path whose server is a bus names its slots,
 `uses: [{ path: /svc/spi0, slots: [0] }]`; admission refuses a use of a bus that names none, a

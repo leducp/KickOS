@@ -15,6 +15,8 @@ kickos_c6_amp_lp_stub_start:
     .rept 32
     j       lp_early_fault
     .endr
+    /* Node 1's image was stored by another hart (the ROM loader on HP). */
+    fence.i
     li      t0, (KICKOS_AMP_PARTITION_BASE + KICKOS_AMP_NODE_SHARE)
     jr      t0
 lp_early_fault:

@@ -18,19 +18,19 @@
       "name": "qemu-m33",
       "displayName": "QEMU mps2-an505 (Cortex-M33, PMSAv8) - runnable",
       "inherits": "arm-base",
-      "cacheVariables": { "KICKOS_BOARD": "qemu-m33" }
+      "cacheVariables": { "KICKOS_TEST_SHAPE": "core", "KICKOS_BOARD": "qemu-m33" }
     },
     {
       "name": "qemu-m7",
       "displayName": "QEMU mps2-an500 (Cortex-M7, 16 MPU regions) - runnable",
       "inherits": "arm-base",
-      "cacheVariables": { "KICKOS_BOARD": "qemu-m7" }
+      "cacheVariables": { "KICKOS_TEST_SHAPE": "core", "KICKOS_BOARD": "qemu-m7" }
     },
     {
       "name": "qemu-m3",
       "displayName": "QEMU mps2-an385 (Cortex-M3, soft-float) - runnable",
       "inherits": "arm-base",
-      "cacheVariables": { "KICKOS_BOARD": "qemu-m3" }
+      "cacheVariables": { "KICKOS_TEST_SHAPE": "core", "KICKOS_BOARD": "qemu-m3" }
     },
     {
       "name": "frdmk64f",
@@ -95,20 +95,18 @@
       "name": "qemu-telem",
       "displayName": "QEMU mps2-an386 + telemetry - QEMU structural gate (PendSV asm)",
       "inherits": "qemu",
-      "cacheVariables": { "KICKOS_CONFIG_VARIANT": "telem" }
+      "cacheVariables": { "KICKOS_TEST_SHAPE": "flat;telem", "KICKOS_CONFIG_VARIANT": "telem" }
     },
     {
       "name": "qemu-tick",
       "displayName": "QEMU mps2-an386 with the periodic scheduler tick",
       "inherits": "qemu",
-      "cacheVariables": { "KICKOS_CONFIG_VARIANT": "tick" }
+      "cacheVariables": { "KICKOS_TEST_SHAPE": "tick", "KICKOS_CONFIG_VARIANT": "tick" }
     },
-    { "name": "xmc4800-relax-bench", "displayName": "XMC4800 Relax + KICKOS_BENCH - the call/reply payload sweep, enforcing", "inherits": "xmc4800-relax", "cacheVariables": { "KICKOS_CONFIG_VARIANT": "bench", "KICKOS_GOLDEN_COMPOSITION": null, "KICKOS_RESTART_WITNESS_SYSTEM": null, "KICKOS_WITNESS_ROOT_DEPTH": null } },
-    { "name": "f411disco-bench", "displayName": "STM32F411 Disco + KICKOS_BENCH - the armv7m switch distribution, enforcing", "inherits": "f411disco", "cacheVariables": { "KICKOS_CONFIG_VARIANT": "bench" } },
-    { "name": "qemu-flat", "displayName": "QEMU mps2-an386, no PMSA enforcement - the ring-only run gate", "inherits": "qemu", "cacheVariables": { "KICKOS_CONFIG_VARIANT": "flat" } },
-    { "name": "qemu-m33-flat", "displayName": "QEMU mps2-an505, no PMSAv8 enforcement - runnable", "inherits": "qemu-m33", "cacheVariables": { "KICKOS_CONFIG_VARIANT": "flat" } },
-    { "name": "qemu-m7-flat", "displayName": "QEMU mps2-an500, no PMSA enforcement - runnable", "inherits": "qemu-m7", "cacheVariables": { "KICKOS_CONFIG_VARIANT": "flat" } },
-    { "name": "qemu-m3-flat", "displayName": "QEMU mps2-an385, no PMSA enforcement - runnable", "inherits": "qemu-m3", "cacheVariables": { "KICKOS_CONFIG_VARIANT": "flat", "KICKOS_TEST_DRIVERS": "ON", "KICKOS_DRIVER_INTASK_SYSTEM": "tests/integration/driver_witness/systems/intask-qemu-m3.yaml" } },
+    { "name": "qemu-flat", "displayName": "QEMU mps2-an386, no PMSA enforcement - the ring-only run gate", "inherits": "qemu", "cacheVariables": { "KICKOS_TEST_SHAPE": "flat", "KICKOS_CONFIG_VARIANT": "flat" } },
+    { "name": "qemu-m33-flat", "displayName": "QEMU mps2-an505, no PMSAv8 enforcement - runnable", "inherits": "qemu-m33", "cacheVariables": { "KICKOS_TEST_SHAPE": "core;flat", "KICKOS_CONFIG_VARIANT": "flat" } },
+    { "name": "qemu-m7-flat", "displayName": "QEMU mps2-an500, no PMSA enforcement - runnable", "inherits": "qemu-m7", "cacheVariables": { "KICKOS_TEST_SHAPE": "core;flat", "KICKOS_CONFIG_VARIANT": "flat" } },
+    { "name": "qemu-m3-flat", "displayName": "QEMU mps2-an385, no PMSA enforcement - runnable", "inherits": "qemu-m3", "cacheVariables": { "KICKOS_TEST_SHAPE": "core;flat", "KICKOS_CONFIG_VARIANT": "flat", "KICKOS_TEST_DRIVERS": "ON", "KICKOS_DRIVER_INTASK_SYSTEM": "tests/integration/driver_witness/systems/intask-qemu-m3.yaml" } },
     { "name": "frdmk64f-flat", "displayName": "FRDM-K64F with no SYSMPU enforcement", "inherits": "frdmk64f", "cacheVariables": { "KICKOS_CONFIG_VARIANT": "flat" } },
     { "name": "teensy41-flat", "displayName": "Teensy 4.1 with no PMSA enforcement", "inherits": "teensy41", "cacheVariables": { "KICKOS_CONFIG_VARIANT": "flat" } },
     { "name": "f411disco-flat", "displayName": "STM32F411 Disco with no PMSA enforcement", "inherits": "f411disco", "cacheVariables": { "KICKOS_CONFIG_VARIANT": "flat" } },
@@ -135,8 +133,6 @@
     { "name": "pizero2350", "configurePreset": "pizero2350" },
     { "name": "due",       "configurePreset": "due" },
     { "name": "xmc4800-relax", "configurePreset": "xmc4800-relax" },
-    { "name": "xmc4800-relax-bench", "configurePreset": "xmc4800-relax-bench" },
-    { "name": "f411disco-bench", "configurePreset": "f411disco-bench" },
     { "name": "qemu-flat", "configurePreset": "qemu-flat" },
     { "name": "qemu-m33-flat", "configurePreset": "qemu-m33-flat" },
     { "name": "qemu-m7-flat", "configurePreset": "qemu-m7-flat" },

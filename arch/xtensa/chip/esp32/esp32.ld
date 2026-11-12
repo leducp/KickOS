@@ -59,7 +59,7 @@ SECTIONS
     .vectors ORIGIN(IRAM) :
     {
         _kickos_vectors = .;
-        KEEP(*(.vectors))
+        KICKOS_KERNEL_KEEP(.vectors)
         . = ALIGN(4);
     } > IRAM
 

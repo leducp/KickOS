@@ -37,7 +37,7 @@ SECTIONS
 {
     .isr_vector ORIGIN(FLASH) :
     {
-        KEEP(*(.isr_vector))
+        KICKOS_KERNEL_KEEP(.isr_vector)
     } > FLASH
 
     .text :

@@ -518,6 +518,11 @@ bool arch_aspace_memtype_support(enum arch_map_memtype type)
     return memtype_attr(type, &attr);
 }
 
+bool arch_aspace_entry_memtype(void)
+{
+    return true;
+}
+
 struct arch_aspace* arch_aspace_create(void)
 {
     arch_phys_addr_t const root = kickos_frame_alloc();
@@ -668,7 +673,8 @@ struct arch_aspace* arch_aspace_boot(void)
     return reinterpret_cast<struct arch_aspace*>(empty_root());
 }
 
-void* arch_aspace_acquire(struct arch_aspace* space, uintptr_t va, bool* uncached,
+void* arch_aspace_acquire(struct arch_aspace* space, uintptr_t va,
+                          enum arch_aspace_access access, bool* uncached,
                           arch_phys_addr_t* frame)
 {
     if (frame != nullptr)
@@ -703,9 +709,14 @@ void* arch_aspace_acquire(struct arch_aspace* space, uintptr_t va, bool* uncache
     {
         *frame = out;
     }
+    uint64_t const attr = (desc >> 2) & 7u;
+    if (attr == ATTR_DEVICE or (access == ARCH_ASPACE_WRITE and (desc & DESC_AP_RO) != 0))
+    {
+        return nullptr;
+    }
     if (uncached != nullptr)
     {
-        *uncached = ((desc >> 2) & 7u) == ATTR_NOCACHE;
+        *uncached = attr == ATTR_NOCACHE;
     }
     return reinterpret_cast<void*>(static_cast<uintptr_t>(out) + va_base() +
                                    (va & (GRANULE - 1)));

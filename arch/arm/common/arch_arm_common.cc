@@ -66,16 +66,23 @@ extern "C"
 // the caller must terminate.
 int kickos_arm_contain_wild_sp(void)
 {
+    // Masked from the booking through the store: an interrupt taken in between books its own
+    // switch into g_arch_next, which the store would then overwrite.
+    arch_irq_state_t const irq = arch_irq_save();
     // g_arch_current, not the scheduler's current: this one tracks the PHYSICAL switch, so it
     // names the thread whose pointer was refused even when a booked switch has already
     // published another one as current.
     struct arch_context* const next = kickos_thread_contain_wild_stack(g_arch_current, nullptr);
+    // g_arch_current is written by the restore half itself, so only the target is set here.
+    if (next != nullptr)
+    {
+        g_arch_next = next;
+    }
+    arch_irq_restore(irq);
     if (next == nullptr)
     {
         return 0;
     }
-    // g_arch_current is written by the restore half itself, so only the target is set here.
-    g_arch_next = next;
     return 1;
 }
 
@@ -273,7 +280,7 @@ void kickos_arm_bad_psp(uint32_t psp, uint32_t need, uint32_t lo, uint32_t hi)
         kpanic_enter();
     }
 #if KICKOS_PANIC_DUMP
-    // Re-derived rather than passed: one guard serves all three legs.
+    // Re-derived rather than passed: one guard serves every leg.
     // THE NOUN IS THE DISCRIMINATOR. tests/lib/panic.ere matches "=== <ARCH> EXCEPTION", so a
     // contained refusal spelled that way is indistinguishable from one that ended the system
     // and assert_no_panic stops meaning anything on exactly the arms that now survive.
@@ -285,6 +292,10 @@ void kickos_arm_bad_psp(uint32_t psp, uint32_t need, uint32_t lo, uint32_t hi)
     else if (psp >= hi)
     {
         why = "at or above stack_hi";
+    }
+    else if (psp - lo >= need)
+    {
+        why = "frame crosses stack_hi";
     }
     // Which guarded push refused: nothing in the arguments separates the sites, so it comes
     // from ICSR.VECTACTIVE.
@@ -338,15 +349,14 @@ void kickos_arm_bad_psp(uint32_t psp, uint32_t need, uint32_t lo, uint32_t hi)
 }
 
 #if KICKOS_KERNEL_STACKS
-// From svc_trampoline, when the calling thread has no kernel block seated. Runs privileged
-// in THREAD mode ON THE MSP, .Lsvc_nokstack having cleared CONTROL.SPSEL before the branch;
-// `psp` is the thread's own, computed before that clear.
+// From the SVC handler, when the calling thread has no kernel block seated, in handler mode on
+// the MSP. `psp` is the one the thread would have resumed on.
 void kickos_arm_no_kernel_stack(uint32_t psp)
 {
     kpanic_enter();
     ::kickos::kprintf(KICKOS_ARM_BANNER_NO_KERNEL_STACK);
 #if KICKOS_PANIC_DUMP
-    ::kickos::kprintf("  in svc_trampoline PSP=0x%x\n", static_cast<unsigned>(psp));
+    ::kickos::kprintf("  in SVCall PSP=0x%x\n", static_cast<unsigned>(psp));
 #else
     (void)psp;
 #endif

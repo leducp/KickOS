@@ -24,12 +24,13 @@ namespace
     constexpr uint64_t CNTP_CTL_ENABLE = 1u << 0;
     // CNTKCTL_EL1.EL0PCTEN: EL0 reads CNTPCT_EL0 and CNTFRQ_EL0.
     constexpr uint64_t CNTKCTL_EL0PCTEN = 1u << 0;
-    // PMCR_EL0: E enables the counters, C resets the cycle counter, D divides it by 64, LC puts
-    // its overflow at bit 63.
-    constexpr uint64_t PMCR_E = 1u << 0;
-    constexpr uint64_t PMCR_C = 1u << 2;
-    constexpr uint64_t PMCR_D = 1u << 3;
-    constexpr uint64_t PMCR_LC = 1u << 6;
+    // MDSCR_EL1.TDCC: EL0 access to the debug comms channel traps.
+    constexpr uint64_t MDSCR_TDCC = 1u << 12;
+    // ID_AA64DFR0_EL1.PMUVer, bits [11:8]: 0 none, 0xF IMPLEMENTATION DEFINED.
+    constexpr uint32_t DFR0_PMUVER_SHIFT = 8;
+    constexpr uint64_t DFR0_PMUVER_MASK = 0xF;
+    constexpr uint64_t PMUVER_NONE = 0x0;
+    constexpr uint64_t PMUVER_IMPDEF = 0xF;
 
     // Seated by kickos_armv8a_timebase_init at the top of every chip's arch_init.
     uint64_t g_ns_per_tick = 0;
@@ -78,26 +79,23 @@ void kickos_armv8a_percore_init(void)
     // kernel's own timer.
     __asm volatile("msr cntkctl_el1, %0\n\tisb" ::"r"(CNTKCTL_EL0PCTEN) : "memory");
 
+    // Both reset UNKNOWN: a debug enable reaches EL1, a clear TDCC hands EL0 the per-core debug
+    // comms channel and a PMUSERENR_EL0.EN the counters, both shared by every task.
+    __asm volatile("msr mdscr_el1, %0\n\tisb" ::"r"(MDSCR_TDCC) : "memory");
+    uint64_t dfr0 = 0;
+    __asm volatile("mrs %0, id_aa64dfr0_el1" : "=r"(dfr0));
+    uint64_t const pmuver = (dfr0 >> DFR0_PMUVER_SHIFT) & DFR0_PMUVER_MASK;
+    if (pmuver != PMUVER_NONE and pmuver != PMUVER_IMPDEF)
+    {
+        __asm volatile("msr pmuserenr_el0, xzr\n\tisb" ::: "memory");
+    }
+
 #if KICKOS_KERNEL_CORES > 1
     // EL0 reads TPIDRRO_EL0 and cannot write it: kos_core_current answers from it what
     // KOS_SYS_CORE_CURRENT answers, kickos_kernel_core(), which is arch_cpu_id() only under the
     // shared model.
     static_assert(KICKOS_MULTICORE_MODEL_SHARED, "the seated id must be the kernel core's slot");
     __asm volatile("msr tpidrro_el0, %0" ::"r"(static_cast<uint64_t>(arch_cpu_id())));
-#endif
-
-#if KICKOS_BENCH
-    // PMCCNTR_EL0 is the bench cycle source (kickos/bench.h). PMCR_EL0.D divides the count by
-    // 64 and resets UNKNOWN, so it is cleared. One statement: check_image_rules.sh reads C out
-    // of the immediate the image ORs in.
-    uint64_t pmcr = 0;
-    uint64_t set = 0;
-    __asm volatile("mrs %0, pmcr_el0\n\tand %0, %0, %2\n\tmov %1, %3\n\torr %0, %0, %1\n\t"
-                   "msr pmcr_el0, %0"
-                   : "=&r"(pmcr), "=&r"(set)
-                   : "i"(~PMCR_D), "i"(PMCR_E | PMCR_C | PMCR_LC));
-    __asm volatile("msr pmcntenset_el0, %0" ::"r"(static_cast<uint64_t>(1ull << 31)));
-    __asm volatile("isb" ::: "memory");
 #endif
 
     kickos_armv8a_gic_percore_init();

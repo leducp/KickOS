@@ -24,7 +24,7 @@
 
 struct arch_context
 {
-    // Saved PSP: the lowest word of the PendSV-pushed {r4-r11, EXC_RETURN} block.
+    // Saved PSP: the lowest word of the PendSV-pushed {r4-r11} block.
     uint32_t sp;
 
     // CONTROL.nPRIV, saved and restored like a register and distinct from the resting
@@ -46,6 +46,11 @@ struct arch_context
     // guard accepts a PSP inside the block below it as well as one inside the user stack,
     // because a thread preempted mid-dispatch runs there. Zero for a TCB outside the pool.
     uintptr_t kernel_sp;
+
+    // The EXC_RETURN the switch-in branches through, kept here and never on a stack: a
+    // task-mate can write the stack a thread parks on, and this word steers a handler-mode
+    // branch.
+    uint32_t exc_return;
 
 #if defined(KICKOS_HAVE_STACK_LIMIT) && KICKOS_HAVE_STACK_LIMIT
     uint32_t splim;

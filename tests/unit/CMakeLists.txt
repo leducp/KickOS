@@ -41,11 +41,11 @@ if(KICKOS_BUILD_UNIT_TESTS)
 
   # Independent targets; consumers of shared fixture libraries follow their providers.
   foreach(_unit IN ITEMS
-      ampconsole amphold ampreset ampshare ampwindow atomiccas benchdist c6apm capreply consolebaud consoleline consoleown
-      consolepace consolering consoletxsmp ctxredirect dcacheplan
+      ampconsole amphold ampreset ampshare ampwindow atomiccas c6apm ccrbringup clockbringup consolebaud consoleline consoleown
+      consolering consoletxsmp ctxredirect dcacheplan
       deathspace doorbell drvbringup fastrefuse faultline flashmmu frame fusedwake gthrtimed grantlookup grantnocache
-      heapbreak imagecheck imagecrt0 initwalk irqquiesce kstring
-      k64fsysmpu ktime mapexec mapfence mapshoot mpuoverlap mpuskip mtimeconv placeadmit presync ramalign ramowner regionsync
+      heapbreak imagecheck imagecrt0 imxrtgate initwalk irqquiesce isrresume kstring
+      k64fsysmpu mapexec mapfence mapshoot mpuoverlap mpuskip mtimeconv placeadmit presync ramalign ramowner regionsync
       reschedowed rp2350gate rp2xxxbringup slotpool
       stdoutwrite taskbudget uartclass useratomic usersem vrange windowholder wrapextend)
     add_subdirectory(${_unit})
@@ -55,7 +55,7 @@ if(KICKOS_BUILD_UNIT_TESTS)
   # macros and avoid conflicts with preset definitions.
   add_subdirectory(kfixture)
   foreach(_unit IN ITEMS
-      cancelkind capbadge capprobe capsweep consolepub faultband faultrecord irqbindown libclock lockid parkresult priodonor rangecheck rootslot
+      cancelkind capbadge capsweep consolepub faultrecord faultstacktop irqbindown libclock lockid parkresult priodonor rangecheck rootslot
       rrlanding rrslice schedwake slayhook taskdeath taskpool v6mframe wildstack windowclose wordref)
     add_subdirectory(${_unit})
   endforeach()
@@ -64,8 +64,8 @@ if(KICKOS_BUILD_UNIT_TESTS)
   add_subdirectory(reentseat)
   add_subdirectory(sysdispatch)
   add_subdirectory(captable)
-  foreach(_unit IN ITEMS consolehold irqlinecore parkdeath placement schedring semtimed mutextimed
-      usercond slaypeer tlscarve)
+  foreach(_unit IN ITEMS consolehold irqlinecore parkdeath placement schedring semtimed ktime
+      mutextimed usercond slaypeer tlscarve)
     add_subdirectory(${_unit})
   endforeach()
 endif()

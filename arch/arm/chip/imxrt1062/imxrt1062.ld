@@ -42,15 +42,15 @@ SECTIONS
        (RM 9.6.3.1 / Table 9-15, Table 9-18). ROM-consumed, so KEEP retains it. */
     .boot_fcb ORIGIN(FLASH) :
     {
-        KEEP(*(.boot_fcb))
+        KICKOS_KERNEL_KEEP(.boot_fcb)
     } > FLASH
 
     /* Image Vector Table @ 0x1000 and Boot Data @ 0x1020 (RM 9.7.1, Table 9-36:
        FlexSPI NOR IVT offset = 0x1000). Both ROM-consumed. */
     .boot_ivt ORIGIN(FLASH) + 0x1000 :
     {
-        KEEP(*(.boot_ivt))
-        KEEP(*(.boot_data))
+        KICKOS_KERNEL_KEEP(.boot_ivt)
+        KICKOS_KERNEL_KEEP(.boot_data)
     } > FLASH
 
     /* After the 8 KiB boot-header window. _boot_entry points VTOR here: the ROM enters
@@ -58,7 +58,7 @@ SECTIONS
     .isr_vector ORIGIN(FLASH) + 0x2000 :
     {
         . = ALIGN(1024);   /* M7 VTOR alignment: >= table size, 1 KiB is ample */
-        KEEP(*(.isr_vector))
+        KICKOS_KERNEL_KEEP(.isr_vector)
     } > FLASH
 
     .text :

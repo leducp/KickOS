@@ -72,6 +72,10 @@ devices:
   aips1: { window: [0x40080000, 0x1000], owner: kernel, ref: "Table 4-3 Peripheral bridge 1 slot assignments, p.178" }
   mcg: { window: [0x40064000, 0x1000], owner: kernel, ref: "Table 4-2 Peripheral bridge 0 slot assignments, p.177" }
   osc0: { window: [0x40065000, 0x1000], owner: kernel, ref: "Table 4-2 Peripheral bridge 0 slot assignments, p.177" }
+  # The flash every task's code runs from: FMC holds its cache, writable, and each master's
+  # access to it; FTFE erases and programs it.
+  fmc: { window: [0x4001F000, 0x1000], owner: kernel, ref: "Table 4-2 Peripheral bridge 0 slot assignments, p.176" }
+  ftfe: { window: [0x40020000, 0x1000], owner: kernel, ref: "Table 4-2 Peripheral bridge 0 slot assignments, p.176" }
   # Disabled at boot, then grantable.
   wdog: { window: [0x40052000, 0x1000], ref: "Table 4-2 Peripheral bridge 0 slot assignments, p.177" }
   # Clock gates and pin mux: reached through kos_periph_enable and kos_pinmux_set only. SOPT1
@@ -85,10 +89,9 @@ devices:
   port: { window: [0x40049000, 0x1000], count: 5, stride: 0x1000, owner: kernel, symbol: PORTA_BASE, ref: "Table 4-2 Peripheral bridge 0 slot assignments, p.177" } # A to E
 
 memory:
-  # SRAM_L below 0x20000000 and SRAM_U above: a misaligned access across the seam is not
-  # supported.
+  # SRAM_L below the bank line and SRAM_U above: no access may run across it.
   flash: { base: 0x00000000, size: 0x100000, link: { region: FLASH, access: rx }, ref: "3.5.1.2 Flash Memory Sizes, p.103" }
-  sram: { base: 0x1FFF0000, size: 0x40000, arena: true, link: { region: RAM, access: rwx }, ref: "3.5.3.1 SRAM sizes, p.107" }
+  sram: { base: 0x1FFF0000, size: 0x40000, arena: true, bank_line: 0x20000000, link: { region: RAM, access: rwx }, ref: "3.5.3.1 SRAM sizes, p.107" }
 
 # Pins are PTxN. A selector other than `gpio` is the ALT number the pin's PCR selects.
 pins:

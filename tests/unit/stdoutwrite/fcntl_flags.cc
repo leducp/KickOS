@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // fcntl on the console's fds: F_SETFL moves this image's O_NONBLOCK word, which stdout_write
-// reads, and F_GETFL reads it back.
+// reads, and F_GETFL reads it back. A console fd closed is no longer one.
 
 #include <gtest/gtest.h>
 
@@ -34,4 +34,14 @@ TEST(FcntlFlags, an_fd_beyond_the_console_is_refused)
     EXPECT_EQ(kickos_test_fcntl(3, F_SETFL, O_NONBLOCK), -1);
     EXPECT_EQ(errno, EBADF);
     EXPECT_EQ(kickos::stdout_nonblock(), 0u);
+}
+
+TEST(FcntlFlags, a_closed_console_fd_is_refused)
+{
+    kickos::console_fds() = 0x5u;
+    errno = 0;
+    EXPECT_EQ(kickos_test_fcntl(1, F_GETFL), -1);
+    EXPECT_EQ(errno, EBADF);
+    EXPECT_EQ(kickos_test_fcntl(2, F_GETFL), O_WRONLY);
+    kickos::console_fds() = 0x7u;
 }

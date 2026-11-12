@@ -297,6 +297,8 @@ function(kickos_compose system)
   endif()
   add_library(${system}_kernel STATIC ${_kernel_sources})
   target_link_libraries(${system}_kernel PRIVATE KickOS::kernel)
+  target_compile_options(${system}_kernel PRIVATE
+    "$<$<COMPILE_LANGUAGE:C,CXX>:${KICKOS_KERNEL_HALF_FLAGS}>")
   # The pools' storage is constant-initialised, which needs C++20's constexpr constructors.
   target_compile_features(${system}_kernel PRIVATE cxx_std_20)
   # A KickOS archive by name, which the link-map gates admit.

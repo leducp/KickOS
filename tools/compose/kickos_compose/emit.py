@@ -949,11 +949,12 @@ def stack_asserts(admitted, name):
     return out
 
 
-def arena_step(tag, prev, size, align):
+def arena_step(tag, prev, size, align, line=None):
     """The ld statements of one allocation of `size` on `align` through the allocator's rule
     (arch/common/ram_arena.h, region.py ArenaModel), the state after tag `tag` from the state
-    after `prev`: the bump cursor and the kept free range [gs, ge). A comparison is ld's 0 or 1,
-    so a choice is a product."""
+    after `prev`: the bump cursor and the kept free range [gs, ge), a bumped block that would run
+    across the bank `line` starting at it. A comparison is ld's 0 or 1, so a choice is a
+    product."""
     def sym(kind, name):
         return "__kickos_system_arena_%s_%s" % (kind, name)
 
@@ -966,10 +967,16 @@ def arena_step(tag, prev, size, align):
     c1, gs1, ge1 = state(tag)
     fit, at, bump = sym("f", tag), sym("a", tag), sym("b", tag)
     keep_after, keep_before, replace = sym("ak", tag), sym("kb", tag), sym("rp", tag)
+    bumped = ["%s = ALIGN(%s, 0x%X);" % (bump, c0, align)]
+    if line is not None:
+        aligned = sym("h", tag)
+        bumped = ["%s = ALIGN(%s, 0x%X);" % (aligned, c0, align),
+                  "%s = %s + (%s < 0x%X) * ((%s + 0x%X) > 0x%X) * (ALIGN(0x%X, 0x%X) - %s);" % (
+                      bump, aligned, aligned, line, aligned, size, line, line, align, aligned)]
     return [
         "%s = (ALIGN(%s, 0x%X) + 0x%X) <= %s;" % (fit, gs0, align, size, ge0),
         "%s = ALIGN(%s, 0x%X);" % (at, gs0, align),
-        "%s = ALIGN(%s, 0x%X);" % (bump, c0, align),
+    ] + bumped + [
         "%s = %s * ((%s - %s - 0x%X) >= (%s - %s));" % (keep_after, fit, ge0, at, size, at, gs0),
         "%s = %s - %s;" % (keep_before, fit, keep_after),
         "%s = (1 - %s) * ((%s - %s) > (%s - %s));" % (replace, fit, bump, c0, ge0, gs0),
@@ -990,6 +997,7 @@ def arena_asserts(admitted):
         return out
     start = c_symbol(manifest, "__kickos_ram_start")
     end = c_symbol(manifest, "__kickos_ram_end")
+    line = admitted.chip.arena_line.get(admitted.cluster)
     out.append("__kickos_system_arena_c_start = %s;" % start)
     out.append("__kickos_system_arena_gs_start = %s;" % start)
     out.append("__kickos_system_arena_ge_start = %s;" % start)
@@ -998,7 +1006,7 @@ def arena_asserts(admitted):
         if not want:
             continue
         placed = "__kickos_system_arena_%d" % n
-        out.extend(arena_step(str(n), prev, ram_size(want, manifest), ram_align(want, manifest)))
+        out.extend(arena_step(str(n), prev, ram_size(want, manifest), ram_align(want, manifest), line))
         out.append("ASSERT(%s <= %s," % (placed, end))
         out.append("       \"KickOS: the arena cannot hold %s, placed as arch_ram_alloc places it after every "
                    "block before it, from __kickos_ram_start to __kickos_ram_end; %s, or a block before it, "

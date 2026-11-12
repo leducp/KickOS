@@ -40,13 +40,13 @@ SECTIONS
     /* boot2: exactly 256 bytes at flash start (the ROM loads + CRC-checks it). */
     .boot2 ORIGIN(FLASH) :
     {
-        KEEP(*(.boot2))
+        KICKOS_KERNEL_KEEP(.boot2)
     } > FLASH
 
     /* The vector table is the first thing in .text, so pinning .text pins the table. */
     .text ORIGIN(FLASH) + 0x100 :
     {
-        KEEP(*(.isr_vector))
+        KICKOS_KERNEL_KEEP(.isr_vector)
         KICKOS_CORTEXM_TEXT
     } > FLASH
 

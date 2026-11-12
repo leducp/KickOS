@@ -133,21 +133,6 @@ if(KICKOS_SPLIM_PLANT)
     target_compile_definitions(kickos_arch_${KICKOS_ARCH} PRIVATE KICKOS_SPLIM_PLANT_UNLIMITED=1)
   endif()
 endif()
-# Test-only: the CCR plant check_ccr_plant.sh configures a tree of its own with.
-set(KICKOS_CCR_PLANT "" CACHE STRING "test-only: boot or kept, CCR inverted from bring-up")
-if(KICKOS_CCR_PLANT)
-  if(NOT "${KICKOS_CCR_PLANT_SCRATCH}" STREQUAL "check_ccr_plant.sh")
-    message(FATAL_ERROR "KickOS: CCR_PLANT_REFUSED: KICKOS_CCR_PLANT builds a kernel that "
-      "clears CCR's divide trap and sets its unaligned trap and unprivileged STIR access on "
-      "purpose. Only tests/integration/check_ccr_plant.sh configures it, in a scratch tree of "
-      "its own.")
-  endif()
-  if(NOT KICKOS_ARCH STREQUAL "armv7m" OR NOT KICKOS_CCR_PLANT MATCHES "^(boot|kept)$")
-    message(FATAL_ERROR "KICKOS_CCR_PLANT is boot or kept, on armv7m")
-  endif()
-  string(TOUPPER "${KICKOS_CCR_PLANT}" _plant)
-  target_compile_definitions(kickos_arch_${KICKOS_ARCH} PRIVATE KICKOS_CCR_PLANT_${_plant}=1)
-endif()
 if(KICKOS_ARCH_HOSTED)
   kickos_apply_hosted(kickos_arch_${KICKOS_ARCH})
 else()
@@ -320,13 +305,6 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
   endif()
   if(KICKOS_CHIP STREQUAL "imxrt1062" AND KICKOS_IMXRT_DCACHE)
     target_compile_definitions(kickos_chip_${KICKOS_CHIP} PRIVATE KICKOS_IMXRT_DCACHE=1)
-  endif()
-  # A v7-M chip that overrides arch_trace_now (the MPS2 machines' dual timer) has it on
-  # the PendSV-tail emit path, so its TU must be FP-register-free too.
-  if(KICKOS_TELEMETRY_ON AND KICKOS_QEMU_MPS2)
-    set_source_files_properties(
-      "${CMAKE_CURRENT_SOURCE_DIR}/arm/chip/mps2/chip_mps2.cc"
-      PROPERTIES COMPILE_OPTIONS "-mgeneral-regs-only")
   endif()
   target_include_directories(kickos_chip_${KICKOS_CHIP} PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/include"

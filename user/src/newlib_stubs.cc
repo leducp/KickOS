@@ -8,6 +8,7 @@
 #include <kickos/arch/arch.h>
 #include <kickos/sys.h>
 #include <kickos/sys/emit.h>
+#include <kickos/sys/user_cas.h>
 
 #include <errno.h>
 #include <limits.h>
@@ -123,10 +124,15 @@ namespace
 extern "C"
 {
 
-// KickOS has no fd namespace: every fd goes to the console. MUST NOT cache how a call fared: a
-// publish seats cap 0 after a send failed on it.
-int _write(int, char const* buf, int len)
+// Fds 0 to 2 are the console, a terminal that reads nothing; no call opens another. MUST NOT
+// cache how a write fared: a publish seats cap 0 after a send failed on it.
+int _write(int fd, char const* buf, int len)
 {
+    if ((fd != 1 and fd != 2) or not kickos::console_fd_open(fd))
+    {
+        errno = EBADF;
+        return -1;
+    }
     if (len <= 0)
     {
         return 0;
@@ -140,8 +146,13 @@ int _write(int, char const* buf, int len)
     return -1;
 }
 
-int _read(int, char*, int)
+int _read(int fd, char*, int)
 {
+    if (fd != 0 or not kickos::console_fd_open(fd))
+    {
+        errno = EBADF;
+        return -1;
+    }
     return 0;
 }
 // No path names a file: fopen, freopen and the rest fail as for a file that does not exist.
@@ -150,21 +161,52 @@ int _open(char const*, int, ...)
     errno = ENOENT;
     return -1;
 }
-int _close(int)
+int _close(int fd)
 {
+    if (fd >= 0 and fd <= 2)
+    {
+        uint32_t const bit = 1u << fd;
+        uint32_t held = __atomic_load_n(&kickos::console_fds(), __ATOMIC_RELAXED);
+        while ((held & bit) != 0u)
+        {
+            uint32_t const seen = kickos_user_cas(&kickos::console_fds(), held, held & ~bit);
+            if (seen == held)
+            {
+                return 0;
+            }
+            held = seen;
+        }
+    }
+    errno = EBADF;
     return -1;
 }
-int _isatty(int)
+int _isatty(int fd)
 {
+    if (not kickos::console_fd_open(fd))
+    {
+        errno = EBADF;
+        return 0;
+    }
     return 1;
 }
-int _lseek(int, int, int)
+int _lseek(int fd, int, int)
 {
-    return 0;
+    if (not kickos::console_fd_open(fd))
+    {
+        errno = EBADF;
+        return -1;
+    }
+    errno = ESPIPE;
+    return -1;
 }
 // A character device, so newlib line-buffers a stream on it.
-int _fstat(int, struct stat* st)
+int _fstat(int fd, struct stat* st)
 {
+    if (not kickos::console_fd_open(fd))
+    {
+        errno = EBADF;
+        return -1;
+    }
     struct stat const console{};
     *st = console;
     st->st_mode = S_IFCHR;

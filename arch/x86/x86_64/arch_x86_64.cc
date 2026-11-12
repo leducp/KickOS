@@ -16,6 +16,7 @@ extern "C" __attribute__((visibility("hidden"), noreturn)) void kfault_terminate
 #include <kickos/arch/apic.h>
 #include <kickos/arch/arch.h>
 #include "ctx_redirect.h"
+#include "isr_resume.h"
 #include <kickos/arch/aspace.h>
 #include <kickos/arch/desc.h>
 #include <kickos/arch/doorbell_protocol.h>
@@ -42,9 +43,6 @@ namespace kickos
 extern "C" KICKOS_X86_64_LOCAL void kickos_x86_64_switch_now(struct arch_context* from,
                                                              struct arch_context* to);
 extern "C" KICKOS_X86_64_LOCAL void kickos_x86_64_start(struct arch_context* first);
-#if KICKOS_BENCH
-extern "C" KICKOS_X86_64_LOCAL void kickos_x86_64_bench_open(void);
-#endif
 
 // The app's own return path (user/src/syscall_stubs.cc), which reaches the kernel exit through
 // the syscall trap, at the address the thread reaches it at.
@@ -385,9 +383,6 @@ void arch_switch(struct arch_context* from, struct arch_context* to)
         cpu.switch_to = to;
         return;
     }
-#if KICKOS_BENCH
-    kickos_x86_64_bench_open();
-#endif
     // Thread context under the kernel IrqLock, so no interrupt observes the cell between this
     // write and the frame it describes being the one on the CPU.
     publish_current(to);
@@ -675,34 +670,26 @@ kickos::x86_64::trap_frame* kickos_x86_64_isr(kickos::x86_64::trap_frame* frame)
     }
     cpu.isr_depth--;
 
-    if (cpu.switch_to == nullptr)
-    {
-        return frame;
-    }
-    // The interrupted frame IS the outgoing context's saved state, so publishing it is one
-    // store; the incoming context's own frame is what the epilogue then pops.
-    struct arch_context* const to = cpu.switch_to;
-    cpu.switch_to = nullptr;
-    // Booked back onto the interrupted context: trap_x86_64.S releases only on a new frame.
-    if (to == cpu.ctx_current)
-    {
+    // The interrupted frame IS the outgoing context's saved state, so parking it is one store;
+    // the vector state goes with it. trap_x86_64.S unlocks after this returns, and nothing
+    // between the restore and its iretq touches that state.
+    return kickos::x86_64::isr_resume(
+        cpu.switch_to, cpu.ctx_current, frame,
+        [] {
 #if KICKOS_KERNEL_CORES > 1
-        kickos_switch_unlock();
+            kickos_switch_unlock();
 #endif
-        return frame;
-    }
-    // The vector state goes with the frame. trap_x86_64.S unlocks after this returns, and
-    // nothing between the restore and its iretq touches that state.
-    if (cpu.ctx_current != nullptr)
-    {
-        cpu.ctx_current->sp = reinterpret_cast<uintptr_t>(frame);
-        __asm__ volatile("xsave64 %0"
-                         : "=m"(cpu.ctx_current->xsave)
-                         : "a"(KICKOS_X86_64_XCR0), "d"(0));
-    }
-    publish_current(to);
-    __asm__ volatile("xrstor64 %0" : : "m"(to->xsave), "a"(KICKOS_X86_64_XCR0), "d"(0));
-    return reinterpret_cast<kickos::x86_64::trap_frame*>(to->sp);
+        },
+        [](struct arch_context* current, kickos::x86_64::trap_frame* parked) {
+            current->sp = reinterpret_cast<uintptr_t>(parked);
+            __asm__ volatile("xsave64 %0"
+                             : "=m"(current->xsave)
+                             : "a"(KICKOS_X86_64_XCR0), "d"(0));
+        },
+        [](struct arch_context* to) {
+            publish_current(to);
+            __asm__ volatile("xrstor64 %0" : : "m"(to->xsave), "a"(KICKOS_X86_64_XCR0), "d"(0));
+        });
 }
 
 #if defined(KICKOS_WITNESS_UACCESS) && KICKOS_WITNESS_UACCESS

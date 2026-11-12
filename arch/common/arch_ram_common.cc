@@ -6,6 +6,7 @@
 #include <kickos/arch/arch.h>
 #include <kickos/klink.h>
 
+#include "chip_layout.h"
 #include "ram_arena.h"
 
 #include <stddef.h>
@@ -31,6 +32,12 @@ namespace
 {
     // Written under arch_irq_save in arch_ram_alloc.
     kickos::RamArena g_arena;
+
+#ifdef KICKOS_LAYOUT_BANK_LINE
+    constexpr uintptr_t BANK_LINE = KICKOS_LAYOUT_BANK_LINE;
+#else
+    constexpr uintptr_t BANK_LINE = 0;
+#endif
 
 #if !KICKOS_MEMORY_ENFORCED
     bool range_within(uintptr_t ptr, uintptr_t end, uintptr_t start, uintptr_t stop)
@@ -87,7 +94,7 @@ void* arch_ram_alloc(size_t size)
     size_t const ralign = arch_ram_region_align(size);
     arch_irq_state_t s = arch_irq_save();
     void* const p = kickos::ram_arena_alloc(g_arena, reinterpret_cast<uintptr_t>(__kickos_ram_start),
-                                            arch_ram_size(), rsz, ralign);
+                                            arch_ram_size(), rsz, ralign, BANK_LINE);
     arch_irq_restore(s);
     return p;
 }

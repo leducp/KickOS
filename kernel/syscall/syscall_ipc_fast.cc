@@ -9,7 +9,6 @@
 // And it reimplements no refusal: a refusal is a fall-through, never an errno, the caller
 // re-issuing through KOS_SYS_CALL so that endpoint_call produces the answer.
 
-#include <kickos/bench.h>
 #include <kickos/cap.h>
 #include <kickos/endpoint.h>
 #include <kickos/held.h>
@@ -24,21 +23,6 @@
 #include <kickos/sys/errno.h>
 
 #include "syscall_internal.h"
-
-namespace kickos
-{
-    namespace
-    {
-        // Single-writer under the trap's own interrupt mask, so a plain type. Outside the
-        // arch guard, so a backend with no fastpath reads 0 and still links.
-        uint32_t g_ipc_fast_taken = 0;
-    }
-
-    uint32_t ipc_fast_taken_count()
-    {
-        return g_ipc_fast_taken;
-    }
-}
 
 #if KICKOS_ARCH_HAS_IPC_FASTPATH
 
@@ -140,7 +124,6 @@ namespace kickos
         }
 
         // Every refusal is behind us. From here the call completes.
-        g_ipc_fast_taken++;
         (void)wq_pop_highest(e->recv_waiters); // == w, nothing mutates under this mask
         c->call_seq++; // new epoch BEFORE the mint: the reply cap rides this seq
         uint32_t rcap = KCAP_INVALID;

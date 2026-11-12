@@ -43,7 +43,6 @@
 
     .equ KOS_CPU_KERNEL_SP, KICKOS_X86_64_CPU_KERNEL_SP
     .equ KOS_CPU_USER_RSP,  KICKOS_X86_64_CPU_USER_RSP
-    .equ KOS_CPU_SW_START,  KICKOS_X86_64_CPU_SW_START
 
     .section .text, "ax"
 
@@ -101,49 +100,20 @@ kickos_x86_64_switch_now:
     movq    %rsp, KOS_CTX_SP(%rdi)
     movq    KOS_CTX_SP(%rsi), %rsp
     xrstor64 KOS_CTX_XSAVE(%rsi)
-#if KICKOS_KERNEL_CORES > 1 || KICKOS_BENCH
+#if KICKOS_KERNEL_CORES > 1
 /* A new privileged frame can be 8 modulo 16. Keep its exact base in a register the frame
- * restores, and align the temporary call stack before invoking either C hook. */
+ * restores, and align the temporary call stack before invoking the C hook. */
     movq    %rsp, %r12
     andq    $-16, %rsp
-#endif
-#if KICKOS_BENCH
-/* Closed where rsp already names the incoming frame and the resume below reloads every
- * register this clobbers, rdi included. That frame base is 16-byte aligned, so the call
- * meets the psABI. */
-    lfence
-    rdtsc
-    subl    %gs:KOS_CPU_SW_START, %eax
-    movl    %eax, %edi
-    call    kickos_bench_switch_done
 #endif
 #if KICKOS_KERNEL_CORES > 1
 /* The outgoing frame is parked and the C hook now runs on the incoming stack. */
     call    kickos_switch_unlock
 #endif
-#if KICKOS_KERNEL_CORES > 1 || KICKOS_BENCH
+#if KICKOS_KERNEL_CORES > 1
     movq    %r12, %rsp
 #endif
     jmp     kickos_x86_64_resume
-
-#if KICKOS_BENCH
-/* void kickos_x86_64_bench_open(void): the switch window (kernel/bench/bench.cc) opens here,
- * called by arch_switch ahead of publish_current, so the window encloses publish_current, the
- * register save, the stack swap and everything kickos_x86_64_switch_now does up to its close.
- * It does NOT enclose the software restore: kickos_x86_64_resume has popped all 15 GPRs by its
- * iretq and leaves none free to close a window on, and it is shared with the syscall and
- * interrupt returns.
- *
- * The TSC is 64 bits and the accumulator is 32, so only eax is kept, which is exact for any
- * delta shorter than 2^32 ticks. */
-    .balign 16
-    .globl kickos_x86_64_bench_open
-kickos_x86_64_bench_open:
-    lfence
-    rdtsc
-    movl    %eax, %gs:KOS_CPU_SW_START
-    ret
-#endif
 
 /* void kickos_x86_64_start(struct arch_context* first): enters the first thread. The boot
  * stack is abandoned, which arch.h permits. */

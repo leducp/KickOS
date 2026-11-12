@@ -223,7 +223,7 @@ Two guardrails are worth writing down because they bite silently otherwise:
 
 - **The refcount is `uint8_t`, and the bound is enforced at RUNTIME, not by an assert.**
   The most references an object can accrue is one per possible holder, so the naive bound
-  is `KICKOS_BUDGET_THREADS` times a table width. Do **not** weld that product into a
+  is the thread pool size times a table width. Do **not** weld that product into a
   `static_assert`: it is a worst case nothing approaches, it omits the boot TCBs and the
   kernel's own console reference, and stating it correctly ties two provisioning knobs
   together tighter than the runtime needs. Instead the ONE increment site refuses:

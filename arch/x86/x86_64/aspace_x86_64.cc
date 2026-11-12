@@ -97,9 +97,10 @@ namespace
     };
     IdentityRun g_identity_runs[2] = {};
 
-    // The leaf bits ARCH_MAP_NOCACHE selects under the PAT, which nothing writes after boot;
-    // all ones where the PAT cannot encode it.
+    // The leaf bits ARCH_MAP_NOCACHE and ARCH_MAP_DEVICE select under the PAT, which nothing
+    // writes after boot; all ones where the PAT cannot encode it.
     uint64_t g_nocache_bits = ~0ull;
+    uint64_t g_device_bits = ~0ull;
     uintptr_t g_user_lo = 0;
     uintptr_t g_user_hi = 0;
 
@@ -338,10 +339,11 @@ namespace
     }
 
     // Walk any leaf size. Leave *pa unchanged on failure. A non-null `type` receives the
-    // leaf's memory-type bits in their 4 KiB positions.
+    // leaf's memory-type bits in their 4 KiB positions, a non-null `leaf` the descriptor.
     __attribute__((always_inline)) inline bool walk(uint64_t const* root, uintptr_t va,
                                                     arch_phys_addr_t* pa, uint64_t* type,
-                                                    uintptr_t* span = nullptr)
+                                                    uintptr_t* span = nullptr,
+                                                    uint64_t* leaf = nullptr)
     {
         uint64_t const* table = root;
         for (int height = walk_top(); height >= 0; height--)
@@ -360,6 +362,10 @@ namespace
                 if (span != nullptr)
                 {
                     *span = span_at(height);
+                }
+                if (leaf != nullptr)
+                {
+                    *leaf = desc;
                 }
                 if (type != nullptr)
                 {
@@ -386,9 +392,10 @@ namespace
         return walk(root, va, pa, nullptr);
     }
 
-    bool resolve_typed(uint64_t const* root, uintptr_t va, arch_phys_addr_t* pa, uint64_t* type)
+    bool resolve_typed(uint64_t const* root, uintptr_t va, arch_phys_addr_t* pa, uint64_t* type,
+                       uint64_t* leaf)
     {
-        return walk(root, va, pa, type);
+        return walk(root, va, pa, type, nullptr, leaf);
     }
 
     bool identity_maps(arch_phys_addr_t pa)
@@ -694,6 +701,11 @@ namespace kickos::x86_64
         {
             g_nocache_bits = nocache;
         }
+        uint64_t device = 0;
+        if (memtype_bits(ARCH_MAP_DEVICE, &device))
+        {
+            g_device_bits = device;
+        }
 
         g_boot_root =
             table_at(static_cast<arch_phys_addr_t>(kickos_x86_64_read_cr3() & PTE_ADDR_MASK));
@@ -840,6 +852,11 @@ bool arch_aspace_memtype_support(enum arch_map_memtype type)
 {
     uint64_t bits = 0;
     return memtype_bits(type, &bits);
+}
+
+bool arch_aspace_entry_memtype(void)
+{
+    return true;
 }
 
 struct arch_aspace* arch_aspace_create(void)
@@ -1000,7 +1017,8 @@ struct arch_aspace* arch_aspace_boot(void)
     return reinterpret_cast<struct arch_aspace*>(g_boot_root);
 }
 
-void* arch_aspace_acquire(struct arch_aspace* space, uintptr_t va, bool* uncached,
+void* arch_aspace_acquire(struct arch_aspace* space, uintptr_t va,
+                          enum arch_aspace_access access, bool* uncached,
                           arch_phys_addr_t* frame_out)
 {
     if (frame_out != nullptr)
@@ -1020,12 +1038,16 @@ void* arch_aspace_acquire(struct arch_aspace* space, uintptr_t va, bool* uncache
     arch_irq_state_t const s = arch_irq_save();
     arch_phys_addr_t frame = 0;
     uint64_t type = 0;
-    bool const mapped = resolve_typed(root_of(space),
-                                      va & ~static_cast<uintptr_t>(GRANULE - 1), &frame, &type);
+    uint64_t leaf = 0;
+    bool const mapped = resolve_typed(root_of(space), va & ~static_cast<uintptr_t>(GRANULE - 1),
+                                      &frame, &type, &leaf);
     bool reachable = false;
     if (mapped)
     {
-        reachable = identity_maps(frame);
+        // Every user table entry carries RW (table_desc_user), so the leaf decides a write.
+        bool const refused = type == g_device_bits
+                             or (access == ARCH_ASPACE_WRITE and (leaf & PTE_RW) == 0);
+        reachable = not refused and identity_maps(frame);
         if (frame_out != nullptr)
         {
             *frame_out = frame;

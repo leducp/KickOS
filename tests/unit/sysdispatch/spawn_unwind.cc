@@ -33,6 +33,7 @@ namespace
     struct alignas(kickos::testfix::REGION_MIN) ParamBlock
     {
         kos_thread_params p;
+        kos_thread_t out;
     };
     ParamBlock g_block;
 }
@@ -87,9 +88,10 @@ namespace kickos
                 p.entry = entry;
                 p.name = "refused";
                 p.prio = 1;
-                kos_thread_t out = 0;
-                EXPECT_EQ(thread_create_call(&p, &out), -KOS_EINVAL);
-                EXPECT_EQ(out, KOS_THREAD_NONE);
+                g_block.out = KOS_THREAD_NONE;
+                EXPECT_EQ(thread_create_call(&p, reinterpret_cast<uintptr_t>(&g_block.out)),
+                          -KOS_EINVAL);
+                EXPECT_EQ(g_block.out, KOS_THREAD_NONE);
 
                 EXPECT_EQ(was.state, ThreadState::EXITED);
                 EXPECT_EQ(k.threads.gen()[1], gen) << "the slot kept the claim's generation";

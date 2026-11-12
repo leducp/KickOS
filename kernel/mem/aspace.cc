@@ -11,6 +11,7 @@
 #include <kickos/debug.h>
 #include <kickos/domain.h>
 #include <kickos/frame_pool.h>
+#include <kickos/grant.h>
 #include <kickos/image.h>
 #include <kickos/instance.h>
 #include <kickos/irqlock.h>
@@ -1179,6 +1180,10 @@ namespace kickos
         {
             return -KOS_EPERM;
         }
+        if (not grant_memtype_at(type, aspace_frame_of(base), size))
+        {
+            return -KOS_ENOTSUP;
+        }
         uint8_t const memtype = static_cast<uint8_t>(type);
         VirtualRange const* e = nullptr;
         int const admit = self_grant_admit(ranges, base, size, rights, memtype, &e);
@@ -1239,6 +1244,10 @@ namespace kickos
         if (va + static_cast<uintptr_t>(pages) * g < va)
         {
             return -KOS_EINVAL; // the range wraps
+        }
+        if (not grant_memtype_at(type, base, static_cast<size_t>(pages) * g))
+        {
+            return -KOS_ENOTSUP;
         }
         // Another space mapping the run with another type keeps it.
         if (not aspace_frames_type_ok(base, pages, static_cast<uint8_t>(type), nullptr))
@@ -1324,6 +1333,10 @@ namespace kickos
             return -KOS_EINVAL;
         }
         size_t const pages = (bytes + g - 1u) / g;
+        if (not grant_memtype_at(type, pa, pages * g))
+        {
+            return -KOS_ENOTSUP;
+        }
         uintptr_t area = 0;
         size_t area_bytes = 0;
         arch_aspace_window_area(&area, &area_bytes);
@@ -1440,6 +1453,10 @@ namespace kickos
         size_t const g = arch_aspace_granule();
         uintptr_t const b = base;
         size_t const pages = (size + g - 1u) / g;
+        if (not grant_memtype_at(type, aspace_frame_of(b), pages * g))
+        {
+            return -KOS_ENOTSUP;
+        }
         uint32_t const rights = ARCH_MAP_R | ARCH_MAP_W;
         // The donor, a window or another handoff mapping these frames with another type keeps
         // them.

@@ -92,6 +92,7 @@ namespace
         g_waiting_kconsole = 0;
         g_rendezvous = false;
         kickos::stdout_nonblock() = 0u;
+        kickos::console_fds() = 0x7u;
     }
 
     void reset_nonblocking(std::deque<int32_t> sends, std::deque<int32_t> kconsole)

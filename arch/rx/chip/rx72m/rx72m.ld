@@ -55,11 +55,11 @@ SECTIONS
 {
     /* Option-setting memory: little-endian + WDT/LVD off (all-ones defaults;
        UM sec.7.2.5 MDE little-endian = 0xFFFFFFFF, sec.7.2.3/4 OFS0/OFS1). */
-    .ofsm : { KEEP(*(.ofsm)) } > OFSM
+    .ofsm : { KICKOS_KERNEL_KEEP(.ofsm) } > OFSM
 
     .rvectors : ALIGN(4)
     {
-        KEEP(*(.rvectors))     /* 256-word relocatable interrupt table (INTB) */
+        KICKOS_KERNEL_KEEP(.rvectors)     /* 256-word relocatable interrupt table (INTB) */
     } > ROM
 
     .text : ALIGN(4)
@@ -71,8 +71,8 @@ SECTIONS
         KICKOS_KERNEL_SECTIONS(C C_1 C_2 C$*)  /* RX-native const */
         KICKOS_KERNEL_SECTIONS(W W_1 W_2)      /* RX-native const (16/8-bit addressed) */
         KICKOS_KERNEL_SECTIONS(L)              /* literal pool */
-        KEEP(*(.init))
-        KEEP(*(.fini))
+        KICKOS_KERNEL_KEEP(.init)
+        KICKOS_KERNEL_KEEP(.fini)
         . = ALIGN(4);
     } > ROM
 
@@ -216,7 +216,7 @@ SECTIONS
                         __sdata, __ebss, ___kickos_ram_end, _istack, 0)
 
     /* Fixed exception vector table incl the reset vector at 0xFFFFFFFC. */
-    .fvectors : { KEEP(*(.fvectors)) } > FVECT
+    .fvectors : { KICKOS_KERNEL_KEEP(.fvectors) } > FVECT
 
     /* rx-elf ld's relocatable script gives an image's own link an empty .stack. */
     /DISCARD/ : { *(.ARM.attributes) *(.comment) *(.stack) }

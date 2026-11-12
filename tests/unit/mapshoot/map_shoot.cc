@@ -287,7 +287,7 @@ TEST_F(MapShoot, ANullSpaceIsRefusedAndAnswersNothing)
     EXPECT_EQ(arch_aspace_map(nullptr, va, PA_A, 1, RIGHTS_DATA, ARCH_MAP_NORMAL),
               ARCH_ASPACE_EINVAL);
     EXPECT_EQ(arch_aspace_frame_at(nullptr, va), 0u);
-    EXPECT_EQ(arch_aspace_acquire(nullptr, va, nullptr, nullptr), nullptr);
+    EXPECT_EQ(arch_aspace_acquire(nullptr, va, ARCH_ASPACE_READ, nullptr, nullptr), nullptr);
 }
 
 TEST_F(MapShoot, AMisalignedFrameAWrappingCountAndASlotBelowTheUserHalfAreRefused)
@@ -308,9 +308,11 @@ TEST_F(MapShoot, AnAddressOutsideTheUserHalfAnswersNoFrame)
 {
     uintptr_t const below = arch_aspace_user_offset() - arch_aspace_granule();
     EXPECT_EQ(arch_aspace_frame_at(space, below), 0u);
-    EXPECT_EQ(arch_aspace_acquire(space, below, nullptr, nullptr), nullptr);
+    EXPECT_EQ(arch_aspace_acquire(space, below, ARCH_ASPACE_READ, nullptr, nullptr), nullptr);
     EXPECT_EQ(arch_aspace_frame_at(space, kernel_half_of(0x1000)), 0u);
-    EXPECT_EQ(arch_aspace_acquire(space, kernel_half_of(0x1000), nullptr, nullptr), nullptr);
+    EXPECT_EQ(arch_aspace_acquire(space, kernel_half_of(0x1000), ARCH_ASPACE_READ, nullptr,
+                                  nullptr),
+              nullptr);
 }
 
 TEST_F(MapShoot, AFrameIsAnsweredForAnyByteOfItsPage)
@@ -471,9 +473,9 @@ TEST(AttributeTableInUse, LeavesAreBuiltFromTheLiveRegister)
             << "type " << i;
     }
     bool uncached = false;
-    ASSERT_NE(arch_aspace_acquire(space, va + g, &uncached, nullptr), nullptr);
+    ASSERT_NE(arch_aspace_acquire(space, va + g, ARCH_ASPACE_READ, &uncached, nullptr), nullptr);
     EXPECT_TRUE(uncached);
-    ASSERT_NE(arch_aspace_acquire(space, va, &uncached, nullptr), nullptr);
+    ASSERT_NE(arch_aspace_acquire(space, va, ARCH_ASPACE_READ, &uncached, nullptr), nullptr);
     EXPECT_FALSE(uncached);
 
     ASSERT_EQ(arch_aspace_unmap(space, va, 3), ARCH_ASPACE_OK);

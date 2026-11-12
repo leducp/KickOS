@@ -5,7 +5,6 @@
 
 #if KICKOS_KERNEL_CORES > 1
 
-#include <kickos/bench.h>
 #include <kickos/instance.h>
 #include <kickos/sched.h>
 #include <kickos/sys/atomic.h>
@@ -100,16 +99,6 @@ namespace kickos
             }
         }
 
-        // The wait sample is charged to the hold span enclosing it: the accumulator call sits
-        // inside the masked window the IrqLock bracket is timing.
-        inline __attribute__((always_inline)) void acquire([[maybe_unused]] uint32_t resume)
-        {
-            KICKOS_BENCH_MARK(bw);
-            arch_kernel_lock();
-            KICKOS_BENCH_DIST_SPAN(BD_LOCK_WAIT, bw);
-            KICKOS_BENCH_ACQUIRED(resume);
-        }
-
         inline __attribute__((always_inline)) void drop(void)
         {
             KlockRow& r = g_row[kickos_kernel_core()];
@@ -124,7 +113,7 @@ namespace kickos
         KlockRow& r = g_row[kickos_kernel_core()];
         if (r.depth == 0 and r.owed == 0)
         {
-            acquire(0);
+            arch_kernel_lock();
         }
         r.depth = r.depth + 1u;
     }
@@ -169,7 +158,7 @@ namespace kickos
         // acquire here would spin on a word it holds itself.
         if (r.owed == 0)
         {
-            acquire(1);
+            arch_kernel_lock();
         }
         r.depth = depth;
     }
@@ -186,7 +175,6 @@ namespace kickos
     // only one a deferred backend reaches.
     extern "C" void kickos_switch_unlock(void)
     {
-        KICKOS_BENCH_SWITCHED();
         KernelCore const me = kickos_kernel_core();
         kernel().on_cpu[me] = kernel().current(me);
         drop();
@@ -233,10 +221,6 @@ namespace kickos
                 g_took[me].seq[from] = asked;
                 stood = true;
             }
-        }
-        if (stood)
-        {
-            KICKOS_BENCH_RESCHED_TAKE();
         }
         return stood;
     }

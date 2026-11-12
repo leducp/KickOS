@@ -89,11 +89,13 @@ get_target_property(_selftest_peer_workers selftest KICKOS_SELFTEST_PEER_WORKERS
 # Every arm that asks a pool for more than this posture provisions, by what the arm itself asks
 # for (tests/static/selftest_demands.py): the workers beside main, the peers, the IRQ lines main's
 # task may bind, the capability slots beside the seated ones, and the objects of each kind main's
-# task budget leaves.
-foreach(_selftest_knob KICKOS_BUDGET_IRQ_BINDINGS
-        KICKOS_MAX_SPAWN_GRANTS KICKOS_BUDGET_ENDPOINTS KICKOS_BUDGET_NOTIFICATIONS)
-  if(NOT "${${_selftest_knob}}" MATCHES "^[0-9]+$")
-    message(FATAL_ERROR "selftest: the generated configuration states no ${_selftest_knob}")
+# task budget leaves. main's budgets and table width are the ones its composition states,
+# recorded on the image.
+foreach(_selftest_kind IRQ_BINDINGS ENDPOINTS NOTIFICATIONS CAP_WIDTH)
+  get_target_property(_selftest_${_selftest_kind} selftest KICKOS_SELFTEST_${_selftest_kind})
+  if(NOT "${_selftest_${_selftest_kind}}" MATCHES "^[0-9]+$")
+    message(FATAL_ERROR
+      "selftest: the image records no ${_selftest_kind} figure of main's from its composition")
   endif()
 endforeach()
 # The guards an arm's registration sits under, as the compiler sees them.
@@ -118,14 +120,14 @@ function(_selftest_pool_short peers workers peer_workers out)
   if(peers GREATER 0)
     math(EXPR _seated "${_seated} + 1")
   endif()
-  _selftest_main_caps("${KICKOS_MAX_SPAWN_GRANTS}" "${_seated}" _selftest_caps)
+  _selftest_main_caps("${_selftest_CAP_WIDTH}" "${_seated}" _selftest_caps)
   execute_process(
     COMMAND "${Python3_EXECUTABLE}" -B "${PROJECT_SOURCE_DIR}/tests/static/selftest_demands.py"
             "${PROJECT_SOURCE_DIR}/user/apps/common/selftest" ${_selftest_guards} --supply
             "workers=${workers}" "tasks=${peers}"
-            "irqs=${KICKOS_BUDGET_IRQ_BINDINGS}" "caps=${_selftest_caps}"
-            "endpoints=${KICKOS_BUDGET_ENDPOINTS}"
-            "notifies=${KICKOS_BUDGET_NOTIFICATIONS}"
+            "irqs=${_selftest_IRQ_BINDINGS}" "caps=${_selftest_caps}"
+            "endpoints=${_selftest_ENDPOINTS}"
+            "notifies=${_selftest_NOTIFICATIONS}"
             "peer_workers=${peer_workers}"
     OUTPUT_VARIABLE _short
     ERROR_VARIABLE _err
@@ -237,6 +239,13 @@ endif()
 if(KICKOS_ARCH STREQUAL "x86_64")
   list(APPEND KICKOS_EXPECT_PARTIALS vector_fault_contained)
 endif()
+# A chip whose page entry carries no memory type maps no RAM uncached
+# (arch_aspace_entry_memtype): each arm checks the refusal and leaves the uncached half.
+if(KICKOS_CHIP STREQUAL "virt_rv64")
+  list(APPEND KICKOS_EXPECT_PARTIALS stack_grant_refused aspace_seam task_handoff_readback
+       uncached_alias_sync window_memory_ro)
+  list(APPEND KICKOS_EXPECT_SKIPS mutex_retype_ends_wait)
+endif()
 if(KICKOS_HAVE_MPU)
   # The reserved-block spawn needs at least one arch_reserved_blocks entry.
   if(NOT KICKOS_CHIP_RESERVED_BLOCKS MATCHES "^[0-9]+$")
@@ -274,6 +283,10 @@ if(KICKOS_HAVE_ASPACE AND KICKOS_FAULT_ISOLATION)
   if(KICKOS_ARCH STREQUAL "x86_64")
     list(APPEND KICKOS_EXPECT_FAULTS pwb pwi vfmf vfxm)
   endif()
+  # el0_control_bits' victims: an EL0 DAIF write, a PMU read and a debug comms channel read.
+  if(KICKOS_ARCH STREQUAL "armv8a")
+    list(APPEND KICKOS_EXPECT_FAULTS e0daif e0pmu e0dcc)
+  endif()
 endif()
 # peer0, writing through window_memory_ro's read-only window and, killed, a reservation of
 # main's in task_exit_cancelled_fault, and task_exit_member_fault's sibling, writing one too.
@@ -283,6 +296,10 @@ endif()
 # image_statics' peer, writing a static of main's image, on a region board.
 if(KICKOS_MEMORY_ENFORCED AND KICKOS_FAULT_ISOLATION AND KICKOS_HAVE_MPU AND NOT KICKOS_HAVE_ASPACE
    AND NOT KICKOS_ARCH STREQUAL "sim")
+  list(APPEND KICKOS_EXPECT_FAULTS peer0)
+endif()
+# parked_frame_ipsr's victim, whose return to thread mode through a stacked IPSR faults.
+if(KICKOS_ARCH STREQUAL "armv7m" AND KICKOS_FAULT_ISOLATION)
   list(APPEND KICKOS_EXPECT_FAULTS peer0)
 endif()
 # task_exit_driver_trap's thread, trapping as a failing packaged driver thread does.
@@ -598,8 +615,8 @@ add_test(
 kickos_host_gate(class_backend)
 
 # The rv64 reader below takes THREE images, so a reference the optimiser only emits in one of
-# them is still in the corpus.
-if(KICKOS_HAVE_ASPACE AND KICKOS_ARCH STREQUAL "rv64imac")
+# them is still in the corpus. A shape preset that builds no cxxtest leaves it to the reference.
+if(KICKOS_HAVE_ASPACE AND KICKOS_ARCH STREQUAL "rv64imac" AND TARGET cxxtest)
   # The app window is at 0x40000000, inside medlow's absolute reach, so ld rewrites a kernel
   # reference to it into lui+addi and the link succeeds, relaxation or not. This reads the
   # kernel archives' relocations, which name the symbol an instruction operand resolves to

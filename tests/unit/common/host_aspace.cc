@@ -22,6 +22,8 @@ namespace
 
     bool g_tables_from_pool = false;
     bool g_map_refused = false;
+    bool g_untyped_entries = false;
+    bool g_device_refused = false;
 
     uintptr_t g_refuse_page = 0;
     uint32_t g_refuse_left = 0;
@@ -51,6 +53,7 @@ struct arch_aspace
         uintptr_t va;
         arch_phys_addr_t pa;
         uint8_t type;
+        uint8_t rights;
         bool used;
     };
     struct Table
@@ -158,6 +161,16 @@ namespace kickos
             g_map_refused = on;
         }
 
+        void untyped_entries(bool on)
+        {
+            g_untyped_entries = on;
+        }
+
+        void refuse_device_type(bool on)
+        {
+            g_device_refused = on;
+        }
+
         void watch_destroy(uintptr_t va)
         {
             g_watch_page = page_of(va);
@@ -172,6 +185,8 @@ namespace kickos
             g_aspace_double_destroys = 0;
             refuse_acquire(0, 0);
             refuse_map(false);
+            untyped_entries(false);
+            refuse_device_type(false);
             watch_destroy(0);
         }
     }
@@ -189,9 +204,14 @@ extern "C"
         return 0;
     }
 
-    bool arch_aspace_memtype_support(enum arch_map_memtype)
+    bool arch_aspace_memtype_support(enum arch_map_memtype type)
     {
-        return true;
+        return type != ARCH_MAP_DEVICE or not g_device_refused;
+    }
+
+    bool arch_aspace_entry_memtype(void)
+    {
+        return not g_untyped_entries;
     }
 
     struct arch_aspace* arch_aspace_create(void)
@@ -307,8 +327,8 @@ extern "C"
     void arch_aspace_activate(struct arch_aspace*) {}
 
     enum arch_aspace_result arch_aspace_map(struct arch_aspace* space, uintptr_t va,
-                                            arch_phys_addr_t pa, size_t pages, uint32_t,
-                                            enum arch_map_memtype type)
+                                            arch_phys_addr_t pa, size_t pages,
+                                            uint32_t rights, enum arch_map_memtype type)
     {
         if (space == nullptr or pages == 0 or (va % G) != 0 or (pa % G) != 0)
         {
@@ -354,7 +374,7 @@ extern "C"
                 return ARCH_ASPACE_ECAPACITY;
             }
             *l = {at, pa + static_cast<arch_phys_addr_t>(i * G), static_cast<uint8_t>(type),
-                  true};
+                  static_cast<uint8_t>(rights), true};
         }
         return ARCH_ASPACE_OK;
     }
@@ -382,7 +402,8 @@ extern "C"
         return ARCH_ASPACE_OK;
     }
 
-    void* arch_aspace_acquire(struct arch_aspace* space, uintptr_t va, bool* uncached,
+    void* arch_aspace_acquire(struct arch_aspace* space, uintptr_t va,
+                              enum arch_aspace_access access, bool* uncached,
                               arch_phys_addr_t* frame)
     {
         if (frame != nullptr)
@@ -395,6 +416,11 @@ extern "C"
         }
         arch_aspace::Leaf const* const l = space->leaf(va);
         if (l == nullptr)
+        {
+            return nullptr;
+        }
+        if (l->type == ARCH_MAP_DEVICE
+            or (access == ARCH_ASPACE_WRITE and (l->rights & ARCH_MAP_W) == 0))
         {
             return nullptr;
         }

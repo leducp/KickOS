@@ -7,8 +7,6 @@
 
 #include <kickos/arch/arch.h>
 
-#include "bench_mpu.h"
-
 #include <stddef.h>
 #include <stdint.h>
 
@@ -21,9 +19,6 @@ extern "C"
 
     void kickos_arch_mpu_commit(void)
     {
-#if KICKOS_BENCH
-        uint32_t const bench_start = kickos_arm_mpu_bench_cyc();
-#endif
         struct arch_mpu_encoded const* const img = kickos_arm_mpu_pending();
         // An empty commit writes no descriptors and is not recorded.
         if (img == nullptr)
@@ -35,9 +30,6 @@ extern "C"
         __asm volatile("cpsid i" ::: "memory");
         kickos_arm_mpu_program(img);
         __asm volatile("msr primask, %0" ::"r"(primask) : "memory");
-#if KICKOS_BENCH
-        kickos_bench_mpu_commit(kickos_arm_mpu_bench_cyc() - bench_start);
-#endif
     }
 }
 

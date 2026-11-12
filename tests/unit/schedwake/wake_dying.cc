@@ -18,7 +18,9 @@
 #include <kickos/diag.h>
 #include <kickos/instance.h>
 #include <kickos/irqlock.h>
+#include <kickos/kernel.h>
 #include <kickos/sched.h>
+#include <kickos/sync.h>
 
 #include "kseam_test.h"
 
@@ -306,6 +308,39 @@ TEST_F(SchedWake, a_wake_before_the_first_pick_does_not_switch)
 
     EXPECT_EQ(p->state, ThreadState::READY) << "the peer becomes READY with no current thread";
     EXPECT_EQ(g_switches, 0u) << "a pre-start wake does not switch";
+}
+
+namespace
+{
+    uint32_t g_switches_at_wake;
+
+    void park_ends(Thread* parked)
+    {
+        IrqLock lock;
+        thread_abort_park(parked, 0, lock);
+    }
+}
+
+// A parked current's own reschedule is the one switch of its span: a pass from a wake before it
+// would leave the rest of that span to whenever the parker is woken.
+TEST_F(SchedWake, a_wake_from_a_parked_current_takes_no_pass)
+{
+    Thread* c = running_thread();
+    Thread* p = blocked_peer(1, PRIO_DYING + 1);
+    wake_next_park(park_ends);
+
+    {
+        IrqLock lock;
+        ParkToken const ask = park_cancel_pending(c);
+        (void)park_queueless(ask)(c, WAIT_SLEEP, nullptr, lock);
+        sched::wake(p, lock);
+        g_switches_at_wake = g_switches;
+        sched::reschedule(nullptr, lock);
+    }
+
+    EXPECT_EQ(g_switches_at_wake, 0u) << "the wake switched out of the parker's span";
+    EXPECT_EQ(g_switches, 1u) << "the parker's own reschedule is the switch";
+    EXPECT_EQ(kernel().current(kickos_kernel_core()), p);
 }
 
 // EXITED is the ThreadPool's free marker (thread.h): a retired slot is listed reclaimable, so

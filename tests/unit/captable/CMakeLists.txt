@@ -19,13 +19,19 @@
 # All four binaries define the SAME gtest suite and case names, so TEST_PREFIX puts the
 # geometry on each ctest entry (flat.CapTable.geometry); without it four different geometries
 # would register under one name.
+#
+# CAP_REPLY's packing reads no geometry, so `flat` alone carries it.
 foreach(_case flat:8:1:8 segmented:16:2:8 deep:24:3:24 deeptail:24:3:8)
   string(REPLACE ":" ";" _parts "${_case}")
   list(GET _parts 0 _name)
   list(GET _parts 1 _width)
   list(GET _parts 2 _chunks)
   list(GET _parts 3 _child)
-  kickos_add_unit_test(NAME captable_${_name} SOURCES captable_policy.cc
+  set(_sources captable_policy.cc)
+  if(_name STREQUAL "flat")
+    list(APPEND _sources capreply_packing.cc)
+  endif()
+  kickos_add_unit_test(NAME captable_${_name} SOURCES ${_sources}
     TEST_PREFIX "${_name}."
     INCLUDES "${PROJECT_SOURCE_DIR}/kernel/include" "${PROJECT_SOURCE_DIR}/system/include"
              "${PROJECT_SOURCE_DIR}/user/include"

@@ -678,64 +678,124 @@ def ld_eval(text, env):
 
 class ArenaReplays(unittest.TestCase):
     """arch/common/ram_arena.h has three replays that must place alike: region.py ArenaModel,
-    emit.py arena_step and the ld macros of arch/common/boot_arena.ld.h."""
+    emit.py arena_step and the ld macros of arch/common/boot_arena.ld.h. A bank line sits on a
+    multiple of every alignment drawn, as chip.bank-line requires."""
 
     BLOCKS = ((0x200, 0x200), (0x1000, 0x1000), (0x40, 0x40), (0x2000, 0x2000), (0x100, 0x100),
               (0x20, 0x20), (0x60, 0x20), (0x400, 0x400), (0x30, 0x10), (0x800, 0x800),
-              (0x20, 0x100), (0x10, 0x400))
+              (0x20, 0x100), (0x10, 0x400), (0x1800, 0x800), (0x3000, 0x1000))
+
+    def emitted(self, start, sequence, line):
+        """The cursor after each block of `sequence` and the kept range after the last, as the
+        emitted statements place them."""
+        env = {"s": start}
+        text = ["Ac_start = s; Ags_start = s; Age_start = s;"]
+        prev = "start"
+        for n, (size, align) in enumerate(sequence):
+            text.extend(emit.arena_step(str(n), prev, size, align, line))
+            prev = str(n)
+        ld_eval(" ".join(text).replace("__kickos_system_arena_", "A"), env)
+        return [env["A%d" % n] for n in range(len(sequence))], (env["Ags_" + prev], env["Age_" + prev])
+
+    def boot_macros(self, line, defs, env):
+        """The boot and pool asserts of arch/common/boot_arena.ld.h over `env`, on a chip whose
+        chip_layout.h states `line` or no bank line."""
+        cpp = shutil.which("cpp")
+        self.assertIsNotNone(cpp, "no cpp: the boot macros are replayed through it")
+        with tempfile.TemporaryDirectory(prefix="kickos-boot-arena-") as layout:
+            with open(os.path.join(layout, "chip_layout.h"), "w") as fh:
+                if line is not None:
+                    fh.write("#define KICKOS_LAYOUT_BANK_LINE 0x%X\n" % line)
+            source = ('#include "boot_arena.ld.h"\nKICKOS_BOOT_ARENA_ASSERT(ram_start, ram_end)\n'
+                      "KICKOS_POOL_ARENA_ASSERT(ram_start, ram_end)\n")
+            done = subprocess.run([cpp, "-P", "-I", os.path.join(TREE, "arch", "common"), "-I", layout]
+                                  + defs + ["-"], input=source, text=True, capture_output=True, check=True)
+        return ld_eval(done.stdout, env)
 
     def test_the_emitted_statements_place_every_sequence_as_the_model_does(self):
         rng = random.Random(7)
-        for _ in range(300):
+        crossed = 0
+        for k in range(600):
             start = rng.randrange(0, 0x3000, 16)
+            line = None
+            if k % 2:
+                line = rng.randrange(0x2000, 0x14000, 0x2000)
             sequence = [rng.choice(self.BLOCKS) for _ in range(rng.randrange(1, 12))]
-            model = region.ArenaModel(start)
-            env = {"s": start}
-            text = ["Ac_start = s; Ags_start = s; Age_start = s;"]
-            prev = "start"
-            for n, (size, align) in enumerate(sequence):
-                model.place(size, align)
-                text.extend(emit.arena_step(str(n), prev, size, align))
-                prev = str(n)
-            text = " ".join(text).replace("__kickos_system_arena_", "A")
-            ld_eval(text, env)
-            self.assertEqual(env["A%d" % (len(sequence) - 1)], model.cursor)
-            self.assertEqual((env["Ags_" + prev], env["Age_" + prev]), (model.gs, model.ge))
+            model = region.ArenaModel(start, line)
+            cursors = []
+            for size, align in sequence:
+                bumped = region.align_up(model.cursor, align)
+                at = model.place(size, align)
+                cursors.append(model.cursor)
+                if line is not None:
+                    self.assertFalse(at < line < at + size, (start, line, sequence))
+                    crossed += at == region.align_up(line, align) and bumped < line < bumped + size
+            self.assertEqual(self.emitted(start, sequence, line), (cursors, (model.gs, model.ge)))
+        self.assertGreater(crossed, 0)
+
+    # (idle, root, private, stack): (size, align) each, three stacks, from 0x1000 with the line at
+    # 0x4000; the blocks each replay places, and the arena ends the boot and the pool assert need.
+    CROSSINGS = (
+        # Root's stack runs across the line.
+        (((0x400, 0x400), (0x3000, 0x1000), (0x40, 0x40), (0x1800, 0x800)),
+         [0x1000, 0x4000, 0x1400, 0x1800, 0x7000, 0x8800], (0x3000, 0x4000), 0x7000, 0xA000),
+        # The pool's second stack does.
+        (((0x400, 0x400), (0x800, 0x800), (0x40, 0x40), (0x1800, 0x800)),
+         [0x1000, 0x1800, 0x1400, 0x2000, 0x4000, 0x5800], (0x3800, 0x4000), 0x2000, 0x7000),
+    )
+
+    def test_a_block_that_would_run_across_the_line_starts_at_it_in_every_replay(self):
+        start, line = 0x1000, 0x4000
+        for blocks, places, kept, boots, pools in self.CROSSINGS:
+            idle, root, private, stack = blocks
+            sequence = [idle, root, private, stack, stack, stack]
+            model = region.ArenaModel(start, line)
+            self.assertEqual([model.place(size, align) for size, align in sequence], places)
+            self.assertEqual((model.gs, model.ge), kept)
+            cursors, emitted_kept = self.emitted(start, sequence, line)
+            self.assertEqual((cursors[-1], emitted_kept), (model.cursor, kept))
+            self.assertEqual(model.cursor, pools)
+            defs = []
+            for name, (size, align) in (("BOOT_IDLE", idle), ("BOOT_ROOT", root), ("BOOT_PRIVATE", private),
+                                        ("POOL_STACK", stack)):
+                defs += ["-DKICKOS_%s_SIZE=%d" % (name, size), "-DKICKOS_%s_ALIGN=%d" % (name, align)]
+            defs.append("-DKICKOS_POOL_STACK_COUNT=pool_stacks")
+            for end in (boots - 1, boots, pools - 1, pools):
+                env = {"ram_start": start, "ram_end": end, "pool_stacks": 3}
+                self.assertEqual(self.boot_macros(line, defs, env), [end >= boots, end >= pools], hex(end))
 
     def test_the_boot_macros_refuse_exactly_when_the_model_does(self):
-        cpp = shutil.which("cpp")
-        self.assertIsNotNone(cpp, "no cpp: the boot macros are replayed through it")
-        header = os.path.join(TREE, "arch", "common")
         rng = random.Random(11)
-        for _ in range(200):
-            idle, root = rng.choice((0x200, 0x400, 0x2000)), rng.choice((0x400, 0x1000, 0x2000))
-            private = rng.choice((0x40, 0x80, 0x200))
+        for k in range(400):
+            idle = rng.choice(((0x200, 0x200), (0x400, 0x400), (0x2000, 0x2000), (0x600, 0x200)))
+            root = rng.choice(((0x400, 0x400), (0x1000, 0x1000), (0x2000, 0x2000), (0x1800, 0x800),
+                               (0x3000, 0x1000)))
+            private = rng.choice(((0x40, 0x40), (0x80, 0x80), (0x200, 0x200), (0x60, 0x20)))
             stack, stack_align = rng.choice(((0x1000, 0x1000), (0x2000, 0x2000), (0x400, 0x1000),
-                                              (0x800, 0x2000)))
+                                              (0x800, 0x2000), (0x1800, 0x800), (0x1400, 0x400)))
             count = rng.randrange(0, 6)
             start = rng.randrange(0, 0x3000, 16)
             end = start + rng.randrange(0x2000, 0x10000, 0x400)
-            defs = ["-DKICKOS_BOOT_IDLE_SIZE=%d" % idle, "-DKICKOS_BOOT_IDLE_ALIGN=%d" % idle,
-                    "-DKICKOS_BOOT_ROOT_SIZE=%d" % root, "-DKICKOS_BOOT_ROOT_ALIGN=%d" % root,
-                    "-DKICKOS_BOOT_PRIVATE_SIZE=%d" % private, "-DKICKOS_BOOT_PRIVATE_ALIGN=%d" % private,
+            defs = ["-DKICKOS_BOOT_IDLE_SIZE=%d" % idle[0], "-DKICKOS_BOOT_IDLE_ALIGN=%d" % idle[1],
+                    "-DKICKOS_BOOT_ROOT_SIZE=%d" % root[0], "-DKICKOS_BOOT_ROOT_ALIGN=%d" % root[1],
+                    "-DKICKOS_BOOT_PRIVATE_SIZE=%d" % private[0], "-DKICKOS_BOOT_PRIVATE_ALIGN=%d" % private[1],
                     "-DKICKOS_POOL_STACK_SIZE=%d" % stack, "-DKICKOS_POOL_STACK_ALIGN=%d" % stack_align,
                     "-DKICKOS_POOL_STACK_COUNT=pool_stacks"]
-            source = ('#include "boot_arena.ld.h"\nKICKOS_BOOT_ARENA_ASSERT(ram_start, ram_end)\n'
-                      "KICKOS_POOL_ARENA_ASSERT(ram_start, ram_end)\n")
-            done = subprocess.run([cpp, "-P", "-I", header] + defs + ["-"], input=source, text=True,
-                                  capture_output=True, check=True)
+            line = None
+            if k % 2:
+                line = rng.randrange(0x2000, 0x14000, 0x2000)
             env = {"ram_start": start, "ram_end": end, "pool_stacks": count}
-            boot, pool = ld_eval(done.stdout, env)
-            model = region.ArenaModel(start)
-            for size in (idle, root):
-                model.place(size, size)
+            boot, pool = self.boot_macros(line, defs, env)
+            model = region.ArenaModel(start, line)
+            for size, align in (idle, root):
+                model.place(size, align)
             boots = model.cursor <= end
-            model.place(private, private)
+            model.place(*private)
             for _ in range(count):
                 model.place(stack, stack_align)
             self.assertEqual(boot, boots)
             self.assertEqual(pool, model.cursor <= end,
-                             (idle, root, private, stack, stack_align, count, start, end))
+                             (idle, root, private, stack, stack_align, count, start, end, line))
 
 
 if __name__ == "__main__":

@@ -83,6 +83,7 @@ namespace kickos
     Task* task_decl_record(size_t) { return nullptr; }
     ThreadLink* task_image_stager(Task const*) { return nullptr; }
 
+    bool grant_memtype_at(enum arch_map_memtype, arch_phys_addr_t, size_t) { return true; }
     bool frame_run_ref(int) { return true; }
     void frame_run_release(int) {}
     int frame_run_slot_of(int obj) { return obj; }

@@ -80,7 +80,7 @@ This is the half an inventory of the struct does not see. Classification as abov
 | `g_handover_tried` | global | exactly-once reboot, system-wide |
 | `g_led_on` | global | one LED |
 | `g_kernel`, `g_default_user` (`kernel/domain/domain.cc`) | global | they were cached pointers into the global `domains[]`. **RESOLVED, section 6**: both caches were deleted, and `domain_kernel()` / `domain_default_user()` index `kernel().domains[]` on each call |
-| the `KICKOS_BENCH` accumulators (`kernel/bench/`) | **per-core** | a shared accumulator across cores produces a number that describes nothing |
+| the in-kernel bench accumulators (removed in M10.6.12) | **per-core** | a shared accumulator across cores produces a number that describes nothing |
 | `g_current` (`kernel/mem/aspace.cc`) | **per-core**, and **RESOLVED at M6.2's audit pass**: it is `g_current[KICKOS_NUM_CORES]`, keyed by `arch_cpu_id()` | the space last written to a translation root. The root is per-CPU hardware, so a shared cell lets a core skip installing a root it never wrote. Destroying a space clears the cell on every core; only the running core's root is rewritten |
 | `g_data_template` (same file) | global, and the exclusion is real | ONE process image, so one pristine copy of its static data. Written once, by the first space's seed, under the kernel lock; replicating it per core would give two cores two answers to "what do a new process's globals start as" (`space-data-starts-from-the-image`) |
 | `g_frames`, `g_refused` (`kernel/mem/frame_pool.cc`) | global | one physical carve. It needs a lock, not replication, exactly as `g_ram_used` does; every entry point takes the pool's `IrqLock` already, the read-only questions included |

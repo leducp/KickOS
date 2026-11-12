@@ -4,7 +4,6 @@
 #include "console_seam.h"
 
 #include <kickos/arch/arch.h>
-#include <kickos/bench.h>
 #include <kickos/console_tx.h>
 #include <kickos/irq.h>
 #include <kickos/irqlock.h>
@@ -308,19 +307,6 @@ extern "C"
 
 namespace kickos
 {
-#if KICKOS_BENCH
-    // The paced printer's lock sampling, without the scheduler and syscall table behind it.
-    constinit BenchLockRow g_bench_lock[KICKOS_KERNEL_CORES] = {};
-
-    void bench_dist_add(uint32_t, BenchTick)
-    {
-    }
-
-    void bench_lock_hold_add(BenchTick, void*)
-    {
-    }
-#endif
-
     bool dev_window_free(uintptr_t, size_t)
     {
         return consoleseam::g_window_free;

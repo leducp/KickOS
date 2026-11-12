@@ -54,6 +54,8 @@ struct Report
     int32_t extra;
     int32_t rc2;
     int32_t paused;
+    int32_t again;
+    int32_t notify;
 };
 
 // What the widths role saw: each first worker's free slots seated and again after the

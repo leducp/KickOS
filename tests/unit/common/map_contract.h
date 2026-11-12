@@ -134,11 +134,11 @@ TEST_F(MAP_CONTRACT_FIXTURE, AcquireReportsTheLeafsCacheability)
     ASSERT_EQ(arch_aspace_map(space, va_b, uncached_frame, 1, RIGHTS_RW, ARCH_MAP_NOCACHE),
               ARCH_ASPACE_OK);
     bool uncached = true;
-    ASSERT_NE(arch_aspace_acquire(space, va_a, &uncached, nullptr), nullptr);
+    ASSERT_NE(arch_aspace_acquire(space, va_a, ARCH_ASPACE_READ, &uncached, nullptr), nullptr);
     arch_aspace_release(space, va_a);
     EXPECT_FALSE(uncached) << "a cacheable leaf was reported uncached";
     uncached = not MAP_CONTRACT_NOCACHE_SEEN;
-    ASSERT_NE(arch_aspace_acquire(space, va_b, &uncached, nullptr), nullptr);
+    ASSERT_NE(arch_aspace_acquire(space, va_b, ARCH_ASPACE_READ, &uncached, nullptr), nullptr);
     arch_aspace_release(space, va_b);
     EXPECT_EQ(uncached, MAP_CONTRACT_NOCACHE_SEEN) << "a non-cacheable leaf was misreported";
 }
@@ -162,33 +162,34 @@ TEST_F(MAP_CONTRACT_FIXTURE, AMappedFrameIsReachedThroughAcquireAndIsGoneAfterUn
     ASSERT_NE(frame, 0u);
     ASSERT_EQ(arch_aspace_map(space, va_a, frame, 1, RIGHTS_RW, ARCH_MAP_NORMAL), ARCH_ASPACE_OK);
 
-    EXPECT_EQ(arch_aspace_acquire(space, va_a + IN_PAGE, nullptr, nullptr),
+    EXPECT_EQ(arch_aspace_acquire(space, va_a + IN_PAGE, ARCH_ASPACE_READ, nullptr, nullptr),
               static_cast<unsigned char*>(frame_pointer(frame)) + IN_PAGE);
     arch_aspace_release(space, va_a + IN_PAGE);
 
     ASSERT_EQ(arch_aspace_unmap(space, va_a, 1), ARCH_ASPACE_OK);
 
-    EXPECT_EQ(arch_aspace_acquire(space, va_a, nullptr, nullptr), nullptr);
+    EXPECT_EQ(arch_aspace_acquire(space, va_a, ARCH_ASPACE_READ, nullptr, nullptr), nullptr);
     EXPECT_EQ(arch_aspace_frame_at(space, va_a), 0u);
 }
 
 TEST_F(MAP_CONTRACT_FIXTURE, AcquireNamesTheFrameFrameAtAnswersAndZeroForAnUnmappedPage)
 {
     size_t const g = arch_aspace_granule();
-    ASSERT_EQ(arch_aspace_map(space, va_a, PA_DEVICE, 2, ARCH_MAP_R, ARCH_MAP_DEVICE),
+    ASSERT_EQ(arch_aspace_map(space, va_a, PA_DEVICE, 2, ARCH_MAP_R, ARCH_MAP_NORMAL),
               ARCH_ASPACE_OK);
     for (size_t i = 0; i < 2; i++)
     {
         uintptr_t const at = va_a + i * g + IN_PAGE;
         arch_phys_addr_t frame = 1;
-        ASSERT_NE(arch_aspace_acquire(space, at, nullptr, &frame), nullptr) << "page " << i;
+        ASSERT_NE(arch_aspace_acquire(space, at, ARCH_ASPACE_READ, nullptr, &frame), nullptr)
+            << "page " << i;
         arch_aspace_release(space, at);
         EXPECT_EQ(frame, arch_aspace_frame_at(space, at)) << "page " << i;
         EXPECT_EQ(frame, PA_DEVICE + i * g) << "page " << i;
     }
     ASSERT_EQ(arch_aspace_unmap(space, va_a, 2), ARCH_ASPACE_OK);
     arch_phys_addr_t frame = 1;
-    EXPECT_EQ(arch_aspace_acquire(space, va_a, nullptr, &frame), nullptr);
+    EXPECT_EQ(arch_aspace_acquire(space, va_a, ARCH_ASPACE_READ, nullptr, &frame), nullptr);
     EXPECT_EQ(frame, 0u) << "an unmapped page named a frame";
 }
 
@@ -201,8 +202,10 @@ TEST_F(MAP_CONTRACT_FIXTURE, TwoPagesOverOneFrameReachOneStore)
 
     EXPECT_EQ(arch_aspace_frame_at(space, va_a), frame);
     EXPECT_EQ(arch_aspace_frame_at(space, va_b), frame);
-    EXPECT_EQ(arch_aspace_acquire(space, va_a, nullptr, nullptr), frame_pointer(frame));
-    EXPECT_EQ(arch_aspace_acquire(space, va_b, nullptr, nullptr), frame_pointer(frame));
+    EXPECT_EQ(arch_aspace_acquire(space, va_a, ARCH_ASPACE_READ, nullptr, nullptr),
+              frame_pointer(frame));
+    EXPECT_EQ(arch_aspace_acquire(space, va_b, ARCH_ASPACE_READ, nullptr, nullptr),
+              frame_pointer(frame));
     arch_aspace_release(space, va_a);
     arch_aspace_release(space, va_b);
     // Destroy frees per leaf, so only one leaf may still name the frame.
@@ -211,25 +214,108 @@ TEST_F(MAP_CONTRACT_FIXTURE, TwoPagesOverOneFrameReachOneStore)
 
 TEST_F(MAP_CONTRACT_FIXTURE, TwoHoldsOfOnePageAnswerOnePointerAndAnotherPageItsOwn)
 {
-    ASSERT_EQ(arch_aspace_map(space, va_a, PA_DEVICE, 2, ARCH_MAP_R, ARCH_MAP_DEVICE),
+    ASSERT_EQ(arch_aspace_map(space, va_a, PA_DEVICE, 2, ARCH_MAP_R, ARCH_MAP_NORMAL),
               ARCH_ASPACE_OK);
     size_t const g = arch_aspace_granule();
 
-    void* const a = arch_aspace_acquire(space, va_a, nullptr, nullptr);
-    void* const again = arch_aspace_acquire(space, va_a, nullptr, nullptr);
+    void* const a = arch_aspace_acquire(space, va_a, ARCH_ASPACE_READ, nullptr, nullptr);
+    void* const again = arch_aspace_acquire(space, va_a, ARCH_ASPACE_READ, nullptr, nullptr);
     ASSERT_NE(a, nullptr);
     EXPECT_EQ(again, a);
     arch_aspace_release(space, va_a);
     // The surviving hold still names its pointer, so another page answers a different one.
-    void* const other = arch_aspace_acquire(space, va_a + g, nullptr, nullptr);
+    void* const other = arch_aspace_acquire(space, va_a + g, ARCH_ASPACE_READ, nullptr, nullptr);
     ASSERT_NE(other, nullptr);
     EXPECT_NE(other, a);
     arch_aspace_release(space, va_a + g);
     arch_aspace_release(space, va_a);
-    EXPECT_NE(arch_aspace_acquire(space, va_a, nullptr, nullptr), nullptr);
+    EXPECT_NE(arch_aspace_acquire(space, va_a, ARCH_ASPACE_READ, nullptr, nullptr), nullptr);
     arch_aspace_release(space, va_a);
-    // Destroy would offer device outputs back to the pool.
+    // Destroy would offer unpooled outputs back to the pool.
     ASSERT_EQ(arch_aspace_unmap(space, va_a, 2), ARCH_ASPACE_OK);
+}
+
+// Over pool frames and over outputs past the pool, which rv64imac reaches through a transient
+// slot instead of its kernel window. A refusal holds nothing.
+TEST_F(MAP_CONTRACT_FIXTURE, AWriteAcquireOfAReadOnlyLeafIsRefused)
+{
+    size_t const g = arch_aspace_granule();
+    constexpr size_t HOLDS = ARCH_ASPACE_ACQUIRE_MIN;
+    for (size_t kind = 0; kind < 2; kind++)
+    {
+        uintptr_t const ro_va = va_a + kind * 2u * HOLDS * g;
+        uintptr_t const rw_va = va_b + kind * 2u * HOLDS * g;
+        arch_phys_addr_t ro[HOLDS] = {};
+        for (size_t i = 0; i < HOLDS; i++)
+        {
+            arch_phys_addr_t rw = 0;
+            if (kind == 0)
+            {
+                ro[i] = kickos_frame_alloc();
+                rw = kickos_frame_alloc();
+                ASSERT_NE(ro[i], 0u);
+                ASSERT_NE(rw, 0u);
+            }
+            else
+            {
+                ro[i] = PA_DEVICE + i * g;
+                rw = PA_DEVICE + (HOLDS + i) * g;
+            }
+            ASSERT_EQ(arch_aspace_map(space, ro_va + i * g, ro[i], 1, ARCH_MAP_R, ARCH_MAP_NORMAL),
+                      ARCH_ASPACE_OK);
+            ASSERT_EQ(arch_aspace_map(space, rw_va + i * g, rw, 1, RIGHTS_RW, ARCH_MAP_NORMAL),
+                      ARCH_ASPACE_OK);
+        }
+        for (size_t i = 0; i < HOLDS; i++)
+        {
+            uintptr_t const at = ro_va + i * g + IN_PAGE;
+            ASSERT_NE(arch_aspace_acquire(space, at, ARCH_ASPACE_READ, nullptr, nullptr), nullptr)
+                << "kind " << kind << " page " << i;
+            arch_aspace_release(space, at);
+            arch_phys_addr_t frame = 0;
+            EXPECT_EQ(arch_aspace_acquire(space, at, ARCH_ASPACE_WRITE, nullptr, &frame), nullptr)
+                << "a read-only leaf answered a write, kind " << kind << " page " << i;
+            EXPECT_EQ(frame, ro[i]) << "kind " << kind << " page " << i;
+        }
+        for (size_t i = 0; i < HOLDS; i++)
+        {
+            EXPECT_NE(arch_aspace_acquire(space, rw_va + i * g, ARCH_ASPACE_WRITE, nullptr,
+                                          nullptr),
+                      nullptr)
+                << "a writable leaf refused a write, kind " << kind << " page " << i;
+        }
+        for (size_t i = 0; i < HOLDS; i++)
+        {
+            arch_aspace_release(space, rw_va + i * g);
+        }
+    }
+    // Destroy would offer the unpooled outputs back to the pool.
+    ASSERT_EQ(arch_aspace_unmap(space, va_a + 2u * HOLDS * g, HOLDS), ARCH_ASPACE_OK);
+    ASSERT_EQ(arch_aspace_unmap(space, va_b + 2u * HOLDS * g, HOLDS), ARCH_ASPACE_OK);
+}
+
+TEST_F(MAP_CONTRACT_FIXTURE, ADeviceLeafAnswersNoAcquire)
+{
+    arch_phys_addr_t const pooled = kickos_frame_alloc();
+    ASSERT_NE(pooled, 0u);
+    ASSERT_EQ(arch_aspace_map(space, va_a, pooled, 1, RIGHTS_RW, ARCH_MAP_DEVICE),
+              ARCH_ASPACE_OK);
+    ASSERT_EQ(arch_aspace_map(space, va_b, PA_DEVICE, 1, RIGHTS_RW, ARCH_MAP_DEVICE),
+              ARCH_ASPACE_OK);
+    uintptr_t const at[2] = {va_a, va_b};
+    arch_phys_addr_t const out[2] = {pooled, PA_DEVICE};
+    enum arch_aspace_access const access[2] = {ARCH_ASPACE_READ, ARCH_ASPACE_WRITE};
+    for (size_t i = 0; i < 2; i++)
+    {
+        for (enum arch_aspace_access const a : access)
+        {
+            arch_phys_addr_t frame = 0;
+            EXPECT_EQ(arch_aspace_acquire(space, at[i] + IN_PAGE, a, nullptr, &frame), nullptr)
+                << "a device leaf was reached, page " << i << " access " << a;
+            EXPECT_EQ(frame, out[i]) << "page " << i << " access " << a;
+        }
+    }
+    ASSERT_EQ(arch_aspace_unmap(space, va_b, 1), ARCH_ASPACE_OK);
 }
 
 TEST_F(MAP_CONTRACT_FIXTURE, ARunAcrossLeafTablesIsContiguousBoundedAndUnmappedWhole)
@@ -242,28 +328,32 @@ TEST_F(MAP_CONTRACT_FIXTURE, ARunAcrossLeafTablesIsContiguousBoundedAndUnmappedW
     size_t const pages = 1 + per_table + per_table / 2;
     struct arch_aspace* const fresh = arch_aspace_create();
     ASSERT_NE(fresh, nullptr);
-    ASSERT_EQ(arch_aspace_map(fresh, start, PA_DEVICE, pages, ARCH_MAP_R, ARCH_MAP_DEVICE),
+    ASSERT_EQ(arch_aspace_map(fresh, start, PA_DEVICE, pages, ARCH_MAP_R, ARCH_MAP_NORMAL),
               ARCH_ASPACE_OK);
 
     for (size_t i = 0; i < pages; i++)
     {
         uintptr_t const at = start + i * g;
         ASSERT_EQ(arch_aspace_frame_at(fresh, at), PA_DEVICE + i * g) << "page " << i;
-        void* const p = arch_aspace_acquire(fresh, at + IN_PAGE, nullptr, nullptr);
+        void* const p =
+            arch_aspace_acquire(fresh, at + IN_PAGE, ARCH_ASPACE_READ, nullptr, nullptr);
         ASSERT_NE(p, nullptr) << "page " << i;
         EXPECT_EQ(reinterpret_cast<uintptr_t>(p) & (g - 1u), IN_PAGE) << "page " << i;
         arch_aspace_release(fresh, at + IN_PAGE);
     }
     EXPECT_EQ(arch_aspace_frame_at(fresh, start - g), 0u);
     EXPECT_EQ(arch_aspace_frame_at(fresh, start + pages * g), 0u);
-    EXPECT_EQ(arch_aspace_acquire(fresh, start - g, nullptr, nullptr), nullptr);
-    EXPECT_EQ(arch_aspace_acquire(fresh, start + pages * g, nullptr, nullptr), nullptr);
+    EXPECT_EQ(arch_aspace_acquire(fresh, start - g, ARCH_ASPACE_READ, nullptr, nullptr), nullptr);
+    EXPECT_EQ(arch_aspace_acquire(fresh, start + pages * g, ARCH_ASPACE_READ, nullptr, nullptr),
+              nullptr);
 
     ASSERT_EQ(arch_aspace_unmap(fresh, start, pages), ARCH_ASPACE_OK);
 
     EXPECT_EQ(arch_aspace_frame_at(fresh, start), 0u);
     EXPECT_EQ(arch_aspace_frame_at(fresh, start + (pages - 1u) * g), 0u);
-    EXPECT_EQ(arch_aspace_acquire(fresh, start + (pages - 1u) * g, nullptr, nullptr), nullptr);
+    EXPECT_EQ(arch_aspace_acquire(fresh, start + (pages - 1u) * g, ARCH_ASPACE_READ, nullptr,
+                                  nullptr),
+              nullptr);
     arch_aspace_destroy(fresh);
 }
 

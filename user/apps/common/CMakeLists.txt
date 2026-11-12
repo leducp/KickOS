@@ -39,6 +39,47 @@ function(_kos_chip_defines out symbol)
   set(${out} ${_defined} PARENT_SCOPE)
 endfunction()
 
+# KICKOS_TEST_SHAPE: the axes along which this preset differs from its arch's reference preset.
+#   core    the image is built for another core of the arch
+#   cpu     the same image runs on another processor model
+#   flat    memory is not enforced
+#   telem   the trace sink is on
+#   tick    the periodic tick
+#   paging  another translation mode
+#   cores   another core count than the arch's SMP reference
+#   root    the root task starts on another core
+#   iso     a core is isolated
+#   gic     another interrupt controller
+#   amp     a node of an AMP partition
+set(KICKOS_TEST_SHAPE "" CACHE STRING
+    "Axes along which this preset differs from its arch's reference preset")
+set(_kos_shape_axes core cpu flat telem tick paging cores root iso gic amp)
+foreach(_axis IN LISTS KICKOS_TEST_SHAPE)
+  if(NOT _axis IN_LIST _kos_shape_axes)
+    message(FATAL_ERROR "KICKOS_TEST_SHAPE names '${_axis}', which is none of: ${_kos_shape_axes}")
+  endif()
+endforeach()
+
+# kickos_shape_runs(<out> [<axis>...]): ON unless this preset differs from its arch's reference
+# along an axis that is not one of <axis>, the axes the app's claim reads.
+function(kickos_shape_runs out)
+  set(_runs ON)
+  foreach(_axis IN LISTS KICKOS_TEST_SHAPE)
+    if(NOT _axis IN_LIST ARGN)
+      set(_runs OFF)
+    endif()
+  endforeach()
+  set(${out} ${_runs} PARENT_SCOPE)
+endfunction()
+
+# kickos_shape_app(<dir> [<axis>...]): add_subdirectory(<dir>) where kickos_shape_runs is ON.
+macro(kickos_shape_app dir)
+  kickos_shape_runs(_kos_shape_runs ${ARGN})
+  if(_kos_shape_runs)
+    add_subdirectory(${dir})
+  endif()
+endmacro()
+
 # The console driver reclaimwit and initdemo create on request, declared once.
 if(KICKOS_HAVE_LIBC)
   add_subdirectory(sinkdrv)
@@ -46,11 +87,11 @@ endif()
 
 # --- Every posture ---------------------------------------------------------------------------
 add_subdirectory(hello)
-add_subdirectory(hello_c)
+kickos_shape_app(hello_c)
 add_subdirectory(selftest)
 add_subdirectory(stress)
-add_subdirectory(sched_exit)
 add_subdirectory(mutexbench)
+add_subdirectory(userbench)
 # Its only witness is the kernel block's high-water line, which a panic prints only where the
 # board carves the blocks and reports them.
 if(KICKOS_KERNEL_STACKS AND KICKOS_KSTACK_REPORT)
@@ -61,26 +102,25 @@ add_subdirectory(fault)
 add_subdirectory(panicgate)
 # A task restarted from its own image, image 1.
 if(NOT KICKOS_ARCH STREQUAL "sim")
-  add_subdirectory(restartwit)
+  kickos_shape_app(restartwit)
 endif()
 
 # --- A C library on the target -----------------------------------------------------------
 if(KICKOS_HAVE_LIBC)
-  add_subdirectory(chaincheck)
-  add_subdirectory(libc_exit)
+  kickos_shape_app(chaincheck core)
+  kickos_shape_app(libc_exit)
   # Not on the ESP32-C6 AMP nodes.
   if(NOT (KICKOS_CHIP STREQUAL "esp32c6" AND KICKOS_AMP_NODE))
     add_subdirectory(libcrace)
   endif()
-  add_subdirectory(sysdefault)
-  add_subdirectory(rootfault)
-  add_subdirectory(rootauth)
-  add_subdirectory(reclaimwit)
+  kickos_shape_app(sysdefault core)
+  kickos_shape_app(rootauth)
+  kickos_shape_app(reclaimwit flat telem)
   add_subdirectory(rebootdemo)
 endif()
 # The host libc of the sim takes none of KickOS's locks.
 if(KICKOS_HAVE_LIBC AND NOT KICKOS_ARCH STREQUAL "sim")
-  add_subdirectory(libc_death)
+  kickos_shape_app(libc_death)
 endif()
 # The sim's std::atomic is the host's.
 if(KICKOS_HAVE_LIBC AND NOT KICKOS_ARCH STREQUAL "sim")
@@ -90,18 +130,14 @@ endif()
 if(KICKOS_HAVE_LIBC AND "nano" IN_LIST KICKOS_LIBC_PROFILES)
   add_subdirectory(libcmix)
 endif()
-# objbudget fills main's endpoint budget and asks that the refusal be the budget's, so both the
-# pool and main's table must have room for that budget: the pool has none to spare where the
-# init seats the partition's ports in it first, and main's table is a spawn's width
-# (KICKOS_MAX_SPAWN_GRANTS + 1), part of it held from the start.
-if(KICKOS_HAVE_LIBC AND NOT KICKOS_AMP_PORTS
-   AND KICKOS_BUDGET_ENDPOINTS LESS KICKOS_MAX_SPAWN_GRANTS)
-  add_subdirectory(objbudget)
-endif()
 # mpu_fault grants a region to one thread of a task, which a backend that translates cannot:
 # its unit of memory is the task's space.
-if(KICKOS_HAVE_LIBC AND NOT KICKOS_HAVE_ASPACE)
+if(KICKOS_HAVE_LIBC AND KICKOS_MEMORY_ENFORCED AND NOT KICKOS_HAVE_ASPACE)
   add_subdirectory(mpu_fault)
+endif()
+# Keyed on confinement, not on which mechanism enforces it.
+if(KICKOS_HAVE_LIBC AND KICKOS_MEMORY_ENFORCED)
+  kickos_shape_app(rootfault core paging cpu)
 endif()
 
 # --- Memory enforcement --------------------------------------------------------------------
@@ -112,7 +148,7 @@ endif()
 # specfault's verdict is that a read of an address nothing grants is DENIED. Where nothing
 # enforces memory the read is the bus's to answer, which is no claim of the kernel's.
 if(KICKOS_MEMORY_ENFORCED)
-  add_subdirectory(specfault)
+  kickos_shape_app(specfault core paging cpu)
 endif()
 
 # --- Fault isolation, translation, and the host sim --------------------------------------
@@ -121,24 +157,21 @@ if(KICKOS_FAULT_ISOLATION)
 endif()
 if(KICKOS_HAVE_ASPACE)
   add_subdirectory(deadstack)
-  add_subdirectory(kernelhalf)
-  add_subdirectory(stackguard)
+  kickos_shape_app(kernelhalf paging cpu)
+  kickos_shape_app(stackguard paging)
 endif()
 # Only the uaccess witness's scratch tree builds it: no other kernel answers its call.
 if(KICKOS_WITNESS_UACCESS)
   add_subdirectory(uaccess)
-endif()
-# Only the CCR plant's scratch trees build it: elsewhere nothing planted what it probes.
-if(KICKOS_CCR_PLANT)
-  add_subdirectory(ccrprobe)
 endif()
 # Only the rewind witness's scratch tree builds it: no other kernel answers its call.
 if(KICKOS_WITNESS_REWIND)
   add_subdirectory(ucasrewind)
 endif()
 # Sim only: each drives something that is only automatable on the host, a loopback "device"
-# that is the host wire, a published posture, or __builtin_trap.
+# that is the host wire, a published posture, __builtin_trap, or many kernels in one process.
 if(KICKOS_ARCH STREQUAL "sim")
+  add_subdirectory(sched_exit)
   add_subdirectory(pubpanic)
   add_subdirectory(simconabi)
   add_subdirectory(uartloop)
@@ -150,8 +183,18 @@ endif()
 # The PSP-bounds and privilege-ring probes move SP with ARM asm and read ARM system registers;
 # each main.cc #errors anywhere else.
 if(KICKOS_ARCH STREQUAL "armv7m" OR KICKOS_ARCH STREQUAL "armv6m")
-  add_subdirectory(ringpriv)
+  kickos_shape_app(ringpriv core)
   add_subdirectory(pspguard)
+endif()
+# Needs a privilege ring to escape from, and an emulator's debugger to place the preemption.
+if(KICKOS_ARCH STREQUAL "armv7m" AND KICKOS_KERNEL_STACKS AND KICKOS_FAULT_ISOLATION)
+  add_subdirectory(privwindow)
+endif()
+# The SVC slow path's copy of an FP-live caller's {s0-s15, FPSCR} onto its kernel block, which
+# only the transfer posture makes and only an FP register file can show.
+if(KICKOS_ARCH STREQUAL "armv7m" AND KICKOS_KERNEL_STACKS
+   AND NOT KICKOS_MFLOAT_ABI STREQUAL "soft")
+  add_subdirectory(svcfp)
 endif()
 # The nested-trap witness: rv32imac is the one backend that runs syscall dispatch on the
 # caller's own stack AND builds its trap frames in software, so it is the only one where an
@@ -164,12 +207,12 @@ endif()
 # Built only where the board compiles TLS: elsewhere the thread_local is a link error naming
 # __aeabi_read_tp, which is the intended diagnostic but not a fleet build failure.
 if(KICKOS_TLS)
-  add_subdirectory(tlsprobe)
+  kickos_shape_app(tlsprobe core)
 endif()
 # Built only where an emulator runs it: its only witness is a QEMU gate.
 kickos_qemu_machine("${KICKOS_BOARD}" _kos_errno_env _kos_errno_machine)
 if(NOT _kos_errno_machine STREQUAL "")
-  add_subdirectory(errnoprobe)
+  kickos_shape_app(errnoprobe root core)
 endif()
 # The budgets' witnesses, eight declarations over two programs, on an emulator or the sim.
 # Not on the 32 KiB nRF51, whose arena seats fewer threads than its declarations' budgets.
@@ -215,8 +258,8 @@ file(STRINGS "${PROJECT_SOURCE_DIR}/boards/${KICKOS_BOARD}/composition.yaml" _ko
      REGEX "^heap: *[0-9]+" LIMIT_COUNT 1)
 string(REGEX REPLACE "^heap: *([0-9]+).*$" "\\1" _kos_heap "${_kos_heap}")
 if(NOT KICKOS_ARCH STREQUAL "sim" AND _kos_heap GREATER_EQUAL 6136)
-  add_subdirectory(cxxtest)
-  add_subdirectory(cxxterm)
+  kickos_shape_app(cxxtest flat paging)
+  kickos_shape_app(cxxterm core flat)
 endif()
 
 # --- Telemetry ----------------------------------------------------------------------------
@@ -232,15 +275,7 @@ endif()
 # and lx6 one.
 if((KICKOS_ARCH STREQUAL "armv7m" AND NOT KICKOS_MFLOAT_ABI STREQUAL "soft")
    OR KICKOS_ARCH MATCHES "^(armv8a|x86_64|lx6)$")
-  add_subdirectory(fp_switch)
-endif()
-
-if(KICKOS_BENCH)
-  add_subdirectory(bench)
-  # The authority and bound arms on the bench syscall.
-  if(KICKOS_HAVE_LIBC)
-    add_subdirectory(benchauth)
-  endif()
+  kickos_shape_app(fp_switch core)
 endif()
 
 # --- GPIO from userspace: the boards whose layout gpioblink carries -------------------------
@@ -260,12 +295,17 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/usbcdcwit/systems/${KICKOS_BOARD}.yaml"
    AND NOT KICKOS_AMP_NODE)
   add_subdirectory(usbcdcwit)
 endif()
+# Its composition names the board's packaged IRQ UART console driver; it #errors without
+# enforcement.
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/uartconsole/systems/${KICKOS_BOARD}.yaml"
+   AND KICKOS_HAVE_MPU)
+  add_subdirectory(uartconsole)
+endif()
 
 # --- Deliberate HARDWARE harnesses, OFF by default ----------------------------------------
 # The knobs are declared unconditionally so they reach the cache and `cmake -LH` on every
 # board; only the descent is gated.
 option(KICKOS_CLOCK_RETUNE_TEST "clockretune: privileged runtime clock-retune HW harness" OFF)
-option(KICKOS_CLOCKSOAK_TEST "clocksoak: clock-hardening wrap/soak HW harness" OFF)
 # Only a chip that defines arch_cpu_clock_set, under enforcement; elsewhere the retune is the
 # fallback no-op and this harness would prove nothing.
 _kos_chip_defines(_kos_clock_set arch_cpu_clock_set)
@@ -280,8 +320,5 @@ endif()
 # Its only witness is a QEMU gate, and its waiter a C++ thread, which needs the heap cxxtest needs.
 if(KICKOS_HAVE_LIBC AND NOT _kos_errno_machine STREQUAL "" AND NOT KICKOS_AMP_NODE
    AND _kos_heap GREATER_EQUAL 6136)
-  add_subdirectory(wallwait)
-endif()
-if(KICKOS_CLOCKSOAK_TEST)
-  add_subdirectory(clocksoak)
+  kickos_shape_app(wallwait)
 endif()

@@ -19,8 +19,8 @@ The build tree mirrors `user/apps/`: a fleet-wide app emits under
 `build/<board>/user/apps/common/<app>/`, a board-specific one under
 `build/<board>/user/apps/<board>/<app>/` -- e.g.
 `build/xmc4800-relax/user/apps/common/blink/blink.{elf-less name,hex,bin}` and
-`build/xmc4800-relax/user/apps/xmc4800-relax/xmcspi/xmcspi.hex`. A board's own demos
-(`xmcspi`, `k64dspi`, `rxdrv`, `c6blink`, `f411spi`, ...) are the second form.
+`build/xmc4800-relax/user/apps/xmc4800-relax/pvprobe/pvprobe.hex`. A board's own demos
+(`pvprobe`, `k64dspi`, `rxdrv`, `c6blink`, `f411spi`, ...) are the second form.
 Espressif boards additionally emit `<app>.app.bin` (the bootable image).
 
 `blink` is the no-UART smoke test (built for xmc/f411/f302/picopi/bluepill-c8/due);

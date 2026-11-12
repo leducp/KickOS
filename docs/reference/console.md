@@ -232,18 +232,6 @@ make the kernel mask interrupts for the wire time of a record line, which it use
 twice a record line's length at the console's baud. Panic output keeps its guarantee:
 `kpanic_enter` still masks, flushes the ring in order and writes polled.
 
-**The one kernel caller that WAITS is the bench report** (`kprintf_paced`, in `console.cc`, under
-`KICKOS_BENCH`). Forty phase rows at about 45 bytes each is roughly 156 ms of wire time at 115200,
-so the ring fills a dozen rows in and the rest are refused; three silicon captures of one campaign
-carried 6, 9 and 7 of 40. It offers a refused line again rather than losing it, waiting between
-attempts with **interrupts open and no lock held** until the drain has taken at least one byte
-(`console_tx_wait_progress`), which is what lets the drain ISR run at all. It gives up once a whole
-attempt passes with nothing leaving the ring, so a dead or unread console costs one bounded poll
-window per line and never a hang: a board whose app hands it back to its bootloader must not need a
-button press because nobody had a terminal open.
-Every multi-line printer in `kernel/bench/bench.cc` uses it, not the forty-row table alone: the ring
-holds about eleven lines at the default 256-byte bound and about five on a board that lowers it,
-which is inside the length of the shorter blocks.
 
 The kernel console is a DEBUG facility, so a line lost to pressure is lost and nothing counts it.
 The USER path is different: `kos_kconsole_write` splits a write into chunks, waits where the
@@ -506,10 +494,7 @@ names the section above or below that carries its mechanism.
     masked span. Each wire byte is a masked span of its own, and inside a node a line is one
     context's until it ends. An expired holder can still leave a split line on the wire ("The
     routing guard").
-11. **The bench report waits for the drain, bounded per line** (`kprintf_paced`), so a dead or
-    unread console costs one bounded poll window per line and never a hang ("The buffered
-    path").
-12. **A clock retune touches the console only while the kernel owns it.** `cpu_clock_set` reads
+11. **A clock retune touches the console only while the kernel owns it.** `cpu_clock_set` reads
     the state under the same `IrqLock` it retunes under, waits for the transmitter to go idle
     (the ring keeping its bytes), and reprimes the ring's drain after the baud is rewritten
     (`console_tx_reprime`); the whole retune sequence is `clock-retune-coherence-tail` in

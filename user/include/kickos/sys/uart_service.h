@@ -42,9 +42,8 @@ enum
     KOS_UART_CAP_LINE = KOS_SPAWN_DELEGATED_CAP0 + 1
 };
 
-// EVERY bit of the object. It is this driver's own, nothing else raises into it, and the
-// pass below services whatever the device has: a mask naming particular bits would be a
-// second statement of which lines the descriptor claims and could only drift from it.
+// EVERY bit of the object: the pass services whatever the device has, so a mask naming
+// particular bits could only drift from the lines the descriptor claims.
 constexpr uint32_t KOS_UART_ACCEPT = 0xFFFFFFFFu;
 
 // The shared block, in ONE power-of-two naturally-aligned allocation: the RAM arm of
@@ -176,6 +175,13 @@ bool flush_answer(Uart& dev, Shared* sh, uint32_t* seen)
     return true;
 }
 
+// What the receive side has taken off the device: bytes, and error latches it cleared.
+inline uint32_t rx_seen(struct kos_uart_stats const* st)
+{
+    return kos_counter_load(&st->rx_bytes) + kos_counter_load(&st->rx_overrun)
+           + kos_counter_load(&st->rx_framing) + kos_counter_load(&st->rx_parity);
+}
+
 // ---------------------------------------------------------------------------------
 // The IRQ thread. It alone touches the device.
 template <typename Uart>
@@ -196,8 +202,8 @@ void irq_loop(Uart& dev, Shared* sh)
     while (true)
     {
         // The FIRST wait is also what arms the line: a claim leaves it masked so no window
-        // exists in which it is armed and unowned. One wait covers the line and the
-        // doorbell, which is why this class needs no relay thread.
+        // exists in which it is armed and unowned. One wait covers the lines and the
+        // doorbell.
         waited = kos_notify_wait(KOS_UART_CAP_NOTIFY, KOS_UART_ACCEPT, KOS_TIMEOUT_NONE, nullptr);
         if (waited != 0)
         {
@@ -205,13 +211,13 @@ void irq_loop(Uart& dev, Shared* sh)
         }
         kos_counter_increment(&sh->stats.irq_wakes, 1u);
         // "Found nothing" is judged from what THIS thread owns: tx_bytes moves under the
-        // service thread, so its value says nothing about whether this wake found work.
-        uint32_t const rx_before = kos_counter_load(&sh->stats.rx_bytes);
+        // service thread, so its value says nothing about whether this wake found work. A
+        // cleared receive error is work: a wake on an error line may move no byte.
+        uint32_t const rx_before = rx_seen(&sh->stats);
         bool const tx_had_work = (kos_byte_ring_used(&sh->tx) != 0u);
         irq_pass(&dev, sh);
         bool const flushed = flush_answer(dev, sh, &flush_seen);
-        if (kos_counter_load(&sh->stats.rx_bytes) == rx_before and not tx_had_work
-            and not flushed)
+        if (rx_seen(&sh->stats) == rx_before and not tx_had_work and not flushed)
         {
             // A doorbell with an empty ring, or a stray raise.
             kos_counter_increment(&sh->stats.irq_spurious, 1u);
@@ -229,10 +235,9 @@ constexpr uint32_t KOS_UART_TX_SPIN_MAX = 1000000u;
 // first wait on the line's notification.
 void win_puts(struct kos_uart* dev, char const* s);
 
-// `prime` is NOT derivable from the trigger mode: xmcuartirq is EDGE and primes, rxsci is
-// EDGE and must not. Priming a source whose only raise is a transfer taken with the source
-// already armed waits on a transition that has already happened; not priming a source that
-// needs it loses the first wake.
+// `prime` is NOT derivable from the trigger mode. Priming a source whose only raise is a
+// transfer taken with the source already armed waits on a transition that has already
+// happened; not priming a source that needs it loses the first wake.
 struct UartParams
 {
     char const* announce;
@@ -257,7 +262,7 @@ void irq_thread(Ctx* ctx, UartParams const& p)
     {
         irq_pass(&dev, &ctx->sh);
     }
-    irq_loop(dev, &ctx->sh); // parks in kos_notify_wait; never returns
+    irq_loop(dev, &ctx->sh); // never returns
 }
 
 // ---------------------------------------------------------------------------------
@@ -266,11 +271,10 @@ void irq_thread(Ctx* ctx, UartParams const& p)
 // -KOS_EBUSY when either budget expired first, the IRQ thread being dead included.
 int32_t flush(Shared* sh);
 
-// The request side of the console is <kickos/sys/console_service.h>. This is what a UART
-// changes about it: a UART drains whether or not anything is listening, so no mode bit is
-// required and a blocking write is honourable; bytes leave the ring into the device's own
-// FIFO and shift register, which only the IRQ thread can drain; and no TX loss is counted
-// outside the ring.
+// The UART transport of <kickos/sys/console_service.h>. A UART drains whether or not anything
+// is listening, so a blocking write is bounded and no mode bit is required; bytes that left
+// the ring sit in the device's FIFO and shifter, which only the IRQ thread can drain; TX loss
+// is counted in the ring alone.
 struct Transport
 {
     static constexpr uint32_t MODE_REQUIRED = 0u;
@@ -278,8 +282,8 @@ struct Transport
     static uint32_t tx_lost(Shared const*) { return 0u; }
 };
 
-// The service thread entry: its ARG is the Ctx the bring-up granted. Replies out of ring state,
-// never touches the device, and traps once its receive fails.
+// The service thread entry: its ARG is the Ctx the bring-up granted. Replies out of ring state
+// and traps once its receive fails.
 void console_thread(void* arg);
 
 // ---------------------------------------------------------------------------------

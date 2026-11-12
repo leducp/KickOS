@@ -29,10 +29,6 @@
 #include <kickos/arch/rv_trap_stack.h>
 #include <kickos/chip_limits.h>
 
-#if KICKOS_BENCH && KICKOS_KERNEL_CORES > 1
-    .error "the switch stamp below is ONE word for the image, so a second core stamping it subtracts one core's open from another's close. Give this backend a per-core cell (armv8a, rv64imac and lx6 have one) before raising the kernel core count."
-#endif
-
     .equ F_MEPC,     0
     .equ F_MSTATUS,  4
     .equ F_RA,       8
@@ -71,6 +67,9 @@
     .if F_S2 != KICKOS_RV_TRAP_F_S2
     .error "F_S2 disagrees with KICKOS_RV_TRAP_F_S2 (the faultsurvive kwrite arm aims at it)"
     .endif
+    .if F_MEPC != KICKOS_RV_TRAP_F_MEPC || F_MSTATUS != KICKOS_RV_TRAP_F_MSTATUS
+    .error "F_MEPC or F_MSTATUS disagrees with rv_trap_stack.h (the mppforge arm finds them)"
+    .endif
     .if F_SP <= F_T6
     .error "F_SP overlaps a saved GPR slot"
     .endif
@@ -82,21 +81,6 @@
     .equ F_CTX_STACK_HI, KICKOS_RV_CTX_OFF_STACK_HI
     .equ F_CTX_KERNEL_SP, KICKOS_RV_CTX_OFF_KERNEL_SP
     .equ F_CTX_TLS_BASE, KICKOS_RV_CTX_OFF_KERNEL_SP + 4
-
-#if KICKOS_BENCH
-/* One cycle sample into \rd, using \rtmp as scratch. A non-zero g_bench_cycle_src selects
-   that MMIO counter, for a core whose rdcycle traps. */
-    .macro  BENCH_CYC rd, rtmp
-    la      \rtmp, g_bench_cycle_src
-    lw      \rtmp, 0(\rtmp)
-    beqz    \rtmp, 1000f
-    lw      \rd, 0(\rtmp)
-    j       1001f
-1000:
-    rdcycle \rd
-1001:
-    .endm
-#endif
 
 /* Nothing in this file is relaxed. gp is U-mode writable and only the linker makes a gp-relative
    access, out of a relaxable pair, so every gp read below is one written out. */
@@ -132,13 +116,6 @@ trap_entry:
        frame store obeys, in M-mode, past PMP. The file's norelax is load-bearing: a relaxed la
        becomes `addi gp, gp, off`, which reads the gp under attack. */
     la      gp, __global_pointer$
-#if KICKOS_BENCH
-    /* The switch window opens above the register save and the demux sits below it, so every
-       trap pays this stamp and only .Lswitch reads it. */
-    BENCH_CYC t0, t1
-    la      t1, g_bench_sw_start
-    sw      t0, 0(t1)
-#endif
     csrr    t0, mstatus
     srli    t1, t0, 11             /* MPP is mstatus[12:11]; 0x1800 exceeds andi's imm */
     andi    t1, t1, 3
@@ -388,22 +365,6 @@ trap_entry:
 #if KICKOS_TELEMETRY
     lw      s1, 4(t3)               /* to_tid = incoming->trace_tid */
 #endif
-#if KICKOS_BENCH
-    BENCH_CYC t0, t1
-    la      t1, g_bench_sw_start
-    lw      t1, 0(t1)
-    sub     t0, t0, t1
-    la      t1, g_bench_sw_half
-    sw      t0, 0(t1)               /* save + swap; .Lrestore's tail adds the restore */
-    /* Bank the PREVIOUS switch, not this one: this one's window is still open and a call
-       inside it would be charged to it. */
-    la      t1, g_bench_sw_pend
-    lw      a0, 0(t1)
-    beqz    a0, 10f
-    sw      zero, 0(t1)
-    call    kickos_bench_switch_done
-10:
-#endif
 #if KICKOS_TELEMETRY
     mv      a0, s0
     mv      a1, s1
@@ -482,8 +443,8 @@ svc_trampoline:
     j       .Lrestore
 
 /* --- A booked switch lands, sp on the incoming frame. The landing is C with a frame, so it
-   runs on the trap stack, which no path to this label holds a frame on: on sp it would stand on
-   the user stack of a thread that has never trapped. */
+   runs on the trap stack, which no path to this label holds a frame on: no class prices it on
+   the incoming thread's stack. */
 .Lland:
     csrr    sp, mscratch            /* the trap-stack top */
     la      t0, g_arch_current
@@ -495,12 +456,6 @@ svc_trampoline:
 
 /* --- Shared restore epilogue: pop the frame at sp, mret. */
 .Lrestore:
-#if KICKOS_BENCH
-    /* Every register but sp is dead here, the frame reloading each one below. */
-    BENCH_CYC t0, t1
-    la      t1, g_bench_sw_rstart
-    sw      t0, 0(t1)
-#endif
     /* mstatus (saved with MIE=0) BEFORE gp, tp and mepc. svc_trampoline arrives here with
        MIE=1, and a trap's own restore rewrites gp and tp, which no frame saves: one taken
        inside either sequence below would resume it on the wrong partial value. A trap between
@@ -553,23 +508,6 @@ svc_trampoline:
     lw      t4,  F_T4(sp)
     lw      t5,  F_T5(sp)
     lw      t6,  F_T6(sp)
-#if KICKOS_BENCH
-    /* The switch window closes here. t0/t1/t2 are this block's scratch, so they are reloaded
-       below it and nowhere above. mret leaves no register free, so the delta is left for
-       .Lswitch to bank. */
-    BENCH_CYC t0, t1
-    la      t1, g_bench_sw_half
-    lw      t2, 0(t1)
-    beqz    t2, 11f
-    sw      zero, 0(t1)
-    la      t1, g_bench_sw_rstart
-    lw      t1, 0(t1)
-    sub     t0, t0, t1              /* the restore half */
-    add     t0, t0, t2              /* plus the save and swap half */
-    la      t1, g_bench_sw_pend
-    sw      t0, 0(t1)
-11:
-#endif
     lw      t0,  F_T0(sp)
     lw      t1,  F_T1(sp)
     lw      t2,  F_T2(sp)

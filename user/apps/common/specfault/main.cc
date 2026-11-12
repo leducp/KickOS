@@ -29,17 +29,17 @@ namespace
 {
     // armv6m reports the faulting instruction and no address, so its judge holds the fault's PC
     // to the address main announces for this load: the load must stay the body's first
-    // instruction, and main calls through g_peek so no inlined copy or clone runs instead.
-    __attribute__((noinline)) uint32_t peek(volatile uint32_t const* cell)
+    // instruction, and main calls through g_read_word so no inlined copy or clone runs instead.
+    __attribute__((noinline)) uint32_t read_word(volatile uint32_t const* cell)
     {
         return *cell;
     }
-    uint32_t (*volatile g_peek)(volatile uint32_t const*) = peek;
+    uint32_t (*volatile g_read_word)(volatile uint32_t const*) = read_word;
 }
 
 int main(int, char**)
 {
-    auto const load = g_peek;
+    auto const load = g_read_word;
     char msg[128];
     ksnprintf(msg, sizeof(msg),
               "[specfault] reading 0x%x: expect a clean MPU FAULT by the load at %p\n",

@@ -2,9 +2,9 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // Where libc finds the running thread's struct _reent, the reader of the running thread's lock
-// id, and the exit-time release of the scratch a _REENT_SMALL libc allocates into a thread's
-// state. The user side of kernel/include/kickos/reent.h; compiled on every board but the sim,
-// whose libc is the host's.
+// id, and the exit-time release of the scratch libc allocates into a thread's state. The user
+// side of kernel/include/kickos/reent.h; compiled on every board but the sim, whose libc is the
+// host's.
 //
 // Each thread's state is the base of its own stack block, and the cell that ends the carve
 // names it. Newlib reaches the state through __getreent() on every target: the running thread's
@@ -127,24 +127,17 @@ extern "C" __attribute__((weak)) void kickos_thread_dtors_run(void)
 {
 }
 
-extern "C"
+namespace
 {
-
-#ifdef _REENT_SMALL
-// Not _reclaim_reent: it runs the stdio cleanup hook, which closes the FILEs every thread
-// shares. The signal table stays for the reason _reclaim_reent gives.
-void kickos_reent_release(void)
-{
-    struct _reent* const r = _REENT;
-    struct _mprec* const mp = r->_mp;
-    if (mp != nullptr)
+    // Balloc sizes the freelist _Kmax + 1, one more than _reclaim_reent walks.
+    void release_mprec(struct _reent* r)
     {
-        if (mp->_freelist != nullptr)
+        struct _Bigint** const freelist = _REENT_MP_FREELIST(r);
+        if (freelist != nullptr)
         {
-            // Balloc sizes the list _Kmax + 1.
             for (size_t k = 0; k <= _Kmax; k++)
             {
-                struct _Bigint* b = mp->_freelist[k];
+                struct _Bigint* b = freelist[k];
                 while (b != nullptr)
                 {
                     struct _Bigint* const next = b->_next;
@@ -152,34 +145,74 @@ void kickos_reent_release(void)
                     b = next;
                 }
             }
-            _free_r(r, mp->_freelist);
+            _free_r(r, freelist);
+            _REENT_MP_FREELIST(r) = nullptr;
         }
-        _free_r(r, mp->_result);
-        struct _Bigint* p5 = mp->_p5s;
+        _free_r(r, _REENT_MP_RESULT(r));
+        _REENT_MP_RESULT(r) = nullptr;
+        struct _Bigint* p5 = _REENT_MP_P5S(r);
         while (p5 != nullptr)
         {
             struct _Bigint* const next = p5->_next;
             _free_r(r, p5);
             p5 = next;
         }
-        _free_r(r, mp);
-        r->_mp = nullptr;
+        _REENT_MP_P5S(r) = nullptr;
     }
-    _free_r(r, r->_emergency);
-    r->_emergency = nullptr;
-    _free_r(r, r->_r48);
-    r->_r48 = nullptr;
-    _free_r(r, r->_localtime_buf);
-    r->_localtime_buf = nullptr;
-    _free_r(r, r->_asctime_buf);
-    r->_asctime_buf = nullptr;
-    _free_r(r, r->_misc);
-    r->_misc = nullptr;
-    _free_r(r, r->_signal_buf);
-    r->_signal_buf = nullptr;
-    _free_r(r, r->_cvtbuf);
-    r->_cvtbuf = nullptr;
-    r->_cvtlen = 0;
-}
+
+    // Not _reclaim_reent: it runs the stdio cleanup hook, which closes the FILEs every thread
+    // shares. The signal table goes too, unlike there: no signal reaches a thread that is exiting.
+    void release_scratch(void)
+    {
+        struct _reent* const r = _REENT;
+#ifdef _REENT_SMALL
+        if (r->_mp != nullptr)
+        {
+            release_mprec(r);
+            _free_r(r, r->_mp);
+            r->_mp = nullptr;
+        }
+        _free_r(r, r->_emergency);
+        r->_emergency = nullptr;
+        _free_r(r, r->_r48);
+        r->_r48 = nullptr;
+        _free_r(r, r->_localtime_buf);
+        r->_localtime_buf = nullptr;
+        _free_r(r, r->_asctime_buf);
+        r->_asctime_buf = nullptr;
+        _free_r(r, r->_misc);
+        r->_misc = nullptr;
+        _free_r(r, r->_signal_buf);
+        r->_signal_buf = nullptr;
+#else
+        release_mprec(r);
 #endif
+        _free_r(r, _REENT_CVTBUF(r));
+        _REENT_CVTBUF(r) = nullptr;
+        _REENT_CVTLEN(r) = 0;
+        _free_r(r, _REENT_SIG_FUNC(r));
+        _REENT_SIG_FUNC(r) = nullptr;
+    }
+
+    // Never called directly: a direct call would keep the allocator in every image.
+    void (*s_release)(void) = nullptr;
+}
+
+extern "C"
+{
+
+void kickos_reent_heap_used(void)
+{
+    __atomic_store_n(&s_release, &release_scratch, __ATOMIC_RELAXED);
+}
+
+// Relaxed: a thread that built scratch took the malloc lock after the heap seat's store.
+void kickos_reent_release(void)
+{
+    void (*const release)(void) = __atomic_load_n(&s_release, __ATOMIC_RELAXED);
+    if (release != nullptr)
+    {
+        release();
+    }
+}
 }

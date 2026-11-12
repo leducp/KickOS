@@ -101,20 +101,20 @@ tests/integration/check_k64drv.sh|k64drv.capture||done|drop|[k64drv] done|
 tests/integration/check_k64drv.sh|k64drv.capture||fault|after|[k64drv] tick 10|=== THREAD FAULT === thread 'k64read' killed, system continues
 tests/integration/check_k64drv.sh|k64drv.capture||error|after|[k64drv] tick 3|[k64drv] ERROR: planted rc -1
 tests/integration/check_k64drv.sh|k64drv.capture||panic|after|[k64drv] done|KERNEL PANIC: planted
-tests/integration/check_k64console.sh|k64console.capture||ctor-line|drop|pre-publish ctor line|
-tests/integration/check_k64console.sh|k64console.capture||driver-up|drop|[k64uartirq] device up|
-tests/integration/check_k64console.sh|k64console.capture||main-line|drop|post-publish line|
-tests/integration/check_k64console.sh|k64console.capture||main-line|order|[k64uartirq] device up|post-publish line
-tests/integration/check_k64console.sh|k64console.capture||main-line|order|pre-publish ctor line|post-publish line
-tests/integration/check_k64console.sh|k64console.capture||worker-line|drop|[worker] line 3|
-tests/integration/check_k64console.sh|k64console.capture||worker-line|order|[worker] line 1|[worker] line 2
-tests/integration/check_k64console.sh|k64console.capture||worker-done|drop|[worker] done|
-tests/integration/check_k64console.sh|k64console.capture||error|after|[worker] line 1|[k64console] ERROR: planted
-tests/integration/check_k64console.sh|k64console.capture||panic|after|[worker] done|KERNEL PANIC: planted
-tests/integration/check_k64console.sh|k64console.capture||verdict|cache||K64CONSOLE_SCRAMBLE_TEST:BOOL=ON
-tests/integration/check_k64console.sh|k64console-scramble.capture|K64CONSOLE_SCRAMBLE_TEST:BOOL=ON|verdict|drop|KERNEL PANIC|
-tests/integration/check_k64console.sh|k64console-scramble.capture|K64CONSOLE_SCRAMBLE_TEST:BOOL=ON|driver-up|drop|[k64uartirq] device up|
-tests/integration/check_k64console.sh|k64console-scramble.capture|K64CONSOLE_SCRAMBLE_TEST:BOOL=ON|panic|cache||K64CONSOLE_SCRAMBLE_TEST:BOOL=OFF
+tests/integration/check_uartconsole.sh;[k64uartirq] device up (IRQ TX/RX)|uartconsole-frdmk64f.capture||ctor-line|drop|pre-publish ctor line|
+tests/integration/check_uartconsole.sh;[k64uartirq] device up (IRQ TX/RX)|uartconsole-frdmk64f.capture||driver-up|drop|[k64uartirq] device up|
+tests/integration/check_uartconsole.sh;[k64uartirq] device up (IRQ TX/RX)|uartconsole-frdmk64f.capture||main-line|drop|post-publish line|
+tests/integration/check_uartconsole.sh;[k64uartirq] device up (IRQ TX/RX)|uartconsole-frdmk64f.capture||main-line|order|[k64uartirq] device up|post-publish line
+tests/integration/check_uartconsole.sh;[k64uartirq] device up (IRQ TX/RX)|uartconsole-frdmk64f.capture||main-line|order|pre-publish ctor line|post-publish line
+tests/integration/check_uartconsole.sh;[k64uartirq] device up (IRQ TX/RX)|uartconsole-frdmk64f.capture||worker-line|drop|[worker] line 3|
+tests/integration/check_uartconsole.sh;[k64uartirq] device up (IRQ TX/RX)|uartconsole-frdmk64f.capture||worker-line|order|[worker] line 1|[worker] line 2
+tests/integration/check_uartconsole.sh;[k64uartirq] device up (IRQ TX/RX)|uartconsole-frdmk64f.capture||worker-done|drop|[worker] done|
+tests/integration/check_uartconsole.sh;[k64uartirq] device up (IRQ TX/RX)|uartconsole-frdmk64f.capture||error|after|[worker] line 1|[uartconsole] ERROR: planted
+tests/integration/check_uartconsole.sh;[k64uartirq] device up (IRQ TX/RX)|uartconsole-frdmk64f.capture||panic|after|[worker] done|KERNEL PANIC: planted
+tests/integration/check_uartconsole.sh;[k64uartirq] device up (IRQ TX/RX)|uartconsole-frdmk64f.capture||verdict|cache||UARTCONSOLE_SCRAMBLE_TEST:BOOL=ON
+tests/integration/check_uartconsole.sh;[k64uartirq] device up (IRQ TX/RX)|uartconsole-frdmk64f-scramble.capture|UARTCONSOLE_SCRAMBLE_TEST:BOOL=ON|verdict|drop|KERNEL PANIC|
+tests/integration/check_uartconsole.sh;[k64uartirq] device up (IRQ TX/RX)|uartconsole-frdmk64f-scramble.capture|UARTCONSOLE_SCRAMBLE_TEST:BOOL=ON|driver-up|drop|[k64uartirq] device up|
+tests/integration/check_uartconsole.sh;[k64uartirq] device up (IRQ TX/RX)|uartconsole-frdmk64f-scramble.capture|UARTCONSOLE_SCRAMBLE_TEST:BOOL=ON|panic|cache||UARTCONSOLE_SCRAMBLE_TEST:BOOL=OFF
 tests/integration/check_k64dspi.sh;@dspi0-loopback|k64dspi-loopback.capture|K64DSPI_LOOPBACK:BOOL=ON|driver-up|drop|SPI service up|
 tests/integration/check_k64dspi.sh;@dspi0-loopback|k64dspi-loopback.capture|K64DSPI_LOOPBACK:BOOL=ON|case|drop|zero-tx loopback: PASS|
 tests/integration/check_k64dspi.sh;@dspi0-loopback|k64dspi-loopback.capture|K64DSPI_LOOPBACK:BOOL=ON|error|swap|single-byte loopback: PASS|single-byte loopback: FAIL (rc=-5)
@@ -221,11 +221,6 @@ tests/integration/check_c6blink.sh|c6blink.capture||announce|drop|poking UNGRANT
 tests/integration/check_c6blink.sh|c6blink.capture||killed|swap|thread 'c6poke'|thread 'c6blink'
 tests/integration/check_c6blink.sh|c6blink.capture||kill-address|swap|ADDR=0x6009157c|ADDR=0x60091040
 tests/integration/check_c6blink.sh|c6blink.capture||panic|after|ADDR=0x6009157c|=== RISC-V TRAP ===
-tests/integration/check_c6lpprobe.sh|c6lpprobe.capture||payload|drop|payload IRQ|
-tests/integration/check_c6lpprobe.sh|c6lpprobe.capture||doorbells|drop|PASS bidirectional|
-tests/integration/check_c6lpprobe.sh|c6lpprobe.capture||doorbells|order|payload IRQ|PASS bidirectional
-tests/integration/check_c6lpprobe.sh|c6lpprobe.capture||timeout|after|LP raw 1|c6lpprobe: timeout marker 0 code 0 pwr1 0 mux 0 pwr0 0 local 0
-tests/integration/check_c6lpprobe.sh|c6lpprobe.capture||panic|after|PASS bidirectional|KERNEL PANIC: planted
 tests/integration/check_c6txidle.sh|c6txidle.capture||tail|swap|<<<TXIDLE-END>>>|<<<TXIDLE-END>>
 tests/integration/check_c6txidle.sh|c6txidle.capture||tail|swap|<<<TXIDLE-END>>>|<<<TXIDLE-END>>~
 tests/integration/check_c6txidle.sh|c6txidle.capture||tail|drop|[c6txidle] TAIL|
@@ -236,17 +231,6 @@ tests/integration/check_c6txidle.sh|c6txidle.capture||verdict|drop|PASS the flus
 tests/integration/check_c6txidle.sh|c6txidle.capture||verdict|after|ST_UTX_OUT 2|[c6txidle] FAIL the flush returned before the last frame could finish
 tests/integration/check_c6txidle.sh|c6txidle.capture||error|after|[c6txidle] TAIL|[c6txidle] ERROR: the console FIFO never stayed empty
 tests/integration/check_c6txidle.sh|c6txidle.capture||panic|after|PASS the flush|KERNEL PANIC: planted
-tests/integration/check_xmcspi.sh|xmcspi.capture||error|swap|seam FDR: rc=0 wrote=0x80000167 read=0x80000167 LANDED|seam FDR: rc=0 wrote=0x80000167 read=0x0 DISCARDED/REFUSED
-tests/integration/check_xmcspi.sh|xmcspi.capture||seam|drop|seam BRG:|
-tests/integration/check_xmcspi.sh|xmcspi.capture||loopback-start|drop|starting SSC loopback|
-tests/integration/check_xmcspi.sh|xmcspi.capture||word|drop|[xmcspi] word 2:|
-tests/integration/check_xmcspi.sh|xmcspi.capture||error|swap|word 1: tx=0x3c rx=0x3c PASS|word 1: tx=0x3c rx=0x3d FAIL
-tests/integration/check_xmcspi.sh|xmcspi.capture||loopback|drop|loopback PASS|
-tests/integration/check_xmcspi.sh|xmcspi.capture||announce|drop|poking UNGRANTED|
-tests/integration/check_xmcspi.sh|xmcspi.capture||announce|order|loopback PASS|poking UNGRANTED
-tests/integration/check_xmcspi.sh|xmcspi.capture||killed|drop|=== THREAD FAULT ===|
-tests/integration/check_xmcspi.sh|xmcspi.capture||kill-address|swap|ADDR=0x50004648|ADDR=0x50004640
-tests/integration/check_xmcspi.sh|xmcspi.capture||panic|after|=== THREAD FAULT|KERNEL PANIC: planted
 tests/integration/check_xmccshold.sh|xmccshold.capture||error|swap|FEM=1: MSLS edges = 2 : PASS|FEM=1: MSLS edges = 8 : FAIL
 tests/integration/check_xmccshold.sh|xmccshold.capture||fault|after|FEM=0: MSLS edges|=== THREAD FAULT === thread 'xmccshold' killed, system continues
 tests/integration/check_xmccshold.sh|xmccshold.capture||fem1-run|drop|run 1 FEM=1|
@@ -274,15 +258,15 @@ tests/integration/check_pvprobe.sh|pvprobe.capture||killed|drop|=== THREAD FAULT
 tests/integration/check_pvprobe.sh|pvprobe.capture||kill-address|swap|ADDR=0x50004648|ADDR=0x50004640
 tests/integration/check_pvprobe.sh|pvprobe.capture||kill-address|swap|ADDR=0x50004648|ADDR=0x50004640|after|poking UNGRANTED|  ADDR=0x50004648
 tests/integration/check_pvprobe.sh|pvprobe.capture||panic|after|ADDR=0x50004648|KERNEL PANIC: planted
-tests/integration/check_consoledemo.sh|consoledemo.capture||error|after|[worker] line 2|[consoledemo] ERROR: planted
-tests/integration/check_consoledemo.sh|consoledemo.capture||ctor-line|drop|pre-publish ctor line|
-tests/integration/check_consoledemo.sh|consoledemo.capture||driver-up|drop|[xmcuartirq] device up|
-tests/integration/check_consoledemo.sh|consoledemo.capture||main-line|drop|post-publish line|
-tests/integration/check_consoledemo.sh|consoledemo.capture||main-line|order|[xmcuartirq] device up|post-publish line
-tests/integration/check_consoledemo.sh|consoledemo.capture||main-line|order|pre-publish ctor line|post-publish line
-tests/integration/check_consoledemo.sh|consoledemo.capture||worker-line|drop|[worker] line 3|
-tests/integration/check_consoledemo.sh|consoledemo.capture||worker-done|drop|[worker] done|
-tests/integration/check_consoledemo.sh|consoledemo.capture||panic|after|[worker] done|KERNEL PANIC: planted
+tests/integration/check_uartconsole.sh;[xmcuartirq] device up (IRQ TX)|uartconsole-xmc4800-relax.capture||error|after|[worker] line 2|[uartconsole] ERROR: planted
+tests/integration/check_uartconsole.sh;[xmcuartirq] device up (IRQ TX)|uartconsole-xmc4800-relax.capture||ctor-line|drop|pre-publish ctor line|
+tests/integration/check_uartconsole.sh;[xmcuartirq] device up (IRQ TX)|uartconsole-xmc4800-relax.capture||driver-up|drop|[xmcuartirq] device up|
+tests/integration/check_uartconsole.sh;[xmcuartirq] device up (IRQ TX)|uartconsole-xmc4800-relax.capture||main-line|drop|post-publish line|
+tests/integration/check_uartconsole.sh;[xmcuartirq] device up (IRQ TX)|uartconsole-xmc4800-relax.capture||main-line|order|[xmcuartirq] device up|post-publish line
+tests/integration/check_uartconsole.sh;[xmcuartirq] device up (IRQ TX)|uartconsole-xmc4800-relax.capture||main-line|order|pre-publish ctor line|post-publish line
+tests/integration/check_uartconsole.sh;[xmcuartirq] device up (IRQ TX)|uartconsole-xmc4800-relax.capture||worker-line|drop|[worker] line 3|
+tests/integration/check_uartconsole.sh;[xmcuartirq] device up (IRQ TX)|uartconsole-xmc4800-relax.capture||worker-done|drop|[worker] done|
+tests/integration/check_uartconsole.sh;[xmcuartirq] device up (IRQ TX)|uartconsole-xmc4800-relax.capture||panic|after|[worker] done|KERNEL PANIC: planted
 tests/integration/check_conreclaim.sh|conreclaim.capture||driver-up|drop|[testusic] driver up|
 tests/integration/check_conreclaim.sh|conreclaim.capture||writer|drop|writing through the test console driver|
 tests/integration/check_conreclaim.sh|conreclaim.capture||writer|order|[testusic] driver up|[conreclaim] writing through
@@ -349,16 +333,6 @@ tests/integration/check_pizero_amp_gate.sh|ampping-pizero.capture||alive|swap|2 
 tests/integration/check_pizero_amp_gate.sh|ampping-pizero.capture||call|drop|ampping: node 0 calls node 1 port 3|
 tests/integration/check_pizero_amp_gate.sh|ampping-pizero.capture||round|drop|  ping 2 -> pong 3|
 tests/integration/check_pizero_amp_gate.sh|ampping-pizero.capture||served|swap|its own record says 4|its own record says 3
-tests/integration/check_pizero_amp_gate.sh|ampping-pizero.capture||witness|cache||KICKOS_WITNESS_NODE:BOOL=ON
-tests/integration/check_pizero_amp_gate.sh|ampping-pizero-witness.capture|KICKOS_WITNESS_NODE:BOOL=ON|witness|cache||
-tests/integration/check_pizero_amp_gate.sh|ampping-pizero-witness.capture|KICKOS_WITNESS_NODE:BOOL=ON|witness|drop|   witness node|
-tests/integration/check_pizero_amp_gate.sh|ampping-pizero-witness.capture|KICKOS_WITNESS_NODE:BOOL=ON|stray|swap|counted 1 spurious|counted 0 spurious
-tests/integration/check_pizero_amp_gate.sh|ampping-pizero-witness.capture|KICKOS_WITNESS_NODE:BOOL=ON|read|drop|[node] node 1 on core 1|
-tests/integration/check_pizero_amp_gate.sh|ampping-pizero-witness.capture|KICKOS_WITNESS_NODE:BOOL=ON|refused|drop|=== BUS FAULT ===|
-tests/integration/check_pizero_amp_gate.sh|ampping-pizero-witness.capture|KICKOS_WITNESS_NODE:BOOL=ON|refused|after|ring 0 reads 0x40070fe0|ampping: witness: ERROR: node 1's kernel read 0x11 from node 0's uart0
-tests/integration/check_pizero_amp_gate.sh|ampping-pizero-witness.capture|KICKOS_WITNESS_NODE:BOOL=ON|refused|order|=== BUS FAULT ===|[node] node 1 on core 1
-tests/integration/check_pizero_amp_gate.sh|ampping-pizero-witness.capture|KICKOS_WITNESS_NODE:BOOL=ON|bfar|swap|BFAR=0x40070fe0|BFAR=0x40078fe0
-tests/integration/check_pizero_amp_gate.sh|ampping-pizero-witness.capture|KICKOS_WITNESS_NODE:BOOL=ON|cfsr|swap|CFSR=0x8200|CFSR=0x8282
 tests/integration/check_pizero_amp_gate.sh|ampping-pizero.capture||done|drop|ampping: node 0 done|
 tests/integration/check_pizero_amp_gate.sh|ampping-pizero.capture||panic|after|ampping: node 0 done|KERNEL PANIC: planted
 tests/integration/check_system_default.sh;sysdefault: main returns 3;3|sysdefault.capture||line|drop|sysdefault: main returns 3|
@@ -386,6 +360,10 @@ tests/integration/check_qemu_tlsprobe.sh|tlsprobe.capture||peer|drop|[tlsprobe] 
 tests/integration/check_qemu_tlsprobe.sh|tlsprobe.capture||peer|swap|peer PASS|peer FAIL: template missing in the peer's entry thread
 tests/integration/check_qemu_tlsprobe.sh;--image=tlsprobe_wide|tlsprobe.capture||verdict|drop|[tlsprobe] PASS|
 tests/integration/check_qemu_tlsprobe.sh;--image=tlsprobe_wide|tlsprobe.capture||banner|after|   cpu     rxv3|   app     tlsprobe 0.5.1
+tests/integration/check_svcfp.sh|svcfp.capture||verdict|drop|[svcfp] PASS|
+tests/integration/check_svcfp.sh|svcfp.capture||error|after|[svcfp] PASS|[svcfp] CORRUPTED: plain syscall: FPSCR 0x63c0009f came back 0x0
+tests/integration/check_svcfp.sh|svcfp.capture||error|swap|[svcfp] PASS: s0-s15 and FPSCR survived a refused register call and a plain syscall|[svcfp] ERROR: plain syscall: the FPSCR mark did not take, so nothing here was witnessed
+tests/integration/check_svcfp.sh|svcfp.capture||panic|after|[svcfp] PASS|KERNEL PANIC: planted
 tests/integration/check_qemu_cxxtest.sh|cxxtest.capture||error|swap|PASS: typeid|FAIL: typeid
 tests/integration/check_qemu_cxxtest.sh|cxxtest.capture||verdict|drop|ALL PASS|
 tests/integration/check_qemu_cxxtest.sh|cxxtest.capture||panic|after|ALL PASS|KERNEL PANIC: planted
@@ -414,6 +392,51 @@ tests/integration/check_mutexbench.sh|mutexbench.capture||crowd|swap|[2 waiters 
 tests/integration/check_mutexbench.sh|mutexbench.capture||crowd|swap|a crowd of 2|a crowd of 0
 tests/integration/check_mutexbench.sh|mutexbench.capture||crowd|swap|sem-wake-crowd: 1900/2300/4100 ns  (p50/p99/max, n=200) [2 waiters parked, one woken]|sem-wake-crowd: SKIP (the clock steps 1000 us)
 tests/integration/check_mutexbench.sh|mutexbench.capture||crowd|swap|sem-wake-crowd: 1900/2300/4100 ns  (p50/p99/max, n=200) [2 waiters parked, one woken]|sem-wake-crowd: SKIP (no heap for the samples, 4000 bytes)
+tests/integration/check_userbench.sh|userbench.capture||header|drop|microbenchmark: switch, IPC, spawn and wake costs|
+tests/integration/check_userbench.sh|userbench.capture||clock|drop|cpu clock:|
+tests/integration/check_userbench.sh|userbench.capture||posture|drop|bench: posture:|
+tests/integration/check_userbench.sh|userbench.capture||posture|swap|clock fine|clock coarse
+tests/integration/check_userbench.sh|userbench.capture||posture|swap|aspace yes|aspace maybe
+tests/integration/check_userbench.sh|userbench.capture||done|drop|bench: done|
+tests/integration/check_userbench.sh|userbench.capture||refused|after|  reach-lost:|  walk: FAIL (1 odd returns)
+tests/integration/check_userbench.sh|userbench.capture||refused|swap|  e2e-local: 20399/27622/2315224 ns  (p50/p99/max, n=1000) [tare 60 ns]|  e2e-local: FAIL (no wake after 12 samples)
+tests/integration/check_userbench.sh|userbench.capture||refused|after|  w4-push:|  push-probe: STALL round=3/200 (hog 1 never ran)
+tests/integration/check_userbench.sh|userbench.capture||panic|after|bench: done|KERNEL PANIC: planted
+tests/integration/check_userbench.sh|userbench.capture||callreply|drop|  call/reply: 64 B|
+tests/integration/check_userbench.sh|userbench.capture||callreply|last-drop|[generic path]|
+tests/integration/check_userbench.sh|userbench.capture||callreply|drop|D1 donates]|
+tests/integration/check_userbench.sh|userbench.capture||throughput|last-drop|  throughput:|
+tests/integration/check_userbench.sh|userbench.capture||walk|drop|  reach-lost:|
+tests/integration/check_userbench.sh|userbench.capture||walk|swap|  owner-exit: 6387|  owner-exit: SKIP (main's threads seat no waiter)
+tests/integration/check_userbench.sh|userbench.capture||walk|swap|(k=0 2786 ns|(k=1 2786 ns
+tests/integration/check_userbench.sh|userbench.capture||walk|swap|k=3 8125 ns, k=5 10180 ns|k=0 8125 ns, k=0 10180 ns
+tests/integration/check_userbench.sh|userbench-average.capture||walk|swap|k=2 3532 ns|k=0 3532 ns
+tests/integration/check_userbench.sh|userbench.capture||walk|swap|median of 16)|mean of 16)
+tests/integration/check_userbench.sh|userbench.capture||e2e|drop|  e2e-local:|
+tests/integration/check_userbench.sh|userbench.capture||e2e|swap|  e2e-local: 20399/27622/2315224 ns  (p50/p99/max, n=1000)|  e2e-local: 20399 ns avg  (n=1000)
+tests/integration/check_userbench.sh|userbench.capture||xcore|drop|  xcore-wake 0-1:|
+tests/integration/check_userbench.sh|userbench.capture||xcore|swap|cores 2,|cores 3,|swap|# smp sched: 2|# smp sched: 3
+tests/integration/check_userbench.sh|userbench.capture||workload|drop|  w4-reseat:|
+tests/integration/check_userbench.sh|userbench.capture||workload|drop|  w2:|
+tests/integration/check_userbench.sh|userbench.capture||vec|drop|  switch-vec:|
+tests/integration/check_userbench.sh|userbench.capture||flash|swap|vector yes, aspace yes, flash no|vector no, aspace yes, flash yes|swap|arch    x86_64|arch    lx6
+tests/integration/check_userbench.sh|userbench.capture||posture|swap|cores 2,|cores 1,
+tests/integration/check_userbench.sh|userbench.capture||posture|drop|# smp sched:|
+tests/integration/check_userbench.sh|userbench.capture||posture|swap|aspace yes|aspace no
+tests/integration/check_userbench.sh|userbench.capture||posture|drop|   mmu     enforce|
+tests/integration/check_userbench.sh|userbench.capture||posture|swap|vector yes|vector no
+tests/integration/check_userbench.sh|userbench.capture||posture|swap|flash no|flash yes
+tests/integration/check_userbench.sh|userbench.capture||posture|drop|   arch    |
+tests/integration/check_userbench.sh|userbench-average.capture||posture|swap|cores 1,|cores 2,
+tests/integration/check_userbench.sh|userbench-average.capture||posture|swap|vector no|vector yes
+tests/integration/check_userbench.sh|userbench.capture||xtask|drop|  xtask ping-pong:|
+tests/integration/check_userbench.sh|userbench.capture||xtask|swap|  xtask call/reply: 16 B  73226 ns|  xtask call/reply: SKIP (task pool too small)
+tests/integration/check_userbench.sh|userbench.capture||spawn|swap|spawn/exit: task 335747 ns|spawn/exit: task SKIP (refused after 3 reps)
+tests/integration/check_userbench.sh|userbench-average.capture||walk|swap|  owner-exit: 750|  owner-exit: SKIP (main's threads seat no waiter)
+tests/integration/check_userbench.sh|userbench-average.capture||walk|swap|mean of 16)|median of 16)
+tests/integration/check_userbench.sh|userbench-average.capture||walk|drop|  word-wake:|
+tests/integration/check_userbench.sh|userbench-average.capture||e2e|swap|  e2e-local: 8399 ns avg  (n=1000)|  e2e-local: 8399/8400/8500 ns  (p50/p99/max, n=1000)
+tests/integration/check_userbench.sh|userbench-average.capture||done|drop|bench: done|
 tests/integration/check_qemu_cxxterm.sh|cxxterm.capture||throw|drop|cxxterm: throwing|
 tests/integration/check_qemu_cxxterm.sh|cxxterm.capture||returned|after|cxxterm: throwing|cxxterm: returned
 tests/integration/check_qemu_cxxterm.sh|cxxterm.capture||terminate|swap|[St13runtime_error]|[St9exception]
@@ -532,12 +555,6 @@ tests/integration/check_slaypeer.sh|slaypeer.capture||kept|after|slay rc: 0|[sla
 tests/integration/check_slaypeer.sh|slaypeer.capture||rc|swap|slay rc: 0|slay rc: -110
 tests/integration/check_slaypeer.sh|slaypeer.capture||pass|drop|SLAYPEER PASS|
 tests/integration/check_slaypeer.sh|slaypeer.capture||panic|after|SLAYPEER PASS|KERNEL PANIC: planted
-tests/integration/check_sched_exit.sh|sched_exit.capture||worker|drop|worker: running|
-tests/integration/check_sched_exit.sh|sched_exit.capture||worker-exit|drop|worker: exiting|
-tests/integration/check_sched_exit.sh|sched_exit.capture||survived|drop|main: survived|
-tests/integration/check_sched_exit.sh|sched_exit.capture||child|after|main: survived|parked spawn refused
-tests/integration/check_sched_exit.sh|sched_exit.capture||main-exit|drop|main: exiting with|
-tests/integration/check_sched_exit.sh|sched_exit.capture||panic|after|main: exiting with|KERNEL PANIC: planted
 tests/integration/check_chaincheck.sh;int|chaincheck.capture||arm|drop|[chaincheck] ok - printf %hd negative|
 tests/integration/check_chaincheck.sh;int|chaincheck.capture||arm|after|[chaincheck] ok - printf %lx|[chaincheck] ok - printf %f 1
 tests/integration/check_chaincheck.sh;int|chaincheck.capture||error|swap|ok - i32 sub to negative|FAIL - i32 sub to negative: got -0xb want -0xc
@@ -572,11 +589,6 @@ tests/integration/check_app_arms.sh;rootauth;4|rootauth.capture||arms|drop|[root
 tests/integration/check_app_arms.sh;rootauth;4|rootauth.capture||verdict|swap|PASS (4 arms)|PASS (3 arms)
 tests/integration/check_app_arms.sh;rootauth;4|rootauth.capture||verdict|drop|[rootauth] PASS|
 tests/integration/check_app_arms.sh;rootauth;4|rootauth.capture||panic|after|[rootauth] PASS|KERNEL PANIC: planted
-tests/integration/check_app_arms.sh;objbudget;6;endpoint_create at the ceiling rc=-12|objbudget.capture||absent|swap|at the ceiling rc=-11|at the ceiling rc=-12
-tests/integration/check_app_arms.sh;objbudget;6;endpoint_create at the ceiling rc=-12|objbudget.capture||arms|after|[objbudget] ok - and the ceiling|[objbudget] ok - planted extra arm
-tests/integration/check_app_arms.sh;objbudget;5;endpoint_create at the ceiling rc=-12;+skip - a peer's statics start from its image at every create: the sim starts a program's statics once|objbudget-sim.capture||absent|swap|at the ceiling rc=-11|at the ceiling rc=-12
-tests/integration/check_app_arms.sh;objbudget;5;endpoint_create at the ceiling rc=-12;+skip - a peer's statics start from its image at every create: the sim starts a program's statics once|objbudget-sim.capture||skip|drop|[objbudget] skip - a peer's statics|
-tests/integration/check_app_arms.sh;objbudget;5;endpoint_create at the ceiling rc=-12;+skip - a peer's statics start from its image at every create: the sim starts a program's statics once|objbudget-sim.capture||arms|after|[objbudget] ok - and the ceiling|[objbudget] ok - planted extra arm
 tests/integration/check_qemu_fp.sh|fp_switch.capture||error|after|FP OK: 10 rounds|  FP FAIL: s20 = 7, expected 20 (round 11)
 tests/integration/check_qemu_fp.sh|fp_switch.capture||verdict|drop|FP OK:|
 tests/integration/check_qemu_fp.sh|fp_switch.capture||panic|after|FP OK: 20 rounds|KERNEL PANIC: planted
@@ -709,20 +721,20 @@ tests/integration/check_system_default.sh;sysdefault: main returns 3 while a thr
 tests/integration/check_system_default.sh;sysdefault: main returns 3 while a thread spins;3|sysdefault-spin.capture||spinner|after|sched   tickless|sysdefault: spinner never ran
 tests/integration/check_system_default.sh;sysdefault: main returns 3 while a thread spins;3|sysdefault-spin.capture||fault|after|while a thread spins|=== THREAD FAULT === thread 'spinner' killed, system continues
 tests/integration/check_system_default.sh;sysdefault: main returns 3 while a thread spins;3|sysdefault-spin.capture||panic|after|while a thread spins|KERNEL PANIC: planted
-tests/integration/check_system_default.sh;sysdefault: main faults;139;main|sysdefault-fault.capture||fault|drop|=== THREAD FAULT|
-tests/integration/check_system_default.sh;sysdefault: main faults;139;main|sysdefault-fault.capture||fault|swap|thread 'main' killed|thread 'spinner' killed
-tests/integration/check_system_default.sh;sysdefault: main faults;139;main|sysdefault-fault.capture||line|drop|sysdefault: main faults|
-tests/integration/check_system_default.sh;sysdefault: main faults;139;main|sysdefault-fault.capture||panic|after|=== THREAD FAULT|KERNEL PANIC: planted
-tests/integration/check_system_default.sh;sysdefault: main faults;139;main|sysdefault-fault.capture||order|order|sysdefault: main faults|=== THREAD FAULT
 tests/integration/check_faultsurvive.sh;survive;rxv3;terminated|faultsurvive.capture||reached|drop|[fs] worker about to fault|
 tests/integration/check_faultsurvive.sh;survive;rxv3;terminated|faultsurvive.capture||killed|drop|=== THREAD FAULT|
 tests/integration/check_faultsurvive.sh;survive;rxv3;terminated|faultsurvive.capture||survived|drop|[fs] survivor ran|
 tests/integration/check_faultsurvive.sh;survive;rxv3;terminated|faultsurvive.capture||order|order|=== THREAD FAULT|[fs] survivor ran
 tests/integration/check_faultsurvive.sh;survive;rxv3;terminated|faultsurvive.capture||error|after|[fs] survivor ran|[fs] ERROR: join did not report the worker gone
 tests/integration/check_faultsurvive.sh;survive;rxv3;terminated|faultsurvive.capture||panic|after|[fs] survivor ran|KERNEL PANIC: planted
-tests/integration/check_faultsurvive.sh;overflow;rxv3;terminated|faultsurvive-overflow.capture||dump|drop|MPU FAULT: thread|
-tests/integration/check_faultsurvive.sh;overflow;rxv3;terminated|faultsurvive-overflow.capture||cause|swap|attempted write|attempted read
-tests/integration/check_faultsurvive.sh;overflow;rxv3;terminated|faultsurvive-overflow.capture||redirected|after|[fs] worker about to fault|=== THREAD FAULT === thread 'faulter' killed, system continues
+tests/integration/check_faultsurvive.sh;overflow;rxv3;killed|faultsurvive-overflow.capture||reached|drop|[fs] worker about to fault|
+tests/integration/check_faultsurvive.sh;overflow;rxv3;killed|faultsurvive-overflow.capture||killed|drop|=== THREAD FAULT|
+tests/integration/check_faultsurvive.sh;overflow;rxv3;killed|faultsurvive-overflow.capture||order|order|[fs] worker about to fault|=== THREAD FAULT
+tests/integration/check_faultsurvive.sh;overflow;rxv3;killed|faultsurvive-overflow.capture||survived|drop|[fs] survivor ran|
+tests/integration/check_faultsurvive.sh;overflow;rxv3;killed|faultsurvive-overflow.capture||order|order|=== THREAD FAULT|[fs] survivor ran
+tests/integration/check_faultsurvive.sh;overflow;rxv3;killed|faultsurvive-overflow.capture||cause|swap|MPESTS=0x6|MPESTS=0x2
+tests/integration/check_faultsurvive.sh;overflow;rxv3;killed|faultsurvive-overflow.capture||cause|drop|  PC=0x||after|[fs] worker about to fault|  PC=0xffc0061c MPESTS=0x6
+tests/integration/check_faultsurvive.sh;overflow;rxv3;killed|faultsurvive-overflow.capture||panic|after|[fs] survivor ran|KERNEL PANIC: planted
 tests/integration/check_faultsurvive.sh;kwrite;rxv3;contained|faultsurvive-kwrite.capture||refusal|drop|=== RX CONTAINED|
 tests/integration/check_faultsurvive.sh;kwrite;rxv3;contained|faultsurvive-kwrite.capture||survived|drop|[fs] survivor ran|
 tests/integration/check_faultsurvive.sh;kwrite;rxv3;contained|faultsurvive-kwrite.capture||order|order|=== RX CONTAINED|[fs] survivor ran
@@ -730,6 +742,44 @@ tests/integration/check_faultsurvive.sh;kwrite;rxv3;contained|faultsurvive-kwrit
 tests/integration/check_faultsurvive.sh;kwrite;rxv3;contained|faultsurvive-kwrite.capture||kwrite|drop|[fs] [kword] INTACT|
 tests/integration/check_faultsurvive.sh;kwrite;rxv3;contained|faultsurvive-kwrite.capture||order|order|[fs] survivor ran|[fs] [kword] INTACT
 tests/integration/check_faultsurvive.sh;kwrite;rxv3;contained|faultsurvive-kwrite.capture||panic|after|[fs] survivor ran|KERNEL PANIC: planted
+tests/integration/check_faultsurvive.sh;wildspin;rxv3;contained|faultsurvive-rx-wildspin.capture||reached|drop|[fs] worker about to fault|
+tests/integration/check_faultsurvive.sh;wildspin;rxv3;contained|faultsurvive-rx-wildspin.capture||refusal|drop|=== RX CONTAINED|
+tests/integration/check_faultsurvive.sh;wildspin;rxv3;contained|faultsurvive-rx-wildspin.capture||order|order|[fs] worker about to fault|=== RX CONTAINED
+tests/integration/check_faultsurvive.sh;wildspin;rxv3;contained|faultsurvive-rx-wildspin.capture||survived|drop|[fs] survivor ran|
+tests/integration/check_faultsurvive.sh;wildspin;rxv3;contained|faultsurvive-rx-wildspin.capture||order|order|=== RX CONTAINED|[fs] survivor ran
+tests/integration/check_faultsurvive.sh;wildspin;rxv3;contained|faultsurvive-rx-wildspin.capture||kwrite|after|[fs] worker about to fault|[fs] [kword] CORRUPTED: planted
+tests/integration/check_faultsurvive.sh;wildspin;rxv3;contained|faultsurvive-rx-wildspin.capture||kwrite|drop|[fs] [kword] INTACT|
+tests/integration/check_faultsurvive.sh;wildspin;rxv3;contained|faultsurvive-rx-wildspin.capture||order|order|[fs] survivor ran|[fs] [kword] INTACT
+tests/integration/check_faultsurvive.sh;wildspin;rxv3;contained|faultsurvive-rx-wildspin.capture||usp|swap|USP=0x102b4|USP=0x102b6
+tests/integration/check_faultsurvive.sh;wildspin;rxv3;contained|faultsurvive-rx-wildspin.capture||usp|drop|USP=|
+tests/integration/check_faultsurvive.sh;wildspin;rxv3;contained|faultsurvive-rx-wildspin.capture||redirected|after|[fs] worker about to fault|=== THREAD FAULT === thread 'fs_wild' killed, system continues
+tests/integration/check_faultsurvive.sh;wildspin;rxv3;contained|faultsurvive-rx-wildspin.capture||error|after|[fs] worker about to fault|[fs] ERROR: worker did not fault
+tests/integration/check_faultsurvive.sh;wildspin;rxv3;contained|faultsurvive-rx-wildspin.capture||panic|after|[fs] survivor ran|KERNEL PANIC: planted
+tests/integration/check_faultsurvive.sh;wildspin;rxv3;contained|faultsurvive-rx-wildspin.capture||gone|drop|[fs] [wildspin] the spinner is gone|
+tests/integration/check_faultsurvive.sh;wildspin;rxv3;contained|faultsurvive-rx-wildspin.capture||order|order|=== RX CONTAINED|[fs] [wildspin] the spinner is gone
+tests/integration/check_faultsurvive.sh;wildspin;rxv3;contained|faultsurvive-rx-wildspin.capture||order|order|[fs] [wildspin] the spinner is gone|[fs] survivor ran
+tests/integration/check_faultsurvive.sh;swtrap;rxv3;killed|faultsurvive-rx-swtrap.capture||reached|drop|[fs] worker about to fault|
+tests/integration/check_faultsurvive.sh;swtrap;rxv3;killed|faultsurvive-rx-swtrap.capture||killed|drop|=== THREAD FAULT|
+tests/integration/check_faultsurvive.sh;swtrap;rxv3;killed|faultsurvive-rx-swtrap.capture||killed|last-drop|=== THREAD FAULT|
+tests/integration/check_faultsurvive.sh;swtrap;rxv3;killed|faultsurvive-rx-swtrap.capture||killed|last-swap|cause=0x100|cause=0x0
+tests/integration/check_faultsurvive.sh;swtrap;rxv3;killed|faultsurvive-rx-swtrap.capture||killed|order|=== THREAD FAULT|[fs] trap int #5
+tests/integration/check_faultsurvive.sh;swtrap;rxv3;killed|faultsurvive-rx-swtrap.capture||killed|after|[fs] trap brk|[fs] trap brk
+tests/integration/check_faultsurvive.sh;swtrap;rxv3;killed|faultsurvive-rx-swtrap.capture||clock|swap|[clock] STEADY|[clock] JUMPED
+tests/integration/check_faultsurvive.sh;swtrap;rxv3;killed|faultsurvive-rx-swtrap.capture||clock|drop|[fs] [clock]|
+tests/integration/check_faultsurvive.sh;swtrap;rxv3;killed|faultsurvive-rx-swtrap.capture||error|after|[fs] trap int #31|[fs] ERROR: worker did not fault
+tests/integration/check_faultsurvive.sh;swtrap;rxv3;killed|faultsurvive-rx-swtrap.capture||panic|after|[fs] survivor ran|KERNEL PANIC: planted
+tests/integration/check_faultsurvive.sh;forge;rxv3;user|faultsurvive-rx-forge.capture||reached|drop|[fs] forger running|
+tests/integration/check_faultsurvive.sh;forge;rxv3;user|faultsurvive-rx-forge.capture||forged|swap|] USER|] SUPERVISOR|swap|forged 0 word|forged 1 word
+tests/integration/check_faultsurvive.sh;forge;rxv3;user|faultsurvive-rx-forge.capture||forged|swap|[first] USER|[first] SUPERVISOR
+tests/integration/check_faultsurvive.sh;forge;rxv3;user|faultsurvive-rx-forge.capture||head|drop|[fs] [head] USER|
+tests/integration/check_faultsurvive.sh;forge;rxv3;user|faultsurvive-rx-forge.capture||first|drop|[fs] [first] USER|
+tests/integration/check_faultsurvive.sh;forge;rxv3;user|faultsurvive-rx-forge.capture||preempt|drop|[fs] [preempt] USER|
+tests/integration/check_faultsurvive.sh;forge;rxv3;user|faultsurvive-rx-forge.capture||survived|drop|[fs] survivor ran|
+tests/integration/check_faultsurvive.sh;forge;rxv3;user|faultsurvive-rx-forge.capture||order|order|[fs] [preempt] USER|[fs] survivor ran
+tests/integration/check_faultsurvive.sh;forge;rxv3;user|faultsurvive-rx-forge.capture||killed|after|[fs] [head] USER|=== THREAD FAULT === thread 'fs_first' killed, system continues
+tests/integration/check_faultsurvive.sh;forge;rxv3;user|faultsurvive-rx-forge.capture||panic|after|[fs] survivor ran|KERNEL PANIC: planted
+tests/integration/check_faultsurvive.sh;forge;rxv3;user|faultsurvive-rx-forge.capture||error|after|[fs] forger running|[fs] ERROR: the head reply was refused (-14)
+tests/integration/check_faultsurvive.sh;forge;rxv3;user|faultsurvive-rx-forge.capture||error|swap|[fs] [head] USER|[fs] ERROR: the head reply was not delivered (-14)
 tests/integration/check_fault_dump.sh;RX EXCEPTION (trap)|fault-rx.capture||marker|drop|=== RX EXCEPTION|
 tests/integration/check_fault_dump.sh;RX EXCEPTION (trap)|fault-rx.capture||doubled|after|PC=0xffc00400|=== RX EXCEPTION (trap) ===
 tests/integration/check_fault_dump.sh;RX EXCEPTION (trap)|fault-rx.capture||faulted|after|[fault] executing|[fault] ERROR: illegal instruction did not fault
@@ -853,6 +903,19 @@ tests/integration/check_faultsurvive.sh;survive;rv32imac;terminated|faultsurvive
 tests/integration/check_faultsurvive.sh;lowedge;rv32imac;terminated|faultsurvive-rv32imac-lowedge.capture||lowband|drop|[lowband] INTACT|
 tests/integration/check_faultsurvive.sh;lowedge;rv32imac;terminated|faultsurvive-rv32imac-lowedge.capture||lowband|swap|[lowband] INTACT: the kernel wrote nothing below the parked sp|[lowband] CORRUPTED: the kernel ran below stack_lo on a U-mode sp
 tests/integration/check_faultsurvive.sh;lowedge;rv32imac;terminated|faultsurvive-rv32imac-lowedge.capture||killed|drop|=== THREAD FAULT|
+tests/integration/check_faultsurvive.sh;mppforge;rv32imac;killed|faultsurvive-rv32imac-mppforge.capture||reached|drop|[fs] worker about to fault|
+tests/integration/check_faultsurvive.sh;mppforge;rv32imac;killed|faultsurvive-rv32imac-mppforge.capture||entry|drop|[fs] [forge] child entry|
+tests/integration/check_faultsurvive.sh;mppforge;rv32imac;killed|faultsurvive-rv32imac-mppforge.capture||escalated|after|[fs] [forge] no first frame|[fs] [forge] ESCALATED: planted
+tests/integration/check_faultsurvive.sh;mppforge;rv32imac;killed|faultsurvive-rv32imac-mppforge.capture||frame|after|[fs] [forge] child entry|[fs] [forge] first frame on the child's user stack, MPP planted
+tests/integration/check_faultsurvive.sh;mppforge;rv32imac;killed|faultsurvive-rv32imac-mppforge.capture||verdict|drop|[fs] [forge] no first frame|
+tests/integration/check_faultsurvive.sh;mppforge;rv32imac;killed|faultsurvive-rv32imac-mppforge.capture||killed|drop|=== THREAD FAULT|
+tests/integration/check_faultsurvive.sh;mppforge;rv32imac;killed|faultsurvive-rv32imac-mppforge.capture||killed|swap|thread 'forged'|thread 'faulter'
+tests/integration/check_faultsurvive.sh;mppforge;rv32imac;killed|faultsurvive-rv32imac-mppforge.capture||order|order|[fs] [forge] no first frame|=== THREAD FAULT
+tests/integration/check_faultsurvive.sh;mppforge;rv32imac;killed|faultsurvive-rv32imac-mppforge.capture||kill-pc|swap|PC=0x42000400|PC=0x42000404
+tests/integration/check_faultsurvive.sh;mppforge;rv32imac;killed|faultsurvive-rv32imac-mppforge.capture||kill-cause|swap|mcause=0x2|mcause=0x1
+tests/integration/check_faultsurvive.sh;mppforge;rv32imac;killed|faultsurvive-rv32imac-mppforge.capture||survived|drop|[fs] survivor ran|
+tests/integration/check_faultsurvive.sh;mppforge;rv32imac;killed|faultsurvive-rv32imac-mppforge.capture||order|order|=== THREAD FAULT|[fs] survivor ran
+tests/integration/check_faultsurvive.sh;mppforge;rv32imac;killed|faultsurvive-rv32imac-mppforge.capture||panic|after|[fs] survivor ran|KERNEL PANIC: planted
 tests/integration/check_faultsurvive.sh;overflow;rv32imac;contained|faultsurvive-rv32imac-contained.capture||refusal|drop|=== RISC-V CONTAINED|
 tests/integration/check_faultsurvive.sh;overflow;rv32imac;contained|faultsurvive-rv32imac-contained.capture||attribution|swap|thread 'faulter' sp|thread 'other' sp
 tests/integration/check_faultsurvive.sh;overflow;rv32imac;contained|faultsurvive-rv32imac-contained.capture||order|order|=== RISC-V CONTAINED|[fs] survivor ran
@@ -869,10 +932,11 @@ tests/integration/check_faultsurvive.sh;misalign;rv32imac;contained|faultsurvive
 tests/integration/check_faultsurvive.sh;kwrite;rv32imac;contained|faultsurvive-rv32imac-kwrite.capture||kwrite|after|[fs] worker about to fault|[fs] [kword] CORRUPTED: planted
 tests/integration/check_faultsurvive.sh;kwrite;rv32imac;contained|faultsurvive-rv32imac-kwrite.capture||kwrite|drop|[fs] [kword] INTACT|
 tests/integration/check_faultsurvive.sh;kwrite;rv32imac;contained|faultsurvive-rv32imac-kwrite.capture||order|order|[fs] survivor ran|[fs] [kword] INTACT
-tests/integration/check_faultsurvive.sh;offstack;rxv3;terminated|faultsurvive-rx-offstack.capture||cause|swap|PSW=0x130003|PSW=0x030003
-tests/integration/check_faultsurvive.sh;offstack;rxv3;terminated|faultsurvive-rx-offstack.capture||dump|drop|=== RX EXCEPTION|
-tests/integration/check_faultsurvive.sh;offstack;rxv3;terminated|faultsurvive-rx-offstack.capture||cause|swap|(privileged instruction)|(undefined instruction)
-tests/integration/check_faultsurvive.sh;offstack;rxv3;terminated|faultsurvive-rx-offstack.capture||order|order|[fs] worker about to fault|=== RX EXCEPTION
+tests/integration/check_faultsurvive.sh;offstack;rxv3;killed|faultsurvive-rx-offstack.capture||killed|drop|=== THREAD FAULT|
+tests/integration/check_faultsurvive.sh;offstack;rxv3;killed|faultsurvive-rx-offstack.capture||order|order|[fs] worker about to fault|=== THREAD FAULT
+tests/integration/check_faultsurvive.sh;offstack;rxv3;killed|faultsurvive-rx-offstack.capture||survived|drop|[fs] survivor ran|
+tests/integration/check_faultsurvive.sh;offstack;rxv3;killed|faultsurvive-rx-offstack.capture||cause|swap|cause=0x50|cause=0x5c
+tests/integration/check_faultsurvive.sh;offstack;rxv3;killed|faultsurvive-rx-offstack.capture||panic|after|[fs] survivor ran|KERNEL PANIC: planted
 tests/integration/check_faultsurvive.sh;misalign;rxv3;contained|faultsurvive-rx-misalign.capture||usp|swap|USP=0x21ffa|USP=0x21ff8
 tests/integration/check_faultsurvive.sh;misalign;rxv3;contained|faultsurvive-rx-misalign.capture||refusal|drop|=== RX CONTAINED|
 tests/integration/check_faultsurvive.sh;misalign;rxv3;contained|faultsurvive-rx-misalign.capture||order|order|=== RX CONTAINED|[fs] survivor ran
@@ -959,18 +1023,22 @@ tests/integration/check_f411spi.sh|loopback (bench wiring absent)
 tests/integration/check_k64dspi.sh|the bus peer (bench wiring absent)
 tests/integration/check_faultsurvive.sh;kwrite;rv32imac;contained|the system exited 0 once main outlived the refusal
 tests/integration/check_faultsurvive.sh;kwrite;rxv3;contained|the system exited 0 once main outlived the refusal
+tests/integration/check_faultsurvive.sh;wildspin;rxv3;contained|the system exited 0 once main outlived the refusal
+tests/integration/check_faultsurvive.sh;swtrap;rxv3;killed|the system exited 0 once main returned
+tests/integration/check_faultsurvive.sh;forge;rxv3;user|the system exited 0 once main returned
+tests/integration/check_faultsurvive.sh;mppforge;rv32imac;killed|the system exited 0 once main returned
 tests/integration/check_faultsurvive.sh;lowedge;rv32imac;terminated|the system exited 0 once main returned
 tests/integration/check_faultsurvive.sh;misalign;rv32imac;contained|the system exited 0 once main outlived the refusal
 tests/integration/check_faultsurvive.sh;misalign;rxv3;contained|the system exited 0 once main outlived the refusal
 tests/integration/check_faultsurvive.sh;offstack;armv6m;terminated|the escalation ended the system with exit 132
 tests/integration/check_faultsurvive.sh;offstack;armv7m;terminated|the escalation ended the system with exit 132
 tests/integration/check_faultsurvive.sh;offstack;rv32imac;contained|the system exited 0 once main outlived the refusal
-tests/integration/check_faultsurvive.sh;offstack;rxv3;terminated|the escalation ended the system with exit 132
+tests/integration/check_faultsurvive.sh;offstack;rxv3;killed|the system exited 0 once main returned
 tests/integration/check_faultsurvive.sh;overflow;armv6m;terminated|the escalation ended the system with exit 132
 tests/integration/check_faultsurvive.sh;overflow;armv7m;terminated|the escalation ended the system with exit 132
 tests/integration/check_faultsurvive.sh;unread;armv7m;terminated|the escalation ended the system with exit 132
 tests/integration/check_faultsurvive.sh;overflow;rv32imac;contained|the system exited 0 once main outlived the refusal
-tests/integration/check_faultsurvive.sh;overflow;rxv3;terminated|the escalation ended the system with exit 0
+tests/integration/check_faultsurvive.sh;overflow;rxv3;killed|the system exited 0 once main returned
 tests/integration/check_faultsurvive.sh;survive;armv6m;terminated|the system exited 0 once main returned
 tests/integration/check_faultsurvive.sh;survive;armv7m;terminated|the system exited 0 once main returned
 tests/integration/check_faultsurvive.sh;stkof;armv7m;contained|the system exited 0 once main returned
@@ -986,14 +1054,13 @@ tests/integration/check_uatomic.sh|main's return ended the system with status 0
 tests/integration/check_libcrace.sh|main returned 0
 tests/integration/check_mutexbench.sh|the bench ended
 tests/integration/check_mutexbench.sh;aspace|the bench ended
+tests/integration/check_userbench.sh|the bench ended
 tests/integration/check_qemu_cxxterm.sh|terminate stopped the image
 tests/integration/check_qemu_cxxterm.sh;--worker|the creator ended the system cleanly
 tests/integration/check_reclaimwit.sh;drain|the drain arm shut the system down with status 0
 tests/integration/check_reboot.sh;refused|the app shut down cleanly with status 0
 tests/integration/check_rootfault.sh;thread-kill|main's fault ended the system with KOS_EXIT_FAULT (139)
-tests/integration/check_sched_exit.sh|main's exit with a child alive ended the system with status 7
 tests/integration/check_slaypeer.sh|the system exited 0 once main returned past PASS
-tests/integration/check_system_default.sh;sysdefault: main faults;139;main|main's task ending ended the system with status 139
 tests/integration/check_system_default.sh;sysdefault: main returns 3;3|main's task ending ended the system with status 3
 tests/integration/check_system_default.sh;sysdefault: main returns 3 while a thread spins;3|main's task ending ended the system with status 3
 tests/integration/check_trapnest.sh;480;292|an injected interrupt was taken inside the syscall dispatch"

@@ -12,9 +12,9 @@ arch: rv32imac
 # No data cache sits over the SRAM: the part's cache serves external flash only, so memory
 # the two cores share is coherent by absence, and a region's cache attribute changes nothing.
 data_cache: false
-# A RAM-only image at flash 0x0 with no second-stage loader: the ROM loads a plain image and
-# never enters it (`ets_loader.c 67`), and mis-reads a QIO header ("Checksum failure"). The
-# image is built from the ELF's load segments, so an image's .data lands at its template.
+# A RAM-only header at flash 0x0 with no second-stage loader: the ROM loads the SRAM segments
+# alone, and mis-reads a QIO header ("Checksum failure"). The task text the cache maps follows
+# in the same file (tools/esp-image.py), each image's .data template with it.
 esptool_image: [--use-segments, --ram-only-header, --dont-append-digest, --flash-mode, dio]
 c: { line_enum: "kernel_line : int", led: addressable }
 
@@ -106,6 +106,12 @@ devices:
   hp_tee: { window: [0x60098000, 0x1000], owner: kernel, ref: "Table 5.3-2, p.176" }
   hp_apm: { window: [0x60099000, 0x1000], owner: kernel, ref: "Table 5.3-2, p.176" } # LP_APM0 sits at +0x800 inside it
   intpri: { window: [0x600C5000, 0x1000], owner: kernel, ref: "Table 5.3-2, p.176" } # the inject doorbell's source
+  # The flash controllers and the cache over every task's code: SPI0 holds the cache MMU, SPI1
+  # writes and erases the flash. The table names SPI0's block after the XTS_AES registers inside
+  # it and marks SPI1's and EXTMEM's reserved; the bases are ESP-IDF's soc/esp32c6 reg_base.h.
+  spi0: { window: [0x60002000, 0x1000], owner: kernel, ref: "Table 5.3-2, p.175" }
+  spi1: { window: [0x60003000, 0x1000], owner: kernel, ref: "Table 5.3-2, p.175" }
+  extmem: { window: [0x600C8000, 0x1000], owner: kernel, ref: "Table 5.3-2, p.176" }
   # The LP node's power, boot, clock and bus gate, set by the HP kernel when it releases it.
   pmu: { window: [0x600B0000, 0x400], owner: kernel, ref: "Table 5.3-2, p.176" }
   rtc_timer: { window: [0x600B0C00, 0x400], owner: kernel, ref: "Table 5.3-2, p.176" }
@@ -119,6 +125,13 @@ devices:
 # nodes' arenas are carved from it.
 memory:
   hp_sram: { base: 0x40800000, size: 0x80000, arena: true, link: { region: RAM, access: rwx }, ref: "Table 5.3-1, p.171" }
+  # External memory through the cache, the HP CPU's alone, one address for fetch and load: every
+  # task image's code span, mapped from flash at boot.
+  flash_text:
+    base: 0x42000000
+    size: 0x1000000
+    link: { region: FLASHTEXT, access: rx }
+    ref: "Table 5.3-1, p.171, and 5.3.3.1 External Memory Address Mapping, p.172"
   lp_sram: { base: 0x50000000, size: 0x4000, ref: "Table 5.3-1, p.171" }
 
 # Pins are GPIOn. A selector other than `gpio` is the IO MUX function its MCU_SEL selects.

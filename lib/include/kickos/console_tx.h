@@ -113,18 +113,6 @@ uint32_t console_tx_sent(void);
 // on the console.
 void console_tx_room_freed(void);
 
-#if KICKOS_BENCH
-// Bytes queued in the ring, 0 while it is not armed.
-uint32_t console_tx_used(void);
-
-// Bounded spin, UNMASKED and holding no lock, returning once the drain has taken at least one
-// byte out of the ring, not once the ring is empty. It reports nothing: a caller offering a
-// refused line again wants the progress made across its WHOLE attempt, the mask gaps of the
-// offer itself included, so it reads console_tx_used either side of the attempt. Returns at once
-// on a backend with no TX interrupt, where the ring is empty by the time a producer leaves it.
-void console_tx_wait_progress(void);
-#endif
-
 // The synchronous line writer, in console.cc. Takes RAW bytes and expands '\n' to CR+LF
 // itself where the build asks for it, under one IrqLock held across the device writes.
 void console_write_line_sync(char const* buf, size_t n);

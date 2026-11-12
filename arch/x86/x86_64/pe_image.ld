@@ -36,7 +36,6 @@ SECTIONS
         *kickos_x86_64_boot.dir/*(.text .text.*)
         *kickos_x86_64_boot_ap.dir/*(.text .text.*)
         *kickos_x86_64_landed_kernel.dir/*(.text .text.*)
-        *kickos_x86_64_nobench.dir/*(.text .text.*)
         *kickos_x86_64_nokernel.dir/*(.text .text.*)
         *(.text .text.*)
     }
@@ -50,7 +49,6 @@ SECTIONS
         *kickos_x86_64_boot.dir/*(.data .data.*)
         *kickos_x86_64_boot_ap.dir/*(.data .data.*)
         *kickos_x86_64_landed_kernel.dir/*(.data .data.*)
-        *kickos_x86_64_nobench.dir/*(.data .data.*)
         *kickos_x86_64_nokernel.dir/*(.data .data.*)
         *(.data .data.*)
     }
@@ -64,7 +62,6 @@ SECTIONS
         *kickos_x86_64_boot.dir/*(.bss .bss.* COMMON)
         *kickos_x86_64_boot_ap.dir/*(.bss .bss.* COMMON)
         *kickos_x86_64_landed_kernel.dir/*(.bss .bss.* COMMON)
-        *kickos_x86_64_nobench.dir/*(.bss .bss.* COMMON)
         *kickos_x86_64_nokernel.dir/*(.bss .bss.* COMMON)
         *(.bss .bss.* COMMON)
     }
@@ -104,7 +101,6 @@ SECTIONS
         KEEP (*kickos_x86_64_boot.dir/*(SORT_BY_INIT_PRIORITY(.init_array.*))) KEEP (*kickos_x86_64_boot.dir/*(.init_array))
         KEEP (*kickos_x86_64_boot_ap.dir/*(SORT_BY_INIT_PRIORITY(.init_array.*))) KEEP (*kickos_x86_64_boot_ap.dir/*(.init_array))
         KEEP (*kickos_x86_64_landed_kernel.dir/*(SORT_BY_INIT_PRIORITY(.init_array.*))) KEEP (*kickos_x86_64_landed_kernel.dir/*(.init_array))
-        KEEP (*kickos_x86_64_nobench.dir/*(SORT_BY_INIT_PRIORITY(.init_array.*))) KEEP (*kickos_x86_64_nobench.dir/*(.init_array))
         KEEP (*kickos_x86_64_nokernel.dir/*(SORT_BY_INIT_PRIORITY(.init_array.*))) KEEP (*kickos_x86_64_nokernel.dir/*(.init_array))
         KEEP (*(.init_array))
         __init_array_end = .;
@@ -116,7 +112,6 @@ SECTIONS
         *kickos_x86_64_boot.dir/*(.rodata .rodata.*)
         *kickos_x86_64_boot_ap.dir/*(.rodata .rodata.*)
         *kickos_x86_64_landed_kernel.dir/*(.rodata .rodata.*)
-        *kickos_x86_64_nobench.dir/*(.rodata .rodata.*)
         *kickos_x86_64_nokernel.dir/*(.rodata .rodata.*)
         *(.rodata .rodata.*)
     }

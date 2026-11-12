@@ -2,7 +2,6 @@
 // Copyright (c) 2026 Philippe Leduc
 
 #include <kickos/sync.h>
-#include <kickos/bench.h>
 #include <kickos/sched.h>
 #include <kickos/smptrace.h>
 #include <kickos/cap.h>
@@ -879,42 +878,101 @@ namespace kickos
             return true;
         }
 
+        // `q`'s nodes, highest priority first and FIFO among equals, as a chain linked by `next`
+        // alone: every `prev` is stale. Leaves `q` empty.
+        ListNode* wq_sorted_chain(List& q)
+        {
+            uint32_t any = 0;
+            uint32_t all = ~0u;
+            for (ListNode* n = q.head; n != nullptr; n = n->next)
+            {
+                any = any | thread_of(n)->prio;
+                all = all & thread_of(n)->prio;
+            }
+            ListNode* head = q.head;
+            q = List{};
+            uint32_t const differ = any & ~all;
+            for (uint32_t bit = 1; bit <= differ; bit = bit << 1)
+            {
+                if ((differ & bit) == 0)
+                {
+                    continue;
+                }
+                ListNode* set = nullptr;
+                ListNode** set_end = &set;
+                ListNode* clear = nullptr;
+                ListNode** clear_end = &clear;
+                for (ListNode* n = head; n != nullptr; n = n->next)
+                {
+                    if ((thread_of(n)->prio & bit) != 0)
+                    {
+                        *set_end = n;
+                        set_end = &n->next;
+                    }
+                    else
+                    {
+                        *clear_end = n;
+                        clear_end = &n->next;
+                    }
+                }
+                *clear_end = nullptr;
+                *set_end = clear;
+                head = set;
+            }
+            return head;
+        }
+
+        // `t`, the i-th woken, readied; *top is the one the pass weighs.
+        void wake_one(Thread* t, uint32_t i, WakePlan const& p, Thread** top, Held held)
+        {
+            t->wait_result = 0;
+            if (i < p.handed)
+            {
+                t->wait_result = 1;
+            }
+            if (sched::wake_no_resched(t, held))
+            {
+                sched::keep_top(t, top, held);
+            }
+        }
+
+        // Masked: waking all W walks them 3 + log2(KICKOS_NUM_PRIO) times at most; n < W, n scans.
         // Every waiter popped is READY, its deadline dropped, before the one pass that may switch
         // away: one still BLOCKED off its queue across that switch has no wait edge for an expiry
-        // or a kill to unwind, and a slain waker would never wake it.
-        void wake_popped(WordRecord* m, WakePlan const& p, Held held)
+        // or a kill to unwind, and a slain waker would never wake it. Returns the one that pass
+        // weighs.
+        Thread* wake_popped(WordRecord* m, WakePlan const& p, Held held)
         {
             Thread* top = nullptr;
-            for (uint32_t i = 0; i < p.woken; i++)
+            if (p.woken == 0)
             {
-                Thread* const t = wq_pop_highest(m->waiters);
-                t->wait_result = 0;
-                if (i < p.handed)
-                {
-                    t->wait_result = 1;
-                }
-                if (not sched::wake_no_resched(t, held))
-                {
-                    continue;
-                }
-                // Popped highest first, so the first readied is the one the pass weighs.
-                if (top == nullptr)
-                {
-                    top = t;
-                    continue;
-                }
-#if KICKOS_KERNEL_CORES > 1
-                sched::place_ready(t, held);
-#endif
+                return nullptr;
             }
-            if (m != nullptr and m->waiters.empty())
+            // The sort would reorder the waiters left, which a later priority change would then
+            // find out of their FIFO order.
+            if (p.keep_bit)
             {
-                record_free(m);
+                for (uint32_t i = 0; i < p.woken; i++)
+                {
+                    wake_one(wq_pop_highest(m->waiters), i, p, &top, held);
+                }
+                return top;
             }
-            if (top != nullptr)
+            List& q = m->waiters;
+            ListNode* n = wq_sorted_chain(q);
+            for (uint32_t i = 0; n != nullptr; i++)
             {
-                sched::resched_after_wake(top, held);
+                ListNode* const after = n->next;
+                Thread* const t = thread_of(n);
+                KOS_TRACE(::kickos::KOS_TR_SEARCH, KOS_TRACE_ID(&q), KOS_TRACE_ID(t));
+                n->next = nullptr;
+                n->prev = nullptr;
+                t->clear_wait_edge();
+                wake_one(t, i, p, &top, held);
+                n = after;
             }
+            record_free(m);
+            return top;
         }
 
         // Every decision on the word is made on the value the compare-and-swap commits over, and
@@ -954,7 +1012,11 @@ namespace kickos
                 }
             }
             *rc = static_cast<int>(p.woken);
-            wake_popped(m, p, lock);
+            Thread* const top = wake_popped(m, p, lock);
+            if (top != nullptr)
+            {
+                sched::resched_after_wake(top, lock);
+            }
             return Attempt::ANSWERED;
         }
     }
@@ -1097,15 +1159,8 @@ namespace kickos
         // `dying` gets NO recompute: it stays boosted for the remainder of its own teardown, a
         // bounded inversion since the sweep is chunked. The waiter is woken with
         // MUTEX_OWNER_DIED, the protected state may be inconsistent, but never stranded.
-#if KICKOS_BENCH_WALKS
-        BenchTick const walk_start = bench_cyccnt();
-        uint32_t handed_records = 0;
-#endif
         while (dying->held_list != nullptr)
         {
-#if KICKOS_BENCH_WALKS
-            handed_records++;
-#endif
             WordRecord* const m = dying->held_list;
             held_remove(dying, m);
             Thread* const next = wq_pop_highest(m->waiters);
@@ -1130,48 +1185,16 @@ namespace kickos
             }
             sched::wake(next, held);
         }
-#if KICKOS_BENCH_WALKS
-        if (handed_records != 0)
-        {
-            bench_walk_add(BD_OWNER_EXIT, bench_cyccnt() - walk_start, handed_records);
-        }
-#endif
     }
 
 #if KICKOS_HAVE_ASPACE
     namespace
     {
-        // The pass is weighed on the highest thread woken: a dying caller declines one for a
-        // thread it outranks.
-        void reach_lost_woke(Thread* t, Thread** top, [[maybe_unused]] Held held)
-        {
-            if (*top == nullptr)
-            {
-                *top = t;
-                return;
-            }
-            Thread* placed = t;
-            if (t->prio > (*top)->prio)
-            {
-                placed = *top;
-                *top = t;
-            }
-#if KICKOS_KERNEL_CORES > 1
-            sched::place_ready(placed, held);
-#else
-            (void)placed;
-#endif
-        }
-
         // Readies and never switches: a switch here lets other threads unpark, free and reuse
         // what the walk's saved pointers name before it resumes on them.
         void reach_lost_scan(struct arch_aspace* space, uintptr_t base, size_t bytes,
                              Thread** top, Held held)
         {
-#if KICKOS_BENCH_WALKS
-            BenchTick const scan_start = bench_cyccnt();
-            uint32_t ended_waits = 0;
-#endif
             WordRecord* m = kernel().word_active;
             while (m != nullptr)
             {
@@ -1187,22 +1210,13 @@ namespace kickos
                     {
                         if (thread_abort_park_no_resched(t, -KOS_EFAULT, held))
                         {
-                            reach_lost_woke(t, top, held);
+                            sched::keep_top(t, top, held);
                         }
-#if KICKOS_BENCH_WALKS
-                        ended_waits++;
-#endif
                     }
                     n = after;
                 }
                 m = next_record;
             }
-#if KICKOS_BENCH_WALKS
-            if (ended_waits != 0)
-            {
-                bench_walk_add(BD_REACH_LOST, bench_cyccnt() - scan_start, ended_waits);
-            }
-#endif
         }
     }
 

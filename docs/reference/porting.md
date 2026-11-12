@@ -275,22 +275,15 @@ believe before it reads them, and this is the part that is easy to get wrong.
   to copy. A core that stacks in HARDWARE at the pre-exception privilege gets leg 1 free for
   the hardware frame only: any registers the port pushes itself go BELOW the checked range
   and need the same treatment. See `docs/book/whoever-stacks-the-trap-frame-owns-the-bounds-check.md`.
-- **A core whose exception CANCELS the faulting instruction has NO moved SP to read, and needs a
-  third test.** Both tests above rest on an SP that moved: armv7m's on a stacking abort, rv32imac's
-  on a software prologue that wrote the frame at one. RXv3 restores the architectural state of the
-  cancelled instruction (RXv3 ISA UM sec.5.3.1), so after an overflow the USP reads exactly as it did
-  before the denied push and the bounds test passes with nothing left below it. Its frame is on the
-  kernel ISP, which no thread can invalidate, so that test says nothing either. `bool
-  kickos_fault_below_stack(uintptr_t addr)` is the third one: it answers whether the faulting ADDRESS
-  landed beneath the running thread's stack, which a downward-growing stack makes an EXACT test for
-  the overflow class, and it fails closed when there is no recorded stack. rxv3 applies it to `MPDEA`
-  on an operand-access MPU error. **The converse is not exact and the cost is measured, not argued:**
-  a cross-domain access to a LOWER address escalates to the panic dump instead of dying alone
-  (`mpu_fault` on `rx72m`, `0x13200`, below `domainA`'s stack), while one to a higher address dies
-  alone (`rxdrv`, `0x8c068`). A port on any instruction-cancelling ISA inherits this and should read
-  archived `M4_fault_isolation_record.md` section 4.2 before reaching for a distance threshold instead:
-  a threshold fails in the UNSAFE direction, because a frame larger than the threshold puts privileged
-  code back on an exhausted stack.
+- **A core whose exception CANCELS the faulting instruction has NO moved SP to read, so the
+  redirect must not run the stub on that SP.** RXv3 restores the architectural state of the
+  cancelled instruction (RXv3 ISA UM sec.5.3.1), so after an overflow the USP is wherever the
+  last completed instruction left it, in bounds or not, and its frame is on the kernel ISP,
+  which no thread can invalidate. rxv3 therefore tests neither: its redirect seats the stub on
+  `kickos_fault_stack_top` (the thread's kernel block), so an overflow or a wild USP kills the
+  thread alone, and it declines only where that answers 0. A port on any instruction-cancelling
+  ISA should do the same rather than judge the faulting address against the stack base, which
+  misreads a cross-domain access below the stack as an overflow.
 - Worth one line of history: an earlier implementation read the stacked IPSR field straight
   out of that stale RAM and declined only BY ACCIDENT, because those bytes happened to be
   non-zero. Had they held zero, the kernel would have rewritten and resumed a fabricated
@@ -488,7 +481,7 @@ the kernel table and the vector table together and strand the lines above it, wi
 nothing to catch it. A configuration cannot set them, and a chip with no chip file is
 refused at configure.
 
-`board_config.h` holds the provisioning KNOBS: `KICKOS_BUDGET_THREADS`, the idle/root/user
+`board_config.h` holds the provisioning KNOBS: the default task budgets, the idle/root/user
 stack sizes sized to the chip's SRAM (too big and the link fails on the linker-script
 RAM `ASSERT`), and the pool sizes. **There is no such file in the source tree**: it is
 GENERATED into the build tree from the board's defconfig, and it is what the whole fleet
@@ -843,8 +836,8 @@ Supervisor-Protect bit in the AIPS-TZ bridge too, and nothing sets it back, whic
 bit is not the gate there. The M7's PMSAv7 MPU runs with `PRIVDEFENA` set
 (`arch/arm/common/arch_arm_mpu_pmsav7.cc`), and under it an unprivileged access that matches no
 enabled region faults (ARMv7-M ARM, DDI 0403E, B3.5.8 `MPU_CTRL.PRIVDEFENA`: the default map is
-a background region for privileged access only). The chip's fixed regions cover only the
-FlexSPI and SEMC apertures, so the one region over USB1 an unprivileged thread can hold is its
+a background region for privileged access only). The chip's fixed regions grant
+unprivileged code nothing, so the one region over USB1 an unprivileged thread can hold is its
 window, and a thread without it faults at the core before the bridge is asked. The K64F's M4 has
 no core MPU at all, only the bus-side SYSMPU, whose slave ports leave the peripheral bridge out,
 which is why `AIPS0`'s bit is the only gate there and the only one this seam closes. A flat
@@ -1498,6 +1491,12 @@ kernel, so the configure refuses it without the marker only the gate passes, the
 caller without the whole authority word, and the banner says `witness uaccess`. A new arch adds its
 name, its posture and a `judge_<arch>` reading its own dump.
 
+**The emulator runs both armv8a forms** (maintainer, 2026-10-12: "an emulator that cannot test a
+security feature is a liability"). The A53 presets run the reserved root, and `qemu-arm64-a710`
+runs the same image with hardware PAN (`boards.md`). A later ARMv8.x protection, such as pointer
+authentication, branch target identification or memory tagging, gets its witness on that second
+preset.
+
 ### Naming the frame behind a page (`arch_aspace_frame_at`)
 
 `arch_phys_addr_t arch_aspace_frame_at(struct arch_aspace* space, uintptr_t va)` answers the
@@ -1775,7 +1774,7 @@ every spawn. At the `f302nucleo-st` provisioning the same 16 KiB part runs the s
 silicon at **63 ok / 0 not ok / 5 skipped**, plan `1..63` (measured at `124b68c`,
 `.session/m456-silicon/b5-nuc-selftest-after.log`). That provisioning is one file, the `st` variant's
 defconfig (`../../boards/f302nucleo/configs/st/defconfig`): self-test on,
-a zero heap, `KICKOS_BUDGET_THREADS 2`, and the
+a zero heap, two thread slots, and the
 stack sizes (`KICKOS_USER_STACK_SIZE 1024`, `KICKOS_ROOT_STACK_SIZE 1536`,
 `KICKOS_IDLE_STACK_SIZE 512`). **That capture was taken at three slots and the file states
 two**: the unconditional priority ceiling grew `Task` past the slack the third slot needed,
@@ -1849,7 +1848,8 @@ unavailable. No gate builds these boards in `Debug`, deliberately -- the link fa
 already names the overflow in bytes.
 
 **The tightest link is the POOL term and not the boot term, on every board measured
-below, and on `bluepill-c8-st` and `esp32c6-wroom-bench` the pool margin is exactly ZERO.** The assert is `<=`, so a
+below, and on `bluepill-c8-st` and the in-kernel bench era's `esp32c6-wroom-bench` the pool margin was
+exactly ZERO.** The assert is `<=`, so a
 margin of zero links and the next byte of static footprint below the arena does not.
 Configure prints only the needed side:
 
@@ -1950,7 +1950,7 @@ linker-script symbol, so the split is readable out of any linked ELF:
   `KICKOS_KERNEL_STACK_SIZE` (`kernel/thread/thread.cc`, `KStackBlock`). That array is a
   FIRST-ORDER term on a small part, and it sits BELOW the arena, so raising the slot count
   shrinks the arena while raising the demand on it. `microbit` provisions four threads and
-  not eight for exactly that reason -- the thread slot count is `KICKOS_BUDGET_THREADS + 1`, so
+  not eight for exactly that reason -- the thread slot count is one more, root's, so
   that is five blocks of the armv6m 896 and not nine -- and its defconfig
   carries the derivation (`../../boards/microbit/configs/base/defconfig`).
 - **`.userheap`** -- the composition's `heap:`, carved *below* `__kickos_ram_start` by
@@ -2042,8 +2042,8 @@ records none.
 board.** `KICKOS_BOOT_ARENA_ASSERT` (`arch/common/boot_arena.ld.h`, fed by
 `cmake/boot_arena.cmake`) replays those two allocations including alignment padding.
 `KICKOS_POOL_ARENA_ASSERT` (same header) carries the same replay further, over the init's
-private block at one record, the least a system with a task reserves, then
-`KICKOS_BUDGET_THREADS` blocks of `align(KICKOS_USER_STACK_SIZE)`. Neither may be opted out
+private block at one record, the least a system with a task reserves, then a
+block of `align(KICKOS_USER_STACK_SIZE)` for each thread slot the composition's THREADS budgets size. Neither may be opted out
 of by omission: a linker script carrying no invocation is a configure `FATAL_ERROR`, and
 that check reads the script this board actually links, so a BOARD-LOCAL override is covered
 like any chip script.
@@ -2061,7 +2061,7 @@ why the honest place to answer the question is the link.
 
 **Headroom is a LINK-TIME quantity, and whether it is also PER-IMAGE depends on the
 board.** Where `__kickos_ram_start` follows `.bss`, each app's static footprint moves the
-arena base and the FATTEST image is what caps `KICKOS_BUDGET_THREADS`: on `bluepill-c8-st`
+arena base and the FATTEST image is what caps the thread count: on `bluepill-c8-st`
 the images span 2,012 B of base, and the split `selftest_p5` is the binding one. Where an
 alignment window pins the base instead, every image on the board reports the SAME headroom
 -- that is `frdmk64f` at `KICKOS_HAVE_MPU=1`, where all images sit at `0x20014340`. Check
@@ -2076,21 +2076,21 @@ base.** Each has a different owner and the demand side may be blameless:
   `__kickos_ram_start`, so every byte of heap is a byte of arena. This was the WHOLE
   deficit on `bluepill-c8`: its heap was 8192, inherited from its
   128 KiB `stm32f411` sibling, on a part with 20 KiB of SRAM. Its thread provisioning
-  (`KICKOS_BUDGET_THREADS 2` x 2048) was never the problem.
+  (2 threads x 2048) was never the problem.
 - the `.appdata` enforcement window on an enforcing chip. `frdmk64f` WITHOUT the MPU has
-  **+49,152 B** of pool margin at `KICKOS_BUDGET_THREADS 16`; `KICKOS_HAVE_MPU=1` pins every
+  **+49,152 B** of pool margin at 16 threads; `KICKOS_HAVE_MPU=1` pins every
   image's `__kickos_ram_start` at `0x20014320` and the window costs `hello` **94,336 B** of
   arena (`0x1fffd2a0` flat against `0x20014320` enforcing). There the
   demand side genuinely had to come down, which is why the enforcing variants provision
   **8** at 8192-byte stacks (`../../boards/frdmk64f/configs/base/defconfig`, `.../st/`)
-  while `flat` states no `KICKOS_BUDGET_THREADS` at all and keeps the default 16. The 8192 is
+  while `flat` states no thread count at all and keeps the default 16. The 8192 is
   a power of two because `KICKOS_TLS` strides every stack by one, NOT because the
   SYSMPU granule asks for it -- that granule is 32 and this backend is the base+limit row
   of the table above.
 
 The model is validated against the real linker rather than by inspection, on both arena
 shapes, and re-swept 2026-09-04, when this board's suite was still three images.
-`f302nucleo-st` is provisioned at `KICKOS_BUDGET_THREADS=2`,
+`f302nucleo-st` is provisioned at two thread slots,
 measured **+1,952 B** and linked, and FAILED at `-DKICKOS_MAX_THREADS=3` -- on the fattest
 image alone, every other image on the board still linking. At the four-image split the same
 board measures **+1,600 B**, and the fattest image is `selftest_p4`.
@@ -2174,7 +2174,7 @@ Thread capacity that follows, each board with its own stack sizes:
 | `f411disco` `hello` | 2,048 | 4,096 | 4,096 | 101,664 | 24 | 8 | **8** |
 
 **The `f302nucleo` and `f411disco` rows predate the `124b68c` right-size** (which took
-`KICKOS_ROOT_STACK_SIZE` to 1,536 and `KICKOS_BUDGET_THREADS` to 3), and the `f302nucleo-st`
+`KICKOS_ROOT_STACK_SIZE` to 1,536 and the thread count to 3), and the `f302nucleo-st`
 row's N has since moved AGAIN, to **2**: the third slot's 1,984 B no longer fits the 1,952 B
 the arena leaves. Neither the N column nor the byte columns of those rows are current.
 **The `microbit` rows are worse than
@@ -2195,7 +2195,7 @@ Four readings, and they are the point of the section:
 - **`f302nucleo` `selftest` is provisioning-bound, not part-bound.** At the chip defaults
   it gets zero threads, and on silicon the suite failed every spawning case (17 ok /
   42 not ok / 10 skipped) on `w >= 0` / `drv >= 0` assertions -- a negative spawn return,
-  which is what N=0 predicts. Raising `KICKOS_BUDGET_THREADS` to 4 alone moved the tally not
+  which is what N=0 predicts. Raising the thread count to 4 alone moved the tally not
   at all: the arena bound, not the pool. Surrendering the 2K heap carve and halving
   `KICKOS_USER_STACK_SIZE` to 1,024 takes the arena to 5,664 and N to 3, and the same
   part then runs the suite at 63 ok / 0 not ok / 5 skipped. Silicon-witnessed both ways,
@@ -2213,7 +2213,7 @@ Four readings, and they are the point of the section:
   SRAM, is usually what binds.** (`bluepill-c8` is build-only, so every N here is a model
   prediction, not a witness.)
 - On a comfortable board the constraint **inverts**: `f411disco`'s arena would hold 24
-  user stacks and `KICKOS_BUDGET_THREADS 8` is what caps it
+  user stacks and its 8 threads are what caps it
   (`../../boards/f411disco/configs/base/defconfig`). Above roughly 32 KiB of
   SRAM, provisioning is the knob and the part is not the limit.
 
@@ -2227,7 +2227,7 @@ requirement, for a zero-skip run:
 
 | Knob | Default | Pool | Suite needs | Tight-board value |
 | --- | --- | --- | --- | --- |
-| `KICKOS_BUDGET_THREADS` | 16 (`config/system.h`) | `thread.h` (`ThreadPool`) | **>= 4** | 2 |
+| the thread pool size | 16 (`config/system.h`) | `thread.h` (`ThreadPool`) | **>= 4** | 2 |
 | a declaration's `caps` | the composer's | per-thread cap table | **>= 11** | 8 |
 | the endpoint pool size | 4 (`system.h`) | `instance.h` (`endpoints`) | >= 1 | 4 |
 | the IRQ binding pool size | 8 (`system.h`) | `instance.h` (`irq_bindings`) | >= 1 | 4 (f302) |
@@ -2237,7 +2237,7 @@ requirement, for a zero-skip run:
 The `Tight-board value` column is the chip default. The `f302nucleo` `st` variant
 overrides threads to **3**, not 4: it was
 cut at `124b68c` once the pool assert made the overcommit a link error, and any text citing
-`arm.json` for `KICKOS_BUDGET_THREADS=4` on this board is stale. The stack sizes are the
+`arm.json` for four thread slots on this board is stale. The stack sizes are the
 board's own, in its base defconfig
 (`KICKOS_USER_STACK_SIZE` 2048 -> **1024**, `KICKOS_ROOT_STACK_SIZE` 2048 -> **1536**),
 chosen against MEASURED paint-and-scan watermarks:
@@ -2261,7 +2261,7 @@ need no 4th worker, so a small part loses one chained-priority-inheritance case 
 one call/reply case, not the suite. `mutex_deadlock`'s mutexes and semaphores are words and hold no
 capability, so no object pool binds it.
 
-`f302nucleo` walked that ladder one knob at a time: at `KICKOS_BUDGET_THREADS=4` plus
+`f302nucleo` walked that ladder one knob at a time: at four thread slots plus
 `KICKOS_USER_STACK_SIZE=1024` and the 2K heap still carved, which bought one more case
 (18 ok / 41 not ok / 11 skipped), the next refusal came from an object pool of 4, not from
 memory; adding a zero heap and a pool of 6 is what took the run to 0 `not ok`. **A spawn failure is not
@@ -2271,12 +2271,12 @@ which is why the honest place to answer it is the link, and why `KICKOS_POOL_ARE
 exists. Eight of `f302nucleo`'s nine pre-`124b68c` skips were arena starvation labelled
 "pool too small"; see *The 5 skips on a 16 KiB part*.
 
-`KICKOS_BUDGET_THREADS` counts **spawnable** threads only. The pool is one slot wider than the
-knob (the thread slot count, `kernel/include/kickos/config/system.h`): root claims one at boot
+The thread count counts **spawnable** threads only. The pool is one slot wider than the
+count (the thread slot count, `kernel/include/kickos/config/system.h`): root claims one at boot
 and that slot is RETIRED for the life of the system -- `ThreadPool::alloc` skips `ROOT_INDEX`,
 so root's death does not give the slot back -- and a spawn therefore draws the full stated
 count whether root is alive or not.
-That is why `f302nucleo` runs a two-thread app at `KICKOS_BUDGET_THREADS 2`. Idle is the one
+That is why `f302nucleo` runs a two-thread app at a thread count of 2. Idle is the one
 thread the pool does not seat; it runs on `Kernel::idle_tcb`
 (`kernel/include/kickos/instance.h`), handed to `thread_create` by pointer. The knob dominates static RAM: on `f302nucleo` `selftest` at
 a root width of 9 and heap 0, `g_instance` measures 2,448 bytes at 2 threads,
@@ -2309,7 +2309,7 @@ arena cannot back are left out of the image and listed by the build
 ### Deriving the suite's SRAM figures
 
 Measured, not assumed -- but measured BEFORE the `124b68c` right-size, which took
-`KICKOS_ROOT_STACK_SIZE` to 1,536 and `KICKOS_BUDGET_THREADS` to 3. Every byte column below is
+`KICKOS_ROOT_STACK_SIZE` to 1,536 and the thread count to 3. Every byte column below is
 therefore the older link; the METHOD is what to reuse, and step 5 of the checklist is how.
 `f302nucleo` `selftest` at the then-shipped `f302nucleo-st` provisioning
 (then in `cmake/presets/arm.json`; the cap table was 9 slots wide, a width no
@@ -2347,18 +2347,18 @@ besides, plus power-of-two natural alignment on every block where
 the five, `mutex_deadlock`, was not a RAM question at all: it waited on an object pool, and its
 mutexes and semaphores are words, which no pool binds.
 `f411disco` is the zero-skip
-witness (128 KiB SRAM, 0 skips), and it provisions `KICKOS_BUDGET_THREADS 8`
+witness (128 KiB SRAM, 0 skips), and it provisions 8 threads
 (`../../boards/f411disco/configs/base/defconfig`), above the measured 4-thread
 peak, so 4 is a floor and not a fitted value.
 
 The 16 KiB result is not slack to spend elsewhere: raising only the thread pool on this
-part fails the **link** at `KICKOS_BUDGET_THREADS=12`, with `KICKOS_BOOT_ARENA_ASSERT`
+part fails the **link** at 12 threads, with `KICKOS_BOOT_ARENA_ASSERT`
 reporting that the arena can no longer hold idle + root.
 
 ### The 5 skips on a 16 KiB part
 
 **The count below is the three-slot, two-image reading and is not today's.** At
-`KICKOS_BUDGET_THREADS 2` over four images `f302nucleo-st` measures 18 skips, nearly all of them a
+two threads over four images `f302nucleo-st` measures 18 skips, nearly all of them a
 worker the board cannot seat beside root, and a `caller_stack` partial beside the partials every
 7-slot board reports. They are declared
 per region in `tests/integration/gates/selftest.cmake`, which is where the bench manifest reads
@@ -2431,11 +2431,11 @@ Given a new part's flash and SRAM, in order:
    `__kickos_ram_end`. They must sum to the part's SRAM. This is the measurement, and it
    costs one build.
 6. **Compute N** = `floor((arena - align(idle) - align(root)) / align(user))`, then
-   `N = min(N, KICKOS_BUDGET_THREADS)`. That is how many threads the board will host.
+   `N = min(N, the thread slots the composition's THREADS budgets size)`. That is how many threads the board will host.
    Subtract any `kos_ram_alloc` the app makes first.
 7. **If N is short**, in decreasing order of yield: cut the composition's `heap:`, cut
-   `KICKOS_USER_STACK_SIZE`, cut `KICKOS_BUDGET_THREADS` (~424 bytes of static RAM each),
-   then the other pools. Do **not** raise `KICKOS_BUDGET_THREADS` to fix a spawn failure
+   `KICKOS_USER_STACK_SIZE`, cut the composition's THREADS budgets (~424 bytes of static RAM a
+   thread), then the other pools. Do **not** raise a THREADS budget to fix a spawn failure
    without checking the arena: on a tight part the arena is usually the binding term,
    and the raise spends static RAM to make the arena smaller.
 8. **A clean link proves that the boot stacks fit AND that the thread-stack pool fits**,

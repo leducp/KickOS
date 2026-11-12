@@ -541,7 +541,7 @@ namespace kickos
                 arm(Edit::FAULTED_OUT, blk, PAGES * G);
                 EXPECT_NE(new_task(g_main, blk, PAGES * G, KOS_MEM_NOCACHE), KOS_TASK_NONE);
                 expect_seen(-KOS_EFAULT, false, 1,
-                            "its out-word went away after the check, and its mapping stands");
+                            "its handle was refused after the window was mapped");
             }
 
             TEST_F(SysPresync, a_spawn_failing_after_its_window_sends_nothing_round)
@@ -1027,12 +1027,12 @@ namespace kickos
                 EXPECT_EQ(host_pool_used(), before);
             }
 
-            TEST_F(SysPresync, a_mint_whose_out_word_went_away_answers_efault_and_keeps_its_object)
+            TEST_F(SysPresync, a_mint_whose_out_word_went_away_answers_efault_and_frees_its_object)
             {
                 int const notifies = live_notifications();
                 refuse_acquire(uva(MAIN_OUT), 1);
                 EXPECT_EQ(err(call_as(g_main, KOS_SYS_NOTIFY_CREATE, uva(MAIN_OUT))), -KOS_EFAULT);
-                EXPECT_EQ(live_notifications(), notifies + 1) << "the capability stays installed";
+                EXPECT_EQ(live_notifications(), notifies) << "the undelivered capability stayed installed";
             }
 
             uintptr_t g_staged_va = 0;
@@ -1132,7 +1132,8 @@ namespace kickos
                           -KOS_EPERM);
                 struct arch_aspace* const space = domain_space(thread_domain(g_main));
                 bool uncached = true;
-                EXPECT_NE(arch_aspace_acquire(space, RUN_VA, &uncached, nullptr), nullptr);
+                EXPECT_NE(arch_aspace_acquire(space, RUN_VA, ARCH_ASPACE_READ, &uncached, nullptr),
+                          nullptr);
                 arch_aspace_release(space, RUN_VA);
                 EXPECT_FALSE(uncached) << "a refused grant mapped the run again";
                 EXPECT_EQ(arch_aspace_frame_at(space, RUN_VA), run.base);

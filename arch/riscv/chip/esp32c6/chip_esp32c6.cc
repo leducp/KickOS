@@ -22,7 +22,6 @@
 #include "crt_tail.h"
 #include "pin_guard.h"
 #include <kickos/arch/amp_shared.h>
-#include <kickos/arch/clock_fallback.h>
 #include <kickos/arch/rv_trap_ids.h>
 #include <kickos/config/limits.h> // KICKOS_POLL_SPIN_MAX
 #include <kickos/console_tx.h>
@@ -37,6 +36,7 @@
 #include "apm_rows.h"
 #include "board_pins.h"
 #include "irq.h"
+#include "clock_bringup.h"
 #include "mtime_conv.h"
 #include "regs/apm.h"
 #include "regs/clint.h"
@@ -51,6 +51,8 @@
 #include "regs/timg.h"
 #include "regs/gpio.h"
 #include "regs/io_mux.h"
+#include "regs/cache.h"
+#include "flash_mmu.h"
 
 namespace mmap = kickos::esp32c6::mmap;
 namespace reg = kickos::esp32c6::reg;
@@ -63,8 +65,6 @@ extern "C"
 
     extern uint32_t _sidata, _sdata, _edata, _sbss, _ebss;
 #if !KICKOS_HAVE_MPU && !KICKOS_AMP_OWN_IMAGE
-    // Defined only in c6lpprobe's link (lp_probe_esp32c6.cc).
-    void kickos_c6_lp_probe_boot(void) __attribute__((weak));
     // Defined only in c6txidle's link (txidle_probe_esp32c6.cc).
     void kickos_c6_txidle_probe(void) __attribute__((weak));
 #endif
@@ -76,6 +76,12 @@ extern "C"
 
     // CPU_CLK, read off PCR before the constructors run (mtime_conv.h).
     uint32_t SystemCoreClock = 0;
+
+#if !KICKOS_AMP_OWN_IMAGE
+    extern unsigned char __kickos_esp32_flash_text_start[];
+    extern unsigned char __kickos_esp32_flash_text_end[];
+    extern unsigned char __kickos_esp32_flash_text_load[];
+#endif
 }
 
 namespace
@@ -142,7 +148,7 @@ namespace
 
     // A UART core whose synchronisation never completes must cost the panic path a bounded
     // delay, not the dump.
-    constexpr uint32_t REG_UPDATE_SPIN_MAX = 200000u;
+    using kickos::esp32c6::REG_UPDATE_SPIN_MAX;
 
     void uart_reg_update_wait()
     {
@@ -704,109 +710,60 @@ static void apm_program_gate(void)
     __asm volatile("fence" ::: "memory");
 }
 
-// T0's latch completes in its own clock domain, so a stopped clock leaves T0UPDATE set.
-static bool timg0_t0_latch(uint32_t& lo)
+#if !KICKOS_AMP_OWN_IMAGE
+static void mmu_write(uint32_t entry, uint32_t value)
 {
-    r32(mmap::TIMG0_BASE + reg::timg::T0UPDATE) = reg::timg::T0_UPDATE;
-    for (uint32_t i = 0; i < REG_UPDATE_SPIN_MAX; i++)
-    {
-        if ((r32(mmap::TIMG0_BASE + reg::timg::T0UPDATE) & reg::timg::T0_UPDATE) == 0u)
-        {
-            lo = r32(mmap::TIMG0_BASE + reg::timg::T0LO);
-            return true;
-        }
-    }
-    return false;
+    r32(reg::cache::MMU_ITEM_INDEX) = entry;
+    r32(reg::cache::MMU_ITEM_CONTENT) = value;
 }
 
-// Counts PLL_F80M_CLK on TIMG0's T0 for 1 ms of MTIME at cpu_hz, then hands T0 and its clock
-// back as found. The TRM names no PLL lock bit, and a PLL selected while it does not run stops
-// the core.
-static bool pll_f80m_runs(uint32_t cpu_hz)
+// Every image's code span, mapped from flash. The ROM loads the image through the cache and
+// hands over with it open and some of its own pages still mapped, so the cache is closed and
+// drained before the table is rewritten. Runs once, before anything is read from flash.
+static void flash_text_map(void)
 {
-    namespace timg = reg::timg;
-    uintptr_t const t0 = mmap::TIMG0_BASE;
-    uint32_t const clk_found = r32(reg::pcr::TG0_TIMER_CLK_CONF);
-    uint32_t const t0_found = r32(t0 + timg::T0CONFIG);
-    uint32_t const t0_div2 = timg::T0_INCREASE | (1u << timg::T0_DIVIDER_S);
-
-    r32(t0 + timg::T0CONFIG) = t0_div2; // the prescaler is rewritten only with T0 stopped
-    r32(t0 + timg::T0CONFIG) = t0_div2 | timg::T0_DIVCNT_RST;
-    uint32_t clk = clk_found & ~(reg::pcr::TG0_TIMER_CLK_SEL_MASK << reg::pcr::TG0_TIMER_CLK_SEL_S);
-    clk |= (reg::pcr::TG0_TIMER_CLK_SEL_PLL_F80M << reg::pcr::TG0_TIMER_CLK_SEL_S)
-           | reg::pcr::TG0_TIMER_CLK_EN;
-    if (KICKOS_WITNESS_CLOCK_FALLBACK)
+    namespace c = reg::cache;
+    namespace m = kickos::esp32c6::flash_mmu;
+    r32(c::PCR_CACHE_CONF) |= c::PCR_CACHE_CLK_EN;
+    r32(c::L1_CTRL) |= c::SHUT_IBUS | c::SHUT_DBUS;
+    r32(c::L1_AUTOLOAD_CTRL) &= ~c::AUTOLOAD_ENA;
+    while ((r32(c::L1_AUTOLOAD_CTRL) & c::AUTOLOAD_DONE) == 0u)
     {
-        // The probe's clock gated off: the count a dead PLL leaves.
-        clk &= ~reg::pcr::TG0_TIMER_CLK_EN;
     }
-    r32(reg::pcr::TG0_TIMER_CLK_CONF) = clk;
-    r32(t0 + timg::T0CONFIG) = t0_div2 | timg::T0_EN;
-    r32(reg::clint::MTIMECTL) |= reg::clint::MTIMECTL_MTCE;
-
-    uint32_t probe_from = 0;
-    uint32_t probe_to = 0;
-    bool latched = timg0_t0_latch(probe_from);
-    uint32_t const mtime_from = r32(reg::clint::MTIME);
-    uint32_t const window = cpu_hz / 1000u;
-    for (uint32_t i = 0; i < KICKOS_POLL_SPIN_MAX; i++)
+    while ((r32(c::L1_PRELOAD_CTRL) & c::PRELOAD_DONE) == 0u)
     {
-        if (r32(reg::clint::MTIME) - mtime_from >= window)
+    }
+    while ((r32(c::L1_SYNC_CTRL) & c::SYNC_DONE) == 0u)
+    {
+    }
+
+    uint32_t const power = r32(c::MMU_POWER_CTRL) & ~(c::MMU_PAGE_SIZE_MASK << c::MMU_PAGE_SIZE_S);
+    r32(c::MMU_POWER_CTRL) = power | (c::MMU_PAGE_SIZE_64K << c::MMU_PAGE_SIZE_S);
+    for (uint32_t e = 0; e < m::ENTRIES; e++)
+    {
+        mmu_write(e, m::INVALID);
+    }
+    uint32_t const start = reinterpret_cast<uint32_t>(__kickos_esp32_flash_text_start);
+    uint32_t const end = reinterpret_cast<uint32_t>(__kickos_esp32_flash_text_end);
+    uint32_t const load = reinterpret_cast<uint32_t>(__kickos_esp32_flash_text_load);
+    if (not m::map_text(start, end, load, mmu_write))
+    {
+        // The link ASSERTs on the span make this unreachable.
+        while (true)
         {
-            break;
         }
     }
-    latched = timg0_t0_latch(probe_to) and latched;
-    uint32_t const mtime_to = r32(reg::clint::MTIME);
 
-    r32(t0 + timg::T0CONFIG) = t0_div2;
-    r32(reg::pcr::TG0_TIMER_CLK_CONF) = clk_found;
-    r32(t0 + timg::T0CONFIG) = (t0_found & ~timg::T0_EN) | timg::T0_DIVCNT_RST;
-    r32(t0 + timg::T0CONFIG) = t0_found;
-
-    return latched
-           and kickos::esp32c6::pll_probe_alive(probe_to - probe_from, mtime_to - mtime_from, cpu_hz);
+    r32(c::L1_SYNC_ADDR) = 0u;
+    r32(c::L1_SYNC_SIZE) &= ~c::SYNC_SIZE_MASK;
+    r32(c::L1_SYNC_CTRL) |= c::INVALIDATE_ENA;
+    while ((r32(c::L1_SYNC_CTRL) & c::SYNC_DONE) == 0u)
+    {
+    }
+    r32(c::L1_CTRL) &= ~(c::SHUT_IBUS | c::SHUT_DBUS);
+    __asm volatile("fence" ::: "memory");
 }
-
-// CPU_CLK to the PLL at 160 MHz, AHB_CLK at 40 MHz. A crystal boot switches only once the PLL is
-// seen running, and otherwise stays on the crystal. The UART's function clock is its own PCR
-// selection, which no step here moves.
-static void pll_bring_up(void)
-{
-    namespace kc = kickos::esp32c6;
-    uint32_t const sys = r32(reg::pcr::SYSCLK_CONF);
-    uint32_t const sel = (sys >> reg::pcr::SOC_CLK_SEL_S) & reg::pcr::SOC_CLK_SEL_MASK;
-    if (sel == kc::SOC_CLK_SEL_XTAL)
-    {
-        uint32_t const cpu = r32(reg::pcr::CPU_FREQ_CONF);
-        uint32_t const xtal_hz = kc::cpu_clk_hz(
-            kc::SOC_CLK_SEL_XTAL,
-            (sys >> reg::pcr::CLK_XTAL_FREQ_S) & reg::pcr::CLK_XTAL_FREQ_MASK,
-            (cpu >> reg::pcr::CPU_LS_DIV_NUM_S) & reg::pcr::CPU_LS_DIV_NUM_MASK, 0u, false);
-        if (not pll_f80m_runs(xtal_hz))
-        {
-            return;
-        }
-    }
-    else if (sel != kc::SOC_CLK_SEL_PLL)
-    {
-        return;
-    }
-    // The AHB divider first: CPU_CLK must stay a multiple of AHB_CLK at every step.
-    uint32_t ahb = r32(reg::pcr::AHB_FREQ_CONF);
-    ahb &= ~(reg::pcr::AHB_HS_DIV_NUM_MASK << reg::pcr::AHB_HS_DIV_NUM_S);
-    r32(reg::pcr::AHB_FREQ_CONF) = ahb | (reg::pcr::AHB_HS_DIV_NUM_BY_4 << reg::pcr::AHB_HS_DIV_NUM_S);
-    uint32_t cpu = r32(reg::pcr::CPU_FREQ_CONF);
-    cpu &= ~((reg::pcr::CPU_HS_DIV_NUM_MASK << reg::pcr::CPU_HS_DIV_NUM_S)
-             | reg::pcr::CPU_HS_120M_FORCE);
-    r32(reg::pcr::CPU_FREQ_CONF) = cpu;
-    if (sel == kc::SOC_CLK_SEL_XTAL)
-    {
-        arch_console_flush_sync();
-        uint32_t const to_pll = sys & ~(reg::pcr::SOC_CLK_SEL_MASK << reg::pcr::SOC_CLK_SEL_S);
-        r32(reg::pcr::SYSCLK_CONF) = to_pll | (kc::SOC_CLK_SEL_PLL << reg::pcr::SOC_CLK_SEL_S);
-    }
-}
+#endif
 
 // MTIME counts CPU_CLK, so a CPU clock that is not 160 MHz >> n stops the boot.
 //
@@ -841,11 +798,6 @@ void arch_init(void)
     g_console_clkdiv = r32(reg::uart::CLKDIV);
 
     g_clint_msip = &r32(reg::clint::MSIP);
-#if KICKOS_BENCH
-    // The C6 traps on `rdcycle`; MTIME counts CPU cycles. Set before any switch.
-    extern volatile uint32_t* g_bench_cycle_src;
-    g_bench_cycle_src = &r32(reg::clint::MTIME);
-#endif
     arch_timer_disarm();
     r32(reg::clint::MTIMECTL) = reg::clint::MTIMECTL_MTCE | reg::clint::MTIMECTL_MTIE;
 
@@ -865,13 +817,6 @@ void arch_init(void)
     r32(reg::plic::MXINT_ENABLE) |= 1u << KICKOS_RV_AMP_DOORBELL_CPU_INT;
     __asm volatile("fence iorw, iorw" ::: "memory");
     __asm volatile("csrs mie, %0" : : "r"(1u << KICKOS_RV_AMP_DOORBELL_CPU_INT) : "memory");
-#endif
-
-#if !KICKOS_HAVE_MPU && !KICKOS_AMP_OWN_IMAGE
-    if (kickos_c6_lp_probe_boot != nullptr)
-    {
-        kickos_c6_lp_probe_boot();
-    }
 #endif
 }
 
@@ -918,9 +863,12 @@ void Reset_Handler(void)
     arch_amp_shared_zero();
 #endif
     c6_early_mark('B'); // .data copied + .bss zeroed
+#if !KICKOS_AMP_OWN_IMAGE
+    flash_text_map(); // every image's template is read from flash from here on
+#endif
     kickos_crt_images_data();
     c6_early_mark('C'); // every image's .data copied and the rest of its window zeroed
-    pll_bring_up();
+    kickos::esp32c6::clocktree::bring_up(arch_console_flush_sync);
     mtime_rate_init(); // a constructor may read SystemCoreClock
     kickos_crt_ctors();
     c6_early_mark('D'); // C++ static constructors (init_array) ran

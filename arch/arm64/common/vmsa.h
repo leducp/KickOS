@@ -66,8 +66,21 @@
                          TCR_TG0_4K | TCR_T1SZ | TCR_IRGN1_WB | TCR_ORGN1_WB | \
                          TCR_SH1_INNER | TCR_TG1_4K | TCR_IPS_40BIT | TCR_AS_16BIT)
 
+/* SCTLR_EL1, written whole: no bit a stage before the kernel left survives. UMA stays clear, so
+ * an EL0 access to DAIF traps. SCTLR_RES1 is the ARMv8.0 RES1 set (bits 29, 28, 23, 22, 20, 11).
+ */
 #define SCTLR_M         (1 << 0)
 #define SCTLR_C         (1 << 2)
+#define SCTLR_SA        (1 << 3)
+#define SCTLR_SA0       (1 << 4)
 #define SCTLR_I         (1 << 12)
+#define SCTLR_DZE       (1 << 14)        /* EL0 DC ZVA */
+#define SCTLR_UCT       (1 << 15)        /* EL0 CTR_EL0 reads */
+#define SCTLR_NTWI      (1 << 16)        /* EL0 WFI not trapped */
+#define SCTLR_NTWE      (1 << 18)        /* EL0 WFE not trapped */
+#define SCTLR_UCI       (1 << 26)        /* EL0 cache maintenance by VA */
+#define SCTLR_RES1      0x30d00800
+#define SCTLR_EL1_VALUE (SCTLR_RES1 | SCTLR_M | SCTLR_C | SCTLR_I | SCTLR_SA | SCTLR_SA0 | \
+                         SCTLR_DZE | SCTLR_UCT | SCTLR_NTWI | SCTLR_NTWE | SCTLR_UCI)
 
 #endif

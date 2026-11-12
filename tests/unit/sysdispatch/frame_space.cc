@@ -569,6 +569,23 @@ namespace kickos
                 EXPECT_EQ(ranges->count(), before) << "an undeliverable map kept its range";
             }
 
+            TEST_F(FrameRunHold, a_map_whose_address_word_turned_read_only_maps_nothing)
+            {
+                uint32_t fcap = KCAP_INVALID;
+                uint32_t acap = KCAP_INVALID;
+                ASSERT_EQ(create(G, &fcap), 0);
+                ASSERT_EQ(space_self(&acap), 0);
+                int const obj = obj_of(main_, fcap);
+                VirtualRanges const* const ranges = domain_ranges(thread_domain(main_));
+                size_t const before = ranges->count();
+                uintptr_t const at = va_word(0);
+                ASSERT_TRUE(remap_page(main_, at, ARCH_MAP_R, ARCH_MAP_NORMAL));
+                EXPECT_EQ(err(call_as(main_, KOS_SYS_FRAME_MAP, fcap, acap, at, 0)), -KOS_EFAULT);
+                EXPECT_EQ(*host<uintptr_t>(at), 0u) << "the address went into a read-only page";
+                EXPECT_EQ(run_refs(obj), 1u) << "an undeliverable map kept its reference";
+                EXPECT_EQ(ranges->count(), before) << "an undeliverable map kept its range";
+            }
+
             TEST_F(FrameRunHold, without_auth_memory_a_bad_address_word_is_eperm)
             {
                 uint32_t fcap = KCAP_INVALID;

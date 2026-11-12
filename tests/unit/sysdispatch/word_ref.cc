@@ -751,6 +751,25 @@ namespace kickos
                 EXPECT_EQ(waiter->held_list, nullptr);
             }
 
+            TEST_F(WordRefSpace, a_word_whose_page_turned_read_only_is_neither_reached_nor_opened)
+            {
+                RunCaps const run = mint(1);
+                ASSERT_NE(run.obj, FRAME_RUN_NONE);
+                ASSERT_EQ(map_run(run, RUN_VA), 0);
+                WordRef const w = named(main_, RUN_VA + AT);
+                ASSERT_TRUE(remap_page(main_, RUN_VA, ARCH_MAP_R, ARCH_MAP_NORMAL));
+                IrqLock lock;
+                EXPECT_FALSE(reached(w)) << "a parked waiter's word was reached";
+                AcquireHolds const before = g_acquire_holds;
+                {
+                    WordRef again;
+                    WordAccess word(main_, RUN_VA + AT, &again);
+                    EXPECT_EQ(word.status(), -KOS_EFAULT);
+                    EXPECT_FALSE(word.reached()) << "a read-only word was opened";
+                }
+                expect_released(before);
+            }
+
             TEST_F(WordRefSpace, a_word_whose_page_went_is_unreachable)
             {
                 RunCaps const run = mint(1);

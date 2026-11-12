@@ -121,9 +121,6 @@ namespace kickos
 #if KICKOS_WITNESS_REWIND
             kprintf(KDIAG_F_BANNER_WITNESS_REWIND);
 #endif
-#if KICKOS_WITNESS_NODE
-            kprintf(KDIAG_F_BANNER_WITNESS_NODE);
-#endif
             kprintf(KDIAG_F_BANNER_SCHED, sched);
             kprintf(KDIAG_F_BANNER_BUILD, kickos_build_time);
             // Image 0's, the executable's own: a later image may be another program's.

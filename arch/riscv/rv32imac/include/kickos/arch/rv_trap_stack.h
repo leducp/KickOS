@@ -27,15 +27,14 @@
 /* Deliberately ABOVE their measurement: the enforced figure is what a future change is measured
  * against. Do NOT tighten them; the block would fall from 1184 to 1104.
  *
- *   _TRAP  192 on the five non-bench presets, 224 on the two bench ones:
- *          kickos_rv_ext_dispatch -> console_tx_isr -> console_tx_room_freed
- *          -> console_dark_wake -> sched::wake -> pick_and_seat -> arch_ctx_redirect[32]
- *          -> arch_context_init[32]
- *   _SYS   832 on qemu-riscv-bench and esp32c6-wroom-bench, the arm that prints:
- *          syscall_dispatch[80]
- *          -> bench_irq_sweep[112] -> dist_print_fmt[80] -> kprintf_paced[320] -> the console.
- *          720 off KICKOS_BENCH on qemu-riscv, a task create staging its grants:
- *          syscall_dispatch[64] -> task_create_call[160] -> spawn_locked[256] -> ...
+ *   _TRAP  368 on esp32c6-wroom-amp2-n1, the AMP doorbell's node service:
+ *          kickos_c6_amp_doorbell_service[16] -> kickos_doorbell_service[16]
+ *          -> kickos_amp_node_service[16] -> node_service[80] -> take_call[96]
+ *          -> depth_ok[64] -> send[64] -> tail_believed[16]
+ *          320 on qemu-riscv and esp32c6-wroom, a timeout's park abort settling inheritance.
+ *   _SYS   736 on esp32c6-wroom-amp2-n0 and -n1, 720 on qemu-riscv, a task create staging
+ *          its grants:
+ *          syscall_dispatch[64] -> task_create_call[160] -> spawn_locked[272] -> ...
  *
  * FRAME_SYS + _SYS = 1168, and the lowest word of a block is its overflow canary, so
  * KICKOS_KERNEL_STACK_SIZE is 1184 here: 12 bytes above the canary word.
@@ -53,8 +52,8 @@
  * arch_rv32imac.cc asserts it equals KICKOS_RV_TRAP_FRAME. */
 #define KICKOS_RV_TRAP_NEST_EXIT 128
 
-/* The fault and slay stubs on the thread's own KERNEL BLOCK. C6 AMP node 0 measures 624
- * through its self-test diagnostic; the other non-bench nodes are smaller. _SYS still wins
+/* The fault and slay stubs on the thread's own KERNEL BLOCK: 448 on qemu-riscv, esp32c6-wroom
+ * and esp32c6-wroom-amp2-n1, the fault record's line waking a console writer. _SYS still wins
  * the block, so this class does not set its size. */
 #if KICKOS_AMP_OWN_IMAGE
 #define KICKOS_RV_TRAP_KERNEL_DEPTH_EXITK 640
@@ -68,9 +67,9 @@
  * KICKOS_RV_TRAP_SWITCH_DEPTH is 0. */
 #define KICKOS_RV_TRAP_FRAME_SYS 256
 
-/* .Lswitch's own C below the frame it saved: 0 on every preset. It MUST stay 0: .Lswitch and
- * arch_start call their hook with sp = incoming->sp, which for a thread that has never trapped
- * is the frame arch_context_init fabricated on its USER stack. */
+/* .Lswitch's own C below the frame it saved: 0 on every preset. .Lswitch and arch_start call
+ * their hook with sp = incoming->sp, which is the incoming thread's kernel block, priced by the
+ * SYS requirement, or idle's stack, priced by KICKOS_ARCH_IDLE_FLOOR. */
 #define KICKOS_RV_TRAP_SWITCH_DEPTH 0
 
 /* idle_entry's own frame, above the msip frame that lands on idle's stack: 16 on every
@@ -81,8 +80,8 @@
  * A synchronous fault reuses the slot, which is sound because arch_fault_is_user_thread
  * refuses a frame off the running thread's kernel stack, so such a fault terminates.
  *
- * .Lfault's reporter sizes it: 560 on qemu-riscv-bench, kickos_rv_fault_report
- * -> kickos_isr_fault -> kprintf[320] -> the console; 544 elsewhere, down the formatter. An
+ * .Lfault's reporter sizes it: 576 on esp32c6-wroom-amp2-n1, kickos_rv_fault_report
+ * -> kickos_isr_fault -> kprintf[320] -> the console; 544 on the other presets. An
  * accepted U-mode fault runs the same reporter on the kernel block, which the FAULT class
  * charges there. Deliberately above the measurement; do NOT tighten it. */
 #define KICKOS_RV_TRAP_NESTED_DEPTH 832
@@ -97,6 +96,11 @@
 /* The s2 slot's offset from the frame base, for the faultsurvive kwrite arm. switch.S asserts
  * its own F_S2 against it. */
 #define KICKOS_RV_TRAP_F_S2 64
+
+/* The pc and mstatus slots, which the faultsurvive mppforge arm finds and plants. switch.S asserts
+ * its own F_MEPC and F_MSTATUS against them. */
+#define KICKOS_RV_TRAP_F_MEPC 0
+#define KICKOS_RV_TRAP_F_MSTATUS 4
 
 /* The slot carrying the sp .Lrestore leaves on. FOUR places write it and nothing else may:
  * trap_entry's three builders and arch_context_init. A fabricated frame that leaves it zero
@@ -124,15 +128,15 @@
 
 /* The panic reporter's own array. Frame 0: the entry clears MIE before the move, and an
  * exception inside the reporter re-enters trap_entry, which builds its frame elsewhere.
- * 192 on qemu-riscv-bench, 160 on the other qemu-riscv presets, 144 to 160 on esp32c6; 448 is
- * enforced above that, and arch_rv32imac.cc asserts KICKOS_PANIC_STACK_SIZE against the pair. */
+ * 208 on esp32c6-wroom, -flat and -amp2-n0, 192 on qemu-riscv and -flat, 176 on -amp2-n1; 448
+ * is enforced above that, and arch_rv32imac.cc asserts KICKOS_PANIC_STACK_SIZE against the pair. */
 #define KICKOS_RV_PANIC_FRAME 0
 #define KICKOS_RV_PANIC_DEPTH 448
 
 /* THE BOOT STACK, _kernel_stack_size below _estack, on which nothing nests: MIE stays clear to
  * arch_start's mret and an M-mode exception takes the trap stack. Reset_Handler's deepest chain,
- * kmain's image record print into the console, measures 848 on esp32c6-wroom-bench and 752 on
- * qemu-riscv. check_trap_redzone.sh compares it against the stack each image links, 4 KiB. */
+ * kmain's image record print into the console, measures 752 on esp32c6-wroom and qemu-riscv.
+ * check_trap_redzone.sh compares it against the stack each image links, 4 KiB. */
 #define KICKOS_RV_TRAP_FRAME_NONE 0
 #define KICKOS_RV_MAIN_DEPTH 1024
 
@@ -144,7 +148,7 @@
  * class TRAP    frame=KICKOS_RV_TRAP_FRAME depth=KICKOS_RV_TRAP_KERNEL_DEPTH stack=kernel
  * class SYS     frame=KICKOS_RV_TRAP_FRAME_SYS depth=KICKOS_RV_TRAP_KERNEL_DEPTH_SYS stack=kernel
  * class FAULT   frame=KICKOS_RV_TRAP_FRAME depth=KICKOS_RV_TRAP_NESTED_DEPTH stack=kernel
- * class SWITCH  frame=KICKOS_RV_TRAP_FRAME depth=KICKOS_RV_TRAP_SWITCH_DEPTH
+ * class SWITCH  frame=KICKOS_RV_TRAP_FRAME depth=KICKOS_RV_TRAP_SWITCH_DEPTH stack=kernel
  * class NESTED  frame=KICKOS_RV_TRAP_FRAME depth=KICKOS_RV_TRAP_NESTED_DEPTH stack=trap
  * class EXITK   frame=KICKOS_RV_TRAP_NEST_EXIT depth=KICKOS_RV_TRAP_KERNEL_DEPTH_EXITK stack=kernel
  * class PANIC   frame=KICKOS_RV_PANIC_FRAME depth=KICKOS_RV_PANIC_DEPTH stack=panic

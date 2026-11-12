@@ -50,20 +50,11 @@ set(KICKOS_KERNEL_SOURCES
   irq/irq_route.cc
   klib/slotpool.cc)
 
-# Microbenchmark accumulator, paired with the cycle-counter bracket in switch.S. On M0 and
-# the sim it links but the cycle path is inert, switch.S bracketing nothing there.
-if(KICKOS_BENCH)
-  list(APPEND KICKOS_KERNEL_SOURCES bench/bench.cc)
-endif()
-
 if(KICKOS_WITNESS_UACCESS)
   list(APPEND KICKOS_KERNEL_SOURCES syscall/syscall_witness.cc)
 endif()
 if(KICKOS_WITNESS_REWIND)
   list(APPEND KICKOS_KERNEL_SOURCES syscall/syscall_witness_rewind.cc)
-endif()
-if(KICKOS_WITNESS_NODE)
-  list(APPEND KICKOS_KERNEL_SOURCES syscall/syscall_witness_node.cc)
 endif()
 
 # The kernel's own copies of the runtime, under the private names cmake/kernel_runtime.syms lists.
@@ -110,18 +101,6 @@ set_source_files_properties("${_kos_build_stamp}" PROPERTIES GENERATED TRUE)
 target_sources(kickos_kernel PRIVATE "${_kos_build_stamp}")
 add_dependencies(kickos_kernel kickos_build_stamp_gen)
 
-# The PendSV tail (the trace and bench switch hooks) and the console drain ISR run with an FP
-# context live, so their paths take no FP register.
-if(KICKOS_ARCH STREQUAL "armv7m" OR KICKOS_ARCH STREQUAL "armv6m")
-  set(_kickos_no_fp init/console_tx.cc)
-  if(KICKOS_TELEMETRY_ON)
-    list(APPEND _kickos_no_fp ktrace/ktrace.cc)
-  endif()
-  if(KICKOS_BENCH AND KICKOS_ARCH STREQUAL "armv7m")
-    list(APPEND _kickos_no_fp bench/bench.cc)
-  endif()
-  set_source_files_properties(${_kickos_no_fp} PROPERTIES COMPILE_OPTIONS "-mgeneral-regs-only")
-endif()
 target_include_directories(kickos_kernel PUBLIC
   "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
   "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>")

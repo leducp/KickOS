@@ -34,7 +34,8 @@
 # asserts, the thread-local spans of every task image but image 1 (kickos_images_tdata.ld) and
 # the image table's entries past image 0's. Where the protection unit takes a power-of-two region
 # aligned to its size, a first final link measures each window and the second places them largest
-# first, each aligned to its own size.
+# first, each aligned to its own size. Where the template states a bank line, a first final link
+# measures each window too, and the second starts at the line one that would run across it.
 #
 # The partial links' script is image_partial.lds, beside <names file>. Kept in <out>.kimg, the
 # one folder of every per-image file: kickos_image<n>.o, and its map image<n>.map.
@@ -331,10 +332,11 @@ def take_template(cmd):
 
 
 def read_template(path):
-    """({part: text}, (enforced, pow2, granule)) of the image template at `path`."""
+    """({part: text}, (enforced, pow2, granule, line)) of the image template at `path`, line the
+    bank line no window runs across, 0 where it states none."""
     with open(path) as fh:
         text = fh.read()
-    m = re.search(r'KIMGRULE\(([^,]*),([^,]*),([^)]*)\)', text)
+    m = re.search(r'KIMGRULE\(([^,]*),([^,]*),([^,)]*)(?:,([^)]*))?\)', text)
     if m is None:
         fail(path + ': no KIMGRULE')
 
@@ -344,7 +346,10 @@ def read_template(path):
             return int(word, 0)
         except ValueError:
             fail(path + ': KIMGRULE holds no number but ' + word)
-    rule = (number(m.group(1)), number(m.group(2)), number(m.group(3)))
+    line = 0
+    if m.group(4) is not None:
+        line = number(m.group(4))
+    rule = (number(m.group(1)), number(m.group(2)), number(m.group(3)), line)
     text = text[:m.start()] + text[m.end():]
     pieces = re.split(r'KIMGPART\((\w+)\)', text)
     parts = {}
@@ -353,6 +358,8 @@ def read_template(path):
     for want in ('base', 'code', 'image', 'tls', 'tdata', 'table', 'asserts'):
         if want not in parts:
             fail(path + ': no KIMGPART(' + want + ')')
+    if line and 'end' not in parts:
+        fail(path + ': a bank line and no KIMGPART(end)')
     return parts, rule
 
 
@@ -362,11 +369,21 @@ def instance(text, n, align=0, heap='0', base='', restarts=False):
             .replace('KIMGTPL', str(int(restarts))))
 
 
-def write_fragments(kimg, parts, count, order, aligns, final, restarts):
+def line_base(start, align, size, line):
+    """The ld expression of a window of `size` on `align` placed from `start`, at the bank line
+    where it would run across it."""
+    at = 'ALIGN(%s, 0x%x)' % (start, align)
+    return '(%s + (%s < 0x%x) * ((%s + 0x%x) > 0x%x) * (ALIGN(0x%x, 0x%x) - %s))' % (
+        at, at, line, at, size, line, line, align, at)
+
+
+def write_fragments(kimg, parts, count, order, aligns, final, restarts, line=0, sizes=None):
     """The fragments of a link holding `count` images: every image's code span in image order,
     and its window placed in `order`, the first at the template's base, each based on aligns[n],
     an image in `restarts` keeping its data's template; the asserts only in the `final` link.
-    Where the template has a window part, the windows are a fragment of their own, in `order`."""
+    Where the template has a window part, the windows are a fragment of their own, in `order`.
+    With a bank `line` and the windows' `sizes`, every window is based past the one before it,
+    or at the line where it would run across it."""
     tasks = list(range(1, count))
     later = list(range(2, count))
     images = []
@@ -379,6 +396,11 @@ def write_fragments(kimg, parts, count, order, aligns, final, restarts):
         base = ''
         if at == 0:
             base = parts['base']
+        if line and sizes is not None:
+            start = parts['base']
+            if at > 0:
+                start = instance(parts['end'], order[at - 1])
+            base = line_base(start, aligns[n], sizes[n], line)
         images.append(instance(parts['image'], n, aligns[n], heap, base, n in restarts))
         if 'window' in parts:
             window_parts.append(instance(parts['window'], n, aligns[n], heap, base, n in restarts))
@@ -1250,11 +1272,12 @@ def main(argv):
 
     pin = 0
     frag, rule = read_template(template)
-    enforced, pow2, granule = rule
+    enforced, pow2, granule, line = rule
     count = len(parts)
     placed = list(range(count))
     aligns = {n: granule for n in placed}
-    if enforced and pow2:
+    sizes = None
+    if (enforced and pow2) or line:
         write_fragments(kimg, frag, count, placed, aligns, False, restarts)
         final_link(moves=False)
         sizes = windows(nm, out, count)
@@ -1265,9 +1288,10 @@ def main(argv):
             # placement that relaxes the code less moves the end, and the link repeats.
             pin = (end + 7) & ~7
         os.remove(out)
-        placed = sorted(placed, key=lambda n: (-sizes[n], n))
-        aligns = sizes
-    write_fragments(kimg, frag, count, placed, aligns, True, restarts)
+        if enforced and pow2:
+            placed = sorted(placed, key=lambda n: (-sizes[n], n))
+            aligns = sizes
+    write_fragments(kimg, frag, count, placed, aligns, True, restarts, line, sizes)
     if pin == 0:
         final_link()
     else:

@@ -27,11 +27,19 @@ namespace kickos
         return a_base <= b_last and b_base <= a_last;
     }
 
+#if KICKOS_HAVE_ASPACE
+    // Whether a mapping of `type` over the frames [pa, pa + size) carries that type. Where the
+    // page entry carries none, the physical address's own attribute is the type: a chip-stated
+    // aperture is uncached device memory, and nothing else is.
+    bool grant_memtype_at(enum arch_map_memtype type, arch_phys_addr_t pa, size_t size);
+#endif
+
     // A commit backend silently DROPS a region whose memory type it cannot encode, so an
     // unencodable ARCH_MPU_NOCACHE is refused here, in BOTH postures.
     //
     // THE QUESTION GOES TO WHICHEVER FAMILY COMMITS THE MAPPING: a translating board answers
-    // ARCH_MPU_NOCACHE_REFUSED to the region query whatever its page tables can encode.
+    // ARCH_MPU_NOCACHE_REFUSED to the region query whatever its page tables can encode, and
+    // its per-address answer is the map's (grant_memtype_at).
     inline bool grant_nocache_admissible(uint32_t attr)
     {
         if ((attr & ARCH_MPU_NOCACHE) == 0)

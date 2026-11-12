@@ -38,6 +38,11 @@ namespace kickos
             }
             size_t const g = arch_aspace_granule();
             VirtualRange const* const e = ranges->find(va, sizeof(uint32_t));
+            // Ahead of the write check, which a device range never answers.
+            if (e != nullptr and e->memtype == static_cast<uint8_t>(ARCH_MAP_DEVICE))
+            {
+                return -KOS_EINVAL;
+            }
             bool writable = thread_writable_found(c, va, sizeof(uint32_t), e);
             // Stacks are mapped task-wide and never granted; the range's first granule is the
             // guard.
@@ -52,7 +57,7 @@ namespace kickos
             }
             bool uncached = false;
             arch_phys_addr_t frame = 0;
-            void* const p = arch_aspace_acquire(space, va, &uncached, &frame);
+            void* const p = arch_aspace_acquire(space, va, ARCH_ASPACE_WRITE, &uncached, &frame);
             *word = static_cast<uint32_t*>(p);
             // A cacheable alias of an uncached word cannot be compared and swapped atomically.
             if (p != nullptr and uncached)
@@ -86,47 +91,47 @@ namespace kickos
             return rc;
         }
 #else
+#if KICKOS_ARCH_SIM
+        // The host's own heap and the host blocks standing in for small stacks lie outside the
+        // arena and outside the image, where every thread writes.
+        bool word_on_host(uintptr_t va)
+        {
+            uintptr_t const arena = arch_ram_base();
+            return va < arena or va - arena >= arch_ram_size();
+        }
+#endif
+
+#if KICKOS_MEMORY_ENFORCED
         bool word_writable(Thread const* t, uintptr_t va)
         {
 #if KICKOS_ARCH_SIM
-            // The host's own heap and the host blocks standing in for small stacks lie outside
-            // the arena and outside the image, where every thread writes.
-            uintptr_t const arena = arch_ram_base();
-            if (va < arena or va - arena >= arch_ram_size())
+            if (word_on_host(va))
             {
                 return true;
             }
 #endif
             return thread_writable_ok(t, va, sizeof(uint32_t));
         }
-
-        // No two memory types share a byte, so any region meeting the word decides its type.
-        bool word_region_typed(Thread const* t, uintptr_t va, uint32_t types)
-        {
-            for (arch_mpu_region const& r : t->mpu)
-            {
-                if ((r.attr & types) != 0 and r.size != 0
-                    and va <= r.base + (r.size - 1u) and r.base <= va + (sizeof(uint32_t) - 1u))
-                {
-                    return true;
-                }
-            }
-            return false;
-        }
+#endif
 
         int word_key(Thread const* c, uintptr_t va, arch_phys_addr_t* key, UserOwner* owner,
                      uint32_t** word)
         {
+            WordReach const reach = thread_word_reach(c, va);
             // Ahead of the write check, which a device region never answers.
-            if (word_region_typed(c, va, ARCH_MPU_DEV))
+            if (reach.device)
             {
                 return -KOS_EINVAL;
             }
-            if (not word_writable(c, va))
+            bool writable = reach.writable;
+#if KICKOS_ARCH_SIM
+            writable = writable or word_on_host(va);
+#endif
+            if (not writable)
             {
                 return -KOS_EFAULT;
             }
-            if (word_region_typed(c, va, ARCH_MPU_NOCACHE))
+            if (reach.uncached)
             {
                 return -KOS_EINVAL;
             }

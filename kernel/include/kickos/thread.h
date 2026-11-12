@@ -235,8 +235,9 @@ namespace kickos
         // thread is staged toward. `affinity` says where a thread may run, this says where its
         // scheduler state lives, and placement keeps it there unless the placement invariant
         // moves it; the two coincide only when the mask is one bit. Written by the scheduler's
-        // publish alone (sched.cc), inside `affinity` when written, and meaningless while
-        // blocked: a parked thread's waker chooses it afresh.
+        // publish alone (sched.cc), inside `affinity` when written. While blocked it names the
+        // core the thread parked on, whose delta list holds its deadline: a write must follow
+        // the deadline's removal.
         uint8_t queue_core = 0;
         // The priority the linking core keyed this thread's ready list on. `prio` runs ahead of
         // it while a request to that core is in flight.
@@ -257,11 +258,10 @@ namespace kickos
         // the zero a fresh TCB carries means none (kickos/notify.h says why zero and not -1).
         // Written under IrqLock.
         int32_t notify_bound = KOS_NOTIFY_UNBOUND;
-        // CapAuthority (AUTH_*) bits. Read by cap_check_authority without IrqLock, so it must
-        // stay one aligned word no path writes concurrently: the parent seats it at spawn
-        // before the child runs, and only the thread itself narrows it. Ignored when
-        // `privileged`. It takes the padding before slice_deadline_ns wherever uint64_t aligns
-        // to 8; RXv3 pays its four bytes.
+        // CapAuthority (AUTH_*) bits, read by cap_check_authority without IrqLock (cap.h), so it
+        // stays one aligned word: seated before the thread first runs, then only narrowed. It
+        // takes the padding before slice_deadline_ns wherever uint64_t aligns to 8; RXv3 pays
+        // its four bytes.
         uint32_t authority = 0;
         uint64_t slice_deadline_ns = 0;
 

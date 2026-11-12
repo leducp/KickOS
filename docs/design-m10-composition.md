@@ -91,7 +91,6 @@ metadata declares, as `lines: { irq: /dev/usic0/sr1 }`.
 | `memory` | mapping | on a part with a core that does not translate | ordinary memory windows -- on-chip RAM, flash, apertures -- each a `size` and either a `base` or, where clusters' maps differ, `at`, one base per cluster, or neither for the arena of a part the host runs, which the host places and the link has no region for, and `cluster` on an entry one cluster alone reaches; for the part, or each of its clusters, that does not translate, exactly one entry it reaches is marked `arena: true`, the RAM its user arena is carved from |
 | `pins` | mapping | no | each pin's functions |
 | `interrupts` | mapping | yes | `count`, the controller's line count; `soft_only_from`, the first line no hardware raises; `free_from`, the first line no device uses; `vectors`, the RX's INTB table size; each a number or `{ value: <number>, ref: <ref> }`. On a multi-architecture part the lines are source numbers, and the generator adds the built cluster's `line_offset` to each; every device's line is below `count` |
-| `cycle_counter` | mapping | no | `hz: 0` where the counter has no fixed rate, `glitches: true` where a read can glitch, each a value or `{ value: <value>, ref: <ref> }` |
 | `timebase` | mapping | no | `hz`, the rate of the counter the kernel's clock and a user-mode read both count, a value or `{ value: <value>, ref: <ref> }`; generated as `KICKOS_CHIP_TIMEBASE_HZ` |
 | `reserved` | `none` | no | stated by a part whose protecting unit holds no window for the kernel, which the tool otherwise refuses: a protecting part marks the devices the kernel holds `owner: kernel` |
 | `c` | mapping | no | `namespace`, the C++ namespace of the generated headers where it is not `kickos::<chip>`, `line_enum`, the line enum's declaration where it is not `irq_num`, as `node : int`, and `led: addressable` where the chip's code drives the kernel's LED as one sent its state as data rather than a `level` one |
@@ -540,7 +539,7 @@ installed beside the package's CMake files, where `kickos_compose` finds it.
 | `abi` | `table`, the version of the emitted table's layout; `cap_reserved`, the capability indices the kernel reserves in every table; `symbol_prefix`, what the link spells before a C name, `""` or rx-elf's `_` | declared in `cmake/manifest.cmake`, `KICKOS_CAP_FIRST_DYNAMIC` in `cmake/cap_geometry.cmake`, and the prefix in the toolchain file of an ABI that adds one |
 | `target` | board, chip, arch; cores, kernel cores, isolated cores; on an AMP node, its node, the partition's nodes, its ports and the bytes of its user share | the resolved Kconfig, and the node and port list as `tools/kconfig/genconfig.py` derives them |
 | `protection` | whether the build enforces its unit; the window rule, `pow2` (a power of two, naturally aligned), `granule` (a multiple of the smallest window, 16 bytes on a region build whose seam states no unit) or `none` (a translating build, whose page is its chip file's), and the smallest window, as the seams state them whether or not the build enforces, the kernel rounding every arena block and checking every device window by them either way; `KICKOS_MAX_THREAD_WINDOWS` as `thread_windows`; whether a fault ends its task rather than the system, as `fault_isolation` | `KICKOS_MEMORY_ENFORCED`, `KICKOS_FAULT_ISOLATION`, `KICKOS_HAVE_ASPACE`, the chip file's region rule, and the resolved Kconfig |
-| `pools` | every `KICKOS_MAX_*` but `KICKOS_MAX_THREAD_WINDOWS`, every `KICKOS_TASK_*_BUDGET`, `KICKOS_MAX_SPAWN_GRANTS`, the RAM owner table size, `KICKOS_ASPACE_RANGES` | the resolved Kconfig |
+| `pools` | every `KICKOS_MAX_*` but `KICKOS_MAX_THREAD_WINDOWS`, every `KICKOS_BUDGET_*` default, `KICKOS_MAX_SPAWN_GRANTS`, the RAM owner table size, `KICKOS_ASPACE_RANGES` | the resolved Kconfig |
 | `threads` | the priority range; `KICKOS_MIN_STACK_SIZE` as `min_stack`; `KICKOS_USER_STACK_SIZE`, the stack a runtime spawn defaults to, as `user_stack`; the idle and root stacks; `KICKOS_STACK_ALIGN` as `stack_align`; `stack_stride`, the block every stack is where the thread pointer is SP masked, or `none` | declared in `cmake/sched_geometry.cmake` and `cmake/stack_geometry.cmake`, the stride as the top-level `CMakeLists.txt` derives it, and the resolved Kconfig |
 | `descriptions` | the board's chip and board files, by their path beside the manifest, on a board that has them; admission and emission against the manifest read the board and chip there and nowhere else | `platform/<chip>/<board>.yaml` and its chip file, copied beside the manifest |
 | `default` | `composition`, the board's default composition, by its path beside the manifest, on a board that has one, which needs its descriptions | `boards/<board>/composition.yaml`, copied beside the manifest |
@@ -691,8 +690,8 @@ init spends exactly:
   one;
 - its threads: a user task's one, at its `stack`, or each thread a packaged driver's catalogue
   declares, on the kernel's default stack of `KICKOS_USER_STACK_SIZE`, each one whole stride where
-  the thread pointer is SP masked; the init's own thread is root's slot, outside
-  `KICKOS_BUDGET_THREADS`;
+  the thread pointer is SP masked; the init's own thread is root's slot, the one thread
+  of the init's budget;
 - the endpoint it serves, or a driver's catalogue endpoints, held for its users and by the init;
 - a notification when it watches, or a driver's catalogue notifications;
 - an IRQ binding per line, which the init claims and passes on at the spawn; a task taking a

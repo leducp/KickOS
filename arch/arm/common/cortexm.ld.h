@@ -7,6 +7,7 @@
 #ifndef KICKOS_ARCH_ARM_COMMON_CORTEXM_LD_H
 #define KICKOS_ARCH_ARM_COMMON_CORTEXM_LD_H
 
+#include <chip_layout.h>
 #include <sections.ld.h>
 
 /* The vector table is a data object nothing references. Not in an image template
@@ -20,8 +21,8 @@ EXTERN(g_isr_vector)
     KICKOS_KERNEL_SECTIONS(.text .text.*)                                     \
     KICKOS_KERNEL_SECTIONS(.rodata .rodata.*)                                 \
     KICKOS_CODE_DEBRIS_SECTIONS                                               \
-    KEEP(*(.init))                                                            \
-    KEEP(*(.fini))                                                            \
+    KICKOS_KERNEL_KEEP(.init)                                                 \
+    KICKOS_KERNEL_KEEP(.fini)                                                 \
     . = ALIGN(4);
 
 /* EHABI unwind instructions and LSDA. libstdc++ emits .gcc_except_table even on EHABI. The
@@ -190,6 +191,26 @@ EXTERN(g_isr_vector)
 /* The first window's base: past kernel .bss and the reserve kernel_data_reserve.ld.h pins. */
 #define KICKOS_CORTEXM_WINDOWS_BASE MAX(KICKOS_LD_C_SYM(_ebss), _kernel_data_top)
 
+/* The arena's bank line (chip.yaml), which no linked object runs across either: a window that
+ * would starts at it (tools/image-link.py, from KIMGRULE), and the rest is refused here. */
+#ifdef KICKOS_LAYOUT_BANK_LINE
+#define KICKOS_CORTEXM_BANK_LINE KICKOS_LAYOUT_BANK_LINE
+#define KICKOS_CORTEXM_LINE_ASSERTS()                                         \
+    ASSERT(_ebss <= KICKOS_LAYOUT_BANK_LINE || _sdata >= KICKOS_LAYOUT_BANK_LINE, \
+           "KickOS: kernel .data/.bss run across the bank line chip.yaml states") \
+    ASSERT(__kickos_ram_end >= KICKOS_LAYOUT_BANK_LINE                        \
+               || _estack <= KICKOS_LAYOUT_BANK_LINE,                         \
+           "KickOS: the main stack runs across the bank line chip.yaml states")
+#define KICKOS_CORTEXM_IMAGE_LINE_ASSERT(n)                                   \
+    ASSERT(KICKOS_LD_IMAGE_SYM(n, window_end) <= KICKOS_LAYOUT_BANK_LINE      \
+               || KICKOS_LD_IMAGE_SYM(n, window_start) >= KICKOS_LAYOUT_BANK_LINE, \
+           "KickOS: an image's window runs across the bank line chip.yaml states, which tools/image-link.py starts it at")
+#else
+#define KICKOS_CORTEXM_BANK_LINE 0
+#define KICKOS_CORTEXM_LINE_ASSERTS()
+#define KICKOS_CORTEXM_IMAGE_LINE_ASSERT(n)
+#endif
+
 #define KICKOS_CORTEXM_ARENA                                                  \
     . = ALIGN(32);                                                            \
     __kickos_ram_start = .;                                                   \
@@ -271,6 +292,7 @@ EXTERN(g_isr_vector)
     KICKOS_CORTEXM_WINDOW_ASSERTS()                                           \
     KICKOS_HEAP_MIN_ASSERT()                                                  \
     KICKOS_CORTEXM_IMAGES_ASSERTS()                                       \
+    KICKOS_CORTEXM_LINE_ASSERTS()                                         \
     KICKOS_APP_IMAGE_SPLIT_NONE()
 
 #endif

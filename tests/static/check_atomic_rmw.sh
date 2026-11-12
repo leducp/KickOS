@@ -316,10 +316,10 @@ NEGK="$(awk '{ s += $1 } END { print s + 0 }' "$TMP/st/nw/kept")"
 
 # --- the corpus ---------------------------------------------------------------------------
 corpus_sources "$TMP/all"
-# x86-only lock and interrupt state require hardware RMWs, and the host probe models one.
-# Neither source can reach the small MCUs whose libatomic absence this gate enforces. uatomic
-# is user code racing the RMWs the user library provides.
-grep -vE '^(arch/x86/|tools/bench/m941_lock_scaling[.]cc$|user/apps/common/uatomic/main[.]cc$)' \
+# x86-only lock and interrupt state require hardware RMWs and cannot reach the small MCUs
+# whose libatomic absence this gate enforces. uatomic is user code racing the RMWs the user
+# library provides.
+grep -vE '^(arch/x86/|user/apps/common/uatomic/main[.]cc$)' \
     "$TMP/all" > "$TMP/portable"
 N="$(wc -l < "$TMP/portable" | tr -d ' ')"
 

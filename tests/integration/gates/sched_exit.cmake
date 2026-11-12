@@ -1,31 +1,18 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 
-# The scheduler exit-path gates riding `sched_exit`, plus the multi-instance gate that only
-# needs a sim tree.
+# The multi-instance gate, whose payload is `sched_exit`.
 
 if(NOT TARGET sched_exit)
   return()
 endif()
-kickos_app_judge(sched_exit tests/integration/check_sched_exit.sh)
+kickos_unbooted(sched_exit "sim_multi_instance boots it in a tree of its own")
 
-set(_sched_exit_script "${PROJECT_SOURCE_DIR}/tests/integration/check_sched_exit.sh")
-
-# Through the same script as the QEMU boards: PASS_REGULAR_EXPRESSION is an OR, so it cannot
-# require the worker markers too, and main survives an exit that never happened.
-if(KICKOS_ARCH STREQUAL "sim")
-  add_test(NAME sim_sched_exit
-    COMMAND "${_sched_exit_script}" "$<TARGET_FILE:sched_exit>")
-  set_tests_properties(sim_sched_exit PROPERTIES TIMEOUT 15)
+# The gate configures the sim preset's own tree with the knob on and would otherwise recurse.
+if(NOT _fs_preset_key STREQUAL "sim" OR KICKOS_MULTI_INSTANCE)
+  return()
 endif()
-
-# Registered only in the SINGLE-instance tree: the gate configures its own tree with the knob
-# on and would otherwise recurse.
-if(KICKOS_ARCH STREQUAL "sim" AND NOT KICKOS_MULTI_INSTANCE)
-  add_test(NAME sim_multi_instance
-    COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_sim_multi_instance.sh"
-            "${PROJECT_SOURCE_DIR}" "${CMAKE_COMMAND}")
-  set_tests_properties(sim_multi_instance PROPERTIES TIMEOUT 300)
-endif()
-
-kickos_add_qemu_test(TARGET sched_exit SCRIPT "${_sched_exit_script}")
+add_test(NAME sim_multi_instance
+  COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_sim_multi_instance.sh"
+          "${PROJECT_SOURCE_DIR}" "${CMAKE_COMMAND}")
+set_tests_properties(sim_multi_instance PROPERTIES TIMEOUT 300)

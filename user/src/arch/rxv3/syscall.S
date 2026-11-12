@@ -6,6 +6,8 @@
  * runtime, so every image carries its own.
  */
 
+#include <kickos/arch/rx_trap_stack.h>
+
     .section .text.kickos_arch_syscall, "ax", @progbits
 
 /* arch_syscall(nr, a0, a1, a2, a3): R1=nr R2=a0 R3=a1 R4=a2, [R0+4]=a3. INT     */
@@ -22,10 +24,16 @@ _arch_syscall64:
 /* the payload rides R4-R8 straight into the trap and the trap's own frame build */
 /* is what stores it. R6-R8 are callee-saved and are banked here. RTE lands after */
 /* the INT whether the trap took the fastpath or ran the generic dispatch.        */
+/* The fastpath banks the DPFPU file at a fixed distance below the USP the INT    */
+/* leaves, so R0 is aligned for it here whatever the caller's frames add up to.   */
     .global _arch_syscall_reg
 _arch_syscall_reg:
     pushm   r6-r8
-    push.l  r1                 /* io, across the trap */
+    mov.l   r0, r14
+    sub     #8, r0
+    and     #-KICKOS_RX_TRAP_BANK_ALIGN, r0
+    mov.l   r14, [r0]          /* the SP to return on */
+    mov.l   r1, 4[r0]          /* io, across the trap */
     mov.l   4[r1], r2          /* io[1] = endpoint cap */
     mov.l   8[r1], r3          /* io[2] = packed lengths */
     mov.l   12[r1], r4         /* io[3..7] = the request payload */
@@ -38,12 +46,12 @@ _arch_syscall_reg:
     /* R2-R6 carry the reply on the taken path and the untouched request on the declined one.
        The stub reads them only when the result is not KOS_CALL_REG_FALLBACK, so the
        unconditional store is observationally free on the declined path. */
-    mov.l   [r0], r14          /* io */
+    mov.l   4[r0], r14         /* io */
     mov.l   r2, 4[r14]
     mov.l   r3, 8[r14]
     mov.l   r4, 12[r14]
     mov.l   r5, 16[r14]
     mov.l   r6, 20[r14]
-    add     #4, r0
+    mov.l   [r0], r0
     popm    r6-r8
     rts

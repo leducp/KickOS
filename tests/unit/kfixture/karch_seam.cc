@@ -209,14 +209,12 @@ extern "C"
         kickos::klock_enter();
     }
 
-    // Record a switch without changing machine context.
     void arch_switch(struct arch_context* from, struct arch_context* to)
     {
         kickos::testfix::note_switch(kickos::testfix::thread_of_context(from),
                                      kickos::testfix::thread_of_context(to));
     }
 
-    // Record context rebuilds without performing them.
     void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),
                            void* stack_base, size_t stack_size)
     {
@@ -235,7 +233,6 @@ extern "C"
     }
 
 #if not KSEAM_REAL_CONSOLE
-    // Trace reclamation after the full sweep to check its order relative to switches.
     void console_note_driver_death(void)
     {
         kickos::testfix::g_console_noted++;
@@ -369,8 +366,7 @@ namespace kickos
 #endif
 
 #if not KSEAM_REAL_DOMAIN
-    // Use a distinct domain per task so reference counts can be tested independently.
-    // The production default-user singleton is not shared in this fixture.
+    // A domain per task: the production default-user singleton is not shared here.
     Domain* domain_for(uint32_t, void*, size_t, uint32_t, Domain*, int* err)
     {
         *err = 0;
@@ -421,7 +417,6 @@ namespace kickos
             testfix::g_domain_live[i] = false;
         }
 #if KICKOS_HAVE_ASPACE
-        // Trace when task_release drops the thread's domain reference.
         testfix::note_member_release();
 #endif
     }
@@ -507,6 +502,26 @@ namespace kickos
 }
 
 #ifdef KFIXTURE_REAL_TIME
+namespace kickos
+{
+    namespace testfix
+    {
+        uint64_t g_comparator[KICKOS_KERNEL_CORES] = {};
+
+        namespace
+        {
+            uint64_t& comparator_here()
+            {
+#if KICKOS_KERNEL_CORES > 1
+                return g_comparator[g_core];
+#else
+                return g_comparator[0];
+#endif
+            }
+        }
+    }
+}
+
 // The real kernel/time/time.cc answers the ktime half; this is the clock beneath it.
 extern "C"
 {
@@ -517,14 +532,14 @@ extern "C"
 
     void arch_timer_arm(uint64_t deadline_ns)
     {
-        kickos::testfix::g_timer_due = deadline_ns;
         kickos::testfix::g_timer_writes++;
+        kickos::testfix::comparator_here() = deadline_ns;
     }
 
     void arch_timer_disarm(void)
     {
-        kickos::testfix::g_timer_due = UINT64_MAX;
         kickos::testfix::g_timer_writes++;
+        kickos::testfix::comparator_here() = UINT64_MAX;
     }
 }
 #endif

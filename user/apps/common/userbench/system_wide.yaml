@@ -1,0 +1,33 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# Irq beside the default's authority, for the line the bench raises past KICKOS_IRQ_FREE_BASE,
+# claimed at run time, and the peer program's two tasks, which main creates for the cross-task
+# rows, on a kernel above two cores, whose workloads seat eight threads beside main.
+
+version: 1
+stdout: kernel
+ends: main
+
+tasks:
+  - name: main
+    program: main
+    priority: 2
+    ceiling: 31
+    authority: [memory, system, tasks, irq]
+    budgets: { threads: 9 }
+
+  # Two tasks over one program, started by main's cross-task rows.
+  - name: xa
+    program: userbench_peer
+    priority: 4
+    ceiling: 4
+    start: on_request
+    budgets: { threads: 1 }
+
+  - name: xb
+    program: userbench_peer
+    priority: 4
+    ceiling: 4
+    start: on_request
+    budgets: { threads: 1 }

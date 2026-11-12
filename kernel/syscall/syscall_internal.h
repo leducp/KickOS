@@ -12,6 +12,7 @@
 
 #include <kickos/aspace.h>    // the kaccess byte-access seam
 #include <kickos/cap.h>       // KCAP_INVALID (the minting out-parameter's failure value)
+#include <kickos/irqlock.h>   // cap_out_deliver's undo
 #include <kickos/sched.h>     // sched::current (cap_out_deliver's owner)
 #include <kickos/thread.h>    // the IPC state reply_wait_seat writes
 #include <kickos/sys/abi.h>   // kos_thread_params (thread_create_call parameter)
@@ -48,6 +49,17 @@ namespace kickos
     // The same, with `found` what c's range list answers for [ptr, ptr + len), null for none.
     bool thread_writable_found(Thread const* c, uintptr_t ptr, size_t len,
                                VirtualRange const* found);
+#else
+    // What c's region set answers for the aligned word at va, in one walk of the set. Past a
+    // device region nothing else is asked: `writable` and `uncached` are then false.
+    struct WordReach
+    {
+        bool device = false;
+        // thread_writable_ok(c, va, sizeof(uint32_t)).
+        bool writable = false;
+        bool uncached = false;
+    };
+    WordReach thread_word_reach(Thread const* c, uintptr_t va);
 #endif
 
     // The CONJUNCTION of the two above over one base: readable across `read_len` AND writable
@@ -104,17 +116,10 @@ namespace kickos
     // processes hold different frames at one virtual address, or once two threads hold one
     // block with different region sets, so a site passes what it already holds.
 #if KICKOS_HAVE_ASPACE or KICKOS_ARCH_ARENA_DCACHE
-    // The owner of a thread's own user pointers.
-    UserOwner user_space_of(Thread const* t);
     // The owner of a PARKED thread's ipc.buf: its own, EXCEPT under the fastpath's park, whose
     // buffer is the caller's saved trap frame and therefore kernel storage.
     UserOwner ipc_buf_space(Thread const* t);
 #else
-    inline UserOwner user_space_of(Thread const* t)
-    {
-        (void)t;
-        return nullptr;
-    }
     inline UserOwner ipc_buf_space(Thread const* t)
     {
         (void)t;
@@ -156,15 +161,29 @@ namespace kickos
     //
     // cap_out_check proved this word writable and aligned, so one granule holds all of it and
     // a refusal here moves NO byte: the mapping went away since that check.
-    inline uint64_t cap_out_deliver(uintptr_t out, int rc, uint32_t handle)
+    inline uint64_t out_word_deliver(uintptr_t out, int rc, uint32_t value)
     {
         if (rc == 0
-            and not kaccess_to_user(user_space_of(sched::current()), out, &handle,
-                                    sizeof(handle)))
+            and not kaccess_to_user(user_space_of(sched::current()), out, &value,
+                                    sizeof(value)))
         {
             rc = -KOS_EFAULT;
         }
         return static_cast<uint64_t>(rc);
+    }
+
+    // For a capability the caller just minted into its own table: one whose handle cannot be
+    // written is closed again, so a refused delivery leaves the table and the object as they
+    // were before the mint.
+    inline uint64_t cap_out_deliver(uintptr_t out, int rc, uint32_t cap)
+    {
+        uint64_t const delivered = out_word_deliver(out, rc, cap);
+        if (rc == 0 and delivered != 0)
+        {
+            IrqLock lock;
+            (void)handle_close(sched::current(), cap, lock);
+        }
+        return delivered;
     }
 
 #if KICKOS_WITNESS_UACCESS
@@ -173,13 +192,6 @@ namespace kickos
 #if KICKOS_WITNESS_REWIND
     int64_t witness_rewinds();
 #endif
-#if KICKOS_WITNESS_NODE
-    int64_t witness_node(uintptr_t op, uintptr_t arg);
-#endif
-
-    // How many calls the trap-handler IPC fastpath COMPLETED; a refusal does not count.
-    // Reads 0 on a backend with no fastpath.
-    uint32_t ipc_fast_taken_count();
 
     // Every minting call returns a status and writes its handle out-parameter on every path
     // (KCAP_INVALID on failure): a handle spends all 32 bits. A charged create and irq_claim
@@ -251,14 +263,16 @@ namespace kickos
     }
 
     // --- Thread lifecycle (syscall_thread.cc) ----------------------------------
-    // Same minting shape as the cap creators above: *out_thread is written on EVERY path
-    // (KOS_THREAD_NONE on failure).
-    int thread_create_call(kos_thread_params const* p, kos_thread_t* out_thread);
+    // The new thread's handle goes to the caller's word at `out`, which cap_out_check
+    // admitted, before the thread can run; a refused write refuses the spawn with -KOS_EFAULT.
+    // Nothing is written on failure.
+    int thread_create_call(kos_thread_params const* p, uintptr_t out);
     // Creates an instance of program `prog` from the caller's struct kos_task_params at `params`
     // and starts its entry thread, a timeout other than 0 first waiting out the instance's last
-    // incarnation. *out_task is written on EVERY path. Takes its own IrqLock, which a console
-    // create drops to drain the console's kernel writers, and a wait drops to park.
-    int task_create_call(uint32_t prog, uintptr_t params, uint32_t timeout_us, kos_task_t* out_task);
+    // incarnation. The task's handle goes to `out` as thread_create_call's does. Takes its own
+    // IrqLock, which a console create drops to drain the console's kernel writers, and a wait
+    // drops to park.
+    int task_create_call(uint32_t prog, uintptr_t params, uint32_t timeout_us, uintptr_t out);
     // Mints a program capability for the program named at `name`. *out_prog is written on EVERY
     // path. Takes its own IrqLock.
     int program_find_call(uintptr_t name, uint32_t* out_prog);

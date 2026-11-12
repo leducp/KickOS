@@ -17,7 +17,13 @@ namespace kickos
 {
     namespace testfix
     {
+#if defined(KSEAM_ARENA_AT)
+        // The gate's link places this section at KSEAM_ARENA_AT, where its posture's constants
+        // put memory the kernel compares against.
+        alignas(256) unsigned char g_arena[ARENA_BYTES] __attribute__((section(".kseam_arena")));
+#else
         alignas(256) unsigned char g_arena[ARENA_BYTES];
+#endif
         size_t g_arena_used = 0;
     }
 

@@ -72,12 +72,3 @@ TEST(Rp2xxxBringup, PadClearPerPart)
         EXPECT_EQ(pad_clear(c.func, c.release, OD), c.clr) << c.what;
     }
 }
-
-// The func word is KOS_SYS_PINMUX_SET's ABI on both parts.
-TEST(Rp2xxxBringup, PinFuncEncoding)
-{
-    EXPECT_EQ(kickos::rp2xxx::PIN_FUNCSEL_MASK, 0x1fu);
-    EXPECT_EQ(PIN_INPUT, 1u << 8);
-    EXPECT_EQ(PIN_DRIVE, 1u << 9);
-    EXPECT_EQ(PIN_SIO_OUT, 1u << 16);
-}

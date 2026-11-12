@@ -25,7 +25,6 @@
 #include <kickos/sys/abi.h>
 #include <kickos/sys/errno.h>
 
-#include "bench_seam.h"
 #include "ipc_seam.h"
 #include "kseam_test.h"
 #include "syscall_internal.h"
@@ -151,6 +150,19 @@ namespace
     };
 
     // Use a real attached line and a real bind, so the kernel can rearm and consume its bit.
+    // l->server is seated, running and pinned to ON_ME.
+    void bind_a_line(Line* l)
+    {
+        l->irq = KCAP_INVALID;
+        l->note = KCAP_INVALID;
+        l->bit = 1u << 0; // irq_bind_notify copies the capability's badge; unbadged is bit 0
+        ASSERT_EQ(irq_claim(l->server, 5, 0, &l->irq), 0);
+        ASSERT_EQ(notify_create(l->server, &l->note), 0);
+        ASSERT_EQ(irq_bind_notify(l->server, l->irq, l->note), 0);
+        ASSERT_EQ(notify_bind(l->server, l->note), 0);
+        ASSERT_EQ(notify_pending_of(l->server), 0u);
+    }
+
     void seat_server_with_a_line(Line* l)
     {
         l->server = seat_pool(0, PRIO_SERVER);
@@ -162,14 +174,7 @@ namespace
             IrqLock lock;
             sched::reschedule(nullptr, lock);
         }
-        l->irq = KCAP_INVALID;
-        l->note = KCAP_INVALID;
-        l->bit = 1u << 0; // irq_bind_notify copies the capability's badge; unbadged is bit 0
-        ASSERT_EQ(irq_claim(l->server, 5, 0, &l->irq), 0);
-        ASSERT_EQ(notify_create(l->server, &l->note), 0);
-        ASSERT_EQ(irq_bind_notify(l->server, l->irq, l->note), 0);
-        ASSERT_EQ(notify_bind(l->server, l->note), 0);
-        ASSERT_EQ(notify_pending_of(l->server), 0u);
+        ASSERT_NO_FATAL_FAILURE(bind_a_line(l));
     }
 
     // Combine a valid flag with an unknown bit to test unknown-bit rejection.
@@ -223,27 +228,6 @@ TEST_F(FusedWake, the_seat_goes_to_the_highest_while_the_peer_hears_about_the_re
     ASSERT_EQ(serve(&f), static_cast<int32_t>(sizeof(f.sender_buf)));
     EXPECT_EQ(sched::current(), f.answered) << "the deferred seat was not fed the highest";
     EXPECT_TRUE(owed_on(CORE_PEER));
-}
-
-// The fused total must close after deferred wake completion. The caller
-// outranks the server, forcing a scheduling decision. Use switch counts
-// to check ordering; host cycle deltas are nondeterministic.
-TEST_F(FusedWake, the_composite_closes_past_the_deferred_seat)
-{
-    Fused f{};
-    ASSERT_NO_FATAL_FAILURE(stage(&f, PRIO_ABOVE_SERVER, ON_ME, PRIO_LOW, ON_PEER));
-
-    bench_seam_reset();
-    uint32_t const before = g_switches;
-    int32_t const rc = serve(&f);
-    uint32_t const rows = g_bench_seam_reply_recv_rows;
-    uint32_t const at_row = g_bench_seam_reply_recv_switches;
-    bench_seam_reset();
-
-    ASSERT_EQ(rc, static_cast<int32_t>(sizeof(f.sender_buf)));
-    ASSERT_EQ(sched::current(), f.answered) << "the deferred seat never reached the scheduler";
-    EXPECT_EQ(rows, 1u) << "the composite was not closed exactly once";
-    EXPECT_GT(at_row, before) << "the composite closed before the deferred seat was discharged";
 }
 
 // A reply failure must replace the accepted mask with zero consumed bits.
@@ -300,7 +284,7 @@ TEST_F(FusedWake, an_unusable_payload_buffer_reports_no_notification_consumed)
     EXPECT_EQ(opts.notify, 0u) << "the accepted mask was reported back as consumed";
 }
 
-// A write-back failure must override the earlier error with EFAULT.
+// An unwritable mask word answers EFAULT ahead of the flags' error.
 TEST_F(FusedWake, a_refused_write_back_of_the_consumed_mask_answers_efault)
 {
     Line l{};
@@ -366,24 +350,126 @@ namespace
         parked->wait_result = 0;
         ASSERT_EQ(notify_signal(parked, g_signalled_note), 0);
     }
+
+    uintptr_t g_word_refused_at_park = 0;
+
+    void signal_the_parked_server_and_refuse_the_word(Thread* parked)
+    {
+        signal_the_parked_server(parked);
+        g_ipc_seam_refuse_write = g_word_refused_at_park;
+    }
 }
 
-TEST_F(FusedWake, the_bench_park_mark_lands_under_the_lock_ahead_of_the_block)
+TEST_F(FusedWake, a_signal_raised_at_the_park_wakes_the_waiter_with_its_bit)
 {
     Line l{};
     ASSERT_NO_FATAL_FAILURE(seat_server_with_a_line(&l));
-    bench_seam_reset();
     g_signalled_note = l.note;
     wake_next_park(signal_the_parked_server);
-    uint32_t const parks = g_parks_committed;
 
     uint32_t bits = 0;
-    ASSERT_EQ(notify_wait(l.server, l.note, l.bit, KOS_TIMEOUT_NONE, &bits), 0);
-    ASSERT_EQ(bits, l.bit);
-    BenchParkMark const& m = g_bench_seam_park_mark;
-    EXPECT_EQ(m.calls, 1u);
-    EXPECT_TRUE(m.locked) << "the mark ran outside the kernel lock";
-    EXPECT_EQ(m.by, l.server) << "the mark ran after the switch away";
-    EXPECT_EQ(m.state, ThreadState::RUNNING) << "the mark ran after the park";
-    EXPECT_EQ(m.parks, parks) << "the mark ran after the park committed";
+    uintptr_t const at = reinterpret_cast<uintptr_t>(&bits);
+    ASSERT_EQ(notify_wait(l.server, l.note, l.bit, KOS_TIMEOUT_NONE, at), 0);
+    EXPECT_EQ(bits, l.bit);
+}
+
+// A mask word the kernel cannot write takes none of the pending bits.
+TEST_F(FusedWake, a_refused_write_back_leaves_the_consumed_notification_pending)
+{
+    Line l{};
+    ASSERT_NO_FATAL_FAILURE(seat_server_with_a_line(&l));
+    ASSERT_EQ(notify_signal(l.server, l.note), 0);
+
+    kos_reply_recv_opts opts{};
+    kos_reply_recv_opts_init(&opts, KOS_CAP_NONE, 0, KOS_TIMEOUT_NONE);
+    opts.notify = l.bit;
+    g_ipc_seam_refuse_write = reinterpret_cast<uintptr_t>(&opts.notify);
+    int32_t const rc = endpoint_reply_recv(KOS_CAP_NONE, 0, 0, reinterpret_cast<uintptr_t>(&opts));
+    g_ipc_seam_refuse_write = 0;
+    EXPECT_EQ(rc, -KOS_EFAULT);
+    EXPECT_EQ(notify_pending_of(l.server) & l.bit, l.bit) << "the refused write-back took the bit";
+
+    opts.notify = l.bit;
+    EXPECT_EQ(endpoint_reply_recv(KOS_CAP_NONE, 0, 0, reinterpret_cast<uintptr_t>(&opts)),
+              -KOS_ENOTIFY);
+    EXPECT_EQ(opts.notify, l.bit);
+    EXPECT_EQ(notify_pending_of(l.server) & l.bit, 0u);
+}
+
+// A mask word unwritable from the start refuses the call before its reply or its receive.
+TEST_F(FusedWake, an_unwritable_mask_word_refuses_the_call_before_anything_is_done)
+{
+    Fused f{};
+    ASSERT_NO_FATAL_FAILURE(stage(&f, PRIO_HIGH, ON_ME, PRIO_LOW, ON_ME));
+
+    kos_reply_recv_opts opts{};
+    kos_reply_recv_opts_init(&opts, f.ep_cap, 0, KOS_TIMEOUT_NONE);
+    opts.notify = 1u;
+    g_ipc_seam_refuse_write = reinterpret_cast<uintptr_t>(&opts.notify);
+    int32_t const rc = endpoint_reply_recv(f.reply_cap, reinterpret_cast<uintptr_t>(f.server_buf),
+                                           kos_call_lens_pack(0, sizeof(f.server_buf)),
+                                           reinterpret_cast<uintptr_t>(&opts));
+    g_ipc_seam_refuse_write = 0;
+    EXPECT_EQ(rc, -KOS_EFAULT);
+    EXPECT_EQ(f.answered->call_state, CALL_REPLY_WAIT) << "the refused call replied";
+    EXPECT_EQ(f.sender->wait_kind, WAIT_EP_SEND) << "the refused call received";
+}
+
+// A message received in the call is answered as received when the write-back is refused, and
+// the word reads no bit consumed rather than the accepted mask.
+TEST_F(FusedWake, a_refused_write_back_still_answers_the_received_message)
+{
+    Fused f{};
+    ASSERT_NO_FATAL_FAILURE(stage(&f, PRIO_HIGH, ON_ME, PRIO_LOW, ON_ME));
+    Line l{};
+    l.server = f.server;
+    ASSERT_NO_FATAL_FAILURE(bind_a_line(&l));
+
+    kos_reply_recv_opts opts{};
+    kos_reply_recv_opts_init(&opts, f.ep_cap, 0, KOS_TIMEOUT_NONE);
+    opts.notify = l.bit;
+    g_ipc_seam_refuse_write_from_copy = reinterpret_cast<uintptr_t>(&opts.notify);
+    int32_t const rc = endpoint_reply_recv(f.reply_cap, reinterpret_cast<uintptr_t>(f.server_buf),
+                                           kos_call_lens_pack(0, sizeof(f.server_buf)),
+                                           reinterpret_cast<uintptr_t>(&opts));
+    bool const refused_mid_call = g_ipc_seam_refuse_write != 0;
+    g_ipc_seam_refuse_write_from_copy = 0;
+    g_ipc_seam_refuse_write = 0;
+    ASSERT_TRUE(refused_mid_call) << "fixture: no copy armed the refusal";
+    EXPECT_EQ(rc, static_cast<int32_t>(sizeof(f.sender_buf))) << "the received message was dropped";
+    EXPECT_EQ(memcmp(f.server_buf, f.sender_buf, sizeof(f.sender_buf)), 0);
+    EXPECT_EQ(opts.notify, 0u) << "the accepted mask reads as consumed bits";
+}
+
+// The same after a park, the bit raised while the receive waits.
+TEST_F(FusedWake, a_parked_receive_whose_write_back_is_refused_leaves_the_bit_pending)
+{
+    Line l{};
+    ASSERT_NO_FATAL_FAILURE(seat_server_with_a_line(&l));
+    Endpoint* const ep = endpoint();
+    uint32_t ep_cap = KCAP_INVALID;
+    {
+        IrqLock lock;
+        int const idx = kernel().endpoints.index_of(ep);
+        ASSERT_EQ(cap_install(l.server, kernel().endpoints.handle_for(idx), CapType::CAP_ENDPOINT,
+                              CAP_WAIT, &ep_cap),
+                  0);
+    }
+    g_signalled_note = l.note;
+    wake_next_park(signal_the_parked_server_and_refuse_the_word);
+
+    uint8_t buf[4] = {};
+    kos_reply_recv_opts opts{};
+    kos_reply_recv_opts_init(&opts, ep_cap, 0, KOS_TIMEOUT_NONE);
+    opts.notify = l.bit;
+    g_word_refused_at_park = reinterpret_cast<uintptr_t>(&opts.notify);
+    int32_t const rc = endpoint_reply_recv(KOS_CAP_NONE, reinterpret_cast<uintptr_t>(buf),
+                                           kos_call_lens_pack(0, sizeof(buf)),
+                                           reinterpret_cast<uintptr_t>(&opts));
+    g_ipc_seam_refuse_write = 0;
+    g_word_refused_at_park = 0;
+    EXPECT_EQ(rc, -KOS_EFAULT);
+    EXPECT_EQ(notify_pending_of(l.server) & l.bit, l.bit)
+        << "the refused write-back took the bit the receive woke for";
+    EXPECT_EQ(opts.notify, 0u) << "the accepted mask reads as consumed bits";
 }

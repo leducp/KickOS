@@ -25,8 +25,9 @@ third-party kernel code. Register definitions come from hardware manuals.
   reference counts control object lifetime.
 - **Event-driven scheduling.** Blocking, yielding, IPC and interrupts trigger scheduling.
   The clock is tickless by default; a periodic tick is also available.
-- **Configurable resource pools.** Thread, task and memory-domain limits are independent.
-  Boards set their budgets through Kconfig.
+- **Per-task budgets.** Each task has its own budget of threads, memory and kernel objects,
+  fixed when the system is built from its composition; Kconfig holds only the defaults for a
+  task whose composition states none. Each kernel pool is sized to the sum of those budgets.
 - **Host testing.** Linux sim runs the kernel and userspace in one process. It uses the same
   scheduler, syscall dispatcher and capability code, with emulated privilege transitions.
 - **Portable backends.** Architecture and chip code implement the interface described in
@@ -139,11 +140,10 @@ Presets select a board and configuration variant. Each uses a separate directory
 
 ```sh
 cmake --preset f411disco        # base configuration
-cmake --preset f411disco-bench  # context-switch microbench
 cmake --preset f411disco-flat   # MPU enforcement disabled
 ```
 
-Available variants depend on the board. They include self-test provisioning, benchmarks, telemetry,
+Available variants depend on the board. They include self-test provisioning, telemetry,
 shared-kernel multicore builds, isolated cores and AMP partitions with separate kernels.
 MPU boards generally provide a `-flat` variant. Sim always uses `mprotect`; MMU targets
 select address-space support through their chip configuration.

@@ -23,16 +23,14 @@
 //     void     ep_stall(uint8_t ep, bool on);
 // Only the IRQ thread may call these methods because they access device registers.
 //
-// RP controllers use DPRAM and software-managed DATA PID. RT1062 manages PID
-// itself and reads descriptors from system RAM, requiring cache coherence.
-// The teensy41 service configuration disables D-cache for this reason.
-//
-// Host configuration may never complete. Keep configured separate from ready,
-// clear it on bus reset, and start the endpoint in nonblocking mode.
+// Host configuration may never complete, so the endpoint starts in nonblocking mode. Bulk IN
+// runs only while a configuration is selected and the bus is not suspended. An unplug reads as
+// the suspend or the bus reset that a bus with no host decays into, and the replug's bus reset
+// drops the configuration.
 //
 // Each configuration opens the host's stream with the banner's identity rows
 // (<kickos/sys/banner_identity.h>), ahead of anything the ring holds: the kernel's own
-// banner never reaches this console.
+// banner never reaches this console. A resume continues the stream without them.
 //
 // Output is held from each configuration until the host's terminal is ready, so no byte reaches
 // a host line discipline still in its default (cooked, echoing) mode. Linux's cdc_acm starts
@@ -72,7 +70,7 @@
 namespace kickos::usb
 {
 
-// Child cap indices the two threads read. A driver NAMES them; the bring-up chooses them.
+// Child cap indices the two threads read.
 enum
 {
     KOS_USB_CAP_EP = console::KOS_CONSOLE_CAP_EP,
@@ -87,11 +85,17 @@ constexpr uint32_t KOS_USB_ACCEPT = 0xFFFFFFFFu;
 
 // Controller events the class layer reacts to. A backend reports only what it saw and
 // clears the source before returning.
+//
+// SUSPEND and RESUME are a STATE, not an edge: when the bus's suspend state changed since the
+// last take, the backend reports exactly one of them, the state it reads now. Two edges that
+// coalesce into one take would otherwise lose their order.
 enum kos_usb_event
 {
     KOS_USB_EV_BUS_RESET = 1u << 0,
     KOS_USB_EV_SETUP = 1u << 1,
-    KOS_USB_EV_BUFFER = 1u << 2
+    KOS_USB_EV_BUFFER = 1u << 2,
+    KOS_USB_EV_SUSPEND = 1u << 3,
+    KOS_USB_EV_RESUME = 1u << 4
 };
 
 constexpr uint64_t KOS_USB_HOLD_OPENED_NS = 1000000000ull;
@@ -115,10 +119,6 @@ struct Shared
     // One-way latch: the IRQ thread reached its loop (driver::ready_publish), which the service
     // thread waits on before its first receive (driver::ready_wait).
     driver::Latch ready;
-    // NOT a latch: a bus reset clears it. It does NOT catch a bare unplug, because no
-    // backend arms a disconnect or suspend source and the RP backend forces
-    // VBUS-detected, so a host that goes away without a later reset leaves this at 1.
-    Atomic<uint32_t, Order::RELAXED> configured;
     // Bytes taken OUT of the tx ring and handed to the controller, not yet completed. The
     // IRQ thread is its only writer; it sits in the shared block because the flush protocol
     // runs on the SERVICE thread, which cannot see the Cdc class.
@@ -149,11 +149,11 @@ void shared_init(Shared* s);
 
 // The offset a generic bring-up polls the readiness latch through, it being unable to name
 // Shared. Never write the offset as a literal in a descriptor: the latch must be the atomic
-// this expression locates, and `configured` sits beside it.
+// this expression locates.
 constexpr uint16_t KOS_USB_READY_OFFSET = static_cast<uint16_t>(offsetof(Shared, ready));
 
 // ---------------------------------------------------------------------------------
-// The class layer. Owns the whole USB protocol; the service thread never sees it.
+// The class layer: the whole USB protocol, IRQ thread only.
 template <typename UsbDev>
 class Cdc
 {
@@ -193,6 +193,10 @@ public:
         {
             on_bus_reset();
         }
+        if ((ev & (KOS_USB_EV_SETUP | KOS_USB_EV_BUFFER)) != 0u)
+        {
+            suspended_ = false; // a transaction proves the bus awake
+        }
         if ((ev & KOS_USB_EV_SETUP) != 0u)
         {
             on_setup();
@@ -201,14 +205,23 @@ public:
         {
             on_buffers(dev_.take_buff_status());
         }
+        // Last: the state the backend read when it took the events.
+        if ((ev & KOS_USB_EV_SUSPEND) != 0u)
+        {
+            suspended_ = true;
+        }
+        if ((ev & KOS_USB_EV_RESUME) != 0u)
+        {
+            suspended_ = false;
+        }
         pump_tx();
     }
 
     // Identity bytes still owed to the host, or one of their packets with the controller.
     bool identity_pending() const { return id_left_ != 0u or id_inflight_; }
 
-    // How long the IRQ thread may park: until the output hold ends, or for ever.
-    uint32_t park_us() const
+    // Until the output hold ends, else no limit.
+    uint32_t max_irq_wait_us() const
     {
         if (hold_until_ == 0u)
         {
@@ -252,6 +265,7 @@ private:
         pending_addr_ = 0;
         addr_pending_ = false;
         config_ = 0;
+        suspended_ = false;
         bulk_in_pid_ = 0;
         bulk_out_pid_ = 0;
         zlp_inflight_ = false;
@@ -261,7 +275,6 @@ private:
         hold_until_ = 0u;
         sh_->tx_inflight = 0;
         sh_->tx_zlp = 0;
-        sh_->configured = 0;
         // `mode` is deliberately NOT reset: it is the caller's choice, not link state, so a
         // bus reset must not silently restore back-pressure a caller opted out of.
     }
@@ -339,18 +352,12 @@ private:
             dev_.ep_open_all();
             if (config_ != 0u)
             {
-                // An unarmed endpoint simply NAKs, so waiting for
-                // an interrupt before arming the first OUT buffer waits forever while the
-                // host politely retries.
+                // An unarmed endpoint NAKs forever, so the first OUT buffer is armed here
+                // rather than on an interrupt.
                 dev_.ep_out_arm(KOS_USB_CDC_EP_DATA, bulk_out_pid_);
                 id_left_ = id_len_;
                 dtr_ = false;
                 hold(KOS_USB_HOLD_UNOPENED_NS);
-                sh_->configured = 1;
-            }
-            else
-            {
-                sh_->configured = 0;
             }
             ep0_ack();
             return;
@@ -422,8 +429,8 @@ private:
         if (recip != KOS_USB_REQ_RECIP_ENDPOINT
             or s.wValue != KOS_USB_FEATURE_ENDPOINT_HALT)
         {
-            // DEVICE_REMOTE_WAKEUP is accepted and ignored: there is no suspend entry for
-            // the flag to gate.
+            // DEVICE_REMOTE_WAKEUP is accepted and ignored: this device never signals a
+            // remote wakeup.
             ep0_ack();
             return;
         }
@@ -448,8 +455,7 @@ private:
         ep0_ack();
     }
 
-    // Always false: no halt state is tracked, and nothing here stalls an endpoint except
-    // on the host's own SET_FEATURE.
+    // Always false: no halt state is tracked.
     bool halted_ep(uint8_t) const
     {
         return false;
@@ -583,8 +589,6 @@ private:
         {
             drain_out();
         }
-        // The notification endpoint is declared and buffered but never queued, so a
-        // completion on it cannot happen and needs no arm.
     }
 
     void on_ep0_in_done()
@@ -686,13 +690,14 @@ private:
 
     void pump_tx()
     {
-        if (sh_->configured == 0u)
-        {
-            return; // no host has selected a configuration: the bytes wait in the ring
-        }
+        // Ahead of the bus state: an expired hold left standing keeps the IRQ thread's park at 0.
         if (held())
         {
             return;
+        }
+        if (config_ == 0u or suspended_)
+        {
+            return; // no host is reading: the bytes wait in the ring
         }
         if (sh_->tx_inflight != 0u or zlp_inflight_)
         {
@@ -764,6 +769,7 @@ private:
     bool ep0_zlp_ = false;
     bool addr_pending_ = false;
     bool zlp_inflight_ = false;
+    bool suspended_ = false;
     // The identity rows, rendered once; id_left_ of them are still to go to the host.
     char id_[BANNER_IDENTITY_MAX] = {};
     uint32_t id_len_ = 0;
@@ -775,9 +781,9 @@ private:
 };
 
 // ---------------------------------------------------------------------------------
-// The IRQ thread. Owns every register and the whole control endpoint; parks in irq_wait and
-// services one pass per wake. A failure traps, never exits: an exited IRQ thread leaves the
-// service thread accepting stdout into a ring nothing drains.
+// The IRQ thread: every register and the whole control endpoint, one pass per wake. A failure
+// traps, never exits: an exited IRQ thread leaves the service thread accepting stdout into a
+// ring nothing drains.
 template <typename UsbDev>
 void irq_loop(Cdc<UsbDev>& cdc, Shared* sh)
 {
@@ -792,7 +798,7 @@ void irq_loop(Cdc<UsbDev>& cdc, Shared* sh)
     {
         // The FIRST wait is also what arms the line: a claim leaves it masked so no
         // window exists in which it is armed and unowned.
-        int const rc = kos_notify_wait(KOS_USB_CAP_NOTIFY, KOS_USB_ACCEPT, cdc.park_us(), nullptr);
+        int const rc = kos_notify_wait(KOS_USB_CAP_NOTIFY, KOS_USB_ACCEPT, cdc.max_irq_wait_us(), nullptr);
         if (rc == -KOS_ETIMEDOUT)
         {
             cdc.service_irq(); // the output hold ended
@@ -815,8 +821,7 @@ void irq_loop(Cdc<UsbDev>& cdc, Shared* sh)
 }
 
 // USB CDC uses console_service.h with nonblocking mode required: the host
-// may never enumerate or read. Do not derive that mode from configured,
-// which does not clear on unplug.
+// may never enumerate or read, and a configured host may still never read.
 // Flush also waits for tx_inflight because an empty ring may leave a packet
 // in controller memory: drained means the host acknowledged the last bulk IN packet, and the
 // zero-length packet closing a transfer that ended on a full one.
@@ -845,7 +850,7 @@ struct Transport
 };
 
 // ---------------------------------------------------------------------------------
-// The service thread. Parks in recv, replies out of ring state, never touches the device.
+// The service thread. Parks in recv and replies out of ring state.
 // A kos_call is a <kickos/sys/uart.h> frame; a plain send is a raw console write. Traps once
 // its receive fails: this is not the entry thread, so its exit would leave the task alive.
 [[noreturn]] void console_serve_loop(Shared* sh);

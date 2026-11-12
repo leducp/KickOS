@@ -753,7 +753,7 @@ def check_arena(f, root, shared, tasks, chip, cluster, manifest):
             base = 0
         else:
             where = "the arena at 0x%X" % base
-        arena = ArenaModel(base)
+        arena = ArenaModel(base, chip.arena_line.get(view))
         for want in blocks:
             if not want:
                 continue

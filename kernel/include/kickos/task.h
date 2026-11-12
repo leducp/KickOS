@@ -181,6 +181,8 @@ namespace kickos
     // domain go back as soon as the last member leaves (at once, if there is none). A member
     // its create has not started yet is started slain, so the task ends. Caller holds IrqLock.
     void task_drop_hold(Task* t, Held held);
+    // task_stop, then task_drop_hold: the hold is gone on return.
+    void task_stop_and_drop_hold(Task* t, Held held);
 
     // The creator's reports (kos_task_watch). Arm or replace the watch on `task`, or disarm
     // it with KOS_CAP_NONE for `notify_cap`: 0, -KOS_EBADF (no such task, or a cap naming
@@ -358,8 +360,6 @@ namespace kickos
     // The first node of the list `th`'s run is on, which is task_runs of the task whose run list
     // holds it. O(th's place on its list).
     ListNode const* task_run_first(Thread const* th);
-    // Whether `th` is on `t`'s run list. Null-safe: false.
-    bool task_has_thread(Task const* t, Thread const* th);
 
     void task_ref(Task* t); // a thread joins; the first one acquires the domain
     // A thread leaves, and counts as sweeping until its task_sweep_done. A created task outlives
@@ -368,9 +368,17 @@ namespace kickos
     // once and only its cause can see it.
     bool task_release(Task* t, Held held);
 
-    // Slay every live member: each is marked and woken out of whatever it is parked on, and its
-    // next resume is claimed, so it reaches its own death point. The group dies by ONE rule:
-    // there is no exception argument, and thread_cancel_kind already refuses a dying thread.
+    // Mark every live member CANCEL_SLAY and ask a peer core running one off it, with no park
+    // ended and no pass taken. A caller that can switch before task_cancel_parks runs this
+    // first, or a member switched in meanwhile runs its own code.
+    void task_cancel_mark(Task* t, Held held);
+    // End the park of every member whose slay claim is pending, an earlier walk's marks
+    // included, then take one pass after the last. Marks nothing: the caller ran
+    // task_cancel_mark on a task that has ended since, so no member joins unmarked.
+    void task_cancel_parks(Task* t, Held held);
+    // Slay every live member: task_cancel_mark, then task_cancel_parks, so a member's next resume
+    // is claimed and it reaches its own death point. The group dies by ONE rule: there is no
+    // exception argument, and the mark already refuses a dying thread.
     void task_cancel_group(Task* t, Held held);
 }
 

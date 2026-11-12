@@ -18,19 +18,24 @@ if(KICKOS_ARCH STREQUAL "sim")
     COMMAND "${CMAKE_COMMAND}" -E env
             "${PROJECT_SOURCE_DIR}/tests/integration/check_hello.py"
             "$<TARGET_FILE:hello>")
-  add_test(
-    NAME    hello_c_demo
-    COMMAND "${CMAKE_COMMAND}" -E env
-            "${PROJECT_SOURCE_DIR}/tests/integration/check_hello.py"
-            "$<TARGET_FILE:hello_c>")
   # Above check_hello.py's own waits, 10 s for the exchanges and 5 s for the exit.
-  set_tests_properties(hello_demo hello_c_demo PROPERTIES TIMEOUT 20)
+  set_tests_properties(hello_demo PROPERTIES TIMEOUT 20)
+  if(TARGET hello_c)
+    add_test(
+      NAME    hello_c_demo
+      COMMAND "${CMAKE_COMMAND}" -E env
+              "${PROJECT_SOURCE_DIR}/tests/integration/check_hello.py"
+              "$<TARGET_FILE:hello_c>")
+    set_tests_properties(hello_c_demo PROPERTIES TIMEOUT 20)
+  endif()
 endif()
 
 # Every board with an emulator boots these images through the same script and reports under the
 # derived <board tag>_hello and <board tag>_hello_c names.
 kickos_add_qemu_test(TARGET hello SCRIPT "${_hello_qemu}")
-kickos_add_qemu_test(TARGET hello_c SCRIPT "${_hello_qemu}")
+if(TARGET hello_c)
+  kickos_add_qemu_test(TARGET hello_c SCRIPT "${_hello_qemu}")
+endif()
 
 # tools/gdb/kickos.py against the emulator's gdb stub: a stop in the root task loads image 0's
 # program ELF, which is where its symbols are on a board whose images the kernel's link embeds.
@@ -105,9 +110,7 @@ endif()
 # core, so it exists under AMP, where one kernel schedules one core.
 # It runs no image, so it carries the host label.
 #
-# armv8a only, and rv64imac is absent by ruling rather than by oversight: the instruction-side
-# barrier is FENCE.I there, and Zifencei is not in that board's ISA baseline, so the backend has
-# no such instruction to assert. Its service body carries the translation-side fence alone.
+# armv8a only: on rv64imac the service's SFENCE.VMA also orders later instruction fetches.
 if(KICKOS_ARCH STREQUAL "armv8a" AND KICKOS_NUM_CORES GREATER 1)
   add_test(NAME doorbell_isb
     COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_doorbell_isb.sh"
@@ -125,8 +128,19 @@ endif()
 if(KICKOS_CHIP STREQUAL "esp32c6" AND NOT (KICKOS_AMP_OWN_IMAGE AND KICKOS_AMP_NODE_ID EQUAL 1))
   kickos_image_rule(c6_hp hello)
 endif()
+if(KICKOS_CHIP STREQUAL "esp32c6" AND KICKOS_AMP_OWN_IMAGE AND KICKOS_AMP_NODE_ID EQUAL 0)
+  kickos_image_rule(c6_lp_stub hello)
+endif()
+# The esp32c6 HP core is entered from the ROM loader, whose own stores are its own to fence.
+if(KICKOS_CHIP MATCHES "^virt_rv(32|64)$")
+  kickos_image_rule(rv_entry hello)
+endif()
 if(KICKOS_NUM_CORES EQUAL 1)
   kickos_image_rule(cpu_id hello)
+endif()
+# hello prints through kos::print and allocates nowhere. The sim's allocator is the host's.
+if(NOT KICKOS_ARCH STREQUAL "sim")
+  kickos_image_rule(no_alloc hello)
 endif()
 # The kernel's own view of an AMP user share: MAIR_EL1 slot 2 is Normal non-cacheable, slot 0
 # write-back (arch/arm64/common/vmsa.h).
@@ -143,34 +157,6 @@ if(_hello_share_size GREATER 0)
   endif()
   kickos_image_rule(arm64_share hello ${_hello_share_base} ${_hello_share_size} ${_hello_share_slot})
 endif()
-
-# The doorbell service's route drain, read out of the source tree. Keyed on nothing: the call is
-# a source property, so every build checks it.
-# It runs no image, so it carries the host label.
-add_test(NAME route_service_order
-  COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_route_service_order.sh"
-          "${PROJECT_SOURCE_DIR}")
-kickos_host_gate(route_service_order)
-
-# The ESP UART's TX-empty acknowledgement, read out of the source tree. Keyed on nothing: the
-# three bodies are source whichever board this build is for, and two of the three are compiled
-# on chips this preset may not name.
-# It runs no image, so it carries the host label.
-#
-# Structural because no board in the fleet can witness it: neither ESP part has an emulator, so
-# nothing in a run raises the interrupt whose acknowledgement this is.
-add_test(NAME esp_tx_latch_ack
-  COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_esp_tx_latch_ack.sh"
-          "${PROJECT_SOURCE_DIR}")
-kickos_host_gate(esp_tx_latch_ack)
-
-# The sole users of the delivery-gating seams, the software raise and the IPC fastpath, read out
-# of the source tree. Keyed on nothing: the rule binds at one kernel core too.
-# It runs no image, so it carries the host label.
-add_test(NAME irq_line_op_sole
-  COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_irq_line_op_sole.sh"
-          "${PROJECT_SOURCE_DIR}")
-kickos_host_gate(irq_line_op_sole)
 
 # The per-core ATOMCTL seat with its read-back, and the interrupt posture the secondary park
 # holds across its sleep decision, read out of the linked image. The seat on every LX6 image:

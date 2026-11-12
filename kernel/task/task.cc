@@ -468,11 +468,17 @@ namespace kickos
         {
             return;
         }
-        mark_ended(t, code, latch, held);
         // The ending thread is still a member, so a count of one leaves nobody to cancel.
-        if (t->refcount > 1)
+        bool const others = t->refcount > 1;
+        // Marked before mark_ended, whose wakes can switch this thread out.
+        if (others)
         {
-            task_cancel_group(t, held);
+            task_cancel_mark(t, held);
+        }
+        mark_ended(t, code, latch, held);
+        if (others)
+        {
+            task_cancel_parks(t, held);
         }
     }
 
@@ -482,8 +488,10 @@ namespace kickos
         {
             return;
         }
+        // Marked before mark_ended, whose wakes can switch a running caller out.
+        task_cancel_mark(t, held);
         mark_ended(t, 0, /*latch=*/false, held);
-        task_cancel_group(t, held);
+        task_cancel_parks(t, held);
     }
 
     void task_watch_notify_gone(int notify_handle)
@@ -721,54 +729,79 @@ namespace kickos
         }
     }
 
+    namespace
+    {
+        // True when a member still holds the slot. Inlined: a frame here deepens the exit stubs'
+        // teardown chain that the trap stack reservations bound.
+        inline __attribute__((always_inline)) bool release_hold(Task* t, Held held)
+        {
+            if (t == nullptr or t->creator_tag == ThreadPool::KILL_TAG_NONE)
+            {
+                return false;
+            }
+            // Added first: a thread not yet added takes no cancel.
+            for (ListNode* m = t->members.head; m != nullptr; m = m->next)
+            {
+                Thread* const th = KICKOS_CONTAINER_OF(m, Thread, member);
+                if (th->state == ThreadState::INACTIVE)
+                {
+                    sched::add(th, held);
+                    thread_cancel_kind(th, CANCEL_SLAY, held);
+                }
+            }
+            Kernel& kn = kernel();
+            int const ti = slot_of(t);
+            uint16_t const tag = t->creator_tag;
+            if (ti >= 0 and tag <= kn.threads.count())
+            {
+                // Out of the creator slot's created list. O(the tasks that slot holds).
+                TaskLinks* const tl = task_links();
+                uint8_t* at = &kn.threads.links()[tag - 1].created_head;
+                while (*at != 0 and *at != static_cast<uint8_t>(ti + 1))
+                {
+                    at = &tl[*at - 1].created_next;
+                }
+                if (*at != 0)
+                {
+                    *at = tl[ti].created_next;
+                }
+                tl[ti].created_next = 0;
+            }
+            t->creator_tag = ThreadPool::KILL_TAG_NONE;
+            // The only place a live creator tag is cleared, which keeps task_holds exact:
+            // free_task sees an already-cleared tag or a task that never held one.
+            Kernel& k = kernel();
+            KICKOS_DEBUG_ASSERT(k.task_holds > 0);
+            k.task_holds--;
+            if (t->refcount == 0)
+            {
+                free_task(t, held);
+                return false;
+            }
+            // The domain reference this drops is the CREATOR's; the members' own, taken by the
+            // first task_ref, keeps the domain alive.
+            domain_release(t->domain);
+            return true;
+        }
+    }
+
     void task_drop_hold(Task* t, Held held)
     {
-        if (t == nullptr or t->creator_tag == ThreadPool::KILL_TAG_NONE)
+        // Last, for it can switch: the walker that marked these members may never resume to end
+        // their parks, and no hold is left for a later slay to name the task by.
+        if (release_hold(t, held) and task_ended(t))
         {
-            return;
+            task_cancel_group(t, held);
         }
-        // Added first: a thread not yet added takes no cancel.
-        for (ListNode* m = t->members.head; m != nullptr; m = m->next)
-        {
-            Thread* const th = KICKOS_CONTAINER_OF(m, Thread, member);
-            if (th->state == ThreadState::INACTIVE)
-            {
-                sched::add(th, held);
-                thread_cancel_kind(th, CANCEL_SLAY, held);
-            }
-        }
-        Kernel& kn = kernel();
-        int const ti = slot_of(t);
-        uint16_t const tag = t->creator_tag;
-        if (ti >= 0 and tag <= kn.threads.count())
-        {
-            // Out of the creator slot's created list. O(the tasks that slot holds).
-            TaskLinks* const tl = task_links();
-            uint8_t* at = &kn.threads.links()[tag - 1].created_head;
-            while (*at != 0 and *at != static_cast<uint8_t>(ti + 1))
-            {
-                at = &tl[*at - 1].created_next;
-            }
-            if (*at != 0)
-            {
-                *at = tl[ti].created_next;
-            }
-            tl[ti].created_next = 0;
-        }
-        t->creator_tag = ThreadPool::KILL_TAG_NONE;
-        // The only place a live creator tag is cleared, which keeps task_holds exact: free_task
-        // sees an already-cleared tag or a task that never held one.
-        Kernel& k = kernel();
-        KICKOS_DEBUG_ASSERT(k.task_holds > 0);
-        k.task_holds--;
-        if (t->refcount == 0)
-        {
-            free_task(t, held);
-            return;
-        }
-        // A member still holds the slot. The domain reference this drops is the CREATOR's;
-        // the members' own, taken by the first task_ref, keeps the domain alive.
-        domain_release(t->domain);
+    }
+
+    void task_stop_and_drop_hold(Task* t, Held held)
+    {
+        // Stopped first: the release can free the slot of an empty group, leaving `t` dangling.
+        task_stop(t, held);
+        // No walk after the release: the stop's own ended every park, and a marked member parks
+        // no more.
+        (void)release_hold(t, held);
     }
 
     void task_ref(Task* t)
@@ -940,12 +973,6 @@ namespace kickos
             return nullptr;
         }
         return task_links()[i].cap_runs.head;
-    }
-
-    bool task_has_thread(Task const* t, Thread const* th)
-    {
-        ListNode const* const head = task_runs(t);
-        return head != nullptr and th != nullptr and head == task_run_first(th);
     }
 
     ListNode const* task_run_first(Thread const* th)

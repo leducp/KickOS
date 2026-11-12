@@ -810,7 +810,7 @@ namespace kickos
     // The bytes of buf that went out or were queued. A ring takes a line whole or refuses it,
     // and a refused line does not go out at all; an AMP chip sharing its UART stops at the
     // first byte its claim no longer covers. Do not grow a retry here: a caller that can afford
-    // to wait offers the line again itself (kprintf_paced).
+    // to wait offers the line again itself (kprintf_record).
     int kconsole_write(char const* buf, size_t n)
     {
         return kconsole_write_impl(buf, n);
@@ -956,40 +956,6 @@ namespace kickos
         kvprintf_route(buf, sizeof(buf), fmt, ap, 0);
         va_end(ap);
     }
-
-#if KICKOS_BENCH
-    // It does NOT route to a published console: a report belongs on the wire the bench is
-    // captured from.
-    //
-    // The progress test spans the WHOLE attempt, not console_tx_wait_progress alone: the offer
-    // itself opens mask gaps, and on a backend whose drain lands in one of them that is where
-    // the bytes leave. The attempt bound is the ring's own size because one attempt that makes
-    // progress frees at least one byte and no line needs more than the ring to fit.
-    void kprintf_paced(char const* fmt, ...)
-    {
-        char buf[KICKOS_DIAG_LINE_MAX];
-        va_list ap;
-        va_start(ap, fmt);
-        kfmt_vsnprintf(buf, sizeof(buf), fmt, ap);
-        va_end(ap);
-        size_t const n = kstrlen(buf);
-        uint32_t queued = console_tx_used();
-        for (uint32_t attempt = 0; attempt < KICKOS_CONSOLE_TX_SIZE; attempt++)
-        {
-            if (kconsole_write_impl(buf, n, nullptr, WRITE_OFFERED) != 0)
-            {
-                return;
-            }
-            console_tx_wait_progress();
-            uint32_t const now = console_tx_used();
-            if (now >= queued)
-            {
-                return; // a dead or unread channel: drop the line rather than hang the run
-            }
-            queued = now;
-        }
-    }
-#endif
 
     uint32_t kprintf_fault(char const* fmt, ...)
     {

@@ -57,8 +57,8 @@ SECTIONS
 {
     .text ORIGIN(FLASH) :
     {
-        KEEP(*(.isr_vector))
-        KEEP(*(.image_def))
+        KICKOS_KERNEL_KEEP(.isr_vector)
+        KICKOS_KERNEL_KEEP(.image_def)
         KICKOS_CORTEXM_TEXT
     } > FLASH
 

@@ -161,11 +161,12 @@ def kernel_lines(view, when):
 
 def region_rule(view):
     """(granule, pow2) arch_mpu_min_region and arch_mpu_region_pow2 answer on this build, or None where
-    the granule is the page of the host the build runs on."""
+    the granule is the page of the host the build runs on. A unit the build does not drive rounds nothing."""
     units = view.units()
     if any(unit.unit == "mprotect" for unit in units):
         return None
-    rules = {(unit.granule, int(unit.unit in POW2_UNITS)) for unit in units if unit.granule is not None}
+    rules = {(unit.granule, int(unit.unit in POW2_UNITS)) for unit in units
+             if unit.granule is not None and unit.driven is not False}
     if len(rules) > 1:
         raise Failure("chip `%s`'s cores state the region rules %s; one build rounds by one"
                       % (view.chip.name, ", ".join("%d/%d" % rule for rule in sorted(rules))))
@@ -184,10 +185,6 @@ def limit_values(view):
             if field in LINE_LIMITS:
                 value = value + view.offset
             values.append((macro, value, chip.refs.get(field)))
-    if "hz" in chip.cycle_counter:
-        values.append(("KICKOS_CHIP_CYCCNT_HZ", chip.cycle_counter["hz"], chip.refs.get("hz")))
-    if chip.cycle_counter.get("glitches"):
-        values.append(("KICKOS_CHIP_CYCCNT_GLITCHES", 1, chip.refs.get("glitches")))
     if chip.timebase_hz is not None:
         values.append(("KICKOS_CHIP_TIMEBASE_HZ", chip.timebase_hz, chip.refs.get("timebase_hz")))
     values.append(("KICKOS_CHIP_DCACHE", int(chip.data_cache), None))
@@ -245,7 +242,8 @@ def emit_limits(view):
 
 
 def layout_values(view):
-    """[(macro, value, ref)] of chip_layout.h: each memory entry's and device window's base and size."""
+    """[(macro, value, ref)] of chip_layout.h: each memory entry's and device window's base and size,
+    and the arena's bank line where it has one."""
     values = []
     for entry in view.memory():
         base = view.base(entry)
@@ -253,6 +251,9 @@ def layout_values(view):
             values.extend(memory_layout(entry, base))
         elif entry.host_placed:
             values.append(memory_layout(entry, 0)[1])
+    line = view.chip.arena_line.get(view.cluster)
+    if line is not None:
+        values.append(("KICKOS_LAYOUT_BANK_LINE", line, None))
     for device in view.devices():
         values.extend(device_layout(device))
     return values

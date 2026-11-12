@@ -312,6 +312,7 @@ int arch_in_isr(void);
 
 // --- Tickless clock + one-shot next-event timer ----------------------------
 uint64_t arch_clock_now(void); // monotonic nanoseconds
+// The CALLING core's comparator, whose expiry interrupts that core alone.
 void arch_timer_arm(uint64_t deadline_ns);
 void arch_timer_disarm(void);
 
@@ -595,9 +596,15 @@ enum arch_map_memtype
     ARCH_MAP_DEVICE = 2   // device / MMIO
 };
 
-// Query memory-type support at grant admission. Never silently downgrade a
-// type: a DMA buffer must not become cacheable. The board may supply the answer.
+// Whether this backend maps `type` at all. Never silently downgrade a type: a
+// DMA buffer must not become cacheable.
 bool arch_aspace_memtype_support(enum arch_map_memtype type);
+
+// Whether a page entry carries the memory type. Where it carries none (RISC-V
+// without Svpbmt) the physical address's platform attribute is the type, so the
+// kernel admits a type per address (kickos::grant_memtype_at). The chip answers
+// where the entry format leaves the type to the platform.
+bool arch_aspace_entry_memtype(void);
 
 // A failed map must leave no partially installed mapping.
 enum arch_aspace_result
@@ -644,8 +651,8 @@ size_t arch_aspace_map_tables(struct arch_aspace* space, uintptr_t va, size_t pa
 // deferred until frame reuse, but revocation must complete immediately.
 // Peer handlers must not take the kernel lock.
 // Removing, replacing or rolling back executable leaves also requires peer
-// instruction synchronization. Capture peers before editing. Backends whose
-// ISA lacks that operation document the limitation (RV64IMAC lacks FENCE.I).
+// instruction synchronization where the ISA's translation invalidate leaves
+// fetched instructions live (armv8a: ISB). Capture peers before editing.
 // Reject partially mapped ranges with ARCH_ASPACE_EINVAL before editing;
 // wholly mapped ranges may be remapped. Rollback of a new map removes its
 // installed leaves and must complete the same maintenance as unmap.
@@ -659,8 +666,17 @@ enum arch_aspace_result arch_aspace_unmap(struct arch_aspace* space, uintptr_t v
 // architecture defines ordering when both root and translation tag change.
 void arch_aspace_activate(struct arch_aspace* space);
 
+// The access a kernel pointer from arch_aspace_acquire is taken for.
+enum arch_aspace_access
+{
+    ARCH_ASPACE_READ = 0,
+    ARCH_ASPACE_WRITE = 1
+};
+
 // Acquire a kernel pointer to the page containing va, preserving its byte
-// offset. Return null for unmapped pages or addresses outside the user range.
+// offset. Return null for unmapped pages or addresses outside the user range,
+// for a page the leaf maps ARCH_MAP_DEVICE, and for an ARCH_ASPACE_WRITE where
+// the leaf does not grant the user write; those two still name `frame`.
 // Callers split ranges at page boundaries; adjacent virtual pages need not
 // be physically adjacent. Each core must support ARCH_ASPACE_ACQUIRE_MIN
 // outstanding holds. Repeated acquisition of one page also counts as separate
@@ -674,7 +690,8 @@ void arch_aspace_activate(struct arch_aspace* space);
 // also where the acquire answers null: 0 for an unmapped page, the frame for one it cannot reach.
 // ep_copy holds one page of each end at once, the deepest holder in the kernel.
 #define ARCH_ASPACE_ACQUIRE_MIN 2u
-void* arch_aspace_acquire(struct arch_aspace* space, uintptr_t va, bool* uncached,
+void* arch_aspace_acquire(struct arch_aspace* space, uintptr_t va,
+                          enum arch_aspace_access access, bool* uncached,
                           arch_phys_addr_t* frame);
 void arch_aspace_release(struct arch_aspace* space, uintptr_t va);
 
@@ -897,7 +914,7 @@ void kickos_isr_irq(int irq);
 // A KICKOS_ARCH_SWITCH_LANDS_LATER arch installed `landed`, after committing its regions and
 // before the return into it, at every point that installs a booked context. Interrupts masked.
 // This call runs on a kernel or interrupt stack, never on `landed`'s own, which may be user
-// memory; the commit and the trace and bench hooks beside it carry no such promise.
+// memory; the commit and the trace hooks beside it carry no such promise.
 void kickos_switch_landed(struct arch_context const* landed);
 // A thread's entry function returned; the arch trampoline routes here.
 void kickos_thread_return(void) __attribute__((noreturn));
@@ -975,15 +992,9 @@ bool kickos_fault_frame_trusted(void const* frame, size_t bytes);
 bool kickos_fault_frame_on_kernel_stack(void const* frame, size_t bytes);
 #endif
 
-// Return the running thread's exclusive stack top, or zero for no thread,
-// idle or no recorded stack. Validate the fault SP with
-// kickos_fault_frame_trusted before using this for redirection.
+// Return the top of the running thread's kernel block where one is seated, else
+// of its own stack, or zero for no thread, idle or no recorded stack.
 uintptr_t kickos_fault_stack_top(void);
-
-// Whether the fault address lies in KICKOS_FAULT_STACK_GUARD_BAND below the
-// running stack. This detects overflow even if the exception restores SP
-// (as on RXv3). Return true when no stack is recorded.
-bool kickos_fault_below_stack(uintptr_t addr);
 
 // Record fault details for printing later in thread context. Do not print
 // in the handler: kpanic_enter permanently masks IRQs and reclaims the console.
@@ -1008,7 +1019,8 @@ void kickos_thread_fault_exit(void) __attribute__((noreturn));
 // On success, write the name to nonnull slain_name; leave it untouched on
 // failure. Use that name on the caller's trap stack, not the bounded exit stack.
 // Return null for no owner, idle, a privileged thread, failed slay or no
-// runnable context. Takes the kernel lock; callers run with IRQs unmasked.
+// runnable context. Takes the kernel lock. Call with this core's IRQs masked and keep them
+// masked until the result is seated: a switch an interrupt books in between is lost.
 struct arch_context* kickos_thread_contain_wild_stack(struct arch_context* offender,
                                                       char const** slain_name);
 

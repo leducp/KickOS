@@ -2,9 +2,9 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // rxv3: struct arch_context. Every switch is deferred through the SWINT handler
-// (switch.S), which saves the full interrupted register set on the thread's own stack, so
-// the saved stack pointer is the only per-thread state: PC, PSW and the registers live in
-// the frame `sp` points at.
+// (switch.S), which saves the interrupted registers on the thread's own stack and the PC and
+// PSW here, in kernel memory: the PSW carries PM, so no copy of it may sit where the thread or
+// a sibling can write.
 //
 // Every thread runs on its own USP (PSW.U=1), supervisor (PM=0) for a kernel thread and user
 // (PM=1) for a user one. The ISP is reserved for exception entry and boot.
@@ -23,7 +23,7 @@
 struct arch_context
 {
     // Saved stack pointer (R0) for this thread: points at the lowest word of the
-    // saved full-context frame (A0 low .. PSW), on the thread's USP. Written by
+    // saved frame (A0 low .. R15), on the thread's USP. Written by
     // the SWINT switcher on switch-out, read on switch-in / by arch_start. MUST STAY
     // FIELD 0: switch.S hard-codes the offset (static_assert in arch_rxv3.cc).
     uint32_t sp;
@@ -44,12 +44,17 @@ struct arch_context
     uint32_t stack_hi;
 
     // TOP of the kernel stack this thread's privileged dispatch runs on, seated once per pool
-    // thread by thread_create. svc_trampoline relocates R0 onto it before it calls anything,
-    // and kickos_rx_pendsw's USP guard accepts a USP inside the block below it as well as one
-    // inside the user stack, because a thread preempted mid-dispatch is running there. Read at
-    // F_CTX_KERNEL_SP in switch.S. Zero for a TCB outside the pool, which reaches neither
+    // thread by thread_create. The syscall trap points the USP onto it before svc_trampoline
+    // runs, and kickos_rx_pendsw's USP guard accepts a USP inside the block below it as well as
+    // one inside the user stack, because a thread preempted mid-dispatch is running there. Read
+    // at F_CTX_KERNEL_SP in switch.S. Zero for a TCB outside the pool, which reaches neither
     // site.
     uintptr_t kernel_sp;
+
+    // The PC and PSW the saved frame resumes with, which _kickos_rx_restore stages on the ISP
+    // for its RTE. Written by every switch-out and by arch_context_init.
+    uint32_t resume_pc;
+    uint32_t resume_psw;
 };
 
 #endif

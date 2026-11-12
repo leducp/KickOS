@@ -16,6 +16,8 @@
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
+# Each gdb session's bound, which kickos_boot_timeout reads off this line for the ctest TIMEOUT.
+: "${QEMU_TIMEOUT:=60}"
 
 ELF="${1:?usage: check_gdb_space.sh <elf> <gdb> <nm> <kickos source>}"
 GDB="${2:?usage: check_gdb_space.sh <elf> <gdb> <nm> <kickos source>}"
@@ -32,31 +34,6 @@ fi
 [ -f "$HELPER" ] || fail "no helper at $HELPER"
 scratch_dir
 boot_args "$ELF"
-
-# gdb on the emulator's stub, with <before> run ahead of the connection and <command>... after,
-# the emulator starting <late> seconds after gdb runs it.
-# gdb starts the emulator in a session of its own, which `timeout` never signals, and waits for it
-# to exit before gdb itself exits: the emulator carries the bound too.
-# gdb waits 2 s by default for the stub's first reply, and a reply that comes later desyncs the
-# connection: on a loaded host the emulator takes longer than that to start.
-gdb_boot() { # <out> <symbol file> <before> <late> <command>...
-    _gb_out="$1"
-    _gb_file="$2"
-    _gb_before="$3"
-    _gb_late="$4"
-    shift 4
-    # A gdb session on a loaded host runs much slower than a plain boot.
-    boot_bound "${QEMU_TIMEOUT:-60}"
-    # QEMU_EXTRA and KOS_BOOT_ARGS are word lists, so they must split.
-    # shellcheck disable=SC2086
-    timeout -k "$((KOS_STOP_TICKS / 5))" "$KOS_BOOT_BOUND_S" "$GDB" -nx -batch \
-        -ex 'set pagination off' -ex 'set confirm off' -ex "file $_gb_file" -ex "$_gb_before" \
-        -ex "set remotetimeout $KOS_BOOT_BOUND_S" \
-        -ex "target remote | sleep $_gb_late; exec timeout $((KOS_BOOT_BOUND_S - _gb_late)) \
-$QEMU_BIN -M $QEMU_MACHINE ${QEMU_EXTRA:-} -display none -monitor none -serial file:$TMP/console \
-$KOS_BOOT_ARGS -gdb stdio -S" \
-        "$@" > "$_gb_out" 2>&1 || true
-}
 
 # Where every image sits at an address of its own, <elf> is the merged ELF and holds every
 # image's symbols: each program's main is a local main of its own, which `break main` places as

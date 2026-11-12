@@ -96,13 +96,6 @@ add_library(kickos_x86_64_nokernel OBJECT "${KICKOS_X86_64_DIR}/nokernel_x86_64.
 kickos_apply_freestanding(kickos_x86_64_nokernel)
 target_include_directories(kickos_x86_64_nokernel PRIVATE ${KICKOS_X86_64_INCLUDES})
 
-# The switch accumulator's two symbols. Under KICKOS_BENCH switch.S brackets the swap and
-# reaches the kernel for both, and the images below carry the arch archive with no kernel
-# behind it.
-add_library(kickos_x86_64_nobench OBJECT "${KICKOS_X86_64_DIR}/nobench_x86_64.cc")
-kickos_apply_freestanding(kickos_x86_64_nobench)
-target_include_directories(kickos_x86_64_nobench PRIVATE ${KICKOS_X86_64_INCLUDES})
-
 # X2's subset: the tables, the report and the declining interrupt fallback.
 if(KICKOS_KERNEL_CORES EQUAL 1)
 add_library(kickos_x86_64_x2 OBJECT
@@ -152,7 +145,7 @@ target_include_directories(kickos_x86_64_probe6 PRIVATE ${KICKOS_X86_64_INCLUDES
 
 set(KICKOS_X6_IMAGE "${PROJECT_BINARY_DIR}/kickos_x86_64_x6.efi")
 kickos_x86_64_probe_image("${KICKOS_X6_IMAGE}" ARCHIVES OBJECTS kickos_x86_64_boot_ap
-  kickos_x86_64_probe6 kickos_x86_64_nobench kickos_x86_64_nokernel)
+  kickos_x86_64_probe6 kickos_x86_64_nokernel)
 add_custom_target(x6_image DEPENDS "${KICKOS_X6_IMAGE}")
 
 set(KICKOS_X1_ESP "${PROJECT_BINARY_DIR}/esp.img")
@@ -191,25 +184,7 @@ add_custom_target(x2-run
   USES_TERMINAL
   COMMENT "x86_64: taking the X2 descriptor and fault-report witness, one boot per class")
 
-# The guard's own positive control, registered here because the guard is this board's alone.
-# AR is not in the toolchain file's find_program set, CMake resolving it itself.
 if(KICKOS_BUILD_TESTS)
-  # The link rules over every application image this tree links: the embedded program is the
-  # program's own bytes at its own offsets, one DIR64 record per absolute kernel word and none
-  # in the program, a kernel reference to a program address only where the allowlist says what
-  # the site does with it, and no script symbol re-based by a dropped section
-  # (docs/design-m10-kernel-share.md 1.2).
-  add_test(NAME x86_64_app_split
-    COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_x86_64_app_split.py"
-            --readelf "${CMAKE_READELF}" --objdump "${CMAKE_OBJDUMP}" --nm "${CMAKE_NM}"
-            --allowlist "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/x86_64_apphalf_allowlist.txt"
-            --tree "${PROJECT_BINARY_DIR}/user")
-  kickos_host_gate(x86_64_app_split TIMEOUT 120)
-  add_test(NAME x86_64_app_split_controls
-    COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_x86_64_app_split.py"
-            --controls)
-  kickos_host_gate(x86_64_app_split_controls)
-
   # SKIP_RETURN_CODE, on every case below: the runners answer 77 for firmware or an ESP tool
   # this box does not have, the way tests/lib/gate.sh does, and WITHOUT this property ctest
   # reports that 77 as a failure naming nothing true.
@@ -256,7 +231,34 @@ if(KICKOS_BUILD_TESTS)
               "${PROJECT_BINARY_DIR}/x2run-ctest/${_cls}")
     set_tests_properties(x86_64_x2_${_cls} PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
   endforeach()
+endif()
 
+message(STATUS "KickOS: x86_64 libraries plus the X1 and X2 images; `ninja x1-run` and "
+               "`ninja x2-run` take the witnesses")
+else()
+  message(STATUS "KickOS: x86_64 shared-kernel application images with AP startup")
+endif()
+
+# The static gates over this tree's objects and images, at every core count.
+if(KICKOS_BUILD_TESTS)
+  # The link rules over every application image this tree links: the embedded program is the
+  # program's own bytes at its own offsets, one DIR64 record per absolute kernel word and none
+  # in the program, a kernel reference to a program address only where the allowlist says what
+  # the site does with it, and no script symbol re-based by a dropped section
+  # (docs/design-m10-kernel-share.md 1.2).
+  add_test(NAME x86_64_app_split
+    COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_x86_64_app_split.py"
+            --readelf "${CMAKE_READELF}" --objdump "${CMAKE_OBJDUMP}" --nm "${CMAKE_NM}"
+            --allowlist "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/x86_64_apphalf_allowlist.txt"
+            --tree "${PROJECT_BINARY_DIR}/user")
+  kickos_host_gate(x86_64_app_split TIMEOUT 120)
+  add_test(NAME x86_64_app_split_controls
+    COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_x86_64_app_split.py"
+            --controls)
+  kickos_host_gate(x86_64_app_split_controls)
+
+  # The guard's own positive control, registered here because the guard is this board's alone.
+  # AR is not in the toolchain file's find_program set, CMake resolving it itself.
   add_test(NAME x86_64_weak_undef_selftest
     COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_x86_64_weak_undef_selftest.sh"
             "${KICKOS_NO_GOT}" "${KICKOS_WEAK_UNDEF}" "${CMAKE_READELF}" "${CMAKE_C_COMPILER}"
@@ -277,12 +279,6 @@ if(KICKOS_BUILD_TESTS)
     COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_x86_64_entry_cld.sh"
             "${CMAKE_OBJDUMP}" "${CMAKE_C_COMPILER}" "${PROJECT_BINARY_DIR}")
   set_tests_properties(x86_64_entry_cld PROPERTIES TIMEOUT 60 LABELS host)
-endif()
-
-message(STATUS "KickOS: x86_64 libraries plus the X1 and X2 images; `ninja x1-run` and "
-               "`ninja x2-run` take the witnesses")
-else()
-  message(STATUS "KickOS: x86_64 shared-kernel application images with AP startup")
 endif()
 
 # The boot tail of an image that carries the kernel: RAM publish, the kernel-owned ctor

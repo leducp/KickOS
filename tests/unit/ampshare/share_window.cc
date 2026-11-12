@@ -2,8 +2,8 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // A translating board's window over the partition's user share, handed by the task holding the
-// share's reservation, over the real kernel/amp/ampshare.cc and kernel/mem/vrange.cc and an
-// address-space seam this file sets.
+// share's reservation, over the real kernel/amp/ampshare.cc, kernel/grant/grant.cc and
+// kernel/mem/vrange.cc and an address-space seam this file sets.
 
 #include <kickos/ampshare.h>
 #include <kickos/aspace.h>
@@ -34,6 +34,8 @@ namespace
     // The type every live mapping of the share carries.
     uint8_t g_share_type = ARCH_MAP_NORMAL;
     bool g_nocache = true;
+    bool g_entry_memtype = true;
+    constexpr struct arch_reserved_block APERTURES[] = {{0x10000000u, 0x1000u}};
 
     // The holder's space, which the seat reserves the share in.
     kickos::VirtualRanges g_ranges;
@@ -53,6 +55,8 @@ extern "C"
     {
         return type != ARCH_MAP_NOCACHE or g_nocache;
     }
+    bool arch_aspace_entry_memtype(void) { return g_entry_memtype; }
+    struct arch_reserved_span arch_window_apertures(void) { return APERTURES; }
 }
 
 namespace kickos
@@ -168,6 +172,21 @@ namespace
         EXPECT_TRUE(amp_share_window(&v, window(SHARE + G, G, KOS_WINDOW_UNCACHED), &rc));
         EXPECT_EQ(rc, -KOS_ENOTSUP);
         g_nocache = true;
+    }
+
+    TEST(AmpShareWindow, an_uncached_window_an_untyped_entry_cannot_take_is_unsupported)
+    {
+        kickos::VirtualRanges const& v = holder();
+        g_entry_memtype = false;
+        g_share_type = ARCH_MAP_NOCACHE;
+        int rc = 0;
+        EXPECT_TRUE(amp_share_window(&v, window(SHARE + G, G, KOS_WINDOW_UNCACHED), &rc));
+        EXPECT_EQ(rc, -KOS_ENOTSUP);
+        rc = 1;
+        EXPECT_TRUE(amp_share_window(&v, window(SHARE + G, G), &rc));
+        EXPECT_EQ(rc, -KOS_EBUSY);
+        g_share_type = ARCH_MAP_NORMAL;
+        g_entry_memtype = true;
     }
 
     TEST(AmpShareWindow, a_space_holding_no_share_reservation_is_left_to_the_reservation_rules)

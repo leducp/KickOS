@@ -2,7 +2,6 @@
 // Copyright (c) 2026 Philippe Leduc
 
 #include <kickos/ampwindow.h>
-#include <kickos/bench.h>
 #include <kickos/cap.h>
 #include <kickos/console_tx.h>
 #include <kickos/diag.h>
@@ -58,22 +57,7 @@ namespace kickos
 
             void offer(Thread* t)
             {
-                Thread* keep = t;
-                Thread* other = top_;
-                if (top_ != nullptr and t->prio <= top_->prio)
-                {
-                    keep = top_;
-                    other = t;
-                }
-                top_ = keep;
-#if KICKOS_KERNEL_CORES > 1
-                if (other != nullptr)
-                {
-                    sched::place_ready(other, held_);
-                }
-#else
-                (void)other;
-#endif
+                sched::keep_top(t, &top_, held_);
             }
 
             [[nodiscard]] Thread* take()
@@ -539,19 +523,12 @@ namespace kickos
                                  size_t cap_len, uintptr_t badge_out, uint32_t timeout_us,
                                  DeferredWake* dw, bool* parked, uint32_t* epoch)
     {
-        // RECV_LOCKED and RECV_SCAN close on the parking path and on the error arms only. A
-        // served return leaves both marks unconsumed on purpose: closing them mixes a scan
-        // that stopped on a hit into rows that otherwise describe a scan run to empty.
-        KICKOS_BENCH_MARK(bm_rlocked);
         *parked = false;
-        KICKOS_BENCH_MARK(bm_rresolve);
         int err = 0;
         Endpoint* e = static_cast<Endpoint*>(
             cap_resolve_e(c, cap, CapType::CAP_ENDPOINT, CAP_WAIT, &err));
         if (e == nullptr)
         {
-            KICKOS_BENCH_SPAN(PH_RECV_RESOLVE, bm_rresolve);
-            KICKOS_BENCH_SPAN(PH_RECV_LOCKED, bm_rlocked);
             return -err;
         }
         endpoint_receiver_waits(e, c);
@@ -565,8 +542,6 @@ namespace kickos
         }
         // Defer rescheduling: changing current() here would make wq_block park the
         // woken caller instead of this receiver.
-        KICKOS_BENCH_SPAN(PH_RECV_RESOLVE, bm_rresolve);
-        KICKOS_BENCH_MARK(bm_rscan);
         if (e->console == EP_CONSOLE_SERVED)
         {
             int32_t const held = held_serve(buf, cap_len, badge_out);
@@ -618,8 +593,6 @@ namespace kickos
                     // Stop on copy failure: if our buffer is invalid, continuing would fail
                     // every queued sender.
                     caller_refuse(c, s, -KOS_EFAULT, dw);
-                    KICKOS_BENCH_SPAN(PH_RECV_SCAN, bm_rscan);
-                    KICKOS_BENCH_SPAN(PH_RECV_LOCKED, bm_rlocked);
                     return -KOS_EFAULT;
                 }
                 reply_wait_seat(s, s->ipc.buf, s->call_rx_cap);
@@ -639,8 +612,6 @@ namespace kickos
                 {
                     dw->offer(s);
                 }
-                KICKOS_BENCH_SPAN(PH_RECV_SCAN, bm_rscan);
-                KICKOS_BENCH_SPAN(PH_RECV_LOCKED, bm_rlocked);
                 return -KOS_EFAULT;
             }
             (void)write_recv_info(user_space_of(c), badge_out, s->ipc.badge, KCAP_INVALID);
@@ -651,17 +622,13 @@ namespace kickos
             }
             return static_cast<int>(n);
         }
-        KICKOS_BENCH_SPAN(PH_RECV_SCAN, bm_rscan);
-        KICKOS_BENCH_MARK(bm_rpark);
         c->ipc.buf = buf;
         c->ipc.len = cap_len;
         c->ipc.badge_out = badge_out;
         ktime_deadline_arm(c, timeout_us, dw->held());
         // Transfer the pending wake to the park's reschedule, including peer notification.
         *epoch = wq_block(ask)(e->recv_waiters, WAIT_EP_RECV, e, dw->take(), dw->held());
-        KICKOS_BENCH_SPAN(PH_RECV_PARK, bm_rpark);
         *parked = true;
-        KICKOS_BENCH_SPAN(PH_RECV_LOCKED, bm_rlocked);
         return 0;
     }
 
@@ -674,20 +641,17 @@ namespace kickos
     int32_t endpoint_call(uint32_t cap, uintptr_t buf, size_t send_len, size_t recv_cap,
                           uint32_t timeout_us)
     {
-        KICKOS_BENCH_MARK(bm_total);
         if (send_len > KOS_EP_MSG_MAX)
         {
             return -KOS_EINVAL;
         }
         recv_cap = ipc_len_min(recv_cap, KOS_EP_MSG_MAX);
-        KICKOS_BENCH_MARK(bm_validate);
         // The one buffer is read (request) then written (reply): validate both here,
         // in caller context, once.
         if (not user_readable_and_writable_ok(buf, send_len, recv_cap))
         {
             return -KOS_EFAULT;
         }
-        KICKOS_BENCH_SPAN(PH_CALL_VALIDATE, bm_validate);
         Thread* c = sched::current();
         uint32_t epoch = 0;
         {
@@ -699,27 +663,9 @@ namespace kickos
             {
                 sched::exit_current(KOS_EXIT_CANCELLED, sched::EXIT_RETURN, &lock);
             }
-            KICKOS_BENCH_MARK(bm_locked);
-            // Calibrate under the same interrupt mask as the measured phases.
-            // PH_NEST includes the accumulator work excluded from PH_NULL.
-            KICKOS_BENCH_MARK(bm_nest);
-            KICKOS_BENCH_MARK(bm_null);
-            KICKOS_BENCH_SPAN(PH_NULL, bm_null);
-            KICKOS_BENCH_SPAN(PH_NEST, bm_nest);
-#if KICKOS_BENCH
-            // Measure a nested acquisition; an outer IrqLock is already held.
-            // Compile it out in non-benchmark builds because it performs real lock operations.
-            KICKOS_BENCH_MARK(bm_nest_lock);
-            {
-                IrqLock nested;
-            }
-            KICKOS_BENCH_SPAN(PH_NEST_LOCK, bm_nest_lock);
-#endif
             int err = 0;
-            KICKOS_BENCH_MARK(bm_resolve);
             Endpoint* e = static_cast<Endpoint*>(
                 cap_resolve_e(c, cap, CapType::CAP_ENDPOINT, CAP_SIGNAL, &err));
-            KICKOS_BENCH_SPAN(PH_CALL_RESOLVE, bm_resolve);
             if (e == nullptr)
             {
                 return -err;
@@ -731,9 +677,7 @@ namespace kickos
             {
                 return endpoint_unserved(e, 0);
             }
-            KICKOS_BENCH_MARK(bm_peek);
             Thread* w = wq_peek_highest(e->recv_waiters);
-            KICKOS_BENCH_SPAN(PH_CALL_PEEK, bm_peek);
 #if KICKOS_AMP_NODE
             if (far)
             {
@@ -753,10 +697,6 @@ namespace kickos
                 // Cross-node calls do not donate priority to the peer scheduler.
                 epoch = park_queueless(ask)(c, WAIT_EP_FAR_REPLY, e, lock);
                 ktime_deadline_arm(c, timeout_us, lock);
-                // Close ahead of the reschedule: a switch inside the bracket would charge the
-                // whole parked wait for the far reply to these two rows.
-                KICKOS_BENCH_SPAN(PH_CALL_LOCKED, bm_locked);
-                KICKOS_BENCH_SPAN(PH_CALL_TOTAL, bm_total);
                 // No wake schedules this park; request a switch explicitly.
                 sched::reschedule(nullptr, lock);
             }
@@ -777,39 +717,26 @@ namespace kickos
                     // receiver counted as gone.
                     return endpoint_unserved(e, 1);
                 }
-                KICKOS_BENCH_MARK(bm_probe);
                 if (not cap_can_take_reply(w))
                 {
                     return -KOS_EMFILE;
                 }
-                KICKOS_BENCH_SPAN(PH_CALL_PROBE, bm_probe);
-                KICKOS_BENCH_MARK(bm_pop);
                 (void)wq_pop_highest(e->recv_waiters); // IrqLock keeps w at the head.
-                KICKOS_BENCH_SPAN(PH_CALL_POP, bm_pop);
                 size_t const n = ipc_len_min(send_len, w->ipc.len);
-                KICKOS_BENCH_MARK(bm_copy);
                 if (not ep_copy(ipc_buf_space(w), w->ipc.buf, user_space_of(c), buf, n))
                 {
-                    KICKOS_BENCH_SPAN(PH_CALL_COPY, bm_copy);
                     // The caller is unchanged. Wake the receiver because it has left recv_waiters.
                     w->wait_result = -KOS_EFAULT;
                     sched::wake(w, lock);
                     return -KOS_EFAULT;
                 }
-                KICKOS_BENCH_SPAN(PH_CALL_COPY, bm_copy);
                 c->call_seq++; // Advance before packing the reply capability.
                 uint32_t rcap = KCAP_INVALID;
-                KICKOS_BENCH_MARK(bm_mint);
-                KICKOS_BENCH_MARK(bm_mint_cap);
                 // Not inside the assert: a compiled-out condition would drop the mint.
                 int const minted = cap_install_reply(w, c, &rcap);
-                KICKOS_BENCH_SPAN(PH_CALL_MINT_CAP, bm_mint_cap);
                 KICKOS_ASSERT(minted == 0);
-                KICKOS_BENCH_MARK(bm_mint_info);
                 if (not write_recv_info(user_space_of(w), w->ipc.badge_out, badge, rcap))
                 {
-                    KICKOS_BENCH_SPAN(PH_CALL_MINT_INFO, bm_mint_info);
-                    KICKOS_BENCH_SPAN(PH_CALL_MINT, bm_mint);
                     // Revoke the undisclosed capability and fail both ends.
                     // The receiver has left recv_waiters, but the caller has not parked.
                     bool const undone = cap_uninstall_reply(w, rcap, c);
@@ -819,31 +746,26 @@ namespace kickos
                     sched::wake(w, lock);
                     return -KOS_EFAULT;
                 }
-                KICKOS_BENCH_SPAN(PH_CALL_MINT_INFO, bm_mint_info);
-                KICKOS_BENCH_SPAN(PH_CALL_MINT, bm_mint);
                 w->wait_result = static_cast<intptr_t>(n);
                 // The request was fully copied above, so the reply may overwrite buf.
                 reply_wait_seat(c, buf, recv_cap);
                 // Donate to the server before waking it.
                 if (c->prio > w->prio)
                 {
-                    KICKOS_BENCH_MARK(bm_donate);
                     sched::set_prio(w, c->prio, lock);
-                    KICKOS_BENCH_SPAN(PH_CALL_DONATE, bm_donate);
                 }
-                KICKOS_BENCH_MARK(bm_park);
                 epoch = park_queueless(ask)(c, WAIT_EP_REPLY, w, lock);
                 reply_donor_park(w, c); // Off the ready queue; link can be reused.
-                // Arm the reply deadline before the wake can switch threads.
+                // Arm the reply deadline before the switch.
                 ktime_deadline_arm(c, timeout_us, lock);
-                KICKOS_BENCH_SPAN(PH_CALL_PARK, bm_park);
-                KICKOS_BENCH_MARK(bm_wake);
-                sched::wake(w, lock);
-                KICKOS_BENCH_SPAN(PH_CALL_WAKE, bm_wake);
+                Thread* woken = nullptr;
+                if (sched::wake_no_resched(w, lock))
+                {
+                    woken = w;
+                }
+                sched::reschedule(woken, lock);
                 // Close inside IrqLock so a deferred switch does not add the round trip.
                 // Keep fastpath and slowpath samples separate.
-                KICKOS_BENCH_SPAN(PH_CALL_LOCKED, bm_locked);
-                KICKOS_BENCH_SPAN(PH_CALL_TOTAL, bm_total);
             }
             else
             {
@@ -860,21 +782,14 @@ namespace kickos
                 epoch = wq_park(ask)(e->send_waiters, WAIT_EP_SEND, e, lock);
                 if (e->server != nullptr and c->prio > e->server->prio)
                 {
-                    KICKOS_BENCH_MARK(bm_sdonate);
                     pi_raise(e->server, c->prio, lock);
-                    KICKOS_BENCH_SPAN(PH_CALL_SLOW_DONATE, bm_sdonate);
                 }
                 // From here, so CALL_SLOW_PARK and CALL_SLOW_DONATE do not overlap.
-                KICKOS_BENCH_MARK(bm_spark);
                 // Keep this deadline when the caller moves from send_waiters to reply_waiters.
                 ktime_deadline_arm(c, timeout_us, lock);
                 sched::reschedule(nullptr, lock);
-                KICKOS_BENCH_SPAN(PH_CALL_SLOW_PARK, bm_spark);
-                KICKOS_BENCH_SPAN(PH_CALL_SLOW_LOCKED, bm_locked);
-                KICKOS_BENCH_SPAN(PH_CALL_SLOW_TOTAL, bm_total);
             }
         }
-        KICKOS_BENCH_MARK(bm_resume);
         wq_confirm_resume(c, epoch);
         c->call_state = CALL_NONE;
 #if KICKOS_AMP_NODE
@@ -883,20 +798,15 @@ namespace kickos
             far_reply_land(c, buf);
         }
 #endif
-        KICKOS_BENCH_SPAN(PH_CALL_RESUME, bm_resume);
         // reply bytes, or -KOS_EPIPE/-KOS_EMFILE/-KOS_ENOTSUP/-KOS_ETIMEDOUT/-KOS_ECANCELED
         return static_cast<int32_t>(c->wait_result);
     }
 
     // Reply with IrqLock held. Consumes the reply cap and adds wakes to dw.
     // Returns 0 or -KOS_E* (EBADF, EFAULT, or ESRCH).
-    // Set answered only for a local caller wake; far replies do not contribute
-    // to the local benchmark phases.
     int endpoint_reply_locked(Thread* c, uint32_t reply_cap, uintptr_t buf, size_t len,
-                              DeferredWake* dw, bool* answered)
+                              DeferredWake* dw)
     {
-        KICKOS_BENCH_MARK(bm_locked);
-        KICKOS_BENCH_MARK(bm_lookup);
         CapEntry* e = cap_lookup(c, reply_cap);
         if (e == nullptr or e->type != static_cast<uint8_t>(CapType::CAP_REPLY))
         {
@@ -938,7 +848,6 @@ namespace kickos
         {
             caller = nullptr;
         }
-        KICKOS_BENCH_SPAN(PH_REPLY_LOOKUP, bm_lookup);
         if (caller == nullptr)
         {
             // Timeout leaves CALL_NONE and an outstanding server capability.
@@ -947,9 +856,7 @@ namespace kickos
             return -KOS_ESRCH; // caller aborted or reused; the cap is consumed regardless
         }
         size_t const n = ipc_len_min(len, caller->call_rx_cap);
-        KICKOS_BENCH_MARK(bm_copy);
         bool const ok = ep_copy(ipc_buf_space(caller), caller->ipc.buf, user_space_of(c), buf, n);
-        KICKOS_BENCH_SPAN(PH_REPLY_COPY, bm_copy);
         // The capability is consumed and the caller is off its queue; wake it on error.
         caller->wait_result = static_cast<intptr_t>(n);
         if (not ok)
@@ -957,18 +864,12 @@ namespace kickos
             caller->wait_result = -KOS_EFAULT;
         }
         caller->call_state = CALL_NONE;
-        KICKOS_BENCH_MARK(bm_funnel);
         sched::set_prio(c, thread_effective_prio(c), dw->held());
-        KICKOS_BENCH_SPAN(PH_REPLY_FUNNEL, bm_funnel);
-        *answered = true;
-        KICKOS_BENCH_MARK(bm_wake);
         // Defer rescheduling so a fused receive can park first.
         if (sched::wake_no_resched(caller, dw->held()))
         {
             dw->offer(caller);
         }
-        KICKOS_BENCH_SPAN(PH_REPLY_WAKE, bm_wake);
-        KICKOS_BENCH_SPAN(PH_REPLY_LOCKED, bm_locked);
         if (not ok)
         {
             return -KOS_EFAULT;
@@ -978,27 +879,17 @@ namespace kickos
 
     int endpoint_reply(uint32_t reply_cap, uintptr_t buf, size_t len)
     {
-        KICKOS_BENCH_MARK(bm_total);
         len = ipc_len_min(len, KOS_EP_MSG_MAX); // the caller's capacity clamps it anyway
-        KICKOS_BENCH_MARK(bm_validate);
         if (not user_readable_ok(buf, len))
         {
             return -KOS_EFAULT;
         }
-        KICKOS_BENCH_SPAN(PH_REPLY_VALIDATE, bm_validate);
         Thread* c = sched::current();
         IrqLock lock;
-        bool answered = false;
         int rc;
         {
-            // Complete the deferred wake before closing PH_REPLY_TOTAL.
             DeferredWake dw(lock);
-            rc = endpoint_reply_locked(c, reply_cap, buf, len, &dw, &answered);
-        }
-        if (answered)
-        {
-            // Close before lock release can trigger a pending switch.
-            KICKOS_BENCH_SPAN(PH_REPLY_TOTAL, bm_total);
+            rc = endpoint_reply_locked(c, reply_cap, buf, len, &dw);
         }
         return rc;
     }
@@ -1011,10 +902,11 @@ namespace kickos
     // and EFAULT abort receiving so its result cannot hide the reply error.
     // After server-buffer validation, a reply EFAULT can be a client-buffer fault;
     // service loops must handle it without terminating the shared service.
+    // opts->notify reads 0 from entry until a leave writes the consumed bits, which it takes
+    // only once written. A refused leave answers -KOS_EFAULT, except after a received message.
     int32_t endpoint_reply_recv(uint32_t reply_cap, uintptr_t buf, uintptr_t lens,
                                 uintptr_t opts)
     {
-        KICKOS_BENCH_MARK(bm_frtotal);
         size_t reply_len = kos_call_lens_send(lens);
         size_t recv_cap = kos_call_lens_recv(lens);
         // Packing saturates at 511, so an oversized length reaches this clamp instead of
@@ -1040,127 +932,110 @@ namespace kickos
             return -KOS_EFAULT;
         }
         uint32_t const admit = in.notify;
-        uint32_t notify_bits = 0;
-        // Run the remaining paths through one write-back of consumed notifications.
-        // Use a callable so early returns still reach it. A destructor cannot replace
-        // the return code with EFAULT if write-back fails.
-        auto const served = [&]() -> int32_t
+        uintptr_t const notify_out = opts + offsetof(kos_reply_recv_opts, notify);
+        if (admit != 0u)
         {
-            if ((in.flags & ~KOS_RECV_NO_INFO) != 0)
-            {
-                return -KOS_EINVAL;
-            }
-            if (not user_readable_and_writable_ok(buf, reply_len, recv_cap))
+            uint32_t const none = 0;
+            if (not kaccess_to_user(user_space_of(c), notify_out, &none, sizeof(none)))
             {
                 return -KOS_EFAULT;
             }
-            uintptr_t badge_out = opts + offsetof(kos_reply_recv_opts, info);
-            if ((in.flags & KOS_RECV_NO_INFO) != 0)
+        }
+        int leave_rc = 0;
+        if ((in.flags & ~KOS_RECV_NO_INFO) != 0)
+        {
+            return -KOS_EINVAL;
+        }
+        if (not user_readable_and_writable_ok(buf, reply_len, recv_cap))
+        {
+            return -KOS_EFAULT;
+        }
+        uintptr_t badge_out = opts + offsetof(kos_reply_recv_opts, info);
+        if ((in.flags & KOS_RECV_NO_INFO) != 0)
+        {
+            badge_out = 0; // no metadata; reject calls
+        }
+        uint32_t epoch = 0;
+        bool parked = false;
+        int32_t rc = 0;
+        uint32_t opened = 0;
+        bool reply_refused = false;
+        {
+            IrqLock lock;
+            ParkToken const ask = park_cancel_pending(c);
+            if (ask.cancelled())
             {
-                badge_out = 0; // no metadata; reject calls
+                sched::exit_current(KOS_EXIT_CANCELLED, sched::EXIT_RETURN, &lock);
             }
-            uint32_t epoch = 0;
-            bool parked = false;
-            int32_t rc = 0;
-            uint32_t opened = 0;
-            bool reply_refused = false;
-            {
-                IrqLock lock;
-                ParkToken const ask = park_cancel_pending(c);
-                if (ask.cancelled())
-                {
-                    sched::exit_current(KOS_EXIT_CANCELLED, sched::EXIT_RETURN, &lock);
-                }
 #if KICKOS_KERNEL_CORES > 1
-                // Before the reply, so a refused wait leaves nothing half done.
-                if (admit != 0u)
+            // Before the reply, so a refused wait leaves nothing half done.
+            if (admit != 0u)
+            {
+                int const arc = notify_wait_admit(c);
+                if (arc != 0)
                 {
-                    int const arc = notify_wait_admit(c);
-                    if (arc != 0)
-                    {
-                        return arc;
-                    }
+                    return arc;
                 }
+            }
 #endif
+            {
+                // Complete the wake while IrqLock is held.
+                DeferredWake dw(lock);
+                if (reply_cap != KOS_CAP_NONE)
                 {
-                    // Complete the wake before closing the total, while IrqLock is held.
-                    DeferredWake dw(lock);
-                    // Only standalone replies use this reply-phase timestamp.
-                    bool answered = false;
-                    if (reply_cap != KOS_CAP_NONE)
+                    int const rrc = endpoint_reply_locked(c, reply_cap, buf, reply_len, &dw);
+                    if (rrc != 0 and rrc != -KOS_ESRCH)
                     {
-                        int const rrc =
-                            endpoint_reply_locked(c, reply_cap, buf, reply_len, &dw, &answered);
-                        if (rrc != 0 and rrc != -KOS_ESRCH)
-                        {
-                            rc = rrc;
-                            reply_refused = true;
-                        }
-                    }
-                    if (not reply_refused)
-                    {
-                        // Open the mask on whatever notification this thread is bound to and
-                        // rearm the signallers it covers. The matching leave consumes bits and
-                        // marks them for the next rearm.
-                        opened = notify_wait_enter(c, admit, lock);
-                        if ((notify_pending_of(c) & opened) != 0u)
-                        {
-                            // Return the notification now; a queued message can be received next
-                            // time. The endpoint is not entered, so a vacated one stays so until
-                            // then.
-                            rc = -KOS_ENOTIFY;
-                        }
-                        else
-                        {
-                            rc = endpoint_recv_locked(ask, c, in.ep, buf, recv_cap, badge_out,
-                                                      in.timeout_us, &dw, &parked, &epoch);
-                        }
-                        if (not parked)
-                        {
-                            // No park occurred, so pending bits can be consumed under this lock.
-                            notify_bits = notify_wait_leave(c, opened);
-                        }
+                        rc = rrc;
+                        reply_refused = true;
                     }
                 }
                 if (not reply_refused)
                 {
-                    // Close before lock release so deferred-switch targets exclude the wait.
-                    // Do not record reply refusals.
-                    KICKOS_BENCH_SPAN(PH_REPLY_RECV_TOTAL, bm_frtotal);
+                    // Open the mask on whatever notification this thread is bound to and
+                    // rearm the signallers it covers. The matching leave consumes bits and
+                    // marks them for the next rearm.
+                    opened = notify_wait_enter(c, admit, lock);
+                    if ((notify_pending_of(c) & opened) != 0u)
+                    {
+                        // Return the notification now; a queued message can be received next
+                        // time. The endpoint is not entered, so a vacated one stays so until
+                        // then.
+                        rc = -KOS_ENOTIFY;
+                    }
+                    else
+                    {
+                        rc = endpoint_recv_locked(ask, c, in.ep, buf, recv_cap, badge_out,
+                                                  in.timeout_us, &dw, &parked, &epoch);
+                    }
+                    if (not parked and admit != 0u)
+                    {
+                        leave_rc = notify_wait_leave(c, opened, notify_out);
+                    }
                 }
             }
-            if (parked)
-            {
-                KICKOS_BENCH_MARK(bm_frtail);
-                wq_confirm_resume(c, epoch);
-                rc = static_cast<int32_t>(c->wait_result);
-#if KICKOS_AMP_NODE
-                if (c->far_hold != 0u)
-                {
-                    rc = far_call_land(c, buf, badge_out, rc);
-                }
-#endif
-                {
-                    // Consume bits after the resume barrier. A deferred switch may not have
-                    // run when wq_block returns. The barrier needs interrupts enabled so that
-                    // switch can run before this thread reads its wake result.
-                    IrqLock lock;
-                    notify_bits = notify_wait_leave(c, opened);
-                }
-                KICKOS_BENCH_SPAN(PH_REPLY_RECV_TAIL, bm_frtail);
-            }
-            return rc;
-        };
-        int32_t const rc = served();
-        // Write consumed bits on every path after the input snapshot, including errors.
-        // Skip when the input mask was zero: it already reports zero consumed bits.
-        // A failed write-back returns EFAULT even if a message was received.
-        if (admit != 0
-            and not kaccess_to_user(user_space_of(c),
-                                    opts + offsetof(kos_reply_recv_opts, notify), &notify_bits,
-                                    sizeof(notify_bits)))
+        }
+        if (parked)
         {
-            return -KOS_EFAULT;
+            wq_confirm_resume(c, epoch);
+            rc = static_cast<int32_t>(c->wait_result);
+#if KICKOS_AMP_NODE
+            if (c->far_hold != 0u)
+            {
+                rc = far_call_land(c, buf, badge_out, rc);
+            }
+#endif
+            if (admit != 0u)
+            {
+                // After the resume barrier: a deferred switch may not have run when
+                // wq_block returns, and the barrier needs interrupts enabled.
+                IrqLock lock;
+                leave_rc = notify_wait_leave(c, opened, notify_out);
+            }
+        }
+        if (leave_rc != 0 and rc < 0)
+        {
+            return leave_rc;
         }
         return rc;
     }

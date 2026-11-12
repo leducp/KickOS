@@ -212,10 +212,6 @@ static_assert(offsetof(struct armv8a_percpu_block, ctx_current) == 8,
               "switch.S spells PERCPU_CTX_CURRENT as 8");
 static_assert(offsetof(struct armv8a_percpu_block, switch_to) == 16,
               "switch.S spells PERCPU_SWITCH_TO as 16");
-#if KICKOS_BENCH
-static_assert(offsetof(struct armv8a_percpu_block, bench_sw_start) == 28,
-              "switch.S spells PERCPU_BENCH_SW_START as 28");
-#endif
 static_assert(offsetof(struct armv8a_percpu_block, user_ttbr0) == 32,
               "switch.S spells PERCPU_USER_TTBR0 as 32");
 static_assert(sizeof(struct armv8a_percpu_block) == 64,

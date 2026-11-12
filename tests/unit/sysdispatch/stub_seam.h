@@ -47,6 +47,8 @@ namespace kickos
         // The one device aperture arch_window_apertures answers, which holds no console window.
         constexpr uintptr_t STUB_DEVICE_BASE = 0x50000000u;
         constexpr size_t STUB_DEVICE_SIZE = 0x1000u;
+        // While set, arch_reserved_blocks answers that aperture as the kernel's own device.
+        extern bool g_device_reserved;
     }
 }
 

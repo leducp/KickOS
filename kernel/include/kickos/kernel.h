@@ -42,14 +42,6 @@ namespace kickos
     // would end every node.
     bool reset_owned_here(void);
 
-#if KICKOS_BENCH
-    // kprintf that offers a refused line again: the console takes a whole line or none, and
-    // this one waits for the drain between attempts. THREAD CONTEXT ONLY, never under a lock:
-    // it spins with interrupts open so the drain ISR can run. It gives up once a whole attempt
-    // passes with nothing leaving the ring.
-    void kprintf_paced(char const* fmt, ...) __attribute__((format(printf, 1, 2)));
-#endif
-
     // A thread-fault record: the kprintf_record lines a thread prints before its krecord_end.
     // kprintf_record offers the line again while the kernel's own console has no room for it,
     // until it goes or kconsole_record_wait gives it up; thread context, no lock held.

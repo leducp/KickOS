@@ -42,6 +42,7 @@ namespace kickos
 
 extern "C"
 {
+void kickos_armv7m_ccr_init(void);
 void kickos_armv7m_init(void);
 #if KICKOS_HAVE_MPU
 // LINK ANCHOR: this reference pulls arch_arm_pmsav8.cc, so its kickos_arch_mpu_commit /
@@ -346,6 +347,7 @@ void kickos_rp2350_xip_identity(void)
 
 void Reset_Handler(void)
 {
+    kickos_armv7m_ccr_init();
     // A warm reboot or debugger entry may not have run the bootrom's VTOR setup (5.2.2). From the
     // SYMBOL, never a literal: a peer links at its own flash slice.
     r32(kickos::arm::SCB_VTOR) = reinterpret_cast<uintptr_t>(g_isr_vector);

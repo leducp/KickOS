@@ -19,30 +19,30 @@ A milestone's own section leaves this file once the milestone after it merges, a
 
 ## Where we are
 
-**M10 HAS MERGED THROUGH M10.6.10, AND M10.6, THE CLEANUP PASS, IS OPEN.** M9's answer is that
+**M10 HAS MERGED THROUGH M10.6.12, AND M10.6, THE CLEANUP PASS, IS DONE.** M9's answer is that
 the one big kernel lock stays, with per-core ready queues and per-pair rings under it and CLH
 arbitration on x86_64 alone. M10 is static composition: a declared system, admitted on the host,
 and an init provider that stays resident. `roadmap.md`'s `### M10` section is the ledger and the
 only place its numbers are assigned; the sections at the bottom of this file say what each
 milestone's green runs do not.
 
-**M10.6.11, THE HARDWARE TAIL AND THE BENCH, IS CLOSED AND READY TO MERGE; NEXT IS M10.6.12.** Its
-record is the M10.6.11 entries of `TODO.md`, and the M10.6.11 section at the bottom of this file
-says what its green runs do not. The bench items it could not witness moved to M10.6.12's
-"THE BENCH ITEMS M10.6.11 LEFT OPEN" (maintainer, 2026-11-08). M10.6.12's prepared branches are
-being integrated on a branch of that name ahead of the merge.
+**M10.7 IS NEXT.** M10.6.12 took the performance bench out of the kernel, audited the test suite
+and closed the bench items M10.6.11 left open; the M10.6.12 section at the bottom of this file
+says what its green runs do not.
 
-**THE ORDER IS LOCKED: M10.6.11, THEN M10.6.12, THEN M10.7** (maintainer, 2026-10-13, M10.6.9 and
+**THE ORDER IS LOCKED: M10.6.12, THEN M10.7, THEN M10.8** (maintainer, 2026-10-13, M10.6.9 and
 M10.6.10 inserted 2026-10-21, M10.6.12 on 2026-11-05 and numbered so on 2026-11-07: "no need for
-sub milestone when there is only one"). M10.6.9 made a task on a region board the MPU equivalent of
-the MMU process, with its own libc state, nonblocking flag included, and closed the kernel's
+sub milestone when there is only one"; on 2026-11-09 M10.6.12 opened with the test suite audit,
+and M10.7 became the API a usable kernel needs, the exit record moving to M10.8). M10.6.9 made a
+task on a region board the MPU equivalent of the MMU process, with its own libc state, nonblocking flag included, and closed the kernel's
 isolation holes; a board too small for that holds one task rather than lie about the isolation.
 M10.6.10 is C++ and libc conformance: a toolchain release giving GCC a KickOS threads model, the
 C++ exception state per thread, and the libc semantics a worker thread, the wall clock and entropy
 get wrong. M10.6.11 captured every board the bench holds, bounded the boot and interrupt stacks on every
 arch, and traps an integer divide by zero wherever the core or its ABI can. M10.6.12 takes the live
 bugs the TODO sweep found, per-core sleep queues and the bench items M10.6.11 left open, as its
-`TODO.md` entry lists. M10.7, the exit record, reconciles the references against what shipped.
+`TODO.md` entry lists. M10.7 is the API a usable kernel needs, `kos_task_create` no longer waiting
+first. M10.8, the exit record, reconciles the references against what shipped.
 **It opens with a cross-family audit** (maintainer, 2026-11-06): GPT-6 Astra, through the Codex
 plugin, audits ten areas from a prompt the maintainer keeps, and a Claude agent verifies each
 finding before it reaches the maintainer. It runs once, on M10.6.12's finished code (maintainer,
@@ -1005,10 +1005,8 @@ The whole point of this file. A green fleet pass says none of the following.
   it in a 2026-08-16 session log, which is why "owed" was the wrong word -- but that log attests the
   M4.9.1 tip, and M6.2 has since changed `arch/arm/armv6m/arch_armv6m.cc` at T6a. A witness is valid
   for a TREE. It is still the fleet's only armv6m enforcement unit, so nothing else can stand in.
-- **The bench chain refuses BY NAME on an absent rig value**, and `bench-fleet.sh` ending
-  `INCOMPLETE` with a non-zero exit is the EXPECTED result for a fleet pass, frdmk64f being out by
-  ruling. **That ruling exists NOWHERE but this line** -- `bench-fleet.sh` still lists and probes
-  the board, and an absent one records `ABSENT` and makes the pass `INCOMPLETE`.
+- **The bench chain refuses BY NAME on an absent rig value.** frdmk64f is out of the fleet pass by
+  ruling (`docs/reference/process.md`, *The bench*): `bench-fleet.sh` runs it only when named.
 
 ## Open, and verified still open
 
@@ -1018,8 +1016,8 @@ The whole point of this file. A green fleet pass says none of the following.
   Detail at `TODO.md`.
 - **No emulated gate for a buffered-ring panic flush**; the sim's ring is provably empty at
   panic time. Detail at `TODO.md`.
-- **Four app SOURCES grant a DEV window a live driver holds**: `xmcspi`, `xmccshold`, `pvprobe`,
-  `inprstorm` -- six targets, `inprstorm` now building three ELFs from one source.
+- **Three app SOURCES grant a DEV window a live driver holds**: `xmccshold`, `pvprobe`,
+  `inprstorm` -- five targets, `inprstorm` now building three ELFs from one source.
   **The app authority macro surfaces only at runtime**, one consumer at boot and no build file
   reading it.
 - **T7's OWED LATENCY MEASUREMENT WAS NEVER TAKEN, and there is no instrument to take it with.**
@@ -1108,7 +1106,7 @@ missing from one of those QEMU captures under load is this, not a flake to re-ru
 **WHAT IT DOES NOT SAY.**
 
 - No silicon has run the last merge: stdout's byte count on a refused or cancelled write,
-  `consoledemo` and `k64console` on their IRQ console drivers, and the XMC4800 and K64F with their
+  `uartconsole` on both boards' IRQ console drivers, and the XMC4800 and K64F with their
   polled console drivers gone. Sweep 4 and the host tests are its only witnesses.
 - picopi, pizero2350 and teensy41 were not reached, because their USB console cable is not on the
   bench host. Owed there: both USB console selftests, `usbcdcwit` (the only witness of the short
@@ -1120,7 +1118,7 @@ missing from one of those QEMU captures under load is this, not a flake to re-ru
 - The K64F ran on a local rig only, on an earlier tree: blink by eye, k64dspi against the LAN9252
   shield, k64drv, both reclaim witnesses, the selftest three times and mpu_fault. Owed, behind the
   J-Link's daily notice: rootfault, a full fleet pass, the SYSMPU user rights narrowed to the core
-  alone with no chip address for a fetch fault, and k64console on k64uartirq.
+  alone with no chip address for a fetch fault, and uartconsole on k64uartirq.
 - An emulator-judged image (stackdepth, rebootdemo, ringppb, the pspguard family, the ESP32's fault)
   is owed on every board with no emulator, and blink is read by eye only. A capture carries no exit
   status, so every "ended the system with status N" clause rests on the emulator gates.
@@ -1146,26 +1144,38 @@ missing from one of those QEMU captures under load is this, not a flake to re-ru
   and one TX_IDLE_NUM, the reset 256: the field reads 2 while the line shifts and 0 once the last
   frame is out. No other baud or idle count was run.
 
-## M10.6.11: the hardware tail and the bench, and what these green runs do NOT say
+## M10.6.12: the cleanup pass, and what these green runs do NOT say
 
-- **THE DIVIDE-BY-ZERO TRAP HAS NO SILICON WITNESS ON TEENSY41, DUE OR MICROBIT.** teensy41 was
-  off the bench after the trap went on, due is absent, and microbit has no unit, so its v6-M
-  dump runs on QEMU only. picopi is the one silicon witness of the v6-M decode, from flash.
-- **A DIVIDE BY ZERO INSIDE THE PREBUILT NEWLIB, LIBSTDC++ OR LIBGCC NOW TRAPS ON ARMV7-M,** and
-  none of their divisions was audited. Where the core does not trap (RISC-V, AArch64, RX) a
-  quotient comes back; the compiler check that would trap there is a ruling in `TODO.md`.
-- **THE BOOT AND INTERRUPT STACK CLASSES CHANGED NO IMAGE BYTE.** Built images differ from the
-  last silicon pass only in their commit, date and image id stamps, so no capture was retaken
-  for them. The firmware's own descent on the x86_64 UEFI stack is priced by no graph: it rests
-  on UEFI's 128 KiB promise.
+- **THE RP USB SUSPEND AND RESUME FIX HAS NO SILICON WITNESS.** picopi and pizero2350 were off the
+  bench; a host test models the race. That the RP2350 acknowledges its suspend interrupt by a write
+  to a bit its datasheet types read-only rests on the datasheet's own interrupt table: a
+  `usbcdcwit` capture on each board is owed.
+- **THE RT1062 BACKGROUND REGION AND THE RP LOADER UNDER THE BY-DEVICE `.bus` RECORD RAN ON NO
+  SILICON.** teensy41, picopi and pizero2350 were absent.
+- **THE TIMER LANDING NOW GOES THROUGH THE SAME DEDUP ON EVERY ARCH.** A switch landing no longer
+  reprograms the comparator unless the next event changed; lx6, which no emulator runs, has it from
+  esp32-wroom captures only.
+- **NOTHING MEASURES INTERRUPT-MASKED TIME ANY MORE.** The lock-hold and in-switch rows went with
+  the in-kernel bench; userbench measures from user space only.
+- **RX72M'S FAULT ISOLATION HAS NO EMULATOR.** "Every unprivileged fault is killed alone" rests
+  on rx72m captures of `mpu_fault`, `rootfault`, `faultsurvive`, `faultsurvive_ovf`
+  and `faultsurvive_off`.
+- **THE ESP32-C6 FLASH AND CACHE CONTROLLERS ARE KERNEL-OWNED, AND `grant_reserved` WITNESSES THE
+  REFUSAL ON SILICON** (esp32c6-wroom `selftest_p4`).
+- **NO K64F OBJECT OR ARENA BLOCK SPANS THE SRAM BANK LINE** (chip.yaml `bank_line`), so an
+  unaligned access cannot cross it. Witnessed on frdmk64f: selftest, k64dspi, k64dspi_slots, hello
+  and uartconsole.
+
+Carried from M10.6.11, still true:
+
+- **THE DIVIDE-BY-ZERO TRAP HAS NO SILICON WITNESS ON TEENSY41, DUE OR MICROBIT.** picopi is the
+  one silicon witness of the v6-M decode, from flash.
+- **A DIVIDE BY ZERO INSIDE THE PREBUILT NEWLIB, LIBSTDC++ OR LIBGCC TRAPS ON ARMV7-M,** and none
+  of their divisions was audited.
 - **THE QEMU M-PROFILE CLOCK, THE X86_64 TIMER CALIBRATION AND THE CLEAN-ROOM PE LINKER SCRIPT
-  RAN ON QEMU ONLY.** No x86_64 silicon exists here, and the mps2, an505 and nrf51 timers are
-  QEMU models.
-- **THE USB CONSOLE HOLDS ITS OUTPUT UNTIL THE HOST SETS A LINE CODING, ELSE A FALLBACK.** teensy41
-  and pizero2350 witnessed the host path; the fallbacks fire only for a host that never sets
-  one, and no capture takes them. Unplug is still owed with M10.6.12's bench items.
-- **THE PREBUILT LIBC STILL MAKES UNALIGNED ACCESSES**, so a K64F access across its two SRAM
-  banks can still fault. The toolchain rebuild and its measurement are M10.6.12's.
+  RAN ON QEMU ONLY.**
+- **THE USB CONSOLE HOLDS ITS OUTPUT UNTIL THE HOST SETS A LINE CODING, ELSE A FALLBACK**, and no
+  capture takes the fallbacks. Unplug waits for a new bench (TODO.md, Parked).
 
 Carried from M10.6.10, still true:
 
@@ -1180,7 +1190,7 @@ Carried from M10.6.10, still true:
 - **`getentropy` FROM RDSEED RAN ON QEMU ONLY**, with and without the feature.
 - **NO ARM HOLDS THE SHARED WALL CLOCK'S READ BOUND ITSELF, NOR `quick_exit`, NOR AN `exit()`
   THAT FINDS A SIBLING ALREADY CANCELLED.**
-- **THE DOCS PASS IS OWED AT THE END OF M10.** The stale lines are listed under the M10.7 exit
+- **THE DOCS PASS IS OWED AT THE END OF M10.** The stale lines are listed under the M10.8 exit
   record in `TODO.md`.
 
 ## Where to go next

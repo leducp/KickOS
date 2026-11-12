@@ -179,7 +179,7 @@ fewer in `syscall_body` put the ping-pong at 4 mod 8. The trail:
 - Ruled (maintainer, 2026-10-02): those paths stay, since realigning them costs every entry to
   save a few thousand cycles a run, and the fastpath's taken entries, aligned today only because
   the callers' frames add up that way, are watched. The RX bench counts each taken entry whose
-  saved or restored bank is at 4 mod 8 (`KICKOS_BENCH_FASTPATH_WATCH`, `kickos/bench.h`), prints
+  saved or restored bank is at 4 mod 8 (the in-kernel bench's fastpath watch, since removed), prints
   `fastpath-misaligned: N of M` once a boot, and `tools/bench/bench-capture.sh` refuses an rxv3
   capture whose N is not zero: the regression it exists for is a compiler change of frame size
   flipping that parity, about 0.4 percent of a call/reply, which no throughput row would refuse.
@@ -342,7 +342,7 @@ and `alignof` under each preset's flags). The size pin in
 `kernel/include/kickos/thread.h` is one assertion of exact size for every arch. It stays exact
 on the other arches, whose memory is counted in KiB; on x86 it becomes a ceiling,
 `sizeof(Thread)` at most 2 KiB, which catches an accidental large increase, and the measured size
-is recorded after the build. At the 32 threads of qemu-x86_64-smp12's `KICKOS_BUDGET_THREADS` the
+is recorded after the build. At the 32 thread slots of qemu-x86_64-smp12 the
 TCBs take about 27 KiB more at the estimate, and even at 2 KiB a Thread the slots would take about
 64 KiB. Each core's boot context in `kernel/include/kickos/instance.h` carries an area too, though
 `arch_start` abandons it on x86: about 10 KiB on twelve cores. Those areas stay in place this stage
@@ -373,7 +373,7 @@ by the libraries an app pulls, and each address space gets its own copy of the h
 `kickos_x86_64_switch_now`'s entry (`arch/x86/x86_64/switch.S`), after `arch_switch` has called
 `publish_current`, and closes once the stack is swapped, before `kickos_switch_unlock`; the WRMSR
 of 5.5 would fall outside it. The open moves ahead of `publish_current`: as built, `arch_switch`
-calls `kickos_x86_64_bench_open`, a body of its own in `switch.S` under `KICKOS_BENCH` holding the
+calls the bench's window-open body of its own in `switch.S` (in-kernel bench era) holding the
 same `lfence`, `rdtsc` and store to the per-core block's `sw_start`. The close stays where it
 is, so the window encloses `publish_current` whole, the task-state segment, the I/O ports and the
 per-core kernel stack as well as the FS base, then the register save, the XSAVE, the stack swap
@@ -412,7 +412,7 @@ each image. "Before" is the image of the commit "Open the q35 switch window befo
 publish_current", the widened window with no vector state; "after" is the final image,
 the area of 5.2 on both paths, the FS base write of 5.5 and newlib linked. The cycles are TSC
 ticks, which this host's TSC counts at 2 GHz under KVM, and the buckets of
-`kernel/include/kickos/bench_hist.h` are 4 ticks wide at 40 and 32 wide at 256. One run of
+in-kernel bench's histogram (since removed) are 4 ticks wide at 40 and 32 wide at 256. One run of
 "before" never reached the kernel, firmware finding no boot partition, and was taken again at
 the session's end.
 

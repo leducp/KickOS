@@ -26,7 +26,7 @@ to 8,192 anyway, so the board provisions **8 x 8,192** rather than 12 x 7,584. R
 `microbit` (nRF51822 provisioned at 32 KiB, 256 KiB flash) takes the fleet defaults everywhere
 but the thread count:
 
-- `KICKOS_BUDGET_THREADS=4` at a 2,048-byte stack, root 2,048, idle 512 -> **10,752 bytes of
+- 4 thread slots at a 2,048-byte stack, root 2,048, idle 512 -> **10,752 bytes of
   arena**
 - `KICKOS_KERNEL_STACKS=1`: the thread slot count blocks, so 5 x 896 = 4,480 bytes of kernel
   `.bss` below the arena. Raising the thread count shrinks the arena while growing the demand
@@ -84,7 +84,7 @@ code wins, then this file.
 | `esp32c6-wroom` | ESP32-C6-WROOM-1 / RV32IMAC | GP8 (WS2812B, LED2) | UART0, GP16/GP17, 115200 -> CH343P VCOM (`/dev/ttyACM0`) | esptool | [x] **the selftest is FOUR images on the enforcing variants (FIVE on the bench one)** (see *The selftest ships as SEVERAL images on three boards*), full selftest + PMP NAPOT enforcement + `mpu_fault` trap + diag-LED + bench; the `c6blink` granted-GPIO window is the canonical per-thread PMP proof. **The core runs at 40 MHz**, the reset selection (XTAL / 1) the ROM leaves: KickOS sets no clock tree, `MTIME` counts `CPU_CLK`, and `Reset_Handler` reads that rate off PCR before the constructors, so a boot that keeps the PLL converts at its rate instead, and a rate that is not 160 MHz >> n stops the boot with a printed refusal that only a reset leaves; `wallclock` holds a kernel sleep against the capture host's arrival stamps. **Second board with an UNPRIVILEGED root, and the first on RISC-V PMP** (2026-07-28) -- see *Unprivileged root* below. **Multiple physical units exist, and the 2026-07-28 pass was luck-dependent**: `esp32c6.ld` linked `.data` with an LMA outside every loaded segment, so `Reset_Handler` copied uninitialised SRAM over correctly-placed `.data`. Whether that corrupted anything load-bearing varied by die and power-on history. Fixed 2026-07-30 and pinned by an `ASSERT` (`_sidata == _sdata` in the shared RV32 body `arch/riscv/common/rv32imac.ld.h`, which `esp32c6.ld` enables with `KICKOS_RV32_LOADS_AT_VMA`), and the post-fix re-witness closes the owed `c6blink` mux-write arm -- see *M4.5.6* below |
 | `esp32-wroom` | ESP32 / Xtensa LX6 @240 MHz | GP2 (D2, active-high) | UART0, GP1/GP3, 115200 -> CH340 (`/dev/ttyUSB1`) | esptool | [x] 8/8 apps incl fault dump + bench |
 | `rx72m` | RX72M / RXv3 @240 MHz | -- (LED6, P80, is `rxdrv`'s) | SCI6 ASC, PB1/PB0, 115200 -> FT232 (`/dev/ttyUSB0`); ring | `rfp-cli` (Renesas Flash Programmer) | [x] full selftest + stress + `RX EXCEPTION` dump (2026-07-09); RX-MPU enforcement selftest + `mpu_fault` cross-domain trap + `rxdrv` granted peripheral window (2026-07-17); DPFPU switch + bench. **Fourth board with an UNPRIVILEGED root, and the only one on the RX MPU** (2026-07-28) -- see *Unprivileged root* below. Re-witnessed 2026-07-30 at a clean `270b6fa`, closing the owed stage-4 `rxdrv` mux-write arm and the M4.5.5 granular-shaping debt in one visit -- see *M4.5.6* below. **No CI gate** -- see *CI coverage* below |
-| `xmc4800-relax` | XMC4800 / M4F | P5.9 (LED1) | USIC0 ASC, P1.5/P1.4, 115200 -> VCOM; + RTT | onboard J-Link | [x] full selftest + stress + fault dump (2026-07-09, 144 MHz); PMSAv7 enforcement selftest + `mpu_fault` cross-domain trap + the `xmcspi` granted-USIC window (2026-07-17) -- the canonical per-thread PMSA proof; console handover to a userspace driver, panic-path reclaim and clock retune all silicon-passed. **First board with an UNPRIVILEGED root** (2026-07-27) -- see *Unprivileged root* below |
+| `xmc4800-relax` | XMC4800 / M4F | P5.9 (LED1) | USIC0 ASC, P1.5/P1.4, 115200 -> VCOM; + RTT | onboard J-Link | [x] full selftest + stress + fault dump (2026-07-09, 144 MHz); PMSAv7 enforcement selftest + `mpu_fault` cross-domain trap + the granted-USIC window (2026-07-17) -- the canonical per-thread PMSA proof, held by `pvprobe` (the granted window, and the kill for an ungranted read) and `xmcssc` (the SSC transfer); console handover to a userspace driver, panic-path reclaim and clock retune all silicon-passed. **First board with an UNPRIVILEGED root** (2026-07-27) -- see *Unprivileged root* below |
 | `f411disco` | STM32F411 / M4F | PD12 (LD4 grn) | USART2, PA2/PA3, 115200 (ext adapter) | onboard ST-Link (`st-flash`) | [x] full selftest + all apps + fault dump + bench + LED; **PMSAv7 enforcement silicon-witnessed 2026-07-29** -- enforcement selftest 62/62 + `mpu_fault` cross-domain MemManage denial, closing the `stm32f411` MPU HW debt for the chip. **Fifth board with an UNPRIVILEGED root, and the second on PMSAv7** (2026-07-29) -- see *Unprivileged root* below |
 | `blackpill` | STM32F411 / M4F | PC13 (active-low) | USART2, PA2/PA3, 115200 (ext adapter) | USB-DFU / SWD | [x] full selftest + bench (2nd F411; 25 MHz HSE); MPU backend is the shared `stm32f411` one, silicon-witnessed on `f411disco` 2026-07-29 (not re-run on this board) |
 | `picopi` | RP2040 / M0+ | GP25 | UART0, GP0/GP1, 115200 | `picotool` (BOOTSEL) | [x] LED + UART0 + full selftest with `sched_exit` (2026-07-09, 125 MHz PLL); PMSAv6 cross-domain denial silicon-proven 2026-07-19 (M0+ has no MemManage -- it escalates to HardFault) -- the fleet's only armv6m enforcement proof; U-mode `cxxtest` still awaits a bench re-flash |
@@ -177,9 +177,8 @@ and gates on CDC host-drain, so app/boot output is dropped; UART0 does not.
   cannot restore a module a channel 1 holder has gated.
 - **`esp32c6-wroom`: a DMA master reaches HP SRAM only through the APM.** Every master but the
   two CPUs reaches HP SRAM through the HP_APM M1 path in REE2, its reset mode, and the APM denies
-  every REE mode at reset (C6 TRM 16.1, Table 16.1-1, p.559; 16.3.2, p.563). KickOS opens a region
-  to REE2 only in the `c6lpprobe` test (`arch/riscv/chip/esp32c6/lp_probe_esp32c6.cc`), so a task
-  granted the GDMA window moves nothing into SRAM. The window itself needs `AUTH_BUS_MASTER`, the
+  every REE mode at reset (C6 TRM 16.1, Table 16.1-1, p.559; 16.3.2, p.563). KickOS opens no region
+  to REE2, so a task granted the GDMA window moves nothing into SRAM. The window itself needs `AUTH_BUS_MASTER`, the
   chip file marking GDMA, SDIO, MEM_MONITOR and TRACE as bus masters.
 - **`imx8mp-evk` IS THE FLEET'S FIRST MODEL OF A REAL PART RATHER THAN OF A BOARD, and every
   number below is emulator-grade.** There is no i.MX8MP on this bench; the witness is
@@ -449,7 +448,7 @@ and gates on CDC host-drain, so app/boot output is dropped; UART0 does not.
   names its own transport:
   `# tap route: stdout endpoint -> console driver (service list published)`. Measured with the
   **default full service list** on both boards: 59 cases, 58 `ok`, 1 skip, 0 fail. The skip is
-  `mutex_deadlock # SKIP pool too small` on both, a genuine `KICKOS_BUDGET_THREADS` constraint.
+  `mutex_deadlock # SKIP pool too small` on both, a genuine thread pool constraint.
 - **An app's own diagnostics were dropped when `kos_print` was the raw kernel console write** --
   the same `console_emit` drop, invisible in the TAP stream because the harness has its own
   writer. This is why `apps/mpu_fault`'s `[domain]` lines were absent from every service-list
@@ -661,13 +660,16 @@ rev 3. NXP's ERR011573 sheet is not on file; what it adds is the observed stall 
   the RT1062 the first two are FlexSPI and SEMC (RM Table 3-1, p.35), and the Code region holds an
   alias of each: FlexSPI at `0x0800_0000` (128 MiB) and SEMC at `0x1000_0000` (256 MiB) (RM
   Table 3-1, p.36). The Teensy populates 8 MiB of FlexSPI flash and no SEMC memory.
-- **The fixed rows.** `kickos_arm_mpu_fixed` (`arch/arm/chip/imxrt1062/chip_imxrt1062.cc`)
-  types both bands and both aliases Device, execute-never and no-access, and lays the populated
-  flash over the FlexSPI band as Normal privileged read-only executable. `arch_init` programs
-  them through `kickos_arm_mpu_fixed_init` before it enables either cache. They own the low slots
-  `[0, 5)`; the PMSAv7 reprogram writes only the slots above them and never clears `MPU_CTRL`
-  (invariant `pmsa-reprogram-keeps-the-fixed-rows`). Five fixed rows and the eight per-thread slots
-  fit the RT1062's 16 descriptors (RM 2.2, p.31).
+- **The fixed rows.** `kickos_arm_mpu_fixed` (`arch/arm/chip/imxrt1062/mpu_rows.h` holds its table) lays a
+  4 GiB Device, execute-never, no-access row in slot 0, so no address is left to the default map,
+  privileged accesses included. Above it, three rows give privileged code back what the image
+  uses: OCRAM2 Normal write-back write-allocate read-write execute-never, as the default map typed
+  it; AIPS-1 to AIPS-5 Device read-write execute-never; and the populated flash Normal read-only
+  executable. ITCM, DTCM, FlexRAM OCRAM and the boot ROM hold nothing of the image and stay denied.
+  `arch_init` programs the rows through `kickos_arm_mpu_fixed_init` before it enables either
+  cache. They own the low slots `[0, 4)`; the PMSAv7 reprogram writes only the slots above them
+  and never clears `MPU_CTRL` (invariant `pmsa-reprogram-keeps-the-fixed-rows`). Four fixed rows
+  and the eight per-thread slots fit the RT1062's 16 descriptors (RM 2.2, p.31).
 - **HardFault and NMI.** A handler at a priority below 0 uses the default map unless
   `HFNMIENA` is set (ARM ARM B3.5.1, p.B3-632), and on the default map the core reads ahead as
   usual (B3.5.2, p.B3-632). With the caches on, that is a Normal FlexSPI and SEMC with nothing to
@@ -761,7 +763,7 @@ Code, templates and the kernel's `.data` are then one run, and a boot image is o
 many task images it holds. A template costs the image's `.data` once more: 328 bytes an image in
 the tree's apps, and 1752 for an image that formats floats, newlib's malloc state included. On
 `esp32c6-wroom-amp2-n0` that leaves the node's slice room for five thread stacks, so the `amp2`
-nodes take `KICKOS_BUDGET_THREADS=5`.
+nodes take five thread slots.
 
 ### `xmc4800-relax` -- two USIC-SSC facts and the two addresses every probe uses
 
@@ -775,8 +777,8 @@ waiting only on `RIF` never wakes. Every USIC-SSC consumer in the tree arms and 
 input **"G"** (`DX0CR.DSEL` = G, with `INSW` set), which is the channel's own transmitter, so a
 byte shifts out DOUT0 and is received on DIN0 entirely inside the chip (RM 18.2.3.5, Loop Back
 Mode). No port pin is muxed, no external MISO-MOSI wire exists, and the port `IOCR` mux therefore
-stays outside the driver's window as an escalation surface -- which is what lets `xmcspi` and
-`xmcssc` run a real SPI transfer from a thread holding nothing but the 512-byte channel window.
+stays outside the driver's window as an escalation surface -- which is what lets `xmcssc` run a
+real SPI transfer from a thread holding nothing but the 512-byte channel window.
 
 Two addresses the probes on this board all use:
 
@@ -800,14 +802,14 @@ the board".
 | ISA | Boards | CI gate | MPU enforcement in CI |
 |---|---|---|---|
 | host | `sim`, `sim-telem` | full `ctest` -- the authoritative deterministic gate -- plus the two ch1 trace decoder gates on the telemetry variant | **runtime** (host `mprotect`) |
-| rv32imac | `qemu-riscv`, `esp32c6-wroom` | `qemu-riscv` run gate in both postures; `qemu-riscv-bench` and C6 plain, flat, `-bench` and both `-amp2` node images build-only, including the merged AMP partition | **runtime** (PMP, the `qemu-riscv-mpu` job) |
-| armv7m | `qemu`, `qemu-m33`, `qemu-m7`, `qemu-m3`, `qemu-telem`, the board sweep, the two `-bench` presets, and the `pizero2350-amp` family | eight MPS2 run gates, the four machines (an386/an505/an500/an385) each in both postures, + the two telemetry image arms on `qemu-telem` + build sweep, each silicon board in its base and flat posture, + `f411disco-bench` and `xmc4800-relax-bench` + the RP2350 AMP partitions, build-only | **runtime** (PMSAv7 on M4/M7/M3, **PMSAv8** on the M33) |
+| rv32imac | `qemu-riscv`, `esp32c6-wroom` | `qemu-riscv` run gate in both postures; C6 plain, flat and both `-amp2` node images build-only, including the merged AMP partition | **runtime** (PMP, the `qemu-riscv-mpu` job) |
+| armv7m | `qemu`, `qemu-m33`, `qemu-m7`, `qemu-m3`, `qemu-telem`, the board sweep and the `pizero2350-amp` family | eight MPS2 run gates, the four machines (an386/an505/an500/an385) each in both postures, + the two telemetry image arms on `qemu-telem` + build sweep, each silicon board in its base and flat posture, + `f411disco-bench` and `xmc4800-relax-bench` + the RP2350 AMP partitions, build-only | **runtime** (PMSAv7 on M4/M7/M3, **PMSAv8** on the M33) |
 | armv6m | `microbit`, `picopi` | `microbit` run gate + `picopi` build, enforcing and flat | **build only** |
-| armv8a | `qemu-arm64`, `qemu-arm64-smp`, `qemu-arm64-smpiso`, `qemu-arm64-gicv3`, `qemu-arm64-a710`, the `qemu-arm64-amp` family, `qemu-arm64-bench`, `qemu-arm64-benchsmp`, `imx8mp-evk` | run gates at one kernel core, at four cores, at four cores with one isolated, at four cores under a GICv3 and at four Cortex-A710 cores under PAN, plus the AMP partition at one, two and three images, plus the microbench gates at one core and at four; `imx8mp-evk` is BUILD-ONLY here, its run gate staying a bench step because no runner's emulator models the die | -- (no region MPU; enforcement is VMSAv8 page tables and it is LIVE in every one of them) |
-| rv64imac | `qemu-riscv64`, `qemu-riscv64-sv48`, `qemu-riscv64-smp`, `qemu-riscv64-bench`, `qemu-riscv64-benchsmp` | one job, three run gates: Sv39, Sv48 and the four-hart shared kernel; the microbench gates at one hart and at four ride the `bench` job | -- (no region MPU; enforcement is Sv39/Sv48 page tables, live in both paging postures) |
-| Xtensa LX6 | `esp32-wroom` | build only, plain, `-smp` and `-bench` | -- (no per-domain unit) |
-| RXv3 | `rx72m` | build only, plain, `-flat` and `-bench` | -- |
-| x86_64 | `qemu-x86_64`, `qemu-x86_64-bench`, `qemu-x86_64-smp2`, `qemu-x86_64-smp2root1` | run gates over a UEFI handover at one core and at two, on firmware the job resolves rather than names, and the microbench gates on the same resolved pair; `errnoprobe` with root on core 1 in a job of its own | -- (no memory family selected; the map is flat) |
+| armv8a | `qemu-arm64`, `qemu-arm64-smp`, `qemu-arm64-smpiso`, `qemu-arm64-gicv3`, `qemu-arm64-a710`, the `qemu-arm64-amp` family, `qemu-arm64-smp2`, `qemu-arm64-smp12`, `imx8mp-evk` | run gates at one kernel core, at four cores, at four cores with one isolated, at four cores under a GICv3 and at four Cortex-A710 cores under PAN, plus the AMP partition at one, two and three images, plus host gates at two and twelve cores; `imx8mp-evk` is BUILD-ONLY here, its run gate staying a bench step because no runner's emulator models the die | -- (no region MPU; enforcement is VMSAv8 page tables and it is LIVE in every one of them) |
+| rv64imac | `qemu-riscv64`, `qemu-riscv64-sv48`, `qemu-riscv64-smp`, `qemu-riscv64-smp2` | one job, three run gates: Sv39, Sv48 and the four-hart shared kernel, plus host gates at two harts | -- (no region MPU; enforcement is Sv39/Sv48 page tables, live in both paging postures) |
+| Xtensa LX6 | `esp32-wroom` | build only, plain and `-smp` | -- (no per-domain unit) |
+| RXv3 | `rx72m` | build only, plain and `-flat` | -- |
+| x86_64 | `qemu-x86_64`, `qemu-x86_64-smp2`, `qemu-x86_64-smp2root1` | run gates over a UEFI handover at one core and at two, on firmware the job resolves rather than names; `errnoprobe` with root on core 1 in a job of its own | -- (no memory family selected; the map is flat) |
 
 - **ARM enforcement is now a run gate too, on both PMSA revisions.** It was build-only for a
   long time, and the reason was real: every enforcing ARM port was a silicon part, and the one
@@ -847,16 +849,6 @@ the board".
   `.secboot` or `.ms` firmware refuses an unsigned image -- and treats any skipped gate as a
   failure.
 
-- **The microbenchmark presets have a job of their own, and the IRQ block is not in it.** The
-  `bench` job builds `qemu-arm64-bench`, `qemu-riscv64-bench` and both four-core variants and runs
-  the counter, lock, saturation, phase-table and authority gates on them; `qemu-x86_64-bench` rides
-  the x86_64 job instead, because the firmware pair that boots it is resolved in that job's own
-  shell; `f411disco-bench` and `xmc4800-relax-bench` are link surface only, no emulator modelling
-  either part. What the job does NOT boot is `*_bench_irqspan`: every arm of that gate reads a
-  timing distribution off a runner whose load nobody controls, so the IRQ block is witnessed by
-  hand at each rebaseline. Its parser half is a separate registration,
-  `*_bench_irqspan_controls`, which runs planted reports with no image and therefore does carry
-  the `host` label and does run here.
 - **Renesas RX is build-only.** RX72M needs `-misa=v3` and `-mdfpu`
   (`arch/rx/chip/rx72m/cpu.cmake`), which only Renesas's changes to GCC give it; the KickOS
   toolchain's `rx-elf` family is the pinned set plus Renesas's changes ported onto it, carried
@@ -903,7 +895,7 @@ the board".
      *before* spawning anything, which is what `TAP_ASK` in the suite now does; the test
      reports a real TAP skip instead.
 - **Xtensa is build-only** because upstream QEMU ships no ESP32 machine model. The gate builds
-  `esp32-wroom`, `esp32-wroom-smp` and `esp32-wroom-bench`, catching link / linker-script /
+  `esp32-wroom` and `esp32-wroom-smp`, catching link / linker-script /
   windowed-ABI asm regressions. `esptool` is deliberately absent:
   only the bootable `.app.bin` post-step needs it, and CI cannot boot the image anyway.
   `-smp` is the two-core image, both CPUs under one kernel; what it adds to the other two is the
@@ -1082,9 +1074,9 @@ re-deriving the per-region counts as a whole-suite one.
   through `microbit_selftest_p6`, each with its OWN
   `EXPECT_SKIPS` / `EXPECT_PARTIALS`. A board's sets are DERIVED in
   `tests/integration/gates/selftest.cmake` from the facts that decide them: the workers an arm
-  states in its `TAP_ASK` against `KICKOS_BUDGET_THREADS`, the tasks it asks
+  states in its `TAP_ASK` against the workers its composition seats, the tasks it asks
   for against the task pool size less main's own and the image's driver tasks, the line it asks for
-  against `KICKOS_BUDGET_IRQ_BINDINGS` (main holds no line between arms; a binding still
+  against main's IRQ binding budget (main holds no line between arms; a binding still
   retiring from the arm before is waited out by the ask, not predicted), the objects it asks for
   against main's endpoint and notification budgets, the capability slots either ask holds or its skip reason
   states against the table main has left (`tests/static/selftest_demands.py` reads the arms).
@@ -1346,9 +1338,8 @@ signal is attributable to PMP and not to the root posture.
 holding no window, which is first refused `kos_periph_enable` and is then the one killed, ending
 the system. The bank also holds the console's and the reserved pins, and the task still accepts no
 `coarse_gate`: the platform-wide `no_protection` the LP core's cluster brings subsumes it, and
-admission refuses it as unneeded. `tests/integration/check_c6blink.sh` judges the capture, and
-`tests/integration/check_c6lpprobe.sh` the LP probe's, which runs on the board's default
-composition in the flat build. `c6txidle` runs there too, its kernel-side half
+admission refuses it as unneeded. `tests/integration/check_c6blink.sh` judges the capture.
+`c6txidle` runs on the board's default composition in the flat build, its kernel-side half
 (`arch/riscv/chip/esp32c6/txidle_probe_esp32c6.cc`) in M-mode as the console ring is set up: it
 loads a line straight into UART0's FIFO, calls `arch_console_flush_sync`, and holds the
 transmitter in reset the moment the flush returns, so `tests/integration/check_c6txidle.sh` finds
@@ -1555,7 +1546,7 @@ archived `M4_unprivileged_root_record.md` stage 3). What is open is bench time, 
 not run on silicon since that rework, and its loopback arm additionally needs the PA7->PA6 jumper
 fitted. `tests/integration/check_f411spi.sh` judges the capture, the echo only where the rig declares
 that jumper (`spi1-loopback`, see `bench.md`) and owed elsewhere. So the chip's peripheral-window
-proof remains open and the canonical PMSA peripheral proof stays `xmcspi`.
+proof remains open and the canonical PMSA peripheral proof stays `pvprobe` and `xmcssc`.
 
 **The pre-stage-3 fault, measured.** With the bring-up still in `main`, i.e. in root, the app faulted
 under the flip on its very first bring-up store -- `=== MPU FAULT === CFSR=0x82 MMFAR=0x40023830`,
@@ -1606,7 +1597,7 @@ tree:
 
 | grant | verdict |
 |---|---|
-| `system/driver/mk64f/k64uartirq`, `k64dspi`; `user/apps/frdmk64f/k64drv`; `user/apps/rx72m/rxdrv`; `user/apps/f411disco/f411spi`; `user/apps/xmc4800-relax/xmcspi` | **LOAD-BEARING**: each calls `kos_periph_enable`. Deleting the grant breaks the device |
+| `system/driver/mk64f/k64uartirq`, `k64dspi`; `user/apps/frdmk64f/k64drv`; `user/apps/rx72m/rxdrv`; `user/apps/f411disco/f411spi` | **LOAD-BEARING**: each calls `kos_periph_enable`. Deleting the grant breaks the device |
 | `user/apps/common/gpioblink` | genuinely inert; kept for portability to an enforcing chip |
 
 The polled UART0 console driver had already drifted into calling its own live grant inert. Deleting it on that comment's
@@ -1624,7 +1615,7 @@ ok 56 - mpu_privileged_guard # SKIP root unprivileged: no privileged caller exis
 # all tests passed (2 skipped)
 ```
 
-`mutex_deadlock` is the pre-existing `KICKOS_BUDGET_THREADS` constraint of the full service list
+`mutex_deadlock` is the pre-existing thread pool constraint of the full service list
 (recorded under *Per-board caveats* above, and shared with `xmc4800-relax`'s full-list runs), not a
 posture cost -- which is why this board reported two skips where the console-only boards reported
 one.
@@ -1675,7 +1666,7 @@ halts, and does not fault.
 
 What this adds is the bus round trip, not a second stage-3 arm: it is the privileged posture, so the
 same transfer **under the flip is still owed**, and the canonical PMSA peripheral proof stays
-`xmcspi` on the XMC.
+`pvprobe` and `xmcssc` on the XMC.
 
 ### Stage 4 -- root narrows its own authority (2026-07-30)
 
@@ -1707,7 +1698,7 @@ demonstrably still held `AUTH_PINMUX` (it hands that bit to `auth_worker`, which
 refuses for a caller that lacks it) and `AUTH_CONSOLE` (`console_publish_priv` asserts `-KOS_EBADF`,
 which becomes `-KOS_EPERM` without the bit).
 
-**`consoledemo` on the XMC is the run where root does give the bits up**, and the only capture here
+**`uartconsole` on the XMC is the run where root does give the bits up**, and the only capture here
 that witnesses the narrow end to end: it declares no mask, so it takes the default
 `AUTH_MEMORY | AUTH_SYSTEM`, and root loses `AUTH_PINMUX` and `AUTH_CONSOLE` after using both.
 `[init] pre-publish ctor line` on the kernel console, then the console driver's up line, then
@@ -2426,9 +2417,9 @@ actual mask column. A green host gate says the seam's LOGIC is right, never that
 
 **`panicgate` is SIX cases, and it is a real gate.** One source, six images, because a run observes
 exactly one panic; each image carries `KICKOS_PANICGATE_CASE=<n>` and is registered as a CTest on
-every one of the TWENTY presets whose board registers it (`sim`, `sim-telem`, `qemu`, `qemu-telem`,
+every one of the NINETEEN presets whose board registers it (`sim`, `sim-telem`, `qemu`, `qemu-telem`,
 `qemu-flat`, `qemu-m3`, `qemu-m3-flat`, `qemu-m7`, `qemu-m7-flat`, `qemu-m33`, `qemu-m33-flat`,
-`microbit`, `qemu-riscv`, `qemu-riscv-flat`, `qemu-riscv-bench`, `qemu-riscv64`, `qemu-riscv64-sv48`,
+`microbit`, `qemu-riscv`, `qemu-riscv-flat`, `qemu-riscv64`, `qemu-riscv64-sv48`,
 `qemu-arm64`, `imx8mp-evk`, `qemu-x86_64` -- registration keys off `KICKOS_BOARD`, not the
 configuration variant).
 **This read FOURTEEN and named nine boards until 2026-08-29**, omitting `qemu-riscv-bench` and the
@@ -2602,7 +2593,7 @@ already says do NOT add the esptool assert there; the porting-guide home for the
 
 **`f302nucleo` -- the board advertised capacity it could not back.** Arena consumed TO THE BYTE:
 `5632 = 512 (idle) + 2048 (root) + 3 x 1024 (pool)`. The `-st` preset declared
-`KICKOS_BUDGET_THREADS=4`, but a post-boot arena of 3072 B backs only THREE 1024 B stacks, so
+four thread slots, but a post-boot arena of 3072 B backs only THREE 1024 B stacks, so
 `kos_ram_alloc(1)` returned NULL and `periph_enable_unheld` failed. **NOT a regression** -- master
 (`2fc7799`) fails identically, so nothing in this milestone caused it.
 
@@ -2624,7 +2615,7 @@ is the sharpest instance of this milestone breaking its own commit-before-witnes
 
 The fix is `commit 124b68c`: `boards/f302nucleo/configs/base/defconfig` takes
 `KICKOS_USER_STACK_SIZE` 2048 -> 1024 and `KICKOS_ROOT_STACK_SIZE` 2048 -> 1536, and the
-`f302nucleo-st` preset takes `KICKOS_BUDGET_THREADS` 4 -> 3 and drops its own
+`f302nucleo-st` preset takes its thread slots 4 -> 3 and drops its own
 `KICKOS_USER_STACK_SIZE` override. Every number was chosen against MEASURED paint-and-scan
 watermarks over the whole selftest suite, which survive in `porting.md` rather than in any
 generated header: deepest pool worker **592 B**, root **1048 B**, idle **76 B**. The wire evidence

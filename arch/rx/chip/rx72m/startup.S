@@ -26,34 +26,38 @@
 
 /* ------------------------------------------------------------------------- */
 /* Relocatable interrupt vector table (INTB). Slot n -> handler for INT/IRQ n. Slots     */
-/* 0..15 carry no peripheral source. Slot 87 (TXI6) serves the console drain, or a        */
-/* userspace TX driver after the console handover. Every other device slot goes to the    */
-/* shared default entry, which asks the chip to demux: that serves the group vectors      */
-/* (106..113).                                                                            */
+/* 0..15 carry no peripheral source, so an entry there is always a software trap. Every   */
+/* device slot enters through a switch.S guard, INT #n reaching each slot as well. Slot   */
+/* 87 (TXI6) serves the console drain, or a userspace TX driver after the console         */
+/* handover. Every other device slot goes to the shared default entry, which asks the     */
+/* chip to demux: that serves the group vectors (106..113).                               */
 /* ------------------------------------------------------------------------- */
     .section .rvectors, "a"
     .balign 4
     .global _g_rvectors
     .type _g_rvectors, %object
 _g_rvectors:
-    .word _rx_trap                    /* 0: BRK (unused) */
+    .word _kickos_rx_soft_trap        /* 0: BRK */
     .word _kickos_rx_syscall_trap     /* 1: syscall trap (INT #1) */
-    .rept 24
-    .word _kickos_rx_default_irq      /* 2..25 */
+    .rept 14
+    .word _kickos_rx_soft_trap        /* 2..15 */
     .endr
-    .word _kickos_rx_swint2           /* 26: SWINT2 -> software-inject doorbell */
+    .rept 10
+    .word _kickos_rx_intb_default     /* 16..25 */
+    .endr
+    .word _kickos_rx_intb_swint2      /* 26: SWINT2 -> software-inject doorbell */
     .word _kickos_rx_pendsw           /* 27: SWINT -> deferred context switch */
-    .word _kickos_rx_default_irq      /* 28 */
-    .word _kickos_rx_default_irq      /* 29 */
-    .word _kickos_rx_timer_isr        /* 30: CMTW0 compare match (CMWI0) */
-    .word _kickos_rx_clock_isr        /* 31: CMTW1 compare match (CMWI1), the clock's wrap */
+    .word _kickos_rx_intb_default     /* 28 */
+    .word _kickos_rx_intb_default     /* 29 */
+    .word _kickos_rx_intb_timer       /* 30: CMTW0 compare match (CMWI0) */
+    .word _kickos_rx_intb_clock       /* 31: CMTW1 compare match (CMWI1), the clock's wrap */
     .rept (86 - 32)
-    .word _kickos_rx_default_irq      /* 32..85 */
+    .word _kickos_rx_intb_default     /* 32..85 */
     .endr
-    .word _kickos_rx_sci6_rxi_isr     /* 86: SCI6 RXI6 -> tier-1 line 86 */
-    .word _kickos_rx_console_txi_isr  /* 87: SCI6 TXI6 -> console drain, or line 87 */
+    .word _kickos_rx_intb_sci6_rxi    /* 86: SCI6 RXI6 -> tier-1 line 86 */
+    .word _kickos_rx_intb_console_txi /* 87: SCI6 TXI6 -> console drain, or line 87 */
     .rept (KICKOS_RX_INTB_ENTRIES - 88)
-    .word _kickos_rx_default_irq      /* 88..255, incl. the group vectors 106..113 */
+    .word _kickos_rx_intb_default     /* 88..255, incl. the group vectors 106..113 */
     .endr
     .size _g_rvectors, . - _g_rvectors
 
@@ -117,7 +121,7 @@ _rx_ex_addr:
 _rx_ex_fp:
     mov     #0x64, r1
     bra     1f
-/* Catch-all for the reserved slots, BRK, and NMI: cause 0 ("trap"). */
+/* Catch-all for the reserved fixed slots and the NMI: cause 0 ("trap"). */
     .global _rx_trap
 _rx_trap:
     mov     #0, r1

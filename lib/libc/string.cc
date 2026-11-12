@@ -25,9 +25,7 @@ namespace
     constexpr uintptr_t WORD_MASK = static_cast<uintptr_t>(WORD_BYTES) - 1u;
 
     // A word is only ever loaded or stored at a word-aligned address: armv6m and lx6
-    // fault on an unaligned one, and -mno-unaligned-access, carried for the K64F's
-    // SRAM_L|SRAM_U seam (arch/arm/chip/mk64f/mk64f.ld), binds the compiler and not
-    // library assembly. Operands whose misalignment differs can never both be
+    // fault on an unaligned one. Operands whose misalignment differs can never both be
     // aligned, so they stay on the byte path.
     //
     // The word path is entered only where at least one whole word is guaranteed to move,

@@ -5,4 +5,4 @@
 #
 # Included by the cross toolchain file pre-project(), after the board descriptor.
 
-set(KICKOS_MCPU -march=rv32imac_zicsr -mabi=ilp32)
+set(KICKOS_MCPU -march=rv32imac_zicsr_zifencei -mabi=ilp32)

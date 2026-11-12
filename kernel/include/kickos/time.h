@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Tickless time: monotonic clock, an absolute-deadline delta list, and a
-// single one-shot next-event timer armed for min(nearest sleep deadline,
-// running-RR slice expiry) with a minimum-delta guard. Pure-FIFO with nothing
-// time-pending leaves the timer disarmed (zero timer interrupts).
+// Tickless time: monotonic clock, one absolute-deadline delta list per kernel core, and per
+// core a one-shot next-event timer armed for min(nearest deadline on that core's list,
+// running-RR slice expiry) with a minimum-delta guard. A core with nothing time-pending has
+// its timer disarmed (zero timer interrupts).
 
 #ifndef KICKOS_TIME_H
 #define KICKOS_TIME_H
@@ -49,7 +49,7 @@ namespace kickos
 
     // Give `t` a deadline `timeout_us` microseconds out and put it on the delta list, so a
     // park on some OTHER queue can be unwound when the deadline passes. KOS_TIMEOUT_NONE arms
-    // nothing.
+    // nothing. `t` is the calling core's current thread, parking in the caller's span.
     void ktime_deadline_arm(Thread* t, uint32_t timeout_us, Held held);
 
     // A timed wait's limit as KOS_SYS_MUTEX_LOCK and KOS_SYS_WORD_WAIT take it (abi.h,
@@ -99,8 +99,9 @@ namespace kickos
     // Queue `t` for the monotonic `deadline_ns`, already floored, marked as a realtime deadline
     // where `wall`.
     void ktime_deadline_arm_at(Thread* t, uint64_t deadline_ns, bool wall, Held held);
-    // Move every marked deadline by `by_ns`, floored at now, and rearm this core's timer if any
-    // moved. One pass over the delta list.
+    // Move every marked deadline by `by_ns`, floored at now, on every core's delta list. Rearms
+    // this core's timer if its own list moved, and asks each peer whose list moved for a
+    // dispatch, which re-arms it.
     void ktime_wall_shift(int64_t by_ns, Held held);
     // The marked deadline for wall time `unix_ns`, keyed to this node's view of the wall clock,
     // queued for `t` (kernel/time/realtime.cc).
@@ -113,9 +114,9 @@ namespace kickos
     // necessarily an unpark, and a park-to-park migration must keep its deadline.
     void ktime_deadline_cancel(Thread* t, Held held);
 
-    // Recompute and (re)arm the one-shot timer. Call after any change that can
-    // affect the earliest deadline (new sleeper, context switch/RR slice, wake).
-    // `incoming` is the thread this core is about to run, which the switch path holds
+    // Recompute and (re)arm this core's one-shot timer from this core's delta list. Call after
+    // any change that can affect the earliest deadline (new sleeper, context switch/RR slice,
+    // wake). `incoming` is the thread this core is about to run, which the switch path holds
     // BEFORE it is seated; every other caller passes the thread already running.
     void ktime_rearm(Thread const* incoming, Held held);
 
@@ -124,9 +125,8 @@ namespace kickos
     // something other than what was last armed comes through here.
     void ktime_disarm(Held held);
 
-    // Settles the landing a booking left owed. On a KICKOS_ARCH_SWITCH_LANDS_LATER arch it stamps
-    // the landed thread's slice and arms the comparator, which that booking left alone; elsewhere
-    // it reprograms the comparator from the clock read here. A no-op when none is owed.
+    // Settles the landing a booking left owed: stamps the landed thread's slice and rearms the
+    // comparator for it. A no-op when none is owed.
     void ktime_land(Held held);
 
     // Where the arch performs a switch booked in an interrupt at that interrupt's exit, the end of

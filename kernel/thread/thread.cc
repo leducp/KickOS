@@ -359,6 +359,17 @@ namespace kickos
         return 0;
     }
 
+    int ram_stack_admit(Thread const* granter, uintptr_t base, size_t size)
+    {
+#if KICKOS_AMP_SHARE
+        if (amp_share_meets(base, static_cast<uint64_t>(base) + ram_grant_extent(size)))
+        {
+            return -KOS_EPERM;
+        }
+#endif
+        return ram_region_admit(granter, base, size, ARCH_MPU_R | ARCH_MPU_W, RAM_ADMIT_GRANT);
+    }
+
     int thread_self_grant(Thread* c, uintptr_t base, size_t size, uint32_t attr)
     {
         int const arc = ram_region_admit(c, base, size, attr, RAM_ADMIT_SELF);

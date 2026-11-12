@@ -106,7 +106,6 @@ namespace kickos
                 uint32_t caller_width;
                 uint32_t recv_width;
                 Scratch scratch;
-                uint32_t taken;
                 uint32_t switches;
                 uint32_t result_stores;
             };
@@ -135,7 +134,6 @@ namespace kickos
                 snap_table(caller, s->caller_caps, &s->caller_width);
                 snap_table(recv, s->recv_caps, &s->recv_width);
                 s->scratch = g_scratch;
-                s->taken = ipc_fast_taken_count();
                 s->switches = g_switches;
                 s->result_stores = g_fast_result_stores;
             }
@@ -175,8 +173,6 @@ namespace kickos
                             after.recv_caps, before.recv_width * sizeof(CapEntry));
                 expect_same("the caller's register frame and the receiver's buffers",
                             &before.scratch, &after.scratch, sizeof(before.scratch));
-                EXPECT_EQ(before.taken, after.taken)
-                    << "a refusal does not count as a completed call";
                 EXPECT_EQ(before.switches, after.switches) << "a refusal switches to nobody";
                 EXPECT_EQ(before.result_stores, after.result_stores)
                     << "a refusal writes no result into a saved frame";
@@ -289,12 +285,12 @@ namespace kickos
         TEST_F(FastRefuse, take_completes)
         {
             Stage s = stage();
-            uint32_t const taken = ipc_fast_taken_count();
+            uint16_t const seq = s.c->call_seq;
 
             struct arch_context* const ctx = kickos_ipc_fastpath(g_scratch.args);
 
             ASSERT_NE(ctx, nullptr) << "the staging every arm below shares must COMPLETE";
-            EXPECT_EQ(ipc_fast_taken_count(), taken + 1u) << "and count as one taken call";
+            EXPECT_EQ(s.c->call_seq, static_cast<uint16_t>(seq + 1u)) << "and open one call epoch";
             EXPECT_EQ(ctx, &s.w->ctx) << "the context handed back is the receiver's";
             EXPECT_EQ(s.c->call_state, CALL_REPLY_WAIT) << "the caller parks on the reply";
             EXPECT_EQ(s.c->call_frame_parked, 1u)

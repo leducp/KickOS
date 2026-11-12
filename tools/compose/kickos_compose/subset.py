@@ -34,7 +34,7 @@ RULES = (
     "chip.gate-register",
     "chip.block-outside", "chip.line-range", "chip.link-duplicate", "chip.symbol-collision", "chip.reserved",
     "chip.address-width", "chip.line-order", "chip.stack-limit-arch", "chip.aperture-memory",
-    "chip.aperture-outside", "form.text",
+    "chip.aperture-outside", "chip.map-boundary", "chip.bank-line", "form.text",
     "board.name-mismatch", "board.name-collision", "board.chip-unknown", "board.chip-unreadable",
     "board.chip-folder", "board.device-unknown",
     "board.pin-unknown", "board.pin-function", "board.pin-not-gpio", "board.reserved-pin-used",

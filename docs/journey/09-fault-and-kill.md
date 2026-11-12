@@ -50,7 +50,7 @@ gdb-multiarch build/qemu/user/apps/common/faultsurvive/faultsurvive -ex 'target 
 ```
 
 `$k` is the kernel's state object, as in [Spawn and capabilities](08-spawn-and-caps.md). Two more
-images appear later: `sysdefault_fault` (Stop 9) and `faultsurvive_ovf` and `panicgate1` (the
+images appear later: `fault` (Stop 9) and `faultsurvive_ovf` and `panicgate1` (the
 last section).
 
 ### Stop 1: the victim gets a task of its own
@@ -272,7 +272,7 @@ that faulted was unprivileged.
 ### Stop 4: record the facts, print nothing, bend the return
 **Where:** `arch/arm/armv7m/arch_armv7m.cc`, `arch_fault_redirect_to_exit`; `kernel/init/fault.cc`,
 `kickos_fault_record`, `kickos_fault_stack_top`; `arch/arm/common/fault_resume.h`,
-`kickos_arm_fault_resume_at`, `kickos_arm_fault_resume_privileged`
+`kickos_arm_fault_frame_at`, `kickos_arm_fault_resume_privileged`
 
 The fault handler must not print. Printing from a fault handler means calling `kpanic_enter`,
 which masks interrupts and takes the console back from any user driver, for good. That is
@@ -304,10 +304,10 @@ Step by step:
   printed can be preempted and another thread's fault could overwrite it.
 - **Clear the status bits.** CFSR and HFSR are sticky and cleared by writing 1s. Left set, they
   would label the next thread's fault with this one's cause.
-- **Rewrite the frame.** `kickos_arm_fault_resume_at` puts the address of a small stub,
-  `kickos_armv7m_fault_stack_reset`, in the stacked PC, and the top of the thread's kernel
-  stack (`kickos_fault_stack_top`, which answers `ctx.kernel_sp`) in the stacked r0. The
-  frame stays where the hardware put it, because the hardware will pop it from there.
+- **Build the exit's frame.** `kickos_arm_fault_frame_at` builds a basic frame at the top of
+  the thread's kernel stack (`kickos_fault_stack_top`, which answers `ctx.kernel_sp`), its PC
+  `kickos_thread_fault_exit`, and points the PSP at it, so the return pops nothing from the
+  thread's own stack.
 - **Clear the IT bits** of the stacked xPSR, so the stub does not resume inside a half-run
   conditional block.
 - **Become privileged on return.** Exception return restores the frame but not `CONTROL`.
@@ -660,8 +660,8 @@ it starts ([Spawn and capabilities, Stop 4](08-spawn-and-caps.md)): `kos_task_wa
 notification and a bit in the task, and `watch_raise` sets that bit whenever the task ends,
 dies, or becomes ready. The init sleeps in `kos_notify_wait`, and the bit wakes it.
 
-`faulter`'s death does not touch the init. To see the watch fire, use `sysdefault_fault`
-(`user/apps/common/sysdefault/fault.c`), where it is `main` itself that executes the undefined
+`faulter`'s death does not touch the init. To see the watch fire, use `fault`
+(`user/apps/common/fault/main.cc`), where it is `main` itself that executes the undefined
 instruction. Everything up to here happens the same way, to `main`. Then the init wakes and
 asks the kernel what happened:
 
@@ -692,7 +692,7 @@ A task that is not `ends:` and is found `DEAD` is instead released with `kos_tas
 `Walk::death` decides from its `restart_max` whether to start it again. A supervisor written
 by hand does the same with its own notification.
 
-**Try it:** on `sysdefault_fault`:
+**Try it:** on `fault`:
 
 ```
 (gdb) break kickos::task_end

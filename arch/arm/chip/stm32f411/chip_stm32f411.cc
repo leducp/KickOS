@@ -19,13 +19,13 @@
 #include "board_pins.h"
 #include "stm32_gpio.h"
 #include "stm32_usart.h"
+#include "clock_bringup.h"
 
 #include <kickos/arch/arch.h>
 #include <kickos/arch/bounded_wait.h>
 #include <kickos/arch/console_poll.h>
 #include "pin_guard.h"
 #include <kickos/arch/clk_anchor.h>
-#include <kickos/arch/clock_fallback.h>
 #include <kickos/arch/wrap_extend.h>
 #include <kickos/board_config.h>
 // A board shipping no board_wiring.h fails here rather than compiling against another board's
@@ -45,6 +45,7 @@ namespace gpio = kickos::stm32f411::reg::gpio;
 namespace tim = kickos::stm32f411::reg::tim;
 namespace usart = kickos::stm32f411::reg::usart;
 namespace stm32 = kickos::stm32;
+namespace clocktree = kickos::stm32f411::clocktree;
 
 static_assert(irq::TIM2_IRQ == KICKOS_LAYOUT_LINE_TIM2_IRQ,
               "startup.S vectors the clock-wrap ISR at KICKOS_LAYOUT_LINE_TIM2_IRQ");
@@ -56,6 +57,7 @@ namespace kickos
 
 extern "C"
 {
+    void kickos_armv7m_ccr_init(void);
     void kickos_armv7m_init(void);
 
     extern void (*__init_array_start[])();
@@ -78,12 +80,8 @@ namespace
         rcc::PLLCFGR_PLLP_DIV4 | (rcc::PLLN << rcc::PLLCFGR_PLLN_SHIFT) |
         (PLLM << rcc::PLLCFGR_PLLM_SHIFT);
 
-    constexpr uint32_t HSE_HZ = KICKOS_HSE_HZ;
-    constexpr uint32_t SYSCLK_PLL_HZ = 84000000u;
-    constexpr uint32_t PCLK1_PLL_HZ = 42000000u; // APB1 = 84/2
-
     // USART2's PCLK1: the HSI rate until the PLL locks.
-    uint32_t pclk1_hz = 16000000u;
+    uint32_t pclk1_hz = clocktree::HSI_HZ;
 
     static_assert(KICKOS_BOARD_CONSOLE_BASE == mmap::USART2_BASE,
                   "the board's console is not the USART this backend drives");
@@ -121,50 +119,6 @@ namespace
     }
 
     constexpr bool LED_LIT = KICKOS_BOARD_LED_ACTIVE_LOW == 0;
-
-    // SystemCoreClock and pclk1_hz move only once SYSCLK is confirmed on the PLL.
-    void clock_init()
-    {
-        // Flash wait states MUST widen before the core runs faster, else the first over-speed
-        // fetch faults.
-        r32(flash::ACR) =
-            flash::ACR_LATENCY_2WS | flash::ACR_PRFTEN | flash::ACR_ICEN | flash::ACR_DCEN;
-
-        r32(rcc::CR) |= rcc::CR_HSEON;
-        if (not kickos::arch::wait_set(r32(rcc::CR), rcc::CR_HSERDY))
-        {
-            return;
-        }
-
-        // PLL config bits are writable only while the PLL is off.
-        r32(rcc::PLLCFGR) = PLLCFGR_VALUE;
-
-        r32(rcc::CR) |= rcc::CR_PLLON;
-        if (not kickos::arch::wait_set(r32(rcc::CR), rcc::CR_PLLRDY) or KICKOS_WITNESS_CLOCK_FALLBACK)
-        {
-            return;
-        }
-
-        // After the lock, or a PLL fallback runs the USART at HSI/2 while pclk1_hz names the HSI.
-        // Before the switch, so APB1<=42 / APB2<=84 always hold.
-        r32(rcc::CFGR) = rcc::CFGR_HPRE_DIV1 | rcc::CFGR_PPRE1_DIV2 | rcc::CFGR_PPRE2_DIV1;
-
-        r32(rcc::CFGR) = (r32(rcc::CFGR) & ~rcc::CFGR_SW_MASK) | rcc::CFGR_SW_PLL;
-        if (not kickos::arch::wait_set(r32(rcc::CFGR), rcc::CFGR_SWS_PLL))
-        {
-            // Back to the HSI, then APB1 to /1, the bus clock pclk1_hz still names. APB1 drops
-            // its /2 only once SYSCLK is confirmed off the PLL, or it runs past 42 MHz.
-            r32(rcc::CFGR) = rcc::CFGR_HPRE_DIV1 | rcc::CFGR_PPRE1_DIV2 | rcc::CFGR_PPRE2_DIV1;
-            if (kickos::arch::wait_clear(r32(rcc::CFGR), rcc::CFGR_SWS_MASK))
-            {
-                r32(rcc::CFGR) = 0;
-            }
-            return;
-        }
-
-        SystemCoreClock = SYSCLK_PLL_HZ;
-        pclk1_hz = PCLK1_PLL_HZ;
-    }
 
     // --- TIM2: the monotonic time base ---------------------------------------------
     // Not DWT_CYCCNT: it intermittently reads aliased garbage here, which the 32->64 wrap
@@ -248,7 +202,9 @@ extern "C"
 void arch_init(void)
 {
     // Clock first: the BRR derives from the final PCLK1.
-    clock_init();
+    clocktree::Landed const landed = clocktree::bring_up(PLLCFGR_VALUE);
+    SystemCoreClock = landed.sysclk_hz;
+    pclk1_hz = landed.pclk1_hz;
     tim2_clock_init();
     // With HPRE=/1 and PPRE1 in {/1,/2} the APB timer-clock doubler makes TIM2's clock equal
     // SystemCoreClock; PPRE1 /4 or more would break that.
@@ -432,6 +388,7 @@ int arch_bitband_present(void)
 
 void Reset_Handler(void)
 {
+    kickos_armv7m_ccr_init();
     kickos_armv7m_enable_fpu(); // before any code a hard-float ABI might emit FP into
 
     kickos_ranges_init();

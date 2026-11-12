@@ -30,3 +30,12 @@ kickos_add_unit_test(NAME wall_shared
   SOURCES wall_shared.cc "${PROJECT_SOURCE_DIR}/kernel/time/realtime.cc"
   POSTURE KICKOS_AMP_CLOCK_SHARED=1 KICKOS_AMP_NODES=2 KICKOS_MULTI_INSTANCE=1
           KICKOS_MAX_INSTANCES=2)
+
+# Per-core delta lists at two kernel cores: which core arms for, expires and re-arms after a
+# deadline when its park, its removal and a set of the wall clock land on different cores.
+# Host-only: the cores' timers and dispatches are sequenced here, which no image can arrange.
+#
+# Needs kickos_kseam_time_smp (tests/unit/semtimed) to exist before this directory is added.
+kickos_add_unit_test(NAME sleepq_cores SOURCES sleepq_cores.cc
+  LIBRARIES kickos_kseam_time_smp
+  TEST_PREFIX smp.)

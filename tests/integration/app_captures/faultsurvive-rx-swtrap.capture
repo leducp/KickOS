@@ -1,0 +1,68 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+
+  ==============================================
+   KickOS 0.5.1  -  microkernel RTOS
+  ==============================================
+   board   rx72m
+   arch    rxv3
+   cpu     rxv3
+   mpu     enforce
+   sched   tickless
+
+[fs] spawning the faulter
+[fs] worker about to fault
+[fs] trap int #5
+
+=== THREAD FAULT === thread 'faulter' killed, system continues
+  PC=0xffc00624 cause=0x100
+[fs] spawning the faulter
+[fs] worker about to fault
+[fs] trap int #26
+
+=== THREAD FAULT === thread 'faulter' killed, system continues
+  PC=0xffc00638 cause=0x100
+[fs] spawning the faulter
+[fs] worker about to fault
+[fs] trap int #27
+
+=== THREAD FAULT === thread 'faulter' killed, system continues
+  PC=0xffc0064c cause=0x100
+[fs] spawning the faulter
+[fs] worker about to fault
+[fs] trap int #30
+
+=== THREAD FAULT === thread 'faulter' killed, system continues
+  PC=0xffc00660 cause=0x100
+[fs] spawning the faulter
+[fs] worker about to fault
+[fs] trap int #31
+
+=== THREAD FAULT === thread 'faulter' killed, system continues
+  PC=0xffc00674 cause=0x100
+[fs] spawning the faulter
+[fs] worker about to fault
+[fs] trap int #32
+
+=== THREAD FAULT === thread 'faulter' killed, system continues
+  PC=0xffc00688 cause=0x100
+[fs] spawning the faulter
+[fs] worker about to fault
+[fs] trap int #86
+
+=== THREAD FAULT === thread 'faulter' killed, system continues
+  PC=0xffc0069c cause=0x100
+[fs] spawning the faulter
+[fs] worker about to fault
+[fs] trap int #87
+
+=== THREAD FAULT === thread 'faulter' killed, system continues
+  PC=0xffc006b0 cause=0x100
+[fs] spawning the faulter
+[fs] worker about to fault
+[fs] trap brk
+
+=== THREAD FAULT === thread 'faulter' killed, system continues
+  PC=0xffc006c4 cause=0x100
+[fs] survivor ran after the fault
+[fs] [clock] STEADY: 9 traps took 61327400 ns
