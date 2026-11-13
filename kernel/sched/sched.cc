@@ -7,6 +7,7 @@
 #include <kickos/notify.h>
 #include <kickos/sched.h>
 #include <kickos/smptrace.h>
+#include <kickos/start_watch.h>
 #include <kickos/cap.h>
 #include <kickos/console_tx.h>
 #include <kickos/debug.h>
@@ -831,6 +832,10 @@ namespace kickos
             uint32_t const me = kickos_kernel_core();
             publish_ready(t, SCHED_HOME_FOR(t, me), me);
             KOS_TRACE(::kickos::KOS_TR_READY, KOS_TRACE_ID(t), t->prio);
+            if (t->notify_bound != KOS_NOTIFY_UNBOUND and notify_lend_woken(t))
+            {
+                watch_lend_settle(held);
+            }
             return true;
         }
 
@@ -951,7 +956,7 @@ namespace kickos
                 // every KCAP_TEARDOWN_CHUNK slots, and a notification still naming this thread
                 // across one of those gaps is a wake into a thread already in teardown.
                 // Unconsumed bits are left pending for the next server.
-                notify_unbind_self(c);
+                notify_unbind_self(c, lock);
                 // A fault or a task-scope exit ends the group (task_end), and so does the entry's
                 // death by any cause. A cancelled entry latches nothing: the task keeps
                 // KOS_EXIT_CANCELLED. An essential thread's death latches a fault, which a task
@@ -1165,31 +1170,6 @@ namespace kickos
 }
 
 #if KICKOS_KERNEL_CORES > 1
-namespace kickos
-{
-    namespace
-    {
-        // Every WAIT_RETIRE waiter asks again, and one whose grace period is still open parks
-        // again. All are readied before the one pass that may switch away.
-        void retire_waiters_wake(Held held)
-        {
-            Thread* top = nullptr;
-            while (not kernel().retire_waiters.empty())
-            {
-                Thread* const w = thread_of(kernel().retire_waiters.head);
-                if (thread_abort_park_no_resched(w, 0, held))
-                {
-                    sched::keep_top(w, &top, held);
-                }
-            }
-            if (top != nullptr)
-            {
-                sched::resched_after_wake(top, held);
-            }
-        }
-    }
-}
-
 // Runs in the doorbell's interrupt, so the switch this books is performed at the exception
 // exit. A core still in bring-up reaches this before its scheduler exists.
 extern "C" void kickos_kernel_core_resched_if_owed(void)
@@ -1205,9 +1185,9 @@ extern "C" void kickos_kernel_core_resched_if_owed(void)
     {
         return;
     }
-    if (not ::kickos::kernel().retire_waiters.empty() and ::kickos::irq_retire_serve(lock))
+    if (::kickos::irq_retire_serve(lock))
     {
-        ::kickos::retire_waiters_wake(lock);
+        ::kickos::start_watch_poke();
     }
     // The drain lives here and nowhere a pass can be mid-walk, and what it leaves is owed to
     // this core's next dispatch.

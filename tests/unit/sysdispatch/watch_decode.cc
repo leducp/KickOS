@@ -93,11 +93,12 @@ namespace kickos
                     return cap;
                 }
 
-                int32_t watch(uint32_t s, uintptr_t source, uint32_t notify, uintptr_t arg = 0)
+                int32_t watch(uint32_t s, uintptr_t source, uint32_t notify, uintptr_t arg = 0,
+                              uintptr_t out = 0)
                 {
                     kernel().current(kickos_kernel_core()) = creator_;
                     return static_cast<int32_t>(
-                        syscall_dispatch(KOS_SYS_WATCH, s, source, notify, arg, 0));
+                        syscall_dispatch(KOS_SYS_WATCH, s, source, notify, arg, out));
                 }
 
                 uintptr_t handle() const
@@ -162,7 +163,7 @@ namespace kickos
         TEST_F(SysWatch, a_spec_naming_no_kind_or_more_than_its_kind_defines_is_invalid)
         {
             EXPECT_EQ(watch(spec(0, KOS_TASK_ENDED), handle(), note_), -KOS_EINVAL) << "kind 0";
-            EXPECT_EQ(watch(spec(3, 1u), handle(), note_), -KOS_EINVAL) << "an unknown kind";
+            EXPECT_EQ(watch(spec(4, 1u), handle(), note_), -KOS_EINVAL) << "an unknown kind";
             EXPECT_EQ(watch(spec(0xFFu, 1u), handle(), note_), -KOS_EINVAL) << "the top kind";
             EXPECT_EQ(watch(spec(KOS_WATCH_TASK, KOS_TASK_LIVE), handle(), note_), -KOS_EINVAL)
                 << "LIVE is a state, not an event";
@@ -318,6 +319,15 @@ namespace kickos
             clear();
             ASSERT_EQ(watch(spec(KOS_WATCH_TASK, KOS_TASK_ENDED), handle(), badged), 0);
             EXPECT_EQ(pending(), 1u << 3) << "the re-arm raised the replaced bit";
+        }
+
+        TEST_F(SysWatch, an_instance_watch_refuses_its_out_pointer_first_and_a_task_watch_never_reads_it)
+        {
+            uint32_t const instance = spec(KOS_WATCH_INSTANCE, KOS_INSTANCE_STARTABLE);
+            EXPECT_EQ(watch(instance, BAD_CAP, BAD_CAP, 1u), -KOS_EINVAL) << "no out-pointer";
+            EXPECT_EQ(watch(instance, BAD_CAP, BAD_CAP, 1u, 1u), -KOS_EINVAL) << "a misaligned one";
+            EXPECT_EQ(watch(instance, BAD_CAP, BAD_CAP, 1u, 4u), -KOS_EFAULT) << "an unwritable one";
+            EXPECT_EQ(watch(spec(KOS_WATCH_TASK, ENDS), handle(), note_, 0, 1u), 0);
         }
 
         TEST_F(SysWatch, a_task_disarm_ends_the_watch)

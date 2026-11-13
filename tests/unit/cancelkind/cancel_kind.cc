@@ -64,7 +64,7 @@ namespace kickos
                     << "fixture: the waiter owns the line";
                 uint32_t note = 0;
                 EXPECT_EQ(notify_create(owner, &note), 0);
-                EXPECT_EQ(watch_call(owner, watch_spec(KOS_WATCH_IRQ, KOS_IRQ_FIRED), line, note, 0), 0)
+                EXPECT_EQ(watch_call(owner, watch_spec(KOS_WATCH_IRQ, KOS_IRQ_FIRED), line, note, 0, nullptr), 0)
                     << "fixture: the line signals the object the waiter waits on";
                 EXPECT_EQ(notify_bind(owner, note), 0)
                     << "fixture: the waiter is that object's bound thread";

@@ -20,6 +20,7 @@
 #include <kickos/sched.h>
 #include <kickos/task.h>
 #include <kickos/thread.h>
+#include <kickos/watch.h>
 
 #include <kickos/sys/image.h>
 
@@ -35,6 +36,11 @@
 
 namespace
 {
+    uint32_t watch_spec(uint32_t kind, uint32_t events)
+    {
+        return (kind << KOS_WATCH_KIND_SHIFT) | events;
+    }
+
     constexpr uint8_t PRIO_ROOT = 8;
     constexpr uint8_t PRIO_DRIVER = 6;
     constexpr uint16_t LINE = 5;
@@ -154,7 +160,7 @@ namespace kickos
 
             void create_con()
             {
-                (void)task_create_call(g_prog, reinterpret_cast<uintptr_t>(&g_block.p), 0,
+                (void)task_create_call(g_prog, reinterpret_cast<uintptr_t>(&g_block.p),
                                        reinterpret_cast<uintptr_t>(&g_block.out));
             }
 
@@ -198,7 +204,7 @@ namespace kickos
                     g_block.p.instance = text(instance, 16);
                     g_block.out = KOS_TASK_NONE;
                     int const rc = task_create_call(prog_, reinterpret_cast<uintptr_t>(&g_block.p),
-                                                    0, reinterpret_cast<uintptr_t>(&g_block.out));
+                                                    reinterpret_cast<uintptr_t>(&g_block.out));
                     *out = g_block.out;
                     return rc;
                 }
@@ -374,6 +380,24 @@ namespace kickos
             g_decls.grant[1].line = LINE;
             g_decls.grant[1].slot = LINE_SLOT;
             refused("peer", -KOS_EBUSY, "the line drv holds");
+        }
+
+        // The create answers -KOS_EAGAIN for a budget as for an instance in the way, and only the
+        // INSTANCE watch tells the two apart: nothing is in the way, so it arms nothing.
+        TEST_F(DriverCreate, a_budget_s_retry_is_told_apart_by_an_arm_that_finds_nothing_in_the_way)
+        {
+            root(AUTH_TASKS | AUTH_IRQ);
+            g_decls.decl[0].budgets[KOS_BUDGET_IRQ_BINDINGS] = 0;
+            refused("drv", -KOS_EAGAIN, "drv's line past its binding budget");
+            Thread* const c = sched::current();
+            uint32_t const head = c->cap_free_head;
+            uint32_t w = KCAP_INVALID;
+            EXPECT_EQ(watch_call(c, watch_spec(KOS_WATCH_INSTANCE, KOS_INSTANCE_STARTABLE), prog_,
+                                 note_, reinterpret_cast<uintptr_t>(text("drv", 16)), &w),
+                      -KOS_EALREADY);
+            EXPECT_EQ(c->cap_free_head, head) << "the arm that found nothing in the way took a slot";
+            EXPECT_TRUE(kernel().start_watches == 0 or kernel().start_watches == 0xFFFFFFFFu)
+                << "the arm that found nothing in the way armed a watch";
         }
 
         TEST_F(DriverCreate, a_driver_s_windows_are_its_declaration_s_alone)

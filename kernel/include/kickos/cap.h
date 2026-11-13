@@ -95,6 +95,10 @@ namespace kickos
         CAP_NOTIFY,   // a notification object; `obj` names a slot in the notification pool.
                       // CapEntry::badge carries this cap's BADGE (cap_badge_seat below)
         CAP_PROGRAM,  // a program; `obj` is its image's index, a static record with no refcount
+        CAP_WATCH,    // an INSTANCE watch (kernel/task/start_watch.cc): `obj` names the
+                      // notification it raises, by a counted reference; the badge and the spare
+                      // sequence bits carry its bit and declaration, and `obj_gen` links it while
+                      // armed
         CAP_KIND_MAX  // never stored: STAYS LAST, and the assert below reads it
     };
     // Keyed on the sentinel and never on the last kind by name: an assert naming CAP_IRQ
@@ -172,7 +176,8 @@ namespace kickos
         // (kcap_free_link below).
         int32_t obj;
         // The whole generation of the object `obj` names, at the install; a pool handle
-        // carries its low 16 bits. Read through cap_obj_live or cap_obj.
+        // carries its low 16 bits. Read through cap_obj_live or cap_obj. A CAP_WATCH, whose
+        // reference pins its object, holds its link on the armed watches here instead.
         uint32_t obj_gen;
         uint8_t type : KCAP_TYPE_BITS;
         // CAP_REPLY's call sequence, low half. cap_install_at zeroes both halves, so no entry
@@ -181,8 +186,8 @@ namespace kickos
         uint8_t rights : KCAP_RIGHTS_BITS;
         uint8_t seq_hi : KCAP_REPLY_SEQ_HI_BITS; // the same field's high half
         uint16_t gen;                            // per-slot cap generation
-        // CAP_ENDPOINT's badge, or CAP_NOTIFY's as bit + 1; KCAP_BADGE_NONE unbadged. Seated
-        // by cap_install_at and never inherited.
+        // CAP_ENDPOINT's badge, or CAP_NOTIFY's and CAP_WATCH's as bit + 1; KCAP_BADGE_NONE
+        // unbadged. Seated by cap_install_at and never inherited.
         uint32_t badge;
     };
     static_assert(sizeof(CapEntry) == KCAP_ENTRY_BYTES,
@@ -212,6 +217,17 @@ namespace kickos
     inline uint32_t cap_reply_handle(CapEntry const& e)
     {
         return static_cast<uint32_t>(e.obj);
+    }
+
+    // A CAP_WATCH carries its declaration index in the spare bits a CAP_REPLY packs its call
+    // sequence into.
+    inline void cap_watch_decl_seat(CapEntry* e, uint8_t decl)
+    {
+        cap_reply_seq_seat(e, decl);
+    }
+    inline uint8_t cap_watch_decl(CapEntry const& e)
+    {
+        return cap_reply_seq(e);
     }
 
     // One badge field for both kinds. A CAP_ENDPOINT's is the 32-bit value its minter chose

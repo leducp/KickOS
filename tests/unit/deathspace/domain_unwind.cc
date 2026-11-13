@@ -90,6 +90,10 @@ namespace kickos
         return nullptr;
     }
 
+    void start_watch_poke()
+    {
+    }
+
     ThreadLink* task_image_stager(Task const*)
     {
         return nullptr;

@@ -245,7 +245,7 @@ int main(int, char**)
     }
     kos_cap_t note = KOS_CAP_NONE;
     if (kos_notify_create(&note) != 0
-        or kos_watch(KOS_WATCH_IRQ, KOS_IRQ_FIRED, line, note, 0) != 0)
+        or kos_watch(KOS_WATCH_IRQ, KOS_IRQ_FIRED, line, note, 0, nullptr) != 0)
     {
         kos::print("[trapnest] ERROR: the line could not be attached to a notification\n");
         return 1;

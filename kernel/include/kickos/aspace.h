@@ -179,7 +179,7 @@ namespace kickos
 
 #if KICKOS_PRESYNC
     // The work a system call does outside the kernel lock (kickos/presync.h). All but
-    // presync_run, presync_round and presync_release are called under IrqLock.
+    // presync_run and presync_release are called under IrqLock.
     //
     // The calling thread's record, or null.
     PresyncRecord* presync_record();
@@ -195,19 +195,13 @@ namespace kickos
     // seat while it is staged. Past the record's PAGES budget, or while another create holds
     // a stage for it, nothing is staged and the locked pass refuses.
     void presync_stage_image(size_t decl);
-    // Whether a thread other than the caller holds an image stage for `t`'s record.
-    bool presync_image_staged_elsewhere(Task const* t);
+    // Whether a thread other than `asker`, any thread where it is null, holds an image stage for
+    // `t`'s record.
+    bool presync_image_staged_elsewhere(Task const* t, Thread const* asker);
     // No lock held: sync every noted frame, then fill the staged run.
     void presync_run();
     // The call completed: every other live record meeting what its locked pass mapped is dropped.
     void presync_commit();
-    // The locked pass is about to park: its stage goes back, so a parked call holds no frames
-    // and no declaration's stager mark.
-    void presync_park();
-    // No lock held: the locked pass parked and was woken, and the call goes round, its plan
-    // made again; false where the call is not working outside the lock. Only the calling thread
-    // reads what this writes.
-    bool presync_round();
     // End a round: true when the locked pass was refused and the call goes round again.
     bool presync_end();
     // No lock held: free a staged run the round did not take, which a call that `succeeded`

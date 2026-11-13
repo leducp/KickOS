@@ -493,7 +493,7 @@ class Emitted(unittest.TestCase):
     def test_cost_prints_what_the_init_spends(self):
         run = self.cost("qemu-x86_64.yaml")
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
-        self.assertEqual(run.stdout, "cap_slots 7\nendpoints 1\nnotifications 2\nthreads 3\ntasks 3\nirq_handles 0\ndomains 6\n"
+        self.assertEqual(run.stdout, "cap_slots 10\nendpoints 1\nnotifications 2\nthreads 3\ntasks 3\nirq_handles 0\ndomains 6\n"
                                      "reservations 6\nself_grants 2\n")
 
     def test_the_init_holds_a_program_of_another_name_for_its_create(self):
@@ -502,8 +502,8 @@ class Emitted(unittest.TestCase):
         main = self.cost("qemu-x86_64.yaml", [("program: %s" % p, "program: main") for t, p in tasks if p != "main"])
         self.assertEqual(named.returncode, 0, named.stdout + named.stderr)
         self.assertEqual(main.returncode, 0, main.stdout + main.stderr)
-        self.assertIn("cap_slots 6\n", main.stdout)
-        self.assertIn("cap_slots 7\n", named.stdout)
+        self.assertIn("cap_slots 9\n", main.stdout)
+        self.assertIn("cap_slots 10\n", named.stdout)
 
     def test_cost_of_a_refused_composition_prints_its_refusals(self):
         run = self.cost("qemu-x86_64.yaml", [("devices: [/dev/cmos_rtc]", "devices: [/dev/cmos_rtc9]")])

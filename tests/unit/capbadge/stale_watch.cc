@@ -64,7 +64,7 @@ TEST_F(StaleWatch, a_watch_kept_across_a_generation_wrap_of_its_notification_rai
     ASSERT_NE(watched, nullptr);
     uint32_t note = KCAP_INVALID;
     ASSERT_EQ(notify_create(creator, &note), 0);
-    ASSERT_EQ(watch_call(creator, ENDS, task_handle(watched), note, 0), 0);
+    ASSERT_EQ(watch_call(creator, ENDS, task_handle(watched), note, 0, nullptr), 0);
 
     Kernel& k = kernel();
     int obj = 0;
@@ -110,7 +110,7 @@ TEST_F(StaleWatch, a_watch_kept_across_a_generation_wrap_of_its_notification_rai
                               &fresh),
                   0);
     }
-    ASSERT_EQ(watch_call(creator, ENDS, task_handle(second), fresh, 0), 0);
+    ASSERT_EQ(watch_call(creator, ENDS, task_handle(second), fresh, 0, nullptr), 0);
     stop(second);
     EXPECT_EQ(n->pending, 1u) << "the control watch raised nothing";
 }

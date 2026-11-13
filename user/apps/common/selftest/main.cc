@@ -462,7 +462,7 @@ namespace
         {
             return KOS_CAP_NONE;
         }
-        if (kos_watch(KOS_WATCH_IRQ, KOS_IRQ_FIRED, line, note, 0) != 0)
+        if (kos_watch(KOS_WATCH_IRQ, KOS_IRQ_FIRED, line, note, 0, nullptr) != 0)
         {
             kos_handle_close(note);
             return KOS_CAP_NONE;
@@ -1745,7 +1745,7 @@ namespace
             TAP_CHECK(kos_endpoint_create(&ep) == 0 and kos_sem_init(&g_ah_gate, 0) == 0);
             TAP_CHECK(kos_mutex_lock(m, KOS_NEVER) == 0);
             TAP_CHECK(kos_notify_create(&note) == 0 and kos_notify_bind(note) == 0);
-            TAP_CHECK(PeerRun("hold").start(&task) == 0);
+            TAP_CHECK(PeerRun("hold").bound(note).start(&task) == 0);
             held_task = task;
             {
                 ArmHold quick(AH_PARK_US);
@@ -3062,7 +3062,7 @@ namespace
             p.block = arg;
             p.size = XG_STK;
             kos_task_t t = KOS_TASK_NONE;
-            rep[XG_MEMBASE] = kos_task_create(prog, &p, KOS_POLL, &t);
+            rep[XG_MEMBASE] = kos_task_create(prog, &p, &t);
             if (rep[XG_MEMBASE] == 0)
             {
                 (void)kos_task_slay(t, after_us(STALL_TOLERANT_US));
@@ -5746,8 +5746,8 @@ namespace
         TAP_CHECK(kos_notify_create(&note) == 0);
         TAP_CHECK(kos_notify_badge(note, 0u, &b1) == 0);
         TAP_CHECK(kos_notify_badge(note, 1u, &b2) == 0);
-        TAP_CHECK(kos_watch(KOS_WATCH_IRQ, KOS_IRQ_FIRED, l1, b1, 0) == 0);
-        TAP_CHECK(kos_watch(KOS_WATCH_IRQ, KOS_IRQ_FIRED, l2, b2, 0) == 0);
+        TAP_CHECK(kos_watch(KOS_WATCH_IRQ, KOS_IRQ_FIRED, l1, b1, 0, nullptr) == 0);
+        TAP_CHECK(kos_watch(KOS_WATCH_IRQ, KOS_IRQ_FIRED, l2, b2, 0, nullptr) == 0);
         // The attachment holds its own reference.
         TAP_CHECK(hold.close(&b1) == 0);
         TAP_CHECK(hold.close(&b2) == 0);
@@ -7835,7 +7835,7 @@ namespace
         char const* hold_argv[] = {"peer", "hold", nullptr};
         kos_task_params p{};
         p.argv = hold_argv;
-        TAP_CHECK(kos_task_create(g_peer_prog, &p, KOS_POLL, nullptr) == -KOS_EINVAL);
+        TAP_CHECK(kos_task_create(g_peer_prog, &p, nullptr) == -KOS_EINVAL);
         TAP_CHECK(PeerRun("hold").start(&task) == 0);
         TAP_CHECK(task != KOS_TASK_NONE); // the bias is what makes this assertion possible
         // The two words nothing can mint: the sentinel, and a generation the slot never held.
@@ -7872,7 +7872,7 @@ namespace
             answer[0] = 1u;
         }
         // Nor watch it or read its state: both reports are the creator's.
-        if (kos_watch(KOS_WATCH_TASK, 0, t, KOS_CAP_NONE, 0) == -KOS_EPERM
+        if (kos_watch(KOS_WATCH_TASK, 0, t, KOS_CAP_NONE, 0, nullptr) == -KOS_EPERM
             and kos_task_state(t, nullptr) == -KOS_EPERM)
         {
             answer[1] = 1u;
@@ -7926,7 +7926,7 @@ namespace
     // A watch of the end and the death of `t`, a task of a program that names no ready endpoint.
     int tw_watch_ends(kos_task_t t, kos_cap_t note)
     {
-        return kos_watch(KOS_WATCH_TASK, KOS_TASK_ENDED | KOS_TASK_DEAD, t, note, 0);
+        return kos_watch(KOS_WATCH_TASK, KOS_TASK_ENDED | KOS_TASK_DEAD, t, note, 0, nullptr);
     }
     constexpr uint8_t TW_CREATOR_PRIO = 14;
     constexpr uint8_t TW_MEMBER_PRIO = 11;
@@ -7963,7 +7963,7 @@ namespace
         uint32_t bits = 0;
         kos_cap_grant const caps[] = {{ep, KOS_CAP_WAIT}, {other, KOS_CAP_WAIT}};
         kos_task_t t = KOS_TASK_NONE;
-        r->setup = PeerRun("tw").caps(caps, 2).start(&t, prog);
+        r->setup = PeerRun("tw").caps(caps, 2).bound(n).start(&t, prog);
         if (r->setup != 0)
         {
             return;
@@ -7973,7 +7973,7 @@ namespace
         if (r->armed == 0)
         {
             r->armed = kos_watch(KOS_WATCH_TASK, KOS_TASK_READY | KOS_TASK_ENDED | KOS_TASK_DEAD, t,
-                                 badged, 0);
+                                 badged, 0, nullptr);
         }
         r->closed = kos_handle_close(badged);
         r->before = kos_task_state(t, nullptr);
@@ -8240,9 +8240,9 @@ namespace
 
     // --- A start waits out a peer still dying ---------------------------------------------
     // peer0's entry returns while its worker, below main on main's core, has not run its
-    // teardown: the task has ended and is not dead. A start of peer0 with no timeout is refused;
-    // one with a timeout parks main until the worker is dead and lands on peer0, whose budget
-    // seats the worker it spawns.
+    // teardown: the task has ended and is not dead. A start of peer0 is refused; an instance
+    // watch armed then raises its bit once the worker is dead, and the start after it lands on
+    // peer0, whose budget seats the worker it spawns.
 #if KICKOS_SELFTEST_PEER
     constexpr uint8_t PD_WORKER_PRIO = 9;
     void pd_parks(void*)
@@ -8271,9 +8271,15 @@ namespace
         return 0;
     }
 #endif
+    // A KOS_WATCH_INSTANCE watch of peer0 raising `badged`'s bit, its handle at *out.
+    int pd_watch_peer0(kos_program_t prog, kos_cap_t badged, kos_cap_t* out)
+    {
+        return kos_watch(KOS_WATCH_INSTANCE, KOS_INSTANCE_STARTABLE, prog, badged,
+                         reinterpret_cast<uintptr_t>("peer0"), out);
+    }
     void t_peer_start_waits_out_dying()
     {
-        TAP_ASK(.tasks = 1, .notifies = 1, .peer_workers = 1);
+        TAP_ASK(.tasks = 1, .notifies = 1, .caps = 2, .peer_workers = 1);
         kos_cap_t n = KOS_CAP_NONE;
         kos_task_t t = KOS_TASK_NONE;
         kos_task_t next = KOS_TASK_NONE;
@@ -8282,6 +8288,7 @@ namespace
         TAP_CHECK(kos_notify_create(&n) == 0);
         TAP_CHECK(PeerRun("pdslow").start(&t) == 0);
         constexpr uint32_t mask = 1u << TW_BIT;
+        constexpr uint32_t startable = 1u << PEER_START_BIT;
         kos_cap_t badged = KOS_CAP_NONE;
         int const bound = kos_notify_bind(n);
         int armed = kos_notify_badge(n, TW_BIT, &badged);
@@ -8295,10 +8302,30 @@ namespace
         int const state = kos_task_state(t, nullptr);
         PeerRun spawn("pdspawn");
         int const refused = spawn.try_start("peer0", &next);
+        int watch = -KOS_EINVAL;
+        kos_cap_t watch_cap = KOS_CAP_NONE;
+        int waited = -KOS_EINVAL;
+        uint32_t woke = 0;
         int started = refused;
         if (refused == -KOS_EAGAIN)
         {
-            started = spawn.start(&next);
+            badged = KOS_CAP_NONE;
+            int const minted = kos_notify_badge(n, PEER_START_BIT, &badged);
+            if (minted == 0)
+            {
+                watch = pd_watch_peer0(g_peer_prog, badged, &watch_cap);
+            }
+            else
+            {
+                watch = minted;
+            }
+            (void)kos_handle_close(badged);
+            if (watch == 0)
+            {
+                waited = kos_notify_wait(startable, after_us(TX_WAIT_US), &woke);
+                (void)kos_handle_close(watch_cap);
+                started = spawn.try_start("peer0", &next);
+            }
         }
         // A create of peer0 ends its dead incarnation's hold.
         int const stale = kos_task_state(t, nullptr);
@@ -8319,21 +8346,25 @@ namespace
         }
         TAP_CHECK((state & KOS_TASK_ENDED) != 0);
         TAP_CHECK(refused == -KOS_EAGAIN);
+        TAP_CHECK(watch == 0);
+        TAP_CHECK(waited == 0 and woke == startable);
         TAP_CHECK(started == 0 and stale == -KOS_EBADF);
         TAP_CHECK(status == 0);
     }
 
     // --- A death wait lends its priority -------------------------------------------------
     // peer0's entry returns while its worker, at the lowest priority, sits below a spinner on
-    // main's core. A creator above both starts peer0 again with a timeout shorter than the spin:
-    // the worker runs its death out on the creator's priority, so the start lands while the
-    // spinner still spins.
+    // main's core. A creator above both, refused the start of peer0, waits on an instance watch
+    // of it with a deadline shorter than the spin: the worker runs its death out on the
+    // creator's priority, so the start lands while the spinner still spins.
     constexpr uint8_t DL_SPIN_PRIO = 8;
     constexpr uint8_t DL_CREATOR_PRIO = 14;
     constexpr uint32_t DL_WAIT_US = CREATOR_US / 4;
     struct DlRun
     {
-        int pre, state, started, stale;
+        int pre, state, refused, waited, started, stale, watch;
+        kos_cap_t watch_cap;
+        uint32_t woke;
     };
     DlRun g_dl;
     Atomic<int32_t, Order::RELAXED> g_dl_done{0};
@@ -8348,6 +8379,41 @@ namespace
         {
             g_dl_spun_out.store(1);
         }
+    }
+    // The start of peer0 refused while its last incarnation dies, then waited out on an instance
+    // watch raising PEER_START_BIT on `n`, which the calling thread is bound to.
+    void dl_restart(kos_program_t prog, kos_cap_t n, kos_task_t* next)
+    {
+        char const* argv[] = {"peer", "nop", nullptr};
+        kos_task_params p{};
+        p.argv = argv;
+        p.instance = "peer0";
+        g_dl.refused = kos_task_create(prog, &p, next);
+        g_dl.started = g_dl.refused;
+        if (g_dl.refused != -KOS_EAGAIN)
+        {
+            return;
+        }
+        kos_cap_t badged = KOS_CAP_NONE;
+        int const minted = kos_notify_badge(n, PEER_START_BIT, &badged);
+        g_dl.watch = minted;
+        if (minted == 0)
+        {
+            g_dl.watch = pd_watch_peer0(prog, badged, &g_dl.watch_cap);
+        }
+        (void)kos_handle_close(badged);
+        if (g_dl.watch == -KOS_EALREADY)
+        {
+            g_dl.started = kos_task_create(prog, &p, next);
+            return;
+        }
+        if (g_dl.watch != 0)
+        {
+            return;
+        }
+        g_dl.waited = kos_notify_wait(1u << PEER_START_BIT, after_us(DL_WAIT_US), &g_dl.woke);
+        (void)kos_handle_close(g_dl.watch_cap);
+        g_dl.started = kos_task_create(prog, &p, next);
     }
     void dl_creator(void*)
     {
@@ -8373,7 +8439,7 @@ namespace
         }
         if (pre == 0)
         {
-            pre = PeerRun("pdslow").start(&t, prog);
+            pre = PeerRun("pdslow").bound(n).start(&t, prog);
         }
         if (pre == 0)
         {
@@ -8394,11 +8460,7 @@ namespace
         if (pre == 0)
         {
             g_dl.state = kos_task_state(t, nullptr);
-            char const* argv[] = {"peer", "nop", nullptr};
-            kos_task_params p{};
-            p.argv = argv;
-            p.instance = "peer0";
-            g_dl.started = kos_task_create(prog, &p, after_us(DL_WAIT_US), &next);
+            dl_restart(prog, n, &next);
             g_dl.stale = kos_task_state(t, nullptr);
         }
         g_dl_done.store(1);
@@ -8419,8 +8481,8 @@ namespace
     }
     void t_death_wait_lends_priority()
     {
-        TAP_ASK(.workers = 2, .tasks = 1, .notifies = 1, .peer_workers = 1);
-        g_dl = {-99, -99, -99, -99};
+        TAP_ASK(.workers = 2, .tasks = 1, .notifies = 1, .caps = 2, .peer_workers = 1);
+        g_dl = {-99, -99, -99, -99, -99, -99, -99, KOS_CAP_NONE, 0u};
         g_dl_done.store(0);
         g_dl_spun_out.store(0);
         kos::thread::Handle w;
@@ -8433,12 +8495,15 @@ namespace
         TAP_CHECK(hold.joined());
         DlRun const r = g_dl;
         TAP_CHECK(r.pre == 0);
-        if (r.state < 0 or (r.state & KOS_TASK_DEAD) != 0)
+        if (r.state < 0 or (r.state & KOS_TASK_DEAD) != 0 or r.watch == -KOS_EALREADY)
         {
             TAP_SKIP_VACUOUS("peer0 was dead before the next start");
             return;
         }
         TAP_CHECK((r.state & KOS_TASK_ENDED) != 0);
+        TAP_CHECK(r.refused == -KOS_EAGAIN);
+        TAP_CHECK(r.watch == 0);
+        TAP_CHECK(r.waited == 0 and r.woke == (1u << PEER_START_BIT));
         TAP_CHECK(r.started == 0 and r.stale == -KOS_EBADF);
         TAP_CHECK(g_dl_spun_out.load() == 0);
     }
@@ -8610,7 +8675,7 @@ namespace
                                        {probe, KOS_CAP_WAIT | KOS_CAP_TRANSFER}};
         if (pre == 0)
         {
-            pre = PeerRun("te").caps(ecaps, 3).start(&t, prog);
+            pre = PeerRun("te").caps(ecaps, 3).bound(n).start(&t, prog);
         }
         if (pre == 0)
         {
@@ -8620,7 +8685,7 @@ namespace
         if (pre == 0)
         {
             kos_cap_grant const wcaps[] = {{probe, KOS_CAP_SIGNAL}};
-            auto const watcher = kos::thread::create(te_watcher, nullptr, "tew", 13,
+            auto const watcher = kos::thread::create(te_watcher, nullptr, "tew", 15,
                                                      KOS_POLICY_FIFO, 0ns, nullptr, 0, nullptr, 0,
                                                      wcaps, 1, 0, nullptr, 1u);
             g_te.watcher_rc = watcher.error();
@@ -8659,7 +8724,8 @@ namespace
     }
     void t_task_dead_after_every_sweep()
     {
-        // main is the creator, above the watcher and the peer's two threads, on core 0.
+        // main is the creator, above the peer's two threads and below the watcher, on core 0: its
+        // wait on the death lends to the sweeping sibling, which the woken watcher must outrank.
         TAP_ASK(.workers = 1, .tasks = 1, .endpoints = 2, .notifies = 1, .peer_workers = 1);
         g_te = {-99, -99, 0, 0, -99, -99, -99, -99};
         g_te_seq = 0;
@@ -9824,7 +9890,7 @@ namespace
         TAP_HOLD(hold.task(&task) and hold.bound(&announced));
         TAP_CHECK(kos_notify_create(&announced) == 0 and kos_notify_bind(announced) == 0);
         kos_cap_grant const caps[] = {{announced, KOS_CAP_SIGNAL}};
-        TAP_CHECK(PeerRun("tsly").caps(caps, 1).start(&task) == 0);
+        TAP_CHECK(PeerRun("tsly").caps(caps, 1).bound(announced).start(&task) == 0);
         uint32_t bits = 0;
         TAP_CHECK(kos_notify_wait(~0u, after_us(STALL_TOLERANT_US), &bits) == 0);
         kos_task_t const slain = task;
@@ -10062,7 +10128,7 @@ namespace
         TAP_CHECK(kos_notify_create(&announced) == 0 and kos_notify_bind(announced) == 0);
         TAP_CHECK(main_above(TSLW_PRIO + 1));
         kos_cap_grant const caps[] = {{announced, KOS_CAP_SIGNAL | KOS_CAP_TRANSFER}};
-        int const started = PeerRun("tslw").caps(caps, 1).start(&task);
+        int const started = PeerRun("tslw").caps(caps, 1).bound(announced).start(&task);
         uint32_t bits = 0;
         int announce = -1;
         if (started == 0)
@@ -10882,7 +10948,7 @@ namespace
             kos_task_params p{};
             p.instance = "peer0";
             kos_task_t t = KOS_TASK_NONE;
-            rc = kos_task_create(prog, &p, KOS_POLL, &t);
+            rc = kos_task_create(prog, &p, &t);
             (void)kos_handle_close(prog);
         }
         g_pa_helper.store(rc);
@@ -10914,11 +10980,11 @@ namespace
         kos_task_params p{};
         kos_task_t t = KOS_TASK_NONE;
         p.instance = "nosuch";
-        TAP_CHECK(kos_task_create(prog, &p, KOS_POLL, &t) == -KOS_ENOENT);
+        TAP_CHECK(kos_task_create(prog, &p, &t) == -KOS_ENOENT);
         // main is the init's to start, and an instance of main's own program, not stpeer's.
         p.instance = "main";
-        TAP_CHECK(kos_task_create(own, &p, KOS_POLL, &t) == -KOS_EPERM);
-        TAP_CHECK(kos_task_create(prog, &p, KOS_POLL, &t) == -KOS_ENOENT);
+        TAP_CHECK(kos_task_create(own, &p, &t) == -KOS_EPERM);
+        TAP_CHECK(kos_task_create(prog, &p, &t) == -KOS_ENOENT);
 
         // The instance field: peer0 starts, its argv and its capability arrive.
         char const* argv[] = {"peer0", "argv", "hello", nullptr};
@@ -10927,24 +10993,24 @@ namespace
         p.argv = argv;
         p.caps = caps;
         p.cap_count = 2;
-        TAP_CHECK(kos_task_create(prog, &p, KOS_POLL, &t) == 0);
+        TAP_CHECK(kos_task_create(prog, &p, &t) == 0);
         uint32_t bits = 0;
         TAP_CHECK(kos_notify_wait(0xFFFFFFFFu, after_us(STALL_TOLERANT_US), &bits) == 0);
 
         // Live: by name it is busy, and once every other instance is live too none is left to
         // this creator.
         kos_task_t again = KOS_TASK_NONE;
-        TAP_CHECK(kos_task_create(prog, &p, KOS_POLL, &again) == -KOS_EBUSY);
+        TAP_CHECK(kos_task_create(prog, &p, &again) == -KOS_EBUSY);
         kos_task_t rest[SELFTEST_PEERS] = {};
         char const* hold[] = {"peer", "hold", nullptr};
         kos_task_params q{};
         q.argv = hold;
         for (int i = 1; i < KICKOS_SELFTEST_PEERS; i++)
         {
-            TAP_CHECK(kos_task_create(prog, &q, KOS_POLL, &rest[i]) == 0);
+            TAP_CHECK(kos_task_create(prog, &q, &rest[i]) == 0);
         }
         p.instance = nullptr;
-        TAP_CHECK(kos_task_create(prog, &p, KOS_POLL, &again) == -KOS_ENOMEM);
+        TAP_CHECK(kos_task_create(prog, &p, &again) == -KOS_ENOMEM);
         TAP_CHECK(again == KOS_TASK_NONE);
         for (int i = 1; i < KICKOS_SELFTEST_PEERS; i++)
         {
@@ -11066,7 +11132,7 @@ namespace
             p.argv = argv;
             p.caps = caps;
             p.cap_count = 2;
-            TAP_CHECK(peer_start(p, &t[i]) == 0);
+            TAP_CHECK(peer_start(p, &t[i], g_peer_prog, n) == 0);
             uint32_t bits = 0;
             TAP_CHECK(kos_notify_wait(1u << i, after_us(STALL_TOLERANT_US), &bits) == 0);
         }
@@ -11102,7 +11168,7 @@ namespace
         pa_nonblock_set(true);
         TAP_CHECK(pa_nonblocking());
         kos_task_t t = KOS_TASK_NONE;
-        TAP_CHECK(peer_start(p, &t) == 0);
+        TAP_CHECK(peer_start(p, &t, g_peer_prog, n) == 0);
         uint32_t bits = 0;
         TAP_CHECK(kos_notify_wait(0xFFFFFFFFu, after_us(STALL_TOLERANT_US), &bits) == 0);
         pa_nonblock_set(false);
@@ -11353,6 +11419,7 @@ int main(int, char**)
 #if KICKOS_KERNEL_CORES > 1
     TAP_ADD("irq_cross_core_wake", t_irq_cross_core_wake);
     TAP_ADD("irq_reclaim_stale_raise", t_irq_reclaim_stale_raise);
+    TAP_ADD("irq_holder_restart", t_irq_holder_restart);
 #endif
 #undef TAP_ADD
 // Region 7.

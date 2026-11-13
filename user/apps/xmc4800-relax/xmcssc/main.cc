@@ -197,7 +197,7 @@ int main(int, char**)
     }
     if (rc == 0)
     {
-        rc = kos_watch(KOS_WATCH_IRQ, KOS_IRQ_FIRED, line.cap, note, 0);
+        rc = kos_watch(KOS_WATCH_IRQ, KOS_IRQ_FIRED, line.cap, note, 0, nullptr);
     }
     if (rc != 0)
     {

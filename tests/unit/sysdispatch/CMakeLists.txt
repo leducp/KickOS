@@ -77,8 +77,8 @@ kickos_add_unit_test(NAME sys_memtype_admit SOURCES memtype_admit.cc
   LIBRARIES kickos_kseam_sysdispatch)
 kickos_sysdispatch_link(sys_memtype_admit g_sys_image 0)
 
-# The translating posture at two kernel cores: a driver's create waiting out its line's IRQ grace
-# period, which only a peer core's dispatch holds open.
+# The translating posture at two kernel cores: a driver whose line's IRQ grace period only a peer
+# core's dispatch holds open, the grace completing on its own and raising the INSTANCE watch.
 kickos_add_kseam(kickos_kseam_sysdispatch_smp
   EXTRA sys_seam.cc stub_seam.cc "${_common}/host_aspace.cc" "${_common}/host_frame_pool.cc"
         ${_sys_aspace}
@@ -87,10 +87,10 @@ kickos_add_kseam(kickos_kseam_sysdispatch_smp
           KICKOS_ARCH_ALIAS_DCACHE=1 KICKOS_ARCH_IRQ_WINDOW=1
           KSEAM_REAL_DOMAIN=1
           KICKOS_NUM_CORES=2 KICKOS_KERNEL_CORES=2 KICKOS_MULTICORE_MODEL_SHARED=1)
-kickos_add_unit_test(NAME sys_presync_grace SOURCES presync_grace.cc
+kickos_add_unit_test(NAME sys_grace_drive SOURCES grace_drive.cc
   DEFINITIONS SYS_IMAGE_BYTES=${_image_bytes}
   LIBRARIES kickos_kseam_sysdispatch_smp)
-kickos_sysdispatch_link(sys_presync_grace g_sys_image 0)
+kickos_sysdispatch_link(sys_grace_drive g_sys_image 0)
 
 kickos_add_kseam(kickos_kseam_sysdispatch_region
   EXTRA region_seam.cc stub_seam.cc ${_sys_region}

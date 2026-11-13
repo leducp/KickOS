@@ -188,10 +188,24 @@ namespace kickos
     Task* task_watch_source(Thread* c, kos_task_t task, int* err);
     // Whether `t`'s declaration names a ready endpoint.
     bool task_watch_ready_named(Task const* t);
-    void task_watch_disarm(Task* t);
+    void task_watch_disarm(Task* t, Held held);
     // Replace `t`'s watch with one raising bit `bit` of notification `notify_obj` at each of
     // `events` (KOS_TASK_READY, DEAD, ENDED), at once for one already reported.
-    void task_watch_arm(Task* t, int notify_obj, uint32_t bit, uint32_t events);
+    void task_watch_arm(Task* t, int notify_obj, uint32_t bit, uint32_t events, Held held);
+    // `p`, or the priority of the waiter parked on the bit `t`'s watch raises at its death, where
+    // `t` has ended and that is higher. Caller holds IrqLock.
+    uint8_t task_watch_lend(Task const* t, uint8_t p);
+    // Owes a recompute to every ended task whose watch raises into notification `notify_obj` at
+    // its death (task_watch_lend_owe): whether there was one. O(the task pool). Caller holds
+    // IrqLock.
+    bool task_watch_owe_into(int notify_obj);
+    // Marks `t`'s threads owed a recompute of what the watches on its death lend them, which
+    // pi_drain_deaths takes (Kernel::watch_lend_owed). Caller holds IrqLock.
+    void task_watch_lend_owe(Task* t);
+    // Whether `t` was owed one, which it no longer is. Caller holds IrqLock.
+    bool task_watch_lend_owed_take(Task* t);
+    // The task whose run list `th`'s run is on, or null. O(the task pool + th's place on it).
+    Task* task_run_owner(Thread const* th);
 
     // The image whose code and data `t`'s threads run (<kickos/image.h>): its declaration's for
     // a declared instance, and image 0, the init's, for a task the boot seats. Null-safe: image 0.
@@ -199,20 +213,23 @@ namespace kickos
 
     // Declaration `decl`'s own task record, which every incarnation of its instance reuses:
     // 0 when a create may seat it, after ending a dead incarnation's creator hold, whose handle
-    // then answers -KOS_EBADF; -KOS_EBUSY while an incarnation runs or another thread's create
-    // holds a copy of its data staged, -KOS_EAGAIN once it ended
-    // and its members are still dying, -KOS_EPERM once one started of a declaration with neither
+    // then answers -KOS_EBADF; task_decl_in_the_way's refusal, a binding's grace that has
+    // elapsed reclaimed first; -KOS_EPERM once one started of a declaration with neither
     // KOS_DECL_RESTARTS nor KOS_DECL_ON_REQUEST. Caller holds IrqLock.
     int task_decl_state(size_t decl);
-    // Declaration `decl`'s own record while its last incarnation has ended and a member still
-    // runs or sweeps: the task whose death wakes a WAIT_TASK_EMPTY park on it. Else null. Caller
-    // holds IrqLock.
-    Task* task_decl_dying(size_t decl);
-#if KICKOS_KERNEL_CORES > 1
-    // Whether an IRQ binding declaration `decl`'s last incarnation released still retires at
-    // its record's charge. Caller holds IrqLock.
-    bool task_decl_retiring(size_t decl);
-#endif
+    // What of `decl`'s past incarnations is in the way of a create by `asker`: -KOS_EAGAIN while
+    // the last one's members die or sweep, or an IRQ binding it released retires at its record's
+    // charge; -KOS_EBUSY while one is live, its entry thread not seated yet, or a create other
+    // than `asker`'s holds a copy of its data staged, any create's where `asker` is null; else 0.
+    // Reads only. Caller holds IrqLock.
+    int task_decl_in_the_way(size_t decl, Thread const* asker);
+    // Whether a line declaration `decl` names still retires, whoever released it: false at one
+    // kernel core. Caller holds IrqLock.
+    bool task_decl_lines_retiring(size_t decl);
+    // Neither of the two: nothing is in the way of a create of `decl` by `asker`.
+    bool task_decl_clear(size_t decl, Thread const* asker);
+    // Whether `decl` starts once and has started.
+    bool task_decl_spent(size_t decl);
 
     // Seats declaration `decl`'s instance in its own record, held by `creator_tag`, running
     // image `image`: domain_for's refusals, a free record being task_decl_state's 0. Caller
@@ -256,7 +273,8 @@ namespace kickos
     // slot was freed during the sweep, its creator's hold gone. Caller holds IrqLock.
     bool task_sweep_done(Task* t);
     // The task emptied and every member's sweep ran: mark it ended and dead and raise the
-    // watch, once, if `t` is still the task of generation `gen`. Caller holds IrqLock.
+    // watch, once, if `t` is still the task of generation `gen`, then raise each INSTANCE watch
+    // nothing is in the way of any more (start_watch_poke). Caller holds IrqLock.
     void task_report_death(Task* t, uint16_t gen);
     uint16_t task_gen(Task const* t); // null-safe: 0
     // A member of `t` is waiting to receive on the endpoint `ep_obj` names: raise the watch
@@ -282,9 +300,9 @@ namespace kickos
     // The thread slot, plus one, holding a staged copy of the data of `t`'s record's next space
     // (TaskLinks::image_stager); null for a task outside the pool.
     ThreadLink* task_image_stager(Task const* t);
+#endif
     // Declaration `decl`'s own record, or null past the declarations.
     Task* task_decl_record(size_t decl);
-#endif
 #if KICKOS_KERNEL_CORES > 1
     // The IRQ bindings `t`'s record pays for between their last capability's release and their
     // reclamation; null for a task outside the pool.

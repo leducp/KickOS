@@ -313,7 +313,7 @@ namespace
 
     // noinline: its frame must not sit below presync_run's interrupt windows (SYSWIN).
     __attribute__((noinline)) void presync_plan(uintptr_t nr, uintptr_t a0, uintptr_t a1,
-                                                uintptr_t a2, uintptr_t a3, uintptr_t a4)
+                                                uintptr_t a2, uintptr_t a3)
     {
         {
             IrqLock lock;
@@ -325,7 +325,7 @@ namespace
             }
             if (nr == KOS_SYS_TASK_CREATE and entering)
             {
-                task_spawn_presync_enter(a1, ktime_limit_word(a3, a4));
+                task_spawn_presync_enter(a1);
             }
             if (c != nullptr and c->task != nullptr)
             {
@@ -355,9 +355,9 @@ namespace
     }
 
     __attribute__((noinline)) void presync_prepare(uintptr_t nr, uintptr_t a0, uintptr_t a1,
-                                                   uintptr_t a2, uintptr_t a3, uintptr_t a4)
+                                                   uintptr_t a2, uintptr_t a3)
     {
-        presync_plan(nr, a0, a1, a2, a3, a4);
+        presync_plan(nr, a0, a1, a2, a3);
         presync_run();
     }
 
@@ -414,7 +414,7 @@ extern "C" uint64_t syscall_dispatch(uintptr_t nr,
     {
         if (synced)
         {
-            presync_prepare(nr, a0, a1, a2, a3, a4);
+            presync_prepare(nr, a0, a1, a2, a3);
         }
         rc = syscall_body(nr, a0, a1, a2, a3, a4);
         if (not synced or not presync_retry(rc == 0))
@@ -617,13 +617,12 @@ uint64_t syscall_body(uintptr_t nr,
         }
         case KOS_SYS_TASK_CREATE:
         {
-            // Blocks for a deadline not passed.
             int rc = cap_out_check(a2);
             if (rc != 0)
             {
                 return static_cast<uint64_t>(rc);
             }
-            rc = task_create_call(static_cast<uint32_t>(a0), a1, ktime_limit_word(a3, a4), a2);
+            rc = task_create_call(static_cast<uint32_t>(a0), a1, a2);
             return created(static_cast<uint64_t>(rc));
         }
         case KOS_SYS_PROGRAM_FIND:
@@ -640,8 +639,20 @@ uint64_t syscall_body(uintptr_t nr,
         case KOS_SYS_WATCH:
         {
             // UNGATED by authority: each kind gates on its source (watch.cc).
-            return static_cast<uint64_t>(watch_call(sched::current(), static_cast<uint32_t>(a0),
-                                                    a1, static_cast<uint32_t>(a2), a3));
+            uint32_t const spec = static_cast<uint32_t>(a0);
+            if ((spec >> KOS_WATCH_KIND_SHIFT) != KOS_WATCH_INSTANCE)
+            {
+                return static_cast<uint64_t>(
+                    watch_call(sched::current(), spec, a1, static_cast<uint32_t>(a2), a3, nullptr));
+            }
+            int rc = cap_out_check(a4);
+            if (rc != 0)
+            {
+                return static_cast<uint64_t>(rc);
+            }
+            uint32_t h = KCAP_INVALID;
+            rc = watch_call(sched::current(), spec, a1, static_cast<uint32_t>(a2), a3, &h);
+            return cap_out_deliver(a4, rc, h);
         }
         case KOS_SYS_WINDOW_GET:
         {

@@ -16,6 +16,7 @@
 #include <kickos/kruntime.h>
 #include <kickos/notify.h>
 #include <kickos/sched.h>
+#include <kickos/start_watch.h>
 #include <kickos/sync.h>
 #include <kickos/task.h>
 
@@ -35,7 +36,8 @@ namespace kickos
             FRAME_POOL,
             DOMAIN,        // the domain slot, whose space an address-space capability names
             THREAD,        // the parked caller's thread slot, or a far caller's reply record
-            STATIC_RECORD  // a build-time program's image record, which no slot reuse takes
+            STATIC_RECORD, // a build-time program's image record, which no slot reuse takes
+            PINNED         // the entry's own reference keeps its object: live while it exists
         };
 
         // A kind's generation source, and the budget its objects draw on: NO_BUDGET for a kind
@@ -57,6 +59,7 @@ namespace kickos
             {CapType::CAP_ASPACE, CapGen::DOMAIN, NO_BUDGET},
             {CapType::CAP_NOTIFY, CapGen::NOTIFY_POOL, BudgetKind::NOTIFICATIONS},
             {CapType::CAP_PROGRAM, CapGen::STATIC_RECORD, NO_BUDGET},
+            {CapType::CAP_WATCH, CapGen::PINNED, NO_BUDGET},
         };
 
         constexpr BudgetKind cap_kind_budget(CapType type)
@@ -285,6 +288,7 @@ namespace kickos
                 return;
             }
             case CapType::CAP_NOTIFY:
+            case CapType::CAP_WATCH:
             {
                 notify_ref_drop(obj_handle);
                 return;
@@ -385,7 +389,7 @@ namespace kickos
 
         // Per-type close/exit protocol, run BEFORE detach + drop at both call sites. No kind
         // refuses a close.
-        void obj_close_protocol(Thread* closer, CapEntry const& e, bool teardown, Held held)
+        void obj_close_protocol(Thread* closer, CapEntry& e, bool teardown, Held held)
         {
             switch (static_cast<CapType>(e.type))
             {
@@ -418,6 +422,11 @@ namespace kickos
                 // NOTHING, and not an oversight: the BIND holds a reference of its own, so
                 // the object outlives its last capability, and the bound thread is released
                 // by its own kos_notify_unbind or by notify_unbind_self at its death.
+                return;
+            }
+            case CapType::CAP_WATCH:
+            {
+                start_watch_close(e, held);
                 return;
             }
             case CapType::CAP_REPLY:
@@ -530,6 +539,7 @@ namespace kickos
                 return true;
             }
             case CapType::CAP_NOTIFY:
+            case CapType::CAP_WATCH:
             {
                 int const idx = kernel().notifies.live_index(obj_handle);
                 if (idx < 0)
@@ -889,10 +899,15 @@ namespace kickos
             return k.notifies.index_of(b->notify);
         }
 
-        // Stages the slot a capability of `type` on `obj_handle` names, and for an IRQ binding
-        // the notification attached to it. True for a type no held pool counts.
+        // Stages the slot a capability of `type` on `obj_handle` names, for an IRQ binding the
+        // notification attached to it, and for a watch the notification it holds. True for a type
+        // no held pool counts.
         bool stage_object(CapType type, int obj_handle, uint16_t epoch, TaskObjectHolds* h)
         {
+            if (type == CapType::CAP_WATCH)
+            {
+                return stage_hold(HELD_NOTIFY, held_live_index(HELD_NOTIFY, obj_handle), epoch, h);
+            }
             int const k = held_of(type);
             if (k < 0)
             {
@@ -1149,6 +1164,7 @@ namespace kickos
         {
         case CapGen::NONE:
         case CapGen::STATIC_RECORD:
+        case CapGen::PINNED:
         {
             return 0;
         }
@@ -1193,6 +1209,11 @@ namespace kickos
 
     bool cap_obj_live(CapEntry const& e)
     {
+        if (e.type < static_cast<uint8_t>(CapType::CAP_KIND_MAX)
+            and CAP_KINDS[e.type].gen == CapGen::PINNED)
+        {
+            return true;
+        }
         return cap_obj_generation(static_cast<CapType>(e.type), e.obj) == e.obj_gen;
     }
 

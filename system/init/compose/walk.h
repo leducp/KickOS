@@ -31,19 +31,16 @@ namespace kickos::init
 
     // How long a slay waits for the group to empty (1.4).
     constexpr std::chrono::milliseconds SLAY_WAIT{1};
-    // How often, and how far apart, a claim answered -KOS_EAGAIN is tried again (1.6).
-    constexpr uint32_t CLAIM_RETRIES = 100u;
-    constexpr std::chrono::milliseconds CLAIM_RETRY{1};
-    // How long a start waits out its instance's last incarnation, or a line or binding it
-    // released still retiring.
-    constexpr std::chrono::milliseconds START_WAIT = CLAIM_RETRY * CLAIM_RETRIES;
+    // A start's answer where it waits on its instance's watch rather than failing.
+    constexpr int PARKED = 1;
 
     enum class Phase : uint8_t
     {
-        WAITING, // never started, or dead with a restart to come
-        RUNNING, // `handle` names its instance
-        GONE,    // dead for good
-        DOWN     // dependency-down: a server it uses is gone, so it never starts
+        WAITING,   // never started, or dead with a restart to come
+        RUNNING,   // `handle` names its instance
+        STARTWAIT, // a past incarnation in the way of its start, which `startwait` reports gone
+        GONE,      // dead for good
+        DOWN       // dependency-down: a server it uses is gone, so it never starts
     };
 
     // One task's record in the private block.
@@ -53,6 +50,7 @@ namespace kickos::init
         kos_task_t ready;   // the instance that last became ready and has not ended since
         kos_cap_t endpoint; // the endpoint it serves, kept with HANDOUT
         kos_cap_t notify;   // a watcher's notification
+        kos_cap_t startwait; // the INSTANCE watch a STARTWAIT record holds, or KOS_CAP_NONE
         void* block;        // its reserved stack or a packaged driver's ring block, or null
         StatusRecord* status; // a watcher's status block, a record per task it watches, or null
         uint16_t deaths;
@@ -104,6 +102,10 @@ namespace kickos::init
         // Watches task `i`'s instance `handle` into `copy`: its end, its death and, for a task
         // serving an endpoint, its readiness. kos_watch's answer.
         int watch(uint16_t i, kos_task_t handle, kos_cap_t copy);
+        // After a create or a claim of task `i` answered -KOS_EAGAIN: arms the INSTANCE watch on
+        // `program` into `copy`. PARKED with the watch in the record, 0 where nothing is in the way
+        // and one more try is final, or the watch's refusal.
+        int park(uint16_t i, kos_program_t program, kos_cap_t copy);
         // Reserves `size` bytes with kos_ram_alloc, refusing a null answer.
         void* reserve(uint32_t size, char const* step, uint16_t task) const;
 
@@ -147,11 +149,12 @@ namespace kickos::init
         void start(uint16_t i);
         int take_lines(Start& s);
         int mint_uses(Start& s);
-        int claim(uint16_t line, kos_cap_t* out);
+        int claim(Start& s, uint16_t line, kos_cap_t* out);
         int create(Start& s);
         void release(Start& s);
         void failed(uint16_t i, kos_task_t handle, char const* step, int rc);
         void wake();
+        void unpark(uint16_t i);
         void death(uint16_t i);
         void tell(uint16_t i);
         void write_status(uint16_t i);

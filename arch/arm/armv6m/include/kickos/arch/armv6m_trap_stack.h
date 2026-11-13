@@ -93,15 +93,15 @@
      _PENDSV   0  handler mode uses SP_main.
      _SVC      0  the SVC handler starts svc_trampoline on ctx.kernel_sp, so the whole
                   dispatch tree is measured as _SVCK.
-     _SVCK   808  616 measured on microbit and picopi, a task create cancelled at its wait:
-                  syscall_dispatch[56] -> task_create_call[152] -> create_wait_death[56]
-                  -> exit_current[48] -> cap_teardown[40] -> ... -> __aeabi_ldivmod[96].
+     _SVCK   808  568 measured on microbit, a task create admitting its entry thread:
+                  syscall_dispatch[56] -> task_create_call[128] -> spawn_locked[208]
+                  -> ThreadPool::alloc[16] -> task_admit[24] -> ... -> stage_hold[16].
                   A spawn stages KICKOS_MAX_SPAWN_GRANTS 9 grants; arch_armv6m.cc refuses more.
 
    THE PANIC REPORTER IS NOT ON THIS CHAIN: kpanic leaves this stack before it prints
    (kickos_panic_stack_enter, switch.S).
 
-   808 IS ENFORCED OVER THE 616 ON PURPOSE, as headroom a future change is measured against
+   808 IS ENFORCED OVER THE 568 ON PURPOSE, as headroom a future change is measured against
    rather than slack to spend.
 
    On arm-none-eabi the compiler's reported frame is the prologue push plus the sub, the

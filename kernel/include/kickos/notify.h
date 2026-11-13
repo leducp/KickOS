@@ -60,8 +60,8 @@ namespace kickos
         return static_cast<int>(static_cast<uint32_t>(stored) - 1u);
     }
 
-    // A freed slot keeps its last contents (slotpool.h), so notify_create seats all four
-    // fields; none of them is a live default. `bound == nullptr` and `accept == 0` are the
+    // A freed slot keeps its last contents (slotpool.h), so notify_create seats every field but
+    // hold_mark; none of them is a live default. `bound == nullptr` and `accept == 0` are the
     // null cases and carry no sentinel beside them.
     struct Notification
     {
@@ -75,9 +75,15 @@ namespace kickos
         uint32_t accept = 0;
         // Head of the signaller chain, a biased binding pool index, or NOTIFY_SIGNALLER_NONE.
         uint8_t signallers = NOTIFY_SIGNALLER_NONE;
+        // Non-zero once an ended task may have a watch on its death raising here, so a wait
+        // parking or woken finds what it lends to; cleared by a look that finds none. In the
+        // padding before hold_mark.
+        uint8_t lend_mark = 0;
         // The holdings epoch that last counted this slot (cap.cc), in the tail padding.
         uint16_t hold_mark = 0;
     };
+    static_assert(sizeof(Notification) == 2 * sizeof(void*) + 8,
+                  "lend_mark and hold_mark sit in padding: 16 bytes at 32 bits, 24 at 64");
 
     // Create a notification and install a full-rights CAP_NOTIFY naming it. 0 with the cap in
     // *out_cap, or -KOS_E*: ENOMEM (pool), EMFILE (cap table), EOVERFLOW (task budget).
@@ -128,7 +134,7 @@ namespace kickos
     // cap_teardown, whose sweep releases IrqLock every KCAP_TEARDOWN_CHUNK slots: an object
     // still naming a thread across one of those gaps would wake a thread already mid-teardown.
     // Caller holds IrqLock.
-    void notify_unbind_self(Thread* c);
+    void notify_unbind_self(Thread* c, Held held);
 
     // Drop one reference to notification `obj_handle`; free the slot at refs -> 0. Caller
     // holds IrqLock. A parked waiter is the bound thread, whose bind holds a reference of its
@@ -150,14 +156,35 @@ namespace kickos
 
     // The fused receive's two halves, over whatever object `c` is bound to. enter() opens
     // `mask` (rearming the signallers it covers) and answers the bits the wait may take, 0 for
-    // a thread bound to nothing. leave() closes the window and writes the pending bits within
-    // `opened` to `c`'s word at `out`, taking them only once written: 0, or -KOS_EFAULT with
-    // none taken. Bound to nothing, it writes nothing. leave()'s caller holds IrqLock.
+    // a thread bound to nothing; the receive's park then calls notify_lend_window. leave()
+    // closes the window and writes the pending bits within `opened` to `c`'s word at `out`,
+    // taking them only once written: 0, or -KOS_EFAULT with none taken. Bound to nothing, it
+    // writes nothing. leave()'s caller holds IrqLock.
     uint32_t notify_wait_enter(Thread* c, uint32_t mask, Held held);
-    int notify_wait_leave(Thread* c, uint32_t opened, uintptr_t out);
+    int notify_wait_leave(Thread* c, uint32_t opened, uintptr_t out, Held held);
+    // `c` parked, ahead of its switch: where a window on its bound notification is open, what it
+    // lends through a watch on an ended task is recomputed (notify_lend_owe). Caller holds IrqLock.
+    void notify_lend_window(Thread* c, Held held);
+    // `t` left a park, by whatever wake: where a window on its bound notification is still open,
+    // what it lent through that window is owed a recompute (notify_lend_owe), which the caller
+    // settles (watch_lend_settle) before `t` runs. Whether one was owed. One byte test where no
+    // ended task is watched into the object. Caller holds IrqLock.
+    bool notify_lend_woken(Thread* t);
 
     // The pending word of whatever `c` is bound to, or 0. Caller holds IrqLock.
     uint32_t notify_pending_of(Thread* c);
+
+    // An ended task's watch on its death raises into `n`. Null-safe. Caller holds IrqLock.
+    void notify_lend_mark(Notification* n);
+    // The priority of the thread parked on `n` with a window open on a bit of `mask`, in
+    // kos_notify_wait or a fused receive, else 0. Caller holds IrqLock.
+    uint8_t notify_lender_prio(Notification const* n, uint32_t mask);
+    // `w` parked or left its park with a window open on its bound notification, or its priority
+    // moved while parked: every task a watch on whose death raises there is owed a recompute
+    // (task_watch_lend_owe), and the mark goes where there is none. Whether one was owed. O(the
+    // task pool + the armed INSTANCE watches) where the object is marked, else O(1). Caller holds
+    // IrqLock.
+    bool notify_lend_owe(Thread* w);
 
 #if KICKOS_KERNEL_CORES > 1
     // irq_admit_signallers over whatever `c` is bound to, and 0 where it is bound to nothing.

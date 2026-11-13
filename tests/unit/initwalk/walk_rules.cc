@@ -22,6 +22,7 @@
 
 namespace
 {
+    using harness::creates_of;
     using harness::Outcome;
     using kickos::init::StatusFields;
     using Steps = std::vector<std::function<void()>>;
@@ -603,30 +604,290 @@ namespace
         EXPECT_EQ(starts("sensor"), 2u);
     }
 
-    TEST_F(Walk, a_claim_retiring_from_its_last_holder_is_retried_within_the_bound)
+    // --- a past incarnation in the way of a start --------------------------------------------
+
+    TEST_F(Walk, a_create_answered_eagain_waits_on_its_instance_watch_then_starts_at_its_bit)
     {
-        use("alarm");
-        fake::refuse("kos_irq_claim", -KOS_EAGAIN, kickos::init::CLAIM_RETRIES);
+        use("golden_arm64");
+        uint16_t const sensor = index("sensor");
+        fake::retire("sensor");
+        fake::script({[this, sensor]
+                      {
+                          kickos::init::TaskRecord const& r = harness::record(sensor);
+                          EXPECT_EQ(r.phase, kickos::init::Phase::STARTWAIT);
+                          EXPECT_NE(r.startwait, static_cast<kos_cap_t>(KOS_CAP_NONE));
+                          EXPECT_EQ(harness::watches_held(), 1u);
+                          for (fake::Object const& o : fake::objects())
+                          {
+                              if (o.kind == fake::Kind::WATCH)
+                              {
+                                  EXPECT_EQ(o.bit, static_cast<int>(sensor % 32u)) << "the task's own bit";
+                                  EXPECT_EQ(o.binding, static_cast<int64_t>(fake::init_notification()));
+                              }
+                          }
+                          EXPECT_EQ(starts("sensor"), 0u);
+                          StatusFields const s = status("sensor");
+                          EXPECT_EQ(s.state, kickos::init::STATUS_ALIVE) << "not dead for good";
+                          EXPECT_EQ(s.deaths, 0u);
+                          EXPECT_EQ(status("app").state, kickos::init::STATUS_ALIVE) << "its user is not down";
+                          fake::retired("sensor");
+                      },
+                      step::ready_all()});
         expect_idle(run());
-        EXPECT_EQ(fake::calls_of("kos_irq_claim").size(), kickos::init::CLAIM_RETRIES + 1u);
-        std::vector<fake::Call> const sleeps = fake::calls_of("kos_sleep_for");
-        ASSERT_EQ(sleeps.size(), kickos::init::CLAIM_RETRIES);
-        EXPECT_EQ(sleeps[0].args[0],
-                  static_cast<uint64_t>(std::chrono::nanoseconds(kickos::init::CLAIM_RETRY).count()));
-        EXPECT_TRUE(fake::slays().empty());
+
+        std::vector<fake::Call> const watches = harness::instance_watches();
+        ASSERT_EQ(watches.size(), 1u);
+        EXPECT_EQ(watches[0].args[0], KOS_WATCH_INSTANCE);
+        EXPECT_EQ(watches[0].args[1], KOS_INSTANCE_STARTABLE);
+        std::vector<fake::Call> const creates = fake::calls_of("kos_task_create");
+        ASSERT_GE(creates.size(), 1u);
+        EXPECT_EQ(watches[0].args[2], creates[0].args[2]) << "armed on the program the create used";
+        EXPECT_EQ(watches[0].result, 0);
+        EXPECT_NE(watches[0].args[5], KOS_CAP_NONE);
         EXPECT_EQ(starts("sensor"), 1u);
-        EXPECT_EQ(status("sensor").deaths, 0u);
+        EXPECT_EQ(starts("app"), 1u);
+        StatusFields const s = status("sensor");
+        EXPECT_EQ(s.deaths, 0u);
+        EXPECT_EQ(s.restarts_left, 3u) << "no restart spent on the wait";
+        EXPECT_EQ(harness::watches_held(), 0u) << "the watch closed once its bit came";
+        EXPECT_EQ(fake::console(), "");
+        EXPECT_TRUE(fake::calls_of("kos_sleep_for").empty());
     }
 
-    TEST_F(Walk, a_claim_still_retiring_past_the_bound_is_a_failed_start)
+    TEST_F(Walk, a_create_answered_eagain_with_nothing_in_the_way_is_tried_once_more)
+    {
+        use("golden_arm64");
+        fake::refuse_if("kos_task_create", -KOS_EAGAIN, 1,
+                        [](fake::Call const& c)
+                        {
+                            return c.text == "sensor";
+                        });
+        fake::script({step::ready_all()});
+        expect_idle(run());
+        std::vector<fake::Call> const watches = harness::instance_watches();
+        ASSERT_EQ(watches.size(), 1u);
+        EXPECT_EQ(watches[0].result, -KOS_EALREADY);
+        EXPECT_EQ(starts("sensor"), 1u);
+        EXPECT_EQ(status("sensor").deaths, 0u);
+        EXPECT_EQ(harness::watches_held(), 0u);
+        EXPECT_TRUE(fake::calls_of("kos_sleep_for").empty());
+    }
+
+    TEST_F(Walk, a_second_eagain_after_nothing_in_the_way_is_a_failed_start)
+    {
+        use("golden_arm64");
+        fake::refuse_if("kos_task_create", -KOS_EAGAIN, 2,
+                        [](fake::Call const& c)
+                        {
+                            return c.text == "sensor";
+                        });
+        fake::script({step::ready_all()});
+        expect_idle(run());
+        EXPECT_EQ(harness::instance_watches().size(), 1u) << "no watch for the retry's answer";
+        EXPECT_EQ(creates_of("sensor").size(), 3u) << "the create, its one retry, then the restart's";
+        StatusFields const s = status("sensor");
+        EXPECT_EQ(s.deaths, 1u);
+        EXPECT_EQ(s.restarts_left, 2u);
+        EXPECT_EQ(starts("sensor"), 1u);
+        EXPECT_NE(fake::console().find("init: `sensor` failed to start: kos_task_create answered -11\n"),
+                  std::string::npos)
+            << fake::console();
+        EXPECT_TRUE(fake::calls_of("kos_sleep_for").empty());
+    }
+
+    TEST_F(Walk, a_claim_answered_eagain_waits_on_its_instance_watch)
     {
         use("alarm");
-        fake::refuse("kos_irq_claim", -KOS_EAGAIN, kickos::init::CLAIM_RETRIES + 1u);
+        fake::retire("sensor");
+        fake::script({[this]
+                      {
+                          EXPECT_EQ(harness::record(index("sensor")).phase, kickos::init::Phase::STARTWAIT);
+                          EXPECT_TRUE(creates_of("sensor").empty()) << "the claim comes first";
+                          EXPECT_EQ(harness::watches_held(), 1u);
+                          for (fake::Cap const& c : fake::table())
+                          {
+                              EXPECT_NE(fake::objects()[c.object].kind, fake::Kind::LINE) << "nothing kept";
+                          }
+                          std::vector<fake::Call> const pins = fake::calls_of("kos_thread_affinity");
+                          ASSERT_FALSE(pins.empty());
+                          EXPECT_EQ(pins.back().args[1], 0u) << "unpinned";
+                          fake::retired("sensor");
+                      }});
         expect_idle(run());
-        EXPECT_EQ(fake::calls_of("kos_sleep_for").size(), kickos::init::CLAIM_RETRIES);
+        EXPECT_EQ(fake::calls_of("kos_irq_claim").size(), 2u);
+        std::vector<fake::Call> const watches = harness::instance_watches();
+        ASSERT_EQ(watches.size(), 1u);
+        // Armed on the program sensor's create finds, found for the watch alone.
+        std::vector<fake::Call> const& all = fake::calls();
+        std::vector<std::string> finds;
+        for (size_t k = 1; k + 1u < all.size(); k++)
+        {
+            if (all[k].fn == "kos_watch" and all[k].args[2] == watches[0].args[2])
+            {
+                EXPECT_EQ(all[k - 1u].fn, "kos_program_find");
+                finds.push_back(all[k - 1u].text);
+                EXPECT_EQ(all[k + 1u].fn, "kos_handle_close");
+                EXPECT_EQ(all[k + 1u].args[0], watches[0].args[2]);
+            }
+            if (all[k].fn == "kos_task_create" and all[k].text == "sensor")
+            {
+                EXPECT_EQ(all[k - 1u].fn, "kos_program_find");
+                finds.push_back(all[k - 1u].text);
+            }
+        }
+        ASSERT_EQ(finds.size(), 2u);
+        EXPECT_EQ(finds[0], finds[1]);
+        EXPECT_EQ(starts("sensor"), 1u);
+        EXPECT_EQ(status("sensor").deaths, 0u);
+        EXPECT_TRUE(fake::slays().empty());
+        EXPECT_EQ(harness::watches_held(), 0u);
+        EXPECT_TRUE(fake::calls_of("kos_sleep_for").empty());
+    }
+
+    TEST_F(Walk, a_claim_answered_eagain_twice_with_nothing_in_the_way_is_a_failed_start)
+    {
+        use("alarm");
+        fake::refuse("kos_irq_claim", -KOS_EAGAIN, 2);
+        expect_idle(run());
+        EXPECT_EQ(harness::instance_watches().size(), 1u);
+        EXPECT_EQ(harness::instance_watches()[0].result, -KOS_EALREADY);
+        EXPECT_EQ(fake::calls_of("kos_irq_claim").size(), 3u) << "the claim, its one retry, then the restart's";
         EXPECT_TRUE(fake::slays().empty()) << "the claim comes before the task";
         EXPECT_EQ(status("sensor").deaths, 1u);
-        EXPECT_EQ(starts("sensor"), 1u) << "its restart claims at once";
+        EXPECT_EQ(starts("sensor"), 1u);
+        EXPECT_NE(fake::console().find("init: `sensor` failed to start: kos_irq_claim answered -11\n"),
+                  std::string::npos)
+            << fake::console();
+        EXPECT_TRUE(fake::calls_of("kos_sleep_for").empty());
+    }
+
+    TEST_F(Walk, a_start_failing_after_its_bit_leaves_no_watch_behind)
+    {
+        use("golden_arm64");
+        fake::retire("sensor");
+        fake::script({[]
+                      {
+                          fake::refuse_if("kos_task_create", -KOS_ENOMEM, 1,
+                                          [](fake::Call const& c)
+                                          {
+                                              return c.text == "sensor";
+                                          });
+                          fake::retired("sensor");
+                      },
+                      step::ready_all()});
+        expect_idle(run());
+        std::vector<fake::Call> const watches = harness::instance_watches();
+        ASSERT_EQ(watches.size(), 1u);
+        size_t closed = 0;
+        for (fake::Call const& c : fake::calls_of("kos_handle_close"))
+        {
+            if (c.args[0] == watches[0].args[5])
+            {
+                closed++;
+            }
+        }
+        EXPECT_EQ(closed, 1u);
+        EXPECT_EQ(harness::watches_held(), 0u);
+        StatusFields const s = status("sensor");
+        EXPECT_EQ(s.deaths, 1u) << "the failed start alone";
+        EXPECT_EQ(s.restarts_left, 2u);
+        EXPECT_EQ(starts("sensor"), 1u);
+    }
+
+    TEST_F(Walk, a_refused_instance_watch_is_a_failed_start)
+    {
+        use("golden_arm64");
+        fake::retire("sensor");
+        fake::refuse_if("kos_watch", -KOS_EMFILE, 1,
+                        [](fake::Call const& c)
+                        {
+                            return c.args[0] == KOS_WATCH_INSTANCE;
+                        });
+        fake::script({[]
+                      {
+                          fake::retired("sensor");
+                      },
+                      step::ready_all()});
+        expect_idle(run());
+        EXPECT_NE(fake::console().find("init: `sensor` failed to start: kos_watch answered -24\n"),
+                  std::string::npos)
+            << fake::console();
+        EXPECT_EQ(status("sensor").deaths, 1u);
+        EXPECT_EQ(starts("sensor"), 1u);
+        EXPECT_EQ(harness::watches_held(), 0u);
+    }
+
+    TEST_F(Walk, a_bit_another_source_raises_costs_one_more_attempt_which_arms_again)
+    {
+        use("golden_arm64");
+        uint16_t const sensor = index("sensor");
+        fake::retire("sensor");
+        fake::script({[sensor]
+                      {
+                          fake::raise_bit(sensor % 32u);
+                      },
+                      [this]
+                      {
+                          EXPECT_EQ(harness::record(index("sensor")).phase, kickos::init::Phase::STARTWAIT);
+                          EXPECT_EQ(harness::watches_held(), 1u) << "the first closed, the second held";
+                          fake::retired("sensor");
+                      },
+                      step::ready_all()});
+        expect_idle(run());
+        std::vector<fake::Call> const watches = harness::instance_watches();
+        ASSERT_EQ(watches.size(), 2u);
+        EXPECT_EQ(watches[0].result, 0);
+        EXPECT_EQ(watches[1].result, 0);
+        EXPECT_EQ(starts("sensor"), 1u);
+        EXPECT_EQ(status("sensor").deaths, 0u);
+        EXPECT_EQ(harness::watches_held(), 0u);
+    }
+
+    TEST_F(Walk, a_start_waiting_on_its_watch_goes_down_with_its_server_and_closes_it)
+    {
+        harness::Patched patched{systems::find("golden_arm64")};
+        patched.task("sensor").restart_max = 0u;
+        use(patched);
+        fake::retire("app");
+        fake::script({step::ready_all(),
+                      [this]
+                      {
+                          EXPECT_EQ(harness::record(index("app")).phase, kickos::init::Phase::STARTWAIT);
+                          fake::die("sensor");
+                      }});
+        expect_idle(run());
+        EXPECT_EQ(status("app").state, kickos::init::STATUS_DEPENDENCY_DOWN);
+        EXPECT_EQ(status("app").deaths, 0u);
+        EXPECT_EQ(harness::watches_held(), 0u);
+        EXPECT_EQ(starts("app"), 0u);
+    }
+
+    TEST_F(Walk, a_program_task_waits_on_the_program_its_create_found_which_then_goes_back)
+    {
+        use("chain_ends");
+        fake::retire("top");
+        // late's death runs the end check while top, the task that ends the system, waits.
+        fake::script({step::ready_all(), step::ready_all(), step::ready_all(), step::die("late")});
+        Outcome const outcome = run();
+        ASSERT_EQ(outcome.kind, Outcome::Kind::IDLE) << outcome.message;
+        EXPECT_EQ(harness::record(index("top")).phase, kickos::init::Phase::STARTWAIT);
+        EXPECT_EQ(status("top").state, kickos::init::STATUS_ALIVE);
+        EXPECT_EQ(status("late").state, 0u);
+        std::vector<fake::Call> const watches = harness::instance_watches();
+        ASSERT_EQ(watches.size(), 1u);
+        std::vector<fake::Call> const creates = creates_of("top");
+        ASSERT_EQ(creates.size(), 1u);
+        EXPECT_EQ(watches[0].args[2], creates[0].args[2]);
+        size_t programs = 0;
+        for (fake::Cap const& c : fake::table())
+        {
+            if (fake::objects()[c.object].kind == fake::Kind::PROGRAM)
+            {
+                programs++;
+            }
+        }
+        EXPECT_EQ(programs, 1u) << "the init's own alone";
+        EXPECT_EQ(harness::watches_held(), 1u);
     }
 
     struct Refusal

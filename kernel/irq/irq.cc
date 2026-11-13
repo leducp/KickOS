@@ -92,9 +92,9 @@ namespace kickos
             // Dispatch nesting depth, touched by the owning core alone. The epoch turns over
             // on this field's zero crossings ONLY.
             uint32_t depth = 0;
-            // The doorbell found this core still inside the dispatch a WAIT_RETIRE waiter waits
-            // out: its exit raises the pass that wakes it. The owning core's alone, written by a
-            // pass nested in its dispatch.
+            // An open retirement batch waits out this core's dispatch: its exit raises the pass
+            // that reclaims the batch. The owning core's alone, written by a pass nested in its
+            // dispatch.
             Atomic<bool, Order::RELAXED> exit_raise{false};
         };
 
@@ -103,6 +103,11 @@ namespace kickos
         // Each core's epoch as sampled when the draining batch was closed.
         uint32_t g_drain_epoch[KICKOS_KERNEL_CORES] = {};
         bool g_drain_open = false;
+        // The cores the draining batch has asked for a pass: each once.
+        uint32_t g_drain_asked = 0;
+        // A reclamation ran since the last pass took it: its INSTANCE watches are owed a look
+        // (irq_retire_serve).
+        bool g_reclaimed = false;
 
         // Store-load ordering, which acquire and release do not give: a core unpublishing a
         // record then sampling an epoch, against a core raising its epoch then reading a
@@ -266,6 +271,7 @@ namespace kickos
                 g_drain_epoch[core] = g_epoch_row[core].epoch.load();
             }
             g_drain_open = true;
+            g_drain_asked = 0;
             pub_lists_check();
         }
 
@@ -286,6 +292,47 @@ namespace kickos
                 }
             }
             return true;
+        }
+
+        // Whether core `core`'s dispatch, entered before the draining batch closed, is still the
+        // one it is in.
+        bool holds_grace(uint32_t core)
+        {
+            return g_drain_open and (g_drain_epoch[core] & 1u) != 0u
+                   and g_epoch_row[core].epoch.load() == g_drain_epoch[core];
+        }
+
+        // The open batch completes on its own: each core still inside the dispatch it waits out
+        // is asked for a pass, once per batch, and this core's own owes its dispatch exit one. An
+        // asked core's pass either finds it out or owes its own exit a pass, so the last holder to
+        // leave reclaims. Where none holds it any more, the holder having left since the batch was
+        // sampled, this core's next pass reclaims it.
+        void pub_batch_ask()
+        {
+            uint32_t const me = kickos_kernel_core();
+            uint32_t cores = 0;
+            for (uint32_t core = 0; core < KICKOS_KERNEL_CORES; core++)
+            {
+                if (holds_grace(core))
+                {
+                    cores = cores | (1u << core);
+                }
+            }
+            if ((cores & (1u << me)) != 0u)
+            {
+                g_epoch_row[me].exit_raise = true;
+                cores = cores & ~(1u << me);
+            }
+            else if (cores == 0u)
+            {
+                klock_resched_self();
+            }
+            cores = cores & ~g_drain_asked;
+            if (cores != 0u)
+            {
+                g_drain_asked = g_drain_asked | cores;
+                klock_resched_ask(cores);
+            }
         }
 
         // Binding slot `idx`, released, is paid for by `payer`'s record until its reclamation.
@@ -345,8 +392,10 @@ namespace kickos
         }
 
         // Reclaims whatever a past retirement is owed and opens a batch for the rest; a record
-        // whose grace period has not elapsed is left to a later call. Two passes: the first
-        // clears the batch a past call left open, the second covers what this call retired.
+        // whose grace period has not elapsed is left to a later call, which the cores holding it
+        // are asked for. Two passes: the first clears the batch a past call left open, the second
+        // covers what this call retired. Raises nothing itself: a reclamation leaves its watches
+        // to this core's next pass, which may switch where this caller may not.
         void pub_drain()
         {
             pub_lists_check();
@@ -356,8 +405,13 @@ namespace kickos
                 {
                     pub_batch_close();
                 }
-                if (not g_drain_open or not pub_batch_elapsed())
+                if (not g_drain_open)
                 {
+                    return;
+                }
+                if (not pub_batch_elapsed())
+                {
+                    pub_batch_ask();
                     return;
                 }
                 int i = g_draining_head;
@@ -371,6 +425,11 @@ namespace kickos
                     i = next;
                 }
                 g_drain_open = false;
+                if (not g_reclaimed)
+                {
+                    g_reclaimed = true;
+                    klock_resched_self();
+                }
             }
         }
 
@@ -465,6 +524,8 @@ namespace kickos
             g_pending_head = -1;
             g_draining_head = -1;
             g_drain_open = false;
+            g_drain_asked = 0;
+            g_reclaimed = false;
             pub_lists_check();
         }
 #endif
@@ -1002,52 +1063,15 @@ namespace kickos
                and (kernel().irq_table[line].pub.load() & IRQ_PUB_RETIRING) != 0;
     }
 
-    namespace
-    {
-        // Whether core `core`'s dispatch, entered before the draining batch closed, is still the
-        // one it is in.
-        bool holds_grace(uint32_t core)
-        {
-            return g_drain_open and (g_drain_epoch[core] & 1u) != 0u
-                   and g_epoch_row[core].epoch.load() == g_drain_epoch[core];
-        }
-    }
-
-    void irq_retire_await(Thread* c, Held)
-    {
-        kernel().retire_waiters.push(&c->link);
-        uint32_t cores = 0;
-        for (uint32_t core = 0; core < KICKOS_KERNEL_CORES; core++)
-        {
-            if (holds_grace(core))
-            {
-                cores = cores | (1u << core);
-            }
-        }
-        // Never this core: it is in a system call, outside every dispatch.
-        KICKOS_DEBUG_ASSERT((cores & (1u << kickos_kernel_core())) == 0);
-        // None: the holder left its dispatch after the caller's drain, its exit storing the epoch
-        // outside the lock, so this core's own pass serves the waiter.
-        if (cores == 0u)
-        {
-            klock_resched_self();
-        }
-        else
-        {
-            klock_resched_ask(cores);
-        }
-    }
-
     bool irq_retire_serve(Held)
     {
-        pub_drain();
-        uint32_t const me = kickos_kernel_core();
-        if (holds_grace(me))
+        if (g_drain_open or g_pending_head >= 0)
         {
-            g_epoch_row[me].exit_raise = true;
-            return false;
+            pub_drain();
         }
-        return true;
+        bool const reclaimed = g_reclaimed;
+        g_reclaimed = false;
+        return reclaimed;
     }
 #endif
 

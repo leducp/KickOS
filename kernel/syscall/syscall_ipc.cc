@@ -34,7 +34,7 @@ namespace kickos
     {
         // Defers one local reschedule until the fused operation finishes or parks; the
         // other woken threads are placed across cores immediately. The destructor
-        // completes nonparking paths, take() transfers completion to wq_block. Do not
+        // completes nonparking paths, take() transfers completion to the park. Do not
         // call a nonreturning exit while this guard is live: it would skip the
         // destructor. Check park_cancel_pending before constructing it.
         class DeferredWake
@@ -630,8 +630,11 @@ namespace kickos
         c->ipc.len = cap_len;
         c->ipc.badge_out = badge_out;
         ktime_limit_arm(c, limit, dw->held());
+        *epoch = wq_park(ask)(e->recv_waiters, WAIT_EP_RECV, e, dw->held());
+        // Before the switch, which on an inline swap returns only at the wake.
+        notify_lend_window(c, dw->held());
         // Transfer the pending wake to the park's reschedule, including peer notification.
-        *epoch = wq_block(ask)(e->recv_waiters, WAIT_EP_RECV, e, dw->take(), dw->held());
+        sched::reschedule(dw->take(), dw->held());
         *parked = true;
         return 0;
     }
@@ -1021,7 +1024,7 @@ namespace kickos
                     }
                     if (not parked and admit != 0u)
                     {
-                        leave_rc = notify_wait_leave(c, opened, notify_out);
+                        leave_rc = notify_wait_leave(c, opened, notify_out, lock);
                     }
                 }
             }
@@ -1039,9 +1042,9 @@ namespace kickos
             if (admit != 0u)
             {
                 // After the resume barrier: a deferred switch may not have run when
-                // wq_block returns, and the barrier needs interrupts enabled.
+                // the park returns, and the barrier needs interrupts enabled.
                 IrqLock lock;
-                leave_rc = notify_wait_leave(c, opened, notify_out);
+                leave_rc = notify_wait_leave(c, opened, notify_out, lock);
             }
         }
         if (leave_rc != 0 and rc < 0)

@@ -113,8 +113,12 @@ namespace kickos
         return death_park;
     }
     // The threads on stopped task `t`'s run list take the priority of every thread parked on its
-    // death, as a mutex holder takes its waiters'. Caller holds IrqLock.
+    // death, as a mutex holder takes its waiters', and of every waiter on a watch of it. Caller
+    // holds IrqLock.
     void death_wait_lend(Task const* t, Held held);
+    // The threads of every task task_watch_lend_owe marked take again what the watches on its
+    // death lend them, within pi_drain_deaths' bound. Caller holds IrqLock.
+    void watch_lend_settle(Held held);
     // `w`, parked by death_park, leaves Kernel::death_waiters or death_dirty, and the threads of
     // the task it waited on fall back to what still lends to them. The park unwind's alone.
     // Caller holds IrqLock.
@@ -257,8 +261,9 @@ namespace kickos
     // The single effective-priority recompute funnel. t's effective prio is the max of its
     // base_prio, the highest waiter across every mutex it holds, the prio of every caller
     // parked on t->reply_waiters, the highest parked SEND_WAIT caller on each endpoint
-    // where ep->server == t, and every thread parked on the death of a task whose run list t is
-    // on. Never a restore-to-base: a mutex unlock mid-transaction must not
+    // where ep->server == t, every thread parked on the death of a task whose run list t is
+    // on, and, once that task has ended, every thread parked on a notification bit a watch on its
+    // death raises. Never a restore-to-base: a mutex unlock mid-transaction must not
     // deflate a live call donation. Every term is O(donors) and none is bounded by a configured
     // pool capacity, and this runs interrupt-masked on every mutex unlock, reply and close.
     // Caller holds IrqLock.

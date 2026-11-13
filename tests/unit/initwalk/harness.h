@@ -69,6 +69,11 @@ namespace harness
     // it reads from its own status block.
     kickos::init::StatusFields status(uint16_t task);
 
+    // The INSTANCE watches the walk armed, oldest first.
+    std::vector<fake::Call> instance_watches();
+    // The INSTANCE watches the init's table still holds.
+    size_t watches_held();
+
     // A test over one system, the scripted kernel reset for it by use().
     class Fixture : public ::testing::Test
     {
@@ -108,6 +113,9 @@ namespace harness
 
         systems::System const* system_ = nullptr;
     };
+
+    // The creates of task `name`, in order.
+    std::vector<fake::Call> creates_of(char const* name);
 }
 
 // The scripted kernel's steps the tests share, each run before one kos_notify_wait reads its bits.

@@ -82,6 +82,7 @@ namespace kickos
     bool task_admit(Task const*, BudgetKind, uint32_t) { return true; }
     Task* task_decl_record(size_t) { return nullptr; }
     ThreadLink* task_image_stager(Task const*) { return nullptr; }
+    void start_watch_poke() {}
 
     bool grant_memtype_at(enum arch_map_memtype, arch_phys_addr_t, size_t) { return true; }
     bool frame_run_ref(int) { return true; }

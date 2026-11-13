@@ -150,21 +150,6 @@ namespace
         }
     }
 
-    int claim(uint16_t line, unsigned int flags, kos_cap_t* out)
-    {
-        uint32_t retries = 0;
-        while (true)
-        {
-            int const rc = kos_irq_claim(line, flags, out);
-            if (rc != -KOS_EAGAIN or retries == kickos::init::CLAIM_RETRIES)
-            {
-                return rc;
-            }
-            retries++;
-            kos::sleep_for(kickos::init::CLAIM_RETRY);
-        }
-    }
-
     // Stages hosted record `h` of task `host` as its own task's create and init would: the
     // endpoint the init passed the host, the notification and its doorbell, each line claimed and
     // bound to its bit, and the windows thread 0 takes.
@@ -241,7 +226,7 @@ namespace
             {
                 return hosted_fail(name, "a line is placed past a spawn's grants\n");
             }
-            if (claim(g.line, g.flags & KOS_IRQ_LEVEL, &st->at[at]) != 0)
+            if (kos_irq_claim(g.line, g.flags & KOS_IRQ_LEVEL, &st->at[at]) != 0)
             {
                 return hosted_fail(name, "kos_irq_claim failed\n");
             }
@@ -252,7 +237,7 @@ namespace
                 {
                     return hosted_fail(name, "kos_notify_badge of a line failed\n");
                 }
-                int const rc = kos_watch(KOS_WATCH_IRQ, KOS_IRQ_FIRED, st->at[at], bit, 0);
+                int const rc = kos_watch(KOS_WATCH_IRQ, KOS_IRQ_FIRED, st->at[at], bit, 0, nullptr);
                 (void)kos_handle_close(bit);
                 if (rc != 0)
                 {

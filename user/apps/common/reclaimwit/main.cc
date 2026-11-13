@@ -88,7 +88,7 @@ int main(int, char**)
     params.caps = caps;
     params.cap_count = 1;
     kos_task_t drv_task = KOS_TASK_NONE;
-    int const task_rc = kos_task_create(prog, &params, KOS_POLL, &drv_task);
+    int const task_rc = kos_task_create(prog, &params, &drv_task);
     (void)kos_handle_close(prog);
     if (task_rc != 0)
     {

@@ -509,7 +509,8 @@ namespace selftest
 foreach(_peer_program stpeer stserve)
   add_executable(${_peer_program} ${_selftest_srcs} "${_peer_left_out}")
   target_link_libraries(${_peer_program} PRIVATE kickos)
-  target_include_directories(${_peer_program} PRIVATE "${PROJECT_SOURCE_DIR}/tests/tap")
+  target_include_directories(${_peer_program} PRIVATE "${PROJECT_SOURCE_DIR}/tests/tap"
+                             "${PROJECT_SOURCE_DIR}/user/apps/common/include")
   target_compile_definitions(${_peer_program} PRIVATE ${_selftest_defs} KICKOS_SELFTEST_PEER=1
     KICKOS_SELFTEST_PEERS=0 KICKOS_SELFTEST_SERVERS=0 KICKOS_SELFTEST_IRQ_BINDINGS=0
     KICKOS_SELFTEST_FIRST_REGION=1
@@ -654,7 +655,8 @@ foreach(_img IN LISTS _selftest_images)
     target_link_libraries(${_img_compile} PRIVATE KickOS::kickos ${_img_system})
     set_target_properties(${_img} PROPERTIES KICKOS_SELFTEST_CORE ${_img_compile})
   endif()
-  target_include_directories(${_img_compile} PRIVATE "${PROJECT_SOURCE_DIR}/tests/tap")
+  target_include_directories(${_img_compile} PRIVATE "${PROJECT_SOURCE_DIR}/tests/tap"
+                             "${PROJECT_SOURCE_DIR}/user/apps/common/include")
   target_compile_definitions(${_img_compile} PRIVATE ${_selftest_defs}
     KICKOS_SELFTEST_FIRST_REGION=${_img_lo} KICKOS_SELFTEST_LAST_REGION=${_img_hi}
     KICKOS_SELFTEST_PEER=0 KICKOS_SELFTEST_PEERS=${_img_peers}

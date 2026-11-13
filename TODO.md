@@ -488,11 +488,12 @@ by ruling and sits in `roadmap.md`'s `Later`.
       link, on any board" (maintainer: LTO is itself a bug source, and not every user expects it),
       and these:
 
-      - [ ] **A CREATE WITH NO INSTANCE NAMED WAITS FOR ONE INSTANCE, NOT FOR ANY.** With
+      - [x] **A CREATE WITH NO INSTANCE NAMED WAITS FOR ONE INSTANCE, NOT FOR ANY.** With
             `params->instance` NULL and none startable, `kos_task_create` with a timeout waits out
             the first instance it finds still dying (`decl_wait` in
             `kernel/syscall/syscall_thread.cc`), even when another becomes startable first. A
             nameless create waits until any instance it may start can start.
+            **LANDED:** the create no longer waits.
       - [ ] **SIGNAL DISPOSITIONS ARE PER THREAD.** newlib keeps the signal table in each thread's
             `struct _reent`, so `signal()` sets the calling thread's disposition only, where POSIX
             makes it per process.

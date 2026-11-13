@@ -244,17 +244,15 @@ int kos_thread_set_priority(uint8_t priority)
 }
 
 int kos_task_create(kos_program_t prog, struct kos_task_params const* params,
-                    kos_monotonic_t until, kos_task_t* out_task)
+                    kos_task_t* out_task)
 {
     if (out_task != NULL)
     {
         *out_task = KOS_TASK_NONE;
     }
-    uint64_t const limit = kos_limit_word(until.ns);
     return static_cast<int>(arch_syscall(KOS_SYS_TASK_CREATE, static_cast<uintptr_t>(prog),
                                          reinterpret_cast<uintptr_t>(params),
-                                         reinterpret_cast<uintptr_t>(out_task),
-                                         kos_u64_lo(limit), kos_u64_hi(limit)));
+                                         reinterpret_cast<uintptr_t>(out_task), 0, 0));
 }
 
 int kos_program_find(char const* name, kos_program_t* out_prog)
@@ -265,8 +263,9 @@ int kos_program_find(char const* name, kos_program_t* out_prog)
 }
 
 int kos_watch(enum kos_watch_kind kind, uint32_t events, uintptr_t source, kos_cap_t notify_cap,
-              uintptr_t arg)
+              uintptr_t arg, kos_cap_t* out_watch)
 {
+    cap_out_clear(out_watch);
     uint32_t const spec = (static_cast<uint32_t>(kind) << KOS_WATCH_KIND_SHIFT) | events;
     if ((spec >> KOS_WATCH_KIND_SHIFT) != static_cast<uint32_t>(kind)
         or (events & ~KOS_WATCH_EVENTS_MASK) != 0u)
@@ -274,7 +273,8 @@ int kos_watch(enum kos_watch_kind kind, uint32_t events, uintptr_t source, kos_c
         return -KOS_EINVAL;
     }
     return static_cast<int>(arch_syscall(KOS_SYS_WATCH, static_cast<uintptr_t>(spec), source,
-                                         static_cast<uintptr_t>(notify_cap), arg, 0));
+                                         static_cast<uintptr_t>(notify_cap), arg,
+                                         reinterpret_cast<uintptr_t>(out_watch)));
 }
 
 int kos_task_state(kos_task_t task, int* status)

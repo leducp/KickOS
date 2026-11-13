@@ -24,6 +24,7 @@
 #include <kickos/thread.h>
 #include <kickos/time.h>
 #include <kickos/ustack.h>
+#include <kickos/watch.h>
 
 #include <kickos/sys/abi.h>
 #include <kickos/sys/errno.h>
@@ -33,22 +34,6 @@
 
 namespace kickos
 {
-    namespace
-    {
-        constexpr uint64_t CREATE_FOREVER = KOS_LIMIT_NONE;
-
-        // The deadline a create waits to, read once at its entry: 0, never waiting, for one
-        // already passed.
-        uint64_t create_until(uint64_t deadline)
-        {
-            if (ktime_limit_passed(WaitLimit(deadline)))
-            {
-                return 0;
-            }
-            return deadline;
-        }
-    }
-
     int grant_device_window_admit(uintptr_t base, size_t size)
     {
         if (size == 0 or base + size < base)
@@ -671,14 +656,10 @@ namespace kickos
         presync_windows_in(c, r, r->params.windows, r->params.window_count);
     }
 
-    void task_spawn_presync_enter(uintptr_t pu, uint64_t deadline)
+    void task_spawn_presync_enter(uintptr_t pu)
     {
         Thread const* const c = sched::current();
         PresyncRecord* const r = presync_record();
-        if (r != nullptr)
-        {
-            r->task_until = create_until(deadline);
-        }
         if (c == nullptr or r == nullptr or pu == 0
             or (pu & (alignof(kos_task_params) - 1)) != 0
             or not user_readable_ok(pu, sizeof(r->task_params))
@@ -711,7 +692,7 @@ namespace kickos
 
     namespace
     {
-        int program_instance(Thread* c, uint32_t prog, kos_task_params const& tp, int* refused_at);
+        int program_instance(Thread* c, uint32_t prog, kos_task_params const& tp);
 
         // What a create of declaration `decl`'s instance owes a sync and stages.
         void create_plan(Thread* c, void* mem_base, size_t mem_size, uint32_t mem_attr,
@@ -754,8 +735,7 @@ namespace kickos
         {
             return;
         }
-        int refused_at = -1;
-        int const sel = program_instance(c, prog, tp, &refused_at);
+        int const sel = program_instance(c, prog, tp);
         if (sel < 0)
         {
             return;
@@ -1754,40 +1734,50 @@ namespace kickos
             return 0;
         }
 
+        // The declaration over the program of image `program` the user string at `name` names,
+        // by index, or -KOS_ENOENT, -KOS_EFAULT or -KOS_EINVAL: every image running that program
+        // holds its own declarations.
+        int instance_named(uintptr_t name, size_t program)
+        {
+            size_t const n = image_decl_count();
+            for (size_t i = 0; i < n; i++)
+            {
+                if (not image_same_program(image_of_decl(i), program))
+                {
+                    continue;
+                }
+                int const is = user_string_len(name, KICKOS_ARGV_MAX, image_decl_name(image_decl(i)));
+                if (is == -KOS_ENOENT)
+                {
+                    continue;
+                }
+                if (is < 0)
+                {
+                    return is;
+                }
+                return static_cast<int>(i);
+            }
+            return -KOS_ENOENT;
+        }
+
         // The declaration over the program of image `program` a create starts, by index, or
-        // the refusal, with the declaration it refuses in *refused_at: every image running that
-        // program holds its own declarations.
-        int instance_select(Thread* c, kos_task_params const& tp, size_t program, int* refused_at)
+        // the refusal.
+        int instance_select(Thread* c, kos_task_params const& tp, size_t program)
         {
             size_t const n = image_decl_count();
             if (tp.instance != nullptr)
             {
-                for (size_t i = 0; i < n; i++)
+                int const i = instance_named(reinterpret_cast<uintptr_t>(tp.instance), program);
+                if (i < 0)
                 {
-                    if (not image_same_program(image_of_decl(i), program))
-                    {
-                        continue;
-                    }
-                    kos_task_decl const* const d = image_decl(i);
-                    int const is = user_string_len(reinterpret_cast<uintptr_t>(tp.instance),
-                                                   KICKOS_ARGV_MAX, image_decl_name(d));
-                    if (is == -KOS_ENOENT)
-                    {
-                        continue;
-                    }
-                    if (is < 0)
-                    {
-                        return is;
-                    }
-                    int const rc = decl_startable(c, i);
-                    if (rc != 0)
-                    {
-                        *refused_at = static_cast<int>(i);
-                        return rc;
-                    }
-                    return static_cast<int>(i);
+                    return i;
                 }
-                return -KOS_ENOENT;
+                int const rc = decl_startable(c, static_cast<size_t>(i));
+                if (rc != 0)
+                {
+                    return rc;
+                }
+                return i;
             }
             // None startable: the refusal of the instance nearest to a start.
             int refused = -KOS_ENOENT;
@@ -1805,7 +1795,6 @@ namespace kickos
                 if (refused == -KOS_ENOENT or refusal_rank(rc) > refusal_rank(refused))
                 {
                     refused = rc;
-                    *refused_at = static_cast<int>(i);
                 }
             }
             if (refused == -KOS_EBUSY)
@@ -1815,9 +1804,9 @@ namespace kickos
             return refused;
         }
 
-        // The declaration a create naming program capability `prog` instantiates: its index,
-        // or a refusal, as instance_select. Caller holds IrqLock.
-        int program_instance(Thread* c, uint32_t prog, kos_task_params const& tp, int* refused_at)
+        // The image of the program capability `prog` names, held by a caller with AUTH_TASKS,
+        // or -KOS_EBADF or -KOS_EPERM. Caller holds IrqLock.
+        int program_image(Thread* c, uint32_t prog)
         {
             int err = 0;
             void const* const program = cap_resolve_e(c, prog, CapType::CAP_PROGRAM, 0, &err);
@@ -1834,7 +1823,19 @@ namespace kickos
             {
                 image++;
             }
-            return instance_select(c, tp, static_cast<size_t>(image), refused_at);
+            return image;
+        }
+
+        // The declaration a create naming program capability `prog` instantiates: its index,
+        // or a refusal, as instance_select. Caller holds IrqLock.
+        int program_instance(Thread* c, uint32_t prog, kos_task_params const& tp)
+        {
+            int const image = program_image(c, prog);
+            if (image < 0)
+            {
+                return image;
+            }
+            return instance_select(c, tp, static_cast<size_t>(image));
         }
 
         // The caller's capability that delegated capability `at` of the create's list names, of
@@ -2184,80 +2185,12 @@ namespace kickos
 
     namespace
     {
-        // What a create refused -KOS_EAGAIN can wait out before it asks again.
-        enum class CreateWait : uint8_t
-        {
-            NONE,  // nothing that ends on its own: answered
-            DEATH, // the declaration's last incarnation, which a WAIT_TASK_EMPTY park waits out
-            GRACE, // a released IRQ binding or line another core's dispatch may still hold,
-                   // which a WAIT_RETIRE park waits out
-        };
-
         // What a create leaves the caller once the lock is dropped.
         struct Created
         {
             Thread* entry = nullptr;
             bool published = false;
-            CreateWait wait = CreateWait::NONE;
-            int16_t decl = -1; // the declaration the wait is for
         };
-
-        // What refusal `rc` of declaration `decl`'s start by `c` waits out: nothing where the
-        // refusal is the caller's own admission, which no death or grace period cures.
-        CreateWait decl_wait(Thread* c, int rc, int decl)
-        {
-            if (rc != -KOS_EAGAIN or decl < 0
-                or decl_admit(c, *image_decl(static_cast<size_t>(decl))) != 0)
-            {
-                return CreateWait::NONE;
-            }
-            if (task_decl_dying(static_cast<size_t>(decl)) != nullptr)
-            {
-                return CreateWait::DEATH;
-            }
-#if KICKOS_KERNEL_CORES > 1
-            if (task_decl_retiring(static_cast<size_t>(decl)))
-            {
-                return CreateWait::GRACE;
-            }
-#endif
-            return CreateWait::NONE;
-        }
-
-#if KICKOS_KERNEL_CORES > 1
-        // Whether a line declaration `d` names is still retiring from its last holder.
-        bool lines_retiring(kos_task_decl const& d)
-        {
-            if ((d.flags & KOS_DECL_DRIVER) == 0)
-            {
-                return false;
-            }
-            kos_decl_grant const* const g = image_decl_grants(&d);
-            for (uint16_t k = 0; k < d.grant_count; k++)
-            {
-                if (g[k].kind == KOS_DECL_LINE and irq_line_retiring(g[k].line))
-                {
-                    return true;
-                }
-            }
-            return false;
-        }
-#endif
-
-        // What declaration `d`'s driver admission refusing `rc` waits out.
-        CreateWait lines_wait(int rc, kos_task_decl const& d)
-        {
-#if KICKOS_KERNEL_CORES > 1
-            if (rc == -KOS_EAGAIN and lines_retiring(d))
-            {
-                return CreateWait::GRACE;
-            }
-#else
-            (void)rc;
-            (void)d;
-#endif
-            return CreateWait::NONE;
-        }
 
         // The locked pass of an instance's create, which writes the task's handle to the
         // caller's word at `uout` before its entry runs, a refused write ending the task. A
@@ -2286,12 +2219,9 @@ namespace kickos
             {
                 return rc;
             }
-            int refused_at = -1;
-            int const sel = program_instance(c, prog, tp, &refused_at);
+            int const sel = program_instance(c, prog, tp);
             if (sel < 0)
             {
-                out->wait = decl_wait(c, sel, refused_at);
-                out->decl = static_cast<int16_t>(refused_at);
                 return sel;
             }
             kos_task_decl const& d = *image_decl(static_cast<size_t>(sel));
@@ -2337,8 +2267,6 @@ namespace kickos
                 rc = driver_admit(c, tp, d, &p);
                 if (rc != 0)
                 {
-                    out->wait = lines_wait(rc, d);
-                    out->decl = static_cast<int16_t>(sel);
                     return rc;
                 }
             }
@@ -2396,140 +2324,11 @@ namespace kickos
         }
     }
 
-    namespace
-    {
-        // Parks the caller until declaration `decl`'s last incarnation is dead, or `until`: 0 to
-        // ask again, -KOS_ETIMEDOUT or -KOS_ECANCELED. noinline: the park's switch chain must
-        // not sit under the create's own frame.
-        __attribute__((noinline)) int create_wait_death(Thread* c, size_t decl, uint64_t until)
-        {
-            uint32_t epoch = 0;
-            {
-                IrqLock lock;
-                ParkToken const ask = park_cancel_pending(c);
-                if (ask.cancelled())
-                {
-                    sched::exit_current(KOS_EXIT_CANCELLED, sched::EXIT_RETURN, &lock);
-                }
-                // Asked again under the lock the park holds: the death may have come since.
-                Task* const dying = task_decl_dying(decl);
-                if (dying == nullptr)
-                {
-                    return 0;
-                }
-                uint64_t const now = ktime_now();
-                if (now >= until)
-                {
-                    return -KOS_ETIMEDOUT;
-                }
-#if KICKOS_PRESYNC
-                presync_park();
-#endif
-                epoch = death_park(ask)(c, dying, lock);
-                death_wait_lend(dying, lock);
-                if (until != CREATE_FOREVER)
-                {
-                    ktime_deadline_arm_at(c, ktime_floored(now, until), false, lock);
-                }
-                sched::reschedule(nullptr, lock);
-            }
-            wq_confirm_resume(c, epoch);
-            return static_cast<int>(c->wait_result);
-        }
-
-#if KICKOS_KERNEL_CORES > 1
-        // Parks the caller until the grace period of what declaration `decl`'s last incarnation
-        // or its lines' last holder released has ended, or `until`: 0 to ask again,
-        // -KOS_ETIMEDOUT or -KOS_ECANCELED. noinline as create_wait_death.
-        __attribute__((noinline)) int create_wait_grace(Thread* c, size_t decl, uint64_t until)
-        {
-            uint32_t epoch = 0;
-            {
-                IrqLock lock;
-                ParkToken const ask = park_cancel_pending(c);
-                if (ask.cancelled())
-                {
-                    sched::exit_current(KOS_EXIT_CANCELLED, sched::EXIT_RETURN, &lock);
-                }
-                // Asked again under the lock the park holds: the grace period may have ended since.
-                irq_retire_drain();
-                if (not task_decl_retiring(decl) and not lines_retiring(*image_decl(decl)))
-                {
-                    return 0;
-                }
-                uint64_t const now = ktime_now();
-                if (now >= until)
-                {
-                    return -KOS_ETIMEDOUT;
-                }
-#if KICKOS_PRESYNC
-                presync_park();
-#endif
-                epoch = park_queueless(ask)(c, WAIT_RETIRE, nullptr, lock);
-                irq_retire_await(c, lock);
-                if (until != CREATE_FOREVER)
-                {
-                    ktime_deadline_arm_at(c, ktime_floored(now, until), false, lock);
-                }
-                sched::reschedule(nullptr, lock);
-            }
-            wq_confirm_resume(c, epoch);
-            return static_cast<int>(c->wait_result);
-        }
-#endif
-    }
-
     // An instance of the program, its entry thread started at the declared priority.
-    int task_create_call(uint32_t prog, uintptr_t pu, uint64_t deadline, uintptr_t out)
+    int task_create_call(uint32_t prog, uintptr_t pu, uintptr_t out)
     {
-#if KICKOS_PRESYNC
-        // One deadline across the rounds the dispatch sends the call through.
-        uint64_t until = 0;
-        PresyncRecord const* const r = spawn_record();
-        if (r != nullptr)
-        {
-            until = r->task_until;
-        }
-        else
-        {
-            until = create_until(deadline);
-        }
-#else
-        uint64_t const until = create_until(deadline);
-#endif
         Created made;
-        int rc = 0;
-        while (true)
-        {
-            made = Created{};
-            rc = task_create_locked(prog, pu, out, &made);
-            if (until == 0 or made.wait == CreateWait::NONE)
-            {
-                break;
-            }
-            int waited = 0;
-            if (made.wait == CreateWait::DEATH)
-            {
-                waited = create_wait_death(sched::current(), static_cast<size_t>(made.decl), until);
-            }
-#if KICKOS_KERNEL_CORES > 1
-            else
-            {
-                waited = create_wait_grace(sched::current(), static_cast<size_t>(made.decl), until);
-            }
-#endif
-            if (waited != 0)
-            {
-                return waited;
-            }
-#if KICKOS_PRESYNC
-            // What the plan staged or found short was decided before the wait.
-            if (presync_round())
-            {
-                return -KOS_EAGAIN;
-            }
-#endif
-        }
+        int const rc = task_create_locked(prog, pu, out, &made);
         if (made.published)
         {
             // With the lock RELEASED: a writer counted before the refusal may be preempted below
@@ -2545,6 +2344,31 @@ namespace kickos
             }
         }
         return rc;
+    }
+
+    int instance_watch_source(Thread* c, uint32_t prog, uintptr_t name, size_t* decl)
+    {
+        int const image = program_image(c, prog);
+        if (image < 0)
+        {
+            return image;
+        }
+        int const i = instance_named(name, static_cast<size_t>(image));
+        if (i < 0)
+        {
+            return i;
+        }
+        int const rc = decl_admit(c, *image_decl(static_cast<size_t>(i)));
+        if (rc != 0)
+        {
+            return rc;
+        }
+        if (task_decl_spent(static_cast<size_t>(i)))
+        {
+            return -KOS_EPERM;
+        }
+        *decl = static_cast<size_t>(i);
+        return 0;
     }
 
     int program_find_call(uintptr_t name, uint32_t* out_prog)

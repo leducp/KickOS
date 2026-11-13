@@ -404,38 +404,53 @@ int kos_program_find(char const* name, kos_program_t* out_prog);
 // answers -KOS_EPERM. A create ends the dead incarnation's creator hold, whose handle then answers
 // -KOS_EBADF. A declaration with neither `restart` nor `start: on_request` starts once: a create
 // of it after its first incarnation started answers -KOS_EPERM.
-// An instance whose last incarnation has ended and is not yet dead, its members still running
-// to their deaths or sweeping, a declared line still retiring from its last holder, or an IRQ
-// binding the last incarnation released still retiring: a passed deadline answers -KOS_EAGAIN,
-// any other waits until `until` for it to pass, then starts the instance.
+// Never waits: an instance whose last incarnation has ended and is not yet dead, its members
+// still running to their deaths or sweeping, a declared line still retiring from its last holder,
+// or an IRQ binding the last incarnation released still retiring, answers -KOS_EAGAIN, and a
+// KOS_WATCH_INSTANCE watch reports when it can start again.
 // Returns 0 and out_task, or -KOS_ENOENT (no such instance), -KOS_EBUSY (it is live),
 // -KOS_ENOMEM (every instance the caller may start is live, or a pool), -KOS_EAGAIN (as above,
-// with a passed deadline, or a budget as kos_thread_create's), -KOS_ETIMEDOUT, -KOS_ECANCELED (the
-// caller was cancelled while it waited), -KOS_EPERM, -KOS_EINVAL, -KOS_EFAULT and the rest of
+// or a budget as kos_thread_create's), -KOS_EPERM, -KOS_EINVAL, -KOS_EFAULT and the rest of
 // kos_thread_create's codes, with KOS_TASK_NONE. With no instance named and none startable:
-// -KOS_EAGAIN, or the wait, where one is still dying, else -KOS_ENOMEM where one the caller may
-// start is live, else the refusal naming the first one answers, and -KOS_ENOENT for a program
-// that declares none.
+// -KOS_EAGAIN where one is still dying, else -KOS_ENOMEM where one the caller may start is live,
+// else the refusal naming the first one answers, and -KOS_ENOENT for a program that declares
+// none.
 int kos_task_create(kos_program_t prog, struct kos_task_params const* params,
-                    kos_monotonic_t until, kos_task_t* out_task);
+                    kos_task_t* out_task);
 
 // Tie an event source of `kind` to a notification: `notify_cap`'s badge bit is raised on each of
 // `events` the source reports. The watch names the notification object, not the capability:
-// closing notify_cap does not end it. `arg` is 0. Returns >= 0, or the first refusal in the
-// order KOS_SYS_WATCH lists.
-//   KOS_WATCH_TASK: `source` is a task YOU created. KOS_TASK_ENDED is raised at its end, DEAD once
-//     every member's teardown is done, and READY the first time a member waits to receive on the
-//     ready endpoint its declaration names (asked of a task naming none: -KOS_EINVAL). An event
-//     reported before the arming is raised at once. One watch per task: arming replaces it,
-//     events 0 with KOS_CAP_NONE disarms it, and the task's slot being freed ends it. A creator's
-//     hold keeps the task's slot: release it with kos_task_slay(task, KOS_POLL) before creating
-//     the next instance.
-//   KOS_WATCH_IRQ: `source` is a line capability with KOS_CAP_WAIT, the event KOS_IRQ_FIRED. The
-//     ISR raises the bit, one signaller among others on the object, so badge the capability first
-//     if the object carries more than one source. ONE-WAY and once per line: a disarm answers
-//     -KOS_ENOTSUP, a second watch -KOS_EBUSY; the binding holds a reference on the notification.
+// closing notify_cap does not end it. Returns 0, or the first refusal in the order KOS_SYS_WATCH
+// lists. A non-NULL `out_watch` is KOS_CAP_NONE unless an INSTANCE watch is armed.
+//   KOS_WATCH_TASK: `source` is a task YOU created, `arg` 0. KOS_TASK_ENDED is raised at its end,
+//     DEAD once every member's teardown is done, and READY the first time a member waits to
+//     receive on the ready endpoint its declaration names (asked of a task naming none:
+//     -KOS_EINVAL). An event reported before the arming is raised at once. One watch per task:
+//     arming replaces it, events 0 with KOS_CAP_NONE disarms it, and the task's slot being freed
+//     ends it. A creator's hold keeps the task's slot: release it with kos_task_slay(task,
+//     KOS_POLL) before creating the next instance. `out_watch` may be NULL.
+//   KOS_WATCH_IRQ: `source` is a line capability with KOS_CAP_WAIT, `arg` 0, the event
+//     KOS_IRQ_FIRED. The ISR raises the bit, one signaller among others on the object, so badge
+//     the capability first if the object carries more than one source. ONE-WAY and once per line:
+//     a disarm answers -KOS_ENOTSUP, a second watch -KOS_EBUSY; the binding holds a reference on
+//     the notification. `out_watch` may be NULL.
+//   KOS_WATCH_INSTANCE: `source` is a program capability and `arg` the name of one of its
+//     declared instances, which the caller may create, the event KOS_INSTANCE_STARTABLE. Raised
+//     ONCE, when nothing of a past incarnation is in the way of a create any more: no member
+//     running or sweeping, no IRQ binding or declared line still retiring, no create of it under
+//     way. Armed on a live instance it waits out that incarnation. The watch, a capability of
+//     the calling thread's own table holding a reference on the notification, lands in
+//     *out_watch (NULL: -KOS_EINVAL, unwritable: -KOS_EFAULT); kos_handle_close disarms it, and
+//     closes it once raised. That thread's death sweeps it unraised, not its task's: arm it on
+//     the thread that waits for it. -KOS_EALREADY where nothing is in the way, nothing armed: the next create reads
+//     the state, and a -KOS_EAGAIN it answers then is a budget's. A create that follows the
+//     event may still answer -KOS_EBUSY where another starter took the instance first.
+//   A thread parked in kos_notify_wait, or in kos_reply_recv with the notification open, on a bit
+//   a TASK watch asking for KOS_TASK_DEAD or an INSTANCE watch raises lends its priority to the
+//   threads of that task, or of that instance's last incarnation, once it has ended and until
+//   they are gone; never to a task that has not ended.
 int kos_watch(enum kos_watch_kind kind, uint32_t events, uintptr_t source, kos_cap_t notify_cap,
-              uintptr_t arg);
+              uintptr_t arg, kos_cap_t* out_watch);
 
 // The enum kos_task_state bits for the task `task` names, or -KOS_EBADF once its slot is
 // freed, -KOS_EPERM for a task you did not create, -KOS_EINVAL / -KOS_EFAULT for a bad `status`.

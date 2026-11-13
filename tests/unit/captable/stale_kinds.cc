@@ -7,6 +7,7 @@
 // resolve, on the copy, on the delegation and on the close.
 
 #include <kickos/cap.h>
+#include <kickos/start_watch.h>
 #include <kickos/domain.h>
 #include <kickos/image.h>
 #include <kickos/instance.h>
@@ -35,7 +36,7 @@ namespace kickos
     {
         namespace
         {
-            static_assert(static_cast<int>(CapType::CAP_KIND_MAX) == 8,
+            static_assert(static_cast<int>(CapType::CAP_KIND_MAX) == 9,
                           "a new capability kind needs its stale-entry case here");
 
             constexpr uint32_t WRAP = 1u << 16;
@@ -334,6 +335,46 @@ namespace kickos
             int err = 0;
             EXPECT_EQ(cap_resolve_e(main_, cap, CapType::CAP_PROGRAM, 0, &err), image_program(e->obj));
             EXPECT_NE(image_program(e->obj), nullptr);
+        }
+
+        // An INSTANCE watch holds a reference on its notification, so the object outlives every
+        // other name and the watch never names a later occupant; its close drops that reference.
+        TEST_F(StaleKind, a_watch)
+        {
+            Kernel& k = kernel();
+            uint32_t note = KCAP_INVALID;
+            ASSERT_EQ(notify_create(main_, &note), 0);
+            int handle = 0;
+            int armed = 0;
+            uint32_t cap = KCAP_INVALID;
+            {
+                IrqLock lock;
+                handle = cap_lookup(main_, note)->obj;
+                armed = start_watch_arm(main_, 0u, handle, 2u, &cap, lock);
+            }
+            ASSERT_EQ(armed, 0);
+            int const slot = k.notifies.live_index(handle);
+            ASSERT_GE(slot, 0);
+            EXPECT_EQ(close(main_, note), 0);
+            EXPECT_EQ(k.notifies.live_index(handle), slot) << "the watch did not keep its notification";
+            {
+                IrqLock lock;
+                CapEntry const* const e = cap_lookup(main_, cap);
+                ASSERT_NE(e, nullptr);
+                EXPECT_TRUE(cap_obj_live(*e));
+                EXPECT_EQ(cap_obj(*e), handle);
+                EXPECT_EQ(notify_cap_bit(*e), 2u);
+            }
+            uintptr_t const p = spawn_params(MAIN_PARAMS, 0, 0, 0);
+            *host<kos_cap_grant>(uva(MAIN_PARAMS, CAPS_AT)) = {cap, KOS_CAP_TRANSFER};
+            params(p)->caps = reinterpret_cast<kos_cap_grant const*>(uva(MAIN_PARAMS, CAPS_AT));
+            params(p)->cap_count = 1;
+            kos_thread_t t = KOS_THREAD_NONE;
+            EXPECT_EQ(spawn(main_, p, MAIN_OUT, &t), -KOS_EACCES) << "a watch was delegated";
+            EXPECT_EQ(close(main_, cap), 0);
+            EXPECT_LT(k.notifies.live_index(handle), 0) << "the watch's close left its reference";
+            EXPECT_TRUE(k.start_watches == 0 or k.start_watches == 0xFFFFFFFFu)
+                << "the closed watch is still armed";
         }
     }
 }
