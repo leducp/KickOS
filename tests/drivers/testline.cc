@@ -19,7 +19,7 @@ namespace
     constexpr kos_cap_t NOTE = KOS_SPAWN_DELEGATED_CAP0;
     constexpr kos_cap_t EP = KOS_SPAWN_DELEGATED_CAP0;
     constexpr kos_cap_t LINE0 = KOS_SPAWN_DELEGATED_CAP0;
-    constexpr uint32_t LINE_WAIT_US = 20000000u;
+    constexpr std::chrono::seconds LINE_WAIT{20};
     constexpr uint64_t RAISE_PACE_NS = 10000000ull;
 
     kickos::Atomic<uint32_t, kickos::Order::ACQUIRE | kickos::Order::RELEASE> g_raised = {};
@@ -44,7 +44,7 @@ namespace
     {
         print_index(drv::line_index_of(arg));
         uint32_t bits = 0;
-        if (kos_notify_bind(NOTE) != 0 or kos_notify_wait(NOTE, 1u, LINE_WAIT_US, &bits) != 0)
+        if (kos_notify_bind(NOTE) != 0 or kos_notify_wait(1u, kos::after(LINE_WAIT), &bits) != 0)
         {
             kos::print("testline: line 0 was never raised\n");
             drv::trap();
@@ -53,7 +53,7 @@ namespace
         g_raised = 1u;
         while (true)
         {
-            (void)kos_notify_wait(NOTE, 1u, KOS_TIMEOUT_NONE, &bits);
+            (void)kos_notify_wait(1u, KOS_NEVER, &bits);
         }
     }
 
@@ -65,7 +65,7 @@ namespace
         while (raised == 0u)
         {
             struct kos_reply_recv_opts opts;
-            kos_reply_recv_opts_init(&opts, EP, 0u, KOS_TIMEOUT_NONE);
+            kos_reply_recv_opts_init(&opts, EP, 0u, KOS_NEVER);
             opts.info.reply_cap = KOS_CAP_NONE;
             int32_t const n =
                 kos_reply_recv(KOS_CAP_NONE, nullptr, kos_call_lens_pack(0u, 0u), &opts);
@@ -100,7 +100,7 @@ namespace
                 kos::print("testline: raising line 0 was refused\n");
                 drv::trap();
             }
-            kos_sleep_ns(RAISE_PACE_NS);
+            kos_sleep_for(kos_ns(RAISE_PACE_NS));
         }
         kos_exit(0);
     }

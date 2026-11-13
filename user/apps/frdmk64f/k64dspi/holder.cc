@@ -80,7 +80,7 @@ namespace
     void halter(void* arg)
     {
         uintptr_t const win = reinterpret_cast<uintptr_t>(arg);
-        kos_sleep_ns(HALT_AFTER_NS);
+        kos_sleep_for(kos_ns(HALT_AFTER_NS));
         r32(win + MCR_OFFSET) = MCR_MSTR | MCR_HALT;
     }
 

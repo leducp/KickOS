@@ -17,6 +17,7 @@
 
 #include <kickos/config.h>
 #include <kickos/held.h>
+#include <kickos/time.h>
 
 namespace kickos
 {
@@ -107,17 +108,20 @@ namespace kickos
     // the next server. 0, -KOS_EPERM (`c` is not the bound thread), or -KOS_EBADF.
     int notify_unbind(Thread* c, uint32_t cap_handle);
 
-    // Wait for any bit of `mask`. Requires CAP_WAIT and a binding to `c`. On entry every
-    // chained signaller whose badge is in `mask` and which owes a rearm is rearmed, so a
-    // driver that never acks cannot deadlock its line. The bits taken are written to `c`'s word
-    // at `out` under the lock that then clears them from pending, their signallers owing a
-    // rearm at the next wait; a refused write takes none. Nothing is written on failure.
-    // 0, or -KOS_E*: EBADF, EACCES (no CAP_WAIT), EPERM (`c` is not the bound thread, or above
-    // one kernel core its own mask is not exactly its lines' claim core), EINVAL (an empty mask,
-    // which could only ever block forever), ETIMEDOUT, ECANCELED, EFAULT (the write).
-    // `timeout_us` is relative; KOS_TIMEOUT_NONE waits forever.
-    int notify_wait(Thread* c, uint32_t cap_handle, uint32_t mask, uint32_t timeout_us,
-                    uintptr_t out);
+    // Wait for any bit of `mask` on the notification `c` is bound to, until the monotonic
+    // `deadline`. On entry
+    // every chained signaller whose badge is in `mask` and which owes a rearm is rearmed, so a
+    // driver that never acks cannot deadlock its line. The bits taken are cleared from pending,
+    // their signallers owing a rearm at the next wait, and answered in the high half:
+    // notify_wait_bits. Else -KOS_E*: EINVAL (an empty mask, which could only ever block
+    // forever), EPERM (`c` is bound to nothing, or above one kernel core its own mask is not
+    // exactly its lines' claim core), ETIMEDOUT, ECANCELED.
+    int64_t notify_wait(Thread* c, uint32_t mask, uint64_t deadline);
+    // The answer of a wait that took `bits`: 0 in the low half, the bits in the high one.
+    constexpr int64_t notify_wait_bits(uint32_t bits)
+    {
+        return static_cast<int64_t>(static_cast<uint64_t>(bits) << 32);
+    }
 
     // Drop `c`'s binding at its death: clear bound and accept, drop the bind's reference, and
     // leave pending untouched. Runs in exit_current's first locked block, separately from

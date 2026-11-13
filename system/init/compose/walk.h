@@ -9,6 +9,7 @@
 #define KICKOS_SYSTEM_INIT_COMPOSE_WALK_H
 
 #include <kickos/board_config.h> // KICKOS_MAX_SPAWN_GRANTS, KICKOS_MAX_THREAD_WINDOWS
+#include <kickos/kos.h>
 #include <kickos/sys.h>
 #include <kickos/sys/init_geometry.h>
 #include <kickos/sys/init_status.h>
@@ -29,13 +30,13 @@ namespace kickos::init
     };
 
     // How long a slay waits for the group to empty (1.4).
-    constexpr uint32_t SLAY_TIMEOUT_US = 1000u;
+    constexpr std::chrono::milliseconds SLAY_WAIT{1};
     // How often, and how far apart, a claim answered -KOS_EAGAIN is tried again (1.6).
     constexpr uint32_t CLAIM_RETRIES = 100u;
-    constexpr uint64_t CLAIM_RETRY_NS = 1000000ull;
+    constexpr std::chrono::milliseconds CLAIM_RETRY{1};
     // How long a start waits out its instance's last incarnation, or a line or binding it
     // released still retiring.
-    constexpr uint32_t START_WAIT_US = CLAIM_RETRIES * static_cast<uint32_t>(CLAIM_RETRY_NS / 1000u);
+    constexpr std::chrono::milliseconds START_WAIT = CLAIM_RETRY * CLAIM_RETRIES;
 
     enum class Phase : uint8_t
     {

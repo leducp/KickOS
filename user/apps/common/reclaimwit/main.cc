@@ -25,7 +25,7 @@ namespace
 {
     // -KOS_ETIMEDOUT means condemned but not yet swept, so a timeout costs the sweep's
     // timing, not the death.
-    constexpr uint32_t SLAY_TIMEOUT_US = 5000000u;
+    constexpr std::chrono::seconds SLAY_BOUND{5};
 
     // The park arm's window in which nothing may follow its last line.
     constexpr uint64_t QUIET_NS = 2000000000ull;
@@ -88,7 +88,7 @@ int main(int, char**)
     params.caps = caps;
     params.cap_count = 1;
     kos_task_t drv_task = KOS_TASK_NONE;
-    int const task_rc = kos_task_create(prog, &params, 0, &drv_task);
+    int const task_rc = kos_task_create(prog, &params, KOS_POLL, &drv_task);
     (void)kos_handle_close(prog);
     if (task_rc != 0)
     {
@@ -107,16 +107,16 @@ int main(int, char**)
     // and not merely created.
     char const served[] = "[reclaimwit] routed through the driver, which discards it\n";
     int32_t const serve_rc =
-        kos_send(KOS_CAP_STDOUT, served, sizeof(served) - 1u, KOS_TIMEOUT_NONE);
+        kos_send(KOS_CAP_STDOUT, served, sizeof(served) - 1u, KOS_NEVER);
 
     // Forcible, not cooperative: the driver never gets the window in which it would have
     // quieted its device. 0 means the task is empty and swept, so the reclaim has already been
     // attempted.
-    int const slay_rc = kos_task_slay(drv_task, SLAY_TIMEOUT_US);
+    int const slay_rc = kos_task_slay(drv_task, kos::after(SLAY_BOUND));
 
     // The driver's task is dead and nothing holds WAIT or HANDOUT, so this refuses at once.
     char const dead = 'x';
-    int32_t const refused_rc = kos_send(KOS_CAP_STDOUT, &dead, 1, KOS_TIMEOUT_NONE);
+    int32_t const refused_rc = kos_send(KOS_CAP_STDOUT, &dead, 1, KOS_NEVER);
 
     kos::print("[reclaimwit] LIVE kernel console after the driver died\n");
     print_rc("handle_close", close_rc);
@@ -144,7 +144,7 @@ int main(int, char**)
     kos::print("[reclaimwit] DRAINTAIL 0123456789abcdef0123456789abcdef <<<DRAIN-END>>>\n");
 #else
     kos::print("[reclaimwit] park arm: nothing further is printed, then main returns its verdict\n");
-    kos::sleep_ns(QUIET_NS);
+    kos::sleep_for(std::chrono::nanoseconds{QUIET_NS});
 #endif
     if (ok)
     {

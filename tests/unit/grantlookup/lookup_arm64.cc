@@ -294,7 +294,7 @@ namespace
         memcpy(&untouched, &st, sizeof(st));
         EXPECT_EQ(seam::task_status(seam::task("health"), 1, &st), -KOS_EAGAIN);
         EXPECT_EQ(memcmp(&st, &untouched, sizeof(st)), 0);
-        EXPECT_EQ(seam::sleeps, std::vector<uint64_t>(100u, 1000000u));
+        EXPECT_EQ(seam::sleeps, std::vector<int64_t>(100u, 1000000));
     }
 
     TEST_F(Lookup, a_record_going_even_within_the_bound_is_answered)

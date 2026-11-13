@@ -1114,9 +1114,9 @@ That block is the arch's and not this seam's, the register it is reached through
 
 ### The clock a thread reads itself (`KICKOS_CLOCK_USER`)
 
-Where `KICKOS_CLOCK_USER` is set, `kos_clock_now` (`user/src/syscall_stubs.cc`) reads the counter
+Where `KICKOS_CLOCK_USER` is set, `kos_monotonic_now` (`user/src/syscall_stubs.cc`) reads the counter
 `arch_clock_now` reads, in user mode, and makes no kernel entry. Everywhere else it is the
-`KOS_SYS_CLOCK_NOW` call. The kernel answers that call on every board, so a raw call and the user
+`KOS_SYS_MONOTONIC_NOW` call. The kernel answers that call on every board, so a raw call and the user
 read both stay available where the knob is set.
 
 | arch | opened on every core at bring-up | the user read |
@@ -1149,8 +1149,8 @@ cooperative kill (`kos_thread_cancel` with `KOS_CANCEL_KILL`); a slay still ends
 counter becomes readable by every thread on those cores, and the kernel trusts nothing a user
 read answers: every timeout it takes is relative.
 
-The selftest witnesses both halves: `user_clock_agrees` brackets a raw `KOS_SYS_CLOCK_NOW` between
-two `kos_clock_now` reads on every kernel core, pinned there, and `clock_after_kill` shows a
+The selftest witnesses both halves: `user_clock_agrees` brackets a raw `KOS_SYS_MONOTONIC_NOW` between
+two `kos_monotonic_now` reads on every kernel core, pinned there, and `clock_after_kill` shows a
 thread with a kill pending running past the read where the knob is set and dying at it where it
 is not.
 

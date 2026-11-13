@@ -27,7 +27,7 @@
 #include "syscall_internal.h"
 
 extern "C" uint64_t syscall_dispatch(uintptr_t nr, uintptr_t a0, uintptr_t a1, uintptr_t a2,
-                                     uintptr_t a3);
+                                     uintptr_t a3, uintptr_t a4);
 
 namespace
 {
@@ -298,7 +298,7 @@ namespace kickos
                               0);
                 }
 
-                int create(char const* instance, kos_task_t* out, uint32_t timeout_us = 0)
+                int create(char const* instance, kos_task_t* out, uint64_t deadline = 0)
                 {
                     g_block.p.instance = nullptr;
                     if (instance != nullptr)
@@ -307,7 +307,7 @@ namespace kickos
                     }
                     g_block.out = KOS_TASK_NONE;
                     int const rc = task_create_call(prog_, reinterpret_cast<uintptr_t>(&g_block.p),
-                                                    timeout_us,
+                                                    deadline,
                                                     reinterpret_cast<uintptr_t>(&g_block.out));
                     *out = g_block.out;
                     return rc;
@@ -678,7 +678,7 @@ namespace kickos
             uint32_t const holds = kernel().task_holds;
             g_dying = Dying{record, e, c, WAIT_NONE, nullptr, 1u, false};
             wake_next_park(the_member_dies);
-            EXPECT_EQ(create("peer0", &again, KOS_TIMEOUT_NONE), 0);
+            EXPECT_EQ(create("peer0", &again, KOS_LIMIT_NONE), 0);
             EXPECT_EQ(g_dying.kind, WAIT_TASK_EMPTY) << "the wait is not the death's own park";
             EXPECT_EQ(g_dying.obj, record) << "the wait parks on another task than the dying one";
             EXPECT_EQ(g_dying.deadline_ns, 0u) << "a wait with no bound armed a deadline";
@@ -708,7 +708,7 @@ namespace kickos
             g_dying = Dying{record, e, c, WAIT_NONE, nullptr, 0u, false};
             wake_next_park(the_deadline_passes);
             kos_task_t h = KOS_TASK_NONE;
-            EXPECT_EQ(create(nullptr, &h, 1000u), -KOS_ETIMEDOUT) << "the create did not wait";
+            EXPECT_EQ(create(nullptr, &h, deadline_in(1000000u)), -KOS_ETIMEDOUT) << "the create did not wait";
             EXPECT_EQ(g_dying.kind, WAIT_TASK_EMPTY);
             EXPECT_EQ(g_dying.obj, record) << "the wait is not on the instance still dying";
         }
@@ -725,7 +725,7 @@ namespace kickos
             wake_next_park(the_deadline_passes);
             uint64_t const before = ktime_now();
             kos_task_t again = KOS_TASK_NONE;
-            EXPECT_EQ(create("peer0", &again, 1000u), -KOS_ETIMEDOUT);
+            EXPECT_EQ(create("peer0", &again, deadline_in(1000000u)), -KOS_ETIMEDOUT);
             EXPECT_EQ(g_dying.kind, WAIT_TASK_EMPTY);
             EXPECT_GE(g_dying.deadline_ns, before + 1000000u) << "the deadline is not the timeout's";
             EXPECT_EQ(again, KOS_TASK_NONE);
@@ -744,7 +744,7 @@ namespace kickos
             g_dying = Dying{nullptr, nullptr, c, WAIT_NONE, nullptr, 0u, false};
             wake_next_park(the_creator_is_killed);
             kos_task_t again = KOS_TASK_NONE;
-            EXPECT_EQ(create("peer0", &again, KOS_TIMEOUT_NONE), -KOS_ECANCELED);
+            EXPECT_EQ(create("peer0", &again, KOS_LIMIT_NONE), -KOS_ECANCELED);
             EXPECT_EQ(g_dying.kind, WAIT_TASK_EMPTY);
             EXPECT_EQ(again, KOS_TASK_NONE);
             EXPECT_EQ(kernel().task_holds, holds) << "a cancelled create spent a task";
@@ -795,7 +795,7 @@ namespace kickos
             dying_with_spinner();
             wake_next_park(the_member_dies_if_it_runs);
             kos_task_t again = KOS_TASK_NONE;
-            EXPECT_EQ(create("peer0", &again, 1000u), 0) << "the spinner starved the death";
+            EXPECT_EQ(create("peer0", &again, deadline_in(1000000u)), 0) << "the spinner starved the death";
             EXPECT_EQ(g_lent.ran, e_) << "the switch away from the waiter chose another thread";
             EXPECT_EQ(g_lent.member_prio, PRIO_CREATOR);
             EXPECT_EQ(g_lent.member_recomputed, PRIO_CREATOR)
@@ -814,7 +814,7 @@ namespace kickos
             g_lent = Lent{nullptr, 0u, 0u, 0u};
             g_owner = nullptr;
             wake_next_park(the_deadline_passes_lent);
-            EXPECT_EQ(task_slay(h_, 1000u), -KOS_ETIMEDOUT);
+            EXPECT_EQ(task_slay(h_, deadline_in(1000000u)), -KOS_ETIMEDOUT);
             EXPECT_EQ(g_dying.kind, WAIT_TASK_EMPTY);
             EXPECT_EQ(g_lent.ran, e_) << "the slay's park switched to the spinner";
             EXPECT_EQ(g_lent.member_prio, PRIO_CREATOR);
@@ -826,7 +826,7 @@ namespace kickos
             dying_with_spinner();
             wake_next_park(the_deadline_passes_lent);
             kos_task_t again = KOS_TASK_NONE;
-            EXPECT_EQ(create("peer0", &again, 1000u), -KOS_ETIMEDOUT);
+            EXPECT_EQ(create("peer0", &again, deadline_in(1000000u)), -KOS_ETIMEDOUT);
             EXPECT_EQ(g_lent.member_prio, PRIO_CREATOR) << "fixture: nothing was lent";
             EXPECT_EQ(e_->prio, PRIO_PEER) << "the member keeps the priority of a waiter gone";
             EXPECT_TRUE(kernel().death_waiters.empty());
@@ -837,7 +837,7 @@ namespace kickos
             dying_with_spinner();
             wake_next_park(the_creator_is_killed_lent);
             kos_task_t again = KOS_TASK_NONE;
-            EXPECT_EQ(create("peer0", &again, KOS_TIMEOUT_NONE), -KOS_ECANCELED);
+            EXPECT_EQ(create("peer0", &again, KOS_LIMIT_NONE), -KOS_ECANCELED);
             EXPECT_EQ(g_lent.member_prio, PRIO_CREATOR) << "fixture: nothing was lent";
             EXPECT_EQ(e_->prio, PRIO_PEER) << "the member keeps the priority of a waiter gone";
             EXPECT_TRUE(kernel().death_waiters.empty());
@@ -859,7 +859,7 @@ namespace kickos
             g_owner = owner;
             wake_next_park(the_deadline_passes_lent);
             kos_task_t again = KOS_TASK_NONE;
-            EXPECT_EQ(create("peer0", &again, 1000u), -KOS_ETIMEDOUT);
+            EXPECT_EQ(create("peer0", &again, deadline_in(1000000u)), -KOS_ETIMEDOUT);
             EXPECT_EQ(g_lent.member_prio, PRIO_CREATOR);
             EXPECT_EQ(g_lent.owner_prio, PRIO_CREATOR) << "the lend stops at the member's mutex";
             EXPECT_EQ(owner->prio, PRIO_PEER) << "the owner keeps a lend the waiter took back";
@@ -896,7 +896,7 @@ namespace kickos
             g_owner = e3;
             wake_next_park(the_deadline_passes_lent);
             kos_task_t again = KOS_TASK_NONE;
-            EXPECT_EQ(create("peer0", &again, 1000u), -KOS_ETIMEDOUT);
+            EXPECT_EQ(create("peer0", &again, deadline_in(1000000u)), -KOS_ETIMEDOUT);
             EXPECT_EQ(g_lent.owner_prio, PRIO_CREATOR)
                 << "the lend stops before the second death edge";
             EXPECT_EQ(e3->prio, e3_before) << "the far member keeps a lend the waiter took back";
@@ -925,7 +925,7 @@ namespace kickos
                 g_two = TwoWaiters{second, second_first, 0u, 0u};
                 wake_next_park(two_waiters_leave);
                 kos_task_t again = KOS_TASK_NONE;
-                EXPECT_EQ(create("peer0", &again, 1000u), -KOS_ETIMEDOUT);
+                EXPECT_EQ(create("peer0", &again, deadline_in(1000000u)), -KOS_ETIMEDOUT);
                 EXPECT_EQ(g_two.with_both, PRIO_CREATOR);
                 if (second_first)
                 {
@@ -955,7 +955,7 @@ namespace kickos
             }
             ASSERT_EQ(e_->prio, PRIO_SPIN) << "fixture: the member is not lent to";
             wake_next_park(the_deadline_passes_lent);
-            EXPECT_EQ(mutex_lock(reinterpret_cast<uintptr_t>(&g_block.lock_word), 1000u),
+            EXPECT_EQ(mutex_lock(reinterpret_cast<uintptr_t>(&g_block.lock_word), deadline_in(1000000u)),
                       -KOS_ETIMEDOUT);
             EXPECT_EQ(g_lent.member_prio, PRIO_CREATOR)
                 << "the lend's recompute undid the lock's raise of the holder";
@@ -982,7 +982,7 @@ namespace kickos
             ASSERT_EQ(member->prio, 3) << "fixture: the unrelated member was lent to";
             g_owner = holder;
             wake_next_park(the_deadline_passes_lent);
-            EXPECT_EQ(mutex_lock(reinterpret_cast<uintptr_t>(&g_block.lock_word), 1000u),
+            EXPECT_EQ(mutex_lock(reinterpret_cast<uintptr_t>(&g_block.lock_word), deadline_in(1000000u)),
                       -KOS_ETIMEDOUT);
             EXPECT_EQ(g_lent.owner_prio, PRIO_CREATOR) << "fixture: the lock lent nothing";
             EXPECT_EQ(member->prio, 3) << "the lock recomputed a task nothing it raised awaits";
@@ -1008,7 +1008,7 @@ namespace kickos
             }
             g_dying = Dying{record_, e_, c_, WAIT_NONE, nullptr, 0u, false};
             wake_next_park(the_member_dies);
-            EXPECT_EQ(task_slay(h_, 1000u), 0) << "a slay its own mutex closed a cycle for";
+            EXPECT_EQ(task_slay(h_, deadline_in(1000000u)), 0) << "a slay its own mutex closed a cycle for";
             EXPECT_EQ(g_dying.kind, WAIT_TASK_EMPTY);
             EXPECT_TRUE(g_dying.woken);
         }
@@ -1064,7 +1064,7 @@ namespace kickos
             g_owner = m4;
             wake_next_park(the_deadline_passes_lent);
             kos_task_t again = KOS_TASK_NONE;
-            EXPECT_EQ(create("peer0", &again, 1000u), -KOS_ETIMEDOUT);
+            EXPECT_EQ(create("peer0", &again, deadline_in(1000000u)), -KOS_ETIMEDOUT);
             EXPECT_EQ(g_lent.owner_prio, PRIO_CREATOR) << "the lend did not reach t2 through t3";
             EXPECT_TRUE(kernel().death_dirty.empty());
             int waiters = 0;
@@ -1088,7 +1088,7 @@ namespace kickos
             creator(AUTH_TASKS);
             for (uintptr_t const nr : {29u, 51u, 64u})
             {
-                EXPECT_EQ(static_cast<int32_t>(syscall_dispatch(nr, 0, 0, 0, 0)), -KOS_EINVAL) << nr;
+                EXPECT_EQ(static_cast<int32_t>(syscall_dispatch(nr, 0, 0, 0, 0, 0)), -KOS_EINVAL) << nr;
             }
         }
     }

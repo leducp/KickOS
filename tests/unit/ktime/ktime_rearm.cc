@@ -193,7 +193,11 @@ namespace kickos
         }
         void wake(Thread*, Held) {}
         void tick_rr(uint64_t, Held) {}
-        void yield() {}
+        uint32_t g_yields = 0;
+        void yield()
+        {
+            g_yields++;
+        }
     }
 }
 
@@ -214,6 +218,7 @@ namespace
         g_sleeper.state.to<ThreadState::RUNNING>(); // the caller of a sleep syscall
         sched::g_exited = false;
         sched::g_exit_pad_armed = false;
+        sched::g_yields = 0;
         g_armed = UINT64_MAX;
         g_arms = 0;
         g_disarms = 0;
@@ -308,14 +313,14 @@ TEST(KTime, floor_is_applied_at_birth)
 {
     reset();
     g_now = 5000000;
-    ktime_sleep_until(g_now); // a deadline already due at the moment of the call
+    EXPECT_EQ(ktime_sleep(g_now + 1u, KOS_LIMIT_MONOTONIC), 0); // due inside the floor
     EXPECT_EQ(kernel().sleepq(kickos_kernel_core()), &g_sleeper) << "sleeper not parked";
     EXPECT_EQ(g_sleeper.deadline_ns, g_now + KICKOS_TIMER_MIN_DELTA_NS)
-        << "an already-due sleep was not floored at birth";
+        << "a deadline inside the floor was not floored at birth";
 
     reset();
     g_now = 5000000;
-    ktime_sleep_ns(1); // 1 ns: below the floor, and not the sleep(0) yield case
+    EXPECT_EQ(ktime_sleep(1u, KOS_LIMIT_RELATIVE), 0); // below the floor, and not the yield case
     EXPECT_EQ(kernel().sleepq(kickos_kernel_core()), &g_sleeper) << "sub-floor sleeper not parked";
     EXPECT_EQ(g_sleeper.deadline_ns, g_now + KICKOS_TIMER_MIN_DELTA_NS)
         << "a sub-min-delta sleep did not round up to the min slice";
@@ -323,7 +328,7 @@ TEST(KTime, floor_is_applied_at_birth)
     // And a deadline born above the floor is passed through untouched.
     reset();
     g_now = 5000000;
-    ktime_sleep_ns(1000000);
+    EXPECT_EQ(ktime_sleep(1000000u, KOS_LIMIT_RELATIVE), 0);
     EXPECT_EQ(g_sleeper.deadline_ns, g_now + 1000000) << "a normal sleep was perturbed";
 }
 
@@ -338,7 +343,7 @@ TEST(KTime, a_cancelled_sleeper_dies_before_it_touches_anything)
     if (setjmp(sched::g_exit_pad) == 0)
     {
         sched::g_exit_pad_armed = true;
-        ktime_sleep_until(g_now + 1000000);
+        (void)ktime_sleep(g_now + 1000000, KOS_LIMIT_MONOTONIC);
         ADD_FAILURE() << "a cancelled caller parked instead of reaching its death point, and a "
                          "cancel that arrived behind the syscall entry read breaks no park";
     }
@@ -353,8 +358,8 @@ TEST(KTime, a_cancelled_sleeper_dies_before_it_touches_anything)
 }
 
 // THE UNBOUNDED HALF. A sleeper normally self-wakes at its own deadline, so a cancel missed
-// here costs the remaining delay and nothing more. ktime_sleep_ns saturates on overflow, and
-// a saturated deadline is a park nothing ever ends.
+// here costs the remaining delay and nothing more. A relative sleep saturates on overflow to no
+// limit, a park nothing ever ends.
 TEST(KTime, a_cancelled_saturated_sleep_does_not_park_forever)
 {
     reset();
@@ -363,7 +368,7 @@ TEST(KTime, a_cancelled_saturated_sleep_does_not_park_forever)
     if (setjmp(sched::g_exit_pad) == 0)
     {
         sched::g_exit_pad_armed = true;
-        ktime_sleep_ns(UINT64_MAX); // saturates to a deadline no clock reaches
+        (void)ktime_sleep(UINT64_MAX - 1u, KOS_LIMIT_RELATIVE); // saturates to no limit
         ADD_FAILURE() << "a cancelled caller parked on a saturated deadline, which is a thread "
                          "lost for the lifetime of the image";
     }
@@ -377,7 +382,7 @@ TEST(KTime, an_uncancelled_sleeper_still_parks)
 {
     reset();
     g_now = 5000000;
-    ktime_sleep_until(g_now + 1000000);
+    EXPECT_EQ(ktime_sleep(g_now + 1000000, KOS_LIMIT_MONOTONIC), 0);
     EXPECT_FALSE(sched::g_exited) << "an uncancelled sleeper was ended at the death point";
     EXPECT_EQ(kernel().sleepq(kickos_kernel_core()), &g_sleeper) << "an uncancelled sleeper did not park";
     EXPECT_EQ(g_arms, 1u) << "an uncancelled sleeper armed no one-shot";

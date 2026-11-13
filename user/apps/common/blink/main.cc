@@ -30,7 +30,7 @@ namespace
         {
             on = not on;
             kos_kernel_diag_led_set(on);
-            kos_sleep_ns(BLINK_NS);
+            kos_sleep_for(kos_ns(BLINK_NS));
         }
         g_done.post();
     }

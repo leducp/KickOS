@@ -32,7 +32,8 @@ int main(int, char**)
     while (true)
     {
         struct sample s = {};
-        int32_t const n = kos_call(sensor, &s, 0u, sizeof(s), CALL_TIMEOUT_US);
+        int32_t const n = kos_call(sensor, &s, 0u, sizeof(s),
+                                   kos_after(kos_monotonic_now(), kos_us(CALL_TIMEOUT_US)));
         // No answer is ever a park: each code says what became of the request. A motor
         // controller would brake on all three.
         if (n == -KOS_EPIPE)
@@ -65,6 +66,6 @@ int main(int, char**)
             last = s.value;
             printf("sensor: %lu\n", static_cast<unsigned long>(s.value));
         }
-        kos_sleep_ns(PERIOD_NS);
+        kos_sleep_for(kos_ns(PERIOD_NS));
     }
 }

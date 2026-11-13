@@ -38,7 +38,7 @@ enum kos_cap_authority
     KOS_AUTH_TASKS = 1 << 6,   // kos_task_create, and a spawn that builds a task of its own
     KOS_AUTH_BUS_MASTER = 1 << 7, // a spawn's device window over a device that masters the bus
     KOS_AUTH_BOOTLOADER = 1 << 8, // kos_shutdown into the chip's bootloader, beside KOS_AUTH_SYSTEM
-    KOS_AUTH_REALTIME = 1 << 9    // kos_clock_set_realtime
+    KOS_AUTH_REALTIME = 1 << 9    // kos_realtime_set
 };
 
 // The only place the full set is written. It must name every authority bit:

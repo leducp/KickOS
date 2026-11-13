@@ -43,7 +43,7 @@ namespace
         {
             printf("[worker] line %d via the userspace console driver\n", i);
             fflush(stdout);
-            kos_sleep_ns(100000000ull);
+            kos_sleep_for(kos_ms(100));
         }
         printf("[worker] done\n");
         fflush(stdout);
@@ -85,7 +85,7 @@ int main(int, char**)
 {
 #if UARTCONSOLE_SCRAMBLE_TEST
     // The driver's up line first, then the garble under it.
-    kos_sleep_ns(200000000ull);
+    kos_sleep_for(kos_ms(200));
     auto const s = kos::thread::create(scrambler, nullptr, "scrambler", SCRAMBLER_PRIO);
     if (not s.valid())
     {

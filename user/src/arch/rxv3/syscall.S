@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: CECILL-C
  * Copyright (c) 2026 Philippe Leduc
  *
- * The user side of the syscall trap: arch_syscall(nr, a0, a1, a2, a3), arch_syscall64 the same
+ * The user side of the syscall trap: arch_syscall(nr, a0, a1, a2, a3, a4), arch_syscall64 the same
  * entry, and arch_syscall_reg where the arch carries the register-form IPC trap. Part of the user
  * runtime, so every image carries its own.
  */
@@ -10,9 +10,9 @@
 
     .section .text.kickos_arch_syscall, "ax", @progbits
 
-/* arch_syscall(nr, a0, a1, a2, a3): R1=nr R2=a0 R3=a1 R4=a2, [R0+4]=a3. INT     */
-/* preserves all GPRs, so no marshaling is needed. arch_syscall64 is the SAME    */
-/* trap: R1:R2 is the RX ABI's 8-byte return pair.                               */
+/* arch_syscall(nr, a0, a1, a2, a3, a4): R1=nr R2=a0 R3=a1 R4=a2, [R0+4]=a3,    */
+/* [R0+8]=a4. INT preserves all GPRs, so no marshaling is needed. arch_syscall64 */
+/* is the SAME trap: R1:R2 is the RX ABI's 8-byte return pair.                   */
     .global _arch_syscall
     .global _arch_syscall64
 _arch_syscall:

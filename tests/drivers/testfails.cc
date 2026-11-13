@@ -36,7 +36,7 @@ extern "C" int testfails_start(struct kos_driver_instance* instance)
         }
         pinned = true;
     }
-    kos_sleep_ns(1000000ull);
+    kos_sleep_for(kos_ms(1));
     if (pinned)
     {
         (void)kos_thread_affinity(kos_thread_self(), 0u);

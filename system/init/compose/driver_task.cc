@@ -133,24 +133,20 @@ namespace
     // The endpoint answers -KOS_EAGAIN until its server has first received, so that is retried.
     int32_t probe(kos_cap_t ep)
     {
-        uint64_t const budget_ns = (uint64_t{kickos::driver::KOS_DRV_HANDOVER_PROBE_US} * 1000u)
-                                   + (uint64_t{kickos::driver::KOS_DRV_READY_WAIT_MAX}
-                                      * kickos::driver::KOS_DRV_READY_WAIT_NS);
-        uint64_t const deadline = kos_clock_now() + budget_ns;
+        kos_monotonic_t const until = kos::after(kickos::driver::KOS_DRV_HANDOVER_PROBE
+                                                 + kickos::driver::KOS_DRV_READY_WAIT);
         while (true)
         {
-            uint64_t const now = kos_clock_now();
-            if (now >= deadline)
+            if (kos_monotonic_now().ns >= until.ns)
             {
                 return -KOS_ETIMEDOUT;
             }
-            uint32_t const left_us = static_cast<uint32_t>((deadline - now + 999u) / 1000u);
-            int32_t const rc = kos_send(ep, "", 0, left_us);
+            int32_t const rc = kos_send(ep, "", 0, until);
             if (rc != -KOS_EAGAIN)
             {
                 return rc;
             }
-            kos_sleep_ns(kickos::driver::KOS_DRV_READY_WAIT_NS);
+            kos::sleep_for(kickos::driver::KOS_DRV_READY_RETRY);
         }
     }
 
@@ -165,7 +161,7 @@ namespace
                 return rc;
             }
             retries++;
-            kos_sleep_ns(kickos::init::CLAIM_RETRY_NS);
+            kos::sleep_for(kickos::init::CLAIM_RETRY);
         }
     }
 

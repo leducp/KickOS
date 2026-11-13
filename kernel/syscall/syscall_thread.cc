@@ -35,20 +35,17 @@ namespace kickos
 {
     namespace
     {
-        constexpr uint64_t CREATE_FOREVER = UINT64_MAX;
+        constexpr uint64_t CREATE_FOREVER = KOS_LIMIT_NONE;
 
-        // The monotonic instant a create of `timeout_us` stops waiting: 0 never waits.
-        uint64_t create_until(uint32_t timeout_us)
+        // The deadline a create waits to, read once at its entry: 0, never waiting, for one
+        // already passed.
+        uint64_t create_until(uint64_t deadline)
         {
-            if (timeout_us == KOS_TIMEOUT_NONE)
-            {
-                return CREATE_FOREVER;
-            }
-            if (timeout_us == 0u)
+            if (ktime_limit_passed(WaitLimit(deadline)))
             {
                 return 0;
             }
-            return ktime_now() + static_cast<uint64_t>(timeout_us) * 1000u;
+            return deadline;
         }
     }
 
@@ -536,11 +533,16 @@ namespace kickos
             return 0;
         }
 
-        // The flags, the authority word and the grant list's shape; its entries are the locked
-        // pass's.
+        // The flags, the quantum, the authority word and the grant list's shape; its entries are
+        // the locked pass's.
         int spawn_authority_admit(kos_thread_params const* p)
         {
             if ((p->flags & ~(KOS_THREAD_ESSENTIAL | KOS_THREAD_INHERIT_PRIO)) != 0u)
+            {
+                return -KOS_EINVAL;
+            }
+            // Refused, never narrowed into the thread's 32-bit slice.
+            if (p->quantum.ns < 0 or p->quantum.ns > static_cast<int64_t>(UINT32_MAX))
             {
                 return -KOS_EINVAL;
             }
@@ -669,13 +671,13 @@ namespace kickos
         presync_windows_in(c, r, r->params.windows, r->params.window_count);
     }
 
-    void task_spawn_presync_enter(uintptr_t pu, uint32_t timeout_us)
+    void task_spawn_presync_enter(uintptr_t pu, uint64_t deadline)
     {
         Thread const* const c = sched::current();
         PresyncRecord* const r = presync_record();
         if (r != nullptr)
         {
-            r->task_until = create_until(timeout_us);
+            r->task_until = create_until(deadline);
         }
         if (c == nullptr or r == nullptr or pu == 0
             or (pu & (alignof(kos_task_params) - 1)) != 0
@@ -1130,7 +1132,7 @@ namespace kickos
         {
             attr.policy = Policy::RR;
         }
-        attr.quantum_ns = p->quantum_ns;
+        attr.quantum_ns = static_cast<uint32_t>(p->quantum.ns);
         attr.windows = kernel().window_stage;
         attr.window_count = p->window_count;
         attr.task = tk;
@@ -1441,8 +1443,9 @@ namespace kickos
     //
     // No timer is needed to reach a spinning victim: on one core a target distinct from the
     // caller is READY, BLOCKED or refused, and both live states are claimed at the resume.
-    int thread_cancel_call(kos_thread_t thread, uintptr_t kind, uint32_t timeout_us)
+    int thread_cancel_call(kos_thread_t thread, uintptr_t kind, uint64_t deadline)
     {
+        WaitLimit const limit(deadline);
         uint8_t cancel = CANCEL_KILL;
         if (kind == KOS_CANCEL_SLAY)
         {
@@ -1453,7 +1456,7 @@ namespace kickos
             return -KOS_EINVAL;
         }
         Thread* const c = sched::current();
-        if (timeout_us == 0u)
+        if (deadline == KOS_LIMIT_POLL)
         {
             IrqLock lock;
             Thread* t = nullptr;
@@ -1481,10 +1484,15 @@ namespace kickos
             {
                 return rc;
             }
+            if (ktime_limit_passed(limit))
+            {
+                thread_cancel_kind(t, cancel, lock);
+                return -KOS_ETIMEDOUT;
+            }
             // Parked first, so the cancel takes no pass: from a running caller it could run the
             // victim to its exit, whose sweep would then find nobody parked on it.
             epoch = park_queueless(ask)(c, WAIT_JOIN, t, lock);
-            ktime_deadline_arm(c, timeout_us, lock);
+            ktime_limit_arm(c, limit, lock);
             thread_cancel_kind(t, cancel, lock);
             sched::reschedule(nullptr, lock);
         }
@@ -2472,7 +2480,7 @@ namespace kickos
     }
 
     // An instance of the program, its entry thread started at the declared priority.
-    int task_create_call(uint32_t prog, uintptr_t pu, uint32_t timeout_us, uintptr_t out)
+    int task_create_call(uint32_t prog, uintptr_t pu, uint64_t deadline, uintptr_t out)
     {
 #if KICKOS_PRESYNC
         // One deadline across the rounds the dispatch sends the call through.
@@ -2484,10 +2492,10 @@ namespace kickos
         }
         else
         {
-            until = create_until(timeout_us);
+            until = create_until(deadline);
         }
 #else
-        uint64_t const until = create_until(timeout_us);
+        uint64_t const until = create_until(deadline);
 #endif
         Created made;
         int rc = 0;
@@ -2559,15 +2567,16 @@ namespace kickos
         return -KOS_ENOENT;
     }
 
-    // Every member is slain, a member running no system call included. A timeout of 0 drops the
+    // Every member is slain, a member running no system call included. KOS_POLL drops the
     // creator's hold at once and returns, the slot going back once the last member's sweep is
-    // done. Any other drops it only on the way out of a successful wait: dropping it first frees
-    // the slot the moment the group empties, leaving `t` a dangling name in a wait edge. On a
-    // timeout the hold survives with the group.
-    int task_slay(kos_task_t task, uint32_t timeout_us)
+    // done. Any other deadline drops it only on the way out of a successful wait: dropping it
+    // first frees the slot the moment the group empties, leaving `t` a dangling name in a wait
+    // edge. On a timeout, a deadline passed at entry included, the hold survives with the group.
+    int task_slay(kos_task_t task, uint64_t deadline)
     {
+        WaitLimit const limit(deadline);
         Thread* const c = sched::current();
-        if (timeout_us == 0u)
+        if (deadline == KOS_LIMIT_POLL)
         {
             IrqLock lock;
             Task* const t = task_resolve(task);
@@ -2608,10 +2617,15 @@ namespace kickos
                 task_drop_hold(t, lock);
                 return 0;
             }
+            if (ktime_limit_passed(limit))
+            {
+                task_stop(t, lock);
+                return -KOS_ETIMEDOUT;
+            }
             // Parked before the stop, as in thread_cancel_call, so the stop takes no pass: every
             // member is marked and every park ended before the reschedule below switches.
             epoch = death_park(ask)(c, t, lock);
-            ktime_deadline_arm(c, timeout_us, lock);
+            ktime_limit_arm(c, limit, lock);
             task_stop(t, lock);
             // After the stop, which cut every wait of the task's threads in this hold.
             death_wait_lend(t, lock);
@@ -2635,8 +2649,9 @@ namespace kickos
 
     // The exit sweep in sched::exit_current is the only thing that wakes this park, apart from
     // the timeout.
-    int thread_join(kos_thread_t thread, uint32_t timeout_us)
+    int thread_join(kos_thread_t thread, uint64_t deadline)
     {
+        WaitLimit const limit(deadline);
         Thread* const c = sched::current();
         uint32_t epoch = 0;
         {
@@ -2666,8 +2681,12 @@ namespace kickos
             {
                 return -KOS_EPERM;
             }
+            if (ktime_limit_passed(limit))
+            {
+                return -KOS_ETIMEDOUT;
+            }
             epoch = park_queueless(ask)(c, WAIT_JOIN, t, lock);
-            ktime_deadline_arm(c, timeout_us, lock);
+            ktime_limit_arm(c, limit, lock);
             sched::reschedule(nullptr, lock);
         }
         wq_confirm_resume(c, epoch); // the lock is released across this: see sync.h

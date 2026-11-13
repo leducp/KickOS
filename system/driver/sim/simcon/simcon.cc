@@ -101,12 +101,12 @@ namespace
 
     // The entry's wait for the window thread to reach its park, in 1 ms steps.
     constexpr uint32_t WIN_READY_MAX = 500u;
-    constexpr uint64_t WIN_READY_NS = 1000000u;
+    constexpr std::chrono::milliseconds WIN_READY_STEP{1};
 
     kickos::Atomic<uint32_t, kickos::Order::RELAXED> g_win_ready{0};
 
     // Only the init may end the driver's task, so its entry polls for the release every
-    // WIN_READY_NS. The releasing task runs an image of its own, so the release is a variable of
+    // WIN_READY_STEP. The releasing task runs an image of its own, so the release is a variable of
     // the host process's environment, which every image of the sim shares.
     constexpr char WIN_RELEASE[] = "KICKOS_SIMCON_WINDOW_RELEASE";
 
@@ -128,7 +128,8 @@ namespace
         for (uintptr_t b : SIMCON_WIN_BASES)
         {
             kos_window const win = {b + SIMCON_WIN_AT, SIMCON_WIN, KOS_WINDOW_DEVICE, 0};
-            t = kos::thread::create(entry, nullptr, name, prio, KOS_POLICY_FIFO, /*quantum_ns=*/0,
+            t = kos::thread::create(entry, nullptr, name, prio, KOS_POLICY_FIFO,
+                                    /*quantum=*/std::chrono::nanoseconds{0},
                                     /*stack=*/nullptr, /*stack_size=*/0, /*windows=*/&win, 1,
                                     win_caps, 1);
             if (t.valid())
@@ -161,7 +162,7 @@ namespace
                 kos::print("[simcon] ERROR: window thread never reached its park\n");
                 return false;
             }
-            kos_sleep_ns(WIN_READY_NS);
+            kos::sleep_for(WIN_READY_STEP);
         }
         return true;
     }
@@ -175,7 +176,7 @@ namespace
         (void)drv::ready_publish(drv::ready_latch(blk, SIMCON_READY_OFFSET));
         while (getenv(WIN_RELEASE) == nullptr)
         {
-            kos_sleep_ns(WIN_READY_NS);
+            kos::sleep_for(WIN_READY_STEP);
         }
         wire_puts("[simcon] task entry released, ending the driver's task\n");
         kos_exit(0);
@@ -188,8 +189,7 @@ namespace
         wire_puts("[simcon] window thread holding the console registers\n");
         (void)kos_notify_bind(KOS_SPAWN_DELEGATED_CAP0);
         g_win_ready = 1;
-        while (kos_notify_wait(KOS_SPAWN_DELEGATED_CAP0, 0xFFFFFFFFu, KOS_TIMEOUT_NONE, nullptr)
-               == 0)
+        while (kos::notify_wait(0xFFFFFFFFu) == 0)
         {
         }
         kos_exit(0);
@@ -202,7 +202,7 @@ namespace
     {
         while (true)
         {
-            kos_sleep_ns(WIN_READY_NS);
+            kos::sleep_for(WIN_READY_STEP);
         }
     }
 
@@ -215,9 +215,7 @@ namespace
         wire_puts("[simcon] wedge irq thread parked, ready never set\n");
         (void)kos_notify_bind(KOS_SPAWN_DELEGATED_CAP0);
         g_win_ready = 1;
-        while (kos_notify_wait(KOS_SPAWN_DELEGATED_CAP0, 0xFFFFFFFFu, KOS_TIMEOUT_NONE,
-                               nullptr)
-               == 0)
+        while (kos::notify_wait(0xFFFFFFFFu) == 0)
         {
         }
         wire_puts("[simcon] wedge irq thread woke from its wait\n");
@@ -346,7 +344,7 @@ extern "C"
         unsigned served = 0;
 #endif
         struct kos_reply_recv_opts opts;
-        kos_reply_recv_opts_init(&opts, ep, 0, KOS_TIMEOUT_NONE);
+        kos_reply_recv_opts_init(&opts, ep, 0, KOS_NEVER);
         while (true)
         {
             opts.info.reply_cap = KOS_CAP_NONE;
@@ -399,7 +397,7 @@ extern "C"
     }
 
     // Ends the driver's task in a build that has a window thread, which its entry notices
-    // within WIN_READY_NS.
+    // within WIN_READY_STEP.
     void kickos_simcon_window_release(void)
     {
 #ifdef SIMCON_HAS_WINDOW_THREAD

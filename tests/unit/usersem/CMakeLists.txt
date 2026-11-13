@@ -9,3 +9,10 @@ kickos_add_unit_test(NAME user_sem
   INCLUDES "${PROJECT_SOURCE_DIR}/user/include" "${PROJECT_SOURCE_DIR}/system/include"
            "${PROJECT_BINARY_DIR}/generated/include"
   KERNEL)
+
+# The std::chrono conversions of <kickos/kos.h>, hosted, over a scripted clock.
+kickos_add_unit_test(NAME kos_chrono
+  SOURCES kos_chrono.cc
+  INCLUDES "${PROJECT_SOURCE_DIR}/user/include" "${PROJECT_SOURCE_DIR}/system/include"
+           "${PROJECT_BINARY_DIR}/generated/include"
+  KERNEL)

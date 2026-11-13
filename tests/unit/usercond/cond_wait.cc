@@ -43,7 +43,7 @@ namespace
 // The kernel's syscall entry for the user library's four: a caller with a cancel pending ends at
 // any of them but an unlock and a wake.
 extern "C" uintptr_t arch_syscall(uintptr_t nr, uintptr_t a0, uintptr_t a1, uintptr_t a2,
-                                  uintptr_t)
+                                  uintptr_t a3, uintptr_t a4)
 {
     using namespace kickos;
     Thread* const caller = sched::current();
@@ -56,7 +56,12 @@ extern "C" uintptr_t arch_syscall(uintptr_t nr, uintptr_t a0, uintptr_t a1, uint
     {
         case KOS_SYS_MUTEX_LOCK:
         {
-            return static_cast<uintptr_t>(mutex_lock(a0, static_cast<uint32_t>(a1)));
+            if (not ktime_limit_kind_ok(a3))
+            {
+                return static_cast<uintptr_t>(-KOS_EINVAL);
+            }
+            return static_cast<uintptr_t>(
+                mutex_lock(a0, ktime_limit_word(a1, a2), static_cast<uint32_t>(a3)));
         }
         case KOS_SYS_MUTEX_UNLOCK:
         {
@@ -75,8 +80,13 @@ extern "C" uintptr_t arch_syscall(uintptr_t nr, uintptr_t a0, uintptr_t a1, uint
                 g_signal_at_wait = false;
                 peer_signals();
             }
-            return static_cast<uintptr_t>(
-                word_wait(a0, static_cast<uint32_t>(a1), static_cast<uint32_t>(a2)));
+            if (not ktime_limit_kind_ok(a4))
+            {
+                return static_cast<uintptr_t>(-KOS_EINVAL);
+            }
+            return static_cast<uintptr_t>(word_wait(a0, static_cast<uint32_t>(a1),
+                                                    ktime_limit_word(a2, a3),
+                                                    static_cast<uint32_t>(a4)));
         }
         case KOS_SYS_WORD_WAKE:
         {
@@ -96,9 +106,9 @@ extern "C" uint32_t kickos_self_lock_id(void)
     return kickos::sched::current()->lock_id;
 }
 
-extern "C" uint64_t kos_clock_now(void)
+extern "C" int64_t kickos_monotonic_now(void)
 {
-    return kickos::testfix::g_now_ns;
+    return static_cast<int64_t>(kickos::testfix::g_now_ns);
 }
 
 extern "C" uint32_t __real_kickos_user_cas(uint32_t* word, uint32_t expected, uint32_t desired);
@@ -127,7 +137,7 @@ namespace kickos
             constexpr int SLOT_FIRST = 2;
             constexpr int SLOT_LAST = 3;
             constexpr int SLOT_PEER = 5;
-            constexpr uint32_t TIMEOUT_US = 1000;
+            constexpr int64_t WAIT_NS = 1000000;
             constexpr uint32_t PARKED = KOS_WORD_WAITERS;
 #if KICKOS_KERNEL_CORES > 1
             constexpr uint32_t CORE_WAKER = KICKOS_KERNEL_CORES - 1;
@@ -185,7 +195,7 @@ namespace kickos
 
             void deadline_fires()
             {
-                g_now_ns += static_cast<uint64_t>(TIMEOUT_US) * 1000u + KICKOS_TIMER_MIN_DELTA_NS;
+                g_now_ns += static_cast<uint64_t>(WAIT_NS) + KICKOS_TIMER_MIN_DELTA_NS;
                 ktime_on_timer();
             }
 
@@ -199,7 +209,7 @@ namespace kickos
                 g_cond_parks++;
                 if (g_holder_takes)
                 {
-                    EXPECT_EQ(kos_mutex_lock(&g_mutex, 0), 0);
+                    EXPECT_EQ(kos_mutex_lock(&g_mutex, KOS_POLL), 0);
                     wake_next_park(holder_hands_back);
                 }
                 deadline_fires();
@@ -284,8 +294,8 @@ namespace kickos
 
             void wait_then_syscall()
             {
-                (void)kos_cond_wait(&g_cond, &g_mutex, KOS_TIMEOUT_NONE);
-                (void)kos_word_wait(&g_spare, 1u, 0u);
+                (void)kos_cond_wait(&g_cond, &g_mutex, KOS_NEVER);
+                (void)kos_word_wait(&g_spare, 1u, KOS_POLL);
             }
         }
 
@@ -303,13 +313,13 @@ namespace kickos
             }
             else
             {
-                ASSERT_EQ(kos_mutex_lock(&g_mutex, 0), 0);
+                ASSERT_EQ(kos_mutex_lock(&g_mutex, KOS_POLL), 0);
             }
             g_signal_at_cas = (s.at == Landing::WAITERS_BIT);
             g_signal_at_wait = (s.at == Landing::PARK_ENTRY);
             wake_next_park(answer);
 
-            EXPECT_EQ(kos_cond_wait(&g_cond, &g_mutex, KOS_TIMEOUT_NONE), 0);
+            EXPECT_EQ(kos_cond_wait(&g_cond, &g_mutex, KOS_NEVER), 0);
 
             EXPECT_EQ(g_cond_parks, s.cond_parks)
                 << "the waiter parked past a signal sent after its release";
@@ -338,10 +348,10 @@ namespace kickos
             Thread* const waiter = seat_waiter_over_holder();
             Thread* const first = parked_on_cond(SLOT_FIRST, PRIO_BELOW);
             Thread* const last = parked_on_cond(SLOT_LAST, PRIO_BELOW);
-            ASSERT_EQ(kos_mutex_lock(&g_mutex, 0), 0);
+            ASSERT_EQ(kos_mutex_lock(&g_mutex, KOS_POLL), 0);
             wake_next_park(broadcast);
 
-            EXPECT_EQ(kos_cond_wait(&g_cond, &g_mutex, KOS_TIMEOUT_NONE), 0);
+            EXPECT_EQ(kos_cond_wait(&g_cond, &g_mutex, KOS_NEVER), 0);
 
             EXPECT_EQ(g_cond_parks, 1u);
             EXPECT_NE(first->state, ThreadState::BLOCKED) << "the broadcast left a waiter parked";
@@ -385,15 +395,16 @@ namespace kickos
                 {
                     mutex_parks = 1;
                 }
-                ASSERT_EQ(kos_mutex_lock(&g_mutex, 0), 0);
+                ASSERT_EQ(kos_mutex_lock(&g_mutex, KOS_POLL), 0);
                 uint64_t const start_ns = g_now_ns;
                 wake_next_park(expire);
 
-                EXPECT_EQ(kos_cond_wait(&g_cond, &g_mutex, TIMEOUT_US), -KOS_ETIMEDOUT);
+                kos_monotonic_t const until = kos_after(kos_monotonic_now(), kos_ns(WAIT_NS));
+                EXPECT_EQ(kos_cond_wait(&g_cond, &g_mutex, until), -KOS_ETIMEDOUT);
 
                 EXPECT_EQ(g_cond_parks, 1u);
                 EXPECT_EQ(g_mutex_parks, mutex_parks);
-                EXPECT_GE(g_now_ns - start_ns, static_cast<uint64_t>(TIMEOUT_US) * 1000u);
+                EXPECT_GE(g_now_ns - start_ns, static_cast<uint64_t>(WAIT_NS));
                 EXPECT_EQ(sched::current(), waiter);
                 EXPECT_EQ(g_mutex.word, waiter->lock_id) << "the wait returned without the mutex";
                 EXPECT_EQ(g_cond.word, PARKED);
@@ -417,7 +428,7 @@ namespace kickos
         TEST_F(CondWait, a_waiter_not_holding_the_mutex_is_refused_with_nothing_waited)
         {
             seat_waiter_over_holder();
-            EXPECT_EQ(kos_cond_wait(&g_cond, &g_mutex, KOS_TIMEOUT_NONE), -KOS_EPERM);
+            EXPECT_EQ(kos_cond_wait(&g_cond, &g_mutex, KOS_NEVER), -KOS_EPERM);
             EXPECT_EQ(g_mutex.word, 0u);
             EXPECT_EQ(g_cond.word, 0u);
         }
@@ -427,7 +438,7 @@ namespace kickos
         TEST_F(CondWait, a_waiter_killed_while_parked_leaves_the_condition_usable)
         {
             Thread* const waiter = seat_waiter_over_holder();
-            ASSERT_EQ(kos_mutex_lock(&g_mutex, 0), 0);
+            ASSERT_EQ(kos_mutex_lock(&g_mutex, KOS_POLL), 0);
             wake_next_park(kill);
 
             run_noreturn(wait_then_syscall);
@@ -440,9 +451,9 @@ namespace kickos
             (void)seat_pool(SLOT_PEER, PRIO_BELOW);
             ASSERT_EQ(sched::current(), g_holder);
             g_cond_parks = 0;
-            ASSERT_EQ(kos_mutex_lock(&g_mutex, 0), 0);
+            ASSERT_EQ(kos_mutex_lock(&g_mutex, KOS_POLL), 0);
             wake_next_park(answer);
-            EXPECT_EQ(kos_cond_wait(&g_cond, &g_mutex, KOS_TIMEOUT_NONE), 0);
+            EXPECT_EQ(kos_cond_wait(&g_cond, &g_mutex, KOS_NEVER), 0);
             EXPECT_EQ(g_cond_parks, 1u);
             EXPECT_EQ(g_mutex.word, g_holder->lock_id);
             EXPECT_EQ(g_cond.word, 1u);

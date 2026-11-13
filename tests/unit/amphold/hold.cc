@@ -223,7 +223,7 @@ namespace kickos
 
             int32_t receive(uint32_t ep, kos_reply_recv_opts* opts, uint32_t flags)
             {
-                kos_reply_recv_opts_init(opts, ep, flags, KOS_TIMEOUT_NONE);
+                kos_reply_recv_opts_init(opts, ep, flags, KOS_NEVER);
                 return endpoint_reply_recv(KOS_CAP_NONE, reinterpret_cast<uintptr_t>(g_rbuf),
                                            kos_call_lens_pack(0, RECV_CAP),
                                            reinterpret_cast<uintptr_t>(opts));
@@ -432,7 +432,7 @@ namespace kickos
             Thread* const r = seat_receiver(1, PRIO_RECEIVER, &ep);
             ASSERT_EQ(sched::current(), above);
             kos_reply_recv_opts opts{};
-            kos_reply_recv_opts_init(&opts, ep, 0, KOS_TIMEOUT_NONE);
+            kos_reply_recv_opts_init(&opts, ep, 0, KOS_NEVER);
             ASSERT_NO_FATAL_FAILURE(park_receiver(r, ep, &opts));
 
             peer_calls(CALL_FILL);
@@ -554,7 +554,7 @@ namespace kickos
             uint32_t ep = KCAP_INVALID;
             g_second = seat_receiver(1, PRIO_RECEIVER, &ep);
             g_second_ep = ep;
-            kos_reply_recv_opts_init(&g_second_opts, ep, 0, KOS_TIMEOUT_NONE);
+            kos_reply_recv_opts_init(&g_second_opts, ep, 0, KOS_NEVER);
             g_old_hold_live = true;
             g_after_service = reset_reuse_and_probe_old_hold;
             wake_next_park(call_arrives);
@@ -713,7 +713,7 @@ namespace kickos
             int32_t call(uint32_t far)
             {
                 return endpoint_call(far, reinterpret_cast<uintptr_t>(g_cbuf), CALL_LEN, RECV_CAP,
-                                     KOS_TIMEOUT_NONE);
+                                     KOS_LIMIT_NONE);
             }
 
             class AmpReplyHold : public AmpHold

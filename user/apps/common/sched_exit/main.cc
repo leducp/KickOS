@@ -24,7 +24,7 @@ namespace
     {
         while (true)
         {
-            kos::sleep_ns(1000000000ull);
+            kos::sleep_for(std::chrono::seconds{1});
         }
     }
 }
@@ -33,7 +33,7 @@ int main(int, char**)
 {
     kos::print("KickOS sched-exit regression\n");
     kos::thread::create(worker, nullptr, "worker", 10);
-    kos::sleep_ns(300000000ull); // 0.3s: main blocks here -> worker runs + exits
+    kos::sleep_for(std::chrono::milliseconds{300}); // main blocks here -> worker runs + exits
     kos::print("main: survived worker exit\n");
     auto parked_thread = kos::thread::create(parked, nullptr, "parked", 10);
     if (not parked_thread.valid())

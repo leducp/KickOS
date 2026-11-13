@@ -38,16 +38,16 @@ namespace
 
     uint64_t clock_granule_ns()
     {
-        uint64_t const e0 = kos_clock_now();
+        uint64_t const e0 = kos_monotonic_now().ns;
         uint64_t e1 = e0;
         while (e1 == e0)
         {
-            e1 = kos_clock_now();
+            e1 = kos_monotonic_now().ns;
         }
         uint64_t e2 = e1;
         while (e2 == e1)
         {
-            e2 = kos_clock_now();
+            e2 = kos_monotonic_now().ns;
         }
         return e2 - e1;
     }
@@ -55,13 +55,13 @@ namespace
     int64_t rewinds()
     {
         return static_cast<int64_t>(
-            static_cast<intptr_t>(arch_syscall(KOS_SYS_WITNESS_REWINDS, 0, 0, 0, 0)));
+            static_cast<intptr_t>(arch_syscall(KOS_SYS_WITNESS_REWINDS, 0, 0, 0, 0, 0)));
     }
 
     void adder(void* arg)
     {
         uintptr_t const me = reinterpret_cast<uintptr_t>(arg);
-        uint64_t const start = kos_clock_now();
+        uint64_t const start = kos_monotonic_now().ns;
         uint32_t adds = 0;
         uint32_t misses = 0;
         uint32_t v = 0;
@@ -83,7 +83,7 @@ namespace
             // The clock rarely: a read is a kernel entry, and the switches must land in the CAS.
             if ((i & 1023u) == 0u)
             {
-                uint64_t const ran = kos_clock_now() - start;
+                uint64_t const ran = kos_monotonic_now().ns - start;
                 if (ran >= g_run_ns * RUN_LIMIT)
                 {
                     break;
@@ -118,19 +118,20 @@ int main(int, char**)
         return 1;
     }
     g_before = before;
+    std::chrono::nanoseconds const slice{static_cast<int64_t>(quantum)};
     kos::thread::Handle a =
         kos::thread::create(adder, reinterpret_cast<void*>(uintptr_t{0}), "rwA", ADDER_PRIO,
-                            KOS_POLICY_RR, static_cast<uint32_t>(quantum));
+                            KOS_POLICY_RR, slice);
     kos::thread::Handle b =
         kos::thread::create(adder, reinterpret_cast<void*>(uintptr_t{1}), "rwB", ADDER_PRIO,
-                            KOS_POLICY_RR, static_cast<uint32_t>(quantum));
+                            KOS_POLICY_RR, slice);
     if (not a.valid() or not b.valid())
     {
         kos_print("[rewind] ERROR: an adder did not spawn\n");
         return 1;
     }
-    (void)a.join(KOS_TIMEOUT_NONE);
-    (void)b.join(KOS_TIMEOUT_NONE);
+    (void)a.join();
+    (void)b.join();
     int64_t const moved = rewinds() - before;
     uint32_t const adds = g_adds[0] + g_adds[1];
     ksnprintf(msg, sizeof(msg),

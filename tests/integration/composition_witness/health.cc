@@ -31,7 +31,7 @@ int main(int, char**)
     {
         witness_own_check("health", 2u);
         uint32_t bits = 0;
-        if (kos_notify_wait(events, ~0u, KOS_TIMEOUT_NONE, &bits) != 0)
+        if (kos_notify_wait(~0u, KOS_NEVER, &bits) != 0)
         {
             continue;
         }

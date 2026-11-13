@@ -33,7 +33,7 @@
 #include "sys_seam.h"
 
 extern "C" uint64_t syscall_dispatch(uintptr_t nr, uintptr_t a0, uintptr_t a1, uintptr_t a2,
-                                     uintptr_t a3);
+                                     uintptr_t a3, uintptr_t a4);
 
 // The image the root space is seeded from, defined by each gate at SYS_IMAGE_BYTES.
 extern "C" unsigned char g_sys_image[];
@@ -68,11 +68,11 @@ namespace kickos
         }
 
         inline uint64_t call_as(Thread* t, uintptr_t nr, uintptr_t a0 = 0, uintptr_t a1 = 0,
-                         uintptr_t a2 = 0, uintptr_t a3 = 0)
+                         uintptr_t a2 = 0, uintptr_t a3 = 0, uintptr_t a4 = 0)
         {
             Thread* const was = running();
             running() = t;
-            uint64_t const rc = syscall_dispatch(nr, a0, a1, a2, a3);
+            uint64_t const rc = syscall_dispatch(nr, a0, a1, a2, a3, a4);
             running() = was;
             return rc;
         }

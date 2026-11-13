@@ -42,7 +42,7 @@ int main(int, char**)
     struct sample s = {};
     while (true)
     {
-        kos_reply_recv_opts_init(&opts, served, 0u, KOS_TIMEOUT_NONE);
+        kos_reply_recv_opts_init(&opts, served, 0u, KOS_NEVER);
         int32_t const n = kos_reply_recv(reply, &s, kos_call_lens_pack(sizeof(s), 0u), &opts);
         reply = KOS_CAP_NONE;
         if (n < 0)

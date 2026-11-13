@@ -191,7 +191,7 @@ extern "C" [[noreturn]] void tlsprobe_edge_park(void)
     g_edge_done = 1;
     while (true)
     {
-        kos::sleep_ns(1000000000ull);
+        kos::sleep_for(std::chrono::seconds{1});
     }
 }
 
@@ -275,7 +275,7 @@ namespace
         }
         // A round trip through the scheduler: on an arch whose thread pointer is a register,
         // this is where a switch that forgot to restore it shows up.
-        kos::sleep_ns(50000000ull);
+        kos::sleep_for(std::chrono::milliseconds{50});
         g_report[k].err = errno;
         g_report[k].state = static_cast<unsigned>(reinterpret_cast<uintptr_t>(_REENT));
         g_report[k].seeded_at = static_cast<unsigned>(reinterpret_cast<uintptr_t>(&g_seeded));
@@ -287,7 +287,7 @@ namespace
         g_report[k].done = 1;
         while (g_release == 0)
         {
-            kos::sleep_ns(10000000ull);
+            kos::sleep_for(std::chrono::milliseconds{10});
         }
     }
 }
@@ -301,7 +301,7 @@ namespace
         kos_task_params p{};
         p.instance = "peer";
         kos_task_t t = KOS_TASK_NONE;
-        int const rc = kos_task_create(prog, &p, 100000u, &t);
+        int const rc = kos_task_create(prog, &p, kos::after(std::chrono::milliseconds{100}), &t);
         if (rc != 0)
         {
             return -1000 + rc;
@@ -315,7 +315,7 @@ namespace
             {
                 return status;
             }
-            kos::sleep_ns(1000000ull);
+            kos::sleep_for(std::chrono::milliseconds{1});
         }
         return -2000;
     }
@@ -371,7 +371,8 @@ int main(int, char**)
         if (stack != nullptr and kos_mem_self_grant(stack, CALLER_STACK, 0) == 0)
         {
             rc = kos::thread::create(worker, reinterpret_cast<void*>(static_cast<uintptr_t>(2)),
-                                     "tlsc", 10, KOS_POLICY_FIFO, 0, stack, CALLER_STACK)
+                                     "tlsc", 10, KOS_POLICY_FIFO, std::chrono::nanoseconds{0},
+                                     stack, CALLER_STACK)
                      .error();
         }
         char d[72];
@@ -398,7 +399,7 @@ int main(int, char**)
         {
             break;
         }
-        kos::sleep_ns(20000000ull);
+        kos::sleep_for(std::chrono::milliseconds{20});
     }
 
     for (int k = 0; k < WORKERS; k++)
@@ -525,7 +526,7 @@ int main(int, char**)
         {
             break;
         }
-        kos::sleep_ns(20000000ull);
+        kos::sleep_for(std::chrono::milliseconds{20});
     }
     for (int k = 0; k < WORKERS; k++)
     {

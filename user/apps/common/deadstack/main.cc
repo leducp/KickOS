@@ -35,7 +35,7 @@ namespace
         volatile uint32_t mark = MARK;
         g_addr = reinterpret_cast<uintptr_t>(&mark);
         (void)kos_sem_post(&g_ready);
-        (void)kos_sem_wait(&g_go, KOS_TIMEOUT_NONE);
+        (void)kos_sem_wait(&g_go, KOS_NEVER);
     }
 
     void announce(int core)
@@ -115,18 +115,18 @@ int main(int, char**)
     uint32_t const core_victim = (static_cast<uint32_t>(here) + 2u) % KICKOS_KERNEL_CORES;
     victim_mask = 1u << core_victim;
 #endif
-    auto const v = kos::thread::create_caps(victim, nullptr, "victim", 10, nullptr, 0,
-                                            KOS_POLICY_FIFO, 0, 0, nullptr, nullptr, 0,
-                                            victim_mask);
-    if (not v.valid() or kos_sem_wait(&g_ready, KOS_TIMEOUT_NONE) != 0)
+    auto const v =
+        kos::thread::create_caps(victim, nullptr, "victim", 10, nullptr, 0, KOS_POLICY_FIFO,
+                                 std::chrono::nanoseconds{0}, 0, nullptr, nullptr, 0, victim_mask);
+    if (not v.valid() or kos_sem_wait(&g_ready, KOS_NEVER) != 0)
     {
         kos_print("[deadstack] ERROR: the victim never published its page\n");
         return 1;
     }
 #if KICKOS_KERNEL_CORES > 1
     auto const r = kos::thread::create(reader, nullptr, "reader", PRIO_SPINNER, KOS_POLICY_FIFO,
-                                       0, nullptr, 0, nullptr, 0, nullptr, 0, 0, nullptr,
-                                       1u << core_reader);
+                                       std::chrono::nanoseconds{0}, nullptr, 0, nullptr, 0, nullptr,
+                                       0, 0, nullptr, 1u << core_reader);
     if (not r.valid())
     {
         kos_print("[deadstack] ERROR: reader spawn refused\n");
@@ -139,18 +139,18 @@ int main(int, char**)
             kos_print("[deadstack] ERROR: the reader never read the victim's page\n");
             return 1;
         }
-        kos_sleep_ns(POLL_NS);
+        kos_sleep_for(kos_ns(POLL_NS));
     }
     announce(static_cast<int>(core_reader));
     (void)kos_sem_post(&g_go);
-    if (v.join(KOS_TIMEOUT_NONE) != 0)
+    if (v.join() != 0)
     {
         kos_print("[deadstack] ERROR: the victim never came back\n");
         return 1;
     }
     kernel_read_after();
     g_reaped = 1;
-    kos_sleep_ns(VERDICT_NS);
+    kos_sleep_for(kos_ns(VERDICT_NS));
     kos_print("[deadstack] ERROR: the reader neither faulted nor reported\n");
     return 1;
 #else
@@ -163,7 +163,7 @@ int main(int, char**)
     announce(0);
     g_sink = *p;
     (void)kos_sem_post(&g_go);
-    if (v.join(KOS_TIMEOUT_NONE) != 0)
+    if (v.join() != 0)
     {
         kos_print("[deadstack] ERROR: the victim never came back\n");
         return 1;

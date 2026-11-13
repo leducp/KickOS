@@ -156,7 +156,7 @@ TEST_F(TaskStop, a_slay_s_wait_drops_no_hold_of_the_next_creator_of_its_declarat
     kos_task_t const handle = task_handle(group);
     wake_next_park(the_group_dies_and_is_created_again);
 
-    EXPECT_EQ(task_slay(handle, 1000u), 0);
+    EXPECT_EQ(task_slay(handle, testfix::deadline_in(1000000u)), 0);
 
     ASSERT_EQ(g_reseat.decl_state, 0) << "fixture: the dead declaration was not free to create";
     ASSERT_EQ(g_reseat.successor, group) << "fixture: the create took another record";
@@ -195,7 +195,7 @@ TEST_F(TaskStop, a_parked_slayer_marks_and_unparks_every_member_before_it_switch
     g_first = FirstSwitch{};
     wake_next_park(read_group_then_time_out);
 
-    EXPECT_EQ(task_slay(task_handle(group), 1000u), -KOS_ETIMEDOUT);
+    EXPECT_EQ(task_slay(task_handle(group), testfix::deadline_in(1000000u)), -KOS_ETIMEDOUT);
 
     ASSERT_TRUE(g_first.taken);
     EXPECT_EQ(g_first.entry_kind, CANCEL_SLAY);
@@ -272,4 +272,67 @@ TEST_F(TaskStop, a_running_slayer_marks_every_member_before_the_end_s_first_wake
     ASSERT_TRUE(g_first.taken) << "fixture: the slayer never switched";
     ASSERT_EQ(g_first.incoming, sender) << "fixture: the first switch is not the refusal";
     EXPECT_EQ(g_first.spinner_kind, CANCEL_SLAY) << "a member is unmarked at the end's first wake";
+}
+
+// Only KOS_POLL drops the hold at once: a deadline that passed before the slay is a wait that timed
+// out, which stops every member and leaves the hold for the next wait.
+TEST_F(TaskStop, a_slay_given_a_passed_deadline_stops_the_task_and_keeps_the_hold)
+{
+    Thread* const creator = seat_pool(0, PRIO_CREATOR);
+    attach_caps(creator, KICKOS_SEAM_CAP_WIDTH);
+    {
+        IrqLock lock;
+        sched::reschedule(nullptr, lock);
+    }
+    ASSERT_EQ(sched::current(), creator);
+    int err = 0;
+    Task* group = nullptr;
+    {
+        IrqLock lock;
+        group = kickos::testfix::task_held(kernel().threads.kill_tag_of(creator), &err, lock);
+    }
+    ASSERT_NE(group, nullptr) << "fixture: the create refused (" << err << ")";
+    Thread* const parked = seat_pool(1, PRIO_MEMBER);
+    join_task(parked, group);
+    park_sleeper(parked, UINT64_MAX / 2);
+    g_now_ns = 2000;
+
+    EXPECT_EQ(task_slay(task_handle(group), 1000u), -KOS_ETIMEDOUT);
+
+    EXPECT_EQ(parked->cancel_kind, CANCEL_SLAY);
+    EXPECT_NE(parked->state, ThreadState::BLOCKED) << "a member stays parked behind the slay";
+    IrqLock lock;
+    EXPECT_TRUE(task_ended(group));
+    EXPECT_TRUE(task_created_by(group, kernel().threads.kill_tag_of(creator)))
+        << "a passed deadline dropped the hold";
+    EXPECT_EQ(task_resolve(task_handle(group)), group);
+}
+
+TEST_F(TaskStop, a_slay_given_kos_poll_drops_the_hold_on_a_running_clock)
+{
+    Thread* const creator = seat_pool(0, PRIO_CREATOR);
+    attach_caps(creator, KICKOS_SEAM_CAP_WIDTH);
+    {
+        IrqLock lock;
+        sched::reschedule(nullptr, lock);
+    }
+    ASSERT_EQ(sched::current(), creator);
+    int err = 0;
+    Task* group = nullptr;
+    {
+        IrqLock lock;
+        group = kickos::testfix::task_held(kernel().threads.kill_tag_of(creator), &err, lock);
+    }
+    ASSERT_NE(group, nullptr) << "fixture: the create refused (" << err << ")";
+    Thread* const parked = seat_pool(1, PRIO_MEMBER);
+    join_task(parked, group);
+    park_sleeper(parked, UINT64_MAX / 2);
+    g_now_ns = 2000;
+
+    EXPECT_EQ(task_slay(task_handle(group), KOS_LIMIT_POLL), 0);
+
+    EXPECT_EQ(parked->cancel_kind, CANCEL_SLAY);
+    IrqLock lock;
+    EXPECT_FALSE(task_created_by(group, kernel().threads.kill_tag_of(creator)))
+        << "KOS_POLL kept the hold";
 }

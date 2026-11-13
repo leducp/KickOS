@@ -101,11 +101,11 @@ int main(int, char**)
         {
             break;
         }
-        kos_sleep_ns(RETRY_SLEEP_NS);
+        kos_sleep_for(kos_ns(RETRY_SLEEP_NS));
     }
 
     // Before the counters are read, so tx_dropped has stopped moving.
-    (void)kos_console_flush(KOS_TIMEOUT_NONE);
+    (void)kos_console_flush(KOS_NEVER);
 
     uint8_t st[sizeof(struct kos_uart_stats)];
     struct kos_uart_stats stats = {};

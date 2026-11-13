@@ -175,7 +175,7 @@ kickos_x86_64_syscall_entry:
     andq    $KICKOS_X86_64_RFLAGS_USER_KEEP, KOS_F_RFLAGS(%rsp)
     orq     $KICKOS_X86_64_RFLAGS_USER_FORCE, KOS_F_RFLAGS(%rsp)
 
-/* syscall_dispatch(nr, a0, a1, a2, a3). SYSCALL destroys rcx, so arch_syscall moved a2 to
+/* syscall_dispatch(nr, a0, a1, a2, a3, a4). SYSCALL destroys rcx, so arch_syscall moved a2 to
  * r10 first and the frame holds it there. The dispatch runs on this thread's own kernel block
  * in privileged THREAD context, so it may block and be resumed here.
  *
@@ -185,6 +185,7 @@ kickos_x86_64_syscall_entry:
     movq    KOS_F_RDX(%rsp), %rdx
     movq    KOS_F_R10(%rsp), %rcx
     movq    KOS_F_R8(%rsp), %r8
+    movq    KOS_F_R9(%rsp), %r9
     call    syscall_dispatch
 /* Into the frame, because the resume reloads rax from there. */
     movq    %rax, KOS_F_RAX(%rsp)

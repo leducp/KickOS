@@ -206,7 +206,7 @@ namespace
 
     // The kernel's contended lock: a dead holder's word is stolen with -KOS_EOWNERDEAD, a held
     // one parks the caller until an unlock hands the word over, a try answers at once.
-    int kernel_lock(uint32_t* word, uint32_t timeout_us)
+    int kernel_lock(uint32_t* word, uint64_t limit, uintptr_t kind)
     {
         bump(g_lock_calls);
         if (g_cancels_before_grant.load() > 0)
@@ -258,12 +258,13 @@ namespace
                 bump(g_locks);
                 return 0;
             }
-            if (timeout_us == 0)
+            EXPECT_EQ(kind, static_cast<uintptr_t>(KOS_LIMIT_MONOTONIC));
+            if (limit == 0)
             {
                 bump(g_tries_refused);
                 return -KOS_ETIMEDOUT;
             }
-            EXPECT_EQ(timeout_us, KOS_TIMEOUT_NONE) << "a libc lock waited with a deadline";
+            EXPECT_EQ(limit, KOS_LIMIT_NONE) << "a libc lock waited with a deadline";
             if (__real_kickos_user_cas(word, v, v | KOS_WORD_WAITERS) != v)
             {
                 continue;
@@ -347,12 +348,14 @@ extern "C" uint32_t __wrap_kickos_user_cas(uint32_t* word, uint32_t expected, ui
     return held;
 }
 
-extern "C" uintptr_t arch_syscall(uintptr_t nr, uintptr_t a0, uintptr_t a1, uintptr_t, uintptr_t)
+extern "C" uintptr_t arch_syscall(uintptr_t nr, uintptr_t a0, uintptr_t a1, uintptr_t a2,
+                                  uintptr_t a3, uintptr_t)
 {
     uint32_t* const word = reinterpret_cast<uint32_t*>(a0);
     if (nr == KOS_SYS_MUTEX_LOCK)
     {
-        return static_cast<uintptr_t>(kernel_lock(word, static_cast<uint32_t>(a1)));
+        uint64_t const limit = kos_u64_join(static_cast<uint32_t>(a1), static_cast<uint32_t>(a2));
+        return static_cast<uintptr_t>(kernel_lock(word, limit, a3));
     }
     if (nr == KOS_SYS_MUTEX_UNLOCK)
     {

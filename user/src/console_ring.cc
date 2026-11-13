@@ -73,7 +73,7 @@ uint32_t flush(struct kos_byte_ring* tx, Atomic<uint32_t, Order::RELAXED> const*
             return 0;
         }
         (void)kos_notify(KOS_CONSOLE_CAP_DOORBELL);
-        kos_sleep_ns(KOS_CONSOLE_FLUSH_SLEEP_NS);
+        kos::sleep_for(KOS_CONSOLE_FLUSH_SLEEP);
     }
     uint32_t left = kos_byte_ring_used(tx);
     if (inflight != nullptr)
@@ -89,7 +89,7 @@ uint32_t push_all(struct kos_byte_ring* tx, struct kos_uart_stats* stats,
     uint32_t off = tx_write(tx, stats, p, n);
     while (off < n)
     {
-        kos_sleep_ns(KOS_CONSOLE_FLUSH_SLEEP_NS);
+        kos::sleep_for(KOS_CONSOLE_FLUSH_SLEEP);
         off += tx_write(tx, stats, p + off, n - off);
     }
     return off;

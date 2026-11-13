@@ -32,8 +32,8 @@ namespace
         // Below the entry, so it holds the lock and spins only while the entry waits.
         auto holder = spawn_in(running_holder, nullptr, "mrunner", KICKOS_PRIO_MIN, core_mask);
         bool ran = setter.valid() and holder.valid()
-                   and kos_sem_wait(&g_gates->held, KOS_TIMEOUT_NONE) == 0
-                   and holder.cancel(KOS_CANCEL_KILL, 0) == 0
+                   and kos_sem_wait(&g_gates->held, KOS_NEVER) == 0
+                   and holder.cancel_for(KOS_CANCEL_KILL, std::chrono::nanoseconds{0}) == 0
                    and kos_sem_post(&g_gates->go) == 0 and setter.join() == 0;
         if (ran)
         {
@@ -61,16 +61,18 @@ namespace
             return REFUSED;
         }
         auto holder = spawn_in(dead_malloc_holder, nullptr, "mholder", WORKER_PRIO, 0);
-        bool ran = holder.valid() and kos_sem_wait(&g_gates->held, KOS_TIMEOUT_NONE) == 0;
+        bool ran = holder.valid() and kos_sem_wait(&g_gates->held, KOS_NEVER) == 0;
         if (ran and waiting)
         {
             auto taker = spawn_parked(malloc_victim, "mwaiter", core_mask);
-            ran = taker.valid() and holder.cancel(KOS_CANCEL_KILL, 0) == 0 and holder.join() == 0
-                  and taker.join() == 0;
+            ran = taker.valid()
+                  and holder.cancel_for(KOS_CANCEL_KILL, std::chrono::nanoseconds{0}) == 0
+                  and holder.join() == 0 and taker.join() == 0;
         }
         else if (ran)
         {
-            ran = holder.cancel(KOS_CANCEL_KILL, 0) == 0 and holder.join() == 0;
+            ran = holder.cancel_for(KOS_CANCEL_KILL, std::chrono::nanoseconds{0}) == 0
+                  and holder.join() == 0;
             auto taker = spawn_parked(malloc_victim, "mlater", core_mask);
             ran = ran and taker.valid() and taker.join() == 0;
         }
@@ -111,7 +113,7 @@ namespace
         release_racers(started);
         for (uint32_t w = 0; w < started; w++)
         {
-            kos_sem_wait(&g_gates->done, KOS_TIMEOUT_NONE);
+            kos_sem_wait(&g_gates->done, KOS_NEVER);
         }
         if (started != TASK_RACERS)
         {

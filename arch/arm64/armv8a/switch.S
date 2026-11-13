@@ -218,12 +218,12 @@ kickos_armv8a_el0_sync_entry:
     lsr     x0, x0, #26                     /* ESR_EL1.EC */
     cmp     x0, #0x15                       /* SVC instruction executed in AArch64 state */
     b.ne    .Lel0_fault
-    /* nr and a0..a3 sit in x0..x4 in the frame; reload what the mrs pair clobbered.
+    /* nr and a0..a4 sit in x0..x5 in the frame; reload what the mrs pair clobbered.
        syscall_dispatch runs in privileged thread context, as arch.h requires: arch_in_isr
        counts IRQ depth alone and reads false. */
     ldp     x0, x1, [sp, #0]
     ldp     x2, x3, [sp, #16]
-    ldr     x4, [sp, #32]
+    ldp     x4, x5, [sp, #32]
     bl      syscall_dispatch
     /* uint64_t returns in x0. */
     str     x0, [sp, #0]

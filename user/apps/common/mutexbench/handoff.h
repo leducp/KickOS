@@ -35,18 +35,18 @@ namespace mutexbench
         uint32_t r = 0;
         while (true)
         {
-            kos_sem_wait(&ho->go, KOS_TIMEOUT_NONE);
+            kos_sem_wait(&ho->go, KOS_NEVER);
             if (r == ho->rounds)
             {
                 return;
             }
             r++;
             ho->enter = r;
-            if (kos_mutex_lock(&ho->m, KOS_TIMEOUT_NONE) != 0)
+            if (kos_mutex_lock(&ho->m, KOS_NEVER) != 0)
             {
                 return;
             }
-            uint64_t d = kos::clock_now() - ho->t0;
+            uint64_t d = kos_monotonic_now().ns - ho->t0;
             if (d > UINT32_MAX)
             {
                 d = UINT32_MAX;

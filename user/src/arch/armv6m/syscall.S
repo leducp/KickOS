@@ -1,9 +1,9 @@
 /* SPDX-License-Identifier: CECILL-C
  * Copyright (c) 2026 Philippe Leduc
  *
- * The user side of the syscall trap: arch_syscall(nr, a0, a1, a2, a3), arch_syscall64 the same
- * entry, and arch_syscall_reg where the arch carries the register-form IPC trap. Part of the user
- * runtime, so every image carries its own.
+ * The user side of the syscall trap: arch_syscall(nr, a0, a1, a2, a3, a4), arch_syscall64 the
+ * same entry, and arch_syscall_reg where the arch carries the register-form IPC trap. Part of
+ * the user runtime, so every image carries its own.
  */
 
     .syntax unified
@@ -13,22 +13,27 @@
     .balign 4               /* the reg trap's ADR offset assumes a word-aligned section */
 
 /* ------------------------------------------------------------------------- */
-/* arch_syscall(nr, a0, a1, a2, a3): r0=nr r1=a0 r2=a1 r3=a2 [sp]=a3.          */
-/* Move a3 into r12 so the exception frame carries it (r12 can't be ldr'd on   */
-/* v6-M -> via a low reg). Result delivered in r0:r1 by svc_trampoline.        */
-/* arch_syscall64 is the SAME trap; r0:r1 is the AAPCS long long pair.         */
+/* arch_syscall(nr, a0, a1, a2, a3, a4): r0=nr r1=a0 r2=a1 r3=a2 [sp]=a3      */
+/* [sp+4]=a4. a3 rides r12 in the exception frame and a4 rides r4, which the  */
+/* SVC slow path copies; r12 and r4 are reached only through a low register.  */
+/* svc_trampoline exits to the stacked LR, so LR names the pop that gives the */
+/* caller its r4 back. Result in r0:r1, the AAPCS long long pair.             */
     .thumb_func
     .global arch_syscall64
 arch_syscall64:
     .thumb_func
     .global arch_syscall
 arch_syscall:
-    push    {r4}                    /* free a low reg (shifts [sp] a3 by +4) */
-    ldr     r4, [sp, #4]            /* a3 */
+    push    {r4, lr}                /* shifts a3 to [sp+8], a4 to [sp+12]; 8B aligned */
+    ldr     r4, [sp, #8]
     mov     r12, r4
-    pop     {r4}                    /* restore r4 + SP (8B aligned again) */
+    ldr     r4, =.Lsys_back
+    adds    r4, #1                  /* the trampoline exits with bx: Thumb bit required */
+    mov     lr, r4
+    ldr     r4, [sp, #12]
     svc     #0
-    bx      lr
+.Lsys_back:
+    pop     {r4, pc}
 
 /* ------------------------------------------------------------------------- */
 /* int32_t arch_syscall_reg(uint32_t* io): the register-carrying IPC trap.    */

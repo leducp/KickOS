@@ -50,6 +50,11 @@ namespace kickos
         // What arch_in_isr answers.
         extern bool g_in_isr;
         extern uint64_t g_now_ns;
+        // The monotonic deadline `ns` past the fixture's clock.
+        inline uint64_t deadline_in(uint64_t ns)
+        {
+            return g_now_ns + ns;
+        }
         // Defined only over the real time.cc (KFIXTURE_REAL_TIME): each core's comparator as its
         // last arch_timer_arm left it, UINT64_MAX after an arch_timer_disarm, 0 before either.
         // Reset clears it.

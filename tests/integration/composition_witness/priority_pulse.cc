@@ -7,5 +7,5 @@
 
 int main(int, char**)
 {
-    kos_sleep_ns(priority_witness::PULSE_NS);
+    kos_sleep_for(kos_ms(priority_witness::PULSE_MS));
 }

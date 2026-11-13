@@ -79,8 +79,8 @@ int main(int, char**)
     win.base = reinterpret_cast<uintptr_t>(rA);
     win.size = REGION;
     win.kind = KOS_WINDOW_MEMORY;
-    auto w = kos::thread::create(domainA_worker, nullptr, "domainA", 10, KOS_POLICY_FIFO, 0,
-                                 nullptr, 0, &win, 1);
+    auto w = kos::thread::create(domainA_worker, nullptr, "domainA", 10, KOS_POLICY_FIFO,
+                                 std::chrono::nanoseconds{0}, nullptr, 0, &win, 1);
     (void)w.join();
     return 0;
 }

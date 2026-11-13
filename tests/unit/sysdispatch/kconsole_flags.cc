@@ -23,7 +23,7 @@
 #endif
 
 extern "C" uint64_t syscall_dispatch(uintptr_t nr, uintptr_t a0, uintptr_t a1, uintptr_t a2,
-                                     uintptr_t a3);
+                                     uintptr_t a3, uintptr_t a4);
 
 namespace kickos
 {
@@ -52,7 +52,7 @@ namespace kickos
                 {
                     return static_cast<int32_t>(
                         syscall_dispatch(KOS_SYS_KCONSOLE_WRITE,
-                                         reinterpret_cast<uintptr_t>(g_text), 5, flags, 0));
+                                         reinterpret_cast<uintptr_t>(g_text), 5, flags, 0, 0));
                 }
 
                 Thread* caller_ = nullptr;

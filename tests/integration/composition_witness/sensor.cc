@@ -20,7 +20,7 @@
 namespace
 {
     constexpr uint32_t READINGS = 5u;
-    constexpr uint64_t RESTART_SLEEP_NS = 500000000ull;
+    constexpr int64_t RESTART_SLEEP_MS = 500;
 
     void probe_entry(void* arg)
     {
@@ -83,7 +83,7 @@ int main(int, char**)
     uint32_t value = 0;
     if (history_latest(hist, &value))
     {
-        kos_sleep_ns(RESTART_SLEEP_NS);
+        kos_sleep_for(kos_ms(RESTART_SLEEP_MS));
     }
 
     struct kos_reply_recv_opts opts;
@@ -92,7 +92,7 @@ int main(int, char**)
     uint32_t count = 0;
     while (count < READINGS)
     {
-        kos_reply_recv_opts_init(&opts, served, 0u, KOS_TIMEOUT_NONE);
+        kos_reply_recv_opts_init(&opts, served, 0u, KOS_NEVER);
         int32_t const n = kos_reply_recv(reply, &s, kos_call_lens_pack(sizeof(s), 0u), &opts);
         reply = KOS_CAP_NONE;
         if (n < 0)

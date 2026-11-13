@@ -142,19 +142,19 @@ namespace tap
         // the wire in either posture, unlike a 1-byte probe.
         bool stdout_published()
         {
-            return kos_send(0, "", 0, KOS_TIMEOUT_NONE) >= 0;
+            return kos_send(0, "", 0, KOS_NEVER) >= 0;
         }
 
         // A USB CDC console has no reader until the host opens the port, and drops what its
         // ring cannot hold until then; each drain answers -KOS_EBUSY while nothing reads.
-        constexpr uint64_t READER_WAIT_NS = 10000000000ull;
+        constexpr int64_t READER_WAIT_S = 10;
 
         bool wait_for_reader()
         {
-            uint64_t const start = kos_clock_now();
-            while (kos_console_flush(KOS_TIMEOUT_NONE) == -KOS_EBUSY)
+            kos_monotonic_t const until = kos_after(kos_monotonic_now(), kos_s(READER_WAIT_S));
+            while (kos_console_flush(KOS_NEVER) == -KOS_EBUSY)
             {
-                if (kos_clock_now() - start >= READER_WAIT_NS)
+                if (kos_monotonic_now().ns >= until.ns)
                 {
                     return false;
                 }

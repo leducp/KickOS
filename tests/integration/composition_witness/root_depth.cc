@@ -29,8 +29,7 @@ extern "C" char const __kickos_tls_carve[];
 extern "C" void* __aeabi_read_tp(void);
 #endif
 
-extern "C" int __real_kos_notify_wait(kos_cap_t notify_cap, uint32_t mask, uint32_t timeout_us,
-                                      uint32_t* out_bits);
+extern "C" int __real_kos_notify_wait(uint32_t mask, kos_monotonic_t until, uint32_t* out_bits);
 
 namespace
 {
@@ -85,8 +84,7 @@ namespace
     }
 }
 
-extern "C" int __wrap_kos_notify_wait(kos_cap_t notify_cap, uint32_t mask, uint32_t timeout_us,
-                                      uint32_t* out_bits)
+extern "C" int __wrap_kos_notify_wait(uint32_t mask, kos_monotonic_t until, uint32_t* out_bits)
 {
     if (root_tp != 0u and thread_pointer() == root_tp)
     {
@@ -101,5 +99,5 @@ extern "C" int __wrap_kos_notify_wait(kos_cap_t notify_cap, uint32_t mask, uint3
                static_cast<unsigned long>(deepest - stack_lo));
         fill();
     }
-    return __real_kos_notify_wait(notify_cap, mask, timeout_us, out_bits);
+    return __real_kos_notify_wait(mask, until, out_bits);
 }

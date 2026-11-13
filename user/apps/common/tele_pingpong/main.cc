@@ -25,7 +25,7 @@ namespace
         while (true)
         {
             g_ping.wait();
-            kos::sleep_ns(BEAT_NS);
+            kos::sleep_for(std::chrono::nanoseconds{BEAT_NS});
             g_pong.post();
         }
     }
@@ -34,7 +34,7 @@ namespace
         while (true)
         {
             g_pong.wait();
-            kos::sleep_ns(BEAT_NS);
+            kos::sleep_for(std::chrono::nanoseconds{BEAT_NS});
             g_ping.post();
         }
     }
@@ -44,7 +44,7 @@ namespace
     {
         while (true)
         {
-            kos::sleep_ns(2000000ull); // 2 ms
+            kos::sleep_for(std::chrono::milliseconds{2});
         }
     }
 }
@@ -63,7 +63,7 @@ int main(int, char**)
     // Let the daemons run for a bounded time (main runs at prio 2, below the workers,
     // so it runs only while they are all blocked; then this sleep expires and we
     // return, ending the run cleanly through the boot path's arch_shutdown).
-    kos::sleep_ns(RUN_NS);
+    kos::sleep_for(std::chrono::nanoseconds{RUN_NS});
     kos::print("tele_pingpong: done\n");
     return 0;
 }

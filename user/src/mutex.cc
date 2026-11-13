@@ -8,51 +8,42 @@
 #include <kickos/sys/user_cas.h>
 #include <kickos/arch/arch.h>
 
+namespace
+{
+    int lock(kos_mutex_t* m, uint64_t limit, uint32_t kind)
+    {
+        uint32_t const self = kickos_self_lock_id();
+        uint32_t const held = kickos_user_cas(&m->word, 0u, self);
+        if (held == 0u)
+        {
+            return 0;
+        }
+        if ((held & ~KOS_WORD_WAITERS) == self)
+        {
+            return -KOS_EDEADLK;
+        }
+        return kickos_mutex_lock_entry(m, limit, kind);
+    }
+}
+
 extern "C"
 {
 
-int kickos_mutex_lock_entry(kos_mutex_t* m, uint32_t timeout_us)
+int kickos_mutex_lock_entry(kos_mutex_t* m, uint64_t limit, uint32_t kind)
 {
     return static_cast<int>(arch_syscall(KOS_SYS_MUTEX_LOCK, reinterpret_cast<uintptr_t>(&m->word),
-                                         static_cast<uintptr_t>(timeout_us), 0, 0));
+                                         kos_u64_lo(limit), kos_u64_hi(limit),
+                                         static_cast<uintptr_t>(kind), 0));
 }
 
-int kos_mutex_lock(kos_mutex_t* m, uint32_t timeout_us)
+int kos_mutex_lock(kos_mutex_t* m, kos_monotonic_t until)
 {
-    uint32_t const self = kickos_self_lock_id();
-    uint32_t const held = kickos_user_cas(&m->word, 0u, self);
-    if (held == 0u)
-    {
-        return 0;
-    }
-    if ((held & ~KOS_WORD_WAITERS) == self)
-    {
-        return -KOS_EDEADLK;
-    }
-    return kickos_mutex_lock_entry(m, timeout_us);
+    return lock(m, kos_limit_word(until.ns), KOS_LIMIT_MONOTONIC);
 }
 
-int kickos_mutex_lock_entry_realtime(kos_mutex_t* m, uint64_t unix_ns)
+int kos_mutex_lock_realtime(kos_mutex_t* m, kos_realtime_t until)
 {
-    uint64_t const at = kos_limit_realtime(unix_ns);
-    return static_cast<int>(arch_syscall(KOS_SYS_MUTEX_LOCK, reinterpret_cast<uintptr_t>(&m->word),
-                                         static_cast<uintptr_t>(kos_u64_lo(at)),
-                                         static_cast<uintptr_t>(kos_u64_hi(at)), 0));
-}
-
-int kos_mutex_lock_realtime(kos_mutex_t* m, uint64_t unix_ns)
-{
-    uint32_t const self = kickos_self_lock_id();
-    uint32_t const held = kickos_user_cas(&m->word, 0u, self);
-    if (held == 0u)
-    {
-        return 0;
-    }
-    if ((held & ~KOS_WORD_WAITERS) == self)
-    {
-        return -KOS_EDEADLK;
-    }
-    return kickos_mutex_lock_entry_realtime(m, unix_ns);
+    return lock(m, kos_limit_word(until.ns), KOS_LIMIT_REALTIME);
 }
 
 int kos_mutex_unlock(kos_mutex_t* m)
@@ -68,6 +59,6 @@ int kos_mutex_unlock(kos_mutex_t* m)
         return -KOS_EPERM;
     }
     return static_cast<int>(arch_syscall(KOS_SYS_MUTEX_UNLOCK,
-                                         reinterpret_cast<uintptr_t>(&m->word), 0, 0, 0));
+                                         reinterpret_cast<uintptr_t>(&m->word), 0, 0, 0, 0));
 }
 }

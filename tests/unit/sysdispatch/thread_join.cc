@@ -20,7 +20,7 @@
 #include "stub_seam.h"
 
 extern "C" uint64_t syscall_dispatch(uintptr_t nr, uintptr_t a0, uintptr_t a1, uintptr_t a2,
-                                     uintptr_t a3);
+                                     uintptr_t a3, uintptr_t a4);
 
 namespace kickos
 {
@@ -58,18 +58,20 @@ namespace kickos
                     ASSERT_EQ(target_->state, ThreadState::EXITED) << "fixture: the target lives";
                 }
 
-                int32_t join_as(Thread* caller, uint32_t timeout_us)
+                int32_t join_as(Thread* caller, uint64_t deadline)
                 {
                     kernel().current(kickos_kernel_core()) = caller;
                     return static_cast<int32_t>(
-                        syscall_dispatch(KOS_SYS_THREAD_JOIN, handle_, timeout_us, 0, 0));
+                        syscall_dispatch(KOS_SYS_THREAD_JOIN, handle_, kos_u64_lo(deadline),
+                                         kos_u64_hi(deadline), 0, 0));
                 }
 
-                int32_t cancel_as(Thread* caller)
+                int32_t cancel_as(Thread* caller, uint64_t deadline = KOS_LIMIT_POLL)
                 {
                     kernel().current(kickos_kernel_core()) = caller;
-                    return static_cast<int32_t>(syscall_dispatch(
-                        KOS_SYS_THREAD_CANCEL, handle_, KOS_CANCEL_KILL, 0, 0));
+                    return static_cast<int32_t>(
+                        syscall_dispatch(KOS_SYS_THREAD_CANCEL, handle_, KOS_CANCEL_KILL,
+                                         kos_u64_lo(deadline), kos_u64_hi(deadline), 0));
                 }
 
                 Task* group_ = nullptr;
@@ -97,6 +99,28 @@ namespace kickos
 
             EXPECT_EQ(cancel_as(stranger_), -KOS_EBADF) << "the cancel already tells an exit";
             EXPECT_EQ(join_as(stranger_, 0u), 0);
+        }
+
+        // Only KOS_POLL raises the cancel and answers 0: a deadline that passed before the call
+        // raises it too and answers as a wait that timed out.
+        TEST_F(SysThreadJoin, a_cancel_given_a_passed_deadline_raises_and_times_out)
+        {
+            target_->spawner_tag = kernel().threads.kill_tag_of(joiner_);
+            g_now_ns = 2000;
+
+            EXPECT_EQ(cancel_as(joiner_, 1000u), -KOS_ETIMEDOUT);
+
+            EXPECT_EQ(target_->cancel_kind, CANCEL_KILL);
+        }
+
+        TEST_F(SysThreadJoin, a_cancel_given_kos_poll_raises_and_answers_0_on_a_running_clock)
+        {
+            target_->spawner_tag = kernel().threads.kill_tag_of(joiner_);
+            g_now_ns = 2000;
+
+            EXPECT_EQ(cancel_as(joiner_, KOS_LIMIT_POLL), 0);
+
+            EXPECT_EQ(target_->cancel_kind, CANCEL_KILL);
         }
     }
 }

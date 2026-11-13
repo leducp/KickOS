@@ -16,6 +16,7 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <string>
 #include <vector>
 
@@ -511,7 +512,7 @@ namespace
         EXPECT_EQ(status("sensor").deaths, 1u);
         for (fake::Call const& wait : fake::calls_of("kos_notify_wait"))
         {
-            EXPECT_EQ(wait.args[2], KOS_TIMEOUT_NONE) << "the wait is never bounded";
+            EXPECT_EQ(wait.args[1], static_cast<uint64_t>(KOS_NEVER.ns)) << "the wait is never bounded";
         }
         EXPECT_EQ(fake::console(), "init: `sensor` is dead and released\n");
     }
@@ -645,9 +646,10 @@ namespace
         fake::refuse("kos_irq_claim", -KOS_EAGAIN, kickos::init::CLAIM_RETRIES);
         expect_idle(run());
         EXPECT_EQ(fake::calls_of("kos_irq_claim").size(), kickos::init::CLAIM_RETRIES + 1u);
-        std::vector<fake::Call> const sleeps = fake::calls_of("kos_sleep_ns");
+        std::vector<fake::Call> const sleeps = fake::calls_of("kos_sleep_for");
         ASSERT_EQ(sleeps.size(), kickos::init::CLAIM_RETRIES);
-        EXPECT_EQ(sleeps[0].args[0], kickos::init::CLAIM_RETRY_NS);
+        EXPECT_EQ(sleeps[0].args[0],
+                  static_cast<uint64_t>(std::chrono::nanoseconds(kickos::init::CLAIM_RETRY).count()));
         EXPECT_TRUE(fake::slays().empty());
         EXPECT_EQ(starts("sensor"), 1u);
         EXPECT_EQ(status("sensor").deaths, 0u);
@@ -658,7 +660,7 @@ namespace
         use("alarm");
         fake::refuse("kos_irq_claim", -KOS_EAGAIN, kickos::init::CLAIM_RETRIES + 1u);
         expect_idle(run());
-        EXPECT_EQ(fake::calls_of("kos_sleep_ns").size(), kickos::init::CLAIM_RETRIES);
+        EXPECT_EQ(fake::calls_of("kos_sleep_for").size(), kickos::init::CLAIM_RETRIES);
         EXPECT_TRUE(fake::slays().empty()) << "the claim comes before the task";
         EXPECT_EQ(status("sensor").deaths, 1u);
         EXPECT_EQ(starts("sensor"), 1u) << "its restart claims at once";
@@ -1256,7 +1258,9 @@ namespace
             if (c.args[1] != 0u)
             {
                 lines++;
-                EXPECT_EQ(c.args[2], kickos::driver::KOS_DRV_HANDOVER_PROBE_US);
+                EXPECT_EQ(c.args[2] - c.at, static_cast<uint64_t>(std::chrono::nanoseconds(
+                                                 kickos::driver::KOS_DRV_HANDOVER_PROBE)
+                                                 .count()));
                 EXPECT_EQ(c.result, -KOS_ETIMEDOUT);
             }
         }

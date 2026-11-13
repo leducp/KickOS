@@ -80,7 +80,37 @@ extern "C++"
 void kos_print(char const* s);
 
 void kos_yield(void);
-void kos_sleep_ns(uint64_t ns);
+// Sleep for `d`, or until the monotonic clock reads `until`. Zero or less, or a deadline already
+// read, yields; neither parks. KOS_FOREVER and KOS_NEVER sleep until cancelled.
+void kos_sleep_for(kos_duration_t d);
+void kos_sleep_until(kos_monotonic_t until);
+
+// The monotonic clock, nanoseconds since boot, which nothing sets. Where KICKOS_CLOCK_USER is
+// set, a counter read in user mode with no kernel entry, and so no death point of a kill.
+int64_t kickos_monotonic_now(void);
+static inline __attribute__((always_inline)) kos_monotonic_t kos_monotonic_now(void)
+{
+    kos_monotonic_t t = {kickos_monotonic_now()};
+    return t;
+}
+// The realtime clock in Unix-epoch nanoseconds: the monotonic clock plus one offset the kernel
+// keeps for every task, and on an AMP partition whose nodes read one counter for every node; it
+// reads boot-relative until a set. gettimeofday, time and clock_gettime(CLOCK_REALTIME) read it;
+// kos_monotonic_now and clock_gettime(CLOCK_MONOTONIC) never move with it.
+int64_t kickos_realtime_now(void);
+static inline __attribute__((always_inline)) kos_realtime_t kos_realtime_now(void)
+{
+    kos_realtime_t t = {kickos_realtime_now()};
+    return t;
+}
+// Set the realtime clock to `t`. A realtime deadline already waited on moves with it. 0, or
+// -KOS_EPERM (no KOS_AUTH_REALTIME).
+int kos_realtime_set(kos_realtime_t t);
+
+// Every wait below takes a deadline on the monotonic clock: KOS_NEVER for none, and one already
+// read, KOS_POLL included, is an immediate try that never parks. A limited wait never ends with
+// -KOS_ETIMEDOUT before kos_monotonic_now reads its deadline; it may end later by the counter's
+// resolution, the timer's minimum delta and scheduling.
 
 // Counting semaphore: a kos_sem_t (abi.h) in memory every thread sharing it can write, statically
 // KOS_SEM_INIT(n), with no kernel object, capability or create call. An uncontended wait and post
@@ -92,12 +122,12 @@ void kos_sleep_ns(uint64_t ns);
 // 0, or -KOS_EINVAL for an initial count above KOS_SEM_COUNT_MAX. A plain store: no thread may
 // wait on the word meanwhile.
 int kos_sem_init(kos_sem_t* s, uint32_t initial);
-// 0 with a unit taken, waiting at most timeout_us relative microseconds for one
-// (KOS_TIMEOUT_NONE: forever; zero: only a unit already banked). -KOS_ETIMEDOUT when none came
-// in time and -KOS_ECANCELED when the waiter is cancelled, both holding no unit and leaving the
-// count alone, so a post that lost the race to the deadline is banked for the next wait.
-// -KOS_EINVAL / -KOS_EFAULT for a word the kernel refuses (kos_word_wait).
-int kos_sem_wait(kos_sem_t* s, uint32_t timeout_us);
+// 0 with a unit taken, waiting until `until` for one (a passed deadline: only a unit already
+// banked). -KOS_ETIMEDOUT when none came in time and -KOS_ECANCELED when the waiter is cancelled,
+// both holding no unit and leaving the count alone, so a post that lost the race to the deadline
+// is banked for the next wait. -KOS_EINVAL / -KOS_EFAULT for a word the kernel refuses
+// (kos_word_wait).
+int kos_sem_wait(kos_sem_t* s, kos_monotonic_t until);
 // 0, or -KOS_EOVERFLOW with no waiter and the count at KOS_SEM_COUNT_MAX, the unit not banked, or
 // -KOS_EINVAL / -KOS_EFAULT as above. Never a death point of a cancel.
 int kos_sem_post(kos_sem_t* s);
@@ -105,7 +135,7 @@ int kos_sem_post(kos_sem_t* s);
 // The kernel's plain word pair, which kos_sem_wait and kos_sem_post are built on (abi.h,
 // KOS_SYS_WORD_WAIT and KOS_SYS_WORD_WAKE): park while *word holds `expected`, and wake up to n
 // waiters handing `units` of them a unit.
-int kos_word_wait(uint32_t* word, uint32_t expected, uint32_t timeout_us);
+int kos_word_wait(uint32_t* word, uint32_t expected, kos_monotonic_t until);
 int kos_word_wake(uint32_t* word, uint32_t n, uint32_t units);
 
 // Priority-inheritance mutex: a kos_mutex_t (abi.h) in memory every thread sharing it can write,
@@ -118,10 +148,9 @@ int kos_word_wake(uint32_t* word, uint32_t n, uint32_t units);
 // a kill only when it enters the kernel, on a word held or left by a dead holder; an
 // unlock never is, for a kill or a slay alike: a holder that reaches it releases first.
 //
-// Acquire, waiting at most timeout_us relative microseconds for a holder to release it, counted
-// from the park, so re-reads of a word other threads keep changing are not charged to it
-// (KOS_TIMEOUT_NONE: forever; zero: a try, which lends the holder no priority). ALL
-// error-shaped codes are negative (see <kickos/sys/errno.h>):
+// Acquire, waiting until `until` for a holder to release it (a passed deadline: a try, which
+// lends the holder no priority). ALL error-shaped codes are negative (see
+// <kickos/sys/errno.h>):
 //   0               acquired, protected state consistent
 //   -KOS_EOWNERDEAD acquired and the lock IS HELD, but the previous holder died holding it and
 //                   the state may be torn: repair the invariant, then unlock as normal. The
@@ -138,7 +167,7 @@ int kos_word_wake(uint32_t* word, uint32_t n, uint32_t units);
 // A misplaced word may instead fault in the compare-and-swap, before any kernel entry. A
 // negative return does NOT uniformly mean "not held": treating every rc < 0 as a failed acquire
 // STRANDS the mutex on the -KOS_EOWNERDEAD path.
-int kos_mutex_lock(kos_mutex_t* m, uint32_t timeout_us);
+int kos_mutex_lock(kos_mutex_t* m, kos_monotonic_t until);
 // 0, or -KOS_EPERM (the caller is not the holder), or -KOS_EINVAL / -KOS_EFAULT as above. Only
 // the holder unlocks.
 int kos_mutex_unlock(kos_mutex_t* m);
@@ -149,10 +178,10 @@ int kos_mutex_unlock(kos_mutex_t* m);
 // among equals, and a broadcast every waiter. A word in memory two address spaces share is one
 // condition across them.
 //
-// Release m, which the caller holds, wait for a signal or a broadcast at most timeout_us relative
-// microseconds counted from the park (KOS_TIMEOUT_NONE: forever; zero: release and re-take
-// only), then re-take m however long that takes. A signal sent after the release and before the
-// park still ends the wait. A return of 0 does not prove a signal: test the predicate again.
+// Release m, which the caller holds, wait for a signal or a broadcast until `until` (a passed
+// deadline: release and re-take only), then re-take m however long that takes. A signal sent
+// after the release and before the park still ends the wait. A return of 0 does not prove a
+// signal: test the predicate again.
 //   0               woken, or spuriously, m held
 //   -KOS_ETIMEDOUT  the time ran out, m held
 //   -KOS_EOWNERDEAD m held, but a holder died holding it meanwhile: as kos_mutex_lock
@@ -161,14 +190,13 @@ int kos_mutex_unlock(kos_mutex_t* m);
 //                   re-take without it
 // A wait is a death point of a kill: a waiter cancelled while parked ends at the re-take's
 // kernel entry, so it never takes m on its way out and leaves the condition usable.
-int kos_cond_wait(kos_cond_t* c, kos_mutex_t* m, uint32_t timeout_us);
-// kos_word_wait, kos_mutex_lock and kos_cond_wait toward a deadline on the wall clock, `unix_ns`
-// Unix-epoch nanoseconds (abi.h, KOS_TIMEOUT_REALTIME) in place of a timeout: the wait ends once
-// kos_clock_realtime reads it, a set of the wall clock while it waits moving it as POSIX
-// clock_settime asks, and one already reached waits as a timeout of 0.
-int kos_word_wait_realtime(uint32_t* word, uint32_t expected, uint64_t unix_ns);
-int kos_mutex_lock_realtime(kos_mutex_t* m, uint64_t unix_ns);
-int kos_cond_wait_realtime(kos_cond_t* c, kos_mutex_t* m, uint64_t unix_ns);
+int kos_cond_wait(kos_cond_t* c, kos_mutex_t* m, kos_monotonic_t until);
+// kos_word_wait, kos_mutex_lock and kos_cond_wait toward a deadline on the realtime clock: the
+// wait ends once kos_realtime_now reads it, a set of the clock while it waits moving it as POSIX
+// clock_settime asks, and one already read is a try.
+int kos_word_wait_realtime(uint32_t* word, uint32_t expected, kos_realtime_t until);
+int kos_mutex_lock_realtime(kos_mutex_t* m, kos_realtime_t until);
+int kos_cond_wait_realtime(kos_cond_t* c, kos_mutex_t* m, kos_realtime_t until);
 // Wake one waiter, or every waiter. 0, or -KOS_EINVAL / -KOS_EFAULT for a word the kernel
 // refuses. Never a death point of a cancel. A signal sent without holding the mutex may wake a
 // thread that began its wait after the signal, in place of one already waiting.
@@ -206,9 +234,9 @@ int kos_endpoint_badge(kos_cap_t source_cap, uint32_t badge, kos_cap_t* out_cap)
 // EFAULT (out), EINVAL (a node outside the partition, an unknown id).
 int kos_amp_count(uint32_t node, uint32_t which, uint32_t* out);
 #endif
-// Send `len` bytes, waiting for a receiver at most `timeout_us` RELATIVE microseconds, or
-// indefinitely if that is KOS_TIMEOUT_NONE. The deadline bounds the PARK only: a receiver already
-// waiting rendezvouses regardless of it, and a timeout of 0 never parks. Returns bytes
+// Send `len` bytes, waiting for a receiver until `until`. The deadline bounds the PARK only: a
+// receiver already waiting rendezvouses regardless of it, and a passed one never parks. Returns
+// bytes
 // transferred or -KOS_E*: EINVAL for len > KOS_EP_MSG_MAX, EFAULT for an invalid buffer,
 // EBADF/EACCES for an invalid capability or missing SIGNAL right, EAGAIN for an endpoint with no
 // receiver while a holder of KOS_CAP_HANDOUT remains, or for a far endpoint whose peer ring is
@@ -222,14 +250,14 @@ int kos_amp_count(uint32_t node, uint32_t which, uint32_t* out);
 // For all IPC copies, either buffer may become inaccessible after validation.
 // Both parties receive EFAULT; any bytes already copied remain changed.
 // See docs/reference/ipc-call-reply.md for partial-copy behavior.
-int32_t kos_send(kos_cap_t ep, void const* buf, size_t len, uint32_t timeout_us);
+int32_t kos_send(kos_cap_t ep, void const* buf, size_t len, kos_monotonic_t until);
 // Receive through kos_reply_recv with KOS_CAP_NONE as the reply capability.
 
 // Synchronous call/reply. Delivers `send_len` request bytes and blocks until the server
 // replies into the SAME buffer, in place, up to `recv_cap`; a one-shot reply cap is minted
-// in the server's recv info. The call gives up after `timeout_us` RELATIVE microseconds, or never
-// if that is KOS_TIMEOUT_NONE, and the deadline bounds the WHOLE call, both phases: the wait for
-// a server to take the request AND the wait for its reply. -> reply bytes (>= 0), or a negative
+// in the server's recv info. The call gives up at `until`, and the deadline bounds the WHOLE
+// call, both phases: the wait for a server to take the request AND the wait for its reply.
+// -> reply bytes (>= 0), or a negative
 // -KOS_E*: EINVAL (request > KOS_EP_MSG_MAX), EFAULT (bad buffer), EBADF/EACCES (bad cap / no
 // SIGNAL), EAGAIN (no receiver while a holder of KOS_CAP_HANDOUT remains, or a far endpoint's
 // peer ring is full: nothing sent, try again), ECONNREFUSED (no receiver and nothing left that
@@ -238,12 +266,13 @@ int32_t kos_send(kos_cap_t ep, void const* buf, size_t len, uint32_t timeout_us)
 // no calls), ETIMEDOUT (the deadline passed and NO reply was received). A request already taken
 // by a server stays taken: its eventual kos_reply gets -KOS_ESRCH and the reply cap is consumed
 // there. Nothing is retried and no bytes land in the buffer after a timeout returns.
-int32_t kos_call(kos_cap_t ep, void* buf, size_t send_len, size_t recv_cap, uint32_t timeout_us);
+int32_t kos_call(kos_cap_t ep, void* buf, size_t send_len, size_t recv_cap,
+                 kos_monotonic_t until);
 // The same call, always through the buffer-carrying trap, never the register form: identical
 // arguments, identical result, identical in-place reply. It is the arm kos_call itself falls
 // through to.
 int32_t kos_call_generic(kos_cap_t ep, void* buf, size_t send_len, size_t recv_cap,
-                         uint32_t timeout_us);
+                         kos_monotonic_t until);
 
 // Complete the call named by `reply_cap` (from kos_recv_info.reply_cap): copy `len` reply
 // bytes to the parked caller and wake it. The cap is ONE-SHOT, consumed here; a server loop
@@ -263,11 +292,11 @@ int kos_reply_recv(kos_cap_t reply_cap, void* buf, uintptr_t lens,
 
 // Wait until the console driver holding this thread's stdout has written every byte sent to it
 // before, as far as its device can tell: a KOS_UART_DRAIN call on KOS_CAP_STDOUT, the whole call
-// bounded by `timeout_us` as kos_call bounds it (docs/reference/console.md). Bytes stdio still
+// bounded by `until` as kos_call bounds it (docs/reference/console.md). Bytes stdio still
 // buffers were never sent: fflush(stdout) first. -> 0 once drained, the driver's -KOS_EBUSY where
 // its own bound expired first, or the call's -KOS_E*: EBADF where stdout is the kernel console,
 // ETIMEDOUT where no answer came in time, EIO for an answer shorter than a reply.
-int32_t kos_console_flush(uint32_t timeout_us);
+int32_t kos_console_flush(kos_monotonic_t until);
 
 // Drop THIS thread's capability. Type-agnostic and refcounted: the underlying object is
 // destroyed only at the LAST close across all holders, and a close touches no waiters.
@@ -305,14 +334,14 @@ void kos_exit(int code) __attribute__((noreturn));
 //                    reached.
 //   KOS_CANCEL_SLAY  forced. The target gets no device-cleanup window and must be scheduled for
 //                    teardown.
-// A timeout of 0 answers 0 once the cancel is raised, which does not confirm death. Any other
-// waits at most timeout_us relative microseconds (KOS_TIMEOUT_NONE: forever) for the target to be
-// gone, and answers 0 after its exit, capability teardown and name release, -KOS_ETIMEDOUT with
-// the cancel irreversible and cleanup pending, or -KOS_ECANCELED when the waiting caller was
-// cancelled; the target is cancelled all the same. Other errors: -KOS_EBADF for an invalid or
+// KOS_POLL answers 0 once the cancel is raised, which does not confirm death. Any other deadline
+// waits until `until` for the target to be gone, and answers 0 after its exit, capability
+// teardown and name release, -KOS_ETIMEDOUT with the cancel irreversible and cleanup pending (a
+// deadline already passed included), or -KOS_ECANCELED when the waiting caller was cancelled;
+// the target is cancelled all the same. Other errors: -KOS_EBADF for an invalid or
 // exited handle, -KOS_EPERM for a different parent, -KOS_EINVAL for self (use kos_exit), idle or
 // an unknown kind. A task's entry thread dying this way ends its task (kos_task_slay).
-int kos_thread_cancel(kos_thread_t thread, enum kos_cancel kind, uint32_t timeout_us);
+int kos_thread_cancel(kos_thread_t thread, enum kos_cancel kind, kos_monotonic_t until);
 
 // Set the cores a thread of the caller's task may run on, and answer the mask it now runs on;
 // another task's thread is refused. A nonzero mask intersects the machine and the task grant and
@@ -337,8 +366,8 @@ uint32_t kickos_self_lock_id(void);
 // The contended entry of kos_mutex_lock alone, with no compare-and-swap first: a waiter whose
 // wait was cancelled asks again here, so the kernel ends it at an entry and it never takes a
 // lock freed meanwhile with no entry at all.
-int kickos_mutex_lock_entry(kos_mutex_t* m, uint32_t timeout_us);
-int kickos_mutex_lock_entry_realtime(kos_mutex_t* m, uint64_t unix_ns);
+// `limit` and `kind` as KOS_SYS_MUTEX_LOCK takes them (abi.h).
+int kickos_mutex_lock_entry(kos_mutex_t* m, uint64_t limit, uint32_t kind);
 // Set the CALLING thread's base priority. Lowering is always allowed; raising is allowed up to
 // the calling task's declared priority ceiling. A thread boosted by priority
 // inheritance keeps the boost: the call moves the base it falls back to once the boost ends. A
@@ -377,19 +406,18 @@ int kos_program_find(char const* name, kos_program_t* out_prog);
 // of it after its first incarnation started answers -KOS_EPERM.
 // An instance whose last incarnation has ended and is not yet dead, its members still running
 // to their deaths or sweeping, a declared line still retiring from its last holder, or an IRQ
-// binding the last incarnation released still retiring: a timeout of 0 answers -KOS_EAGAIN, any
-// other waits at most timeout_us relative microseconds (KOS_TIMEOUT_NONE: forever) for it to
-// pass, then starts the instance.
+// binding the last incarnation released still retiring: a passed deadline answers -KOS_EAGAIN,
+// any other waits until `until` for it to pass, then starts the instance.
 // Returns 0 and out_task, or -KOS_ENOENT (no such instance), -KOS_EBUSY (it is live),
 // -KOS_ENOMEM (every instance the caller may start is live, or a pool), -KOS_EAGAIN (as above,
-// with a timeout of 0, or a budget as kos_thread_create's), -KOS_ETIMEDOUT, -KOS_ECANCELED (the
+// with a passed deadline, or a budget as kos_thread_create's), -KOS_ETIMEDOUT, -KOS_ECANCELED (the
 // caller was cancelled while it waited), -KOS_EPERM, -KOS_EINVAL, -KOS_EFAULT and the rest of
 // kos_thread_create's codes, with KOS_TASK_NONE. With no instance named and none startable:
 // -KOS_EAGAIN, or the wait, where one is still dying, else -KOS_ENOMEM where one the caller may
 // start is live, else the refusal naming the first one answers, and -KOS_ENOENT for a program
 // that declares none.
 int kos_task_create(kos_program_t prog, struct kos_task_params const* params,
-                    uint32_t timeout_us, kos_task_t* out_task);
+                    kos_monotonic_t until, kos_task_t* out_task);
 
 // Watch a task YOU created: `notify_cap`'s badge is raised when the task ends, when it is dead,
 // every member's teardown done, and the first time a member waits to receive on `ready_ep`
@@ -399,7 +427,7 @@ int kos_task_create(kos_program_t prog, struct kos_task_params const* params,
 // object, not the capability:
 // closing notify_cap does not end it, and it reaches whoever still holds or is bound to the object.
 // The task's slot being freed ends it, as does re-arming, or disarming with KOS_CAP_NONE. A
-// creator's hold keeps the task's slot: release it with kos_task_slay of timeout 0 before
+// creator's hold keeps the task's slot: release it with kos_task_slay(task, KOS_POLL) before
 // creating the next instance. Returns 0, -KOS_EBADF, -KOS_EPERM (not the creator) or -KOS_EACCES
 // (notify_cap lacks SIGNAL).
 int kos_task_watch(kos_task_t task, kos_cap_t notify_cap, kos_cap_t ready_ep);
@@ -499,22 +527,22 @@ int kos_port_reg_write(uint16_t base, uint16_t offset, uint8_t value);
 // or kos_thread_cancel of the entry alone, the entry being the first member a non-member seated,
 // or when any member faults: every other member is stopped as here, and it takes no new member.
 // Every other member's own death ends that member alone.
-// A timeout of 0 drops your hold on the task at once, so the handle stops naming anything, and
-// answers 0: the stop is committed, not every member gone. Any other waits timeout_us relative
-// microseconds (KOS_TIMEOUT_NONE: forever) and answers 0 once the task is empty, every member's
-// teardown done, and released.
-// ETIMEDOUT leaves termination pending and the handle valid for another wait. ECANCELED cancels
+// KOS_POLL drops your hold on the task at once, so the handle stops naming anything, and answers
+// 0: the stop is committed, not every member gone. Any other deadline waits until `until` and
+// answers 0 once the task is empty, every member's teardown done, and released.
+// ETIMEDOUT, a deadline already passed included, leaves termination pending and the handle valid
+// for another wait. ECANCELED cancels
 // only the wait. Other errors: EBADF for an invalid task, KOS_TASK_NONE included, EPERM
 // for a caller that did not create it, a member of the task included. Error codes are negative.
-int kos_task_slay(kos_task_t task, uint32_t timeout_us);
+int kos_task_slay(kos_task_t task, kos_monotonic_t until);
 
-// Wait for a thread of the caller's task, or one the caller created, with a relative
-// microsecond timeout or KOS_TIMEOUT_NONE, until it is gone by any path: its slot and its
+// Wait for a thread of the caller's task, or one the caller created, until `until`, for it to be
+// gone by any path: its slot and its
 // task's thread budget are free again on return. Returns 0 if exited, including before this
 // call, whoever asks. Returns -KOS_E*: ETIMEDOUT if still running, ECANCELED if the caller is
 // cancelled, EBADF for an invalid/reused slot, EPERM for another task's running thread the caller
 // did not create, EDEADLK for self. Handles remain valid after exit until the slot is reused.
-int kos_thread_join(kos_thread_t thread, uint32_t timeout_us);
+int kos_thread_join(kos_thread_t thread, kos_monotonic_t until);
 
 // End the WHOLE system with `status`, by `outcome`: drain the kernel console, then halt
 // (what a returning kickos_init_entry does, see <kickos/sys/init.h>), reset, or reset into the
@@ -609,18 +637,14 @@ int kos_notify_bind(kos_cap_t notify_cap);
 // Give the binding up. Unconsumed bits are LEFT pending for the next server, which is how a
 // driver hands its device over. -KOS_EPERM where the caller is not the bound thread.
 int kos_notify_unbind(kos_cap_t notify_cap);
-// Wait for any bit of `mask`, consuming and returning them in *out_bits. Every attached line
-// whose badge is in `mask` is rearmed on entry, so a driver that never acks still receives
-// every later interrupt. `timeout_us` is relative; KOS_TIMEOUT_NONE waits forever.
-// 0, or -KOS_E*: EBADF, EACCES (no KOS_CAP_WAIT), EPERM (the caller is not the bound thread,
-// or its own core mask is not exactly the core the attached lines were claimed on), EINVAL
-// (an empty mask), EFAULT, ETIMEDOUT, ECANCELED. A bit is taken only once written to
-// *out_bits, so an EFAULT leaves every bit pending. *out_bits reads 0 on every error.
-int kos_notify_wait(kos_cap_t notify_cap, uint32_t mask, uint32_t timeout_us,
-                    uint32_t* out_bits);
-// Monotonic nanoseconds. Where KICKOS_CLOCK_USER is set, a counter read in user mode with no
-// kernel entry, and so no death point of a kill.
-uint64_t kos_clock_now(void);
+// Wait on the notification the caller is bound to (kos_notify_bind), the bind being the authority
+// to receive, for any bit of `mask`, consuming them and returning them in *out_bits where it is
+// not NULL. Every attached line whose badge is in `mask` is rearmed on entry, so a driver that
+// never acks still receives every later interrupt.
+// 0, or -KOS_E*: EINVAL (an empty mask), EPERM (the caller is bound to nothing, or its own core
+// mask is not exactly the core the attached lines were claimed on), ETIMEDOUT, ECANCELED.
+// *out_bits reads 0 on every error.
+int kos_notify_wait(uint32_t mask, kos_monotonic_t until, uint32_t* out_bits);
 
 // Running core clock in Hz. 0 if the backend has no silicon core clock (host sim, QEMU virt).
 // On x86_64, the timestamp counter's rate.
@@ -675,15 +699,6 @@ int kos_pinmux_set(uint32_t port, uint32_t pin, uint32_t func);
 // when the chip cannot change its clock, the caller lacks that authority, or a userspace
 // driver owns the console (a retune would garble a baud the kernel cannot relocate).
 uint64_t kos_cpu_clock_set(kos_pstate_t pstate);
-
-// The wall clock in Unix-epoch nanoseconds: kos_clock_now() plus one offset the kernel keeps for
-// every task, and on an AMP partition whose nodes read one counter for every node; it reads
-// boot-relative until a set. gettimeofday, time and clock_gettime(CLOCK_REALTIME) read it;
-// kos_clock_now and clock_gettime(CLOCK_MONOTONIC) never move with it.
-uint64_t kos_clock_realtime(void);
-
-// Set the wall clock to unix_ns. 0, or -KOS_EPERM (no KOS_AUTH_REALTIME).
-int kos_clock_set_realtime(uint64_t unix_ns);
 
 // Reserve page-aligned user RAM for this task; returns NULL on exhaustion.
 // Reservation alone grants no access. Pass it to spawn/task creation or

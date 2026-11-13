@@ -227,10 +227,11 @@ namespace
         if (kos_program_find("libcmix_peer", &prog) == 0
             and kickos::apps::create_peer(prog, params, &task) == 0)
         {
-            while (kickos::apps::wait_dead(task, &status, 1000u) == -KOS_ETIMEDOUT)
+            while (kickos::apps::wait_dead(task, &status, std::chrono::seconds{1})
+                   == -KOS_ETIMEDOUT)
             {
             }
-            (void)kos_task_slay(task, 0);
+            (void)kos_task_slay(task, KOS_POLL);
         }
         if (prog != KOS_CAP_NONE)
         {

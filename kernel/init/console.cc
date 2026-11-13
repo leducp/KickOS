@@ -134,10 +134,10 @@ namespace
 
     // A record line's wait for ring room ends once this long passes with no byte leaving the
     // ring: the channel is wedged, and the dying thread drops the line rather than stay alive.
-    constexpr uint32_t RECORD_STALL_US = 50000u;
+    constexpr uint64_t RECORD_STALL_NS = 50000000u;
 
     // How often a writer a polled line refused offers again: that writer wakes nobody.
-    constexpr uint32_t LINE_RETRY_US = 1000u;
+    constexpr uint64_t LINE_RETRY_NS = 1000000u;
 
 #if KICKOS_CONSOLE_CHIP
     // Who speaks on a console written outside the ring: the context inside a polled or claimed
@@ -852,7 +852,7 @@ namespace kickos
                 woke = console_claim_wait();
 #else
                 woke = console_room_wait(console_tx_line_needed(buf, n, KICKOS_CONSOLE_CRLF),
-                                         KOS_TIMEOUT_NONE);
+                                         KOS_LIMIT_NONE);
 #endif
             }
             if (woke < 0)
@@ -1010,12 +1010,12 @@ namespace kickos
         (void)need;
         return console_claim_wait() == 0;
 #else
-        return console_room_wait(need, RECORD_STALL_US) == 0;
+        return console_room_wait(need, RECORD_STALL_NS) == 0;
 #endif
     }
 
 #if KICKOS_CONSOLE_CHIP
-    uint32_t console_line_wait(Thread const* t, Held held)
+    uint64_t console_line_wait(Thread const* t, Held held)
     {
         if (not line_taken(t, held))
         {
@@ -1025,26 +1025,26 @@ namespace kickos
         // A record's line ends waking nobody, and the record's end wakes every writer.
         if (line().record != nullptr)
         {
-            return LINE_RETRY_US;
+            return LINE_RETRY_NS;
         }
         if (line().records != 0 and line().writer == nullptr)
         {
-            return KOS_TIMEOUT_NONE;
+            return KOS_LIMIT_NONE;
         }
 #if KICKOS_AMP_CONSOLE_CLAIM
         if (line().writer == nullptr)
         {
-            return arch_console_claim_left();
+            return static_cast<uint64_t>(arch_console_claim_left()) * 1000u;
         }
 #endif
         if (not line().writer_wakes)
         {
-            return LINE_RETRY_US;
+            return LINE_RETRY_NS;
         }
-        return KOS_TIMEOUT_NONE;
+        return KOS_LIMIT_NONE;
     }
 #else
-    uint32_t console_line_wait(Thread const*, Held)
+    uint64_t console_line_wait(Thread const*, Held)
     {
         return 0;
     }

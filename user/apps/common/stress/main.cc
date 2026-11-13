@@ -54,7 +54,7 @@ namespace
     long g_handoffs = 0;     // total ping-pong handoffs; expect 2*pairs*ROUNDS
     long g_churn_runs = 0;   // total churn-worker runs; expect live*CHURN_GENERATIONS
 
-    void lock() { kos_sem_wait(&g_mtx, KOS_TIMEOUT_NONE); }
+    void lock() { kos_sem_wait(&g_mtx, KOS_NEVER); }
     void unlock() { kos_sem_post(&g_mtx); }
 
     // The linger keeps the slot held past the post, so a spawn on the post alone finds the budget
@@ -62,7 +62,7 @@ namespace
     void done()
     {
         kos_sem_post(&g_done);
-        kos_sleep_ns(LINGER_NS);
+        kos_sleep_for(kos_ns(LINGER_NS));
     }
 
     // Per-thread LCG (seeded off the thread index): deterministic, no shared state.
@@ -80,15 +80,15 @@ namespace
         kos_sem_t* const a = &g_pair_a[i];
         kos_sem_t* const b = &g_pair_b[i];
         // The kick: the token enters A only once every worker of the round exists.
-        kos_sem_wait(&g_start, KOS_TIMEOUT_NONE);
+        kos_sem_wait(&g_start, KOS_NEVER);
         kos_sem_post(a);
         for (int r = 0; r < ROUNDS; r++)
         {
-            kos_sem_wait(a, KOS_TIMEOUT_NONE);
+            kos_sem_wait(a, KOS_NEVER);
             // Occasional nap: interleave the sem path with the tickless one-shot.
             if ((r & 63) == 0)
             {
-                kos_sleep_ns(NAP_MIN_NS + (lcg(&seed) % NAP_SPAN_NS));
+                kos_sleep_for(kos_ns(NAP_MIN_NS + (lcg(&seed) % NAP_SPAN_NS)));
             }
             kos_sem_post(b);
             lock();
@@ -105,7 +105,7 @@ namespace
         kos_sem_t* const b = &g_pair_b[i];
         for (int r = 0; r < ROUNDS; r++)
         {
-            kos_sem_wait(b, KOS_TIMEOUT_NONE);
+            kos_sem_wait(b, KOS_NEVER);
             kos_sem_post(a);
             lock();
             g_handoffs++;
@@ -120,7 +120,7 @@ namespace
         uint32_t seed = 0x1234567u + static_cast<uint32_t>(i) * 40503u;
         for (int j = 0; j < NAPS; j++)
         {
-            kos_sleep_ns(NAP_MIN_NS + (lcg(&seed) % NAP_SPAN_NS));
+            kos_sleep_for(kos_ns(NAP_MIN_NS + (lcg(&seed) % NAP_SPAN_NS)));
             lock();
             g_naps_done++;
             unlock();
@@ -150,7 +150,7 @@ namespace
     // until one is refused, so the live count == the board's concurrent thread pool.
     void prober(void*)
     {
-        kos_sem_wait(&g_gate, KOS_TIMEOUT_NONE);
+        kos_sem_wait(&g_gate, KOS_NEVER);
         done();
     }
 
@@ -189,7 +189,7 @@ namespace
         }
         for (int i = 0; i < n; i++)
         {
-            kos_sem_wait(&g_done, KOS_TIMEOUT_NONE);
+            kos_sem_wait(&g_done, KOS_NEVER);
         }
         join_spawned(n);
         return n;
@@ -217,11 +217,11 @@ int run_stress_round(int pairs, int sleepers, int live)
         (void)kos_sem_init(&g_pair_b[i], 0);
         uint8_t prio = static_cast<uint8_t>(8 + i);
         uint8_t policy = KOS_POLICY_FIFO;
-        uint32_t quantum = 0;
+        std::chrono::nanoseconds quantum{0};
         if (i == pairs - 1)
         {
             policy = KOS_POLICY_RR;
-            quantum = 300000u; // 300 us
+            quantum = std::chrono::microseconds{300};
         }
         auto a = kos::thread::create(ping, reinterpret_cast<void*>(uintptr_t(i)), "ping",
                                      prio, policy, quantum);
@@ -270,7 +270,7 @@ int run_stress_round(int pairs, int sleepers, int live)
     // timeout catches it as a failure.
     for (int i = 0; i < spawned; i++)
     {
-        kos_sem_wait(&g_done, KOS_TIMEOUT_NONE);
+        kos_sem_wait(&g_done, KOS_NEVER);
     }
     join_spawned(spawned);
 
@@ -302,7 +302,7 @@ int run_stress_round(int pairs, int sleepers, int live)
         }
         for (int b = 0; b < batch; b++)
         {
-            kos_sem_wait(&g_done, KOS_TIMEOUT_NONE); // join only what this batch actually spawned
+            kos_sem_wait(&g_done, KOS_NEVER); // join only what this batch actually spawned
         }
         join_spawned(batch);
         if (batch != live)

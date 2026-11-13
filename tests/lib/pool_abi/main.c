@@ -16,7 +16,7 @@ static void parked(void* arg)
     (void)arg;
     while (true)
     {
-        kos_sem_wait(&g_never, KOS_TIMEOUT_NONE);
+        kos_sem_wait(&g_never, KOS_NEVER);
     }
 }
 

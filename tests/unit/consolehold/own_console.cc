@@ -79,7 +79,7 @@ TEST_F(ConsoleOwnTask, a_driver_thread_spawned_after_the_publish_has_no_stdout_a
             << "the console's own task got the console as its stdout";
         char const line[] = "line\n";
         EXPECT_EQ(endpoint_send(KOS_CAP_STDOUT, reinterpret_cast<uintptr_t>(line), 5,
-                                KOS_TIMEOUT_NONE),
+                                KOS_LIMIT_NONE),
                   -KOS_EBADF);
         g_member_parked = false;
         wake_next_park([](Thread*) { g_member_parked = true; });

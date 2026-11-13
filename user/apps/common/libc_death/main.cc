@@ -20,7 +20,7 @@ namespace
     constexpr uint8_t VICTIM_PRIO = 10;
     // How long main waits for the victim to park behind malloc's lock, in 1 ms steps.
     constexpr int PARK_POLLS = 2000;
-    constexpr uint32_t POLL_US = 1000;
+    constexpr std::chrono::milliseconds POLL{1};
 
     kos_sem_t g_entering = KOS_SEM_INIT(0);
     kos_sem_t g_returned = KOS_SEM_INIT(0);
@@ -65,7 +65,7 @@ namespace
             {
                 return true;
             }
-            if (kos_sem_wait(&g_returned, POLL_US) == 0)
+            if (kos_sem_wait(&g_returned, kos::after(POLL)) == 0)
             {
                 return false;
             }
@@ -90,14 +90,15 @@ int main(int, char**)
     kos::print("libc_death: start\n");
     __malloc_lock(_REENT);
     auto v = kos::thread::create(victim, nullptr, "victim", VICTIM_PRIO);
-    if (not v.valid() or kos_sem_wait(&g_entering, KOS_TIMEOUT_NONE) != 0)
+    if (not v.valid() or kos_sem_wait(&g_entering, KOS_NEVER) != 0)
     {
         __malloc_unlock(_REENT);
         kos::print("libc_death: the victim was refused\n");
         return 1;
     }
     bool const parked = parked_inside_the_call();
-    bool const killed = v.cancel(KOS_CANCEL_KILL, 0) == 0 and v.join() == 0;
+    bool const killed =
+        v.cancel_for(KOS_CANCEL_KILL, std::chrono::nanoseconds{0}) == 0 and v.join() == 0;
     __malloc_unlock(_REENT);
     if (not parked or not killed)
     {

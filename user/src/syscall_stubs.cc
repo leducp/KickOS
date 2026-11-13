@@ -26,9 +26,10 @@ extern "C"
 // The byte-count returns are pinned at 4 bytes on every target (see sys.h). sizeof on a call
 // expression is unevaluated, so these pin the DECLARED return type without emitting a trap.
 static_assert(sizeof(kos_kconsole_write(nullptr, 0, 0)) == 4, "must be exactly 4 bytes");
-static_assert(sizeof(kos_send(0, nullptr, 0, 0)) == 4, "must be exactly 4 bytes");
-static_assert(sizeof(kos_call(0, nullptr, 0, 0, 0)) == 4, "must be exactly 4 bytes");
-static_assert(sizeof(kos_call_generic(0, nullptr, 0, 0, 0)) == 4, "must be exactly 4 bytes");
+static_assert(sizeof(kos_send(0, nullptr, 0, KOS_NEVER)) == 4, "must be exactly 4 bytes");
+static_assert(sizeof(kos_call(0, nullptr, 0, 0, KOS_NEVER)) == 4, "must be exactly 4 bytes");
+static_assert(sizeof(kos_call_generic(0, nullptr, 0, 0, KOS_NEVER)) == 4,
+              "must be exactly 4 bytes");
 
 // arch_syscall returns at REGISTER width, so the narrowing casts below truncate. They are
 // exact: a transferred count is bounded by KOS_EP_MSG_MAX / the kernel's 4096-byte console
@@ -38,17 +39,28 @@ int32_t kos_kconsole_write(void const* buf, size_t len, uint32_t flags)
     return static_cast<int32_t>(arch_syscall(KOS_SYS_KCONSOLE_WRITE,
                                              reinterpret_cast<uintptr_t>(buf),
                                              static_cast<uintptr_t>(len),
-                                             static_cast<uintptr_t>(flags), 0));
+                                             static_cast<uintptr_t>(flags), 0, 0));
 }
 
 void kos_yield(void)
 {
-    arch_syscall(KOS_SYS_YIELD, 0, 0, 0, 0);
+    arch_syscall(KOS_SYS_YIELD, 0, 0, 0, 0, 0);
 }
 
-void kos_sleep_ns(uint64_t ns)
+static void sleep_limit(int64_t ns, uint32_t kind)
 {
-    arch_syscall(KOS_SYS_SLEEP_NS, kos_u64_lo(ns), kos_u64_hi(ns), 0, 0);
+    uint64_t const limit = kos_limit_word(ns);
+    arch_syscall(KOS_SYS_SLEEP, kos_u64_lo(limit), kos_u64_hi(limit), kind, 0, 0);
+}
+
+void kos_sleep_for(kos_duration_t d)
+{
+    sleep_limit(d.ns, KOS_LIMIT_RELATIVE);
+}
+
+void kos_sleep_until(kos_monotonic_t until)
+{
+    sleep_limit(until.ns, KOS_LIMIT_MONOTONIC);
 }
 
 // Holds the "always written" guarantee on the paths the kernel never reaches: a null or
@@ -65,7 +77,7 @@ int kos_endpoint_create(kos_cap_t* out_cap)
 {
     cap_out_clear(out_cap);
     return static_cast<int>(arch_syscall(KOS_SYS_ENDPOINT_CREATE,
-                                         reinterpret_cast<uintptr_t>(out_cap), 0, 0, 0));
+                                         reinterpret_cast<uintptr_t>(out_cap), 0, 0, 0, 0));
 }
 
 #if KICKOS_AMP_NODE
@@ -73,25 +85,27 @@ int kos_amp_count(uint32_t node, uint32_t which, uint32_t* out)
 {
     return static_cast<int>(arch_syscall(KOS_SYS_AMP_COUNT, static_cast<uintptr_t>(node),
                                          static_cast<uintptr_t>(which),
-                                         reinterpret_cast<uintptr_t>(out), 0));
+                                         reinterpret_cast<uintptr_t>(out), 0, 0));
 }
 #endif
 
-int32_t kos_send(kos_cap_t ep, void const* buf, size_t len, uint32_t timeout_us)
+int32_t kos_send(kos_cap_t ep, void const* buf, size_t len, kos_monotonic_t until)
 {
+    uint64_t const limit = kos_limit_word(until.ns);
     return static_cast<int32_t>(arch_syscall(KOS_SYS_SEND,
                                              static_cast<uintptr_t>(ep),
                                              reinterpret_cast<uintptr_t>(buf),
-                                             static_cast<uintptr_t>(len),
-                                             static_cast<uintptr_t>(timeout_us)));
+                                             static_cast<uintptr_t>(len), kos_u64_lo(limit),
+                                             kos_u64_hi(limit)));
 }
 
-int32_t kos_call(kos_cap_t ep, void* buf, size_t send_len, size_t recv_cap, uint32_t timeout_us)
+int32_t kos_call(kos_cap_t ep, void* buf, size_t send_len, size_t recv_cap,
+                 kos_monotonic_t until)
 {
 #if KICKOS_ARCH_HAS_IPC_FASTPATH
     // The caller-side selection is the deadline and the SIZE only; the kernel's refusals are
     // about STATE and live in the fastpath.
-    if (timeout_us == KOS_TIMEOUT_NONE and send_len <= (size_t)KOS_CALL_REG_BYTES
+    if (kos_limit_word(until.ns) == KOS_LIMIT_NONE and send_len <= (size_t)KOS_CALL_REG_BYTES
         and recv_cap <= (size_t)KOS_CALL_REG_BYTES)
     {
         uint32_t io[KOS_CALL_REG_WORDS + 3];
@@ -125,17 +139,18 @@ int32_t kos_call(kos_cap_t ep, void* buf, size_t send_len, size_t recv_cap, uint
         }
     }
 #endif
-    return kos_call_generic(ep, buf, send_len, recv_cap, timeout_us);
+    return kos_call_generic(ep, buf, send_len, recv_cap, until);
 }
 
 int32_t kos_call_generic(kos_cap_t ep, void* buf, size_t send_len, size_t recv_cap,
-                         uint32_t timeout_us)
+                         kos_monotonic_t until)
 {
+    uint64_t const limit = kos_limit_word(until.ns);
     return static_cast<int32_t>(arch_syscall(KOS_SYS_CALL,
                                              static_cast<uintptr_t>(ep),
                                              reinterpret_cast<uintptr_t>(buf),
                                              kos_call_lens_pack(send_len, recv_cap),
-                                             static_cast<uintptr_t>(timeout_us)));
+                                             kos_u64_lo(limit), kos_u64_hi(limit)));
 }
 
 int kos_reply(kos_cap_t reply_cap, void const* buf, size_t len)
@@ -143,15 +158,27 @@ int kos_reply(kos_cap_t reply_cap, void const* buf, size_t len)
     return static_cast<int>(arch_syscall(KOS_SYS_REPLY_RECV,
                                          static_cast<uintptr_t>(reply_cap),
                                          reinterpret_cast<uintptr_t>(buf),
-                                         kos_call_lens_pack(len, 0), 0));
+                                         kos_call_lens_pack(len, 0), 0, 0));
 }
 
-int kos_thread_cancel(kos_thread_t thread, enum kos_cancel kind, uint32_t timeout_us)
+// For the calls whose KOS_POLL is a mode of its own: a negative deadline is a passed one, never
+// that mode's word.
+static uint64_t kickos_limit_word_not_poll(int64_t ns)
 {
+    if (ns < 0)
+    {
+        return 1u;
+    }
+    return kos_limit_word(ns);
+}
+
+int kos_thread_cancel(kos_thread_t thread, enum kos_cancel kind, kos_monotonic_t until)
+{
+    uint64_t const limit = kickos_limit_word_not_poll(until.ns);
     return static_cast<int>(arch_syscall(KOS_SYS_THREAD_CANCEL,
                                          static_cast<uintptr_t>(thread),
-                                         static_cast<uintptr_t>(kind),
-                                         static_cast<uintptr_t>(timeout_us), 0));
+                                         static_cast<uintptr_t>(kind), kos_u64_lo(limit),
+                                         kos_u64_hi(limit), 0));
 }
 
 int kos_thread_affinity(kos_thread_t thread, uint32_t core_mask)
@@ -159,7 +186,7 @@ int kos_thread_affinity(kos_thread_t thread, uint32_t core_mask)
 #if KICKOS_KERNEL_CORES > 1
     return static_cast<int>(arch_syscall(KOS_SYS_THREAD_AFFINITY,
                                          static_cast<uintptr_t>(thread),
-                                         static_cast<uintptr_t>(core_mask), 0, 0));
+                                         static_cast<uintptr_t>(core_mask), 0, 0, 0));
 #else
     (void)thread;
     (void)core_mask;
@@ -181,7 +208,7 @@ int kos_core_current(void)
     __asm volatile("rdtscp" : "=a"(lo), "=d"(hi), "=c"(core));
     return static_cast<int>(core);
 #elif KICKOS_KERNEL_CORES > 1
-    return static_cast<int>(arch_syscall(KOS_SYS_CORE_CURRENT, 0, 0, 0, 0));
+    return static_cast<int>(arch_syscall(KOS_SYS_CORE_CURRENT, 0, 0, 0, 0, 0));
 #else
     return 0;
 #endif
@@ -191,7 +218,7 @@ int kos_task_cores(kos_task_t task)
 {
 #if KICKOS_KERNEL_CORES > 1
     return static_cast<int>(arch_syscall(KOS_SYS_TASK_CORES, static_cast<uintptr_t>(task), 0,
-                                         0, 0));
+                                         0, 0, 0));
 #else
     (void)task;
     return -KOS_ENOSYS;
@@ -213,72 +240,73 @@ kos_thread_t kos_thread_self(void)
 int kos_thread_set_priority(uint8_t priority)
 {
     return static_cast<int>(arch_syscall(KOS_SYS_THREAD_SET_PRIORITY,
-                                         static_cast<uintptr_t>(priority), 0, 0, 0));
+                                         static_cast<uintptr_t>(priority), 0, 0, 0, 0));
 }
 
 int kos_task_create(kos_program_t prog, struct kos_task_params const* params,
-                    uint32_t timeout_us, kos_task_t* out_task)
+                    kos_monotonic_t until, kos_task_t* out_task)
 {
     if (out_task != NULL)
     {
         *out_task = KOS_TASK_NONE;
     }
+    uint64_t const limit = kos_limit_word(until.ns);
     return static_cast<int>(arch_syscall(KOS_SYS_TASK_CREATE, static_cast<uintptr_t>(prog),
                                          reinterpret_cast<uintptr_t>(params),
                                          reinterpret_cast<uintptr_t>(out_task),
-                                         static_cast<uintptr_t>(timeout_us)));
+                                         kos_u64_lo(limit), kos_u64_hi(limit)));
 }
 
 int kos_program_find(char const* name, kos_program_t* out_prog)
 {
     cap_out_clear(out_prog);
     return static_cast<int>(arch_syscall(KOS_SYS_PROGRAM_FIND, reinterpret_cast<uintptr_t>(name),
-                                         reinterpret_cast<uintptr_t>(out_prog), 0, 0));
+                                         reinterpret_cast<uintptr_t>(out_prog), 0, 0, 0));
 }
 
 int kos_task_watch(kos_task_t task, kos_cap_t notify_cap, kos_cap_t ready_ep)
 {
     return static_cast<int>(arch_syscall(KOS_SYS_TASK_WATCH, static_cast<uintptr_t>(task),
                                          static_cast<uintptr_t>(notify_cap),
-                                         static_cast<uintptr_t>(ready_ep), 0));
+                                         static_cast<uintptr_t>(ready_ep), 0, 0));
 }
 
 int kos_task_state(kos_task_t task, int* status)
 {
     return static_cast<int>(arch_syscall(KOS_SYS_TASK_STATE, static_cast<uintptr_t>(task),
-                                         reinterpret_cast<uintptr_t>(status), 0, 0));
+                                         reinterpret_cast<uintptr_t>(status), 0, 0, 0));
 }
 
 int kos_window_get(uint32_t index, struct kos_window* out)
 {
     return static_cast<int>(arch_syscall(KOS_SYS_WINDOW_GET, index,
-                                         reinterpret_cast<uintptr_t>(out), 0, 0));
+                                         reinterpret_cast<uintptr_t>(out), 0, 0, 0));
 }
 
 int kos_port_reg_write(uint16_t base, uint16_t offset, uint8_t value)
 {
-    return static_cast<int>(arch_syscall(KOS_SYS_PORT_REG_WRITE, base, offset, value, 0));
+    return static_cast<int>(arch_syscall(KOS_SYS_PORT_REG_WRITE, base, offset, value, 0, 0));
 }
 
-int kos_task_slay(kos_task_t task, uint32_t timeout_us)
+int kos_task_slay(kos_task_t task, kos_monotonic_t until)
 {
-    return static_cast<int>(arch_syscall(KOS_SYS_TASK_SLAY,
-                                         static_cast<uintptr_t>(task),
-                                         static_cast<uintptr_t>(timeout_us), 0, 0));
+    uint64_t const limit = kickos_limit_word_not_poll(until.ns);
+    return static_cast<int>(arch_syscall(KOS_SYS_TASK_SLAY, static_cast<uintptr_t>(task),
+                                         kos_u64_lo(limit), kos_u64_hi(limit), 0, 0));
 }
 
-int kos_thread_join(kos_thread_t thread, uint32_t timeout_us)
+int kos_thread_join(kos_thread_t thread, kos_monotonic_t until)
 {
-    return static_cast<int>(arch_syscall(KOS_SYS_THREAD_JOIN,
-                                         static_cast<uintptr_t>(thread),
-                                         static_cast<uintptr_t>(timeout_us), 0, 0));
+    uint64_t const limit = kos_limit_word(until.ns);
+    return static_cast<int>(arch_syscall(KOS_SYS_THREAD_JOIN, static_cast<uintptr_t>(thread),
+                                         kos_u64_lo(limit), kos_u64_hi(limit), 0, 0));
 }
 
 int kos_cap_narrow(kos_cap_t cap, uint32_t mask)
 {
     return static_cast<int>(arch_syscall(KOS_SYS_CAP_NARROW,
                                          static_cast<uintptr_t>(cap),
-                                         static_cast<uintptr_t>(mask), 0, 0));
+                                         static_cast<uintptr_t>(mask), 0, 0, 0));
 }
 
 int kos_pinmux_set(uint32_t port, uint32_t pin, uint32_t func)
@@ -286,13 +314,13 @@ int kos_pinmux_set(uint32_t port, uint32_t pin, uint32_t func)
     return static_cast<int>(arch_syscall(KOS_SYS_PINMUX_SET,
                                          static_cast<uintptr_t>(port),
                                          static_cast<uintptr_t>(pin),
-                                         static_cast<uintptr_t>(func), 0));
+                                         static_cast<uintptr_t>(func), 0, 0));
 }
 
 int kos_handle_close(kos_cap_t cap)
 {
     return static_cast<int>(arch_syscall(KOS_SYS_HANDLE_CLOSE,
-                                         static_cast<uintptr_t>(cap), 0, 0, 0));
+                                         static_cast<uintptr_t>(cap), 0, 0, 0, 0));
 }
 
 int kos_thread_create(struct kos_thread_params const* params, kos_thread_t* out_thread)
@@ -303,7 +331,7 @@ int kos_thread_create(struct kos_thread_params const* params, kos_thread_t* out_
     }
     return static_cast<int>(arch_syscall(KOS_SYS_THREAD_CREATE,
                                          reinterpret_cast<uintptr_t>(params),
-                                         reinterpret_cast<uintptr_t>(out_thread), 0, 0));
+                                         reinterpret_cast<uintptr_t>(out_thread), 0, 0, 0));
 }
 
 void kos_exit(int code)
@@ -313,25 +341,25 @@ void kos_exit(int code)
     kickos_keys_thread_end();
     kickos_reent_release();
 #endif
-    arch_syscall(KOS_SYS_EXIT, static_cast<uintptr_t>(code), KOS_EXIT_THREAD, 0, 0);
+    arch_syscall(KOS_SYS_EXIT, static_cast<uintptr_t>(code), KOS_EXIT_THREAD, 0, 0, 0);
     __builtin_unreachable();
 }
 
 int kos_shutdown(int status, enum kos_shutdown_outcome outcome)
 {
     return static_cast<int>(arch_syscall(KOS_SYS_SHUTDOWN, static_cast<uintptr_t>(status),
-                                         static_cast<uintptr_t>(outcome), 0, 0));
+                                         static_cast<uintptr_t>(outcome), 0, 0, 0));
 }
 
 int kos_terminal_outcome(enum kos_shutdown_outcome outcome)
 {
     return static_cast<int>(
-        arch_syscall(KOS_SYS_TERMINAL_OUTCOME, static_cast<uintptr_t>(outcome), 0, 0, 0));
+        arch_syscall(KOS_SYS_TERMINAL_OUTCOME, static_cast<uintptr_t>(outcome), 0, 0, 0, 0));
 }
 
 void kos_panic(char const* msg)
 {
-    arch_syscall(KOS_SYS_PANIC, reinterpret_cast<uintptr_t>(msg), 0, 0, 0);
+    arch_syscall(KOS_SYS_PANIC, reinterpret_cast<uintptr_t>(msg), 0, 0, 0, 0);
     __builtin_unreachable();
 }
 
@@ -349,7 +377,7 @@ int kos_irq_claim(int line, unsigned int flags, kos_cap_t* out_cap)
     return static_cast<int>(
         arch_syscall(KOS_SYS_IRQ_CLAIM, static_cast<uintptr_t>(line),
                      static_cast<uintptr_t>(flags),
-                     reinterpret_cast<uintptr_t>(out_cap), 0));
+                     reinterpret_cast<uintptr_t>(out_cap), 0, 0));
 }
 
 int kos_reply_recv(kos_cap_t reply_cap, void* buf, uintptr_t lens,
@@ -358,14 +386,14 @@ int kos_reply_recv(kos_cap_t reply_cap, void* buf, uintptr_t lens,
     return static_cast<int>(
         arch_syscall(KOS_SYS_REPLY_RECV, static_cast<uintptr_t>(reply_cap),
                      reinterpret_cast<uintptr_t>(buf), lens,
-                     reinterpret_cast<uintptr_t>(opts)));
+                     reinterpret_cast<uintptr_t>(opts), 0));
 }
 
 int kos_notify_create(kos_cap_t* out_cap)
 {
     cap_out_clear(out_cap);
     return static_cast<int>(
-        arch_syscall(KOS_SYS_NOTIFY_CREATE, reinterpret_cast<uintptr_t>(out_cap), 0, 0, 0));
+        arch_syscall(KOS_SYS_NOTIFY_CREATE, reinterpret_cast<uintptr_t>(out_cap), 0, 0, 0, 0));
 }
 
 int kos_endpoint_badge(kos_cap_t source_cap, uint32_t badge, kos_cap_t* out_cap)
@@ -373,7 +401,7 @@ int kos_endpoint_badge(kos_cap_t source_cap, uint32_t badge, kos_cap_t* out_cap)
     cap_out_clear(out_cap);
     return static_cast<int>(
         arch_syscall(KOS_SYS_ENDPOINT_BADGE, static_cast<uintptr_t>(source_cap),
-                     static_cast<uintptr_t>(badge), reinterpret_cast<uintptr_t>(out_cap), 0));
+                     static_cast<uintptr_t>(badge), reinterpret_cast<uintptr_t>(out_cap), 0, 0));
 }
 
 int kos_notify_badge(kos_cap_t source_cap, uint32_t bit, kos_cap_t* out_cap)
@@ -381,67 +409,68 @@ int kos_notify_badge(kos_cap_t source_cap, uint32_t bit, kos_cap_t* out_cap)
     cap_out_clear(out_cap);
     return static_cast<int>(
         arch_syscall(KOS_SYS_NOTIFY_BADGE, static_cast<uintptr_t>(source_cap),
-                     static_cast<uintptr_t>(bit), reinterpret_cast<uintptr_t>(out_cap), 0));
+                     static_cast<uintptr_t>(bit), reinterpret_cast<uintptr_t>(out_cap), 0, 0));
 }
 
 int kos_notify(kos_cap_t notify_cap)
 {
     return static_cast<int>(
-        arch_syscall(KOS_SYS_NOTIFY, static_cast<uintptr_t>(notify_cap), 0, 0, 0));
+        arch_syscall(KOS_SYS_NOTIFY, static_cast<uintptr_t>(notify_cap), 0, 0, 0, 0));
 }
 
 int kos_notify_bind(kos_cap_t notify_cap)
 {
     return static_cast<int>(
-        arch_syscall(KOS_SYS_NOTIFY_BIND, static_cast<uintptr_t>(notify_cap), 0, 0, 0));
+        arch_syscall(KOS_SYS_NOTIFY_BIND, static_cast<uintptr_t>(notify_cap), 0, 0, 0, 0));
 }
 
 int kos_notify_unbind(kos_cap_t notify_cap)
 {
     return static_cast<int>(
-        arch_syscall(KOS_SYS_NOTIFY_UNBIND, static_cast<uintptr_t>(notify_cap), 0, 0, 0));
+        arch_syscall(KOS_SYS_NOTIFY_UNBIND, static_cast<uintptr_t>(notify_cap), 0, 0, 0, 0));
 }
 
-int kos_notify_wait(kos_cap_t notify_cap, uint32_t mask, uint32_t timeout_us,
-                    uint32_t* out_bits)
+int kos_notify_wait(uint32_t mask, kos_monotonic_t until, uint32_t* out_bits)
 {
-    // Supply a writable output even where the caller does not need the bits: the kernel
-    // validates the word ahead of the park and would otherwise refuse the wait.
-    uint32_t local = 0;
-    if (out_bits == nullptr)
+    uint64_t const limit = kos_limit_word(until.ns);
+    uint64_t const r = arch_syscall64(KOS_SYS_NOTIFY_WAIT, static_cast<uintptr_t>(mask),
+                                      kos_u64_lo(limit), kos_u64_hi(limit), 0, 0);
+    int const rc = static_cast<int32_t>(kos_u64_lo(r));
+    if (out_bits != nullptr)
     {
-        out_bits = &local;
+        uint32_t bits = 0;
+        if (rc == 0)
+        {
+            bits = kos_u64_hi(r);
+        }
+        *out_bits = bits;
     }
-    *out_bits = 0;
-    return static_cast<int>(
-        arch_syscall(KOS_SYS_NOTIFY_WAIT, static_cast<uintptr_t>(notify_cap),
-                     static_cast<uintptr_t>(mask), static_cast<uintptr_t>(timeout_us),
-                     reinterpret_cast<uintptr_t>(out_bits)));
+    return rc;
 }
 
 int kos_irq_bind_notify(kos_cap_t irq_cap, kos_cap_t notify_cap)
 {
     return static_cast<int>(
         arch_syscall(KOS_SYS_IRQ_BIND_NOTIFY, static_cast<uintptr_t>(irq_cap),
-                     static_cast<uintptr_t>(notify_cap), 0, 0));
+                     static_cast<uintptr_t>(notify_cap), 0, 0, 0));
 }
 
 int kos_irq_ack(kos_cap_t irq_cap)
 {
     return static_cast<int>(
-        arch_syscall(KOS_SYS_IRQ_ACK, static_cast<uintptr_t>(irq_cap), 0, 0, 0));
+        arch_syscall(KOS_SYS_IRQ_ACK, static_cast<uintptr_t>(irq_cap), 0, 0, 0, 0));
 }
 
 int kos_irq_discard(kos_cap_t irq_cap)
 {
     return static_cast<int>(
-        arch_syscall(KOS_SYS_IRQ_DISCARD, static_cast<uintptr_t>(irq_cap), 0, 0, 0));
+        arch_syscall(KOS_SYS_IRQ_DISCARD, static_cast<uintptr_t>(irq_cap), 0, 0, 0, 0));
 }
 
 int kos_irq_raise(kos_cap_t irq_cap)
 {
     return static_cast<int>(
-        arch_syscall(KOS_SYS_IRQ_RAISE, static_cast<uintptr_t>(irq_cap), 0, 0, 0));
+        arch_syscall(KOS_SYS_IRQ_RAISE, static_cast<uintptr_t>(irq_cap), 0, 0, 0, 0));
 }
 
 #if KICKOS_CLOCK_USER
@@ -461,15 +490,15 @@ static uint64_t s_clock_hz = 0;
 
 void kickos_clock_seat(void)
 {
-    s_clock_hz = arch_syscall64(KOS_SYS_CPU_CLOCK_HZ, 0, 0, 0, 0);
+    s_clock_hz = arch_syscall64(KOS_SYS_CPU_CLOCK_HZ, 0, 0, 0, 0, 0);
 }
 #endif
 
 // Each read below computes what the kernel's arch_clock_now computes from the same counter.
-uint64_t kos_clock_now(void)
+static uint64_t clock_now(void)
 {
 #if not KICKOS_CLOCK_USER
-    return arch_syscall64(KOS_SYS_CLOCK_NOW, 0, 0, 0, 0);
+    return arch_syscall64(KOS_SYS_MONOTONIC_NOW, 0, 0, 0, 0, 0);
 #elif KICKOS_ARCH_SIM
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -512,60 +541,66 @@ uint64_t kos_clock_now(void)
 #endif
 }
 
-uint64_t kos_clock_realtime(void)
+int64_t kickos_monotonic_now(void)
 {
-    return arch_syscall64(KOS_SYS_CLOCK_REALTIME, 0, 0, 0, 0);
+    return static_cast<int64_t>(clock_now());
 }
 
-int kos_clock_set_realtime(uint64_t unix_ns)
+int64_t kickos_realtime_now(void)
 {
-    return static_cast<int>(arch_syscall(KOS_SYS_CLOCK_SET_REALTIME, kos_u64_lo(unix_ns),
-                                         kos_u64_hi(unix_ns), 0, 0));
+    return static_cast<int64_t>(arch_syscall64(KOS_SYS_REALTIME_NOW, 0, 0, 0, 0, 0));
+}
+
+int kos_realtime_set(kos_realtime_t t)
+{
+    uint64_t const ns = static_cast<uint64_t>(t.ns);
+    return static_cast<int>(
+        arch_syscall(KOS_SYS_REALTIME_SET, kos_u64_lo(ns), kos_u64_hi(ns), 0, 0, 0));
 }
 
 uint64_t kos_cpu_clock_hz(void)
 {
-    return arch_syscall64(KOS_SYS_CPU_CLOCK_HZ, 0, 0, 0, 0);
+    return arch_syscall64(KOS_SYS_CPU_CLOCK_HZ, 0, 0, 0, 0, 0);
 }
 
 uint32_t kos_periph_clock_hz(uintptr_t base)
 {
     return static_cast<uint32_t>(
-        arch_syscall(KOS_SYS_PERIPH_CLOCK_HZ, base, 0, 0, 0));
+        arch_syscall(KOS_SYS_PERIPH_CLOCK_HZ, base, 0, 0, 0, 0));
 }
 
 int kos_periph_enable(uintptr_t base)
 {
-    return static_cast<int>(arch_syscall(KOS_SYS_PERIPH_ENABLE, base, 0, 0, 0));
+    return static_cast<int>(arch_syscall(KOS_SYS_PERIPH_ENABLE, base, 0, 0, 0, 0));
 }
 
 int kos_periph_disable(uintptr_t base)
 {
-    return static_cast<int>(arch_syscall(KOS_SYS_PERIPH_DISABLE, base, 0, 0, 0));
+    return static_cast<int>(arch_syscall(KOS_SYS_PERIPH_DISABLE, base, 0, 0, 0, 0));
 }
 
 int kos_periph_reg_write(uintptr_t base, uintptr_t offset, uint32_t value)
 {
     return static_cast<int>(arch_syscall(KOS_SYS_PERIPH_REG_WRITE, base, offset,
-                                         static_cast<uintptr_t>(value), 0));
+                                         static_cast<uintptr_t>(value), 0, 0));
 }
 
 uint64_t kos_cpu_clock_set(kos_pstate_t pstate)
 {
-    return arch_syscall64(KOS_SYS_CPU_CLOCK_SET, static_cast<uintptr_t>(pstate), 0, 0, 0);
+    return arch_syscall64(KOS_SYS_CPU_CLOCK_SET, static_cast<uintptr_t>(pstate), 0, 0, 0, 0);
 }
 
 void* kos_ram_alloc(size_t size)
 {
     return reinterpret_cast<void*>(
-        arch_syscall(KOS_SYS_RAM_ALLOC, static_cast<uintptr_t>(size), 0, 0, 0));
+        arch_syscall(KOS_SYS_RAM_ALLOC, static_cast<uintptr_t>(size), 0, 0, 0, 0));
 }
 
 int kos_mem_self_grant(void* base, size_t size, uint32_t flags)
 {
     return static_cast<int>(
         arch_syscall(KOS_SYS_MEM_SELF_GRANT, reinterpret_cast<uintptr_t>(base),
-                     static_cast<uintptr_t>(size), static_cast<uintptr_t>(flags), 0));
+                     static_cast<uintptr_t>(size), static_cast<uintptr_t>(flags), 0, 0));
 }
 
 #if KICKOS_HAVE_ASPACE
@@ -573,14 +608,14 @@ int kos_frame_create(size_t bytes, kos_cap_t* out_frame)
 {
     cap_out_clear(out_frame);
     return static_cast<int>(arch_syscall(KOS_SYS_FRAME_CREATE, static_cast<uintptr_t>(bytes),
-                                         reinterpret_cast<uintptr_t>(out_frame), 0, 0));
+                                         reinterpret_cast<uintptr_t>(out_frame), 0, 0, 0));
 }
 
 int kos_aspace_self(kos_cap_t* out_space)
 {
     cap_out_clear(out_space);
     return static_cast<int>(arch_syscall(KOS_SYS_ASPACE_SELF,
-                                         reinterpret_cast<uintptr_t>(out_space), 0, 0, 0));
+                                         reinterpret_cast<uintptr_t>(out_space), 0, 0, 0, 0));
 }
 
 int kos_frame_map(kos_cap_t frame, kos_cap_t space, uintptr_t* va, uint32_t flags)
@@ -588,25 +623,25 @@ int kos_frame_map(kos_cap_t frame, kos_cap_t space, uintptr_t* va, uint32_t flag
     return static_cast<int>(arch_syscall(KOS_SYS_FRAME_MAP, static_cast<uintptr_t>(frame),
                                          static_cast<uintptr_t>(space),
                                          reinterpret_cast<uintptr_t>(va),
-                                         static_cast<uintptr_t>(flags)));
+                                         static_cast<uintptr_t>(flags), 0));
 }
 
 int kos_frame_unmap(kos_cap_t frame, kos_cap_t space, uintptr_t va)
 {
     return static_cast<int>(arch_syscall(KOS_SYS_FRAME_UNMAP, static_cast<uintptr_t>(frame),
-                                         static_cast<uintptr_t>(space), va, 0));
+                                         static_cast<uintptr_t>(space), va, 0, 0));
 }
 
 int kos_mem_count(uint32_t which, uint32_t* out)
 {
     return static_cast<int>(arch_syscall(KOS_SYS_MEM_COUNT, static_cast<uintptr_t>(which),
-                                         reinterpret_cast<uintptr_t>(out), 0, 0));
+                                         reinterpret_cast<uintptr_t>(out), 0, 0, 0));
 }
 #endif
 
 void kos_kernel_diag_led_set(int on)
 {
-    arch_syscall(KOS_SYS_DIAG_LED_SET, static_cast<uintptr_t>(on), 0, 0, 0);
+    arch_syscall(KOS_SYS_DIAG_LED_SET, static_cast<uintptr_t>(on), 0, 0, 0, 0);
 }
 
 }

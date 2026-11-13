@@ -47,9 +47,9 @@ namespace
 
     uint64_t timed_spin(char const* label)
     {
-        uint64_t const a = kos::clock_now();
+        uint64_t const a = kos_monotonic_now().ns;
         fixed_spin();
-        uint64_t const b = kos::clock_now();
+        uint64_t const b = kos_monotonic_now().ns;
         uint64_t const d = b - a;
 
         char s[128];
@@ -76,8 +76,8 @@ int main(int, char**)
     emit("[clockretune] START privileged retune harness\n");
 
     uint64_t const hz_boot = kos::cpu_clock_hz();
-    uint64_t const t0 = kos::clock_now();
-    ksnprintf(s, sizeof(s), "[clockretune] boot: cpu_clock_hz = %llu  clock_now t0 = %llu ns\n",
+    uint64_t const t0 = kos_monotonic_now().ns;
+    ksnprintf(s, sizeof(s), "[clockretune] boot: cpu_clock_hz = %llu  now t0 = %llu ns\n",
               static_cast<unsigned long long>(hz_boot), static_cast<unsigned long long>(t0));
     emit(s);
 
@@ -85,7 +85,7 @@ int main(int, char**)
 
     // 1. retune -> LOW. Sample now() immediately BEFORE the seam so step 2 can bound
     //    the mispriced-window delta across the actual PLL/divider move.
-    uint64_t const t_pre = kos::clock_now();
+    uint64_t const t_pre = kos_monotonic_now().ns;
     uint64_t const hz_low = kos_cpu_clock_set(KOS_PSTATE_LOW);
     print_hz("after set(LOW)", hz_low);
 
@@ -93,10 +93,10 @@ int main(int, char**)
     //    and no phantom forward jump (a jump == the B1/B2 hazard surviving on silicon:
     //    the seam-crossing delta would be seconds-to-minutes, not the tens-of-us to
     //    ~1 ms masked transition).
-    uint64_t const r0 = kos::clock_now();
-    uint64_t const r1 = kos::clock_now();
-    uint64_t const r2 = kos::clock_now();
-    uint64_t const r3 = kos::clock_now();
+    uint64_t const r0 = kos_monotonic_now().ns;
+    uint64_t const r1 = kos_monotonic_now().ns;
+    uint64_t const r2 = kos_monotonic_now().ns;
+    uint64_t const r3 = kos_monotonic_now().ns;
     ksnprintf(s, sizeof(s), "[clockretune] now around retune: pre=%llu r0=%llu r1=%llu r2=%llu r3=%llu\n",
               static_cast<unsigned long long>(t_pre), static_cast<unsigned long long>(r0),
               static_cast<unsigned long long>(r1), static_cast<unsigned long long>(r2),
@@ -140,11 +140,11 @@ int main(int, char**)
 
     // 4. known sleep at LOW: the capture's wall-clock timing must land near SLEEP_NS
     //    (timer re-armed at the new rate, not ratio-off).
-    uint64_t const s0 = kos::clock_now();
-    kos::sleep_ns(SLEEP_NS);
-    uint64_t const s1 = kos::clock_now();
+    uint64_t const s0 = kos_monotonic_now().ns;
+    kos::sleep_for(std::chrono::nanoseconds{SLEEP_NS});
+    uint64_t const s1 = kos_monotonic_now().ns;
     ksnprintf(s, sizeof(s),
-              "[clockretune] sleep_ns(%llu) at LOW measured %llu ns\n",
+              "[clockretune] sleep_for(%llu ns) at LOW measured %llu ns\n",
               static_cast<unsigned long long>(SLEEP_NS),
               static_cast<unsigned long long>(s1 - s0));
     emit(s);

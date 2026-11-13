@@ -13,8 +13,8 @@ int main(int, char**)
     using namespace priority_witness;
     int const first = pulse_deaths();
     int last = first;
-    uint64_t const end = kos_clock_now() + HIGH_SPIN_NS;
-    while (kos_clock_now() < end)
+    kos_monotonic_t const end = kos_after(kos_monotonic_now(), kos_ms(HIGH_SPIN_MS));
+    while (kos_monotonic_now().ns < end.ns)
     {
         last = pulse_deaths();
     }

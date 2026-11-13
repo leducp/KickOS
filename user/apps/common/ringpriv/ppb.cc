@@ -68,7 +68,7 @@ int main(int, char**)
     // kpanic_enter masks IRQs before it flushes, so anything still in the ring is at the
     // mercy of the reporter completing. Without this wait a board that dies AT the read is
     // indistinguishable from one that dies in the reporter: both emit a few bytes and stop.
-    kos_sleep_ns(100000000ull); // 100 ms: ~1150 byte-times at 115200, the ring is
+    kos_sleep_for(kos_ms(100)); // 100 ms: ~1150 byte-times at 115200, the ring is
                                 // far smaller
 
     uint32_t const cpuid = load32(SCB_CPUID);

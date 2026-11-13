@@ -24,7 +24,7 @@ namespace kickos
 
             void sleep_a_while()
             {
-                ktime_sleep_until(g_now_ns + SLEEP_NS);
+                (void)ktime_sleep(g_now_ns + SLEEP_NS, KOS_LIMIT_MONOTONIC);
             }
         }
 

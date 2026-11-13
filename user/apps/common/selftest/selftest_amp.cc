@@ -88,27 +88,21 @@ namespace selftest
         {
             return -KOS_EINVAL;
         }
-        uint64_t const deadline = kos_clock_now() + uint64_t{STALL_TOLERANT_US} * 1000u;
+        kos_monotonic_t const deadline = after_us(STALL_TOLERANT_US);
         int32_t got = -KOS_ETIMEDOUT;
         while (true)
         {
-            uint64_t const now = kos_clock_now();
-            uint32_t left_us = 0;
-            if (now < deadline)
-            {
-                left_us = static_cast<uint32_t>((deadline - now) / 1000u);
-            }
-            if (left_us == 0)
+            if (kos_monotonic_now().ns >= deadline.ns)
             {
                 return got;
             }
-            got = kos_call(ep, buf, len, len, left_us);
+            got = kos_call(ep, buf, len, len, deadline);
             // Empty: the peer is between its answer and its next wait, which node 0 cannot see.
             if (got != 0)
             {
                 return got;
             }
-            kos_sleep_ns(AMP_REPARK_POLL_NS);
+            kos_sleep_for(kos_ns(AMP_REPARK_POLL_NS));
         }
     }
 
@@ -301,7 +295,7 @@ namespace selftest
         // Far endpoints have only CAP_SIGNAL, so receive resolution must fail.
         char rbuf[AMP_FAR_LEN];
         struct kos_reply_recv_opts fo;
-        kos_reply_recv_opts_init(&fo, eps[first], KOS_RECV_NO_INFO, STALL_TOLERANT_US);
+        kos_reply_recv_opts_init(&fo, eps[first], KOS_RECV_NO_INFO, after_us(STALL_TOLERANT_US));
         TAP_CHECK(kos_reply_recv(KOS_CAP_NONE, rbuf, kos_call_lens_pack(0, sizeof(rbuf)), &fo)
                   == -KOS_EACCES);
 
@@ -352,7 +346,7 @@ namespace selftest
             }
             int64_t const sent0 = amp_count(AMP_SELF_ROW, KOS_AMP_COUNT_SENT);
             int64_t const refused0 = amp_count(AMP_SELF_ROW, KOS_AMP_COUNT_SEND_REFUSED);
-            int32_t const rc = kos_send(quiet, sbuf, sizeof(sbuf), KOS_TIMEOUT_NONE);
+            int32_t const rc = kos_send(quiet, sbuf, sizeof(sbuf), KOS_NEVER);
             int64_t const sent1 = amp_count(AMP_SELF_ROW, KOS_AMP_COUNT_SENT);
             int64_t const refused1 = amp_count(AMP_SELF_ROW, KOS_AMP_COUNT_SEND_REFUSED);
             tap::diag("send to node %u: %ld, sent %ld->%ld, refused %ld->%ld",
@@ -374,7 +368,7 @@ namespace selftest
     }
 
     // A refused far call still answers its caller: the peer's kernel publishes a zero-length
-    // reply for a call to a port bound with no receiver, which a caller under KOS_TIMEOUT_NONE
+    // reply for a call to a port bound with no receiver, which a caller with no deadline
     // has nothing else to wake it.
     void t_amp_far_reply_empty()
     {
@@ -395,7 +389,8 @@ namespace selftest
         {
             cbuf[i] = static_cast<char>(0x30u + i);
         }
-        int32_t const n = kos_call(ep, cbuf, sizeof(cbuf), sizeof(cbuf), STALL_TOLERANT_US);
+        int32_t const n =
+            kos_call(ep, cbuf, sizeof(cbuf), sizeof(cbuf), after_us(STALL_TOLERANT_US));
         tap::diag("far reply empty: node %u answered a refused call with %ld byte(s)",
                   static_cast<unsigned>(node), static_cast<long>(n));
         // Exactly zero: a caller nobody answered reads -KOS_ETIMEDOUT.
@@ -448,7 +443,7 @@ namespace selftest
                 TAP_CHECK(kos_amp_port_is_local(node, port) == 1);
                 // Resolves with the wait right, so the receive parks and times out.
                 struct kos_reply_recv_opts opts = {};
-                opts.timeout_us = AMP_SEAT_PROBE_US;
+                opts.until = after_us(AMP_SEAT_PROBE_US);
                 opts.ep = cap;
                 TAP_CHECK(kos_reply_recv(KOS_CAP_NONE, probe, kos_call_lens_pack(0, sizeof(probe)), &opts) == -KOS_ETIMEDOUT);
                 local++;
@@ -458,7 +453,7 @@ namespace selftest
                 TAP_CHECK(kos_amp_port_is_local(node, port) == 0);
                 // Far endpoints have only CAP_SIGNAL, so receive resolution must fail.
                 struct kos_reply_recv_opts po;
-                kos_reply_recv_opts_init(&po, cap, KOS_RECV_NO_INFO, STALL_TOLERANT_US);
+                kos_reply_recv_opts_init(&po, cap, KOS_RECV_NO_INFO, after_us(STALL_TOLERANT_US));
                 TAP_CHECK(kos_reply_recv(KOS_CAP_NONE, probe,
                                          kos_call_lens_pack(0, sizeof(probe)), &po)
                           == -KOS_EACCES);
@@ -507,9 +502,9 @@ namespace selftest
             TAP_CHECK(kos_amp_port_is_local(node, unnamed) == 0);
         }
         char body[4] = {};
-        TAP_CHECK(kos_send(KOS_CAP_NONE, body, sizeof(body), KOS_TIMEOUT_NONE) == -KOS_EBADF);
+        TAP_CHECK(kos_send(KOS_CAP_NONE, body, sizeof(body), KOS_NEVER) == -KOS_EBADF);
         struct kos_reply_recv_opts uo;
-        kos_reply_recv_opts_init(&uo, KOS_CAP_NONE, KOS_RECV_NO_INFO, STALL_TOLERANT_US);
+        kos_reply_recv_opts_init(&uo, KOS_CAP_NONE, KOS_RECV_NO_INFO, after_us(STALL_TOLERANT_US));
         TAP_CHECK(kos_reply_recv(KOS_CAP_NONE, body, kos_call_lens_pack(0, sizeof(body)), &uo)
                   == -KOS_EBADF);
         tap::diag("unnamed crossing: port %u is named for no node, and its capability is none",
@@ -537,7 +532,7 @@ namespace selftest
         volatile int64_t* const out = reinterpret_cast<volatile int64_t*>(at.base);
         char body[4] = {};
         out[AG_SEND] = kos_send(static_cast<kos_cap_t>(out[AG_CROSSING]), body,
-                                      sizeof(body), 0);
+                                      sizeof(body), KOS_POLL);
         out[AG_RAN] = 1;
         return 0;
     }
@@ -560,7 +555,7 @@ namespace selftest
         // The control: the same index resolves in main's own table, to a local crossing that
         // carries WAIT and no SIGNAL.
         char body[4] = {};
-        int32_t const mine = kos_send(crossing, body, sizeof(body), 0);
+        int32_t const mine = kos_send(crossing, body, sizeof(body), KOS_POLL);
         kos_task_t t = KOS_TASK_NONE;
         ArmHold hold;
         TAP_HOLD(hold.task(&t));
@@ -648,7 +643,7 @@ namespace selftest
         kos::thread::Handle child;
         ArmHold hold;
         TAP_HOLD(hold.thread(&child));
-        child = kos::thread::create(amp_share_child, nullptr, "shx", 10, KOS_POLICY_FIFO, 0,
+        child = kos::thread::create(amp_share_child, nullptr, "shx", 10, KOS_POLICY_FIFO, 0ns,
                                     nullptr, 0, &w, 1);
         int const window = child.error();
         tap::diag("share named by main: grant %ld, the other type %ld, a child's window %ld",
@@ -668,7 +663,7 @@ namespace selftest
     constexpr uint32_t ASM_REFUSED_US = 500000;
     void asm_contender(void* arg)
     {
-        g_asm_rc = kos_mutex_lock(static_cast<kos_mutex_t*>(arg), STALL_TOLERANT_US);
+        g_asm_rc = kos_mutex_lock(static_cast<kos_mutex_t*>(arg), after_us(STALL_TOLERANT_US));
     }
     void t_amp_share_mutex()
     {
@@ -685,12 +680,12 @@ namespace selftest
         kos::thread::Handle c;
         ArmHold hold;
         TAP_HOLD(hold.owned(m) and hold.thread(&c));
-        int const taken = kos_mutex_lock(m, 0);
-        c = kos::thread::create(asm_contender, m, "asmC", TAP_PRIO_PARKS, KOS_POLICY_FIFO, 0,
+        int const taken = kos_mutex_lock(m, KOS_POLL);
+        c = kos::thread::create(asm_contender, m, "asmC", TAP_PRIO_PARKS, KOS_POLICY_FIFO, 0ns,
                                 nullptr, 0, nullptr, 0, nullptr, 0, 0, nullptr, TAP_PIN_CORE);
         TAP_CHECK(c.valid());
         // A refusal ends the contender at once; a park outlives the join and the unlock ends it.
-        (void)c.join(ASM_REFUSED_US);
+        (void)c.join_for(std::chrono::microseconds{ASM_REFUSED_US});
         int32_t const contended = g_asm_rc;
         int const unlocked = kos_mutex_unlock(m);
         TAP_CHECK(hold.joined());
@@ -787,10 +782,11 @@ namespace selftest
         kos_cap_grant caps[] = {{frame, KOS_CAP_TRANSFER}, {space, KOS_CAP_TRANSFER}};
         w = kos::thread::create_caps(amp_ru_unmapper, nullptr, "ampru",
                                      static_cast<uint8_t>(g_self->priority - 1u), caps, 2,
-                                     KOS_POLICY_FIFO, 0, KOS_AUTH_MEMORY);
+                                     KOS_POLICY_FIFO, 0ns, KOS_AUTH_MEMORY);
         TAP_CHECK(w.valid());
         int64_t const fault0 = amp_count(AMP_SELF_ROW, KOS_AMP_COUNT_DELIVER_FAULT);
-        int32_t const got = kos_call(far, req, AMP_FAR_LEN, AMP_FAR_LEN, STALL_TOLERANT_US);
+        int32_t const got =
+            kos_call(far, req, AMP_FAR_LEN, AMP_FAR_LEN, after_us(STALL_TOLERANT_US));
         // The unmapper stores the sequence only after its unmap, so a word still short of it
         // here means the peer's own hold lapsed and it answered into a mapped page.
         bool const unmapped_first = release->load() == seq;
@@ -849,12 +845,12 @@ namespace selftest
     void amp_wall_waiter(void*)
     {
         (void)__gthread_mutex_lock(&g_awall_mutex);
-        uint64_t const at = kos_clock_realtime() + AMP_WALL_AHEAD_NS;
+        uint64_t const at = kos_realtime_now().ns + AMP_WALL_AHEAD_NS;
         __gthread_time_t abs;
         abs.tv_sec = static_cast<time_t>(at / 1000000000u);
         abs.tv_nsec = static_cast<long>(at % 1000000000u);
         int const rc = __gthread_cond_timedwait(&g_awall_cond, &g_awall_mutex, &abs);
-        g_awall_ended = kos_clock_now();
+        g_awall_ended = kos_monotonic_now().ns;
         (void)__gthread_mutex_unlock(&g_awall_mutex);
         g_awall_rc = rc;
         reinterpret_cast<Atomic<uint32_t, Order::RELEASE>*>(g_awall_hold)->store(g_awall_seq);
@@ -881,14 +877,14 @@ namespace selftest
         ArmHold hold;
         TAP_HOLD(hold.thread(&w));
         w = kos::thread::create(amp_wall_waiter, nullptr, "ampwall", TAP_PRIO_PARKS,
-                                KOS_POLICY_FIFO, 0, nullptr, 0, nullptr, 0, nullptr, 0, 0, nullptr,
-                                TAP_PIN_CORE);
+                                KOS_POLICY_FIFO, 0ns, nullptr, 0, nullptr, 0, nullptr, 0, 0,
+                                nullptr, TAP_PIN_CORE);
         TAP_CHECK(w.valid());
-        kos_sleep_ns(AMP_WALL_SETTLE_NS);
+        kos_sleep_for(kos_ns(AMP_WALL_SETTLE_NS));
         unsigned char req[AMP_FAR_LEN] = {};
         req[0] = AMP_WALL_MARK;
         req[1] = static_cast<unsigned char>(seq);
-        uint64_t const called = kos_clock_now();
+        uint64_t const called = kos_monotonic_now().ns;
         int32_t const got = amp_echo_call(far, req, sizeof(req));
         bool const joined = hold.joined();
         // Released whatever happened, so a failure here leaves the peer echoing.

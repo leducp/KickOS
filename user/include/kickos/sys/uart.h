@@ -154,7 +154,7 @@ static inline int kos_uart_call_in_place(kos_cap_t ep, uint8_t* buf, uint8_t op,
     {
         buf[i] = rp[i];
     }
-    int32_t const rc = kos_call(ep, buf, sizeof(req) + carried, KOS_EP_MSG_MAX, KOS_TIMEOUT_NONE);
+    int32_t const rc = kos_call(ep, buf, sizeof(req) + carried, KOS_EP_MSG_MAX, KOS_NEVER);
     if (rc < 0)
     {
         return (int)rc;

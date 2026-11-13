@@ -219,7 +219,8 @@ namespace kickos
         // console_park's answer where nothing held the writer, outside the 0 and -KOS_E* range.
         constexpr int UNHELD = 1;
 
-        int console_park(ConsoleHold hold, uint32_t needed, uint32_t timeout_us)
+        // `wait_ns` from the park, KOS_LIMIT_NONE for no bound.
+        int console_park(ConsoleHold hold, uint32_t needed, uint64_t wait_ns)
         {
             Thread* const c = sched::current();
             uint32_t epoch = 0;
@@ -238,8 +239,8 @@ namespace kickos
                 }
                 if (hold == HOLD_LINE)
                 {
-                    timeout_us = console_line_wait(c, lock);
-                    if (timeout_us == 0)
+                    wait_ns = console_line_wait(c, lock);
+                    if (wait_ns == 0)
                     {
                         return UNHELD;
                     }
@@ -249,8 +250,8 @@ namespace kickos
                 // is taken once this thread is parked.
                 if (hold == HOLD_CLAIM)
                 {
-                    timeout_us = arch_console_claim_wait();
-                    if (timeout_us == 0)
+                    uint32_t const left_us = arch_console_claim_wait();
+                    if (left_us == 0)
                     {
                         // The take cleared this node's mark, which a release already reading the
                         // marks may now miss: a writer still parked here offers again instead.
@@ -258,10 +259,16 @@ namespace kickos
                         return UNHELD;
                     }
                     g_claim_waiting = true;
+                    wait_ns = static_cast<uint64_t>(left_us) * 1000u;
                 }
 #endif
                 epoch = park_queueless(ask)(c, WAIT_CONSOLE, nullptr, lock);
-                ktime_deadline_arm(c, timeout_us, lock);
+                uint64_t deadline = KOS_LIMIT_NONE;
+                if (wait_ns != KOS_LIMIT_NONE)
+                {
+                    deadline = ktime_now() + wait_ns;
+                }
+                ktime_limit_arm(c, WaitLimit(deadline), lock);
                 sched::reschedule(nullptr, lock);
             }
             wq_confirm_resume(c, epoch);
@@ -280,7 +287,7 @@ namespace kickos
 
     int console_dark_wait(void)
     {
-        return held_or_zero(console_park(HOLD_DARK, 0, KOS_TIMEOUT_NONE));
+        return held_or_zero(console_park(HOLD_DARK, 0, KOS_LIMIT_NONE));
     }
 
     namespace
@@ -298,7 +305,7 @@ namespace kickos
         }
     }
 
-    int console_room_wait(uint32_t needed, uint32_t stall_us)
+    int console_room_wait(uint32_t needed, uint64_t stall_ns)
     {
         int const line = console_line_park();
         if (line != UNHELD)
@@ -310,7 +317,7 @@ namespace kickos
             return 0;
         }
         uint32_t const sent = console_tx_sent();
-        int const rc = held_or_zero(console_park(HOLD_ROOM, needed, stall_us));
+        int const rc = held_or_zero(console_park(HOLD_ROOM, needed, stall_ns));
         if (rc == -KOS_ETIMEDOUT and console_tx_sent() != sent)
         {
             return 0;
@@ -356,7 +363,7 @@ namespace kickos
     {
         while (console_chip_writers() != 0)
         {
-            (void)console_park(HOLD_WRITERS, 0, KOS_TIMEOUT_NONE);
+            (void)console_park(HOLD_WRITERS, 0, KOS_LIMIT_NONE);
         }
     }
 

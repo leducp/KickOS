@@ -55,9 +55,10 @@ namespace
     void across_set(char const* what, void (*waiter)())
     {
         std::thread t(waiter);
-        kos::sleep_ns(SETTLE_NS);
+        kos::sleep_for(std::chrono::nanoseconds{SETTLE_NS});
         steady::time_point const set_at = steady::now();
-        int const rc = kos::clock_set_realtime(kos::clock_realtime() + DAY_NS);
+        int const rc = kos::realtime_set(kos::to_chrono(kos_realtime_now())
+                                         + std::chrono::nanoseconds{DAY_NS});
         t.join();
         long long const after = static_cast<long long>(
             std::chrono::duration_cast<std::chrono::nanoseconds>(g_ended - set_at).count());

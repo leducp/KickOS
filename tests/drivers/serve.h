@@ -23,7 +23,7 @@ namespace testdrivers
         for (uint32_t served = 1; served <= SERVED; served++)
         {
             struct kos_reply_recv_opts opts;
-            kos_reply_recv_opts_init(&opts, ep, 0u, KOS_TIMEOUT_NONE);
+            kos_reply_recv_opts_init(&opts, ep, 0u, KOS_NEVER);
             opts.info.reply_cap = KOS_CAP_NONE;
             int32_t const n = kos_reply_recv(KOS_CAP_NONE, nullptr, kos_call_lens_pack(0u, 0u), &opts);
             if (n < 0)

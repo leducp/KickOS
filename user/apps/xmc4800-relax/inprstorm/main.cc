@@ -246,7 +246,7 @@ namespace
                 guard++;
             }
             uint32_t const lvl_pre = (r32(win + off::TRBSR) >> TRBSR_TBFLVL_SHIFT) & 0x7Fu;
-            kos_sleep_ns(10000000ull); // no fills during this window
+            kos_sleep_for(kos_ms(10)); // no fills during this window
             uint32_t const lvl_post = (r32(win + off::TRBSR) >> TRBSR_TBFLVL_SHIFT) & 0x7Fu;
             char s[128];
             ksnprintf(s, sizeof(s),
@@ -262,7 +262,7 @@ namespace
 
         // Root prints several heartbeats that DO drain first: the console is demonstrably
         // alive right up to the storm.
-        kos_sleep_ns(2000000000ull);
+        kos_sleep_for(kos_s(2));
 
         // The attack: RINP/AINP field 0 routes the receive interrupt to SR0. INPR is U,PV
         // and in-window, so this unprivileged store lands.
@@ -311,12 +311,12 @@ namespace
     // and dt the interval since the previous beat, both ms from the monotonic clock.
     void heartbeat(void*)
     {
-        uint64_t const t0 = kos_clock_now();
+        uint64_t const t0 = kos_monotonic_now().ns;
         uint64_t prev = t0;
         uint32_t beat = 0;
         while (true)
         {
-            uint64_t const now = kos_clock_now();
+            uint64_t const now = kos_monotonic_now().ns;
             char s[80];
             ksnprintf(s, sizeof(s), "[inprstorm] heartbeat %u t=%ums dt=%ums\n",
                       static_cast<unsigned>(beat),
@@ -325,7 +325,7 @@ namespace
             (void)KICKOS_KCONSOLE_MEASURED(WAIT, s, strlen(s));
             prev = now;
             beat++;
-            kos_sleep_ns(300000000ull);
+            kos_sleep_for(kos_ms(300));
         }
     }
 }
@@ -352,7 +352,7 @@ int main(int, char**)
     // hogging the CPU, so a wedged console isolates the foreign-SR0 storm as the cause. The beat
     // is spawned at the entry's own priority, so it first runs once the entry drops.
     auto const p = kos::thread::create(heartbeat, nullptr, "inprstorm-beat", 2, KOS_POLICY_FIFO,
-                                       0);
+                                       std::chrono::nanoseconds{0});
     if (not p.valid())
     {
         char e[64];

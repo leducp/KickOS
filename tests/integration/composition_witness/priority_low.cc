@@ -14,8 +14,8 @@ int main(int, char**)
     using namespace priority_witness;
     int const first = pulse_deaths();
     int now = first;
-    uint64_t const end = kos_clock_now() + LOW_SPIN_NS;
-    while (now == first and kos_clock_now() < end)
+    kos_monotonic_t const end = kos_after(kos_monotonic_now(), kos_ms(LOW_SPIN_MS));
+    while (now == first and kos_monotonic_now().ns < end.ns)
     {
         now = pulse_deaths();
     }

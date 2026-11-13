@@ -9,8 +9,175 @@
 
 #include <kickos/sys.h>
 
+#include <chrono>
+#include <ratio>
+#include <type_traits>
+
+// Time crosses as std::chrono, defining no clock: a duration converts to kos_duration_t rounding
+// up and saturating, a steady_clock point to kos_monotonic_t and a system_clock point to
+// kos_realtime_t, and no other mix has an overload. A duration's or a point's max() is the same
+// no limit as the overload that takes no time. A freestanding TU's <chrono> declares no clock, so
+// it gets the duration forms alone.
+namespace kos::detail
+{
+    // `d` in nanoseconds, rounded toward plus infinity and held inside the int64_t range; a NaN
+    // count is 0.
+    template <class Rep, class Period>
+    constexpr int64_t ns_ceil(std::chrono::duration<Rep, Period> d)
+    {
+        using R = std::ratio_divide<Period, std::nano>;
+        if constexpr (std::is_floating_point_v<Rep>)
+        {
+            double const c = static_cast<double>(d.count());
+            if (not(c == c))
+            {
+                return 0;
+            }
+            // Bounded before scaling: an overflowing product is no constant expression.
+            double const bound = 9223372036854775808.0 * static_cast<double>(R::den)
+                                 / static_cast<double>(R::num);
+            if (c >= bound)
+            {
+                return INT64_MAX;
+            }
+            if (c <= -bound)
+            {
+                return INT64_MIN;
+            }
+            double const v = c * static_cast<double>(R::num) / static_cast<double>(R::den);
+            if (v >= 9223372036854775807.0)
+            {
+                return INT64_MAX;
+            }
+            if (v <= -9223372036854775808.0)
+            {
+                return INT64_MIN;
+            }
+            int64_t n = static_cast<int64_t>(v);
+            if (static_cast<double>(n) < v)
+            {
+                n = n + 1;
+            }
+            return n;
+        }
+        else
+        {
+            static_assert(R::den <= INT64_MAX / R::num, "a period no int64_t product can scale");
+            using U = std::common_type_t<std::make_unsigned_t<Rep>, uint64_t>;
+            U const num = static_cast<U>(R::num);
+            U const den = static_cast<U>(R::den);
+            bool negative = false;
+            U mag = static_cast<U>(d.count());
+            if constexpr (std::is_signed_v<Rep>)
+            {
+                if (d.count() < 0)
+                {
+                    negative = true;
+                    mag = U{0} - mag;
+                }
+            }
+            U limit = static_cast<U>(INT64_MAX);
+            if (negative)
+            {
+                limit = limit + 1;
+            }
+            U const q = mag / den;
+            U ns = limit;
+            if (q <= limit / num)
+            {
+                // (mag % den) * num < den * num, which the static_assert keeps inside int64_t.
+                U const rest = (mag % den) * num;
+                ns = q * num + rest / den;
+                // A negative count rounds its magnitude down.
+                if (not negative and rest % den != 0)
+                {
+                    ns = ns + 1;
+                }
+                if (ns > limit)
+                {
+                    ns = limit;
+                }
+            }
+            if (negative)
+            {
+                if (ns == limit)
+                {
+                    return INT64_MIN;
+                }
+                return -static_cast<int64_t>(ns);
+            }
+            return static_cast<int64_t>(ns);
+        }
+    }
+}
+
 namespace kos
 {
+    template <class Rep, class Period>
+    constexpr kos_duration_t to_kos(std::chrono::duration<Rep, Period> d)
+    {
+        if (d == d.max())
+        {
+            return KOS_FOREVER;
+        }
+        return kos_duration_t{detail::ns_ceil(d)};
+    }
+#if __STDC_HOSTED__
+#if defined(__GLIBCXX__) and not defined(_GLIBCXX_USE_CLOCK_MONOTONIC)
+    static_assert(false, "kickos/kos.h: this libstdc++ reads steady_clock from the wall clock, "
+                         "not the KickOS monotonic clock; build with a toolchain of the KickOS "
+                         "threads model (1.2.0 or later)");
+#endif
+    template <class Duration>
+    constexpr kos_monotonic_t to_kos(std::chrono::time_point<std::chrono::steady_clock, Duration> t)
+    {
+        if (t == t.max())
+        {
+            return KOS_NEVER;
+        }
+        return kos_monotonic_t{detail::ns_ceil(t.time_since_epoch())};
+    }
+    template <class Duration>
+    constexpr kos_realtime_t to_kos(std::chrono::time_point<std::chrono::system_clock, Duration> t)
+    {
+        if (t == t.max())
+        {
+            return kos_realtime_t{KOS_NEVER.ns};
+        }
+        return kos_realtime_t{detail::ns_ceil(t.time_since_epoch())};
+    }
+#endif
+    constexpr std::chrono::nanoseconds to_chrono(kos_duration_t d)
+    {
+        return std::chrono::nanoseconds{d.ns};
+    }
+#if __STDC_HOSTED__
+    constexpr std::chrono::steady_clock::time_point to_chrono(kos_monotonic_t t)
+    {
+        return std::chrono::steady_clock::time_point{
+            std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                std::chrono::nanoseconds{t.ns})};
+    }
+    constexpr std::chrono::system_clock::time_point to_chrono(kos_realtime_t t)
+    {
+        return std::chrono::system_clock::time_point{
+            std::chrono::duration_cast<std::chrono::system_clock::duration>(
+                std::chrono::nanoseconds{t.ns})};
+    }
+
+    // The monotonic clock, read straight from kos_monotonic_now: the steady_clock epoch.
+    inline std::chrono::steady_clock::time_point now()
+    {
+        return to_chrono(kos_monotonic_now());
+    }
+#endif
+    // `d` from now, saturating.
+    template <class Rep, class Period>
+    kos_monotonic_t after(std::chrono::duration<Rep, Period> d)
+    {
+        return kos_after(kos_monotonic_now(), to_kos(d));
+    }
+
     // Delegated capability i of a freshly spawned thread, where a default grant list seats it.
     constexpr kos_cap_t child_cap(int i)
     {
@@ -26,14 +193,18 @@ namespace kos
     {
         kos_yield();
     }
-    inline void sleep_ns(uint64_t ns)
+    template <class Rep, class Period>
+    void sleep_for(std::chrono::duration<Rep, Period> d)
     {
-        kos_sleep_ns(ns);
+        kos_sleep_for(to_kos(d));
     }
-    inline uint64_t clock_now()
+#if __STDC_HOSTED__
+    template <class Duration>
+    void sleep_until(std::chrono::time_point<std::chrono::steady_clock, Duration> t)
     {
-        return kos_clock_now();
+        kos_sleep_until(to_kos(t));
     }
+#endif
     // Running core clock in Hz (0 where the backend has none); read-only, see kos_cpu_clock_hz.
     inline uint64_t cpu_clock_hz()
     {
@@ -45,14 +216,14 @@ namespace kos
     {
         return kos_periph_clock_hz(base);
     }
-    inline uint64_t clock_realtime()
+#if __STDC_HOSTED__
+    // Set the realtime clock (see kos_realtime_set).
+    template <class Duration>
+    int realtime_set(std::chrono::time_point<std::chrono::system_clock, Duration> t)
     {
-        return kos_clock_realtime();
+        return kos_realtime_set(to_kos(t));
     }
-    inline int clock_set_realtime(uint64_t unix_ns)
-    {
-        return kos_clock_set_realtime(unix_ns);
-    }
+#endif
     // Borrow the kernel's diagnostic LED (see kos_kernel_diag_led_set): a shared
     // status pin, not an app-owned device; provisional until caps land.
     inline void kernel_diag_led(bool on)
@@ -85,11 +256,27 @@ namespace kos
         Semaphore(Semaphore const&) = delete;
         Semaphore& operator=(Semaphore const&) = delete;
 
-        // wait(0) is a try: it takes only a unit already banked.
-        int wait(uint32_t timeout_us = KOS_TIMEOUT_NONE)
+        int wait()
         {
-            return kos_sem_wait(&sem_, timeout_us);
+            return kos_sem_wait(&sem_, KOS_NEVER);
         }
+        // Takes only a unit already banked.
+        int try_wait()
+        {
+            return kos_sem_wait(&sem_, KOS_POLL);
+        }
+        template <class Rep, class Period>
+        int wait_for(std::chrono::duration<Rep, Period> d)
+        {
+            return kos_sem_wait(&sem_, after(d));
+        }
+#if __STDC_HOSTED__
+        template <class Duration>
+        int wait_until(std::chrono::time_point<std::chrono::steady_clock, Duration> t)
+        {
+            return kos_sem_wait(&sem_, to_kos(t));
+        }
+#endif
         int post()
         {
             return kos_sem_post(&sem_);
@@ -105,7 +292,7 @@ namespace kos
 
     // Priority-inheritance mutex over a kos_mutex_t word it holds: no kernel object, so a
     // static or a member costs only the word, and nothing is freed. Not copyable or movable,
-    // since the word's address is the mutex. lock, try_lock_for and unlock return the raw codes
+    // since the word's address is the mutex. lock, the timed locks and unlock return the raw codes
     // (see kos_mutex_lock). ROBUST-MUTEX CAVEAT: -KOS_EOWNERDEAD means the lock IS held (owner
     // died), so do NOT treat every rc < 0 as "not acquired" or you strand the mutex;
     // special-case rc == -KOS_EOWNERDEAD as held. Its storage must outlive every holder and
@@ -120,19 +307,32 @@ namespace kos
 
         int lock()
         {
-            return kos_mutex_lock(&word_, KOS_TIMEOUT_NONE);
+            return kos_mutex_lock(&word_, KOS_NEVER);
         }
         // True with the mutex held, a dead holder's stolen one included (-KOS_EOWNERDEAD); a
-        // caller that must see that death uses try_lock_for(0).
+        // caller that must see that death uses try_lock_for with a zero duration.
         bool try_lock()
         {
-            int const rc = kos_mutex_lock(&word_, 0);
+            int const rc = kos_mutex_lock(&word_, KOS_POLL);
             return rc == 0 or rc == -KOS_EOWNERDEAD;
         }
-        int try_lock_for(uint32_t timeout_us)
+        template <class Rep, class Period>
+        int try_lock_for(std::chrono::duration<Rep, Period> d)
         {
-            return kos_mutex_lock(&word_, timeout_us);
+            return kos_mutex_lock(&word_, after(d));
         }
+#if __STDC_HOSTED__
+        template <class Duration>
+        int try_lock_until(std::chrono::time_point<std::chrono::steady_clock, Duration> t)
+        {
+            return kos_mutex_lock(&word_, to_kos(t));
+        }
+        template <class Duration>
+        int try_lock_until(std::chrono::time_point<std::chrono::system_clock, Duration> t)
+        {
+            return kos_mutex_lock_realtime(&word_, to_kos(t));
+        }
+#endif
         int unlock()
         {
             return kos_mutex_unlock(&word_);
@@ -149,7 +349,7 @@ namespace kos
     // IRQ line capability (tier-1 userspace driver). Two ways in:
     //   root:   auto irq = kos::Irq::claim(line);        // needs KOS_AUTH_IRQ
     //   driver: auto irq = kos::Irq::adopt(cap_index);   // a cap delegated at spawn
-    // then irq.bind_notify(n); n.wait(mask, ...); ...; irq.ack();
+    // then irq.bind_notify(n); n.bind(); kos::notify_wait(mask, ...); ...; irq.ack();
     // OWNING and move-only: the destructor closes the cap, which drops the binding's
     // last reference and hands the line back if this was the only holder.
     class Irq
@@ -298,11 +498,6 @@ namespace kos
         {
             return kos_notify_unbind(h_);
         }
-        int wait(uint32_t mask, uint32_t timeout_us = KOS_TIMEOUT_NONE,
-                 uint32_t* out_bits = nullptr)
-        {
-            return kos_notify_wait(h_, mask, timeout_us, out_bits);
-        }
         kos_cap_t handle() const
         {
             return h_;
@@ -333,6 +528,28 @@ namespace kos
         kos_cap_t h_;
         int err_;
     };
+
+    // Wait on the notification the caller is bound to, which names no object (see
+    // kos_notify_wait).
+    inline int notify_wait(uint32_t mask, uint32_t* out_bits = nullptr)
+    {
+        return kos_notify_wait(mask, KOS_NEVER, out_bits);
+    }
+    template <class Rep, class Period>
+    int notify_wait_for(uint32_t mask, std::chrono::duration<Rep, Period> d,
+                        uint32_t* out_bits = nullptr)
+    {
+        return kos_notify_wait(mask, after(d), out_bits);
+    }
+#if __STDC_HOSTED__
+    template <class Duration>
+    int notify_wait_until(uint32_t mask,
+                          std::chrono::time_point<std::chrono::steady_clock, Duration> t,
+                          uint32_t* out_bits = nullptr)
+    {
+        return kos_notify_wait(mask, to_kos(t), out_bits);
+    }
+#endif
 }
 
 namespace kos::thread
@@ -364,18 +581,50 @@ namespace kos::thread
         {
             return err_;
         }
-        // See kos_thread_cancel. Returns -KOS_EBADF on a failed create: KOS_THREAD_NONE names
-        // nothing to cancel.
-        int cancel(enum kos_cancel kind, uint32_t timeout_us) const
+        // See kos_thread_cancel: the overload with no time waits for the thread to be gone, a
+        // duration of zero or less is KOS_POLL and only raises the cancel, and a positive one,
+        // however short, is a wait that may time out. Returns -KOS_EBADF on a failed create:
+        // KOS_THREAD_NONE names nothing to cancel.
+        int cancel(enum kos_cancel kind) const
         {
-            return kos_thread_cancel(id_, kind, timeout_us);
+            return kos_thread_cancel(id_, kind, KOS_NEVER);
         }
+        template <class Rep, class Period>
+        int cancel_for(enum kos_cancel kind, std::chrono::duration<Rep, Period> d) const
+        {
+            kos_duration_t const wait = to_kos(d);
+            if (wait.ns <= 0)
+            {
+                return kos_thread_cancel(id_, kind, KOS_POLL);
+            }
+            return kos_thread_cancel(id_, kind, kos_after(kos_monotonic_now(), wait));
+        }
+#if __STDC_HOSTED__
+        template <class Duration>
+        int cancel_until(enum kos_cancel kind,
+                         std::chrono::time_point<std::chrono::steady_clock, Duration> t) const
+        {
+            return kos_thread_cancel(id_, kind, to_kos(t));
+        }
+#endif
         // Wait for the thread to be gone (see kos_thread_join): 0 also for a thread that
-        // had already exited, and -KOS_EBADF on a failed create. Unbounded by default.
-        int join(uint32_t timeout_us = KOS_TIMEOUT_NONE) const
+        // had already exited, and -KOS_EBADF on a failed create.
+        int join() const
         {
-            return kos_thread_join(id_, timeout_us);
+            return kos_thread_join(id_, KOS_NEVER);
         }
+        template <class Rep, class Period>
+        int join_for(std::chrono::duration<Rep, Period> d) const
+        {
+            return kos_thread_join(id_, after(d));
+        }
+#if __STDC_HOSTED__
+        template <class Duration>
+        int join_until(std::chrono::time_point<std::chrono::steady_clock, Duration> t) const
+        {
+            return kos_thread_join(id_, to_kos(t));
+        }
+#endif
 
     private:
         kos_thread_t id_ = KOS_THREAD_NONE;
@@ -392,7 +641,7 @@ namespace kos::thread
     // The thread joins the caller's task: a fault terminates the whole task.
     inline Handle create(void (*entry)(void*), void* arg, char const* name,
                         uint8_t prio, uint8_t policy = KOS_POLICY_FIFO,
-                        uint32_t quantum_ns = 0,
+                        std::chrono::nanoseconds quantum = std::chrono::nanoseconds{0},
                         void* stack = nullptr, uint32_t stack_size = 0,
                         kos_window const* windows = nullptr, uint16_t window_count = 0,
                         kos_cap_grant const* caps = nullptr, uint8_t cap_count = 0,
@@ -405,7 +654,7 @@ namespace kos::thread
         p.name = name;
         p.prio = prio;
         p.policy = policy;
-        p.quantum_ns = quantum_ns;
+        p.quantum = to_kos(quantum);
         p.windows = windows;
         p.window_count = window_count;
         p.stack_base = stack;
@@ -452,12 +701,13 @@ namespace kos::thread
     // grant may name its own index instead).
     inline Handle create_caps(void (*entry)(void*), void* arg, char const* name, uint8_t prio,
                              kos_cap_grant const* caps, uint8_t cap_count,
-                             uint8_t policy = KOS_POLICY_FIFO, uint32_t quantum_ns = 0,
+                             uint8_t policy = KOS_POLICY_FIFO,
+                             std::chrono::nanoseconds quantum = std::chrono::nanoseconds{0},
                              uint32_t authority = 0, uint16_t const* cap_dest = nullptr,
                              void* stack = nullptr,
                              uint32_t stack_size = 0, uint32_t core_mask = 0)
     {
-        return create(entry, arg, name, prio, policy, quantum_ns, stack,
+        return create(entry, arg, name, prio, policy, quantum, stack,
                      stack_size, nullptr, 0, caps, cap_count, authority, cap_dest, core_mask);
     }
 }

@@ -27,12 +27,12 @@ namespace kickos
 
             void lock_the_mutex()
             {
-                (void)mutex_lock(reinterpret_cast<uintptr_t>(&g_word), KOS_TIMEOUT_NONE);
+                (void)mutex_lock(reinterpret_cast<uintptr_t>(&g_word), KOS_LIMIT_NONE);
             }
 
             void wait_on_the_word()
             {
-                (void)word_wait(reinterpret_cast<uintptr_t>(&g_word), 0u, KOS_TIMEOUT_NONE);
+                (void)word_wait(reinterpret_cast<uintptr_t>(&g_word), 0u, KOS_LIMIT_NONE);
             }
         }
 

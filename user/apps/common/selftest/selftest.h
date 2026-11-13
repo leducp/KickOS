@@ -166,6 +166,14 @@ namespace selftest
     // What an ArmHold gives one slay to finish a teardown.
     constexpr uint32_t ARM_SLAY_US = 500000;
 
+    using namespace std::chrono_literals;
+
+    // The deadline `us` microseconds from now.
+    inline kos_monotonic_t after_us(uint64_t us)
+    {
+        return kos_after(kos_monotonic_now(), kos_us(static_cast<int64_t>(us)));
+    }
+
     // A kos_task_state answer naming a task that has ended.
     inline bool state_ended(int state)
     {
@@ -250,7 +258,7 @@ namespace selftest
             kos_task_params named = p;
             named.argv = argv;
             named.instance = instance;
-            return kos_task_create(prog, &named, 0, t);
+            return kos_task_create(prog, &named, KOS_POLL, t);
         }
         char const* argv[6];
         kos_task_params p{};
@@ -287,10 +295,10 @@ namespace selftest
     inline kos::thread::Handle irq_spawn(void (*entry)(void*), void* arg, char const* name,
                                          uint8_t prio, kos_cap_grant const* caps, uint8_t count,
                                          uint8_t policy = KOS_POLICY_FIFO,
-                                         uint32_t quantum_ns = 0, uint32_t authority = 0,
-                                         uint16_t const* cap_dest = nullptr)
+                                         std::chrono::nanoseconds quantum = 0ns,
+                                         uint32_t authority = 0, uint16_t const* cap_dest = nullptr)
     {
-        return kos::thread::create_caps(entry, arg, name, prio, caps, count, policy, quantum_ns,
+        return kos::thread::create_caps(entry, arg, name, prio, caps, count, policy, quantum,
                                         authority, cap_dest, nullptr, 0, TAP_PIN_CORE);
     }
 

@@ -24,7 +24,7 @@ namespace
     uint32_t g_next_thread;
     uint32_t g_spawns;
     void* g_spawn_args[8];
-    uint64_t g_now_ns;
+    int64_t g_now_ns;
 
     // snprintf returns the length it WOULD have written, so advancing a cursor by it walks
     // past the buffer on the first truncation and makes the next `cap - len` underflow.
@@ -61,6 +61,13 @@ namespace
     {
         char buf[40];
         snprintf(buf, sizeof(buf), "%s%u", verb, id);
+        note(buf);
+    }
+
+    void note_ns(char const* verb, int64_t ns)
+    {
+        char buf[40];
+        snprintf(buf, sizeof(buf), "%s%lld", verb, static_cast<long long>(ns));
         note(buf);
     }
 }
@@ -130,12 +137,15 @@ extern "C"
         return static_cast<int32_t>(len);
     }
 
-    void kos_sleep_ns(uint64_t ns)
+    void kos_sleep_for(kos_duration_t d)
     {
-        g_now_ns += ns;
+        if (d.ns > 0)
+        {
+            g_now_ns += d.ns;
+        }
     }
 
-    uint64_t kos_clock_now(void)
+    int64_t kickos_monotonic_now(void)
     {
         return g_now_ns;
     }
@@ -210,20 +220,24 @@ extern "C"
         throw kos_seam_exit{code};
     }
 
-    int kos_word_wait(uint32_t* word, uint32_t expected, uint32_t timeout_us)
+    // Notes the park's span in nanoseconds from the fake clock to its deadline.
+    int kos_word_wait(uint32_t* word, uint32_t expected, kos_monotonic_t until)
     {
         if (*word != expected)
         {
             note("park?");
             return -KOS_EAGAIN;
         }
-        note_id("park", timeout_us);
+        note_ns("park", until.ns - g_now_ns);
         if (g_seam.publish_on_park)
         {
             *word = 1u;
             return 0;
         }
-        g_now_ns += uint64_t{timeout_us} * 1000u;
+        if (until.ns > g_now_ns)
+        {
+            g_now_ns = until.ns;
+        }
         return -KOS_ETIMEDOUT;
     }
 
@@ -235,7 +249,7 @@ extern "C"
         return 0;
     }
 
-    int32_t kos_send(kos_cap_t, void const*, size_t, uint32_t)
+    int32_t kos_send(kos_cap_t, void const*, size_t, kos_monotonic_t)
     {
         note("send");
         return 0;

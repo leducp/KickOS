@@ -152,7 +152,7 @@ namespace
 
             // Deliberate slow-software gap. FEM=1: MSLS stays asserted (no edge).
             // FEM=0: MSLS already fell inside the capture window (no edge here).
-            kos_sleep_ns(WORD_GAP_NS);
+            kos_sleep_for(kos_ns(WORD_GAP_NS));
         }
 
         // Stop any still-running frame (defensive): W1C PSR.MSLS deactivates MSLS.

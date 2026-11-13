@@ -22,7 +22,7 @@ int main(int, char**)
 {
     kos::print("[rebootdemo] KickOS reboot-to-bootloader demo\n");
     kos::print("[rebootdemo] handing the chip to its bootloader in 3s\n");
-    kos::sleep_ns(ARM_NS);
+    kos::sleep_for(std::chrono::nanoseconds{ARM_NS});
 
     int const rc = kos_shutdown(0, KOS_SHUTDOWN_BOOTLOADER);
 

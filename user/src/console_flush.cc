@@ -6,7 +6,7 @@
 #include <kickos/sys/errno.h>
 #include <kickos/sys/uart.h>
 
-int32_t kos_console_flush(uint32_t timeout_us)
+int32_t kos_console_flush(kos_monotonic_t until)
 {
     union
     {
@@ -14,7 +14,7 @@ int32_t kos_console_flush(uint32_t timeout_us)
         struct kos_uart_rsp rsp;
     } msg = {};
     msg.req.op = KOS_UART_DRAIN;
-    int32_t const n = kos_call(KOS_CAP_STDOUT, &msg, sizeof(msg.req), sizeof(msg.rsp), timeout_us);
+    int32_t const n = kos_call(KOS_CAP_STDOUT, &msg, sizeof(msg.req), sizeof(msg.rsp), until);
     if (n < 0)
     {
         return n;

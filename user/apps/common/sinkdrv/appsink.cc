@@ -25,7 +25,7 @@ namespace
             int32_t count;
         } msg;
         struct kos_reply_recv_opts opts;
-        kos_reply_recv_opts_init(&opts, KOS_SPAWN_DELEGATED_CAP0, 0u, KOS_TIMEOUT_NONE);
+        kos_reply_recv_opts_init(&opts, KOS_SPAWN_DELEGATED_CAP0, 0u, KOS_NEVER);
         kos_cap_t reply_cap = KOS_CAP_NONE;
         size_t reply_len = 0;
         int32_t total = 0;

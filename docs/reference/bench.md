@@ -293,14 +293,14 @@ library's locks under `malloc` and `getenv`, the bare system calls (`cpu_clock_h
 wait (`sem: post+wait`, an uncontended pair of compare-and-swaps in user mode with no kernel
 entry, so it times no system call and compares only with captures whose semaphore is a user
 word), a semaphore round trip between two threads, and the waiter's wait in a mutex handoff: alone, beside every other thread slot parked in pairs, and from another task through a
-memory window where the board has address spaces. It reads `kos_clock_now`, so it builds on every
+memory window where the board has address spaces. It reads `kos_monotonic_now`, so it builds on every
 board, the 64 KiB-flash ones included. Each handoff row prints its p50, p99 and max and the
 round it came from, and a clock too coarse to time one handoff prints the round alone. Its rows
 are read, not judged (`kickos_unbooted`), so a capture takes no judge:
 
     APP=mutexbench JUDGE=none CAP_SECS=90 VARIANT= tools/bench/bench.sh <board>
 
-A handoff is timed by a `kos_clock_now` on each side, a system call except where
+A handoff is timed by a `kos_monotonic_now` on each side, a system call except where
 `KICKOS_CLOCK_USER` makes it a counter read (porting.md), so its figures compare only between
 trees whose clock read costs the same.
 
@@ -321,7 +321,7 @@ armv6m and over a capture alike. rxv3 has no QEMU machine, so its witness is the
 
 The kernel carries no bench instrument. `userbench` (`user/apps/common/userbench/main.cc`) times
 every row from user space, on the plain kernel every other image runs, with the clock an
-application reads (`kos_clock_now`, and `kos_cpu_clock_hz` for the `cpu clock` line).
+application reads (`kos_monotonic_now`, and `kos_cpu_clock_hz` for the `cpu clock` line).
 `tests/integration/check_userbench.sh` judges it under the emulator gate and over a capture
 alike: every row the stated posture owes is printed in the shape its clock owes, nothing is
 refused, and the run ends in one boot. The figures themselves are read, not judged.
@@ -349,7 +349,7 @@ What the clock an application reads resolves, per family:
 
 | family | user clock | resolution |
 |---|---|---|
-| armv6m, armv7m, armv8-M | none (`kos_clock_now` is a system call) | coarse |
+| armv6m, armv7m, armv8-M | none (`kos_monotonic_now` is a system call) | coarse |
 | rv32imac virt, rv64imac virt | the time CSR (`KICKOS_CLOCK_USER`) | 100 ns |
 | rv32imac ESP32-C6 | none | coarse |
 | armv8a | `CNTPCT_EL0` | 16 ns under QEMU |

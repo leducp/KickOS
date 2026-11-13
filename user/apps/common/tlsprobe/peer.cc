@@ -44,7 +44,7 @@ int main(int, char**)
     g_peer_seeded = 0u;
     g_peer_zero[2] = 1u;
     // Main writes its own thread-local storage while this thread sleeps.
-    kos::sleep_ns(20000000ull);
+    kos::sleep_for(std::chrono::milliseconds{20});
     for (unsigned i = 0; i < 5u; i++)
     {
         if (g_peer_pad[i] != 0x9EE20000u + i)

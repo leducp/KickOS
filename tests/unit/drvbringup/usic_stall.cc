@@ -30,6 +30,8 @@ namespace
     constexpr uint32_t CCR_RUNNING = ru::CCR_MODE_SSC | ru::CCR_RIEN | ru::CCR_AIEN;
     constexpr uint32_t RX_FLAGS = ru::PSR_RIF | ru::PSR_AIF;
     constexpr uint32_t NEVER = UINT32_MAX;
+    // The fake clock, which never moves.
+    constexpr int64_t NOW_NS = 1000000;
 
     // FDR.STEP = 1 and BRG.PDIV = 1023: 144 MHz / 1024 / (2 * 1024), 68.66 Hz.
     constexpr uint32_t SLOW_FDR = ru::FDR_DM_FRACTIONAL | 1u;
@@ -108,14 +110,19 @@ extern "C"
         return 0;
     }
 
-    int kos_notify_wait(kos_cap_t, uint32_t, uint32_t timeout_us, uint32_t*)
+    int64_t kickos_monotonic_now(void)
+    {
+        return NOW_NS;
+    }
+
+    int kos_notify_wait(uint32_t, kos_monotonic_t until, uint32_t*)
     {
         // PSCR is write-1-to-clear on PSR, which a host buffer only stores.
         uint32_t const pscr = word(ru::off::PSCR);
         word(ru::off::PSR) &= ~(pscr & RX_FLAGS);
         word(ru::off::PSCR) = 0u;
 
-        if (timeout_us == 0u)
+        if (until.ns <= NOW_NS)
         {
             g_polls++;
             g_ccr_at_poll = word(ru::off::CCR);
@@ -127,7 +134,7 @@ extern "C"
         uint32_t const w = g_words++;
         if (w >= g_silent_from)
         {
-            if (timeout_us == KOS_TIMEOUT_NONE)
+            if (until.ns == KOS_NEVER.ns)
             {
                 fprintf(stderr, "a wait with no bound on a silent line never returns\n");
                 fflush(stderr);
@@ -135,7 +142,7 @@ extern "C"
             }
             return -KOS_ETIMEDOUT;
         }
-        if (g_word_us > timeout_us)
+        if (int64_t{g_word_us} * 1000 > until.ns - NOW_NS)
         {
             return -KOS_ETIMEDOUT;
         }

@@ -104,7 +104,7 @@ namespace kickos
             Thread* const later = member_of(2, PRIO_MID, task(1));
             run_as(later);
             EXPECT_EQ(mutex_lock(va(&libc_word), 0), -KOS_EOWNERDEAD);
-            EXPECT_EQ(mutex_lock(va(&malloc_word), KOS_TIMEOUT_NONE), -KOS_EOWNERDEAD);
+            EXPECT_EQ(mutex_lock(va(&malloc_word), KOS_LIMIT_NONE), -KOS_EOWNERDEAD);
             EXPECT_EQ(mutex_unlock(va(&libc_word)), 0);
             EXPECT_EQ(mutex_lock(va(&libc_word), 0), 0) << "the death was reported twice";
         }

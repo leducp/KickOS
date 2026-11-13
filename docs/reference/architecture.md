@@ -543,7 +543,7 @@ where the primitive has a channel to report one; the target then runs its own `s
 own. A timeout of 0 answers once the cancel is raised; any other parks the caller on the target
 BEFORE the cancel is raised, as a join parks, and answers once the target is gone.
 `KOS_SYS_THREAD_JOIN` OBSERVES the death, bounded by an optional `timeout_us`
-(`KOS_TIMEOUT_NONE` = none). The joiner parks **queue-less** tagged `WAIT_JOIN` with `wait_obj`
+(`KOS_NEVER` = none). The joiner parks **queue-less** tagged `WAIT_JOIN` with `wait_obj`
 naming the target TCB, and `sched::exit_current` sweeps the thread pool for that tag at every
 thread exit -- a scan at an exit and on no other path, which is what buys join **zero per-TCB
 state and no waiter list**, a byte budget the 16 KiB boards care about. Kill and join take the
@@ -611,7 +611,7 @@ is the form that waits. archived `M4_task_layer_record.md` is the record.
   **`ETIMEDOUT`** is a caller-supplied deadline that passed before the operation could happen,
   and it promises that NOTHING happened for the caller: `KOS_SYS_SEND`, `KOS_SYS_REPLY_RECV`,
   `KOS_SYS_CALL`, `KOS_SYS_WORD_WAIT` and `KOS_SYS_THREAD_JOIN` given a `timeout_us` other
-  than `KOS_TIMEOUT_NONE` expire with no peer, move no bytes, return no reply, take no unit,
+  than `KOS_NEVER` expire with no peer, move no bytes, return no reply, take no unit,
   and leave the joined thread running. `kernel/time/time.cc` decides only THAT a deadline
   expired and delegates each park's unwind to `thread_abort_park`
   (`kernel/thread/park.cc`), which unlinks the right queue and reverts the right

@@ -44,7 +44,7 @@ namespace
     void report_done()
     {
         uint8_t const mark = 1;
-        (void)kos_send(CH_DONE, &mark, sizeof(mark), KOS_TIMEOUT_NONE);
+        (void)kos_send(CH_DONE, &mark, sizeof(mark), KOS_NEVER);
     }
 
     void confined_child(void*)
@@ -68,7 +68,7 @@ namespace
         }
         kos::print("[rootfault] child: wrote my own granted region\n");
         report_done();
-        kos_sem_wait(&g_hold, KOS_TIMEOUT_NONE);
+        kos_sem_wait(&g_hold, KOS_NEVER);
         kos::print("[rootfault] ERROR: child unparked\n");
     }
 }
@@ -106,9 +106,9 @@ int main(int, char**)
     win.base = reinterpret_cast<uintptr_t>(rA);
     win.size = 4096;
     win.kind = KOS_WINDOW_MEMORY;
-    auto const child = kos::thread::create(confined_child, nullptr, "confined", 10,
-                                           KOS_POLICY_FIFO, 0, nullptr, 0, &win, 1, caps, 1, 0,
-                                           nullptr, core_mask);
+    auto const child = kos::thread::create(confined_child, nullptr, "confined", 10, KOS_POLICY_FIFO,
+                                           std::chrono::nanoseconds{0}, nullptr, 0, &win, 1, caps,
+                                           1, 0, nullptr, core_mask);
     if (not child.valid())
     {
         kos::print("[rootfault] ERROR: child spawn refused\n");
@@ -118,7 +118,7 @@ int main(int, char**)
     // The child wrote A: the control half passed.
     uint8_t mark = 0;
     struct kos_reply_recv_opts opts;
-    kos_reply_recv_opts_init(&opts, done, KOS_RECV_NO_INFO, KOS_TIMEOUT_NONE);
+    kos_reply_recv_opts_init(&opts, done, KOS_RECV_NO_INFO, KOS_NEVER);
     (void)kos_reply_recv(KOS_CAP_NONE, &mark, kos_call_lens_pack(0, sizeof(mark)), &opts);
 
     // %p, not %x: the sim is a 64-bit host, and a truncated pointer would not match the

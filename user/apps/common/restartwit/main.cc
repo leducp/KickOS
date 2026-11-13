@@ -22,7 +22,7 @@ int main(int, char**)
             break;
         }
         uint32_t bits = 0;
-        if (kos_notify_wait(events, 1u, KOS_TIMEOUT_NONE, &bits) != 0)
+        if (kos_notify_wait(1u, KOS_NEVER, &bits) != 0)
         {
             kos::print("[restartwit] ERROR: the init never reported the witness's death\n");
             kos_exit(4);

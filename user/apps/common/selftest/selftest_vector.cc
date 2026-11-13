@@ -44,11 +44,12 @@ namespace selftest
 
 extern "C"
 {
-    // Loads `load`, makes the syscall (nr, a0, a1, a2) while holding it, and stores the state
-    // into `out`. Returns the syscall's result.
+    // Loads `load`, makes the syscall (nr, a0, a1, a2, a3, a4) while holding it, and stores the
+    // state into `out`. Returns the syscall's result.
     KICKOS_SELFTEST_LOCAL int selftest_vec_hold(selftest::VecImage const* load,
                                                     selftest::VecImage* out, uintptr_t nr,
-                                                    uintptr_t a0, uintptr_t a1, uintptr_t a2);
+                                                    uintptr_t a0, uintptr_t a1, uintptr_t a2,
+                                                    uintptr_t a3, uintptr_t a4);
     // Loads `load` and spins, counting in *own, until *other moves or `bound` polls pass, then
     // stores the state into `out`. Returns 1 when *other moved.
     KICKOS_SELFTEST_LOCAL int selftest_vec_spin(selftest::VecImage const* load,
@@ -107,7 +108,7 @@ __asm__(".pushsection .text, \"ax\", @progbits\n"
         "    pushq %rbx\n    pushq %r12\n    movq %rdi, %rbx\n    movq %rsi, %r12\n"
         KOS_VEC_LOAD("%rbx")
         "    movq %rdx, %rdi\n    movq %rcx, %rsi\n    movq %r8, %rdx\n"
-        "    movq %r9, %r10\n    xorl %r8d, %r8d\n    syscall\n"
+        "    movq %r9, %r10\n    movq 24(%rsp), %r8\n    movq 32(%rsp), %r9\n    syscall\n"
         KOS_VEC_STORE("%r12")
         "    popq %r12\n    popq %rbx\n    ret\n"
 
@@ -200,13 +201,14 @@ namespace selftest
     {
         g_vb_rc[0] = selftest_vec_hold(&g_vb_load[0], &g_vb_seen[0], KOS_SYS_WORD_WAIT,
                                        reinterpret_cast<uintptr_t>(&g_vb_word), 0,
-                                       KOS_TIMEOUT_NONE);
+                                       kos_u64_lo(KOS_LIMIT_NONE), kos_u64_hi(KOS_LIMIT_NONE),
+                                       KOS_LIMIT_MONOTONIC);
         g_vb_holder_done = 1;
     }
     void vb_poster(void*)
     {
         g_vb_rc[1] = selftest_vec_hold(&g_vb_load[1], &g_vb_seen[1], KOS_SYS_WORD_WAKE,
-                                       reinterpret_cast<uintptr_t>(&g_vb_word), 1, 1);
+                                       reinterpret_cast<uintptr_t>(&g_vb_word), 1, 1, 0, 0);
         g_vb_poster_after = g_vb_holder_done;
     }
 
@@ -226,10 +228,10 @@ namespace selftest
         ArmHold hold;
         TAP_HOLD(hold.thread(&h) and hold.thread(&p));
         h = kos::thread::create_caps(vb_holder, nullptr, "vbhold", TAP_PRIO_PARKS + 1, nullptr, 0,
-                                     KOS_POLICY_FIFO, 0, 0, nullptr, nullptr, 0, TAP_PIN_CORE);
+                                     KOS_POLICY_FIFO, 0ns, 0, nullptr, nullptr, 0, TAP_PIN_CORE);
         TAP_CHECK(h.valid());
         p = kos::thread::create_caps(vb_poster, nullptr, "vbpost", TAP_PRIO_PARKS, nullptr, 0,
-                                     KOS_POLICY_FIFO, 0, 0, nullptr, nullptr, 0, TAP_PIN_CORE);
+                                     KOS_POLICY_FIFO, 0ns, 0, nullptr, nullptr, 0, TAP_PIN_CORE);
         TAP_CHECK(p.valid());
         TAP_CHECK(hold.joined());
         tap::diag("holder rc %d mxcsr 0x%x fcw 0x%x, poster rc %d mxcsr 0x%x fcw 0x%x, "
@@ -269,16 +271,16 @@ namespace selftest
     uint64_t vec_quantum_ns()
     {
         // An emulated clock's granule is coarse, so the slice is held above it.
-        uint64_t e0 = kos_clock_now();
+        uint64_t e0 = kos_monotonic_now().ns;
         uint64_t e1 = e0;
         while (e1 == e0)
         {
-            e1 = kos_clock_now();
+            e1 = kos_monotonic_now().ns;
         }
         uint64_t e2 = e1;
         while (e2 == e1)
         {
-            e2 = kos_clock_now();
+            e2 = kos_monotonic_now().ns;
         }
         uint64_t quantum = 1000000ull;
         if (quantum < (e2 - e1) * 4)
@@ -307,8 +309,9 @@ namespace selftest
         for (uintptr_t i = 0; i < 2; i++)
         {
             w[i] = kos::thread::create_caps(vp_spinner, reinterpret_cast<void*>(i), "vpspin",
-                                            TAP_PRIO_PARKS, nullptr, 0, KOS_POLICY_RR, quantum, 0,
-                                            nullptr, nullptr, 0, TAP_PIN_CORE);
+                                            TAP_PRIO_PARKS, nullptr, 0, KOS_POLICY_RR,
+                                            std::chrono::nanoseconds{quantum}, 0, nullptr,
+                                            nullptr, 0, TAP_PIN_CORE);
         }
         TAP_CHECK(main_back());
         TAP_CHECK(w[0].valid() and w[1].valid());
@@ -378,7 +381,7 @@ namespace selftest
         VecImage load;
         VecImage seen;
         vec_pattern(&load, 5, 3, 0);
-        (void)selftest_vec_hold(&load, &seen, KOS_SYS_CLOCK_NOW, 0, 0, 0);
+        (void)selftest_vec_hold(&load, &seen, KOS_SYS_MONOTONIC_NOW, 0, 0, 0, 0, 0);
     }
 
     bool vec_clean_ok(VecVerdict const& v, char const* who)
@@ -428,12 +431,12 @@ namespace selftest
         VecVerdict v;
         memset(&v, 0xA5, sizeof(v));
         struct kos_reply_recv_opts o;
-        kos_reply_recv_opts_init(&o, ep, KOS_RECV_NO_INFO, STALL_TOLERANT_US);
+        kos_reply_recv_opts_init(&o, ep, KOS_RECV_NO_INFO, after_us(STALL_TOLERANT_US));
         int32_t const n = kos_reply_recv(KOS_CAP_NONE, &v, kos_call_lens_pack(0, sizeof(v)), &o);
         TAP_CHECK(n == static_cast<int32_t>(sizeof(v)));
         TAP_CHECK(peer_dead_status(task) == 0);
         TAP_CHECK(vec_clean_ok(v, "another task"));
-        TAP_CHECK(kos_task_slay(task, 0) == 0);
+        TAP_CHECK(kos_task_slay(task, KOS_POLL) == 0);
         task = KOS_TASK_NONE;
         TAP_CHECK(kos_handle_close(ep) == 0);
         ep = KOS_CAP_NONE;
@@ -450,7 +453,7 @@ namespace selftest
     {
         uint32_t word = 0;
         struct kos_reply_recv_opts opts;
-        kos_reply_recv_opts_init(&opts, KOS_SPAWN_DELEGATED_CAP0, 0, KOS_TIMEOUT_NONE);
+        kos_reply_recv_opts_init(&opts, KOS_SPAWN_DELEGATED_CAP0, 0, KOS_NEVER);
         if (kos_reply_recv(KOS_CAP_NONE, &word, kos_call_lens_pack(0, sizeof(word)), &opts) < 0)
         {
             return KOS_CAP_NONE;
@@ -483,14 +486,14 @@ namespace selftest
         {
             return 1;
         }
-        return t.join(STALL_TOLERANT_US);
+        return t.join_for(std::chrono::microseconds{STALL_TOLERANT_US});
     }
 
     // Never posted: the sibling waits on its task's own copy.
     kos_sem_t g_vf_never = KOS_SEM_INIT(0);
     void vf_sibling(void*)
     {
-        kos_sem_wait(&g_vf_never, KOS_TIMEOUT_NONE);
+        kos_sem_wait(&g_vf_never, KOS_NEVER);
         kos_exit(1);
     }
     // The victim, named for the fault it takes, beside the entry parked as its sibling.
@@ -523,7 +526,7 @@ namespace selftest
         TAP_CHECK(kos_endpoint_create(&ep) == 0);
         kos_cap_grant const vcaps[] = {{ep, KOS_CAP_WAIT | KOS_CAP_TRANSFER}};
         TAP_CHECK(PeerRun(victim).caps(vcaps, 1).start(&task) == 0);
-        int32_t const n = kos_call(ep, word, 0, sizeof(*word), STALL_TOLERANT_US);
+        int32_t const n = kos_call(ep, word, 0, sizeof(*word), after_us(STALL_TOLERANT_US));
         int verdict_now = -1;
         if (n == -KOS_EPIPE)
         {
@@ -587,7 +590,7 @@ namespace selftest
     {
         g_vm_core[0] = static_cast<uint32_t>(kos_core_current());
         g_vm_rc = selftest_vec_hold(&g_vm_load, &g_vm_seen, KOS_SYS_THREAD_AFFINITY,
-                                        kos_thread_self(), 1u << g_vm_away, 0);
+                                        kos_thread_self(), 1u << g_vm_away, 0, 0, 0);
         g_vm_core[1] = static_cast<uint32_t>(kos_core_current());
     }
 
@@ -614,7 +617,7 @@ namespace selftest
         ArmHold hold;
         TAP_HOLD(hold.thread(&t));
         t = kos::thread::create_caps(vm_mover, nullptr, "vmmove", TAP_PRIO_PARKS, nullptr, 0,
-                                     KOS_POLICY_FIFO, 0, 0, nullptr, nullptr, 0, TAP_PIN_CORE);
+                                     KOS_POLICY_FIFO, 0ns, 0, nullptr, nullptr, 0, TAP_PIN_CORE);
         TAP_CHECK(t.valid());
         TAP_CHECK(hold.joined());
         tap::diag("re-pin rc %d, core %u before and %u after, mxcsr 0x%x fcw 0x%x",
@@ -655,7 +658,7 @@ extern "C" void selftest_vec_clean_report(selftest::VecClean const* seen, void* 
         *static_cast<selftest::VecVerdict*>(arg) = v;
         return;
     }
-    (void)kos_send(KOS_SPAWN_DELEGATED_CAP0, &v, sizeof(v), KOS_TIMEOUT_NONE);
+    (void)kos_send(KOS_SPAWN_DELEGATED_CAP0, &v, sizeof(v), KOS_NEVER);
 }
 
 #endif

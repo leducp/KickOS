@@ -1387,7 +1387,7 @@ bool arch_user_data_writable(uintptr_t ptr, size_t len)
 // A direct call. No ARCH_HAS_IPC_FASTPATH: a caller's continuation is a host return address on
 // its own stack, not a saved register frame a reply could land in.
 uint64_t arch_syscall64(uintptr_t nr,
-                        uintptr_t a0, uintptr_t a1, uintptr_t a2, uintptr_t a3)
+                        uintptr_t a0, uintptr_t a1, uintptr_t a2, uintptr_t a3, uintptr_t a4)
 {
     // Tracked per context in SimContext::raised: a switch-in reinstates the caller's resting
     // posture while it still runs kernel code, and guard_apply_current re-raises.
@@ -1398,7 +1398,7 @@ uint64_t arch_syscall64(uintptr_t nr,
         self->raised = self->raised + 1;
         arena_raise_all();
     }
-    uint64_t r = syscall_dispatch(nr, a0, a1, a2, a3);
+    uint64_t r = syscall_dispatch(nr, a0, a1, a2, a3, a4);
     if (self != nullptr)
     {
         self->raised = self->raised - 1;
@@ -1411,9 +1411,9 @@ uint64_t arch_syscall64(uintptr_t nr,
 }
 
 uintptr_t arch_syscall(uintptr_t nr,
-                       uintptr_t a0, uintptr_t a1, uintptr_t a2, uintptr_t a3)
+                       uintptr_t a0, uintptr_t a1, uintptr_t a2, uintptr_t a3, uintptr_t a4)
 {
-    return static_cast<uintptr_t>(arch_syscall64(nr, a0, a1, a2, a3));
+    return static_cast<uintptr_t>(arch_syscall64(nr, a0, a1, a2, a3, a4));
 }
 
 // --- Interrupt controller (mask / unmask / raise) --------------------------

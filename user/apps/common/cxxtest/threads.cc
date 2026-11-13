@@ -153,7 +153,7 @@ namespace
             {
                 held = g_shared;
             }
-            kos_sleep_ns(100000u);
+            kos_sleep_for(kos_us(100));
         }
         held.reset();
     }
@@ -361,9 +361,9 @@ namespace
         }
         if (cancel)
         {
-            (void)kos_thread_cancel(g_joinee.native_handle(), KOS_CANCEL_SLAY, 0);
+            (void)kos_thread_cancel(g_joinee.native_handle(), KOS_CANCEL_SLAY, KOS_POLL);
         }
-        (void)joiner.join(KOS_TIMEOUT_NONE);
+        (void)joiner.join();
         return g_nc_joined and g_nc_created and not g_nc_refused;
     }
 
@@ -440,7 +440,7 @@ namespace
     constexpr int SPRAY = 8;
     constexpr uint32_t SPRAY_FILL = 0xA5A5A5A5u;
     constexpr size_t SPRAY_WORDS = 5u * sizeof(void*) / sizeof(uint32_t);
-    constexpr uint32_t GONE_BOUND_US = 2000000u;
+    constexpr std::chrono::seconds GONE_BOUND{2};
     uint32_t* g_spray[SPRAY];
     kos::Semaphore g_loose_go;
     bool g_loose_child_gone = false;
@@ -465,7 +465,7 @@ namespace
         std::thread b(returns_now);
         kos_thread_t const child = b.native_handle();
         b.detach();
-        g_loose_child_gone = kos_thread_join(child, GONE_BOUND_US) == 0;
+        g_loose_child_gone = kos_thread_join(child, kos::after(GONE_BOUND)) == 0;
         g_loose_ran = true;
     }
 
@@ -477,7 +477,7 @@ namespace
         kos_thread_t const parent = t.native_handle();
         t.detach();
         (void)g_loose_go.post();
-        bool const parent_gone = kos_thread_join(parent, GONE_BOUND_US) == 0;
+        bool const parent_gone = kos_thread_join(parent, kos::after(GONE_BOUND)) == 0;
         bool intact = true;
         for (int i = 0; i < SPRAY; i++)
         {
@@ -513,7 +513,7 @@ namespace
             std::thread t(returns_now);
             kos_thread_t const h = t.native_handle();
             t.detach();
-            if (kos_thread_join(h, GONE_BOUND_US) != 0)
+            if (kos_thread_join(h, kos::after(GONE_BOUND)) != 0)
             {
                 gone = false;
             }
@@ -523,7 +523,7 @@ namespace
 
     // Each thread holds a caught exception while the other throws, catches and rethrows its own,
     // and each counts only its own uncaught exception.
-    constexpr uint32_t HOLD_BOUND_US = 2000000u;
+    constexpr std::chrono::seconds HOLD_BOUND{2};
     kos::Semaphore g_a_unwinding;
     kos::Semaphore g_b_counted;
     kos::Semaphore g_a_caught;
@@ -541,7 +541,7 @@ namespace
         {
             g_a_uncaught = std::uncaught_exceptions();
             (void)g_a_unwinding.post();
-            (void)g_b_counted.wait(HOLD_BOUND_US);
+            (void)g_b_counted.wait_for(HOLD_BOUND);
         }
     };
 
@@ -571,19 +571,19 @@ namespace
         catch (std::runtime_error const&)
         {
             (void)g_a_caught.post();
-            (void)g_b_caught.wait(HOLD_BOUND_US);
+            (void)g_b_caught.wait_for(HOLD_BOUND);
             g_a_own = rethrows_own('a');
             (void)g_a_rethrown.post();
-            (void)g_b_rethrown.wait(HOLD_BOUND_US);
+            (void)g_b_rethrown.wait_for(HOLD_BOUND);
         }
     }
 
     void holder_b()
     {
-        (void)g_a_unwinding.wait(HOLD_BOUND_US);
+        (void)g_a_unwinding.wait_for(HOLD_BOUND);
         g_b_uncaught = std::uncaught_exceptions();
         (void)g_b_counted.post();
-        (void)g_a_caught.wait(HOLD_BOUND_US);
+        (void)g_a_caught.wait_for(HOLD_BOUND);
         try
         {
             throw std::runtime_error("b");
@@ -591,7 +591,7 @@ namespace
         catch (std::runtime_error const&)
         {
             (void)g_b_caught.post();
-            (void)g_a_rethrown.wait(HOLD_BOUND_US);
+            (void)g_a_rethrown.wait_for(HOLD_BOUND);
             g_b_own = rethrows_own('b');
             (void)g_b_rethrown.post();
         }
@@ -693,7 +693,7 @@ void cxxtest_threads(void (*report)(char const*, bool))
             bool const spawned = irq.valid();
             if (spawned)
             {
-                (void)irq.join(KOS_TIMEOUT_NONE);
+                (void)irq.join();
             }
             report("a shared_ptr two threads copy and drop keeps its count",
                    spawned and g_shared.use_count() == 1);
@@ -759,7 +759,7 @@ void cxxtest_threads(void (*report)(char const*, bool))
             int const rc = kos_thread_create(&p, &h);
             if (rc == 0)
             {
-                (void)kos_thread_join(h, KOS_TIMEOUT_NONE);
+                (void)kos_thread_join(h, KOS_NEVER);
             }
             report("a thread inheriting its priority ignores the one it names", rc == 0);
         }

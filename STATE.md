@@ -26,9 +26,10 @@ and an init provider that stays resident. `roadmap.md`'s `### M10` section is th
 only place its numbers are assigned; the sections at the bottom of this file say what each
 milestone's green runs do not.
 
-**M10.7 IS NEXT.** M10.6.12 took the performance bench out of the kernel, audited the test suite
-and closed the bench items M10.6.11 left open; the M10.6.12 section at the bottom of this file
-says what its green runs do not.
+**M10.7 IS NEXT.** M10.6.12 took the performance bench out of the kernel, audited the test suite,
+closed the bench items M10.6.11 left open, and fixed what an audit of its code found: no return
+into a thread takes privilege state from memory a task can write, on Cortex-M, RV32 and RX; the
+M10.6.12 section at the bottom of this file says what its green runs do not.
 
 **THE ORDER IS LOCKED: M10.6.12, THEN M10.7, THEN M10.8** (maintainer, 2026-10-13, M10.6.9 and
 M10.6.10 inserted 2026-10-21, M10.6.12 on 2026-11-05 and numbered so on 2026-11-07: "no need for
@@ -1146,12 +1147,17 @@ missing from one of those QEMU captures under load is this, not a flake to re-ru
 
 ## M10.6.12: the cleanup pass, and what these green runs do NOT say
 
-- **THE RP USB SUSPEND AND RESUME FIX HAS NO SILICON WITNESS.** picopi and pizero2350 were off the
-  bench; a host test models the race. That the RP2350 acknowledges its suspend interrupt by a write
-  to a bit its datasheet types read-only rests on the datasheet's own interrupt table: a
-  `usbcdcwit` capture on each board is owed.
-- **THE RT1062 BACKGROUND REGION AND THE RP LOADER UNDER THE BY-DEVICE `.bus` RECORD RAN ON NO
-  SILICON.** teensy41, picopi and pizero2350 were absent.
+- **THE RP USB SUSPEND AND RESUME FIX HAS NO RP2350 WITNESS.** A host test models the race and
+  picopi's `usbcdcwit` passed; that the RP2350 acknowledges its suspend interrupt by a write to a
+  bit its datasheet types read-only rests on the datasheet's own interrupt table, and a
+  pizero2350 `usbcdcwit` capture is owed.
+- **THE AUDIT FIXES ON ARM64, RV64 AND X86_64 RAN ON QEMU ONLY**: the kernel's refusal
+  of a device window or a read-only page on its own access to user memory, and the arm64 EL0
+  control registers written whole. No real Cortex-A53 ran them (`TODO.md` names what QEMU does not
+  model).
+- **THE CORTEX-M PSP GUARD ARMS ARE EMULATOR-JUDGED.** `pspguard_*` and `privwindow_*` run under
+  QEMU; silicon holds `svcfp`, `selftest`'s parked-frame arms and the `faultsurvive` family on
+  picopi, pizero2350, xmc4800-relax, frdmk64f and teensy41.
 - **THE TIMER LANDING NOW GOES THROUGH THE SAME DEDUP ON EVERY ARCH.** A switch landing no longer
   reprograms the comparator unless the next event changed; lx6, which no emulator runs, has it from
   esp32-wroom captures only.
@@ -1168,8 +1174,8 @@ missing from one of those QEMU captures under load is this, not a flake to re-ru
 
 Carried from M10.6.11, still true:
 
-- **THE DIVIDE-BY-ZERO TRAP HAS NO SILICON WITNESS ON TEENSY41, DUE OR MICROBIT.** picopi is the
-  one silicon witness of the v6-M decode, from flash.
+- **THE DIVIDE-BY-ZERO TRAP HAS NO SILICON WITNESS ON DUE OR MICROBIT.** picopi is the one
+  silicon witness of the v6-M decode, from flash.
 - **A DIVIDE BY ZERO INSIDE THE PREBUILT NEWLIB, LIBSTDC++ OR LIBGCC TRAPS ON ARMV7-M,** and none
   of their divisions was audited.
 - **THE QEMU M-PROFILE CLOCK, THE X86_64 TIMER CALIBRATION AND THE CLEAN-ROOM PE LINKER SCRIPT

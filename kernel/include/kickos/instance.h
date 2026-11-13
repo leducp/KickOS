@@ -281,7 +281,7 @@ namespace kickos
         // What each core's one-shot comparator is programmed for, and the sole authority for
         // it. UINT64_MAX means disarmed. Zero-initialised deliberately: 0 is a value no
         // computation here can produce (arm_slice answers UINT64_MAX for a FIFO thread,
-        // ktime_sleep_until floors at now + MIN_DELTA), so the first rearm always programs
+        // a deadline is floored at now + MIN_DELTA), so the first rearm always programs
         // whatever a bring-up probe left in the hardware.
         uint64_t timer_armed_ns[KICKOS_KERNEL_CORES] = {};
 

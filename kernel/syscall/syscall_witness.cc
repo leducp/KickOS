@@ -81,7 +81,7 @@ namespace kickos
             }
             case KOS_WITNESS_UREAD_AFTER_PARK:
             {
-                ktime_sleep_ns(ns);
+                (void)ktime_sleep(ns, KOS_LIMIT_RELATIVE);
                 return plant_read(uaddr, "after a park");
             }
             case KOS_WITNESS_UREAD_SPACELESS:

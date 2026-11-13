@@ -55,9 +55,9 @@ milliseconds, and a long pause at a breakpoint can make the deadline already pas
 continue.
 
 ### Stop 1: the app asks to sleep
-**Where:** `user/include/kickos/kos.h`, `kos::sleep_ns`; `user/src/syscall_stubs.cc`, `kos_sleep_ns`
+**Where:** `user/include/kickos/kos.h`, `kos::sleep_ns`; `user/src/syscall_stubs.cc`, `kos_sleep_for`
 
-`kos::sleep_ns` calls `kos_sleep_ns`, whose whole body is one trap:
+`kos::sleep_ns` calls `kos_sleep_for`, whose whole body is one trap:
 
 ```
 void kos_sleep_ns(uint64_t ns)
@@ -70,9 +70,9 @@ The duration is 64 bits but every syscall argument is one register, 32 bits on t
 stub splits it into a low and a high word with `kos_u64_lo` and `kos_u64_hi` (from
 `user/include/kickos/sys/abi.h`), and the kernel joins them back. The split is done the same way on
 64-bit targets too, so the register layout of every syscall is identical across the fleet.
-`KOS_SYS_SLEEP_NS` is 3. The stub ignores the result: a sleep has nothing to report.
+`KOS_SYS_SLEEP` is 3. The stub ignores the result: a sleep has nothing to report.
 
-**Try it:** `break kos_sleep_ns`, `continue`, `bt 3`:
+**Try it:** `break kos_sleep_for`, `continue`, `bt 3`:
 
 ```
 #0  kos_sleep_ns (ns=400000000) at .../user/src/syscall_stubs.cc:44
@@ -94,7 +94,7 @@ r2             0x0                 0
 ("A 64-bit argument is split into halves, deliberately")
 
 ### Stop 2: into the kernel
-**Where:** `kernel/syscall/syscall.cc`, the `KOS_SYS_SLEEP_NS` case; `kernel/time/time.cc`, `ktime_sleep_ns`
+**Where:** `kernel/syscall/syscall.cc`, the `KOS_SYS_SLEEP` case; `kernel/time/time.cc`, `ktime_sleep_ns`
 
 The trap, `SVC_Handler`, `svc_trampoline` and `syscall_dispatch` run exactly as in
 [the first syscall](02-first-syscall.md), Stops 3 to 6. The sleep case is three lines:
@@ -420,7 +420,7 @@ MHz. The clock read 30 ms by the time the arm ran, and 430 - 30 = 400. The count
 started down.
 
 To watch the deduplication, trace every call instead of stopping. In a fresh session, after the
-`kos_sleep_ns` stop:
+`kos_sleep_for` stop:
 
 ```
 break arch_timer_arm
@@ -669,15 +669,15 @@ still SysTick.
 
 ### Stop 12: ping resumes, and returns 0
 **Where:** `kernel/time/time.cc`, the end of `ktime_sleep_until`; `kernel/syscall/syscall.cc`,
-the `KOS_SYS_SLEEP_NS` case; `arch/arm/armv7m/switch.S`, the end of `svc_trampoline`
+the `KOS_SYS_SLEEP` case; `arch/arm/armv7m/switch.S`, the end of `svc_trampoline`
 
 PendSV restores `ping`'s registers from its kernel stack, sets `CONTROL.nPRIV` to the saved 0, and
 returns from the exception to the saved `pc`: the closing brace of `ktime_sleep_until`, right
 where the lock was released. From `ping`'s point of view, `sched::reschedule` returned and the
 lock opened; 0.4 s simply passed. `ktime_sleep_until` returns, `ktime_sleep_ns` returns, and the
-`KOS_SYS_SLEEP_NS` case returns 0. The trampoline then takes the way back described in
+`KOS_SYS_SLEEP` case returns 0. The trampoline then takes the way back described in
 [the first syscall](02-first-syscall.md), Stop 11: back to the user stack, privilege dropped to
-`resting_npriv`, `bx lr` into `kos_sleep_ns`.
+`resting_npriv`, `bx lr` into `kos_sleep_for`.
 
 Notice what happened to `-KOS_ETIMEDOUT`. It sits in `ping`'s `wait_result`, and nobody reads it:
 for a sleep, reaching the deadline is the success. A semaphore wait or a send reads
@@ -712,7 +712,7 @@ $20 = 2
 `ping` is back, inside its trampoline, with the result 0 in `r0:r1` and the unread `-110` in
 `wait_result`. `switch_count` is 2: switched in once at its start, once now. `CONTROL` is 2,
 privileged. `break *0x2594` (the final `bx lr`) and `continue` shows `$control` back at 3 before
-the return to `kos_sleep_ns`. The next line `ping` runs prints `ping 1`.
+the return to `kos_sleep_for`. The next line `ping` runs prints `ping 1`.
 
 **Why, and the contract:** [Book: the syscall path](../book/the-syscall-path-trap-dispatch-return.md)
 ("Blocking syscalls are ordinary context switches"), [Book: the blocking substrate](../book/the-blocking-substrate-one-wait-wake-primitive.md)

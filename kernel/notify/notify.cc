@@ -374,9 +374,9 @@ namespace kickos
         return deliver_pending(c, n, opened, out);
     }
 
-    int notify_wait(Thread* c, uint32_t cap_handle, uint32_t mask, uint32_t timeout_us,
-                    uintptr_t out)
+    int64_t notify_wait(Thread* c, uint32_t mask, uint64_t deadline)
     {
+        WaitLimit const limit(deadline);
         if (mask == 0)
         {
             return -KOS_EINVAL; // a wait nothing can ever satisfy
@@ -385,17 +385,15 @@ namespace kickos
         uint32_t epoch = 0;
         {
             IrqLock lock;
-            int err = 0;
-            n = notify_of_cap(c, cap_handle, CAP_WAIT, &err);
-            if (n == nullptr)
-            {
-                return -err;
-            }
+            n = bound_object_of(c);
 #if KICKOS_KERNEL_CORES > 1
-            int const arc = irq_admit_signallers(c, n);
-            if (arc != 0)
+            if (n != nullptr)
             {
-                return arc;
+                int const arc = irq_admit_signallers(c, n);
+                if (arc != 0)
+                {
+                    return arc;
+                }
             }
 #endif
             // Cancellation takes precedence over a missing binding.
@@ -404,21 +402,25 @@ namespace kickos
             {
                 return -KOS_ECANCELED;
             }
-            if (n->bound != c)
+            if (n == nullptr)
             {
-                return -KOS_EPERM; // only the bound thread receives from this object
+                return -KOS_EPERM; // the bind is the authority to receive
             }
             irq_signallers_rearm(n, mask, lock);
             if ((n->pending & mask) != 0)
             {
-                return deliver_pending(c, n, mask, out);
+                return notify_wait_bits(take_pending(n, mask));
+            }
+            if (ktime_limit_passed(limit))
+            {
+                return -KOS_ETIMEDOUT;
             }
             n->accept = mask;
             // `n` survives the park: this thread's own bind holds a reference on the object,
             // so nothing another thread can close frees it under a parked waiter.
             c->wait_result = 0; // normal delivery leaves this result unchanged
             epoch = park_queueless(ask)(c, WAIT_NOTIFY, n, lock);
-            ktime_deadline_arm(c, timeout_us, lock);
+            ktime_limit_arm(c, limit, lock);
             sched::reschedule(nullptr, lock);
         }
         // Mandatory, and outside the lock: where the switch is only pended when the block
@@ -433,7 +435,7 @@ namespace kickos
                 // and masks the line.
                 return static_cast<int>(c->wait_result);
             }
-            return deliver_pending(c, n, mask, out);
+            return notify_wait_bits(take_pending(n, mask));
         }
     }
 }

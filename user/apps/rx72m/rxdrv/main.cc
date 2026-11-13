@@ -138,10 +138,10 @@ int main(int, char**)
     for (int i = 0; i < DRIVER_BLINKS; i++)
     {
         r8(podr) = static_cast<uint8_t>(r8(podr) & ~LED6);
-        kos_sleep_ns(HALF_PERIOD_NS);
+        kos_sleep_for(kos_ns(HALF_PERIOD_NS));
         int const lo = static_cast<int>((r8(pidr) >> P80) & 1u);
         r8(podr) = static_cast<uint8_t>(r8(podr) | LED6);
-        kos_sleep_ns(HALF_PERIOD_NS);
+        kos_sleep_for(kos_ns(HALF_PERIOD_NS));
         int const hi = static_cast<int>((r8(pidr) >> P80) & 1u);
 
         char s[64];

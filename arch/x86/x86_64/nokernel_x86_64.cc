@@ -74,13 +74,15 @@ void kickos_x86_64_fault_report_open(void)
 
 void (*kickos_image_thread_return)(void) = kickos_user_thread_return;
 
-uint64_t syscall_dispatch(uintptr_t nr, uintptr_t a0, uintptr_t a1, uintptr_t a2, uintptr_t a3)
+uint64_t syscall_dispatch(uintptr_t nr, uintptr_t a0, uintptr_t a1, uintptr_t a2, uintptr_t a3,
+                          uintptr_t a4)
 {
     (void)nr;
     (void)a0;
     (void)a1;
     (void)a2;
     (void)a3;
+    (void)a4;
     return 0;
 }
 

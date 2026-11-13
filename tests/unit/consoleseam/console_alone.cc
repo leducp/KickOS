@@ -34,7 +34,7 @@ namespace kickos
     bool task_serves_console(Task const*) { return false; }
 
     // No ring to wait on: the write ends.
-    int console_room_wait(uint32_t, uint32_t) { return -KOS_ECANCELED; }
+    int console_room_wait(uint32_t, uint64_t) { return -KOS_ECANCELED; }
 
     void cap_console_deliver(Held) {}
 }

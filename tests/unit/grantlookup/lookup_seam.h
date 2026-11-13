@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The kernel the lookups ask, faked: kos_window_get answers `windows`, kos_sleep_ns records and
+// The kernel the lookups ask, faked: kos_window_get answers `windows`, kos_sleep_for records and
 // runs `on_sleep`, kos_exit throws Exit. Each table's user entries are defined here too.
 //
 // HOST-ONLY. These are public kos_* names, which a target image linking this TU would take
@@ -28,8 +28,8 @@ namespace seam
     extern kos_window stale;
     // Every index kos_window_get was asked, in order.
     extern std::vector<uint32_t> asked;
-    // Every kos_sleep_ns duration, in order.
-    extern std::vector<uint64_t> sleeps;
+    // Every kos_sleep_for duration in nanoseconds, in order.
+    extern std::vector<int64_t> sleeps;
     // Run after each sleep is recorded.
     extern std::function<void()> on_sleep;
 

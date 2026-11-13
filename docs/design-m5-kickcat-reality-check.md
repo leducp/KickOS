@@ -27,7 +27,7 @@ What evaporated is the far side of one ABI. `../../KickCAT/lib/slave/driver/src/
 that provided them is gone; what replaced it is `system/driver/mk64f/k64dspi/` (a service) plus
 `user/apps/frdmk64f/k64dspi/` (a client).
 
-Time survived the same delink intact: `OS/KickOS/Time.cc` binds `kos_clock_now` and `kos_sleep_ns`,
+Time survived the same delink intact: `OS/KickOS/Time.cc` binds `kos_monotonic_now` and `kos_sleep_for`,
 both of which still exist and still link. `AbstractESC` needs nothing from KickOS at all, because a
 slave never sees a frame -- the ESC chip does the MAC, and the raw-socket seam is master-side only.
 

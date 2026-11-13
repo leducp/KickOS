@@ -38,16 +38,16 @@ namespace
 
     uint64_t clock_granule_ns()
     {
-        uint64_t const e0 = kos_clock_now();
+        uint64_t const e0 = kos_monotonic_now().ns;
         uint64_t e1 = e0;
         while (e1 == e0)
         {
-            e1 = kos_clock_now();
+            e1 = kos_monotonic_now().ns;
         }
         uint64_t e2 = e1;
         while (e2 == e1)
         {
-            e2 = kos_clock_now();
+            e2 = kos_monotonic_now().ns;
         }
         return e2 - e1;
     }
@@ -55,7 +55,7 @@ namespace
     void worker(void* arg)
     {
         uintptr_t const me = reinterpret_cast<uintptr_t>(arg);
-        uint64_t const start = kos_clock_now();
+        uint64_t const start = kos_monotonic_now().ns;
         uint32_t interleaved = 0;
         uint32_t rounds = 0;
         int last = 0;
@@ -73,7 +73,7 @@ namespace
             // The clock rarely: a read is a kernel entry, and the switches must land in the loops.
             if ((rounds & 1023u) == 0u)
             {
-                uint64_t const ran = kos_clock_now() - start;
+                uint64_t const ran = kos_monotonic_now().ns - start;
                 if (ran >= g_run_ns * RUN_LIMIT)
                 {
                     break;
@@ -117,12 +117,12 @@ int main(int, char**)
     ksnprintf(msg, sizeof(msg), "uatomic: %u workers, quantum %u ns\n", WORKERS,
               static_cast<unsigned>(quantum));
     kos_print(msg);
+    std::chrono::nanoseconds const slice{static_cast<int64_t>(quantum)};
     kos::thread::Handle workers[WORKERS];
     for (unsigned w = 0; w < WORKERS; w = w + 1u)
     {
         workers[w] = kos::thread::create(worker, reinterpret_cast<void*>(uintptr_t{w}), "uat",
-                                         WORKER_PRIO, KOS_POLICY_RR,
-                                         static_cast<uint32_t>(quantum));
+                                         WORKER_PRIO, KOS_POLICY_RR, slice);
         if (not workers[w].valid())
         {
             kos_print("uatomic: FAIL a worker did not spawn\n");
@@ -131,7 +131,7 @@ int main(int, char**)
     }
     for (unsigned w = 0; w < WORKERS; w = w + 1u)
     {
-        (void)workers[w].join(KOS_TIMEOUT_NONE);
+        (void)workers[w].join();
     }
     bool ok = true;
     uint32_t total = 0;

@@ -242,32 +242,68 @@ namespace kickos
         arch_timer_disarm();
     }
 
-    void ktime_sleep_until(uint64_t deadline_ns)
+    namespace
     {
-        IrqLock lock;
-        Thread* c = sched::current();
-        // Ahead of every side effect below: sched::exit_current does not sweep the sleep
-        // queue, so an exit after the insert would leave this thread on it.
-        ParkToken const ask = park_cancel_pending(c);
-        if (ask.cancelled())
+        // Parks the current thread on the delta list alone until monotonic `deadline_ns`, marked
+        // as a realtime deadline where `realtime`, whose `unix_ns` it then is.
+        void sleep_park(uint64_t deadline_ns, bool realtime)
         {
-            sched::exit_current(KOS_EXIT_CANCELLED, sched::EXIT_RETURN, &lock);
+            IrqLock lock;
+            Thread* c = sched::current();
+            // Ahead of every side effect below: sched::exit_current does not sweep the sleep
+            // queue, so an exit after the insert would leave this thread on it.
+            ParkToken const ask = park_cancel_pending(c);
+            if (ask.cancelled())
+            {
+                sched::exit_current(KOS_EXIT_CANCELLED, sched::EXIT_RETURN, &lock);
+            }
+            park_queueless(ask)(c, WAIT_SLEEP, nullptr, lock);
+            if (realtime)
+            {
+                realtime_deadline_arm(c, deadline_ns, lock);
+            }
+            else
+            {
+                ktime_deadline_arm_at(c, ktime_floored(ktime_now(), deadline_ns), false, lock);
+            }
+            sched::reschedule(nullptr, lock); // its switch arms the timer for the incoming thread
         }
-        c->deadline_ns = ktime_floored(ktime_now(), deadline_ns);
-        park_queueless(ask)(c, WAIT_SLEEP, nullptr, lock);
-        sleepq_insert(c, false);
-        sched::reschedule(nullptr, lock); // its switch arms the timer for the incoming thread
     }
 
-    void ktime_deadline_arm(Thread* t, uint32_t timeout_us, Held held)
+    int ktime_sleep(uint64_t limit, uintptr_t kind)
     {
-        if (timeout_us == KOS_TIMEOUT_NONE)
+        if (kind == KOS_LIMIT_RELATIVE)
         {
-            return;
+            if (limit == 0)
+            {
+                sched::yield();
+                return 0;
+            }
+            uint64_t deadline = KOS_LIMIT_NONE;
+            if (limit != KOS_LIMIT_NONE)
+            {
+                uint64_t const now = ktime_now();
+                deadline = now + limit;
+                if (deadline < now)
+                {
+                    deadline = KOS_LIMIT_NONE;
+                }
+            }
+            sleep_park(deadline, false);
+            return 0;
         }
-        uint64_t const now = ktime_now();
-        uint64_t const deadline = now + static_cast<uint64_t>(timeout_us) * 1000u;
-        ktime_deadline_arm_at(t, ktime_floored(now, deadline), false, held);
+        if (not ktime_limit_kind_ok(kind))
+        {
+            return -KOS_EINVAL;
+        }
+        WaitLimit const l(limit, static_cast<uint32_t>(kind));
+        if (ktime_limit_passed(l))
+        {
+            sched::yield();
+            return 0;
+        }
+        sleep_park(l.word, l.kind == KOS_LIMIT_REALTIME and not l.none());
+        return 0;
     }
 
     void ktime_deadline_arm_at(Thread* t, uint64_t deadline_ns, bool wall, Held)
@@ -278,21 +314,29 @@ namespace kickos
 
     bool ktime_limit_passed(WaitLimit limit)
     {
-        if (limit.on_wall())
+        if (limit.none())
         {
-            return limit.unix_ns() <= realtime_now();
+            return false;
         }
-        return limit.lo == 0u;
+        if (limit.kind == KOS_LIMIT_REALTIME)
+        {
+            return limit.word <= realtime_now();
+        }
+        return limit.word <= ktime_now();
     }
 
     void ktime_limit_arm(Thread* t, WaitLimit limit, Held held)
     {
-        if (limit.on_wall())
+        if (limit.none())
         {
-            realtime_deadline_arm(t, limit.unix_ns(), held);
             return;
         }
-        ktime_deadline_arm(t, limit.lo, held);
+        if (limit.kind == KOS_LIMIT_REALTIME)
+        {
+            realtime_deadline_arm(t, limit.word, held);
+            return;
+        }
+        ktime_deadline_arm_at(t, ktime_floored(ktime_now(), limit.word), false, held);
     }
 
     void ktime_wall_shift(int64_t by_ns, Held held)
@@ -338,26 +382,6 @@ namespace kickos
         // No re-arm, even of a peer whose head this was: its comparator fires once for nothing
         // and re-arms from its own queue.
         sleepq_remove(t);
-    }
-
-    void ktime_sleep_ns(uint64_t ns)
-    {
-        // sleep(0) yields instead of parking, and 0 < ns < min-delta still rounds UP to the
-        // min slice: a delay promises time off-CPU, yield() returns at once with no peer.
-        if (ns == 0)
-        {
-            sched::yield();
-            return;
-        }
-        // Saturate on overflow: a caller-supplied huge ns must not wrap to a past
-        // deadline (which the min-delta guard would turn into a ~20us sleep).
-        uint64_t now = ktime_now();
-        uint64_t deadline = now + ns;
-        if (deadline < now)
-        {
-            deadline = UINT64_MAX;
-        }
-        ktime_sleep_until(deadline);
     }
 
     void ktime_on_timer()

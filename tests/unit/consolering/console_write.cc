@@ -28,7 +28,7 @@ extern "C"
         return 0;
     }
 
-    void kos_sleep_ns(uint64_t)
+    void kos_sleep_for(kos_duration_t)
     {
         g_sleeps++;
         if (g_drained != nullptr)

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# Main declares realtime, which kos_clock_set_realtime needs, and a thread beside main.
+# Main declares realtime, which kos_realtime_set needs, and a thread beside main.
 
 version: 1
 stdout: kernel

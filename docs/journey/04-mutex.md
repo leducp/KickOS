@@ -88,7 +88,7 @@ holder by its **lock id** (Stop 2), and 0 means free. Bit 31, `KOS_WORD_WAITERS`
 thread is or was parked on the word, so its release must enter the kernel.
 
 The two calls take the word's address: `kos_mutex_lock(m, timeout_us)` and `kos_mutex_unlock(m)`.
-A timeout of `KOS_TIMEOUT_NONE` waits forever, and 0 is a try. The C++ class `kos::Mutex` holds a
+A timeout of `KOS_NEVER` waits forever, and 0 is a try. The C++ class `kos::Mutex` holds a
 `kos_mutex_t`, has a `constexpr` constructor, and cannot be copied: a copy would be another word,
 and so another mutex. Its `lock()`, `try_lock()` and `unlock()` forward to the C calls.
 

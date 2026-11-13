@@ -2,9 +2,9 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // The real user/src/gthr.cc over a scripted kernel: what it hands the kernel for an absolute
-// deadline, a timeout on the monotonic clock and the deadline itself on the realtime one, what each
-// timed wait answers as the kernel and the clocks move, a wall-clock set included, and the thread
-// id of root.
+// deadline, the deadline itself on the clock it names with no clock read of its own, what each
+// timed wait answers as the kernel and the clocks move, a realtime clock set included, and the
+// thread id of root.
 
 #include <gtest/gtest.h>
 
@@ -39,15 +39,15 @@ namespace
     timespec g_now = {};
     uint64_t g_mono_ns = 0;
     uint32_t g_calls = 0;
-    uint32_t g_handed_us = 0;
-    // The last kernel wait's realtime deadline, where it was one.
-    bool g_handed_on_wall = false;
-    uint64_t g_handed_wall = 0;
+    uint32_t g_clock_reads = 0;
+    // The last kernel wait's deadline and the clock it is read against.
+    uint32_t g_handed_kind = KOS_LIMIT_MONOTONIC;
+    int64_t g_handed_ns = 0;
     KickosThreadWords g_words = {};
     kos_thread_t g_self = 1u;
 
-    // One kernel wait's answer, and how far it moves the clocks: by the timeout it was handed
-    // when `waits`, and the realtime clock by `wall_step_s` more.
+    // One kernel wait's answer: one that `waits` lasts until its own clock reads its deadline,
+    // after the realtime clock is set `wall_step_s` away.
     struct Answer
     {
         int rc;
@@ -72,12 +72,11 @@ namespace
         g_now.tv_nsec = static_cast<long>(wall % 1000000000u);
     }
 
-    // A realtime kernel wait: one that `waits` lasts until the wall clock reads its deadline.
-    int answer_wall(uint64_t unix_ns)
+    int answer(int64_t deadline_ns, uint32_t kind)
     {
         g_calls++;
-        g_handed_on_wall = true;
-        g_handed_wall = unix_ns;
+        g_handed_kind = kind;
+        g_handed_ns = deadline_ns;
         if (g_script.empty())
         {
             return 0;
@@ -85,38 +84,30 @@ namespace
         Answer const a = g_script.front();
         g_script.pop_front();
         g_now.tv_sec += static_cast<time_t>(a.wall_step_s);
-        if (a.waits and unix_ns > wall_now_ns())
+        if (a.waits and deadline_ns > 0)
         {
-            advance(unix_ns - wall_now_ns());
+            uint64_t const deadline = static_cast<uint64_t>(deadline_ns);
+            uint64_t now = g_mono_ns;
+            if (kind == KOS_LIMIT_REALTIME)
+            {
+                now = wall_now_ns();
+            }
+            if (deadline > now)
+            {
+                advance(deadline - now);
+            }
         }
         return a.rc;
     }
 
-    int answer(uint32_t timeout_us)
+    // The deadline a limit word names, INT64_MAX for none.
+    int64_t ns_of(uint64_t limit)
     {
-        g_calls++;
-        g_handed_on_wall = false;
-        g_handed_us = timeout_us;
-        if (g_script.empty())
+        if (limit == KOS_LIMIT_NONE)
         {
-            return 0;
+            return INT64_MAX;
         }
-        Answer const a = g_script.front();
-        g_script.pop_front();
-        if (a.waits)
-        {
-            uint64_t const ns = static_cast<uint64_t>(timeout_us) * 1000u;
-            g_mono_ns += ns;
-            g_now.tv_sec += static_cast<time_t>(ns / 1000000000u);
-            g_now.tv_nsec += static_cast<long>(ns % 1000000000u);
-            if (g_now.tv_nsec >= 1000000000)
-            {
-                g_now.tv_sec++;
-                g_now.tv_nsec -= 1000000000;
-            }
-        }
-        g_now.tv_sec += static_cast<time_t>(a.wall_step_s);
-        return a.rc;
+        return static_cast<int64_t>(limit);
     }
 }
 
@@ -138,8 +129,10 @@ extern "C"
     int __wrap_clock_gettime(clockid_t clock, timespec* ts);
 }
 
+// Counts every read: the library reads no clock of its own.
 extern "C" int __wrap_clock_gettime(clockid_t clock, timespec* ts)
 {
+    g_clock_reads++;
     if (clock != CLOCK_REALTIME)
     {
         return __real_clock_gettime(clock, ts);
@@ -148,29 +141,31 @@ extern "C" int __wrap_clock_gettime(clockid_t clock, timespec* ts)
     return 0;
 }
 
-extern "C" uint64_t kos_clock_now(void)
+extern "C" int64_t kickos_monotonic_now(void)
 {
-    return g_mono_ns;
+    g_clock_reads++;
+    return static_cast<int64_t>(g_mono_ns);
 }
 
-extern "C" int kos_mutex_lock(kos_mutex_t*, uint32_t timeout_us)
+extern "C" int64_t kickos_realtime_now(void)
 {
-    return answer(timeout_us);
+    g_clock_reads++;
+    return static_cast<int64_t>(wall_now_ns());
 }
 
-extern "C" int kickos_mutex_lock_entry(kos_mutex_t*, uint32_t timeout_us)
+extern "C" int kos_mutex_lock(kos_mutex_t*, kos_monotonic_t until)
 {
-    return answer(timeout_us);
+    return answer(until.ns, KOS_LIMIT_MONOTONIC);
 }
 
-extern "C" int kos_mutex_lock_realtime(kos_mutex_t*, uint64_t unix_ns)
+extern "C" int kickos_mutex_lock_entry(kos_mutex_t*, uint64_t limit, uint32_t kind)
 {
-    return answer_wall(unix_ns);
+    return answer(ns_of(limit), kind);
 }
 
-extern "C" int kickos_mutex_lock_entry_realtime(kos_mutex_t*, uint64_t unix_ns)
+extern "C" int kos_mutex_lock_realtime(kos_mutex_t*, kos_realtime_t until)
 {
-    return answer_wall(unix_ns);
+    return answer(until.ns, KOS_LIMIT_REALTIME);
 }
 
 extern "C" int kos_mutex_unlock(kos_mutex_t*)
@@ -183,14 +178,14 @@ extern "C" uint32_t kickos_self_lock_id(void)
     return 1u;
 }
 
-extern "C" int kos_cond_wait(kos_cond_t*, kos_mutex_t*, uint32_t timeout_us)
+extern "C" int kos_cond_wait(kos_cond_t*, kos_mutex_t*, kos_monotonic_t until)
 {
-    return answer(timeout_us);
+    return answer(until.ns, KOS_LIMIT_MONOTONIC);
 }
 
-extern "C" int kos_cond_wait_realtime(kos_cond_t*, kos_mutex_t*, uint64_t unix_ns)
+extern "C" int kos_cond_wait_realtime(kos_cond_t*, kos_mutex_t*, kos_realtime_t until)
 {
-    return answer_wall(unix_ns);
+    return answer(until.ns, KOS_LIMIT_REALTIME);
 }
 
 extern "C" int kos_cond_signal(kos_cond_t*)
@@ -208,7 +203,7 @@ extern "C" int kos_thread_create(kos_thread_params const*, kos_thread_t*)
     return -KOS_ENOMEM;
 }
 
-extern "C" int kos_thread_join(kos_thread_t, uint32_t)
+extern "C" int kos_thread_join(kos_thread_t, kos_monotonic_t)
 {
     return 0;
 }
@@ -260,16 +255,14 @@ namespace
         Clock clock;
     };
 
-    constexpr uint32_t CEILING_US = KOS_TIMEOUT_NONE - 1u;
-
     void reset()
     {
         g_now = {100, 0};
         g_mono_ns = 5000000000u;
         g_calls = 0;
-        g_handed_us = 0;
-        g_handed_on_wall = false;
-        g_handed_wall = 0;
+        g_clock_reads = 0;
+        g_handed_kind = KOS_LIMIT_MONOTONIC;
+        g_handed_ns = 0;
         g_script.clear();
     }
 
@@ -325,6 +318,11 @@ namespace
             reset();
         }
 
+        void TearDown() override
+        {
+            EXPECT_EQ(g_clock_reads, 0u) << "the library read a clock for an absolute deadline";
+        }
+
         bool on_wall() const
         {
             return GetParam().clock != Clock::MONOTONIC;
@@ -350,44 +348,55 @@ namespace
             return ::wait_until(GetParam(), abs);
         }
 
-        // The one kernel wait toward `abs`: its timeout on the monotonic clock, and on the
-        // realtime one the deadline itself, as the kernel's wall clock reads it.
-        void expect_one_wait_toward(timespec const& abs, uint32_t timeout_us)
+        uint32_t kind() const
+        {
+            if (on_wall())
+            {
+                return KOS_LIMIT_REALTIME;
+            }
+            return KOS_LIMIT_MONOTONIC;
+        }
+
+        // The one kernel wait toward `abs`, handed `want` nanoseconds on the case's clock.
+        void expect_one_wait_toward(timespec const& abs, int64_t want)
         {
             EXPECT_EQ(wait_until(abs), 0);
             EXPECT_EQ(g_calls, 1u);
-            EXPECT_EQ(g_handed_on_wall, on_wall()) << "the wait went to the other clock's call";
-            if (on_wall())
-            {
-                uint64_t want = UINT64_MAX;
-                if (abs.tv_sec != std::numeric_limits<time_t>::max())
-                {
-                    want = static_cast<uint64_t>(abs.tv_sec) * 1000000000u
-                           + static_cast<uint64_t>(abs.tv_nsec);
-                }
-                EXPECT_EQ(g_handed_wall, want) << "the kernel was not handed the deadline";
-            }
-            else
-            {
-                EXPECT_EQ(g_handed_us, timeout_us);
-            }
+            EXPECT_EQ(g_handed_kind, kind()) << "the wait went to the other clock's call";
+            EXPECT_EQ(g_handed_ns, want) << "the kernel was not handed the deadline";
         }
     };
+
+    int64_t ns_at(timespec const& abs)
+    {
+        return static_cast<int64_t>(abs.tv_sec) * 1000000000 + abs.tv_nsec;
+    }
 }
 
-TEST_P(GthrTimed, a_far_deadline_is_one_wait_of_the_longest_its_clock_takes)
+TEST_P(GthrTimed, a_deadline_past_the_clock_range_is_handed_as_never)
 {
-    expect_one_wait_toward({std::numeric_limits<time_t>::max(), 0}, CEILING_US);
+    expect_one_wait_toward({std::numeric_limits<time_t>::max(), 0}, INT64_MAX);
 }
 
-TEST_P(GthrTimed, a_deadline_one_nanosecond_away_waits_one_microsecond_or_is_handed_whole)
+TEST_P(GthrTimed, a_deadline_one_nanosecond_away_is_handed_whole)
 {
-    expect_one_wait_toward(in(1), 1u);
+    timespec const abs = in(1);
+    expect_one_wait_toward(abs, ns_at(abs));
 }
 
-TEST_P(GthrTimed, an_exact_microsecond_is_not_rounded_up)
+TEST_P(GthrTimed, a_deadline_is_handed_to_the_nanosecond)
 {
-    expect_one_wait_toward(in(5005000), 5005u);
+    timespec const abs = in(5005123);
+    expect_one_wait_toward(abs, ns_at(abs));
+}
+
+TEST_P(GthrTimed, a_deadline_before_the_epoch_is_handed_as_passed)
+{
+    g_script.push_back({-KOS_ETIMEDOUT, false, 0});
+
+    EXPECT_EQ(wait_until({-1, 0}), ETIMEDOUT);
+    EXPECT_EQ(g_calls, 1u);
+    EXPECT_LT(g_handed_ns, 0) << "a time before the clock's epoch became a wait";
 }
 
 TEST_P(GthrTimed, a_passed_deadline_is_one_try)
@@ -400,19 +409,9 @@ TEST_P(GthrTimed, a_passed_deadline_is_one_try)
     g_script.push_back({-KOS_ETIMEDOUT, false, 0});
 
     EXPECT_EQ(wait_until(abs), ETIMEDOUT);
-    if (is_cond())
-    {
-        EXPECT_EQ(g_calls, 0u);
-    }
-    else
-    {
-        EXPECT_EQ(g_calls, 1u);
-        EXPECT_EQ(g_handed_on_wall, on_wall());
-        if (not on_wall())
-        {
-            EXPECT_EQ(g_handed_us, 0u);
-        }
-    }
+    EXPECT_EQ(g_calls, 1u);
+    EXPECT_EQ(g_handed_kind, kind());
+    EXPECT_EQ(g_handed_ns, ns_at(abs));
 }
 
 TEST_P(GthrTimed, a_nanosecond_field_out_of_range_is_refused)
@@ -422,48 +421,30 @@ TEST_P(GthrTimed, a_nanosecond_field_out_of_range_is_refused)
     EXPECT_EQ(g_calls, 0u);
 }
 
-// Only a monotonic wait has a ceiling; a realtime one is a single kernel wait, however far.
-TEST_P(GthrTimed, a_monotonic_wait_that_ends_at_its_ceiling_asks_again_or_returns_spuriously)
+// No ceiling cuts a wait short: however far, the deadline is one kernel wait.
+TEST_P(GthrTimed, a_far_deadline_is_one_kernel_wait)
 {
-    uint64_t away_ns = 2u * static_cast<uint64_t>(CEILING_US) * 1000u;
-    timespec const abs = in(away_ns);
+    timespec const abs = in(10000000000000u);
     g_script.push_back({-KOS_ETIMEDOUT, true, 0});
     g_script.push_back({-KOS_ETIMEDOUT, true, 0});
 
-    int const rc = wait_until(abs);
-
-    if (on_wall())
-    {
-        EXPECT_EQ(rc, ETIMEDOUT);
-        EXPECT_EQ(g_calls, 1u) << "a realtime wait was cut short of its deadline";
-    }
-    else if (is_cond())
-    {
-        EXPECT_EQ(rc, 0) << "a capped wait returns as a spurious wake";
-        EXPECT_EQ(g_calls, 1u);
-    }
-    else
-    {
-        EXPECT_EQ(rc, ETIMEDOUT);
-        EXPECT_EQ(g_calls, 2u);
-        EXPECT_EQ(g_handed_us, CEILING_US);
-    }
+    EXPECT_EQ(wait_until(abs), ETIMEDOUT);
+    EXPECT_EQ(g_calls, 1u) << "a wait was asked again before its deadline";
+    EXPECT_EQ(g_handed_ns, ns_at(abs));
 }
 
 TEST_P(GthrTimed, a_timeout_at_the_deadline_answers_timed_out)
 {
+    timespec const abs = in(50000000);
     g_script.push_back({-KOS_ETIMEDOUT, true, 0});
 
-    EXPECT_EQ(wait_until(in(50000000)), ETIMEDOUT);
+    EXPECT_EQ(wait_until(abs), ETIMEDOUT);
     EXPECT_EQ(g_calls, 1u);
-    if (not on_wall())
-    {
-        EXPECT_EQ(g_handed_us, 50000u);
-    }
+    EXPECT_EQ(g_handed_ns, ns_at(abs));
 }
 
-// The kernel follows a set of the wall clock for a realtime wait, so the library asks once and
-// takes its answer; a monotonic wait is not moved by one.
+// The kernel follows a set of the realtime clock for a realtime wait, so the library asks once
+// and takes its answer; a monotonic wait is not moved by one.
 TEST_P(GthrTimed, a_wall_clock_set_back_during_the_wait_moves_only_a_realtime_deadline)
 {
     timespec const abs = in(1000000000u);
@@ -488,33 +469,21 @@ TEST_P(GthrTimed, a_wall_clock_set_back_during_the_wait_moves_only_a_realtime_de
 
 TEST_P(GthrTimed, a_wall_clock_set_forward_during_the_wait_moves_only_a_realtime_deadline)
 {
-    // Past the ceiling on the monotonic clock, so that it takes two kernel waits.
-    uint64_t away_ns = 10000000000u;
-    if (not on_wall())
-    {
-        away_ns = 2u * static_cast<uint64_t>(CEILING_US) * 1000u;
-    }
-    timespec const abs = in(away_ns);
+    timespec const abs = in(10000000000u);
     g_script.push_back({-KOS_ETIMEDOUT, true, 86400});
     uint64_t const mono_from = g_mono_ns;
 
     int const rc = wait_until(abs);
 
+    EXPECT_EQ(rc, ETIMEDOUT);
+    EXPECT_EQ(g_calls, 1u);
     if (on_wall())
     {
-        EXPECT_EQ(rc, ETIMEDOUT);
-        EXPECT_EQ(g_calls, 1u);
         EXPECT_EQ(g_mono_ns - mono_from, 0u) << "a realtime wait outlived the set past its deadline";
-    }
-    else if (is_cond())
-    {
-        EXPECT_EQ(rc, 0) << "a monotonic wait ended at the set";
-        EXPECT_EQ(g_calls, 1u);
     }
     else
     {
-        EXPECT_EQ(rc, 0) << "a monotonic lock ended at the set";
-        EXPECT_EQ(g_calls, 2u);
+        EXPECT_EQ(g_mono_ns - mono_from, 10000000000u) << "a monotonic wait moved with the set";
     }
 }
 
@@ -543,8 +512,9 @@ TEST(GthrTimedLock, a_wait_a_kill_cancels_asks_again_at_the_kernel_entry)
 
     EXPECT_EQ(__kickos_gthr_mutex_timedlock(&m, &abs), 0);
     EXPECT_EQ(g_calls, 2u);
-    EXPECT_TRUE(g_handed_on_wall) << "the second ask left the wall clock";
-    EXPECT_EQ(g_handed_wall, 101000000000u);
+    EXPECT_EQ(g_handed_kind, static_cast<uint32_t>(KOS_LIMIT_REALTIME))
+        << "the second ask left the realtime clock";
+    EXPECT_EQ(g_handed_ns, 101000000000);
 }
 
 TEST(GthrSelf, root_has_a_thread_id_and_others_their_handle)

@@ -55,8 +55,8 @@ static_assert(KICKOS_ARMV7M_TRAP_NEST_SVC == KICKOS_ARMV7M_TRAP_FRAME_MAX,
               "shape, which lands on the guarded PSP");
 #if !KICKOS_KERNEL_STACKS
 // The gate scrapes both figures as immediates and cannot catch a drift between them.
-static_assert(KICKOS_ARMV7M_TRAP_NEST_SVC_DISPATCH == KICKOS_ARMV7M_TRAP_NEST_SVC + 8 + 4,
-              "the unconverted SVC window is the converted one plus the trampoline's push and "
+static_assert(KICKOS_ARMV7M_TRAP_NEST_SVC_DISPATCH == KICKOS_ARMV7M_TRAP_NEST_SVC + 16 + 4,
+              "the unconverted SVC window is the converted one plus the trampoline's store and "
               "the STKALIGN pad a preempting entry spends below a chain of compiler frames");
 static_assert(KICKOS_MAX_SPAWN_GRANTS <= 9,
               "KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_SVC holds a spawn staging 9 grants on the "
@@ -65,7 +65,7 @@ static_assert(KICKOS_MAX_SPAWN_GRANTS <= 9,
 #endif
 #if KICKOS_KERNEL_STACKS
 static_assert(KICKOS_ARMV7M_TRAP_NEST_SVCK
-                  == 16 + 4 + 104 + KICKOS_ARMV7M_TRAP_FRAME_MAX,
+                  == 24 + 4 + 104 + KICKOS_ARMV7M_TRAP_FRAME_MAX,
               "the SVCK structural half is the continuation header, the STKALIGN pad, a "
               "preempting hardware frame and the PendSV block that tail-chains below it");
 // SVCK counts the panic tail SVC excludes, so it cannot be the smaller; the gate scrapes

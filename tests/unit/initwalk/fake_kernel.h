@@ -121,6 +121,7 @@ namespace fake
         std::vector<uint64_t> args;
         int64_t result;
         std::string text; // a spawned thread's name
+        uint64_t at;      // the clock when it was made
     };
 
     struct Block
@@ -196,8 +197,8 @@ namespace fake
     void refuse_if(char const* fn, int result, uint32_t times, std::function<bool(Call const&)> when);
 
     // One step per kos_notify_wait, run before it reads the bits: a wait with no bit raised runs
-    // the next step, or with a bound times out after advancing the clock by it, or with none and
-    // no step left throws Idle.
+    // the next step, or with a deadline times out after advancing the clock to it, or with none
+    // and no step left throws Idle.
     void script(std::vector<std::function<void()>> steps);
     void advance(uint64_t ns);
     uint64_t now();
@@ -232,7 +233,7 @@ namespace fake
     std::vector<Call> const& calls();
     // The calls to `fn`, in order.
     std::vector<Call> calls_of(char const* fn);
-    // The task slays of a timeout other than 0, and those of 0, which release the task.
+    // The task slays toward a deadline, and those with KOS_POLL, which release the task.
     std::vector<Call> slays();
     std::vector<Call> releases();
     // The names of the calls, in order, the ones in `fns` only.

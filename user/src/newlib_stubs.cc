@@ -287,7 +287,7 @@ int _gettimeofday(struct timeval* tv, void*)
 {
     if (tv != nullptr)
     {
-        uint64_t const ns = kos_clock_realtime();
+        uint64_t const ns = static_cast<uint64_t>(kos_realtime_now().ns);
         tv->tv_sec = static_cast<time_t>(ns / NS_PER_SEC);
         tv->tv_usec = static_cast<suseconds_t>((ns % NS_PER_SEC) / 1000u);
     }
@@ -299,11 +299,11 @@ int clock_gettime(clockid_t id, struct timespec* ts)
     uint64_t ns = 0;
     if (id == CLOCK_REALTIME)
     {
-        ns = kos_clock_realtime();
+        ns = static_cast<uint64_t>(kos_realtime_now().ns);
     }
     else if (id == CLOCK_MONOTONIC)
     {
-        ns = kos_clock_now();
+        ns = static_cast<uint64_t>(kos_monotonic_now().ns);
     }
     else
     {
@@ -323,7 +323,12 @@ int clock_settime(clockid_t id, struct timespec const* ts)
         errno = EINVAL;
         return -1;
     }
-    int const rc = kos_clock_set_realtime(ns);
+    kos_realtime_t t = {INT64_MAX};
+    if (ns < static_cast<uint64_t>(INT64_MAX))
+    {
+        t.ns = static_cast<int64_t>(ns);
+    }
+    int const rc = kos_realtime_set(t);
     if (rc != 0)
     {
         errno = posix_errno(rc);
@@ -341,14 +346,19 @@ int nanosleep(struct timespec const* req, struct timespec*)
         errno = EINVAL;
         return -1;
     }
-    kos_sleep_ns(ns);
+    kos_duration_t d = KOS_FOREVER;
+    if (ns < static_cast<uint64_t>(INT64_MAX))
+    {
+        d = kos_ns(static_cast<int64_t>(ns));
+    }
+    kos_sleep_for(d);
     return 0;
 }
 
 // The whole task ends, its other threads stopped, with `code` its status.
 void _exit(int code)
 {
-    arch_syscall(KOS_SYS_EXIT, static_cast<uintptr_t>(code), KOS_EXIT_TASK, 0, 0);
+    arch_syscall(KOS_SYS_EXIT, static_cast<uintptr_t>(code), KOS_EXIT_TASK, 0, 0, 0);
     while (true)
     {
     }

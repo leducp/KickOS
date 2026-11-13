@@ -97,7 +97,7 @@ namespace
     {
         memset(c->driver_buf, 0, sizeof(c->driver_buf));
         kos_reply_recv_opts opts{};
-        kos_reply_recv_opts_init(&opts, c->ep_cap, 0, KOS_TIMEOUT_NONE);
+        kos_reply_recv_opts_init(&opts, c->ep_cap, 0, KOS_NEVER);
         return endpoint_reply_recv(KOS_CAP_NONE, reinterpret_cast<uintptr_t>(c->driver_buf),
                                    kos_call_lens_pack(0, sizeof(c->driver_buf)),
                                    reinterpret_cast<uintptr_t>(&opts));

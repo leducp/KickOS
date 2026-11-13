@@ -124,10 +124,10 @@ int main(int, char**)
     for (int i = 0; i < DRIVER_BLINKS; i++)
     {
         r32(win + W1TS_OFFSET) = bit;
-        kos_sleep_ns(HALF_PERIOD_NS);
+        kos_sleep_for(kos_ns(HALF_PERIOD_NS));
         int const hi = static_cast<int>((r32(win + IN_OFFSET) >> BLINK_PIN) & 1u);
         r32(win + W1TC_OFFSET) = bit;
-        kos_sleep_ns(HALF_PERIOD_NS);
+        kos_sleep_for(kos_ns(HALF_PERIOD_NS));
         int const lo = static_cast<int>((r32(win + IN_OFFSET) >> BLINK_PIN) & 1u);
 
         char s[64];

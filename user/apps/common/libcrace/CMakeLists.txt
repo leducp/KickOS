@@ -4,13 +4,13 @@
 # libcrace_image(<target> <quantum ns>)
 #   main.cc as <target> and peer.cc as <target>_peer, their racers on a round-robin quantum of
 #   <quantum ns>.
-function(libcrace_image target quantum_ns)
+function(libcrace_image target quantum)
   add_executable(${target} main.cc)
   target_include_directories(${target} PRIVATE "${PROJECT_SOURCE_DIR}/user/apps/common/include")
-  target_compile_definitions(${target} PRIVATE LIBCRACE_QUANTUM_NS=${quantum_ns}u)
+  target_compile_definitions(${target} PRIVATE LIBCRACE_QUANTUM_NS=${quantum}u)
   add_executable(${target}_peer peer.cc)
   target_link_libraries(${target}_peer PRIVATE kickos)
-  target_compile_definitions(${target}_peer PRIVATE LIBCRACE_QUANTUM_NS=${quantum_ns}u)
+  target_compile_definitions(${target}_peer PRIVATE LIBCRACE_QUANTUM_NS=${quantum}u)
   target_compile_definitions(${target} PRIVATE "LIBCRACE_PEER=\"${target}_peer\"")
   set(LIBCRACE_APP ${target})
   set(LIBCRACE_PEER_THREADS 3)

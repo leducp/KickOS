@@ -50,7 +50,12 @@ extern "C"
         return 0;
     }
 
-    int kos_notify_wait(kos_cap_t, uint32_t, uint32_t, uint32_t*)
+    int kos_notify_wait(uint32_t, kos_monotonic_t, uint32_t*)
+    {
+        return 0;
+    }
+
+    int64_t kickos_monotonic_now(void)
     {
         return 0;
     }
