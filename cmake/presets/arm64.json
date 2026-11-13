@@ -15,12 +15,6 @@
       "cacheVariables": { "KICKOS_BOARD": "qemu-arm64" }
     },
     {
-      "name": "qemu-arm64-bench",
-      "displayName": "QEMU virt (AArch64 Cortex-A53, EL1) + KICKOS_BENCH - context-switch microbench",
-      "inherits": "qemu-arm64",
-      "cacheVariables": { "KICKOS_CONFIG_VARIANT": "bench" }
-    },
-    {
       "name": "qemu-arm64-smp",
       "displayName": "QEMU virt (AArch64 Cortex-A53, EL1) with four cores",
       "inherits": "qemu-arm64",
@@ -37,88 +31,70 @@
       }
     },
     {
-      "name": "qemu-arm64-benchsmp",
-      "displayName": "QEMU virt (AArch64 Cortex-A53, EL1), four cores + KICKOS_BENCH",
+      "name": "qemu-arm64-smp2",
+      "displayName": "QEMU virt (AArch64 Cortex-A53, EL1) with two cores",
       "inherits": "qemu-arm64",
-      "cacheVariables": { "KICKOS_CONFIG_VARIANT": "benchsmp" }
+      "cacheVariables": { "KICKOS_TEST_SHAPE": "cores", "KICKOS_CONFIG_VARIANT": "smp2" }
     },
     {
-      "name": "qemu-arm64-benchsched",
-      "displayName": "QEMU virt (AArch64 Cortex-A53, EL1), four cores + KICKOS_BENCH + the scheduler's counters",
+      "name": "qemu-arm64-smp12",
+      "displayName": "QEMU virt (AArch64 Cortex-A53, EL1) with twelve cores under GICv3",
       "inherits": "qemu-arm64",
-      "cacheVariables": { "KICKOS_CONFIG_VARIANT": "benchsched" }
-    },
-    {
-      "name": "qemu-arm64-benchsmp12",
-      "displayName": "QEMU virt (AArch64 Cortex-A53, EL1), twelve cores + GICv3 + KICKOS_BENCH",
-      "inherits": "qemu-arm64",
-      "cacheVariables": { "KICKOS_CONFIG_VARIANT": "benchsmp12" }
-    },
-    {
-      "name": "qemu-arm64-benchgicv3",
-      "displayName": "QEMU virt (AArch64 Cortex-A53, EL1), four cores + GICv3 + KICKOS_BENCH",
-      "inherits": "qemu-arm64",
-      "cacheVariables": { "KICKOS_CONFIG_VARIANT": "benchgicv3" }
-    },
-    {
-      "name": "qemu-arm64-benchsmp2",
-      "displayName": "QEMU virt (AArch64 Cortex-A53, EL1), two cores + KICKOS_BENCH",
-      "inherits": "qemu-arm64",
-      "cacheVariables": { "KICKOS_CONFIG_VARIANT": "benchsmp2" }
+      "cacheVariables": { "KICKOS_TEST_SHAPE": "cores;gic", "KICKOS_CONFIG_VARIANT": "smp12" }
     },
     {
       "name": "qemu-arm64-smpiso",
       "displayName": "QEMU virt (AArch64 Cortex-A53, EL1), four cores with core 3 isolated",
       "inherits": "qemu-arm64",
-      "cacheVariables": { "KICKOS_CONFIG_VARIANT": "smpiso" }
+      "cacheVariables": { "KICKOS_TEST_SHAPE": "iso", "KICKOS_CONFIG_VARIANT": "smpiso" }
     },
     {
       "name": "qemu-arm64-gicv3",
       "displayName": "QEMU virt (AArch64 Cortex-A53, EL1) with four cores under GICv3",
       "inherits": "qemu-arm64",
-      "cacheVariables": { "KICKOS_CONFIG_VARIANT": "gicv3" }
+      "cacheVariables": { "KICKOS_TEST_SHAPE": "gic", "KICKOS_CONFIG_VARIANT": "gicv3" }
     },
     {
       "name": "qemu-arm64-amp",
       "displayName": "QEMU virt (AArch64 Cortex-A53, EL1), four cores driven by one kernel core under GICv3",
       "inherits": "qemu-arm64",
-      "cacheVariables": { "KICKOS_CONFIG_VARIANT": "amp" }
+      "cacheVariables": { "KICKOS_TEST_SHAPE": "amp", "KICKOS_CONFIG_VARIANT": "amp" }
     },
     {
       "name": "qemu-arm64-amp2-n0",
       "displayName": "QEMU virt (AArch64 Cortex-A53, EL1), node 0 of a two-image AMP partition",
       "inherits": "qemu-arm64",
-      "cacheVariables": { "KICKOS_CONFIG_VARIANT": "amp2", "KICKOS_AMP_NODE_ID": "0" }
+      "cacheVariables": { "KICKOS_TEST_SHAPE": "amp", "KICKOS_CONFIG_VARIANT": "amp2", "KICKOS_AMP_NODE_ID": "0" }
     },
     {
       "name": "qemu-arm64-amp2-n1",
       "displayName": "QEMU virt (AArch64 Cortex-A53, EL1), node 1 of a two-image AMP partition",
       "inherits": "qemu-arm64",
-      "cacheVariables": { "KICKOS_CONFIG_VARIANT": "amp2", "KICKOS_AMP_NODE_ID": "1" }
+      "cacheVariables": { "KICKOS_TEST_SHAPE": "amp", "KICKOS_CONFIG_VARIANT": "amp2", "KICKOS_AMP_NODE_ID": "1" }
     },
     {
       "name": "qemu-arm64-amp3-n0",
       "displayName": "QEMU virt (AArch64 Cortex-A53, EL1), node 0 of a three-image AMP partition",
       "inherits": "qemu-arm64",
-      "cacheVariables": { "KICKOS_CONFIG_VARIANT": "amp3", "KICKOS_AMP_NODE_ID": "0" }
+      "cacheVariables": { "KICKOS_TEST_SHAPE": "amp", "KICKOS_CONFIG_VARIANT": "amp3", "KICKOS_AMP_NODE_ID": "0" }
     },
     {
       "name": "qemu-arm64-amp3-n1",
       "displayName": "QEMU virt (AArch64 Cortex-A53, EL1), node 1 of a three-image AMP partition",
       "inherits": "qemu-arm64",
-      "cacheVariables": { "KICKOS_CONFIG_VARIANT": "amp3", "KICKOS_AMP_NODE_ID": "1" }
+      "cacheVariables": { "KICKOS_TEST_SHAPE": "amp", "KICKOS_CONFIG_VARIANT": "amp3", "KICKOS_AMP_NODE_ID": "1" }
     },
     {
       "name": "qemu-arm64-amp3-n2",
       "displayName": "QEMU virt (AArch64 Cortex-A53, EL1), node 2 of a three-image AMP partition",
       "inherits": "qemu-arm64",
-      "cacheVariables": { "KICKOS_CONFIG_VARIANT": "amp3", "KICKOS_AMP_NODE_ID": "2" }
+      "cacheVariables": { "KICKOS_TEST_SHAPE": "amp", "KICKOS_CONFIG_VARIANT": "amp3", "KICKOS_AMP_NODE_ID": "2" }
     },
     {
       "name": "qemu-arm64-a710",
       "displayName": "QEMU virt, four Cortex-A710 cores running the A53 image: hardware PAN, later ARMv8.x protection",
       "inherits": "qemu-arm64",
-      "cacheVariables": { "KICKOS_CONFIG_VARIANT": "a710", "KICKOS_QEMU_CPU": "cortex-a710" }
+      "cacheVariables": { "KICKOS_TEST_SHAPE": "cpu", "KICKOS_CONFIG_VARIANT": "a710", "KICKOS_QEMU_CPU": "cortex-a710" }
     },
     {
       "name": "imx8mp-evk",
@@ -129,13 +105,9 @@
   ],
   "buildPresets": [
     { "name": "qemu-arm64", "configurePreset": "qemu-arm64" },
-    { "name": "qemu-arm64-bench", "configurePreset": "qemu-arm64-bench" },
     { "name": "qemu-arm64-smp", "configurePreset": "qemu-arm64-smp" },
-    { "name": "qemu-arm64-benchsmp", "configurePreset": "qemu-arm64-benchsmp" },
-    { "name": "qemu-arm64-benchsched", "configurePreset": "qemu-arm64-benchsched" },
-    { "name": "qemu-arm64-benchsmp12", "configurePreset": "qemu-arm64-benchsmp12" },
-    { "name": "qemu-arm64-benchgicv3", "configurePreset": "qemu-arm64-benchgicv3" },
-    { "name": "qemu-arm64-benchsmp2", "configurePreset": "qemu-arm64-benchsmp2" },
+    { "name": "qemu-arm64-smp2", "configurePreset": "qemu-arm64-smp2" },
+    { "name": "qemu-arm64-smp12", "configurePreset": "qemu-arm64-smp12" },
     { "name": "qemu-arm64-smpiso", "configurePreset": "qemu-arm64-smpiso" },
     { "name": "qemu-arm64-gicv3", "configurePreset": "qemu-arm64-gicv3" },
     { "name": "qemu-arm64-amp", "configurePreset": "qemu-arm64-amp" },
@@ -149,13 +121,9 @@
   ],
   "testPresets": [
     { "name": "qemu-arm64", "configurePreset": "qemu-arm64", "output": { "outputOnFailure": true } },
-    { "name": "qemu-arm64-bench", "configurePreset": "qemu-arm64-bench", "output": { "outputOnFailure": true } },
     { "name": "qemu-arm64-smp", "configurePreset": "qemu-arm64-smp", "output": { "outputOnFailure": true } },
-    { "name": "qemu-arm64-benchsmp", "configurePreset": "qemu-arm64-benchsmp", "output": { "outputOnFailure": true } },
-    { "name": "qemu-arm64-benchsched", "configurePreset": "qemu-arm64-benchsched", "output": { "outputOnFailure": true } },
-    { "name": "qemu-arm64-benchsmp12", "configurePreset": "qemu-arm64-benchsmp12", "output": { "outputOnFailure": true } },
-    { "name": "qemu-arm64-benchgicv3", "configurePreset": "qemu-arm64-benchgicv3", "output": { "outputOnFailure": true } },
-    { "name": "qemu-arm64-benchsmp2", "configurePreset": "qemu-arm64-benchsmp2", "output": { "outputOnFailure": true } },
+    { "name": "qemu-arm64-smp2", "configurePreset": "qemu-arm64-smp2", "output": { "outputOnFailure": true } },
+    { "name": "qemu-arm64-smp12", "configurePreset": "qemu-arm64-smp12", "output": { "outputOnFailure": true } },
     { "name": "qemu-arm64-smpiso", "configurePreset": "qemu-arm64-smpiso", "output": { "outputOnFailure": true } },
     { "name": "qemu-arm64-gicv3", "configurePreset": "qemu-arm64-gicv3", "output": { "outputOnFailure": true } },
     { "name": "qemu-arm64-amp", "configurePreset": "qemu-arm64-amp", "output": { "outputOnFailure": true } },

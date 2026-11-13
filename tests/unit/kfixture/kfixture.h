@@ -47,13 +47,15 @@ namespace kickos
             *reinterpret_cast<ThreadState*>(&t->state) = ThreadState::BLOCKED;
         }
 
-        // Value returned by arch_in_isr. Invalid call context is checked by death tests.
+        // What arch_in_isr answers.
         extern bool g_in_isr;
         extern uint64_t g_now_ns;
+        // Defined only over the real time.cc (KFIXTURE_REAL_TIME): each core's comparator as its
+        // last arch_timer_arm left it, UINT64_MAX after an arch_timer_disarm, 0 before either.
+        // Reset clears it.
+        extern uint64_t g_comparator[KICKOS_KERNEL_CORES];
         // What installing a thread's MPU set at a switch moves the clock by.
         extern uint64_t g_seat_cost_ns;
-        // Where the real time.cc last programmed the comparator to fire, UINT64_MAX disarmed.
-        extern uint64_t g_timer_due;
         // Comparator writes, arms and disarms alike, and interrupt saves, since reset().
         extern uint32_t g_timer_writes;
         extern uint32_t g_irq_saves;

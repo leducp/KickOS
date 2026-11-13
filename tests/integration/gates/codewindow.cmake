@@ -13,3 +13,14 @@ foreach(_probe below past)
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_codewindow.sh"
     ARGS ${_probe})
 endforeach()
+# A boot stage's PMP entry 12, planted through the emulator's gdb stub.
+find_program(KICKOS_GDB NAMES gdb-multiarch)
+set(_cw_gdb gdb-multiarch)
+if(KICKOS_GDB)
+  set(_cw_gdb "${KICKOS_GDB}")
+endif()
+foreach(_plant stale locked)
+  kickos_add_qemu_test(NAME ${_tag}_codewindow_past_${_plant} TARGET codewindow_past
+    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_codewindow.sh"
+    ARGS past ${_plant} "${_cw_gdb}" BOUND 60)
+endforeach()

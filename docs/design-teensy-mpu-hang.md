@@ -62,22 +62,23 @@ other chip, so their emitted sequence is byte-identical to the pre-seam behavior
 DECIDED: the rows carry a raw PMSAv7 `base + RASR` pair. The portable R/W/X/DEV attr vocabulary
 cannot express the AP and type values this needs (no-access, priv-RO, Device).
 
-The imxrt fixed table, five rows:
+The imxrt fixed table (`arch/arm/chip/imxrt1062/mpu_rows.h`), four rows, lowest slot first:
 
 | Base | Size | Type / AP |
 |---|---|---|
-| `0x6000_0000` | 512 MiB | Device + XN + no-access -- FlexSPI aperture wrap |
-| `0x6000_0000` | 8 MiB | Normal WB cacheable, priv-RO + X -- populated-flash overlay |
-| `0x8000_0000` | 512 MiB | Device + XN + no-access -- SEMC aperture wrap |
-| `0x0800_0000` | 128 MiB | Device + XN + no-access -- FlexSPI alias wrap, in the Code region |
-| `0x1000_0000` | 256 MiB | Device + XN + no-access -- SEMC alias wrap, in the Code region |
+| `0x0000_0000` | 4 GiB | Device + XN + no-access -- every address, privileged ones included |
+| `0x2020_0000` | 512 KiB | Normal WBWA, priv-RW + XN -- OCRAM2, the image's RAM |
+| `0x4000_0000` | 64 MiB, subregions 0 and 4 | Device, priv-RW + XN -- AIPS-1 to AIPS-4, AIPS-5 |
+| `0x6000_0000` | 8 MiB | Normal WB cacheable, priv-RO + X -- populated flash |
 
-The default map types the whole Code region Normal executable, so the two aliases of the bands it
-holds (IMXRT1060RM Table 3-1, p.36) are wrapped too.
+The first shipped table wrapped only the FlexSPI and SEMC bands and their two aliases in the Code
+region, and left the rest to the `PRIVDEFENA` default map, which types every hole in the Code and
+SRAM regions Normal for privileged code. The 4 GiB row closes those holes too, and replaces the
+four wraps, so the table is one row shorter.
 
-The 8 MiB Normal overlay sits in a higher slot than the 512 MiB wrap, so the real image is
-executable and readable while the unbacked remainder is Device (never speculated) and no-access
-(never even architecturally reachable).
+Each row above the background sits in a higher slot, so the image's memory is reachable while
+everything else is Device (never speculated) and no-access (never even architecturally
+reachable). Vector table reads and PPB accesses always use the default map (ARM ARM B3.5.1).
 
 ORDERING IS LOAD-BEARING: the fixed regions must be live BEFORE the cache is enabled, because the
 cache is what arms the prefetch the wrap defends against. `arch_init` calls
@@ -106,9 +107,9 @@ clean. No-MPU Teensy (unchanged) and the four other enforcing backends stand.
   default (`KICKOS_IMXRT_DCACHE ON`). Safe on this single-core, DMA-less port; the coherency
   obligation arrives with DMA (a non-cacheable pool or per-buffer clean/invalidate) and is carried
   in TODO.md.
-- **Option B (M8 fleet-wide hardening).** The shipped fix keeps `PRIVDEFENA`, so privileged
-  code still runs on a permissive background. The stronger posture (drop `PRIVDEFENA`, program an
-  explicit whole-map, confine the kernel to its own regions) is recorded for M8. TODO.md.
+- **Option B: TAKEN on imxrt1062 (M10.6.12).** The 4 GiB background row matches every
+  address, so `PRIVDEFENA`, still set by the shared PMSAv7 backend, no longer decides anything
+  there. Other PMSAv7 chips keep the default map for privileged code.
 - **The per-switch reprogram keeps the MPU on.** `kickos_arm_mpu_program` never writes
   `MPU_CTRL = 0`: it disables and rewrites one per-thread descriptor at a time above the fixed rows,
   so the wrap holds throughout (invariant `pmsa-reprogram-keeps-the-fixed-rows`). Only

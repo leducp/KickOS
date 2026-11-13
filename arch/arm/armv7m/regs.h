@@ -22,11 +22,23 @@ namespace kickos
         constexpr uint32_t CCR_UNALIGN_TRP = 1u << 3;
         constexpr uint32_t CCR_DIV_0_TRP = 1u << 4;
 
+        // CCR as bring-up leaves it, whatever the boot ROM left (XMC4800 enters with UNALIGN_TRP
+        // set): compiled code and the prebuilt libc make unaligned accesses, USERSETMPEND lets an
+        // unprivileged STIR write pend any line, and a divide by zero must fault.
+        constexpr uint32_t ccr_at_bringup(uint32_t found)
+        {
+            return (found & ~(CCR_USERSETMPEND | CCR_UNALIGN_TRP)) | CCR_DIV_0_TRP;
+        }
+
         // --- Fault status and address (v6-M has none) ---
         constexpr uintptr_t SCB_CFSR = 0xE000ED28;
         constexpr uintptr_t SCB_HFSR = 0xE000ED2C;
         constexpr uintptr_t SCB_MMFAR = 0xE000ED34;
         constexpr uintptr_t SCB_BFAR = 0xE000ED38;
+
+        // --- FPU context control ---
+        constexpr uintptr_t FPU_FPCCR = 0xE000EF34;
+        constexpr uint32_t FPU_FPCCR_LSPACT = 1u << 0;
 
         // --- NVIC (arch-specific: byte-addressable per-line priority) ---
         constexpr uintptr_t NVIC_IPR0 = 0xE000E400;

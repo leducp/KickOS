@@ -6,11 +6,7 @@
 if(NOT TARGET mpu_fault)
   return()
 endif()
-if(KICKOS_MEMORY_ENFORCED)
-  kickos_app_judge(mpu_fault tests/integration/check_mpu_fault.sh ARGS ${KICKOS_FAULT_OUTCOME})
-else()
-  kickos_inapplicable(mpu_fault "memory not enforced")
-endif()
+kickos_app_judge(mpu_fault tests/integration/check_mpu_fault.sh ARGS ${KICKOS_FAULT_OUTCOME})
 
 # Through the same script as the QEMU boards: a PASS/FAIL_REGULAR_EXPRESSION pair cannot
 # require the control marker AND pin the fault address the app announced, and without both a

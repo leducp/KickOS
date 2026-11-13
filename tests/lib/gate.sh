@@ -979,20 +979,42 @@ need_qemu_machine() {
 # which defeats end-anchored parses). RC: its exit status, which a pipeline here would
 # replace with tr's. QEMU when QEMU_MACHINE is set (kickos_add_qemu_test always exports
 # it), native otherwise.
+#
+# With KOS_SILENCE_S set, the run has no bound on its length: it is stopped once its console has
+# printed no new line for KOS_SILENCE_S seconds (the first line also gets boot_bound's firmware
+# allowance), and RC is 124 as for the total bound. A script opts in with a top-level
+# `: "${KOS_SILENCE_S:=<s>}"`, which kickos_boot_timeout (tests/cmake/kickos_tests.cmake) reads
+# to register the test with no ctest TIMEOUT.
 run_image() {
+    if [ -n "${KOS_SILENCE_S:-}" ] && [ -n "${KOS_CTEST_TIMEOUT_S:-}" ]; then
+        fail "this run is bounded on ${KOS_SILENCE_S}s of console silence and not on its length,
+  so ctest's TIMEOUT of ${KOS_CTEST_TIMEOUT_S%%.*}s would kill a slow run with no finding:
+  declare KOS_SILENCE_S at the script's top level so the test is registered with none"
+    fi
     if [ -n "${QEMU_MACHINE:-}" ]; then
         need_qemu
         boot_args "$1"
-        boot_bound "${QEMU_TIMEOUT:-20}"
         # QEMU_EXTRA and KOS_BOOT_ARGS are word lists (e.g. `-bios none`), so they must split.
-        # shellcheck disable=SC2086
-        OUT="$(timeout "$KOS_BOOT_BOUND_S" "$QEMU_BIN" -M "$QEMU_MACHINE" ${QEMU_EXTRA:-} \
-                 -nographic ${KOS_BOOT_ARGS} 2>&1)"
+        if [ -n "${KOS_SILENCE_S:-}" ]; then
+            boot_bound "$KOS_SILENCE_S"
+            # shellcheck disable=SC2086
+            _run_until_silent "$QEMU_BIN" -M "$QEMU_MACHINE" ${QEMU_EXTRA:-} \
+                -nographic ${KOS_BOOT_ARGS}
+        else
+            boot_bound "${QEMU_TIMEOUT:-20}"
+            # shellcheck disable=SC2086
+            OUT="$(timeout "$KOS_BOOT_BOUND_S" "$QEMU_BIN" -M "$QEMU_MACHINE" ${QEMU_EXTRA:-} \
+                     -nographic ${KOS_BOOT_ARGS} 2>&1)"
+            RC=$?
+        fi
+    elif [ -n "${KOS_SILENCE_S:-}" ]; then
+        boot_bound "$KOS_SILENCE_S"
+        _run_until_silent "$1"
     else
         boot_bound "${SIM_TIMEOUT:-20}"
         OUT="$(timeout "$KOS_BOOT_BOUND_S" "$1" 2>&1)"
+        RC=$?
     fi
-    RC=$?
     # Every capture-parsing pattern in tests/ rests on this line: the console lowers '\n' to
     # CR+LF on every board but the sim (KICKOS_CONSOLE_CRLF), so the wire carries
     # `ok 149 - amp_far_call\r\n`, and stripping the CR is what makes a '$' anchor and a
@@ -1004,6 +1026,72 @@ run_image() {
     boot_status "$RC" "$OUT"
     RC="$KOS_STATUS"
     printf '%s\n' "$OUT"
+}
+
+# gdb ($GDB) on the emulator's stub, with <before> run ahead of the connection and <command>...
+# after, the emulator starting <late> seconds after gdb runs it; the console lands in
+# $TMP/console (need_qemu, need_qemu_machine, scratch_dir and boot_args first).
+# gdb starts the emulator in a session of its own, which `timeout` never signals, and waits for it
+# to exit before gdb itself exits: the emulator carries the bound too.
+# gdb waits 2 s by default for the stub's first reply, and a reply that comes later desyncs the
+# connection: on a loaded host the emulator takes longer than that to start.
+gdb_boot() { # <out> <symbol file> <before> <late> <command>...
+    _gb_out="$1"
+    _gb_file="$2"
+    _gb_before="$3"
+    _gb_late="$4"
+    shift 4
+    # A gdb session on a loaded host runs much slower than a plain boot.
+    boot_bound "${QEMU_TIMEOUT:-60}"
+    # QEMU_EXTRA and KOS_BOOT_ARGS are word lists, so they must split.
+    # shellcheck disable=SC2086
+    timeout -k "$((KOS_STOP_TICKS / 5))" "$KOS_BOOT_BOUND_S" "$GDB" -nx -batch \
+        -ex 'set pagination off' -ex 'set confirm off' -ex "file $_gb_file" -ex "$_gb_before" \
+        -ex "set remotetimeout $KOS_BOOT_BOUND_S" \
+        -ex "target remote | sleep $_gb_late; exec timeout $((KOS_BOOT_BOUND_S - _gb_late)) \
+$QEMU_BIN -M $QEMU_MACHINE ${QEMU_EXTRA:-} -display none -monitor none -serial file:$TMP/console \
+$KOS_BOOT_ARGS -gdb stdio -S" \
+        "$@" > "$_gb_out" 2>&1 || true
+}
+
+# run_image's KOS_SILENCE_S arm: <command> runs with its output in a log, and is stopped once that
+# log has gained no line for KOS_SILENCE_S seconds, KOS_BOOT_BOUND_S before its first. Sets OUT
+# and RC. Counted in 5 Hz ticks, which only ever run long, so the stop never comes early.
+_run_until_silent() { # <command>...
+    _rs_log="$(mktemp)" || fail "mktemp failed"
+    KOS_TRASH_FILE="$_rs_log"
+    "$@" >"$_rs_log" 2>&1 &
+    _rs_pid=$!
+    KOS_CHILD_PID="$_rs_pid"
+    kos_trap
+    _rs_lines=0
+    _rs_quiet=0
+    _rs_window=$((KOS_BOOT_BOUND_S * 5))
+    RC=""
+    while kill -0 "$_rs_pid" 2>/dev/null; do
+        sleep 0.2
+        _rs_now=$(($(wc -l < "$_rs_log")))
+        if [ "$_rs_now" -ne "$_rs_lines" ]; then
+            _rs_lines="$_rs_now"
+            _rs_quiet=0
+            _rs_window=$((KOS_SILENCE_S * 5))
+        else
+            _rs_quiet=$((_rs_quiet + 1))
+            if [ "$_rs_quiet" -ge "$_rs_window" ]; then
+                kos_stop_child
+                RC=124
+                break
+            fi
+        fi
+    done
+    if [ -z "$RC" ]; then
+        KOS_CHILD_PID=""
+        wait "$_rs_pid"
+        RC=$?
+    fi
+    OUT="$(cat "$_rs_log")"
+    KOS_TRASH_FILE=""
+    rm -f "$_rs_log"
 }
 
 # For an app that never terminates on its own: boot it in the background and poll its
@@ -1563,6 +1651,9 @@ status_clause() { # <clause> <status|ended>
     if judging_capture; then
         cnot_evaluated "$1"
         return 0
+    fi
+    if [ "$RC" -eq 124 ] && [ -n "${KOS_SILENCE_S:-}" ]; then
+        fail "not met: $1 (its console printed no line for ${KOS_SILENCE_S}s, so it was stopped)"
     fi
     if [ "$RC" -eq 124 ]; then
         fail "not met: $1 (the system was still running when the bound ran out)"

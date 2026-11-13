@@ -2,9 +2,9 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // RISC-V RV32IMAC: the state the switcher needs to resume a thread. Every register lives in
-// one flat save frame on the thread's stack (switch.S), the same format for a voluntary block
-// and a preemptive wake, so a thread is described by the base of that frame. Its privilege is
-// the frame's mstatus.MPP.
+// one flat save frame (switch.S), on an unprivileged thread's kernel block and on idle's own
+// stack, the same format for a voluntary block and a preemptive wake, so a thread is described
+// by the base of that frame. Its privilege is the frame's mstatus.MPP.
 //
 // switch.S reads every field at a literal displacement (rv_trap_stack.h, F_CTX_TLS_BASE);
 // arch_rv32imac.cc static_asserts them.

@@ -3,6 +3,7 @@
 
 #include <kickos/notify.h>
 
+#include <kickos/aspace.h>
 #include <kickos/cap.h>
 #include <kickos/debug.h>
 #include <kickos/instance.h>
@@ -12,7 +13,6 @@
 #include <kickos/sched.h>
 #include <kickos/task.h>
 #include <kickos/time.h>
-#include <kickos/bench.h>
 
 #include <kickos/sys/abi.h>
 #include <kickos/sys/errno.h>
@@ -54,6 +54,19 @@ namespace kickos
             n->pending = n->pending & ~taken;
             irq_signallers_owe_rearm(n, taken);
             return taken;
+        }
+
+        // The wait's answer: `n`'s bits within `mask` go to `c`'s word at `out`, then leave
+        // pending. Caller holds IrqLock, so no raise lands between the write and the take.
+        int deliver_pending(Thread* c, Notification* n, uint32_t mask, uintptr_t out)
+        {
+            uint32_t const bits = n->pending & mask;
+            if (not kaccess_to_user(user_space_of(c), out, &bits, sizeof(bits)))
+            {
+                return -KOS_EFAULT;
+            }
+            (void)take_pending(n, bits);
+            return 0;
         }
     }
 
@@ -350,7 +363,7 @@ namespace kickos
         return mask;
     }
 
-    uint32_t notify_wait_leave(Thread* c, uint32_t opened)
+    int notify_wait_leave(Thread* c, uint32_t opened, uintptr_t out)
     {
         Notification* const n = bound_object_of(c);
         if (n == nullptr)
@@ -358,13 +371,12 @@ namespace kickos
             return 0;
         }
         n->accept = 0;
-        return take_pending(n, opened);
+        return deliver_pending(c, n, opened, out);
     }
 
     int notify_wait(Thread* c, uint32_t cap_handle, uint32_t mask, uint32_t timeout_us,
-                    uint32_t* out_bits)
+                    uintptr_t out)
     {
-        *out_bits = 0;
         if (mask == 0)
         {
             return -KOS_EINVAL; // a wait nothing can ever satisfy
@@ -399,16 +411,12 @@ namespace kickos
             irq_signallers_rearm(n, mask, lock);
             if ((n->pending & mask) != 0)
             {
-                *out_bits = take_pending(n, mask);
-                return 0;
+                return deliver_pending(c, n, mask, out);
             }
             n->accept = mask;
             // `n` survives the park: this thread's own bind holds a reference on the object,
             // so nothing another thread can close frees it under a parked waiter.
             c->wait_result = 0; // normal delivery leaves this result unchanged
-            // Under this lock and ahead of the block: the raise that wakes this thread takes
-            // the same lock, so nothing delivered past this mark can arrive before the park.
-            KICKOS_BENCH_E2E_PARK_MARK();
             epoch = park_queueless(ask)(c, WAIT_NOTIFY, n, lock);
             ktime_deadline_arm(c, timeout_us, lock);
             sched::reschedule(nullptr, lock);
@@ -425,8 +433,7 @@ namespace kickos
                 // and masks the line.
                 return static_cast<int>(c->wait_result);
             }
-            *out_bits = take_pending(n, mask);
+            return deliver_pending(c, n, mask, out);
         }
-        return 0;
     }
 }

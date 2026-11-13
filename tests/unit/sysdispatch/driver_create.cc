@@ -91,6 +91,7 @@ namespace
         uint16_t dest[2];
         kos_window window;
         char strings[32];
+        uint32_t out;
     };
     Block g_block;
 
@@ -139,8 +140,8 @@ namespace kickos
                 g_block.racer.prio = PRIO_DRIVER;
                 g_block.racer.windows = &g_block.window;
                 g_block.racer.window_count = 1;
-                kos_thread_t child = KOS_THREAD_NONE;
-                g_racer_rc = thread_create_call(&g_block.racer, &child);
+                g_racer_rc = thread_create_call(&g_block.racer,
+                                                reinterpret_cast<uintptr_t>(&g_block.out));
             }
 
             // The creator's resume is claimed by a slay, as a switch into it redirects it.
@@ -153,8 +154,8 @@ namespace kickos
 
             void create_con()
             {
-                kos_task_t h = KOS_TASK_NONE;
-                (void)task_create_call(g_prog, reinterpret_cast<uintptr_t>(&g_block.p), 0, &h);
+                (void)task_create_call(g_prog, reinterpret_cast<uintptr_t>(&g_block.p), 0,
+                                       reinterpret_cast<uintptr_t>(&g_block.out));
             }
 
             class DriverCreate : public KSeam
@@ -195,7 +196,11 @@ namespace kickos
                 int create(char const* instance, kos_task_t* out)
                 {
                     g_block.p.instance = text(instance, 16);
-                    return task_create_call(prog_, reinterpret_cast<uintptr_t>(&g_block.p), 0, out);
+                    g_block.out = KOS_TASK_NONE;
+                    int const rc = task_create_call(prog_, reinterpret_cast<uintptr_t>(&g_block.p),
+                                                    0, reinterpret_cast<uintptr_t>(&g_block.out));
+                    *out = g_block.out;
+                    return rc;
                 }
 
                 Thread* entry_of(kos_task_t h)

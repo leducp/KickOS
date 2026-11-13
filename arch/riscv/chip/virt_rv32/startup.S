@@ -8,6 +8,9 @@
     .section .text.init, "ax"
     .global _start
 _start:
+    /* A loader's stores reach this hart's instruction fetch only after its own FENCE.I. */
+    fence.i
+
     /* Relaxation OFF: a relaxed la would be gp-relative before gp is set. */
     .option push
     .option norelax

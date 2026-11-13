@@ -61,11 +61,21 @@ kickos_sysdispatch_link(sys_presync g_sys_image 0)
 kickos_sysdispatch_link(sys_frame_space g_sys_image 0)
 kickos_sysdispatch_link(sys_word_ref g_word_text 4096)
 kickos_sysdispatch_link(sys_page_budget g_sys_image 0)
+# A capability mint whose out word is refused at the delivery.
+kickos_add_unit_test(NAME sys_cap_deliver SOURCES cap_deliver.cc
+  DEFINITIONS SYS_IMAGE_BYTES=${_image_bytes}
+  LIBRARIES kickos_kseam_sysdispatch)
+kickos_sysdispatch_link(sys_cap_deliver g_sys_image 0)
 # Two admissions of one budget, one parked at its first window outside the lock.
 kickos_add_unit_test(NAME sys_budget_race SOURCES budget_race.cc
   DEFINITIONS SYS_IMAGE_BYTES=${_image_bytes}
   LIBRARIES kickos_kseam_sysdispatch)
 kickos_sysdispatch_link(sys_budget_race g_sys_image 0)
+# A window's memory type, admitted per address where a page entry carries none.
+kickos_add_unit_test(NAME sys_memtype_admit SOURCES memtype_admit.cc
+  DEFINITIONS SYS_IMAGE_BYTES=${_image_bytes}
+  LIBRARIES kickos_kseam_sysdispatch)
+kickos_sysdispatch_link(sys_memtype_admit g_sys_image 0)
 
 # The translating posture at two kernel cores: a driver's create waiting out its line's IRQ grace
 # period, which only a peer core's dispatch holds open.
@@ -90,6 +100,19 @@ kickos_add_unit_test(NAME sys_ram_clear SOURCES ram_clear.cc
 kickos_add_unit_test(NAME spawn_unwind SOURCES spawn_unwind.cc task_stop.cc spawn_badge.cc program_create.cc
   driver_create.cc
   LIBRARIES kickos_kseam_sysdispatch_region)
+# The region posture with the partition's user share in the arena, which the gate's link places
+# at the address the share's constants name: a spawn's stack over the share, through the dispatch.
+kickos_add_kseam(kickos_kseam_sysdispatch_region_share
+  EXTRA region_seam.cc stub_seam.cc ${_sys_region}
+  INCLUDES "${_k}/syscall" "${CMAKE_CURRENT_SOURCE_DIR}"
+  POSTURE KICKOS_AMP_OWN_IMAGE=1
+          KICKOS_AMP_NODE_ID=0
+          KICKOS_AMP_USER_SHARE_ADDR=0x20010000
+          KICKOS_AMP_USER_SHARE_SIZE=0x4000
+          KSEAM_ARENA_AT=0x20000000)
+kickos_add_unit_test(NAME sys_spawn_share SOURCES spawn_share.cc
+  LIBRARIES kickos_kseam_sysdispatch_region_share)
+target_link_options(sys_spawn_share PRIVATE -no-pie -Wl,--section-start=.kseam_arena=0x20000000)
 # The fault dead-end of an emulated chip, whose arch_shutdown the seam answers.
 kickos_add_unit_test(NAME sys_shutdown
   SOURCES shutdown.cc "${PROJECT_SOURCE_DIR}/arch/common/kfault_terminate_shutdown.cc"
@@ -122,6 +145,6 @@ target_compile_definitions(sys_witness_on PRIVATE KICKOS_WITNESS_UACCESS=1)
 kickos_add_unit_test(NAME sys_witness_off SOURCES witness_gate.cc
   LIBRARIES kickos_kseam_sysdispatch_region)
 foreach(_gate IN ITEMS sys_ram_clear spawn_unwind sys_shutdown sys_realtime sys_thread_join sys_periph_disable sys_kconsole_flags sys_witness_on
-                       sys_witness_off)
+                       sys_witness_off sys_spawn_share)
   target_link_options(${_gate} PRIVATE -Wl,--gc-sections)
 endforeach()

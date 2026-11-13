@@ -130,7 +130,7 @@ NCORES="$(sed -n 's/^[[:space:]]*set(KICKOS_NUM_CORES[[:space:]]\{1,\}\([0-9]\{1
     this gate compares a measurement against that header and has no default to fall back on"
 
 # A figure in that header can be posture-dependent (armv7m's SVCK depth resolves per
-# KICKOS_TELEMETRY and KICKOS_BENCH), so a sed over the source would see every branch of that
+# KICKOS_TELEMETRY), so a sed over the source would see every branch of that
 # ladder and refuse the macro as defined twice, or take the first and compare against the wrong
 # posture's number. The compiler resolves it instead, and the scrape below runs over its macro
 # dump.

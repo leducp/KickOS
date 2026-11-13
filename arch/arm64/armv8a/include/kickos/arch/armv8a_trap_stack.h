@@ -42,12 +42,12 @@
 #define KICKOS_ARMV8A_TRAP_ENTRY_FRAME 0
 #define KICKOS_ARMV8A_TRAP_NEED_USER 0
 
-/* IRQ and IRQK. 800 on qemu-arm64-benchgicv3 and benchsmp12, 736 gicv3, 720 amp, 672 benchsmp
- * and benchsched, 656 benchsmp2, 624 smp, smpiso and a710, 576 bench and amp3, 560 amp2,
- * qemu-arm64 and imx8mp-evk. Above one core it is the console drain's
- * wake, whose switch spins on the kernel lock and services a route ask that GICv3 refuses:
- *   kickos_armv8a_irq[32] -> kickos_armv8a_gic_dispatch[48] -> kickos_isr_irq[64]
- *   -> console_tx_isr[80] -> console_tx_room_freed[48] -> console_dark_wake[48] -> sched::wake
+/* IRQ and IRQK. 736 on qemu-arm64-gicv3 and smp12, 720 amp, 624 smp, smp2, smpiso and a710,
+ * 592 amp3-n1, 576 amp3-n0 and amp3-n2, 560 amp2, qemu-arm64 and imx8mp-evk. Above one core it
+ * is the console drain's wake, whose switch spins on the kernel lock and services a route ask
+ * that GICv3 refuses:
+ *   kickos_armv8a_irq[32] -> kickos_armv8a_gic_dispatch[48] -> kickos_isr_irq[48]
+ *   -> console_tx_isr[64] -> console_tx_room_freed[32] -> console_dark_wake[48] -> sched::wake
  *   -> pick_and_seat[96] -> klock_attach[48] -> arch_kernel_lock -> kickos_doorbell_poll
  *   -> kickos_doorbell_service -> kickos_irq_route_service[48] -> arch_irq_mask[48]
  *   -> wait_gicd_rwp[48] -> kpanic_refuse_unlocked[32]
@@ -61,13 +61,14 @@
  * arch_armv8a.cc asserts: the frame term of every class an interrupt can land under. */
 #define KICKOS_ARMV8A_TRAP_NEST 1632
 
-/* The EL0 synchronous entry on the block, the syscall and the fault it contains. 2256 on
- * qemu-arm64-benchgicv3 under the KickOS toolchain's GCC 16.2, a bench print whose console
- * writer wakes the writer parked on the line and switches to it; 1760 on qemu-arm64:
- *   syscall_dispatch[192] -> bench_irq_sweep[128] -> dist_print_fmt[112] -> ...[560]
- *   -> console_emit[80] -> console_chip_writer_leave[48] -> console_dark_wake[48]
- *   -> sched::wake[32] -> ... -> kickos_armv8a_switch_now[800] -> ...
- *   -> kickos_armv8a_gic_doorbell_send[80]
+/* The EL0 synchronous entry on the block, the syscall and the fault it contains. 2016 on
+ * qemu-arm64-gicv3 and smp12 under the KickOS toolchain's GCC 16.2, a task create seeding the
+ * child's tables, whose frame allocation spins on the kernel lock and services a route ask
+ * that GICv3 refuses; 1776 on qemu-arm64:
+ *   syscall_dispatch[176] -> task_create_call[224] -> spawn_locked[448] -> thread_create[128]
+ *   -> ... -> aspace_image_seed[96] -> arch_aspace_map[112] -> map_into[96]x3
+ *   -> kickos_frame_alloc[48] -> klock_enter[32] -> arch_kernel_lock -> ...
+ *   -> wait_gicd_rwp[48] -> kpanic_refuse_unlocked[32]
  * arch_armv8a.cc refuses more than 13 grants. Reserved at 2304, above the measurement. */
 #define KICKOS_ARMV8A_TRAP_DEPTH_SYSK 2304
 
@@ -76,23 +77,24 @@
  * arch_armv8a.cc asserts. */
 #define KICKOS_ARMV8A_TRAP_WINDOW 2432
 
-/* The system call's descent to arch_irq_window, above SYSWIN's frame. 384 on the bench,
- * benchsmp and benchgicv3 presets, 352 on qemu-arm64:
+/* The system call's descent to arch_irq_window, above SYSWIN's frame. 352 on every armv8a
+ * preset:
  *   syscall_dispatch[176] -> frame_create_call[96] -> presync_run[80] -> arch_irq_window[0]
  * WINDOW + 1024 = 3456 against 4092 above the canary. */
 #define KICKOS_ARMV8A_TRAP_DEPTH_SYSWIN 1024
 
-/* The fault and slay stubs on the block with an interrupt nested below. 1264 on
- * qemu-arm64-benchgicv3 and benchsmp12, the fault report's line waking the publisher it raced:
+/* The fault and slay stubs on the block with an interrupt nested below. 1232 on
+ * qemu-arm64-gicv3 and smp12, the fault report's line waking the publisher it raced:
  *   kickos_thread_fault_exit[32] -> fault_record_print[96] -> kprintf_record[320]
- *   -> kvprintf_fault[176] -> console_emit[80] -> console_chip_writer_leave[48]
+ *   -> kvprintf_fault[176] -> console_emit[64] -> console_chip_writer_leave[32]
  *   -> console_dark_wake[48] -> ...
  *   -> klock_attach[48] -> arch_kernel_lock -> ... -> wait_gicd_rwp[48]
  *   -> kpanic_refuse_unlocked[32]
  * NEST + 2048 = 3680 is the block's deepest need, against 4092 above the canary. */
 #define KICKOS_ARMV8A_TRAP_DEPTH_EXITK 2048
 
-/* The same stubs through the switch. 1792 on qemu-arm64-smp, 1888 on benchgicv3:
+/* The same stubs through the switch. 1856 on qemu-arm64-gicv3 and smp12, 1808 on
+ * qemu-arm64-smp:
  *   kickos_thread_fault_exit -> fault_record_print[96] -> kprintf_record[320]
  *   -> kvprintf_fault[176] -> console_emit
  *   -> console_chip_writer_leave -> console_dark_wake -> sched::wake -> pick_and_seat
@@ -101,15 +103,15 @@
 #define KICKOS_ARMV8A_TRAP_DEPTH_EXITKSW 2048
 
 /* A privileged fault's reporter, kickos_armv8a_exception, on idle's stack, the one privileged
- * thread's. 1168 on qemu-arm64-benchgicv3 and benchsmp12: kprintf[560] into the console and the
- * kernel lock under it. */
+ * thread's. 1824 on qemu-arm64-gicv3 and smp12: kprintf[528] into the console, whose wake
+ * switches to the woken writer and rings its core's doorbell. */
 #define KICKOS_ARMV8A_TRAP_DEPTH_FAULT 2048
 
 /* idle_entry's own frame, above the interrupt idle waits for: 16 on every preset. */
 #define KICKOS_ARMV8A_TRAP_DEPTH_IDLE 64
 
-/* The panic reporter on its own array: 640 on qemu-arm64-benchgicv3 and benchsmp12, under an
- * enforced 704. */
+/* The panic reporter on its own array: 624 on qemu-arm64-gicv3, smp12 and the amp2 and amp3
+ * nodes, under an enforced 704. */
 #define KICKOS_ARMV8A_PANIC_FRAME 0
 #define KICKOS_ARMV8A_PANIC_DEPTH 704
 
@@ -118,11 +120,11 @@
  * summed.
  *
  * MAIN, the primary's boot with a fault nested on it, no interrupt opening before the first eret:
- * 4240 on qemu-arm64-benchgicv3 and benchsmp12, 3680 on qemu-arm64 and imx8mp-evk. Its frame is 0,
+ * 4128 on qemu-arm64-gicv3 and smp12, 3680 on qemu-arm64 and imx8mp-evk. Its frame is 0,
  * the EL1h synchronous slot branching to the reporter without a push.
  *
  * CORE, a secondary's park with the doorbell interrupt and then a fault nested on it: 4112 on
- * qemu-arm64-amp, whose park drains the AMP node, 3792 on benchgicv3 and benchsmp12. Its frame is
+ * qemu-arm64-amp, whose park drains the AMP node, 3648 on qemu-arm64-gicv3 and smp12. Its frame is
  * the interrupt's SAVE_FRAME.
  *
  * Both are reserved at 5120, which arch_armv8a.cc asserts the block holds. */

@@ -418,6 +418,15 @@ TEST(VRange, a_range_grants_only_once_granted_and_only_its_rights)
     EXPECT_FALSE(kickos::vr_grants(v.find(BASE, 4), ARCH_MAP_R | ARCH_MAP_W));
 }
 
+TEST(VRange, a_device_range_grants_no_kernel_access)
+{
+    kickos::VirtualRanges v = made();
+    ASSERT_TRUE(v.reserve(BASE, 1, kickos::VR_BORROWED | kickos::VR_WINDOW));
+    ASSERT_TRUE(v.grant(BASE, 1, ARCH_MAP_R | ARCH_MAP_W, ARCH_MAP_DEVICE));
+    EXPECT_FALSE(kickos::vr_grants(v.find(BASE, 4), ARCH_MAP_R));
+    EXPECT_FALSE(v.covers(BASE, 4, ARCH_MAP_W));
+}
+
 TEST(VRange, covers_finds_the_one_granted_entry_at_the_end_of_a_full_list)
 {
     kickos::VirtualRanges v = made();

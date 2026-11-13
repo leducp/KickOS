@@ -272,25 +272,7 @@ enum kos_syscall_nr
                                //   nothing afterwards; otherwise the group is EMPTY and its slot
                                //   released), -KOS_ETIMEDOUT, -KOS_ECANCELED, -KOS_EBADF (never
                                //   created / freed under this handle / an idle or root task, which is
-                               //   unnameable), -KOS_EPERM (the caller did not create it),
-                               //   -KOS_EDEADLK (a timeout other than 0 from a member of the
-                               //   task).
-    KOS_SYS_BENCH = 55,        // (kos_bench_op, a0, a1) -> per-op (see enum kos_bench_op),
-                               //   -KOS_EINVAL (bad op, bad line, no span open, or an
-                               //   argument outside what the op admits), -KOS_ENOSYS (an op
-                               //   this image's core count leaves nothing to measure),
-                               //   -KOS_EAGAIN (the end-to-end waiter is not parked yet),
-                               //   -KOS_EBUSY (the span that closed was not a wake), -KOS_EBADF
-                               //   (the arm's handle names no live IRQ cap), -KOS_EACCES (an
-                               //   arm whose cap carries no KOS_CAP_WAIT) or -KOS_EPERM (an op
-                               //   that reaches the controller or the doorbell issued without
-                               //   KOS_AUTH_IRQ, or
-                               //   a thread that is not the armed waiter closing or taring a
-                               //   span). The counted ops refuse a count above
-                               //   KOS_BENCH_SAMPLES_MAX / KOS_BENCH_ROUNDS_MAX. The
-                               //   dispatch arm is compiled out unless KICKOS_BENCH, so a
-                               //   normal image returns -KOS_EINVAL for every op. THE RESULT
-                               //   IS READ AS A SIGNED 64-BIT WORD.
+                               //   unnameable), -KOS_EPERM (the caller did not create it).
     KOS_SYS_CALL_REG = 56,     // (ep_cap, kos_call_lens_pack(send_len, recv_cap), payload in
                                //   the remaining argument registers) -> as KOS_SYS_CALL, with
                                //   the reply delivered in registers too. INTERNAL:
@@ -317,9 +299,10 @@ enum kos_syscall_nr
                                //   -KOS_EFAULT (va), -KOS_EBADF on a cap that does not
                                //   resolve, -KOS_ENOMEM when the space cannot take the range
                                //   there, -KOS_EBUSY while another mapping of the run carries
-                               //   another memory type, -KOS_EAGAIN when the page tables the
-                               //   map needs pass the page budget of the space's task. *va 0
-                               //   maps at the run's own address.
+                               //   another memory type, -KOS_ENOTSUP for a memory type the
+                               //   chip cannot honour over the run's frames, -KOS_EAGAIN when
+                               //   the page tables the map needs pass the page budget of the
+                               //   space's task. *va 0 maps at the run's own address.
     KOS_SYS_FRAME_UNMAP = 61,  // (frame cap, address-space cap, virtual address) -> 0, or
                                //    -KOS_EBADF for an invalid cap, -KOS_EINVAL for a nontranslating space,
                                //    -KOS_EPERM for a range not mapped through KOS_SYS_FRAME_MAP.
@@ -464,14 +447,8 @@ enum kos_syscall_nr
     KOS_SYS_CLOCK_REALTIME = 87,  // () -> Unix-epoch nanoseconds (u64, in registers; cannot
                                   //   fail): the monotonic clock plus the offset the last
                                   //   KOS_SYS_CLOCK_SET_REALTIME stored, none before it
-    KOS_SYS_CLOCK_SET_REALTIME = 88, // (ns_lo, ns_hi) -> 0, or -KOS_EPERM (no KOS_AUTH_REALTIME).
-                                    //   The wall clock reads ns from now on
-    KOS_SYS_WITNESS_NODE = 89       // RESERVED for the node witness (<kickos/sys/witness.h>):
-                                    //   (op, arg) -> per op, or -KOS_EINVAL (an unknown op
-                                    //   or line), -KOS_EPERM (a line the kernel drives),
-                                    //   -KOS_EBUSY (a line a driver holds), -KOS_ENOSYS (no
-                                    //   software raise). Any kernel not built for the witness
-                                    //   answers -KOS_EINVAL
+    KOS_SYS_CLOCK_SET_REALTIME = 88  // (ns_lo, ns_hi) -> 0, or -KOS_EPERM (no KOS_AUTH_REALTIME).
+                                     //   The wall clock reads ns from now on
 };
 // The raw console write's number, refused in an app as kos_kconsole_write is (<kickos/sys.h>).
 #if defined(KICKOS_APP_IMAGE)
@@ -577,104 +554,16 @@ enum kos_mem_flags
 {
     // Map the block Normal non-cacheable, for a block a bus master reads or writes. A chip whose
     // region descriptors carry no memory type and whose data cache sits over the arena REFUSES it
-    // with -KOS_ENOTSUP; a chip with no cache in that path accepts it; a chip that TRANSLATES
-    // answers from its page tables. The kernel's own copies into and out of the block, IPC
-    // included, maintain the data cache around themselves, as a translating chip's mapping does,
-    // so no line of the kernel's cacheable view of it is read in place of memory or evicted over
-    // it.
+    // with -KOS_ENOTSUP; a chip with no cache in that path accepts it. A chip that TRANSLATES
+    // accepts it where its page entry carries the type (armv8a, x86_64); where the entry carries
+    // none (rv64) the type is the physical address's own, so it accepts it only inside a window
+    // aperture the chip states and answers -KOS_ENOTSUP over RAM. The kernel's own copies into
+    // and out of the block, IPC included, maintain the data cache around themselves, as a
+    // translating chip's mapping does, so no line of the kernel's cacheable view of it is read in
+    // place of memory or evicted over it.
     KOS_MEM_NOCACHE = 1u << 0
 };
 #define KOS_MEM_FLAGS_ALL (KOS_MEM_NOCACHE)
-
-// KOS_SYS_BENCH operation IDs (benchmark images only). Append new values.
-// KOS_BENCH_OP_DIST_PRINT's rows: the switch row alone, its window run with every vector register
-// written before each switch.
-#define KOS_BENCH_DIST_SWITCH_VEC 1
-
-// Unknown operations return -KOS_EINVAL. PRINT operations use the kernel console.
-// Operations marked AUTH_IRQ require KOS_AUTH_IRQ or return -KOS_EPERM.
-enum kos_bench_op
-{
-    KOS_BENCH_OP_RESET = 0,       // ()          -> 0. Every distribution AND every phase.
-    KOS_BENCH_OP_CYCCNT_HZ = 1,   // ()          -> rate of the counter the cycle ops read,
-                                  //   which is not always the core clock, as a 64-BIT Hz
-                                  //   count. 0 = no rate converts a reading, so report
-                                  //   cycles alone.
-    KOS_BENCH_OP_DIST_PRINT = 2,  // (rows)      -> switch sample count (the kernel prints one
-                                  //   line per workload-fed distribution; a SWEPT one is
-                                  //   printed by the op that filled it). rows
-                                  //   KOS_BENCH_DIST_SWITCH_VEC prints the switch row alone,
-                                  //   labelled as the dirty-vector variant; any other non-zero
-                                  //   rows is refused.
-    KOS_BENCH_OP_IRQ_SETUP = 3,   // (line)      -> 0, or -KOS_EBUSY if irq_attach refuses the
-                                  //   line. AUTH_IRQ. Names the line every IRQ op below uses.
-    KOS_BENCH_OP_IRQ_SWEEP = 4,   // (samples)   -> samples taken (the kernel prints the
-                                  //   inject->entry row). 0 = the controller never raised it.
-                                  //   AUTH_IRQ; samples above KOS_BENCH_SAMPLES_MAX refused.
-    KOS_BENCH_OP_IRQ_WCASE = 5,   // (samples)   -> samples taken over every masked span, each
-                                  //   span sampled in turn per round (the kernel prints one
-                                  //   worst-case row per span). AUTH_IRQ; samples above
-                                  //   KOS_BENCH_SAMPLES_MAX refused.
-    KOS_BENCH_OP_PHASE_PRINT = 6, // ()          -> 0 (kernel prints the phase table)
-    KOS_BENCH_OP_LOCK_PROBE = 7,  // ()          -> 0 (kernel prints one line: how far the
-                                  //   lock distributions moved across three nested IrqLocks,
-                                  //   and on which core)
-    KOS_BENCH_OP_DOORBELL_PROBE = 9, // (core, rounds) -> rounds run, 0 where the calling
-                                  //   thread may not run on that core, -KOS_EINVAL for a core
-                                  //   this kernel does not schedule, which is how a caller
-                                  //   walks the cores without being told how many there are.
-                                  //   -KOS_ENOSYS at one kernel core. The kernel prints one
-                                  //   line. AUTH_IRQ; rounds above KOS_BENCH_ROUNDS_MAX
-                                  //   refused, the rounds running under one IrqLock.
-    // The end-to-end span, raise to the woken userspace thread's first device read. ARM,
-    // TARE and CLOSE are the WAITER's; the kernel refuses a close from any other thread.
-    // RAISE injects on the line the ARM named and takes no authority of its own.
-    KOS_BENCH_OP_E2E_ARM = 10,    // (irq_cap)   -> 0, -KOS_EBADF (no such cap) or -KOS_EACCES
-                                  //   (the cap carries no KOS_CAP_WAIT). The span's line is
-                                  //   the one that cap names.
-    KOS_BENCH_OP_E2E_RAISE = 11,  // ()          -> 0, or -KOS_EAGAIN until the waiter has
-                                  //   published its own park, which the caller retries.
-    KOS_BENCH_OP_E2E_TARE = 12,   // ()          -> 0. Opens a span with no raise, so the
-                                  //   close prices the instrument's own tail.
-    KOS_BENCH_OP_E2E_CLOSE = 13,  // ()          -> 0, or -KOS_E* for a span that was not a
-                                  //   wake (counted as dropped and reported)
-    KOS_BENCH_OP_E2E_PRINT = 14,  // (asked)     -> 0 (kernel prints the probe line, the pass
-                                  //   denominator and the two locality rows). `asked` is the
-                                  //   sweep size the CALLER ran; the kernel echoes it beside
-                                  //   the raises it let through and acts on it in no other
-                                  //   way.
-    KOS_BENCH_OP_SCHED_PRINT = 15, // (tag)      -> 0 (kernel prints the scheduler's report
-                                  //   since the last reset, labelled with `tag`). -KOS_ENOSYS
-                                  //   at one kernel core and in an image built without
-                                  //   KICKOS_BENCH_SCHED, neither of which keeps the report.
-    KOS_BENCH_OP_E2E_QUIET = 16,  // ()          -> 1 once every other kernel core runs its idle
-                                  //   thread and no thread is on its way to any core, else 0.
-                                  //   The raiser polls it before a pass's first raise.
-    KOS_BENCH_OP_FASTPATH_WATCH = 17, // ()      -> 0 (kernel prints one line: the register-form
-                                  //   call's taken fastpath entries since boot whose saved or
-                                  //   restored DPFPU bank stood at 4 mod 8). -KOS_ENOSYS where
-                                  //   no backend keeps that count, which is every one but RXv3.
-    KOS_BENCH_OP_OWNER_PRINT = 18 // (which, waiters) -> 0 (kernel prints a header naming
-                                  //   `waiters`, which it only echoes, and the thread pool's
-                                  //   slot count, then the cycles and count rows `which` names,
-                                  //   and clears them). -KOS_ENOSYS for any `which` in an image
-                                  //   that keeps no rows (KICKOS_BENCH_WALKS 0), and for
-                                  //   KOS_BENCH_OWNER_REACH_LOST on a board that does not
-                                  //   translate; -KOS_EINVAL for any other unknown `which`.
-};
-
-// KOS_BENCH_OP_OWNER_PRINT's rows: a dead holder's hand-over walk, each that handed at least one
-// record; and a lost mapping's scan, each that ended at least one wait.
-#define KOS_BENCH_OWNER_EXIT 0u
-#define KOS_BENCH_OWNER_REACH_LOST 1u
-
-// The largest count the counted ops admit. Raising either raises what a caller can make the
-// kernel do in one syscall, the rounds under an IrqLock.
-#define KOS_BENCH_SAMPLES_MAX 100u
-#define KOS_BENCH_ROUNDS_MAX 64u
-
-// The widest end-to-end span KOS_BENCH_OP_E2E_CLOSE accepts, in ns; a wider one is dropped.
-#define KOS_BENCH_E2E_SPAN_MAX_NS 0xFFFFFFFFull
 
 // What kos_recv_info.badge carries for a sender holding no badge, and so a badge no mint takes.
 #define KOS_BADGE_NONE 0u
@@ -700,6 +589,11 @@ KOS_STATIC_ASSERT(sizeof(struct kos_recv_info) == 8, "kos_recv_info must stay 8 
 // notify supplies the accepted badge bits on input and consumed bits on output, over
 // whatever notification the caller is bound to. Zero accepts none; unaccepted bits remain
 // pending. Restore the accepted mask before each call because the kernel overwrites it.
+// With a mask accepted, the kernel writes 0 to notify before anything else is done
+// (-KOS_EFAULT, nothing done, where it cannot), then writes the consumed bits over it and
+// takes a bit only once written. A write of the consumed bits refused mid-call takes none:
+// they stay pending, notify reads 0, and the call answers -KOS_EFAULT, or the byte count of
+// a message it received.
 struct kos_reply_recv_opts
 {
     kos_cap_t ep;              // IN: the endpoint to receive on (needs CAP_WAIT)

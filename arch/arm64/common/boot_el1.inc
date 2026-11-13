@@ -63,10 +63,7 @@
     msr     VBAR_EL1, x0
     isb
 
-    mrs     x0, SCTLR_EL1
-    orr     x0, x0, #SCTLR_M
-    orr     x0, x0, #SCTLR_C
-    orr     x0, x0, #SCTLR_I
+    ldr     x0, =SCTLR_EL1_VALUE
     msr     SCTLR_EL1, x0
     isb                             /* the next instruction is fetched translated */
 

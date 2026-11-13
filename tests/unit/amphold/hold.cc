@@ -1223,10 +1223,10 @@ namespace kickos
             ASSERT_NO_FATAL_FAILURE(stage_fast());
             g_fs.ep->far_node = static_cast<uint8_t>(PEER + 1u);
             uint32_t const out_head = outbound_ring().head.v.load();
-            uint32_t const taken = ipc_fast_taken_count();
+            uint16_t const seq = g_fs.c->call_seq;
 
             EXPECT_EQ(kickos_ipc_fastpath(g_fs.args), nullptr);
-            EXPECT_EQ(ipc_fast_taken_count(), taken);
+            EXPECT_EQ(g_fs.c->call_seq, seq);
             EXPECT_EQ(g_fs.c->state, ThreadState::RUNNING);
             EXPECT_EQ(g_fs.c->call_frame_parked, 0u);
             EXPECT_EQ(g_fs.w->state, ThreadState::BLOCKED);

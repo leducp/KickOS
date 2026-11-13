@@ -75,7 +75,7 @@ SYSCALL_NAME = {
     46: "call", 47: "notify_unbind",
     48: "thread_join", 50: "send",
     53: "thread_cancel",
-    54: "task_slay", 55: "bench", 56: "call_reg", 57: "mem_count",
+    54: "task_slay", 56: "call_reg", 57: "mem_count",
     58: "aspace_self", 59: "frame_create", 60: "frame_map",
     61: "frame_unmap",
     63: "thread_affinity", 65: "core_current",
@@ -86,7 +86,7 @@ SYSCALL_NAME = {
     79: "periph_disable", 80: "witness_uaccess", 81: "witness_rewinds",
     82: "word_wait", 83: "word_wake", 84: "endpoint_badge",
     85: "task_create", 86: "program_find",
-    87: "clock_realtime", 88: "clock_set_realtime", 89: "witness_node",
+    87: "clock_realtime", 88: "clock_set_realtime",
 }
 
 TRACE_MAGIC = 0x4B545243

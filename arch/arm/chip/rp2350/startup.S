@@ -48,8 +48,8 @@ g_isr_vector:
     /* The datasheet 5.9.5.1 "Minimum Arm IMAGE_DEF": the 20-byte block the bootrom accepts for
      * an UNSIGNED image on a chip with CRIT1.SECURE_BOOT_ENABLE clear. image_type_flags 0x1021 =
      * EXE | Security=S (the M33 boots Secure; no TrustZone) | CPU=ARM | CHIP=RP2350. LINK=0 makes
-     * it a single-block loop. Nothing references it: KEEP(*(.image_def)) in rp2350.ld retains
-     * it, and the -u,g_isr_vector force-ref pulls this object. */
+     * it a single-block loop. Nothing references it: KICKOS_KERNEL_KEEP(.image_def) in rp2350.ld
+     * retains it, and the -u,g_isr_vector force-ref pulls this object. */
     .section .image_def, "a"
     .align 2
     .global g_image_def

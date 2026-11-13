@@ -2,14 +2,12 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // NXP i.MX RT1062 USB device-controller register map and descriptor layout, from the
-// i.MX RT1060 Processor Reference Manual, Rev. 3 (IMXRT1060RM) chapter 42. Offsets and
-// layout only. The PHY, PLL_USB1 and the CCGR6 gate belong to the kernel
-// (arch/arm/chip/imxrt1062/) and are not named here.
+// i.MX RT1060 Processor Reference Manual, Rev. 3 (IMXRT1060RM) chapter 42. The PHY, PLL_USB1
+// and the CCGR6 gate are the kernel's (arch/arm/chip/imxrt1062/).
 //
 //   - The controller is a BUS MASTER, so a wrong field corrupts memory at DMA time instead
-//     of faulting at the poke site. Coherency rests on KICKOS_IMXRT_DCACHE=OFF; no cache
-//     maintenance exists.
-//   - Two per-endpoint bitmap conventions appear below. ENDPTPRIME / ENDPTFLUSH /
+//     of faulting at the poke site. Coherency rests on KICKOS_IMXRT_DCACHE=OFF.
+//   - Three per-endpoint bit conventions meet here. ENDPTPRIME / ENDPTFLUSH /
 //     ENDPTSTAT / ENDPTCOMPLETE put OUT endpoint n at bit n and IN at bit 16 + n
 //     (RM 42.7.35, 42.7.38); the dQH list puts OUT at index 2n and IN at 2n + 1
 //     (RM 42.5.5); the class layer's buff_status has IN at bit 2n and OUT at 2n + 1.
@@ -95,6 +93,7 @@ namespace kickos::rtusb::reg
     constexpr uint32_t PORTSC1_CSC = 1u << 1; // write-1-to-clear in host mode, undefined here
     constexpr uint32_t PORTSC1_PEC = 1u << 3; // likewise
     constexpr uint32_t PORTSC1_OCC = 1u << 5;
+    constexpr uint32_t PORTSC1_SUSP = 1u << 7; // read-only in device mode: the port is suspended
     constexpr uint32_t PORTSC1_PFSC = 1u << 24;
     constexpr uint32_t PORTSC1_PSPD_SHIFT = 26; // read-only: 0 FS, 1 LS, 2 HS
     constexpr uint32_t PORTSC1_PSPD_MASK = 3u << 26;

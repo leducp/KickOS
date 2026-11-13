@@ -9,12 +9,13 @@
 //   0  an unprivileged worker executes a trapping instruction; main must run AFTER it and end
 //      the system cleanly. The join is the ordering proof.
 //   1  the worker recurses off its own stack, producing no legitimate exception frame, so the
-//      fault must reach the PANIC dump and not the thread kill. Needs a guarded stack.
+//      fault must reach the PANIC dump and not the thread kill, except where the frame lies off
+//      the thread's stack (RX: the ISP). Needs a guarded stack.
 //   2  the worker points SP at a buffer OUTSIDE its stack and faults. The frame is written in
 //      full, at a writable address, by a thread that really is unprivileged in thread mode, so
 //      every register-derived clause of the rule says yes and only the stack-bounds test can
-//      refuse it. On RX the frame goes to the ISP instead and the bounds test reads the USP the
-//      exit stub WOULD have run on. Above the stack where a stack limit refuses one below.
+//      refuse it. On RX the frame goes to the ISP instead and the worker dies alone. Above the
+//      stack where a stack limit refuses one below.
 //   3  the worker points SP at a word of MAIN's data (its address is the peer's argument) and
 //      traps. A software trap prologue that stored the frame through the U-mode SP overwrites
 //      that word in privileged mode, where no protection applies; the bounds test refuses the SP
@@ -37,6 +38,19 @@
 //   8  the worker divides by zero in 32 bits; 9 in 64. Where the core traps it, the worker is
 //      killed as by any fault; where the ISA defines a quotient instead, the worker prints it.
 //      Either way main must run after it.
+//  10  RX only: the worker executes one software trap, an INT #n or BRK through an INTB slot that
+//      is not the syscall's, once per spawn over FS_SWTRAP_COUNT spawns. Each must kill the worker
+//      and nothing else, and none may move the clock: main reads it around the whole loop.
+//  11  RX only: the worker forges a PSW with PM clear wherever a task can write one, from a
+//      thread of its own per arm, and each target thread prints the mode it then runs in.
+//  12  rv32imac only: the faulter takes a block, starts a lower-priority child on it, and plants
+//      MPP=M in every frame of the child's it finds there before the child first runs. The
+//      child's first instruction reads mstatus, so it must die from U-mode at its entry, never
+//      print.
+//  13  RX only: a thread of the faulter points its USP just above MAIN's word (as mode 3) and
+//      spins until the faulter's wake preempts it. The switcher's guard must slay that thread
+//      before the save stores through that USP, and the faulter, which outlives it, says so;
+//      main reads the word back after the join.
 
 #include <kickos/apps/peer_run.h>
 #include <kickos/kos.h>
@@ -52,7 +66,7 @@
 
 namespace
 {
-#if KICKOS_FS_MODE == 3
+#if KICKOS_FS_MODE == 3 || KICKOS_FS_MODE == 13
     constexpr unsigned FS_KWORD_POISON = 0x5AFEBA5Eu;
     volatile unsigned g_fs_kword = FS_KWORD_POISON;
 #endif
@@ -95,7 +109,7 @@ int main(int, char**)
     void* block = nullptr;
     uint32_t block_size = 0;
     uintptr_t arg = 0;
-#if KICKOS_FS_MODE == 3
+#if KICKOS_FS_MODE == 3 || KICKOS_FS_MODE == 13
     arg = reinterpret_cast<uintptr_t>(&g_fs_kword);
 #endif
 #if KICKOS_FS_MODE == 4
@@ -163,33 +177,74 @@ int main(int, char**)
         kos::print("[fs] ERROR: no faulter program\n");
         return 1;
     }
-    char arg_text[24];
-    ksnprintf(arg_text, sizeof(arg_text), "%p", reinterpret_cast<void*>(arg));
-    char const* const argv[] = {"faulter", arg_text, nullptr};
-    kos_task_params params = {};
-    params.argv = argv;
-    params.block = block;
-    params.size = block_size;
-    params.stack = stack;
-    params.stack_size = stack_size;
-    kos::print("[fs] spawning the faulter\n");
-    kos_task_t victim = KOS_TASK_NONE;
-    int rc = kickos::apps::create_peer(prog, params, &victim);
-    if (rc != 0)
+    uint32_t runs = 1;
+#if KICKOS_FS_MODE == 10
+    runs = FS_SWTRAP_COUNT;
+    uint64_t const clock_before = kos_clock_now();
+    bool jumped = false;
+#endif
+    int rc = 0;
+    for (uint32_t run = 0; run < runs; run++)
     {
-        kos::print("[fs] ERROR: no task slot for the faulter\n");
-        return 1;
+#if KICKOS_FS_MODE == 10
+        arg = run;
+#endif
+        char arg_text[24];
+        ksnprintf(arg_text, sizeof(arg_text), "%p", reinterpret_cast<void*>(arg));
+        char const* const argv[] = {"faulter", arg_text, nullptr};
+        kos_task_params params = {};
+        params.argv = argv;
+        params.block = block;
+        params.size = block_size;
+        params.stack = stack;
+        params.stack_size = stack_size;
+        kos::print("[fs] spawning the faulter\n");
+        kos_task_t victim = KOS_TASK_NONE;
+        rc = kickos::apps::create_peer(prog, params, &victim);
+        if (rc != 0)
+        {
+            kos::print("[fs] ERROR: no task slot for the faulter\n");
+            return 1;
+        }
+        int status = 0;
+        do
+        {
+            rc = kickos::apps::wait_dead(victim, &status, 1000u);
+        } while (rc == -KOS_ETIMEDOUT);
+        // Drops main's hold on a group that is already dead, so the slot goes back here rather
+        // than at main's own exit.
+        (void)kos_task_slay(victim, 0);
+        if (rc != 0)
+        {
+            break;
+        }
+#if KICKOS_FS_MODE == 10
+        // Read after every trap, so a jump is on the wire before a later trap can end the run.
+        // One INT #31 that reaches the clock's wrap handler adds 2^32 counts, minutes at any
+        // CMTW1 rate, so a minute bounds the whole loop with room to spare.
+        uint64_t const elapsed = kos_clock_now() - clock_before;
+        if (elapsed > 60000000000ull and not jumped)
+        {
+            jumped = true;
+            char line[96];
+            ksnprintf(line, sizeof(line), "[fs] [clock] JUMPED: %llu ns after trap %u\n",
+                      static_cast<unsigned long long>(elapsed), static_cast<unsigned>(run));
+            kos::print(line);
+        }
+#endif
     }
-    int status = 0;
-    do
-    {
-        rc = kickos::apps::wait_dead(victim, &status, 1000u);
-    } while (rc == -KOS_ETIMEDOUT);
-    // Drops main's hold on a group that is already dead, so the slot goes back here rather
-    // than at main's own exit.
-    (void)kos_task_slay(victim, 0);
     (void)kos_handle_close(prog);
     kos::print("[fs] survivor ran after the fault\n");
+#if KICKOS_FS_MODE == 10
+    if (not jumped)
+    {
+        char line[96];
+        ksnprintf(line, sizeof(line), "[fs] [clock] STEADY: %u traps took %llu ns\n",
+                  static_cast<unsigned>(runs),
+                  static_cast<unsigned long long>(kos_clock_now() - clock_before));
+        kos::print(line);
+    }
+#endif
 #if KICKOS_FS_MODE == 4
     // Both outcomes PRINT: a silent arm is indistinguishable from a deleted band check, a spawn
     // that never happened, or a worker that never faulted.
@@ -210,10 +265,10 @@ int main(int, char**)
         kos::print("[fs] [lowband] INTACT: the kernel wrote nothing below the parked sp\n");
     }
 #endif
-#if KICKOS_FS_MODE == 3
+#if KICKOS_FS_MODE == 3 || KICKOS_FS_MODE == 13
     if (g_fs_kword != FS_KWORD_POISON)
     {
-        kos::print("[fs] [kword] CORRUPTED: the trap prologue stored through the U-mode sp\n");
+        kos::print("[fs] [kword] CORRUPTED: the kernel stored through the U-mode sp\n");
     }
     else
     {

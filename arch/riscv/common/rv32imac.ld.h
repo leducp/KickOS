@@ -12,11 +12,16 @@
  * bytes at the LMA, and kickos_ranges_init moves them by the copy table. Where each task runs an
  * image of its own, the image template says where each image's .data loads.
  *
+ * KICKOS_RV32_IMAGE_CODE_APART, which the chip may define 1 with KICKOS_RV32_IMAGE_CODE_REGION,
+ * links every image's code span, with the thread-local templates, in that region instead of RAM,
+ * from __kickos_images_code_start to __kickos_images_code_end; kernel .data then follows the
+ * kernel's text in RAM.
+ *
  * Under KICKOS_HAVE_MPU the script carves what every UNPRIVILEGED thread needs under PMP
  * enforcement:
  *   __kickos_pmp_code_start/_end  every image's code, rodata and templates, the TOR pair the
  *                                 arch writes once at boot (entries 8 and 9, RX); the kernel's
- *                                 text lies below the start
+ *                                 text lies outside it
  *   __kickos_appdata_start/_end   the app window, RW-NX, one pow2 NAPOT region
  * (arch_domain_static_regions).
  *
@@ -32,16 +37,23 @@
 #define KICKOS_RV32_IMAGE_DATA_LOADED 0
 #endif
 
+#ifndef KICKOS_RV32_IMAGE_CODE_APART
+#define KICKOS_RV32_IMAGE_CODE_APART 0
+#endif
+#if !KICKOS_RV32_IMAGE_CODE_APART
+#define KICKOS_RV32_IMAGE_CODE_REGION RAM
+#endif
+
 /* The alignment of the code window's two ends, which the chip may raise. A section, so the
-   sections placed > RAM after it, and the load addresses that follow, start past the pad. */
+   sections placed in `region` after it, and the load addresses that follow, start past the pad. */
 #ifndef KICKOS_RV32_CODE_WINDOW_ALIGN
 #define KICKOS_RV32_CODE_WINDOW_ALIGN 4
 #endif
-#define KICKOS_RV32_CODE_WINDOW_PAD(name)                                     \
+#define KICKOS_RV32_CODE_WINDOW_PAD(name, region)                             \
     name :                                                                    \
     {                                                                         \
         . = ALIGN(KICKOS_RV32_CODE_WINDOW_ALIGN);                             \
-    } > RAM
+    } > region
 
 #include <sections.ld.h>
 
@@ -64,7 +76,7 @@ SECTIONS
 {
     .text ORIGIN(RAM) : ALIGN(4)
     {
-        KEEP(*(.text.init))
+        KICKOS_KERNEL_KEEP(.text.init)
         KICKOS_KERNEL_SECTIONS(.text .text.*)
         KICKOS_CODE_DEBRIS_SECTIONS
         KICKOS_KERNEL_SECTIONS(.rodata .rodata.*)
@@ -98,15 +110,29 @@ SECTIONS
     } > RAM
 
     KICKOS_IMAGE_TABLE(RAM, LONG)
-    KICKOS_RV32_CODE_WINDOW_PAD(.kickos_code_window_lo)
+    KICKOS_RV32_CODE_WINDOW_PAD(.kickos_code_window_lo, RAM)
     __kickos_kernel_code_end = .;
+#if KICKOS_RV32_IMAGE_CODE_APART
+    .kickos_image_code_start : ALIGN(KICKOS_RV32_CODE_WINDOW_ALIGN)
+    {
+        __kickos_images_code_start = .;
+    } > KICKOS_RV32_IMAGE_CODE_REGION
+#else
+    __kickos_images_code_start = __kickos_kernel_code_end;
+#endif
 
     /* The thread-local template of every image, then every image's code span, which
        tools/image-link.py writes per link (KICKOS_RV32_IMAGE_CODE). */
-    KICKOS_TLS_TEMPLATE(RAM)
+    KICKOS_TLS_TEMPLATE(KICKOS_RV32_IMAGE_CODE_REGION)
     INCLUDE kickos_images_code.ld
-    KICKOS_RV32_CODE_WINDOW_PAD(.kickos_code_window_hi)
-    _code_used_end = .;
+    KICKOS_RV32_CODE_WINDOW_PAD(.kickos_code_window_hi, KICKOS_RV32_IMAGE_CODE_REGION)
+    __kickos_images_code_end = .;
+    /* The code kernel .data follows in RAM; tools/image-link.py pins .data past it. */
+#if KICKOS_RV32_IMAGE_CODE_APART
+    _code_used_end = __kickos_kernel_code_end;
+#else
+    _code_used_end = __kickos_images_code_end;
+#endif
     __eh_frame_start = KICKOS_LD_IMAGE_SYM(1, eh_frame);
     __kickos_app_init_array_start = KICKOS_LD_IMAGE_SYM(1, ctor_start);
     __kickos_app_init_array_end = KICKOS_LD_IMAGE_SYM(1, ctor_end);
@@ -114,8 +140,8 @@ SECTIONS
 #if KICKOS_HAVE_MPU
     /* Past the kernel's own text, which the TOR pair leaves out. A task's restart template
        lies in its code span. */
-    __kickos_pmp_code_start = __kickos_kernel_code_end;
-    __kickos_pmp_code_end = _code_used_end;
+    __kickos_pmp_code_start = __kickos_images_code_start;
+    __kickos_pmp_code_end = __kickos_images_code_end;
     /* tools/image-link.py states __kickos_data_pin, where the code ended once relaxed, so a base
        computed from the code does not move as relaxation shrinks it. */
     PROVIDE(__kickos_data_pin = 0);
@@ -198,7 +224,11 @@ SECTIONS
     /* Every image's window, exact, which tools/image-link.py writes per link
        (KICKOS_RV32_IMAGE_WINDOW). */
     INCLUDE kickos_images.ld
+#if KICKOS_RV32_IMAGE_CODE_APART
+    KICKOS_IMAGE_BOUNDS(__kickos_images_code_start, __kickos_images_code_end,
+#else
     KICKOS_IMAGE_BOUNDS(ORIGIN(RAM), ORIGIN(RAM) + LENGTH(RAM),
+#endif
                         ORIGIN(RAM), __kickos_kernel_code_end,
                         ORIGIN(RAM), ORIGIN(RAM) + LENGTH(RAM),
                         _sdata, _ebss, _estack - _kernel_stack_size, _estack,
@@ -223,8 +253,13 @@ SECTIONS
     __kickos_ram_start = .;
     __kickos_ram_end = _estack - _kernel_stack_size;
 
+#if KICKOS_RV32_IMAGE_CODE_APART
+    __kickos_rom_start = __kickos_images_code_start;
+    __kickos_rom_end = __kickos_images_code_end;
+#else
     __kickos_rom_start = 0;
     __kickos_rom_end = 0;
+#endif
     __kickos_sram_start = ORIGIN(RAM);
 
 #if KICKOS_AMP_OWN_IMAGE

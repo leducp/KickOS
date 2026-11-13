@@ -12,6 +12,8 @@ endif()
 set(_fs_outcome terminated)
 if(KICKOS_ARCH STREQUAL "rv32imac")
   set(_fs_outcome contained)
+elseif(KICKOS_ARCH STREQUAL "rxv3")
+  set(_fs_outcome killed)
 endif()
 # The arches the gate holds corroborating evidence for. The overflow needs a guard to fault it; the
 # off-stack, kwrite and misalign arms need an unprivileged worker, which the RX runs only where
@@ -68,16 +70,10 @@ if(_fs_judged)
   elseif(_fs_guarded)
     kickos_app_judge(faultsurvive_ovf tests/integration/check_faultsurvive.sh
       ARGS overflow ${KICKOS_ARCH} ${_fs_outcome})
-  else()
-    kickos_inapplicable(faultsurvive_ovf "memory not enforced, so no guard faults the overflow")
   endif()
-  if(TARGET faultsurvive_off)
-    if(_fs_unprivileged)
-      kickos_app_judge(faultsurvive_off tests/integration/check_faultsurvive.sh
-        ARGS offstack ${KICKOS_ARCH} ${_fs_outcome})
-    else()
-      kickos_inapplicable(faultsurvive_off "${_fs_privileged_why}")
-    endif()
+  if(_fs_unprivileged)
+    kickos_app_judge(faultsurvive_off tests/integration/check_faultsurvive.sh
+      ARGS offstack ${KICKOS_ARCH} ${_fs_outcome})
   endif()
   # Both enter through the syscall trap, whose entry contains a refused sp on either arch.
   if(TARGET faultsurvive_kwrite)
@@ -91,18 +87,37 @@ if(_fs_judged)
       kickos_inapplicable(faultsurvive_misalign "${_fs_privileged_why}")
     endif()
   endif()
+  # Built only where the RX runs an unprivileged worker, so the target alone keys them.
+  if(TARGET faultsurvive_swtrap)
+    kickos_app_judge(faultsurvive_swtrap tests/integration/check_faultsurvive.sh
+      ARGS swtrap ${KICKOS_ARCH} killed)
+    kickos_app_judge(faultsurvive_forge tests/integration/check_faultsurvive.sh
+      ARGS forge ${KICKOS_ARCH} user)
+    kickos_app_judge(faultsurvive_wildspin tests/integration/check_faultsurvive.sh
+      ARGS wildspin ${KICKOS_ARCH} contained)
+  endif()
   if(TARGET faultsurvive_lowedge)
     kickos_app_judge(faultsurvive_lowedge tests/integration/check_faultsurvive.sh
       ARGS lowedge ${KICKOS_ARCH} terminated)
+  endif()
+  if(TARGET faultsurvive_mppforge)
+    if(_fs_unprivileged)
+      kickos_app_judge(faultsurvive_mppforge tests/integration/check_faultsurvive.sh
+        ARGS mppforge ${KICKOS_ARCH} killed)
+    else()
+      kickos_inapplicable(faultsurvive_mppforge "${_fs_privileged_why}")
+    endif()
   endif()
   if(TARGET faultsurvive_unread)
     kickos_app_judge(faultsurvive_unread tests/integration/check_faultsurvive.sh
       ARGS unread ${KICKOS_ARCH} terminated)
   endif()
-  foreach(_fs_w div0 ldiv0)
-    kickos_app_judge(faultsurvive_${_fs_w} tests/integration/check_faultsurvive.sh
-      ARGS ${_fs_w} ${KICKOS_ARCH} ${_fs_${_fs_w}_outcome})
-  endforeach()
+  if(TARGET faultsurvive_div0)
+    foreach(_fs_w div0 ldiv0)
+      kickos_app_judge(faultsurvive_${_fs_w} tests/integration/check_faultsurvive.sh
+        ARGS ${_fs_w} ${KICKOS_ARCH} ${_fs_${_fs_w}_outcome})
+    endforeach()
+  endif()
   # Every image of the family names its judge or why none applies.
   get_property(_fs_targets DIRECTORY "${PROJECT_SOURCE_DIR}/user/apps/common/faultsurvive"
                PROPERTY BUILDSYSTEM_TARGETS)
@@ -114,16 +129,6 @@ if(_fs_judged)
                           "none applies")
     endif()
   endforeach()
-elseif(KICKOS_HAVE_ASPACE)
-  # A translating backend's trap entry builds its frame on the kernel's own stack, so no sp the
-  # thread sets carries a frame, and an overrun is a plain unprivileged fault at the guard page,
-  # which stackguard witnesses.
-  kickos_inapplicable(faultsurvive_ovf
-    "the trap entry runs on the kernel's stack, so an overrun is a kill at the guard page")
-  if(TARGET faultsurvive_off)
-    kickos_inapplicable(faultsurvive_off
-      "the trap entry builds its frame on the kernel's stack, never through the thread's sp")
-  endif()
 endif()
 
 if(KICKOS_ARCH STREQUAL "sim")
@@ -131,12 +136,15 @@ if(KICKOS_ARCH STREQUAL "sim")
     COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_faultsurvive.sh"
             "$<TARGET_FILE:faultsurvive>" survive ${KICKOS_ARCH} terminated)
   set_tests_properties(${_tag}_faultsurvive PROPERTIES TIMEOUT 30)
-  foreach(_fs_w div0 ldiv0)
-    add_test(NAME ${_tag}_fault${_fs_w}
-      COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_faultsurvive.sh"
-              "$<TARGET_FILE:faultsurvive_${_fs_w}>" ${_fs_w} ${KICKOS_ARCH} ${_fs_${_fs_w}_outcome})
-    set_tests_properties(${_tag}_fault${_fs_w} PROPERTIES TIMEOUT 30)
-  endforeach()
+  if(TARGET faultsurvive_div0)
+    foreach(_fs_w div0 ldiv0)
+      add_test(NAME ${_tag}_fault${_fs_w}
+        COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_faultsurvive.sh"
+                "$<TARGET_FILE:faultsurvive_${_fs_w}>" ${_fs_w} ${KICKOS_ARCH}
+                ${_fs_${_fs_w}_outcome})
+      set_tests_properties(${_tag}_fault${_fs_w} PROPERTIES TIMEOUT 30)
+    endforeach()
+  endif()
   add_test(NAME ${_tag}_faultsurvive_published
     COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_sim_faultsurvive_pub.sh"
             "$<TARGET_FILE:faultsurvive_published>")
@@ -146,11 +154,13 @@ endif()
 kickos_add_qemu_test(TARGET faultsurvive
   SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_faultsurvive.sh"
   ARGS survive ${KICKOS_ARCH} terminated)
-foreach(_fs_w div0 ldiv0)
-  kickos_add_qemu_test(NAME ${_tag}_fault${_fs_w} TARGET faultsurvive_${_fs_w}
-    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_faultsurvive.sh"
-    ARGS ${_fs_w} ${KICKOS_ARCH} ${_fs_${_fs_w}_outcome})
-endforeach()
+if(TARGET faultsurvive_div0)
+  foreach(_fs_w div0 ldiv0)
+    kickos_add_qemu_test(NAME ${_tag}_fault${_fs_w} TARGET faultsurvive_${_fs_w}
+      SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_faultsurvive.sh"
+      ARGS ${_fs_w} ${KICKOS_ARCH} ${_fs_${_fs_w}_outcome})
+  endforeach()
+endif()
 
 if(_fs_stklim)
   kickos_add_qemu_test(NAME ${_tag}_faultoverflow TARGET faultsurvive_ovf
@@ -188,4 +198,9 @@ if(_fs_judged AND TARGET faultsurvive_lowedge)
   kickos_add_qemu_test(NAME ${_tag}_faultlowedge TARGET faultsurvive_lowedge
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_faultsurvive.sh"
     ARGS lowedge ${KICKOS_ARCH} terminated)
+endif()
+if(_fs_unprivileged AND TARGET faultsurvive_mppforge)
+  kickos_add_qemu_test(NAME ${_tag}_faultmppforge TARGET faultsurvive_mppforge
+    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_faultsurvive.sh"
+    ARGS mppforge ${KICKOS_ARCH} killed)
 endif()

@@ -508,10 +508,12 @@ namespace kickos
             Task* const group = task(0);
             Thread* const c = seat_pool(SLOT_DYING, PRIO_MID);
             Thread* const peer = seat_pool(SLOT_PEER, PRIO_LOW);
+            Thread* const walker = seat_pool(SLOT_OTHER, PRIO_LOW);
             join_task(c, group);
             join_task(peer, group);
             c->dying = true;
-            kernel().current(kickos_kernel_core()) = peer;
+            // No walker is a live member of the group it walks.
+            kernel().current(kickos_kernel_core()) = walker;
 
             IrqLock lock;
             task_cancel_group(group, lock);

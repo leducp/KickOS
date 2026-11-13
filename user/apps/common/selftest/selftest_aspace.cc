@@ -551,10 +551,18 @@ namespace selftest
                   static_cast<int>(w[7]), static_cast<int>(w[4]), static_cast<int>(w[5]),
                   static_cast<int>(w[6]));
         TAP_CHECK(ps_guard_faulted(run));
-        TAP_CHECK(w[0] == -KOS_EPERM and w[1] == -KOS_EPERM and w[2] == -KOS_EPERM);
+        TAP_CHECK(w[0] == -KOS_EPERM and w[1] == -KOS_EPERM);
         TAP_CHECK(w[3] == 1);
-        TAP_CHECK(w[4] == 0 and w[5] == 0 and w[6] == 0);
+        TAP_CHECK(w[4] == 0 and w[6] == 0);
         TAP_CHECK(w[7] == -KOS_EPERM);
+        // A board whose RAM takes no uncached type refuses the typed retype by its type first.
+        if (w[5] == -KOS_ENOTSUP)
+        {
+            TAP_CHECK(w[2] == -KOS_ENOTSUP);
+            tap::partial("typed stack retype refused by its type (no uncached RAM)");
+            return;
+        }
+        TAP_CHECK(w[2] == -KOS_EPERM and w[5] == 0);
     }
 
     void t_stack_handoff_refused()
@@ -899,9 +907,15 @@ namespace selftest
         void* const blk = st_ram<SEAM_RAM, 0>();
         TAP_CHECK(blk != nullptr);
         TAP_CHECK(kos_mem_self_grant(blk, SNP_BLK, 0) == 0);
-        TAP_CHECK(kos_mem_self_grant(blk, SNP_BLK, KOS_MEM_NOCACHE) == 0);
+        int const typed = kos_mem_self_grant(blk, SNP_BLK, KOS_MEM_NOCACHE);
         TAP_CHECK(kos_mem_self_grant(blk, SNP_BLK, KOS_MEM_NOCACHE << 1) == -KOS_EINVAL);
         TAP_CHECK(kos_mem_self_grant(blk, SNP_BLK, 0) == 0);
+        if (typed == -KOS_ENOTSUP)
+        {
+            tap::partial("no uncached retype (no uncached RAM)");
+            return;
+        }
+        TAP_CHECK(typed == 0);
     }
 
     // One pool balance across task creation and teardown.
@@ -1222,7 +1236,19 @@ namespace selftest
         TAP_CHECK(out[HO_ADDR] == reinterpret_cast<uintptr_t>(blk)); // at the address main named
         // A nondefault type on a separate block.
         void* const typed = st_ram<HO_RAM, 1>();
-        TAP_CHECK(kos_mem_self_grant(typed, HO_BLK, KOS_MEM_NOCACHE) == 0);
+        int const typed_rc = kos_mem_self_grant(typed, HO_BLK, KOS_MEM_NOCACHE);
+        if (typed_rc == -KOS_ENOTSUP)
+        {
+            // Both consumers refuse the type alike.
+            TAP_CHECK(kos_mem_self_grant(typed, HO_BLK, 0) == 0);
+            TAP_CHECK(PeerRun("ho", peer_hex(reinterpret_cast<uintptr_t>(typed)).s)
+                          .block(typed, HO_BLK, KOS_MEM_NOCACHE)
+                          .start(&tt)
+                      == -KOS_ENOTSUP);
+            tap::partial("typed handoff refused (no uncached RAM)");
+            return;
+        }
+        TAP_CHECK(typed_rc == 0);
         volatile uint64_t* const tout = static_cast<volatile uint64_t*>(typed);
         tout[HO_SEEN] = HO_SENTINEL;
         tout[HO_ADDR] = 0;
@@ -2426,8 +2452,9 @@ namespace selftest
 #if defined(KICKOS_SELFTEST_SPARE_DEV)
     // --- A device window at the address the kernel chose -------------------------------
     // The holder, in a task of its own, reads a device the kernel never drives through the
-    // address kos_window_get answers, which is not the physical one, and is answered no window
-    // past its list; it reports over an endpoint, its task's data being its own.
+    // address kos_window_get answers, which is not the physical one, is answered no window past
+    // its list, and is refused a console write the kernel would read from the device; it reports
+    // over an endpoint, its task's data being its own.
     // While it lives a second task is refused the device; once it has exited, its sibling in
     // the task faults on the address it left, and the next instance is granted the device and
     // reaches it again.
@@ -2439,6 +2466,7 @@ namespace selftest
         int32_t other;
         uint32_t value;
         uint32_t moved;
+        int32_t console; // the kernel asked to read the window
     };
     uintptr_t g_wa_addr = 0; // the holder's task's copy, which its sibling reads
     // A bound notification's wait: the gate main raises across tasks without a window, which
@@ -2452,7 +2480,7 @@ namespace selftest
     void wa_holder(void*) // caps: E(SIGNAL)@0, hold@1
     {
         kos_window at = {};
-        WaSeen seen = {-99, -99, 0, 0};
+        WaSeen seen = {-99, -99, 0, 0, -99};
         seen.rc = kos_window_get(0, &at);
         g_wa_addr = at.base;
         if (seen.rc == 0)
@@ -2462,6 +2490,8 @@ namespace selftest
                 seen.moved = 1u;
             }
             seen.value = *reinterpret_cast<volatile uint32_t*>(at.base);
+            seen.console = KICKOS_KCONSOLE_MEASURED(
+                ANSWER, reinterpret_cast<void const*>(at.base), sizeof(uint32_t));
         }
         kos_window other = {};
         seen.other = kos_window_get(1, &other);
@@ -2543,7 +2573,7 @@ namespace selftest
     // Receives the report of a holder of the device.
     void wa_report(kos_cap_t ep, WaSeen* seen)
     {
-        *seen = {-99, -99, 0, 0};
+        *seen = {-99, -99, 0, 0, -99};
         struct kos_reply_recv_opts o;
         kos_reply_recv_opts_init(&o, ep, KOS_RECV_NO_INFO, STALL_TOLERANT_US);
         (void)kos_reply_recv(KOS_CAP_NONE, seen, kos_call_lens_pack(0, sizeof(*seen)), &o);
@@ -2572,7 +2602,7 @@ namespace selftest
                                       {park, KOS_CAP_WAIT | KOS_CAP_TRANSFER},
                                       {go, KOS_CAP_WAIT | KOS_CAP_TRANSFER}};
         TAP_CHECK(PeerRun("wa").caps(caps, 3).start(&t) == 0);
-        WaSeen first = {-99, -99, 0, 0};
+        WaSeen first = {-99, -99, 0, 0, -99};
         wa_report(ep, &first);
         kos_window const dev = {WA_DEV, WA_SIZE, KOS_WINDOW_DEVICE, 0};
         TAP_CHECK(PeerRun("nop").windows(&dev, 1).start(&other) == -KOS_EBUSY);
@@ -2592,8 +2622,9 @@ namespace selftest
         TAP_CHECK(task_end(&t) == 0);
         TAP_CHECK(first.rc == 0 and first.moved == 1u and first.value != 0);
         TAP_CHECK(first.other == -KOS_EINVAL);
+        TAP_CHECK(first.console == -KOS_EFAULT);
         // The next instance, in the other task, maps the device again.
-        WaSeen again = {-99, -99, 0, 0};
+        WaSeen again = {-99, -99, 0, 0, -99};
         (void)kos_notify(park);
         kos_cap_grant const hcaps[] = {{ep, KOS_CAP_SIGNAL}, {park, KOS_CAP_WAIT}};
         TAP_CHECK(PeerRun("wah").caps(hcaps, 2).windows(&dev, 1).start(&other) == 0);
@@ -2772,6 +2803,19 @@ namespace selftest
         TAP_CHECK(kept == 0);
     }
 
+    // A frame run is refused the type as a reservation is.
+    void ua_refused()
+    {
+        Seed s;
+        uintptr_t at = 0;
+        ArmHold hold;
+        TAP_HOLD(hold.mapped(&s.frame, &s.space, &at));
+        TAP_CHECK(seed_mint(ASPACE_GRANULE, &s));
+        TAP_CHECK(kos_frame_map(s.frame, s.space, &at, KOS_MEM_NOCACHE) == -KOS_ENOTSUP);
+        TAP_CHECK(at == 0);
+        seed_close(&s);
+    }
+
     void t_uncached_alias_sync()
     {
         TAP_ASK(.workers = 1, .endpoints = 1);
@@ -2787,7 +2831,14 @@ namespace selftest
         TAP_HOLD(hold.cap(&ep) and hold.thread(&unauth) and hold.thread(&receiver));
         TAP_CHECK(kos_endpoint_create(&ep) == 0);
         TAP_CHECK(kos_mem_self_grant(cac, UA_BLK, 0) == 0);
-        TAP_CHECK(kos_mem_self_grant(unc, UA_BLK, KOS_MEM_NOCACHE) == 0);
+        int const unc_rc = kos_mem_self_grant(unc, UA_BLK, KOS_MEM_NOCACHE);
+        if (unc_rc == -KOS_ENOTSUP)
+        {
+            ua_refused();
+            tap::partial("no alias to maintain (no uncached RAM)");
+            return;
+        }
+        TAP_CHECK(unc_rc == 0);
         // A wide reservation the kernel cleared, read through a non-cacheable grant.
         TAP_CHECK(kos_mem_self_grant(wide, wide_bytes, KOS_MEM_NOCACHE) == 0);
         uint32_t const wide_cleared =
@@ -3131,7 +3182,7 @@ namespace selftest
         }
 
         // Site A validates and writes the output under one lock without parking, so only boundary
-        // validation is reachable; site B and tests/unit/capprobe cover capability rollback.
+        // validation is reachable; site B and tests/unit/capbadge cover capability rollback.
         int32_t const a_entry =
             kos_reply_recv(KOS_CAP_NONE, g_lu_rx, kos_call_lens_pack(0, LU_LEN),
                            reinterpret_cast<struct kos_reply_recv_opts*>(va));
@@ -3579,9 +3630,134 @@ namespace selftest
     }
 #endif
 
+#if defined(__aarch64__)
+    // What SCTLR_EL1, MDSCR_EL1 and PMUSERENR_EL0 leave EL0, each probed in a task of its own:
+    // the ops that must trap end it with KOS_EXIT_FAULT, the ones that must not exit it with 0.
+    void t_el0_control_bits()
+    {
+        TAP_ASK(.tasks = 1, .peer_workers = 1);
+        struct Probe
+        {
+            char const* role;
+            char const* what;
+            int expect;
+        };
+        constexpr Probe PROBES[] = {
+            {"e0daif", "msr daifset (SCTLR_EL1.UMA clear)", KOS_EXIT_FAULT},
+            {"e0pmu", "mrs pmccntr_el0 (PMUSERENR_EL0.EN clear)", KOS_EXIT_FAULT},
+            {"e0dcc", "mrs mdccsr_el0 (MDSCR_EL1.TDCC set)", KOS_EXIT_FAULT},
+            {"e0cache", "__clear_cache and dc zva (SCTLR_EL1.UCT, UCI, DZE set)", 0},
+        };
+        kos_task_t t = KOS_TASK_NONE;
+        ArmHold hold;
+        TAP_HOLD(hold.task(&t));
+        bool held[sizeof(PROBES) / sizeof(PROBES[0])] = {};
+        size_t i = 0;
+        for (Probe const& probe : PROBES)
+        {
+            TAP_CHECK(PeerRun(probe.role).start(&t) == 0);
+            int const status = peer_dead_status(t);
+            tap::diag("%s: the task ended with %d, expected %d", probe.what, status, probe.expect);
+            held[i] = status == probe.expect;
+            i++;
+            TAP_CHECK(task_end(&t) == 0);
+        }
+        for (bool const h : held)
+        {
+            TAP_CHECK(h);
+        }
+    }
+#endif
+
 #if KICKOS_SELFTEST_PEER
     namespace
     {
+#if defined(__aarch64__)
+        int el0_daif()
+        {
+            __asm volatile("msr daifset, #2\n\tmsr daifclr, #2" ::: "memory");
+            return 0;
+        }
+
+        int el0_pmu()
+        {
+            uint64_t v = 0;
+            __asm volatile("mrs %0, pmccntr_el0" : "=r"(v));
+            (void)v;
+            return 0;
+        }
+
+        int el0_dcc()
+        {
+            uint64_t v = 0;
+            __asm volatile("mrs %0, mdccsr_el0" : "=r"(v));
+            (void)v;
+            return 0;
+        }
+
+        // DCZID_EL0.BS is log2 of the block in words, at most 9: 2 KiB.
+        constexpr uint64_t DCZID_DZP = 1u << 4;
+        constexpr uint64_t DCZID_BS_MASK = 0xF;
+        constexpr size_t ZVA_MAX = 2048;
+        // One byte past the largest block: the canary a block of ZVA_MAX leaves untouched.
+        alignas(ZVA_MAX) uint8_t g_zva[ZVA_MAX + 1];
+
+        int el0_cache()
+        {
+            memset(g_zva, 0xA5, sizeof(g_zva));
+            __builtin___clear_cache(reinterpret_cast<char*>(g_zva),
+                                    reinterpret_cast<char*>(g_zva + sizeof(g_zva)));
+            uint64_t dczid = 0;
+            __asm volatile("mrs %0, dczid_el0" : "=r"(dczid));
+            if ((dczid & DCZID_DZP) != 0)
+            {
+                return 1;
+            }
+            size_t const block = static_cast<size_t>(4) << (dczid & DCZID_BS_MASK);
+            if (block > ZVA_MAX)
+            {
+                return 2;
+            }
+            __asm volatile("dc zva, %0" ::"r"(g_zva) : "memory");
+            for (size_t i = 0; i < block; i++)
+            {
+                if (g_zva[i] != 0)
+                {
+                    return 3;
+                }
+            }
+            if (g_zva[block] != 0xA5)
+            {
+                return 4;
+            }
+            return 0;
+        }
+
+        int (*g_e0_op)() = nullptr;
+        int g_e0_result = -1;
+
+        void e0_run(void*)
+        {
+            g_e0_result = g_e0_op();
+        }
+
+        // `op` on a thread named `name`, so a fault is recorded as that thread's and ends the task.
+        int e0_task(int (*op)(), char const* name)
+        {
+            g_e0_op = op;
+            kos::thread::Handle const t = kos::thread::create_caps(e0_run, nullptr, name, 10,
+                                                                   nullptr, 0);
+            if (not t.valid())
+            {
+                return 1;
+            }
+            if (t.join(STALL_TOLERANT_US) != 0)
+            {
+                return 1;
+            }
+            return g_e0_result;
+        }
+#endif
         void* peer_ptr(char const* s)
         {
             return reinterpret_cast<void*>(peer_word(s));
@@ -3609,6 +3785,24 @@ namespace selftest
             pin_child(nullptr);
             return 0;
         }
+#if defined(__aarch64__)
+        if (arg == nullptr and peer_is(role, "e0daif"))
+        {
+            return e0_task(el0_daif, "e0daif");
+        }
+        if (arg == nullptr and peer_is(role, "e0pmu"))
+        {
+            return e0_task(el0_pmu, "e0pmu");
+        }
+        if (arg == nullptr and peer_is(role, "e0dcc"))
+        {
+            return e0_task(el0_dcc, "e0dcc");
+        }
+        if (arg == nullptr and peer_is(role, "e0cache"))
+        {
+            return e0_task(el0_cache, "e0cache");
+        }
+#endif
         if (arg != nullptr and peer_is(role, "shr"))
         {
             share_child(peer_ptr(arg));

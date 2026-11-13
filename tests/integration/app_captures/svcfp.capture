@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+
+  ==============================================
+   KickOS 0.5.1  -  microkernel RTOS
+  ==============================================
+   board   teensy41
+   arch    armv7m
+   cpu     cortex-m7
+   mpu     enforce
+   sched   tickless
+
+[svcfp] PASS: s0-s15 and FPSCR survived a refused register call and a plain syscall

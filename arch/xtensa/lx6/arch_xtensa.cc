@@ -38,10 +38,6 @@ extern "C" void kfault_terminate(void) __attribute__((noreturn));
 #define KICKOS_PANIC_DUMP 1
 #endif
 
-// The panic frame term is one trap frame: the entry raises INTLEVEL before the move, but a
-// window or ISA exception is not maskable.
-static_assert(KICKOS_LX6_PANIC_FRAME == KICKOS_LX6_TRAP_FRAME,
-              "the panic frame term is one trap frame, which switch.S cannot compute");
 static_assert(KICKOS_PANIC_STACK_SIZE >= KICKOS_LX6_PANIC_FRAME + KICKOS_LX6_PANIC_DEPTH,
               "KICKOS_PANIC_STACK_SIZE is below what this arch's panic reporter descends");
 
@@ -288,11 +284,6 @@ extern "C"
     void _thread_trampoline(void);
     void kickos_thread_return(void);
     extern void (*kickos_image_thread_return)(void);
-
-#if KICKOS_BENCH
-    // switch.S reads it through PERCPU_CELL.
-    extern uint32_t g_bench_sw_end[KICKOS_NUM_CORES];
-#endif
 
     // Chip-defined, ISR context, once per asserted device CPU interrupt: calls kickos_isr_irq
     // once per asserted sub-source and owns each source's clear.
@@ -541,13 +532,6 @@ void arch_switch(struct arch_context* from, struct arch_context* to)
     }
     g_arch_current[core] = to;
     kickos_lx6_switch(from, to);
-#if KICKOS_BENCH
-    // Closes the switch window that RESUMED this thread; switch.S cannot, since the close must
-    // stand past the retw. The count is read first so the windowed return and its underflow are
-    // the last thing inside the span; the core is re-read because this may be another core now.
-    uint32_t const at = rd_ccount();
-    g_bench_sw_end[arch_cpu_id()] = at;
-#endif
 }
 
 int arch_in_isr(void)

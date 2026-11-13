@@ -13,7 +13,6 @@
 #   doc_gates  the tree gates that read the docs, for a change to the docs alone
 #   host       sim and sim-ubsan, whose unit tests compile every family's arch code
 #   arm, arm64, riscv, x86, xtensa, rx   the jobs that build that family's boards
-#   bench      the microbenchmark job, which builds arm, arm64 and riscv boards
 
 set -eu
 
@@ -119,18 +118,10 @@ fi
 echo "tree=$tree"
 echo "doc_gates=$doc_gates"
 echo "host=$host"
-bench=false
 for f in $FAMILIES; do
     v=false
     case "$families" in
         *" $f "*) v=true ;;
     esac
     echo "$f=$v"
-    case "$f" in
-        arm|arm64|riscv)
-            if [ "$v" = true ]; then
-                bench=true
-            fi ;;
-    esac
 done
-echo "bench=$bench"

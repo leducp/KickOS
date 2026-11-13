@@ -26,7 +26,7 @@ namespace kickos::testfix
     void pools_reset()
     {
         new (&system_pools[kickos_instance_index()]) SystemPools{};
-#if KICKOS_HAVE_ASPACE or KICKOS_BENCH_SCHED_ON
+#if KICKOS_HAVE_ASPACE
         new (&system_shared) SystemPools::Shared{};
 #endif
     }

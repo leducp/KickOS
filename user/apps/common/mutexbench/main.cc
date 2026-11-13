@@ -5,9 +5,7 @@
 // under malloc and getenv, the bare syscalls, a semaphore's post and wait, and the waiter's wait in a
 // handoff, alone, beside other parked pairs, and from another task through a memory window, a
 // semaphore round trip between two threads, and a post with every spare thread parked on the
-// semaphore. Timed on kos_clock_now, so
-// it runs on every board and needs no bench kernel; a bench kernel also prints its own rows over
-// each handoff window.
+// semaphore. Timed on kos_clock_now, so it runs on every board.
 
 #include <kickos/board_config.h>
 #include <kickos/kos.h>
@@ -387,9 +385,6 @@ namespace
         ho->taken = 0;
         (void)kos_sem_init(&ho->go, 0);
         (void)kos_sem_init(&ho->done, 0);
-#if KICKOS_BENCH
-        (void)kos_bench(KOS_BENCH_OP_RESET, 0, 0);
-#endif
     }
 
     // Runs ho->rounds handoffs of ho->m between a fresh holder and waiter, the waiter's wait from
@@ -520,9 +515,6 @@ namespace
         {
             return;
         }
-#if KICKOS_BENCH
-        (void)kos_bench(KOS_BENCH_OP_DIST_PRINT, 0, 0);
-#endif
     }
 
     char const* handoff_where()

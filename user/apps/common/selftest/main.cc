@@ -2542,6 +2542,266 @@ namespace
     }
 #endif
 
+#if defined(__thumb2__)
+    // --- A syscall issued inside an IT block -----------------------------------------------------
+    // The three slots after the svc are false. The trap must still enter the kernel's own code
+    // with no condition state of the caller's, and come back to the caller with the result.
+    extern "C" int32_t it_block_syscall(uint32_t nr);
+    __asm__(".section .text.it_block_syscall,\"ax\",%progbits\n"
+            ".global it_block_syscall\n"
+            ".type it_block_syscall, %function\n"
+            ".thumb_func\n"
+            "it_block_syscall:\n"
+            "    cmp    r0, r0\n"
+            "    iteee  eq\n"
+            "    svceq  #0\n"
+            "    movne  r0, #1\n"
+            "    movne  r0, #2\n"
+            "    movne  r0, #3\n"
+            "    bx     lr\n"
+            ".size it_block_syscall, . - it_block_syscall\n"
+            ".previous\n");
+    void t_svc_in_it_block()
+    {
+        TAP_CHECK(it_block_syscall(KOS_SYS_YIELD) == 0);
+    }
+#endif
+
+#if defined(__arm__) and not KICKOS_HAVE_ASPACE and KICKOS_FAULT_ISOLATION
+    // --- A thread's parked frame under a writer that is not the thread ------------------------
+    // The victim, a peer, parks its user context by preemption at an SP it publishes, on a stack
+    // main reserved; a helper of main's then rewrites the parked words. The resume must stay the
+    // victim's own: never a handler-mode branch, never a privileged thread, and a fault it takes
+    // there is its task's alone.
+    constexpr uint32_t PF_MAGIC = 0x50465231u;
+    constexpr uint32_t PF_SPINNING = 1u;
+    constexpr uint32_t PF_RELEASED = 2u;
+    // What the payload reports: unprivileged in thread mode, privileged in thread mode, or
+    // entered in handler mode first.
+    constexpr uint32_t PF_UNPRIV = 1u;
+    constexpr uint32_t PF_PRIV_THREAD = 2u;
+    constexpr uint32_t PF_HANDLER = 3u;
+    // The parked words the scribble covers below the published SP: either hardware frame shape,
+    // {s16-s31} and the callee block.
+    constexpr uint32_t PF_WINDOW = 256u;
+    constexpr RamAsk PF_RAM = {CSTK_RESERVE};
+
+    // The victim's mailbox, a local of its own frame above the parked words.
+    enum PfBox : uint32_t
+    {
+        PF_BOX_MAGIC,
+        PF_BOX_SP,
+        PF_BOX_PAYLOAD,
+        PF_BOX_STATE,
+        PF_BOX_WORDS
+    };
+
+#if KICKOS_SELFTEST_PEER
+    // r4 is what the payload's handler-mode half leaves behind: exception return keeps it.
+    extern "C" __attribute__((noreturn, used)) void pf_report(uint32_t r4, uint32_t control)
+    {
+        uint32_t verdict = PF_UNPRIV;
+        if (r4 == 0x50574E44u)
+        {
+            verdict = PF_HANDLER;
+        }
+        else if ((control & 1u) == 0u)
+        {
+            verdict = PF_PRIV_THREAD;
+        }
+        (void)kos_send(child_cap(0), &verdict, sizeof(verdict), KOS_TIMEOUT_NONE);
+        kos_exit(0);
+    }
+    // Entered through a rewritten resume. In handler mode it marks r4 and returns to thread mode
+    // on the PSP the switch left; in thread mode it reports. Its address has bit 4 set, so a
+    // switcher reading it as EXC_RETURN pops no FP block.
+    extern "C" void pf_payload(void);
+    __asm__(".section .text.pf_payload,\"ax\",%progbits\n"
+            ".balign 32\n"
+            ".space 16\n"
+            ".global pf_payload\n"
+            ".type pf_payload, %function\n"
+            ".thumb_func\n"
+            "pf_payload:\n"
+            "    mrs   r0, ipsr\n"
+            "    cmp   r0, #0\n"
+            "    beq   1f\n"
+            "    ldr   r4, =0x50574E44\n"
+            "    ldr   r0, =0xFFFFFFFD\n"
+            "    bx    r0\n"
+            "1:  mov   r0, r4\n"
+            "    mrs   r1, control\n"
+            "    ldr   r2, =pf_report\n"
+            "    bx    r2\n"
+            "    .ltorg\n"
+            ".size pf_payload, . - pf_payload\n"
+            ".previous\n");
+    // Moves SP to `sp`, publishes the spin and spins on `state` with nothing pushed, so a
+    // preemption parks the frame exactly under `sp`.
+    extern "C" void pf_spin(uint32_t volatile* state, uintptr_t sp);
+    __asm__(".section .text.pf_spin,\"ax\",%progbits\n"
+            ".global pf_spin\n"
+            ".type pf_spin, %function\n"
+            ".thumb_func\n"
+            "pf_spin:\n"
+            "    mov   r12, sp\n"
+            "    mov   sp, r1\n"
+            "    movs  r2, #1\n"
+            "    str   r2, [r0]\n"
+            "1:  ldr   r2, [r0]\n"
+            "    cmp   r2, #1\n"
+            "    beq   1b\n"
+            "    mov   sp, r12\n"
+            "    bx    lr\n"
+            ".size pf_spin, . - pf_spin\n"
+            ".previous\n");
+    static_assert(PF_SPINNING == 1u, "pf_spin stores and compares the literal 1");
+
+    int pf_victim() // caps: E(SIGNAL)@0
+    {
+        peer_seat(TAP_PRIO_AFTER);
+        uint32_t volatile box[PF_BOX_WORDS] = {};
+        uintptr_t sp = 0;
+        __asm__ volatile("mov %0, sp" : "=r"(sp));
+        uintptr_t const park = (sp - 64u) & ~uintptr_t{7};
+        box[PF_BOX_SP] = park;
+        box[PF_BOX_PAYLOAD] = reinterpret_cast<uintptr_t>(&pf_payload);
+        box[PF_BOX_MAGIC] = PF_MAGIC;
+        pf_spin(&box[PF_BOX_STATE], park);
+        return 0;
+    }
+#else
+    enum PfScribble : uint32_t
+    {
+        PF_EXC_RETURN,
+        PF_IPSR
+    };
+    struct PfJob
+    {
+        uintptr_t lo;
+        uint32_t size;
+        PfScribble how;
+        int rc;
+    };
+    PfJob g_pf_job = {};
+
+    // Runs once the victim spins, which it is no longer doing while this thread runs, and
+    // rewrites the words parked under its SP: both frame shapes get a PC and an xPSR, at the
+    // offsets each would have them.
+    void pf_scribbler(void*)
+    {
+        PfJob& j = g_pf_job;
+        j.rc = kos_mem_self_grant(reinterpret_cast<void*>(j.lo), j.size, 0);
+        if (j.rc != 0)
+        {
+            return;
+        }
+        uint32_t volatile* box = nullptr;
+        for (int tries = 0; tries < 2000 and box == nullptr; tries++)
+        {
+            for (uintptr_t at = j.lo; at + PF_BOX_WORDS * 4u <= j.lo + j.size; at += 4u)
+            {
+                auto* const w = reinterpret_cast<uint32_t volatile*>(at);
+                if (w[PF_BOX_MAGIC] == PF_MAGIC and w[PF_BOX_STATE] == PF_SPINNING)
+                {
+                    box = w;
+                    break;
+                }
+            }
+            if (box == nullptr)
+            {
+                kos::sleep_ns(1000000ull);
+            }
+        }
+        if (box == nullptr)
+        {
+            j.rc = -KOS_ETIMEDOUT;
+            return;
+        }
+        uint32_t const payload = box[PF_BOX_PAYLOAD];
+        auto* const top = reinterpret_cast<uint32_t volatile*>(box[PF_BOX_SP]);
+        if (j.how == PF_EXC_RETURN)
+        {
+            for (uint32_t i = 1; i <= PF_WINDOW / 4u; i++)
+            {
+                top[-static_cast<int>(i)] = payload | 1u;
+            }
+            top[-2] = payload & ~1u;  // basic frame PC
+            top[-1] = 0x01000000u;    // basic frame xPSR
+            top[-20] = payload & ~1u; // extended frame PC
+            top[-19] = 0x01000000u;   // extended frame xPSR
+        }
+        else
+        {
+            top[-1] = 0x0100000Eu;
+            top[-19] = 0x0100000Eu;
+        }
+        box[PF_BOX_STATE] = PF_RELEASED;
+    }
+
+    // The victim's task status, and its report where the scribble makes it send one.
+    void pf_run(PfScribble how, uint32_t* verdict, int* status)
+    {
+        void* const raw = st_ram<PF_RAM, 0>();
+        TAP_CHECK(raw != nullptr);
+        kos_cap_t ep = KOS_CAP_NONE;
+        kos_task_t task = KOS_TASK_NONE;
+        kos::thread::Handle helper;
+        ArmHold hold;
+        TAP_HOLD(hold.cap(&ep) and hold.task(&task) and hold.thread(&helper));
+        TAP_CHECK(kos_endpoint_create(&ep) == 0);
+        g_pf_job = {reinterpret_cast<uintptr_t>(raw), CSTK_RESERVE, how, 1};
+        kos_cap_grant const caps[] = {{ep, KOS_CAP_SIGNAL}};
+        PeerRun victim("pfv");
+        victim.p.instance = "peer0";
+        TAP_CHECK(victim.caps(caps, 1).stack(cstk_stack(raw), CSTK_STK).start(&task) == 0);
+        helper = kos::thread::create(pf_scribbler, nullptr, "pfS", TAP_PRIO_PARKS,
+                                     KOS_POLICY_FIFO, 0, nullptr, 0, nullptr, 0, nullptr, 0,
+                                     KOS_AUTH_MEMORY);
+        TAP_CHECK(helper.valid());
+        TAP_CHECK(hold.joined());
+        tap::diag("scribbler: %d", g_pf_job.rc);
+        TAP_CHECK(g_pf_job.rc == 0);
+        if (how == PF_EXC_RETURN)
+        {
+            TAP_CHECK(report_await(ep, verdict, sizeof(*verdict)));
+        }
+        *status = peer_dead_status(task);
+        TAP_CHECK(task_end(&task) == 0);
+    }
+
+    // A rewritten EXC_RETURN slot, PC and xPSR: the victim resumes at the writer's code as its
+    // own unprivileged self, and never through a handler-mode branch.
+    void t_parked_frame_exc_return()
+    {
+        TAP_ASK(.workers = 1, .tasks = 1, .endpoints = 1);
+        uint32_t verdict = 0;
+        int status = -1;
+        pf_run(PF_EXC_RETURN, &verdict, &status);
+        tap::diag("payload verdict %u, victim status %d", static_cast<unsigned>(verdict), status);
+        TAP_CHECK(verdict == PF_UNPRIV);
+        TAP_CHECK(status == 0);
+    }
+
+    // A non-zero IPSR in the parked xPSR. ARMv7-M and ARMv8-M fault the return to thread mode,
+    // which must be the victim task's fault; ARMv6-M leaves it UNPREDICTABLE, so its switcher
+    // scrubs the field and the victim runs on.
+    void t_parked_frame_ipsr()
+    {
+        TAP_ASK(.workers = 1, .tasks = 1, .endpoints = 1);
+        uint32_t verdict = 0;
+        int status = -1;
+        pf_run(PF_IPSR, &verdict, &status);
+        tap::diag("victim status %d", status);
+#if defined(__ARM_ARCH) && (__ARM_ARCH >= 7)
+        TAP_CHECK(status == KOS_EXIT_FAULT);
+#else
+        TAP_CHECK(status == 0);
+#endif
+    }
+#endif
+#endif
+
     void t_caller_stack()
     {
         TAP_ASK(.workers = 1, .endpoints = 1);
@@ -3226,6 +3486,23 @@ namespace
         TAP_CHECK(rc.error() == -KOS_EPERM);
 #else
         tap::partial("reserved-block spawn not run (board reserves nothing)");
+#endif
+#if defined(KICKOS_SELFTEST_CODE_MAP_BLOCKS)
+        // The blocks that remap or rewrite the flash every task's code runs from.
+        kos::thread::Handle stray;
+        ArmHold hold;
+        TAP_HOLD(hold.thread(&stray));
+        uintptr_t const code_map[] = {KICKOS_SELFTEST_CODE_MAP_BLOCKS};
+        for (uintptr_t const block : code_map)
+        {
+            stray = kos::thread::create(grant_noop, nullptr, "rsvd", 10, KOS_POLICY_FIFO, 0, nullptr, 0,
+                                        DeviceWindow(block, 0x1000).list(), 1);
+            if (stray.error() != -KOS_EPERM)
+            {
+                tap::fail("window 0x%lx answered %d", static_cast<unsigned long>(block), stray.error());
+                return;
+            }
+        }
 #endif
     }
 
@@ -9616,6 +9893,84 @@ namespace
         TAP_CHECK(r.restarted == 0 and r.same_slot == 1);
     }
 
+    // --- Slay: every member marked before the slayer first switches ------------------------
+    // Two members at one priority on main's core: the one in the higher pool slot spins with no
+    // system call once it has announced, the other is parked. The walk reaches the parked one
+    // first, and a switch taken at its wake ran the spinner before the walk had marked it.
+    constexpr uint8_t TSLW_PRIO = 11;
+#if KICKOS_SELFTEST_PEER
+    kos_sem_t g_tslw_park = KOS_SEM_INIT(0);
+    kos_sem_t g_tslw_parked = KOS_SEM_INIT(0);
+    Atomic<int32_t, Order::RELAXED> g_tslw_worker_spins{0};
+
+    // The announce is the spinner's last system call: the other member has parked by then.
+    [[noreturn]] void tslw_spin()
+    {
+        (void)kos_notify(child_cap(0));
+        while (true)
+        {
+        }
+    }
+    void tslw_worker(void*) // caps: N(SIGNAL)@0
+    {
+        if (g_tslw_worker_spins != 0)
+        {
+            tslw_spin();
+        }
+        (void)kos_sem_post(&g_tslw_parked);
+        (void)kos_sem_wait(&g_tslw_park, KOS_TIMEOUT_NONE);
+    }
+    int tslw_entry() // caps: N(SIGNAL | TRANSFER)@0
+    {
+        peer_seat(TSLW_PRIO, TAP_PIN_CORE);
+        kos_cap_grant const wcaps[] = {{child_cap(0), KOS_CAP_SIGNAL}};
+        auto const worker = kos::thread::create(tslw_worker, nullptr, "tslw", TSLW_PRIO,
+                                                KOS_POLICY_FIFO, 0, nullptr, 0, nullptr, 0, wcaps,
+                                                1, 0, nullptr, TAP_PIN_CORE);
+        if (not worker.valid())
+        {
+            return 1;
+        }
+        constexpr kos_thread_t SLOT_MASK = 0xFFFFu;
+        if ((worker.id() & SLOT_MASK) > (kos_thread_self() & SLOT_MASK))
+        {
+            g_tslw_worker_spins = 1;
+            (void)kos_sem_wait(&g_tslw_park, KOS_TIMEOUT_NONE);
+            return 1;
+        }
+        // The worker posts this just before its own park, so this wait ends once it has parked.
+        (void)kos_sem_wait(&g_tslw_parked, KOS_TIMEOUT_NONE);
+        tslw_spin();
+    }
+#endif
+    void t_task_slay_walk()
+    {
+        TAP_ASK(.tasks = 1, .notifies = 1, .peer_workers = 1);
+        kos_task_t task = KOS_TASK_NONE;
+        kos_cap_t announced = KOS_CAP_NONE;
+        ArmHold hold;
+        TAP_HOLD(hold.task(&task) and hold.bound(&announced));
+        TAP_CHECK(kos_notify_create(&announced) == 0 and kos_notify_bind(announced) == 0);
+        TAP_CHECK(main_above(TSLW_PRIO + 1));
+        kos_cap_grant const caps[] = {{announced, KOS_CAP_SIGNAL | KOS_CAP_TRANSFER}};
+        int const started = PeerRun("tslw").caps(caps, 1).start(&task);
+        uint32_t bits = 0;
+        int announce = -1;
+        if (started == 0)
+        {
+            announce = kos_notify_wait(announced, ~0u, STALL_TOLERANT_US, &bits);
+        }
+        int slain = -1;
+        if (announce == 0)
+        {
+            slain = task_end(&task, JOIN_GENEROUS_US);
+        }
+        TAP_CHECK(main_back());
+        TAP_CHECK(started == 0);
+        TAP_CHECK(announce == 0);
+        TAP_CHECK(slain == 0);
+    }
+
     // --- Slay: condemned is not yet gone ----------------------------------------
     // The middle guarantee level. It needs a victim that CANNOT be scheduled while the
     // deadline runs, so a higher-priority thread holds the CPU across it: the starvation
@@ -10193,6 +10548,12 @@ namespace
             caller_stack_worker(nullptr);
             return 0;
         }
+#if defined(__arm__) and not KICKOS_HAVE_ASPACE and KICKOS_FAULT_ISOLATION
+        if (argc == 2 and peer_is(role, "pfv"))
+        {
+            return pf_victim();
+        }
+#endif
         if (argc == 2 and peer_is(role, "pcc"))
         {
             return pc_task();
@@ -10237,6 +10598,10 @@ namespace
         if (argc == 2 and peer_is(role, "tsl"))
         {
             return ts_entry();
+        }
+        if (argc == 2 and peer_is(role, "tslw"))
+        {
+            return tslw_entry();
         }
 #if KICKOS_HAVE_ASPACE
         if (argc == 2 and peer_is(role, "sgw"))
@@ -10859,6 +11224,7 @@ int main(int, char**)
     TAP_ADD("task_slay_group", t_task_slay_group);
     TAP_ADD("task_slay_gate", t_task_slay_gate);
     TAP_ADD("task_slay_after_every_sweep", t_task_slay_after_every_sweep);
+    TAP_ADD_PINNED("task_slay_walk", t_task_slay_walk);
     TAP_ADD_PINNED("arm_hold", t_arm_hold);
     TAP_ADD_IRQ("irq_thread_ctx", t_irq);
     TAP_ADD_IRQ("irq_as_event", t_irqdrv, IRQDRV_RAM);
@@ -10921,6 +11287,13 @@ int main(int, char**)
 #endif
 #if not KICKOS_HAVE_ASPACE
     TAP_ADD("caller_stack_overlap", t_caller_stack_overlap, CSTK_RAM);
+#endif
+#if defined(__thumb2__)
+    TAP_ADD("svc_in_it_block", t_svc_in_it_block);
+#endif
+#if defined(__arm__) and not KICKOS_HAVE_ASPACE and KICKOS_FAULT_ISOLATION
+    TAP_ADD("parked_frame_exc_return", t_parked_frame_exc_return, PF_RAM);
+    TAP_ADD("parked_frame_ipsr", t_parked_frame_ipsr, PF_RAM);
 #endif
 #if KICKOS_HAVE_MPU
     TAP_ADD("stackbase_arena", t_stackbase_arena);
@@ -11021,6 +11394,9 @@ int main(int, char**)
 #endif
     TAP_ADD("vector_starts_clean", t_vector_starts_clean);
     TAP_ADD("vector_fault_contained", t_vector_fault_contained);
+#endif
+#if defined(__aarch64__)
+    TAP_ADD("el0_control_bits", t_el0_control_bits);
 #endif
 #endif
 #if KICKOS_AMP_NODE

@@ -22,14 +22,6 @@ if(KICKOS_NUM_CORES GREATER 1 OR KICKOS_AMP_NODE)
   list(APPEND KICKOS_ARCH_SOURCES common/doorbell_protocol.cc)
 endif()
 
-# The DWT arch_trace_now fallback runs on the PendSV-tail emit path, so its TU (and
-# arch_armv7m.cc, which carries the rest of that path) must be FP-register-free.
-if(KICKOS_TELEMETRY_ON)
-  set_source_files_properties(arm/armv7m/arch_armv7m.cc
-                              arm/armv7m/arch_trace_now_default.cc
-    PROPERTIES COMPILE_OPTIONS "-mgeneral-regs-only")
-endif()
-
 # Resolves the <arm_isa.h> arm/common/arch_arm_common.cc includes. PRIVATE and a directory
 # of its own: it must not reach an installed consumer, and a directory holding a second
 # regs.h would shadow the one a common TU means.

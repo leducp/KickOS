@@ -62,6 +62,9 @@ namespace
     constexpr uint64_t PTE_A = 1ull << 6;
     constexpr uint64_t PTE_D = 1ull << 7;
     constexpr uint64_t PTE_RWX = PTE_R | PTE_W | PTE_X;
+    // RSW, which the walk ignores: the entry has no type field, so a device leaf is marked here
+    // for the kernel's own accesses.
+    constexpr uint64_t PTE_SW_DEVICE = 1ull << 8;
     // PPN at bits 53:10.
     constexpr uint64_t PTE_PPN_MASK = 0x003FFFFFFFFFFC00ull;
 }
@@ -220,9 +223,9 @@ namespace
     }
 #endif
 
-    // SFENCE.VMA is local, so every resident peer must run its own fence.
-    // This applies to data and executable mappings. FENCE.I is unavailable
-    // in this board's ISA baseline.
+    // SFENCE.VMA is local, so every resident peer must run its own fence. It also orders the
+    // fetches of later instructions, so an executable leaf owes no FENCE.I: that synchronizes
+    // stores to instruction memory, which no map edit makes.
 #if KICKOS_KERNEL_CORES > 1
     void translation_rendezvous(uint32_t peers)
     {
@@ -250,7 +253,8 @@ namespace
 #endif
     }
 
-    // Memory types are fixed by physical address; this part has no Svpbmt.
+    // The hardware reads no type from an entry: the frames' own attribute is the type, which the
+    // kernel admits per address (arch_aspace_entry_memtype).
     bool memtype_known(enum arch_map_memtype type)
     {
         return type == ARCH_MAP_NORMAL or type == ARCH_MAP_NOCACHE or type == ARCH_MAP_DEVICE;
@@ -281,6 +285,10 @@ namespace
         if ((rights & ARCH_MAP_X) != 0)
         {
             desc |= PTE_X;
+        }
+        if (type == ARCH_MAP_DEVICE)
+        {
+            desc |= PTE_SW_DEVICE;
         }
         *out = desc;
         return true;
@@ -683,7 +691,8 @@ struct arch_aspace* arch_aspace_boot(void)
     return reinterpret_cast<struct arch_aspace*>(g_boot_root);
 }
 
-void* arch_aspace_acquire(struct arch_aspace* space, uintptr_t va, bool* uncached,
+void* arch_aspace_acquire(struct arch_aspace* space, uintptr_t va,
+                          enum arch_aspace_access access, bool* uncached,
                           arch_phys_addr_t* frame)
 {
     if (uncached != nullptr)
@@ -712,10 +721,16 @@ void* arch_aspace_acquire(struct arch_aspace* space, uintptr_t va, bool* uncache
         arch_irq_restore(s);
         return nullptr;
     }
-    arch_phys_addr_t const out = entry_pa(*entry);
+    uint64_t const desc = *entry;
+    arch_phys_addr_t const out = entry_pa(desc);
     if (frame != nullptr)
     {
         *frame = out;
+    }
+    if ((desc & PTE_SW_DEVICE) != 0 or (access == ARCH_ASPACE_WRITE and (desc & PTE_W) == 0))
+    {
+        arch_irq_restore(s);
+        return nullptr;
     }
     if (in_kernel_window(out))
     {

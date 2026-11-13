@@ -30,6 +30,7 @@ extern char _kickos_heap_limit[];
 void* malloc(size_t);
 void free(void*);
 void kickos_heap_seat(void);
+void kickos_reent_heap_used(void);
 static char* s_brk = _kickos_heap_start;
 
 // Unserialised: newlib calls it under malloc's lock, and a direct sbrk() outside that lock can
@@ -77,6 +78,8 @@ static bool s_seated = false;
 // once: the largest request that fits. Run under the malloc lock (newlib_lock.cc), once.
 void kickos_heap_seat(void)
 {
+    // Both profiles: until this runs, an exiting thread frees no libc scratch (newlib_reent.cc).
+    kickos_reent_heap_used();
 #if not defined(_NANO_MALLOC)
     if (s_seated)
     {

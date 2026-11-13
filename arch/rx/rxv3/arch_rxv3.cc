@@ -95,55 +95,55 @@ static_assert(offsetof(struct arch_context, stack_lo) == KICKOS_RX_CTX_OFF_STACK
 static_assert(offsetof(struct arch_context, stack_hi) == KICKOS_RX_CTX_OFF_STACK_HI,
               "switch.S reads stack_hi at F_CTX_STACK_HI");
 static_assert(offsetof(struct arch_context, kernel_sp) == KICKOS_RX_CTX_OFF_KERNEL_SP,
-              "svc_trampoline and kickos_rx_pendsw load ctx.kernel_sp at F_CTX_KERNEL_SP");
+              "the syscall trap and kickos_rx_pendsw load ctx.kernel_sp at F_CTX_KERNEL_SP");
+static_assert(offsetof(struct arch_context, resume_pc) == KICKOS_RX_CTX_OFF_RESUME_PC,
+              "switch.S saves and restores ctx.resume_pc at F_CTX_RESUME_PC");
+static_assert(offsetof(struct arch_context, resume_psw) == KICKOS_RX_CTX_OFF_RESUME_PSW,
+              "switch.S saves and restores ctx.resume_psw at F_CTX_RESUME_PSW");
 // The reporter's own array (kernel/init/console.cc), cut to the Kconfig figure and measured
 // against the header's by check_trap_redzone.sh. A board may only RAISE it.
 static_assert(KICKOS_PANIC_STACK_SIZE >= KICKOS_RX_PANIC_FRAME + KICKOS_RX_PANIC_DEPTH,
               "KICKOS_PANIC_STACK_SIZE is below what this arch's panic reporter descends");
+static_assert(KICKOS_RX_TRAP_NEST_IDLE == KICKOS_RX_TRAP_REDZONE_PENDSW,
+              "idle's frame term is one whole PENDSW zone");
+static_assert(KICKOS_IDLE_STACK_SIZE % KICKOS_RX_TRAP_SP_ALIGN == 0,
+              "arch_context_init rounds the stack top down to 4, which the idle figure does "
+              "not price");
+static_assert(KICKOS_IDLE_STACK_SIZE >= KICKOS_RX_TRAP_NEST_IDLE + KICKOS_RX_TRAP_DEPTH_IDLE,
+              "KICKOS_IDLE_STACK_SIZE cannot hold a switch save and restore below idle's own "
+              "frames");
 
 static_assert(KICKOS_KERNEL_STACK_SIZE % KICKOS_RX_TRAP_SP_ALIGN == 0,
               "KICKOS_KERNEL_STACK_SIZE must be a multiple of KICKOS_RX_TRAP_SP_ALIGN, "
               "or a kernel stack's top does not land on the alignment the prologue "
               "requires");
-static_assert(sizeof(struct arch_context) >= KICKOS_RX_CTX_OFF_KERNEL_SP + sizeof(uint32_t),
-              "a guard reads a word past the end of struct arch_context");
-// With no block seated every syscall takes svc_trampoline's refusal instead of dispatching,
+static_assert(sizeof(struct arch_context) >= KICKOS_RX_CTX_OFF_RESUME_PSW + sizeof(uint32_t),
+              "a trap site reads a word past the end of struct arch_context");
+// With no block seated every syscall takes the trap's refusal instead of dispatching,
 // so this arch cannot be configured without the blocks. ARCH_KERNEL_STACKS_MANDATORY puts
 // `range 1 1` on the knob; this fires if that select is ever dropped.
 static_assert(KICKOS_KERNEL_STACKS != 0,
               "rxv3's syscall trap runs every dispatch on ctx.kernel_sp");
 
-// The syscall guard runs above the arm selection, so its one figure must dominate both
-// arms. The generic arm sets it; the fastpath arm's save plus restore descent is smaller.
-static_assert(KICKOS_RX_TRAP_REDZONE_SYS >= KICKOS_RX_TRAP_NEST_SYS,
-              "the syscall red zone does not cover the generic arm");
+// The syscall guard runs above the arm selection, so its one figure must cover the fastpath
+// arm's save; the generic arm writes nothing below the USP.
 static_assert(KICKOS_RX_TRAP_REDZONE_SYS
                   >= KICKOS_RX_TRAP_FRAME_SYS_FAST + KICKOS_RX_TRAP_KERNEL_DEPTH_SYS_FAST,
               "the syscall red zone does not cover the fastpath arm");
-// The generic arm's window is the head the trap commits plus a whole PENDSW zone: a SWINT
-// accepted over svc_trampoline before it reaches the block builds its save on the same USP
-// below that head (rx_trap_stack.h derives the composition).
-static_assert(KICKOS_RX_TRAP_NEST_SYS == KICKOS_RX_TRAP_HEAD_SYS + KICKOS_RX_TRAP_REDZONE_PENDSW,
-              "the SYS window is the stacked [userPC][userPSW] head and the switcher zone "
-              "a SWINT puts below it");
-// The kernel block's structural half: the continuation header svc_trampoline lays at the
-// block top, plus the switcher zone a preemption takes below the deepest dispatch byte.
-static_assert(KICKOS_RX_TRAP_NEST_SYSK == 8 + KICKOS_RX_TRAP_REDZONE_PENDSW,
+// The kernel block's structural half: the continuation header the trap lays at the block top,
+// plus the switcher zone a preemption takes below the deepest dispatch byte.
+static_assert(KICKOS_RX_TRAP_NEST_SYSK
+                  == KICKOS_RX_TRAP_SYSK_HEADER + KICKOS_RX_TRAP_REDZONE_PENDSW,
               "the SYSK structural half is the continuation header and the switcher zone "
               "a SWINT puts below the dispatch");
-// svc_trampoline moves R0 to ctx.kernel_sp before it calls anything, so the generic arm's
-// dispatch is measured as SYSK and nothing of it descends on the thread stack.
-static_assert(KICKOS_RX_TRAP_KERNEL_DEPTH_SYS == 0,
-              "a nonzero SYS descent needs roots in tests/static/trap_redzone_roots.txt");
 // The spawn stages its grant list on the kernel block, and _SYSK holds the list it was
 // measured at (rx_trap_stack.h).
 static_assert(KICKOS_MAX_SPAWN_GRANTS <= 9,
               "KICKOS_RX_TRAP_KERNEL_DEPTH_SYSK was measured at a spawn staging 9 grants on "
               "the kernel block: re-measure with tests/static/check_trap_redzone.sh first");
 // The fastpath arm's C dispatch is on the block too, so what is left of that class on the
-// thread stack is its save plus the restore descent below it, which is the epilogue PENDSW
-// already measures on the same chain. Equal by derivation: if one moves and the other does
-// not, one of the two classes is wrong.
+// thread stack is its save and the restore epilogue PENDSW already measures. Equal by
+// derivation: if one moves and the other does not, one of the two classes is wrong.
 static_assert(KICKOS_RX_TRAP_KERNEL_DEPTH_SYS_FAST == KICKOS_RX_TRAP_KERNEL_DEPTH_PENDSW,
               "the fastpath arm's residual is the restore epilogue PENDSW measures, so the "
               "two depths are one measurement");
@@ -184,7 +184,8 @@ namespace
 
     // CMWI1 is an edge source: the ICU clears its IR as the CPU accepts it (UM sec.15.2.1), so
     // the latch is gone before take() runs. Sound because no handler here sets PSW.I, so
-    // nothing runs between that acceptance and the handler's return.
+    // nothing runs between that acceptance and the handler's return, and because the INTB guard
+    // (switch.S) sends an INT #31 to the software-trap path before the handler runs.
     struct cmtw1_wrap_ops
     {
         static uint32_t count() { return r32(CMTW1_BASE + CMTW_CMWCNT); }
@@ -342,10 +343,10 @@ extern "C"
 // Identical to what the SWINT switcher saves, so the first switch-in (arch_start) restores
 // it and RTEs into entry(arg). Low to high on the USP:
 //   [+0 A0LO][+4 A0HI][+8 A0GU][+12 A1LO][+16 A1HI][+20 A1GU][+24 FPSW]
-//   [+28 R1=arg .. +84 R15][+88 PC=entry][+92 PSW]
-// and, ABOVE the frame, [+96] = the address a returning entry() RTSes into
+//   [+28 R1=arg .. +84 R15]
+// and, ABOVE the frame, [+88] = the address a returning entry() RTSes into
 // (kickos_thread_return for a kernel thread, kickos_user_thread_return for a user one).
-// RTE pops PC then PSW, delivering R1=arg per the psABI.
+// The PC and PSW go in the context, never on the stack: the PSW carries PM.
 void arch_context_init(struct arch_context* ctx,
                        void (*entry)(void*), void* arg,
                        void* stack_base, size_t stack_size,
@@ -365,9 +366,7 @@ void arch_context_init(struct arch_context* ctx,
         ret = reinterpret_cast<uint32_t>(kickos_image_thread_return);
     }
 
-    *(--sp) = ret;                               // [+96] entry's eventual RTS target
-    *(--sp) = psw;                               // [+92] PSW (RTE pops)
-    *(--sp) = reinterpret_cast<uint32_t>(entry); // [+88] PC  (RTE pops)
+    *(--sp) = ret;                               // [+88] entry's eventual RTS target
     for (int i = 0; i < 14; i++)                 // [+84..+32] R15..R2 = 0
     {
         *(--sp) = 0;
@@ -395,6 +394,8 @@ void arch_context_init(struct arch_context* ctx,
 #endif
 
     ctx->sp = reinterpret_cast<uint32_t>(sp);
+    ctx->resume_pc = reinterpret_cast<uint32_t>(entry);
+    ctx->resume_psw = psw;
 
     // The syscall trap and SWINT switcher validate the live USP against these before they
     // store a frame through it. `top` is the aligned high edge, so a running thread's USP
@@ -403,7 +404,7 @@ void arch_context_init(struct arch_context* ctx,
     ctx->stack_hi = static_cast<uint32_t>(top);
 
     // ctx->kernel_sp IS DELIBERATELY UNTOUCHED. thread_create seats it BEFORE this call and
-    // is the only writer of the zero that means no block seated, which svc_trampoline's
+    // is the only writer of the zero that means no block seated, which the syscall trap's
     // refusal path keys on; clearing it here would wipe the block off every fresh thread.
 }
 
@@ -421,9 +422,8 @@ void arch_ctx_set_syscall_result(struct arch_context* ctx, uint32_t result)
     reinterpret_cast<uint32_t*>(ctx->sp + FRAME_R1_OFF)[0] = result;
 }
 
-// The fabricated frame's PSW word is PSW_THREAD_KERNEL, which the RTE pops. The MPU_MPECLR
-// latch arch_fault_redirect_to_exit clears is global and belongs to a fault, so a rebuild
-// must not touch it.
+// The fabricated PSW is PSW_THREAD_KERNEL. The MPU_MPECLR latch arch_fault_redirect_to_exit
+// clears is global and belongs to a fault, so a rebuild must not touch it.
 void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),
                        void* stack_base, size_t stack_size)
 {
@@ -469,13 +469,14 @@ struct RxFaultFrame
 };
 
 // The five instruction-CANCELING exceptions, whose saved PC is the instruction that
-// generated them (ISA UM sec.5.3.1 Table 5.1). Cause 0, the _rx_trap catch-all, carries the
-// NMI and BRK: an NMI is accepted at an instruction boundary with PSW.PM still set, so
-// admitting it here would kill whichever thread happened to be running for a chip event.
+// generated them (ISA UM sec.5.3.1 Table 5.1), and a software trap, whose saved PC is the next
+// one. Cause 0, the _rx_trap catch-all, carries the NMI: it is accepted at an instruction
+// boundary with PSW.PM still set, so admitting it here would kill whichever thread happened to
+// be running for a chip event.
 static bool rx_cause_is_thread_fault(uint32_t cause)
 {
     return cause == 0x50 or cause == 0x54 or cause == 0x5C or cause == 0x60
-           or cause == 0x64;
+           or cause == 0x64 or cause == RX_CAUSE_SOFT_TRAP;
 }
 
 bool arch_fault_is_user_thread(void* frame)
@@ -491,33 +492,10 @@ bool arch_fault_is_user_thread(void* frame)
     {
         return false;
     }
-    // RTE restores U=1 and the stub executes on the thread's USP, so the USP is what must
-    // lie in the thread's own stack: a thread that wrecked R0 would otherwise put privileged
-    // code on a stack of its choosing. Length 0 asks for containment alone, the stack
-    // growing DOWN from here with no frame written at this address. The thread-stack test
-    // and not its kernel-block twin, because a fault taken while a thread runs its dispatch
-    // on ctx.kernel_sp arrives with PSW.PM clear and is refused above.
-    uint32_t usp;
-    __asm volatile("mvfc usp, %0" : "=r"(usp));
-    if (not kickos_fault_frame_trusted(reinterpret_cast<void*>(usp), 0))
-    {
-        return false;
-    }
-#if KICKOS_HAVE_MPU
-    // A STACK OVERFLOW reads as in-bounds in the USP: every one of these exceptions CANCELS
-    // its instruction and restores SP (ISA UM sec.5.3.1), so the denied push leaves the USP
-    // where it was and the containment test above passes with nothing left below. MPDEA is
-    // the only register that says so, and supervisor bypasses the RX MPU, so a stub run on
-    // the exhausted stack smashes its way out untrapped.
-    if (ff->cause == 0x54 and (r32(MPU_MPESTS) & MPU_MPESTS_DMPER) != 0)
-    {
-        if (kickos_fault_below_stack(r32(MPU_MPDEA)))
-        {
-            return false;
-        }
-    }
-#endif
-    return true;
+    // No test of the USP or of the faulting address belongs here: the redirect runs the stub
+    // on kickos_fault_stack_top and never on the USP, which an overflow leaves exhausted (RXv3
+    // cancels the instruction, ISA UM sec.5.3.1) and a thread can aim anywhere.
+    return kickos_fault_stack_top() != 0;
 }
 
 void arch_fault_redirect_to_exit(void* frame)
@@ -551,16 +529,15 @@ void arch_fault_redirect_to_exit(void* frame)
     kickos_fault_record(status_name, status, ff->saved[0], addr, addr_valid);
 
     // The same posture the syscall trap's own rewrite builds (switch.S
-    // kickos_rx_syscall_trap): supervisor on the USP. U is WRITTEN rather than inherited
-    // because RTE forces it only on a transition TO user mode and this one is the other way.
-    // I=1 with IPL=0 is what lets the stub's exit_current reschedule: it pends SWINT and
-    // must see it taken.
+    // kickos_rx_syscall_trap): supervisor on the USP, here the kernel block. U is WRITTEN
+    // rather than inherited because RTE forces it only on a transition TO user mode and this
+    // one is the other way. I=1 with IPL=0 is what lets the stub's exit_current reschedule: it
+    // pends SWINT and must see it taken.
     ff->saved[0] = reinterpret_cast<uint32_t>(&kickos_thread_fault_exit);
     ff->saved[1] = (ff->saved[1] & ~(PSW_PM | PSW_IPL_MASK)) | PSW_U | PSW_I;
 
-    // An overflow can leave the USP anywhere (exception entry restores SP, ISA UM sec.5.3.1),
-    // so it is reset; this handler runs on the ISP. top - 8 because kickos_rx_pendsw's block
-    // leg refuses a USP at zero distance from kernel_sp.
+    // This handler runs on the ISP. top - 8 because kickos_rx_pendsw's block leg refuses a USP
+    // at zero distance from kernel_sp.
     uint32_t const top = static_cast<uint32_t>(kickos_fault_stack_top());
     if (top != 0)
     {
@@ -600,9 +577,8 @@ struct arch_context* kickos_rx_bad_usp(uint32_t usp)
     return next;
 }
 
-// From svc_trampoline, when the calling thread has no kernel block seated. Runs supervisor
-// ON THE ISP, .Lsvc_nokstack having cleared PSW.U before the branch; `usp` is the thread's
-// own, copied before that clear.
+// From the syscall trap, when the calling thread has no kernel block seated. Runs supervisor
+// on the ISP with PSW.I clear; `usp` is the thread's own.
 void kickos_rx_no_kernel_stack(uint32_t usp)
 {
     kpanic_enter();
@@ -680,6 +656,10 @@ void kickos_rx_fault_report(uint32_t cause, uint32_t* saved)
     {
         what = "floating-point";
     }
+    else if (cause == RX_CAUSE_SOFT_TRAP)
+    {
+        what = "software trap";
+    }
 #if KICKOS_PANIC_DUMP
     ::kickos::kprintf("\n=== RX EXCEPTION (%s) ===\n  PC=0x%x PSW=0x%x\n", what, pc, psw);
 #else
@@ -688,6 +668,13 @@ void kickos_rx_fault_report(uint32_t cause, uint32_t* saved)
     ::kickos::kprintf("\n=== RX EXCEPTION (%s) ===\n", what);
 #endif
     kfault_terminate();
+}
+
+// From kickos_rx_soft_trap (switch.S): an INT #n or BRK through an INTB slot other than the
+// syscall's, `saved` the [PC][PSW] pair on the ISP.
+void kickos_rx_soft_trap_report(uint32_t* saved)
+{
+    kickos_rx_fault_report(RX_CAUSE_SOFT_TRAP, saved);
 }
 
 // --- Tickless clock (CMTW1) + one-shot timer (CMTW0) ------------------------
@@ -785,17 +772,6 @@ static_assert(MPU_REGION_COUNT <= ARCH_MPU_ENCODED_SLOTS,
 static_assert(ARCH_MPU_ENCODED_SLOTS <= MPU_REGION_COUNT,
               "this part cannot hold a full per-thread set; refuse, never drop the top slots");
 
-#if KICKOS_BENCH
-extern "C" void kickos_bench_mpu_commit(uint32_t delta);
-
-// Match bench_cyccnt(): convert CMTW1 ticks (PCLKB/8) to ICLK cycles.
-// Inline counter reads so PH_NULL accounts for their overhead.
-static __attribute__((always_inline)) inline uint32_t mpu_bench_cyc(void)
-{
-    return r32(CMTW1_BASE + CMTW_CMWCNT) << 5;
-}
-#endif
-
 void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n,
                     struct arch_mpu_encoded const* image)
 {
@@ -808,9 +784,6 @@ void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n,
 // PSW.I=0; the bracket covers any other caller.
 void kickos_arch_mpu_commit(void)
 {
-#if KICKOS_BENCH
-    uint32_t const bench_start = mpu_bench_cyc();
-#endif
     arch_irq_state_t const irq = arch_irq_save();
     struct arch_mpu_encoded const* const img = g_pend_image;
     if (img == nullptr)
@@ -883,9 +856,6 @@ void kickos_arch_mpu_commit(void)
         rx_mpu_mark(']');
     }
     arch_irq_restore(irq);
-#if KICKOS_BENCH
-    kickos_bench_mpu_commit(mpu_bench_cyc() - bench_start);
-#endif
 }
 
 // THE STASH IS RESTORED, and that is this entry's whole reason to exist: a switch to another

@@ -54,28 +54,27 @@
 /* IRQ, IRQK and the frame term of every class an interrupt lands under. The deepest chain is an
  * interrupt's wake seating a thread through pick_and_seat, which primes the incoming thread's
  * libc state from its image: reent_prime copies into its space through arch_aspace_acquire
- * (docs/design-m10-toolchain.md section 5.5). qemu-x86_64's measures 616 and the bench
- * preset's, whose brackets widen pick_and_seat's frame, 632. */
+ * (docs/design-m10-toolchain.md section 5.5). qemu-x86_64 measures 624 under GCC 16.2. */
 #define KICKOS_X86_64_TRAP_DEPTH_IRQ 704
 
 /* A ring 0 interrupt's whole extent below the rsp it interrupts, FRAME_IRQ + DEPTH_IRQ, which
  * arch_x86_64.cc asserts. */
 #define KICKOS_X86_64_TRAP_NEST 888
 
-/* The ring 3 syscall on the block. 2072 on qemu-x86_64, a task create seeding the new task's
+/* The ring 3 syscall on the block. 2088 on qemu-x86_64, a task create seeding the new task's
  * space; arch_x86_64.cc refuses more than 9 grants:
- *   syscall_dispatch[176] -> task_create_call[224] -> spawn_locked[432] -> thread_create[128]
+ *   syscall_dispatch[176] -> task_create_call[224] -> spawn_locked[448] -> thread_create[128]
  *   -> task_for[48] -> domain_for[96] -> claim_slot[48] -> aspace_image_seed[128]
  *   -> arch_aspace_map[144] -> map_into[112] x5 -> kickos_frame_alloc[32] -> ... */
-#define KICKOS_X86_64_TRAP_DEPTH_SYSK 2080
+#define KICKOS_X86_64_TRAP_DEPTH_SYSK 2096
 
 /* An interrupt nested below arch_irq_window, the one place a ring 3 syscall opens interrupts on
  * the block: the syscall entry's frame and a ring 0 interrupt's whole extent, FRAME + NEST, which
  * arch_x86_64.cc asserts. */
 #define KICKOS_X86_64_TRAP_WINDOW 1064
 
-/* The syscall's descent to arch_irq_window, above SYSWIN's frame. 392 on the multicore
- * presets, 360 on qemu-x86_64 and qemu-x86_64-bench:
+/* The syscall's descent to arch_irq_window, above SYSWIN's frame. 360 on every x86_64 preset
+ * under GCC 16.2:
  *   syscall_dispatch[176] -> frame_create_call[96] -> presync_run[80] -> arch_irq_window[8]
  * WINDOW + 512 = 1576 against 4092 above the canary, and 1128 + 512 = 1640 on the multicore
  * presets. */
@@ -97,7 +96,7 @@
 #define KICKOS_X86_64_TRAP_DEPTH_IDLE 64
 
 /* The panic reporter on its own array, below the null return word kickos_panic_stack_enter
- * pushes. 320 on qemu-x86_64 and 368 on qemu-x86_64-bench:
+ * pushes. 320 on qemu-x86_64:
  *   kickos_panic_report[32] -> kputs[32] -> kconsole_write[8] -> console_emit[48]
  *   -> console_tx_insert_line[32] -> console_write_line_owned[64] -> give_way's byte[48]
  *   -> arch_console_write_sync[48] -> com1_slot_free[8] */
@@ -116,9 +115,9 @@
 #define KICKOS_X86_64_TRAP_WINDOW 1128
 #undef KICKOS_X86_64_TRAP_DEPTH_SYSK
 #define KICKOS_X86_64_TRAP_DEPTH_SYSK 2432
-/* SYSK measures 2288 on qemu-x86_64-smp12, a task create seeding the new task's space, whose
+/* SYSK measures 2320 on qemu-x86_64-smp12, a task create seeding the new task's space, whose
  * frame allocation waits on the kernel lock and serves the doorbell:
- *   syscall_dispatch[192] -> task_create_call[224] -> spawn_locked[432] -> ...
+ *   syscall_dispatch[192] -> task_create_call[224] -> spawn_locked[464] -> ...
  *   -> kickos_frame_alloc[48] -> klock_enter[48] -> ... -> x86_64::apic_write[8] */
 #undef KICKOS_X86_64_TRAP_DEPTH_IST
 #define KICKOS_X86_64_TRAP_DEPTH_IST 768

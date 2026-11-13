@@ -66,7 +66,7 @@ unset IMAGES
 OUTDIR="$RIG_SESSION/logs"
 mkdir -p "$OUTDIR"
 
-ALL="rx72m f411disco esp32c6-wroom esp32-wroom xmc4800-relax frdmk64f"
+ALL="rx72m f411disco esp32c6-wroom esp32-wroom xmc4800-relax"
 WANT="${*:-$ALL}"
 
 # WHICH IMAGES A BOARD'S BUILD SHIPS, asked of the tree one board at a time, as bench.sh's
@@ -132,11 +132,6 @@ partition_part() { # <variant> <variants>
 }
 variant_tag() { # <variant>
   printf '%s%s' "$TAG" "$(printf '%s' "$1" | tr -d '-')"
-}
-# A variant that turns KICKOS_BENCH on is the microbenchmark's posture, which the bench sweep
-# measures; its images are not judged here.
-measurement_variant() { # <board> <variant>
-  grep -qx 'CONFIG_KICKOS_BENCH=y' "$TREE/boards/$1/configs/$2/defconfig" 2>/dev/null
 }
 
 # The board's AMP partition is the image a node 0 build of its amp2 preset assembles.
@@ -361,7 +356,6 @@ EMULATOR_OWED=""
 HUMAN_OWED=""
 VOID=""
 PARTLY=""
-MEASURED=""
 JOBS=""
 SHIPPED=""
 ENUMERATED=""
@@ -449,14 +443,6 @@ ROWS
       else
         capture_image "$board" ampping_n0 "$img" "$judge" "$variant" 1
       fi
-      continue
-    fi
-    if measurement_variant "$board" "$variant"; then
-      if [ -n "$SUBSET" ]; then
-        continue
-      fi
-      MEASURED="$MEASURED$board $variant
-"
       continue
     fi
     LERR=$(mktemp)
@@ -613,12 +599,6 @@ while IFS='|' read -r board img why; do
 done <<VOID
 $VOID
 VOID
-while read -r board variant; do
-  [ -n "$board" ] || continue
-  printf '  %-16s %-38s measurement posture, taken by the bench sweep\n' "$board" "variant $variant"
-done <<MEASURED
-$MEASURED
-MEASURED
 HUMANS=0
 while IFS='|' read -r board img what; do
   [ -n "$board" ] || continue

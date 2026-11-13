@@ -34,11 +34,13 @@ static_assert(offsetof(struct arch_context, stack_hi) == KICKOS_ARMV7M_CTX_OFF_S
               "switch.S reads ctx.stack_hi at KICKOS_ARMV7M_CTX_OFF_STACK_HI");
 // Unconditional even at KICKOS_KERNEL_STACKS 0: the field is in the struct on every build.
 static_assert(offsetof(struct arch_context, kernel_sp) == KICKOS_ARMV7M_CTX_OFF_KERNEL_SP,
-              "svc_trampoline and PendSV_Handler load ctx.kernel_sp at F_CTX_KERNEL_SP");
+              "SVC_Handler and PendSV_Handler load ctx.kernel_sp at F_CTX_KERNEL_SP");
+static_assert(offsetof(struct arch_context, exc_return) == KICKOS_ARMV7M_CTX_OFF_EXC_RETURN,
+              "every switch site saves and reloads EXC_RETURN at F_CTX_EXC_RETURN");
 
 // gas cannot count the registers in an stmdb.
-static_assert(KICKOS_ARMV7M_TRAP_FRAME == 9u * sizeof(uint32_t),
-              "PSP_GUARD prices {r4-r11, EXC_RETURN}: nine words");
+static_assert(KICKOS_ARMV7M_TRAP_FRAME == 8u * sizeof(uint32_t),
+              "PSP_GUARD prices {r4-r11}: eight words");
 static_assert(KICKOS_ARMV7M_TRAP_FRAME_FP == 16u * sizeof(uint32_t),
               "the FP term prices {s16-s31}: sixteen words");
 static_assert(KICKOS_ARMV7M_TRAP_FRAME_MAX
@@ -48,15 +50,14 @@ static_assert(KICKOS_ARMV7M_TRAP_FRAME_MAX
 static_assert(KICKOS_ARMV7M_TRAP_NEST_SVC >= KICKOS_ARMV7M_TRAP_FRAME_MAX,
               "the SVC site must cover the fastpath arm's FP-live push, which it guards too");
 // The SVC window, derived in armv7m_trap_stack.h.
-static_assert(KICKOS_ARMV7M_TRAP_NEST_SVC
-                  == 8 + 104 + KICKOS_ARMV7M_TRAP_FRAME_MAX - 32,
-              "the SVC window is the unstack credit, the trampoline's prologue, a "
-              "preempting hardware frame and the PendSV block that tail-chains below it");
+static_assert(KICKOS_ARMV7M_TRAP_NEST_SVC == KICKOS_ARMV7M_TRAP_FRAME_MAX,
+              "the SVC window is the PendSV block under a preempting frame of the entry's own "
+              "shape, which lands on the guarded PSP");
 #if !KICKOS_KERNEL_STACKS
 // The gate scrapes both figures as immediates and cannot catch a drift between them.
-static_assert(KICKOS_ARMV7M_TRAP_NEST_SVC_DISPATCH == KICKOS_ARMV7M_TRAP_NEST_SVC + 4,
-              "the unconverted SVC window is the converted one plus the STKALIGN pad a "
-              "preempting entry spends below a chain of compiler frames");
+static_assert(KICKOS_ARMV7M_TRAP_NEST_SVC_DISPATCH == KICKOS_ARMV7M_TRAP_NEST_SVC + 8 + 4,
+              "the unconverted SVC window is the converted one plus the trampoline's push and "
+              "the STKALIGN pad a preempting entry spends below a chain of compiler frames");
 static_assert(KICKOS_MAX_SPAWN_GRANTS <= 9,
               "KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_SVC holds a spawn staging 9 grants on the "
               "caller's stack, and 10 measure past it: re-measure with "
@@ -71,7 +72,7 @@ static_assert(KICKOS_ARMV7M_TRAP_NEST_SVCK
 // both as immediates.
 static_assert(KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_SVCK >= KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_SVC,
               "the tail-counted dispatch depth is below the tail-excluded one");
-#if KICKOS_TELEMETRY or KICKOS_BENCH
+#if KICKOS_TELEMETRY
 static_assert(KICKOS_MAX_SPAWN_GRANTS <= 9,
               "KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_SVCK was measured at a spawn staging 9 grants on "
               "the kernel block: re-measure with tests/static/check_trap_redzone.sh first");
@@ -85,7 +86,8 @@ static_assert(KICKOS_MAX_SPAWN_GRANTS <= 12,
 static_assert(KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_PENDSV == 0,
               "a nonzero PendSV descent needs roots in tests/static/trap_redzone_roots.txt");
 static_assert(KICKOS_ARMV7M_TRAP_NEED_SVC > KICKOS_ARMV7M_TRAP_NEED_PENDSV,
-              "the SVC site must charge more than the switcher: it keeps running on the PSP");
+              "the SVC site must charge more than the switcher: its return window stacks on the "
+              "PSP privileged");
 // The floor must DOMINATE the worst-case red zone, or a thread spawned at the floor passes
 // the spawn check and is refused by the guard on every syscall. The hardware spends the entry
 // frame ABOVE the PSP before any handler runs, so a floor-sized empty stack offers the guard
@@ -98,12 +100,28 @@ static_assert(KICKOS_MIN_STACK_SIZE
               "exception frame entry spends above it: raise the per-arch default in "
               "Kconfig, never the red zone, which is a measurement");
 
-// The reporter's own array (kernel/init/console.cc); the frame term is the hardware frame a
-// HardFault stacks there.
-static_assert(KICKOS_ARMV7M_PANIC_FRAME == KICKOS_ARMV7M_TRAP_FRAME_MAX,
-              "the panic frame term is the hardware frame, which switch.S cannot compute");
 static_assert(KICKOS_PANIC_STACK_SIZE >= KICKOS_ARMV7M_PANIC_FRAME + KICKOS_ARMV7M_PANIC_DEPTH,
               "KICKOS_PANIC_STACK_SIZE is below what this arch's panic reporter descends");
+
+#if KICKOS_ARMV7M_SPLIM
+static_assert(KICKOS_ARMV7M_IDLE_FRAME
+                  == 4 + KICKOS_ARMV7M_TRAP_ENTRY_FRAME + KICKOS_ARMV7M_SPLIM_ROOM,
+              "idle's frame term is the STKALIGN pad, a hardware frame and the limit's room");
+#elif defined(__ARM_FP)
+static_assert(KICKOS_ARMV7M_IDLE_FRAME
+                  == 4 + KICKOS_ARMV7M_TRAP_ENTRY_FRAME + KICKOS_ARMV7M_TRAP_FRAME_MAX,
+              "idle's frame term is the STKALIGN pad, a hardware frame and the PendSV block");
+#else
+static_assert(KICKOS_ARMV7M_IDLE_FRAME
+                  == 4 + KICKOS_ARMV7M_TRAP_ENTRY_FRAME + KICKOS_ARMV7M_TRAP_FRAME,
+              "idle's frame term is the STKALIGN pad, a hardware frame and the PendSV block");
+#endif
+static_assert(KICKOS_IDLE_STACK_SIZE % 8 == 0,
+              "arch_context_init rounds the stack top down to 8, which the idle figure does "
+              "not price");
+static_assert(KICKOS_IDLE_STACK_SIZE >= KICKOS_ARMV7M_IDLE_FRAME + KICKOS_ARMV7M_IDLE_DEPTH,
+              "KICKOS_IDLE_STACK_SIZE cannot hold an interrupt and the switch it pends below "
+              "idle's own frames");
 
 static_assert(KICKOS_KERNEL_STACK_SIZE % 8 == 0,
               "KICKOS_KERNEL_STACK_SIZE must be a multiple of 8 on this arch, or a "
@@ -147,7 +165,7 @@ static_assert(KICKOS_ARMV7M_SPLIM_ROOM >= KICKOS_ARMV7M_TRAP_FRAME_MAX + sizeof(
               "a limit must leave the unchecked PendSV block and the kernel block's canary "
               "above the base, on the registers' 8-byte granule");
 static_assert(KICKOS_KERNEL_STACK_SIZE - KICKOS_ARMV7M_SPLIM_ROOM <= 0xFFFF,
-              "svc_trampoline loads the block's limit offset with movw");
+              "SVC_Handler loads the block's limit offset with movw");
 #endif
 static_assert(kickos::armv7m::PRIO_LOCK_BASEPRI == 0x20,
               "SVC_Handler's fastpath raises this level as a literal");
@@ -207,14 +225,13 @@ void arch_context_init(struct arch_context* ctx,
     *(--sp) = 0;                                              // r1
     *(--sp) = reinterpret_cast<uint32_t>(arg);               // r0 = arg
 
-    // PendSV-saved block, popped by ldmia with r4 lowest and EXC_RETURN highest.
-    *(--sp) = 0xFFFFFFFDu; // EXC_RETURN: thread mode, PSP, non-FP frame
     for (int i = 0; i < 8; i++)
     {
         *(--sp) = 0; // r11..r4
     }
 
     ctx->sp = reinterpret_cast<uint32_t>(sp);
+    ctx->exc_return = 0xFFFFFFFDu; // thread mode, PSP, non-FP frame
     // CONTROL.nPRIV: 0 = privileged, 1 = unprivileged.
     uint32_t npriv = 1;
     if (privileged)
@@ -236,7 +253,7 @@ void arch_context_init(struct arch_context* ctx,
     // no-block marker.
 }
 
-// The fabricated frame carries EXC_RETURN 0xFFFFFFFD (thread mode, PSP, NON-FP frame), so
+// The rebuilt context carries EXC_RETURN 0xFFFFFFFD (thread mode, PSP, NON-FP frame), so
 // the rebuild also RESETS the frame format: a thread that had an extended FP frame stacked
 // resumes on a plain 8-word one. Sound only because every frame it held is discarded here.
 void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),
@@ -291,7 +308,8 @@ extern "C"
 // CONTROL.nPRIV and NOT ctx.resting_npriv: syscall dispatch runs PRIVILEGED in thread mode
 // (switch.S svc_trampoline) on behalf of a user thread, so a fault there is a kernel bug.
 // Exception entry does not modify CONTROL, so reading it here gives the privilege at fault
-// time. A non-zero stacked IPSR means the fault escalated from inside another handler.
+// time. Thread mode is the reporter's EXC_RETURN test, never the stacked IPSR: a task-mate
+// writes that word, and a return to thread mode it makes fail is the thread's fault.
 //
 // The frame is always on the USER stack under either entry design: the hardware stacks it at
 // the PSP, and an accepted fault here is one taken with nPRIV set, which the dispatch never
@@ -325,30 +343,7 @@ bool arch_fault_is_user_thread(void* frame)
     // Neither test subsumes the other: the CFSR bits catch a stacking abort whose SP was
     // still in range, this catches a frame written in full at a wild SP, which sets no
     // CFSR bit at all.
-    if (not kickos_fault_frame_trusted(frame, ARMV7M_BASIC_FRAME_BYTES))
-    {
-        return false;
-    }
-    uint32_t const* const f = static_cast<uint32_t const*>(frame);
-    return (f[7] & 0x1FFu) == 0u; // stacked xPSR IPSR field
-}
-
-// Entered by the exception return with r0 = the SP the stub must run on. The SP move must
-// be the first instruction: anything the compiler put before it would run on the stack this
-// exists to leave. Thread mode does not change SPSEL, so this writes the PSP.
-__attribute__((naked, noreturn)) void kickos_armv7m_fault_stack_reset(void)
-{
-#if KICKOS_ARMV7M_SPLIM
-    // Entered with PRIMASK set by the redirect, so nothing stacks under the old limit before
-    // the block's, carried in r1, is seated.
-    __asm volatile("msr psplim, r1\n\t"
-                   "mov sp, r0\n\t"
-                   "cpsie i\n\t"
-                   "b   kickos_thread_fault_exit");
-#else
-    __asm volatile("mov sp, r0\n\t"
-                   "b   kickos_thread_fault_exit");
-#endif
+    return kickos_fault_frame_trusted(frame, ARMV7M_BASIC_FRAME_BYTES);
 }
 
 void arch_fault_redirect_to_exit(void* frame)
@@ -391,7 +386,7 @@ void arch_fault_redirect_to_exit(void* frame)
         kickos_fault_record("CFSR", cfsr, f[6], addr, addr_valid);
     }
     // An SVC whose entry stacking violated the limit stays pending, and would tail-chain into
-    // the stub's place with this dying thread's frame.
+    // the exit's place with this dying thread's frame.
     if ((cfsr & ARMV7M_CFSR_STKOF) != 0u)
     {
         kickos::arm::reg32(SCB_SHCSR) &= ~SHCSR_SVCALLPENDED;
@@ -403,52 +398,53 @@ void arch_fault_redirect_to_exit(void* frame)
     kickos::arm::reg32(SCB_CFSR) = cfsr;
     kickos::arm::reg32(SCB_HFSR) = hfsr;
 
-    kickos_arm_fault_resume_at(f, &kickos_armv7m_fault_stack_reset);
-    // Keep T (bit 24) and the stack-realign bit 9, which belongs to the pop at the original
-    // SP; clear IT/ICI (bits 26:25 and 15:10): a fault inside an IT block would otherwise
-    // resume with stale condition state and conditionally skip the stub's first instructions.
-    f[7] = (f[7] & ~((3u << 25) | (0x3Fu << 10))) | (1u << 24);
-#if KICKOS_ARMV7M_SPLIM
-    if (clamped)
+    uint32_t const top = kickos_arm_fault_exit_top();
+    if (top == 0)
     {
-        f[7] = 1u << 24;
+        kickos_arm_fault_frame_in_place(f);
     }
-    if (f[6] == (reinterpret_cast<uint32_t>(&kickos_armv7m_fault_stack_reset) & ~1u))
+    else
     {
-        // The stub's stack is the thread's kernel block where one is seated and its own user
-        // stack otherwise, whose limit is the live one.
-        f[1] = psplim;
-        if (kickos_fault_frame_on_kernel_stack(reinterpret_cast<void const*>(f[0] - 4u), 4u))
-        {
-            f[1] = f[0] - KICKOS_KERNEL_STACK_SIZE + KICKOS_ARMV7M_SPLIM_ROOM;
-        }
-        // An unprivileged thread cannot have set PRIMASK, so the stub's cpsie restores it.
-        __asm volatile("cpsid i" ::: "memory");
-    }
+#if defined(__ARM_FP)
+        // The built frame is a basic one, so a lazy save this thread left pending at FPCAR
+        // would fire later through a pointer into its user stack.
+        kickos::arm::reg32(FPU_FPCCR) &= ~FPU_FPCCR_LSPACT;
+        __asm volatile("dsb\n\tisb" ::: "memory");
 #endif
+#if KICKOS_ARMV7M_SPLIM
+        uint32_t limit = psplim;
+        if (kickos_fault_frame_on_kernel_stack(reinterpret_cast<void const*>(top - 4u), 4u))
+        {
+            limit = top - KICKOS_KERNEL_STACK_SIZE + KICKOS_ARMV7M_SPLIM_ROOM;
+        }
+        __asm volatile("msr psplim, %0" ::"r"(limit) : "memory");
+#endif
+        kickos_arm_fault_frame_at(top);
+    }
     kickos_arm_fault_resume_privileged();
 }
 
 // `frame` points at the hardware-stacked exception frame {r0,r1,r2,r3,r12,lr,pc,xPSR};
 // `exc_return` is the EXC_RETURN in LR, whose bit 2 selects the pre-fault stack.
+// Returns only when the faulting thread was contained, with the EXC_RETURN its handler's
+// exception return must take.
 #if KICKOS_ARMV7M_SPLIM
 // `limit` is that stack's limit register as the fault found it.
-void kickos_armv7m_fault_report(uint32_t* frame, uint32_t exc_return, uint32_t limit)
+uint32_t kickos_armv7m_fault_report(uint32_t* frame, uint32_t exc_return, uint32_t limit)
 #else
-void kickos_armv7m_fault_report(uint32_t* frame, uint32_t exc_return)
+uint32_t kickos_armv7m_fault_report(uint32_t* frame, uint32_t exc_return)
 #endif
 {
-    // HardFault_Handler reaches here by a plain `b`, so this function's own return IS the
-    // exception return. Nothing may print above this: kpanic_enter's console reclaim is
-    // permanent and this fault is survivable.
+    // Nothing may print above this: kpanic_enter's console reclaim is permanent and this fault
+    // is survivable.
     bool const frame_read = armv7m_fault_frame_readable(kickos::arm::reg32(SCB_CFSR));
 #if KICKOS_ARMV7M_SPLIM
     bool const unverified = armv7m_stkof_frame_clamped(kickos::arm::reg32(SCB_CFSR),
                                                        reinterpret_cast<uintptr_t>(frame), limit);
 #endif
-    if (kickos_fault_kill_thread(frame))
+    if ((exc_return & KICKOS_ARM_EXC_RETURN_THREAD) != 0u and kickos_fault_kill_thread(frame))
     {
-        return;
+        return kickos_arm_fault_exit_exc_return(exc_return);
     }
     kickos_fault_report_begin();
     kpanic_enter();
@@ -536,7 +532,8 @@ __attribute__((naked)) void HardFault_Handler(void)
         "ldr r3, [r3]        \n"
         "tst r3, #0x100000   \n"
         "bne kickos_armv7m_stkof \n"
-        "b kickos_armv7m_fault_report \n");
+        "bl kickos_armv7m_fault_report \n"
+        "bx r0               \n");
 #else
     __asm volatile(
         "tst lr, #4          \n"
@@ -544,7 +541,8 @@ __attribute__((naked)) void HardFault_Handler(void)
         "mrseq r0, msp       \n"
         "mrsne r0, psp       \n"
         "mov r1, lr          \n"
-        "b kickos_armv7m_fault_report \n");
+        "bl kickos_armv7m_fault_report \n"
+        "bx r0               \n");
 #endif
 }
 
@@ -554,8 +552,6 @@ __attribute__((naked)) void HardFault_Handler(void)
 #define KICKOS_ARMV7M_STR2(x) #x
 #define KICKOS_ARMV7M_STR(x) KICKOS_ARMV7M_STR2(x)
 
-static_assert(KICKOS_ARMV7M_STKOF_FRAME == KICKOS_ARMV7M_TRAP_FRAME_MAX,
-              "the STKOF frame term is the hardware frame, which switch.S cannot compute");
 static_assert(KICKOS_KERNEL_CORES == 1, "the main stack's overflow report has one array per image");
 
 // Kernel .bss, below the app window and the arena: no grant reaches it.
@@ -565,7 +561,7 @@ __attribute__((noreturn)) void kickos_armv7m_stkof_report(uint32_t* frame, uint3
                                                           uint32_t limit)
 {
     // Off the array, an exception return would pop a frame that is not there.
-    kickos_armv7m_fault_report(frame, exc_return, limit);
+    (void)kickos_armv7m_fault_report(frame, exc_return, limit);
     kfault_terminate();
 }
 
@@ -584,7 +580,10 @@ __attribute__((naked)) void kickos_armv7m_stkof(void)
         "isb                 \n"
 #endif
         "tst lr, #4          \n"
-        "bne kickos_armv7m_fault_report \n"
+        "beq 1f              \n"
+        "bl kickos_armv7m_fault_report \n"
+        "bx r0               \n"
+        "1:                  \n"
         "ldr r3, =kickos_armv7m_stkof_stack \n"
         "ldr r12, =kickos_armv7m_stkof_stack + " KICKOS_ARMV7M_STR(KICKOS_ARMV7M_STKOF_STACK_SIZE) " \n"
         "msr msplim, r3      \n"
@@ -679,18 +678,14 @@ extern "C" void kickos_splim_plant(void)
 #endif
 
 // --- One-time core bring-up ------------------------------------------------
+// Called by every Reset_Handler before any code that may access unaligned.
+void kickos_armv7m_ccr_init(void)
+{
+    reg32(SCB_CCR) = ccr_at_bringup(reg32(SCB_CCR));
+}
+
 void kickos_armv7m_init(void)
 {
-    // Cleared whatever the boot ROM left (XMC4800 enters with UNALIGN_TRP set): the prebuilt libc
-    // makes unaligned accesses, and USERSETMPEND lets an unprivileged STIR write pend any line.
-    constexpr uint32_t CCR_CLEARED = CCR_USERSETMPEND | CCR_UNALIGN_TRP;
-#if defined(KICKOS_CCR_PLANT_BOOT)
-    reg32(SCB_CCR) = (reg32(SCB_CCR) | CCR_CLEARED) & ~CCR_DIV_0_TRP;
-#endif
-    reg32(SCB_CCR) = (reg32(SCB_CCR) & ~CCR_CLEARED) | CCR_DIV_0_TRP;
-#if defined(KICKOS_CCR_PLANT_KEPT)
-    reg32(SCB_CCR) = (reg32(SCB_CCR) | CCR_CLEARED) & ~CCR_DIV_0_TRP;
-#endif
     reg32(SCB_SHCSR) |= SHCSR_USGFAULTENA | SHCSR_BUSFAULTENA;
 #if KICKOS_ARMV7M_SPLIM
     {

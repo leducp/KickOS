@@ -57,7 +57,7 @@ namespace
     // Power of two and clear of the floor: under enforcement the worker's stack is one PMP
     // region, and PMP NAPOT wants a naturally aligned power of two.
     constexpr uint32_t TN_STACK_SIZE = 2048;
-    static_assert(TN_STACK_SIZE > TN_PARK_ROOM,
+    static_assert(TN_STACK_SIZE > KICKOS_REENT_CARVE + TN_PARK_ROOM,
                   "the worker cannot park that low and still have a stack above it, so it "
                   "would fault before reaching the arm");
 
@@ -217,7 +217,8 @@ int main(int, char**)
         kos::print("[trapnest] ERROR: the arena block is not aligned to the stack size\n");
         return 1;
     }
-    g_tn_stack_lo = lo;
+    // The thread's libc state is the block's first KICKOS_REENT_CARVE bytes, below its stack.
+    g_tn_stack_lo = lo + KICKOS_REENT_CARVE;
 
     // WHERE the refusal happens decides the depth reached. A stack under the floor is refused
     // near the TOP of thread_create_call; an INADMISSIBLE memory window is refused in

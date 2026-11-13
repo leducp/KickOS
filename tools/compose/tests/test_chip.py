@@ -34,7 +34,6 @@ manual: "The Small Part Manual, rev 2"
 arch: armv7m
 protection: { unit: pmsav7, granule: 32, covers_devices: true, memory_type: true }
 interrupts: { count: { value: 40, ref: "Table 1, p.3" }, free_from: 30 }
-cycle_counter: { hz: 0, glitches: true }
 family: none
 exits_on_fault: false
 c: { namespace: kickos::sm, line_enum: "node : int" }
@@ -79,8 +78,6 @@ HAND_IRQ = """namespace kickos::sm::irq
 
 HAND_LIMITS = """#define KICKOS_MAX_IRQ 40
 #define KICKOS_IRQ_FREE_BASE 30
-#define KICKOS_CHIP_CYCCNT_HZ 0
-#define KICKOS_CHIP_CYCCNT_GLITCHES 1
 #define KICKOS_CHIP_DCACHE 1
 #define KICKOS_CHIP_REGION_GRANULE 32
 #define KICKOS_CHIP_REGION_POW2 1
@@ -135,8 +132,6 @@ class Generated(unittest.TestCase):
         self.assertIn("#ifndef KICKOS_ARCH_ARM_CHIP_SMALL_IRQ_H", outputs["irq.h"])
         self.assertIn("#define KICKOS_MAX_IRQ 40 /* Table 1, p.3 */", outputs["chip_limits.h"])
         self.assertIn("#define KICKOS_IRQ_FREE_BASE 30", outputs["chip_limits.h"])
-        self.assertIn("#define KICKOS_CHIP_CYCCNT_HZ 0", outputs["chip_limits.h"])
-        self.assertIn("#define KICKOS_CHIP_CYCCNT_GLITCHES 1", outputs["chip_limits.h"])
         self.assertIn("#define KICKOS_CHIP_DCACHE 1\n", outputs["chip_limits.h"])
         self.assertIn("#define KICKOS_LINK_FLASH FLASH (rx) : ORIGIN = 0x8000000, LENGTH = 0x200000", outputs["chip_layout.h"])
         self.assertIn("#define KICKOS_LAYOUT_SRAM_SIZE 0x20000", outputs["chip_layout.h"])
@@ -252,7 +247,7 @@ class Generated(unittest.TestCase):
     def test_tree_reserved_blocks(self):
         for name, count, first in (("sim", 0, None), ("mps2", 1, "0x40002000 0x1000"),
                                    ("xmc4800", 3, "0x4000C000 0x4000"),
-                                   ("esp32c6", 14, "0x60091040 0xFC0"), ("rx72m", 7, "0x8C100 0x100")):
+                                   ("esp32c6", 17, "0x60091040 0xFC0"), ("rx72m", 8, "0x8C100 0x100")):
             path = os.path.join(TREE, "platform", name, "chip.yaml")
             text = chip.generate(self.view(path, ARCHES[name]))["chip.cmake"]
             self.assertIn("\nset(KICKOS_CHIP_RESERVED_BLOCKS %d)\n" % count, text, name)
@@ -324,7 +319,7 @@ class Generated(unittest.TestCase):
         rules = {
             "xmc4800": (32, 1), "stm32f411": (32, 1), "mk64f": (32, 0), "esp32c6": (8, 1), "virt_rv32": (8, 1),
             "virt_arm64": (0, 0), "virt_rv64": (0, 0), "q35": (0, 0), "imx8mp": (0, 0),
-            "rp2040": (256, 1), "rp2350": (32, 0), "imxrt1062": (32, 1), "sam3x8e": (32, 1),
+            "rp2040": (256, 1), "rp2350": (32, 0), "imxrt1062": (32, 1), "sam3x8e": (0, 0),
             "nrf51": (0, 0), "mps2": (32, 1), "an505": (32, 0), "rx72m": (16, 0), "esp32": (0, 0), "sim": None,
         }
         self.assertEqual(set(rules), set(ARCHES))
@@ -333,6 +328,8 @@ class Generated(unittest.TestCase):
             self.assertEqual(chip.region_rule(view), rules[name], name)
             if rules[name] is None:
                 self.assertNotIn("KICKOS_CHIP_REGION_GRANULE", "".join(chip.generate(view).values()), name)
+        m7 = self.view(os.path.join(PLATFORM, "imx8mp", "chip.yaml"), "armv7m")
+        self.assertEqual(chip.region_rule(m7), (0, 0), "imx8mp's undriven M7 unit")
 
     def test_one_build_rounds_by_one_region_rule(self):
         self.write(self.path, SMALL.replace("protection: { unit: pmsav7, granule: 32, covers_devices: true, "
@@ -349,11 +346,39 @@ class Generated(unittest.TestCase):
         rows = chip.table_rows(self.view(os.path.join(PLATFORM, "rx72m", "chip.yaml"), "rxv3"))
         self.assertIn((0x0008C100, 0x100), [(b, s) for b, s, r in rows["reserved_blocks"]])
 
+    def test_rx72m_flash_sequencer_is_reserved(self):
+        rows = chip.table_rows(self.view(os.path.join(PLATFORM, "rx72m", "chip.yaml"), "rxv3"))
+        self.assertIn((0x007FE000, 0x100), [(b, s) for b, s, r in rows["reserved_blocks"]])
+
     def test_c6_routing_and_lp_tee_are_reserved(self):
         rows = chip.table_rows(self.view(os.path.join(PLATFORM, "esp32c6", "chip.yaml"), "rv32imac"))
         reserved = [(b, s) for b, s, r in rows["reserved_blocks"]]
         self.assertIn((0x60091040, 0xFC0), reserved)
         self.assertIn((0x600B3400, 0x400), reserved)
+
+    def test_c6_cache_mmu_and_flash_controllers_are_reserved(self):
+        rows = chip.table_rows(self.view(os.path.join(PLATFORM, "esp32c6", "chip.yaml"), "rv32imac"))
+        reserved = [(b, s) for b, s, r in rows["reserved_blocks"]]
+        for block in ((0x60002000, 0x1000), (0x60003000, 0x1000), (0x600C8000, 0x1000)):
+            self.assertIn(block, reserved)
+
+    def test_rp2350_xip_cache_and_qmi_are_reserved(self):
+        rows = chip.table_rows(self.view(os.path.join(PLATFORM, "rp2350", "chip.yaml"), "armv7m"))
+        reserved = [(b, s) for b, s, r in rows["reserved_blocks"]]
+        for block in ((0x400C8000, 0x4000), (0x400D0000, 0x4000)):
+            self.assertIn(block, reserved)
+
+    def test_imxrt1062_flexspi_and_bee_are_reserved(self):
+        rows = chip.table_rows(self.view(os.path.join(PLATFORM, "imxrt1062", "chip.yaml"), "armv7m"))
+        reserved = [(b, s) for b, s, r in rows["reserved_blocks"]]
+        for block in ((0x402A8000, 0x4000), (0x403EC000, 0x4000)):
+            self.assertIn(block, reserved)
+
+    def test_mk64f_flash_controller_and_cache_are_reserved(self):
+        rows = chip.table_rows(self.view(os.path.join(PLATFORM, "mk64f", "chip.yaml"), "armv7m"))
+        reserved = [(b, s) for b, s, r in rows["reserved_blocks"]]
+        for block in ((0x4001F000, 0x1000), (0x40020000, 0x1000)):
+            self.assertIn(block, reserved)
 
     def test_bus_master_apertures(self):
         rows = chip.table_rows(self.view(os.path.join(PLATFORM, "virt_arm64", "chip.yaml"), "armv8a"))
@@ -438,7 +463,6 @@ class Generated(unittest.TestCase):
             ("irq.h", HAND_IRQ, "enum node : int", "enum line : int"),
             ("chip_limits.h", HAND_LIMITS, "KICKOS_MAX_IRQ 40", "KICKOS_MAX_IRQ 41"),
             ("chip_limits.h", HAND_LIMITS, "#define KICKOS_IRQ_FREE_BASE 30\n", ""),
-            ("chip_limits.h", HAND_LIMITS, "#define KICKOS_CHIP_CYCCNT_HZ 0\n", ""),
         ]
         for name, text, old, new in plants:
             with self.subTest(plant=new):
@@ -529,7 +553,7 @@ class Generated(unittest.TestCase):
 
     def test_the_described_chips_keep_the_values_their_headers_had(self):
         golden = {
-            ("xmc4800", "armv7m"): ["#define KICKOS_MAX_IRQ 112", "#define KICKOS_CHIP_CYCCNT_GLITCHES 1",
+            ("xmc4800", "armv7m"): ["#define KICKOS_MAX_IRQ 112",
                                     "CCU40_BASE = 0x4000C000u", "SCU_TRAP_BASE = 0x50004160u",
                                     "SCU_PLL_BASE = 0x50004710u", "FLASH0_CTRL_BASE = 0x58001000u",
                                     "FLASH_CACHED_BASE = 0x8000000u", "USIC0_SR0 = 84,", "enum node : int",
@@ -543,21 +567,21 @@ class Generated(unittest.TestCase):
             ("esp32c6", "rv32imac"): ["#define KICKOS_MAX_IRQ 32", "#define KICKOS_IRQ_SOFT_ONLY_BASE 26",
                                       "PLIC_MX_BASE = 0x20001000u", "CLINT_BASE = 0x20001800u",
                                       "RTC_WDT_BASE = 0x600B1C00u", "UART0_TX_LINE = 16,", "enum kernel_line : int"],
-            ("virt_rv32", "rv32imac"): ["#define KICKOS_MAX_IRQ 32", "#define KICKOS_CHIP_CYCCNT_HZ 0",
+            ("virt_rv32", "rv32imac"): ["#define KICKOS_MAX_IRQ 32",
                                         "#define KICKOS_CHIP_TIMEBASE_HZ 10000000",
                                         "CLINT_BASE = 0x2000000u"],
             ("virt_arm64", "armv8a"): ["#define KICKOS_MAX_IRQ 288", "#define KICKOS_IRQ_FREE_BASE 200",
-                                       "#define KICKOS_CHIP_CYCCNT_HZ 0", "GICD_BASE = 0x8000000u",
+                                       "GICD_BASE = 0x8000000u",
                                        "GICR_BASE = 0x80A0000u", "UART0_BASE = 0x9000000u",
                                        "#define KICKOS_LAYOUT_DRAM_BASE 0x40000000"],
-            ("virt_rv64", "rv64imac"): ["#define KICKOS_MAX_IRQ 32", "#define KICKOS_CHIP_CYCCNT_HZ 0",
+            ("virt_rv64", "rv64imac"): ["#define KICKOS_MAX_IRQ 32",
                                         "#define KICKOS_CHIP_TIMEBASE_HZ 10000000",
                                         "#define KICKOS_LAYOUT_DRAM_SIZE 0x4000000",
                                         "#define KICKOS_LAYOUT_TEST_FINISHER_BASE 0x100000"],
             ("q35", "x86_64"): ["#define KICKOS_MAX_IRQ 24", "COM1_BASE = 0x3F8u", "PIC_MASTER_BASE = 0x20u",
                                 "ACPI_PM_BASE = 0x600u"],
             ("imx8mp", "armv8a"): ["#define KICKOS_MAX_IRQ 192", "#define KICKOS_IRQ_FREE_BASE 181",
-                                   "#define KICKOS_CHIP_CYCCNT_HZ 0", "GICD_BASE = 0x38800000u",
+                                   "GICD_BASE = 0x38800000u",
                                    "UART1_BASE = 0x30860000u", "MU1_A_TO_A53 = 120,",
                                    "#define KICKOS_LAYOUT_GICR_SIZE 0x80000"],
         }

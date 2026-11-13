@@ -9,9 +9,10 @@ endif()
 kickos_unbooted(drvdeath "sim_driver_death boots it in a tree of its own per death knob")
 
 # The gate builds a tree of its own per death knob of the console driver, so register it only
-# in a tree that sets none; registering it in the trees the script configures would recurse.
-if(KICKOS_SIMCON_EXIT_AFTER OR KICKOS_SIMCON_DIE_AT_BRINGUP OR KICKOS_SIMCON_WINDOW_THREAD
-   OR KICKOS_SIMCON_IRQ_WEDGE)
+# in the sim preset's tree, which sets none; registering it in the trees the script configures
+# would recurse.
+if(NOT _fs_preset_key STREQUAL "sim" OR KICKOS_SIMCON_EXIT_AFTER OR KICKOS_SIMCON_DIE_AT_BRINGUP
+   OR KICKOS_SIMCON_WINDOW_THREAD OR KICKOS_SIMCON_IRQ_WEDGE)
   return()
 endif()
 add_test(

@@ -2,8 +2,8 @@
 <!-- Copyright (c) 2026 Philippe Leduc -->
 # Design brief: unprivileged userspace SPI driver
 
-> **Status: LANDED** -- `xmcspi` shipped as `user/apps/xmc4800-relax/xmcspi/` and is
-> silicon-proven (2026-07-17): the canonical per-thread PMSA MMIO-isolation result, where a
+> **Status: LANDED** -- `xmcspi` shipped as an XMC4800 app (removed since; `pvprobe` and
+> `xmcssc` hold its claims) and was silicon-proven (2026-07-17): the canonical per-thread PMSA MMIO-isolation result, where a
 > granted 512-byte USIC DEV window does an internal SSC loopback (4 words, `tx == rx`) AND an
 > ungranted SCU poke faults MemManage (`CFSR=0x82`). Note the milestone numbers in this brief
 > predate the M4/M5/M6 renumbering (`design-driver-era-scope.md` sec.4). See `design/README.md`

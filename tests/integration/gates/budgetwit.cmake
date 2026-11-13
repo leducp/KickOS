@@ -9,10 +9,10 @@ endif()
 
 # EXACTLY the arms main.cc registers. The four PAGES arms are a translating board's, and skip by
 # name elsewhere.
-set(_arms 19)
+set(_arms 21)
 set(_skip "")
 if(NOT KICKOS_HAVE_ASPACE)
-  set(_arms 15)
+  set(_arms 17)
   set(_skip
     "+skip - a run past the task's PAGES budget is refused: this board does not translate"
     "+skip - a run mapped and closed still charges its minter: this board does not translate"

@@ -22,3 +22,6 @@ reserved_pins:
   GPIO15: strapping
   GPIO12: usb_jtag
   GPIO13: usb_jtag
+
+# The module's SPI flash, which the ROM boots from and the cache maps task text out of.
+flash: { size: 0x400000, ref: "ESP32-C6-WROOM-1 datasheet v0.1, 1.2 Description, Table 1" }

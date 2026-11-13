@@ -55,7 +55,7 @@ measure the M2 `arch_mpu_apply` switch-hook cost against.
 
 ## 4. Context-switch + IRQ-entry bench baselines -- [x] DONE
 
-The per-board bench table (bench app, `KICKOS_BENCH=ON`) is filled -- the full fleet is
+The per-board bench table (the in-kernel era's bench app) is filled -- the full fleet is
 recorded in archived `M1_state.md` section 3 (throughput on every target; per-switch cost +
 IRQ-entry latency on every board with a cycle counter). Only K64F re-confirms under M2
 SYSMPU (prior baseline 77 cyc / 641 ns on record). These are the M2 regression baseline.
@@ -304,8 +304,7 @@ bring-up in `book/peripheral-isolation-and-the-hardware-ceiling.md`):
   loopback (4 words tx==rx) AND an ungranted SCU poke faults MemManage (CFSR=0x82,
   MMFAR=0x50004648), per thread. Internal loopback, no jumper. The USIC CCR/FDR/BRG are
   PV-write-only at the bus (RM Table 18-20) so interrupt-enable+config is privileged bring-up --
-  a K64F-AIPS-like bus-privilege layer sitting UNDER the PMSA proof. `design-spi-driver.md`,
-  `user/apps/xmc4800-relax/xmcspi/`.
+  a K64F-AIPS-like bus-privilege layer sitting UNDER the PMSA proof. `design-spi-driver.md`.
 - **rxdrv (RX72M, PORT8/LED6 GPIO):** DONE on silicon (2026-07-17) -- per-thread peripheral
   isolation on the RX MPU: a granted 16-byte PODR window blinks LED6 AND an ungranted PORT8.PDR
   poke faults ("MPU FAULT: task 'rxdrv' attempted read at 0x8c008"). First real granted

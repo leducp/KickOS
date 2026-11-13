@@ -92,8 +92,6 @@ namespace kickos::x86_64
                       "switch.S loads the kernel stack at CPU_KERNEL_SP");
         static_assert(offsetof(cpu_block, user_rsp) == KICKOS_X86_64_CPU_USER_RSP,
                       "switch.S parks the caller's stack pointer at CPU_USER_RSP");
-        static_assert(offsetof(cpu_block, sw_start) == KICKOS_X86_64_CPU_SW_START,
-                      "switch.S timestamps the swap in this core's block");
         static_assert(offsetof(cpu_block, core_id) == KICKOS_X86_64_CPU_CORE_ID,
                       "arch_cpu_id reads the core ID from this GS offset");
         static_assert(offsetof(cpu_block, current) == KICKOS_X86_64_CPU_CURRENT,

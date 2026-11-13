@@ -5,10 +5,7 @@
 // pointer, made on purpose: only a kernel configured by tests/integration/check_uaccess.sh
 // carries it, and its banner says `witness uaccess`. KOS_SYS_WITNESS_REWINDS answers the
 // switcher's rewind count: only a kernel configured by tests/integration/check_rewind.sh carries
-// it, and its banner says `witness rewind`. KOS_SYS_WITNESS_NODE raises a line no driver holds
-// on the calling core, or reads a word from ring 0: only a kernel configured for the
-// tests/integration/check_pizero_amp_gate.sh capture carries it, and its banner says
-// `witness node`.
+// it, and its banner says `witness rewind`.
 
 #ifndef KICKOS_SYS_WITNESS_H
 #define KICKOS_SYS_WITNESS_H
@@ -19,10 +16,6 @@
 
 #ifndef KICKOS_WITNESS_REWIND
 #define KICKOS_WITNESS_REWIND 0
-#endif
-
-#ifndef KICKOS_WITNESS_NODE
-#define KICKOS_WITNESS_NODE 0
 #endif
 
 // Each a ring-0 touch of uaddr at a different point. Append new values.
@@ -44,16 +37,6 @@ enum kos_witness_uaccess_op
                                          //   core with the flag lifting the guard set; one
                                          //   finding it clear moves the due time ns on: the
                                          //   entry from user mode an interrupt builds
-};
-
-enum kos_witness_node_op
-{
-    KOS_WITNESS_NODE_STRAY = 0, // arg is a line nothing on this kernel holds: unmasks and
-                                //   pends it on the calling core, then answers how far the
-                                //   kernel's spurious count moved once it was taken, 0 where it
-                                //   never was within the poll bound; -KOS_EBUSY for a held line
-    KOS_WITNESS_NODE_READ = 1   // arg is an address: announces it, then reads the word there
-                                //   from ring 0 and answers it
 };
 
 #endif

@@ -1,0 +1,44 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+# Recorded under QEMU on microbit.
+
+  ==============================================
+   KickOS 0.5.1  -  microkernel RTOS
+  ==============================================
+   board   microbit
+   arch    armv6m
+   cpu     cortex-m0
+   mpu     off
+   sched   tickless
+   heap    1 KiB available
+   kstack  896 B x 6 = 5376 B
+
+microbenchmark: switch, IPC, spawn and wake costs, each timed from user space
+cpu clock: 16000000 Hz (0 = the backend states none)
+bench: posture: cores 1, clock average, vector no, aspace no, flash no, threads 3
+
+  word-wake: 750 ns/waiter  (k=0 2032 ns, k=1 3094 ns, k=2 3532 ns; mean of 16)
+  owner-exit: 750 ns/waiter  (k=0 9657 ns, k=1 9782 ns, k=1 10407 ns; mean of 16)
+  call/reply: 8 B  16404 ns/round-trip  (60958 round-trips/s over 20000 calls / 328 ms)
+  call/reply: 16 B  15909 ns/round-trip  (62857 round-trips/s over 20000 calls / 318 ms)
+  call/reply: 32 B  14606 ns/round-trip  (68463 round-trips/s over 20000 calls / 292 ms)
+  call/reply: 64 B  14731 ns/round-trip  (67882 round-trips/s over 20000 calls / 294 ms)
+  call/reply: 128 B  14721 ns/round-trip  (67926 round-trips/s over 20000 calls / 294 ms)
+  call/reply: 256 B  14703 ns/round-trip  (68011 round-trips/s over 20000 calls / 294 ms)
+  call/reply: 8 B  14507 ns/round-trip  (68931 round-trips/s over 20000 calls / 290 ms) [generic path]
+  call/reply: 16 B  14421 ns/round-trip  (69340 round-trips/s over 20000 calls / 288 ms) [generic path]
+  call/reply: 32 B  14730 ns/round-trip  (67884 round-trips/s over 20000 calls / 294 ms) [generic path]
+  call/reply: 64 B  14568 ns/round-trip  (68640 round-trips/s over 20000 calls / 291 ms) [generic path]
+  call/reply: 128 B  14765 ns/round-trip  (67725 round-trips/s over 20000 calls / 295 ms) [generic path]
+  call/reply: 256 B  14685 ns/round-trip  (68093 round-trips/s over 20000 calls / 293 ms) [generic path]
+  call/reply: 32 B  14893 ns/round-trip  (67143 round-trips/s over 20000 calls / 297 ms) [caller outranks server, D1 donates]
+
+  throughput: 115690 ctx-sw/s  (8643 ns/sw avg over 40000 switches / 345 ms)
+  throughput: 114548 ctx-sw/s  (8729 ns/sw avg over 40000 switches / 349 ms)
+  throughput: 115115 ctx-sw/s  (8686 ns/sw avg over 40000 switches / 347 ms)
+  e2e-local: 8399 ns avg  (n=1000) [tare 3218 ns]
+  xtask ping-pong: 8628 ns/switch  (40000 switches / 345 ms)
+  xtask call/reply: 16 B  16988 ns/round-trip  (58863 round-trips/s over 20000 calls / 339 ms)
+  spawn/exit: thread 27900 ns  (200 reps / 5 ms)
+  spawn/exit: task 42480 ns  (200 reps / 8 ms)
+bench: done

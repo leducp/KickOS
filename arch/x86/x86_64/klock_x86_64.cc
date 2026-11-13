@@ -13,10 +13,6 @@
 
 #include <stdint.h>
 
-#if KICKOS_BENCH
-extern "C" void kickos_bench_lock_draw_clh(void);
-#endif
-
 namespace
 {
     // One request per core plus the initially granted sentinel; the interrupt mask keeps at
@@ -119,9 +115,6 @@ void arch_kernel_lock(void)
     }
     __atomic_store_n(&node.mine->pending, 1u, __ATOMIC_RELAXED);
     node.predecessor = __atomic_exchange_n(&g_clh_tail, node.mine, __ATOMIC_ACQ_REL);
-#if KICKOS_BENCH
-    kickos_bench_lock_draw_clh();
-#endif
     kickos::doorbell::await_turn(
         [&node] { return __atomic_load_n(&node.predecessor->pending, __ATOMIC_ACQUIRE) == 0u; });
     kickos::klock::owner_take();

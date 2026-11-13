@@ -30,8 +30,9 @@
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
-# A hang detector, not a speed bound. An SMP board gets a larger one from libcrace.cmake.
-: "${QEMU_TIMEOUT:=240}"
+# A hang detector, not a speed bound: a loaded host stalls a healthy run for over a minute between
+# two lines. tests/cmake/kickos_tests.cmake reads this line to register the test with no TIMEOUT.
+: "${KOS_SILENCE_S:=300}"
 
 dead=1
 unbuffered=0
@@ -48,6 +49,10 @@ else
 fi
 
 assert_no_panic "panic while the workers raced"
+if ! judging_capture; then
+    # Before the lines are judged, or a cut-off run reads as a lost line.
+    status_clause "a whole run to judge the lines of" ended
+fi
 shape="$(printf '%s\n' "$OUT" | sed -n 's/^libcrace: \([0-9][0-9]*\) workers x \([0-9][0-9]*\) rounds$/\1 \2/p')"
 if [ -z "$shape" ]; then
     cfail start "main never announced its workers"

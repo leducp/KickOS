@@ -7,15 +7,14 @@
  *
  * AN EXTENT AND NOT A POINTER TEST. Exception entry stacks the HARDWARE frame with the
  * PRE-exception privilege, so the MPU already refuses a kernel-aimed PSP as MSTKERR. The
- * {r4-r11, EXC_RETURN} block pushed BELOW that frame is written in handler mode and refused
- * by nothing, and its last word is the EXC_RETURN the resume branches through: a neighbour
- * owning that word rewrites it to 0xFFFFFFF1 and resumes the victim privileged. So the bound
- * is on the room REMAINING below the PSP.
+ * {r4-r11} block pushed BELOW that frame is written in handler mode and refused by nothing,
+ * so a PSP a few words above a neighbour's region writes into it. So the bound is on the
+ * room REMAINING below the PSP.
  *
  * KICKOS_KERNEL_STACKS picks between two syscall entry designs:
- *   1  THE TRANSFER. svc_trampoline relocates SP onto the caller's own kernel block
- *      (ctx.kernel_sp) before dispatching, so the dispatch is a requirement on
- *      KICKOS_KERNEL_STACK_SIZE. Every HAS_MPU armv7m chip.
+ *   1  THE TRANSFER. The SVC handler starts svc_trampoline on the caller's own kernel block
+ *      (ctx.kernel_sp), so the dispatch is a requirement on KICKOS_KERNEL_STACK_SIZE. Every
+ *      HAS_MPU armv7m chip.
  *   0  THE RED ZONE. svc_trampoline dispatches on the caller's PSP and the SVC site refuses
  *      a PSP without room for all of it. sam3x8e, which has no MPU.
  *
@@ -26,6 +25,7 @@
  *   SVC     the syscall trap's writes on the interrupted thread's stack.
  *   SVCK    the syscall dispatch on the caller's kernel block, at KICKOS_KERNEL_STACKS 1.
  *   EXIT    the death path, below.
+ *   IDLE    idle's own stack, below.
  *   MSP     the main stack, below: boot and every exception nested on it.
  *
  * tests/static/check_trap_redzone.sh re-measures the descent figures and fails when a worst
@@ -63,7 +63,7 @@
 #error "the stack limit is programmed only around the kernel blocks' syscall entry; the red-zone dispatch would run privileged on the limited user stack"
 #endif
 
-/* How far above a stack's base its limit sits: the {r4-r11, EXC_RETURN} and {s16-s31} block
+/* How far above a stack's base its limit sits: the {r4-r11} and {s16-s31} block
  * PendSV and the SVC fastpath push below a PSP, which no limit checks, rounded up to the
  * registers' 8-byte granule. On a kernel block the extra word is the canary. A plain integer:
  * tests/integration/gates/pspguard.cmake scrapes it. */
@@ -71,72 +71,68 @@
 
 /* The software block PendSV and the SVC fastpath push below the live PSP, counted off the
  * emitted code:
- *   stmdb r0!, {r4-r11, lr}     9 words                                        36
+ *   stmdb r0!, {r4-r11}         8 words                                        32
  *   vstmdbeq r0!, {s16-s31}    16 words, only on an __ARM_FP build            +64
  *
  * FRAME_MAX is a plain integer and not an expression: the gate scrapes the enforced figures
  * out of this header as immediates. arch_armv7m.cc asserts each against the registers it
  * prices, and FRAME_MAX against their sum. */
-#define KICKOS_ARMV7M_TRAP_FRAME 36
+#define KICKOS_ARMV7M_TRAP_FRAME 32
 #define KICKOS_ARMV7M_TRAP_FRAME_FP 64
-#define KICKOS_ARMV7M_TRAP_FRAME_MAX 100
+#define KICKOS_ARMV7M_TRAP_FRAME_MAX 96
 
-/* THE SVC CLASS, structural half: the bytes below the guarded PSP written by the hardware and
- * one assembly prologue, which no call graph sees. P0 is the PSP the guard validates, P1 the
- * PSP the SVC's exception return leaves, where svc_trampoline starts.
+/* THE SVC CLASS, structural half: the bytes below the guarded PSP P0 that the hardware writes
+ * for the thread, which no call graph sees. At KICKOS_KERNEL_STACKS 1 the SVC handler builds
+ * the trampoline's frame on the kernel block and writes nothing below P0. What stands is the
+ * syscall return's window, from svc_trampoline's move back onto R, the PSP the thread resumes
+ * on, to its privilege drop, where a preemption stacks on R while the thread is privileged:
  *
- *   P1 = P0 + 32   the hardware frame exception return unstacks. 104 with an FP frame, and
- *                  the pessimal pairing below wants the SMALLER credit, so 32.
- *   -8             svc_trampoline's prologue. Both designs spend exactly eight bytes:
- *                  `push {r0, r1}` at KICKOS_KERNEL_STACKS 1, `push {r12, lr}` at 0.
- *   -104           the hardware frame a device IRQ or SysTick stacks if it preempts the
- *                  trampoline. PRIO_DEVICE (0x30) is above PRIO_SVCALL (0xE0) and the
- *                  trampoline runs in THREAD mode, so ARMv7-M stacks it on the PSP.
- *   -100           the PendSV that tail-chains behind it. It cannot repeat: PendSV switches
- *                  away and pops the block on resume, and a further exception nests on the
- *                  MSP, so at most ONE exception is ever stacked on a thread's PSP.
+ *   R = P0 + 32    the entry frame the return pops, 104 with an FP frame.
+ *   -32            the hardware frame a device IRQ or SysTick stacks if it preempts the window,
+ *                  104 with an FP frame. PRIO_DEVICE (0x30) is above PRIO_SVCALL (0xE0) and
+ *                  the window runs in THREAD mode, so ARMv7-M stacks it on the PSP. Privileged,
+ *                  so no MPU region bounds it. It takes the entry frame's shape: the kernel half
+ *                  executes no FP instruction (rule armv7m_kernel_fp), so CONTROL.FPCA leaves
+ *                  the dispatch as the return into the trampoline set it.
+ *   -32            the PendSV that tail-chains behind it, 96 with an FP frame. It cannot
+ *                  repeat: PendSV switches away and pops the block on resume, and a further
+ *                  exception nests on the MSP, so at most ONE exception is ever stacked on a
+ *                  thread's PSP.
  *
- * THE STKALIGN PAD IS NOT A TERM. Both SVC sites are reached by a bl from C, so SP is
- * 8-aligned there, and neither prologue moves it off. It would also cancel if one did: entry
- * spends 4 exactly when the pre-exception SP was 4-mod-8, and that same case puts P0 4 bytes
- * lower, so both parities reach P0 - 180. A future entry point pushing an odd number of words
- * needs no term added here.
- *
- * The 104/100 pair is the FP-live posture while the 32 credit is the FP-absent one, and that
- * pairing is reachable: a thread traps with no FP frame, then the ISR executes one FP
- * instruction, so CONTROL.FPCA is set by the time the tick lands. Whether the kernel emits an
- * FP instruction is a codegen decision and is NOT gated, so the 136 bytes are unconditional.
- *
- * FRAME_MAX is NOT added on top: the fastpath arm's push is an alternative to this window,
- * not something below it, and 180 dominates it. arch_armv7m.cc asserts the domination. */
-#define KICKOS_ARMV7M_TRAP_NEST_SVC 180
+ * So the preemption lands on P0 and the window is the PendSV block: 96 at most, FRAME_MAX,
+ * the fastpath arm's own push. THE STKALIGN PAD IS NOT A TERM: the entry spends 4 exactly when
+ * the pre-exception SP was 4-mod-8, which puts P0 4 bytes lower and R back on that same SP,
+ * where the preempting entry spends its own 4. */
+#define KICKOS_ARMV7M_TRAP_NEST_SVC 96
 
-/* The same window with the dispatch inside it, which is the KICKOS_KERNEL_STACKS 0 posture.
- * One term is added, the STKALIGN pad the preempting entry spends: the cancellation above
- * holds for a fixed window walked from an 8-aligned SP, and the dispatch's own frames are
+/* The window with the dispatch inside it, which is the KICKOS_KERNEL_STACKS 0 posture: the
+ * trampoline runs on R from its first instruction, so its `push {r12, lr}` adds 8, and the
+ * STKALIGN pad the preempting entry spends is a term: the dispatch's own frames are
  * word-granular, so the deepest SP can be 4-mod-8 on its own.
  *
  * It is a frame term and not rounding in the depth. Here the gate compares DEPTH >= D for
  * every parity of D; folded into the depth it would compare D against a figure that already
  * spent 4 on the pad, and pass a dispatch 4 bytes past what the site can hold. */
-#define KICKOS_ARMV7M_TRAP_NEST_SVC_DISPATCH 184
+#define KICKOS_ARMV7M_TRAP_NEST_SVC_DISPATCH 108
 
 /* THE SVCK CLASS, structural half: what stands between the top of a kernel block (T =
  * ctx.kernel_sp) and the first byte syscall_dispatch may use, plus what a preemption puts
  * below the deepest byte it uses.
  *
- *   -16    the continuation header svc_trampoline lays at T: a3 (the fifth argument, passed
+ *   -16    the continuation header the SVC handler lays at T: a3 (the fifth argument, passed
  *          on the stack by AAPCS), the caller-return, the PSP the thread resumes on, and the
- *          word that keeps SP 8-aligned for the call.
+ *          word that keeps SP 8-aligned for the call. The trampoline's entry frame below it,
+ *          at most 104, is popped before the dispatch descends, so it and the preemption
+ *          below are alternatives: 16 + 104 + 96 tail-chained onto it stays inside the sum.
  *   -4     the STKALIGN pad a preempting exception spends. It does NOT cancel here: above it
  *          is a chain of compiler frames whose sub is a multiple of 4, so the deepest SP can
  *          be 4-mod-8 on its own.
  *   -104   the hardware frame a device IRQ or SysTick stacks. The dispatch runs in THREAD
  *          mode, so ARMv7-M stacks it on the PSP, which is this block.
- *   -100   the PendSV that tail-chains behind it, by the single-nesting argument above.
+ *   -96    the PendSV that tail-chains behind it, by the single-nesting argument above.
  *
- * The FP terms are unconditional for the same reason the SVC class makes them so. */
-#define KICKOS_ARMV7M_TRAP_NEST_SVCK 224
+ * The FP terms are unconditional: an FP-live caller's dispatch runs with CONTROL.FPCA set. */
+#define KICKOS_ARMV7M_TRAP_NEST_SVCK 220
 
 /* Worst-case bytes the kernel's C dispatch descends BELOW all of that, per class.
  *
@@ -161,45 +157,42 @@
  * by nothing else, and one fleet-wide figure would make every non-telemetry board reserve
  * a block per thread slot of a tail its image does not contain.
  *
- * KICKOS_BENCH is a smaller knob of the same kind, its arm printing from inside the dispatch:
- * 832 enforced against 728 measured on f411disco-bench. Off both, 768 enforced against 600 on
- * qemu and 640 on pizero2350-amp2-n0, a task create staging its grants:
+ * Off it, 768 enforced against 600 on qemu and 640 on pizero2350-amp2-n0, a task create
+ * staging its grants:
  *   syscall_dispatch[48] -> task_create_call[144] -> spawn_locked[272] -> ThreadPool::alloc[16]
  *   -> task_admit[24] -> task_usage[8] -> task_object_usage[40] -> task_object_holds[48] -> ...
  * 1240 enforced against 1088 measured on qemu-telem, a create cancelled at its wait whose exit
- * ends the system through arch_shutdown's telemetry tail. Bench and telemetry presets stage at
- * most 9 spawn grants and the partition nodes 12; arch_armv7m.cc refuses more. The doorbell's
+ * ends the system through arch_shutdown's telemetry tail. Telemetry presets stage at most 9
+ * spawn grants and the partition nodes 12; arch_armv7m.cc refuses more. The doorbell's
  * service body runs in handler mode on SP_main, where the MSP class prices it.
  *
- * NO FALLBACK #define: with -Wundef -Werror an image that lost KICKOS_TELEMETRY or KICKOS_BENCH
- * fails to build, where a fallback would silently reserve the smaller figure. */
+ * NO FALLBACK #define: with -Wundef -Werror an image that lost KICKOS_TELEMETRY fails to
+ * build, where a fallback would silently reserve the smaller figure. */
 #if KICKOS_TELEMETRY
 #define KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_SVCK 1240
-#elif KICKOS_BENCH
-#define KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_SVCK 832
 #else
 #define KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_SVCK 768
 #endif
 
 /* THE EXIT CLASS, structural half: NEST_SVCK's window without the 16-byte continuation
- * header, which no trampoline lays here. The backend rewrites the exception frame so the
- * return lands in the stub with sp at kickos_fault_stack_top.
+ * header, which no trampoline lays here. The backend builds the exception frame the return
+ * pops at kickos_fault_stack_top, so the exit starts with sp there.
  *
  *   -4     the STKALIGN pad, which does not cancel, as in the SVCK window.
  *   -104   the hardware frame a device IRQ or SysTick stacks. The stub runs in THREAD mode.
- *   -100   the PendSV that tail-chains behind it.
+ *   -96    the PendSV that tail-chains behind it.
  *
  * Unlike rv32imac's KICKOS_RV_TRAP_FRAME_EXIT 0, the stub is PREEMPTIBLE: exit_current
  * reschedules. */
-#define KICKOS_ARMV7M_TRAP_NEST_EXIT 208
+#define KICKOS_ARMV7M_TRAP_NEST_EXIT 204
 
 /* The measured descent of the two stubs a dying thread runs PRIVILEGED on its own stack:
  * kickos_thread_fault_exit and kickos_thread_slay_exit. The fault stub is the deeper at every
  * posture, reaching the console through kvprintf_fault, which formats
  * into KDIAG_FAULT_LINE_MAX bytes and not the 256 an ordinary kprintf gets.
  *
- * The kstacks=0 fallback, with no posture ladder: its presets have neither a telemetry nor a
- * bench variant and measure 360. Where a block IS seated they are EXITK below. */
+ * The kstacks=0 fallback, with no posture ladder: its preset, due, has no telemetry variant
+ * and measures 368. Where a block IS seated they are EXITK below. */
 #define KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_EXIT 448
 
 /* THE SAME TWO STUBS ON THE KERNEL BLOCK. kickos_fault_stack_top answers with ctx.kernel_sp,
@@ -208,8 +201,8 @@
  * rather than their sum.
  *
  * It never binds: SVCK wins the block on every registered preset. Off telemetry it measures
- * 360 to 440 (400 on bench) under an enforced 448; on telemetry 952 stands over 800, down
- * arch_shutdown's drain. */
+ * 368 to 440 under an enforced 448; on telemetry 952 stands over 808, down arch_shutdown's
+ * drain. */
 #if KICKOS_TELEMETRY
 #define KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_EXITK 952
 #else
@@ -220,12 +213,8 @@
  * movw, whose imm16 range covers anything the floor can hold, so a figure that outgrew the
  * encoding fails to assemble rather than truncating.
  *
- * ONLY PENDSV TAKES A RUN-TIME FP TERM, and the SVC site must not. PendSV's push IS the
- * {s16-s31} block. NEST_SVC is a structural constant that already bounds both entry postures,
- * because the 72 extra bytes the hardware consumes ABOVE P0 on an FP-live entry are 72 bytes
- * svc_trampoline then starts higher by:
- *   entry frame 32:   trampoline at P0+32,  window reaches P0-180
- *   entry frame 104:  trampoline at P0+104, window reaches P0-108 */
+ * ONLY PENDSV TAKES A RUN-TIME FP TERM. PendSV's push IS the {s16-s31} block, while
+ * NEST_SVC is a structural constant that bounds both entry postures at the FP-live one's 96. */
 #define KICKOS_ARMV7M_TRAP_NEED_PENDSV \
     (KICKOS_ARMV7M_TRAP_FRAME + KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_PENDSV)
 
@@ -233,8 +222,8 @@
  * floor assert, kickos_arm_bad_psp's reported count and user/apps/common/pspguard's
  * expectation are one value and not four agreements. */
 #if KICKOS_KERNEL_STACKS && KICKOS_ARMV7M_SPLIM
-/* The window's checked part (NEST_SVC less the PendSV block) must clear PSPLIM: a violation in
- * the privileged trampoline is the kernel's and panics. */
+/* Every entry stacks at or above PSPLIM, which sits SPLIM_ROOM over stack_lo and covers the
+ * window, so the lower leg asks for that room and only the upper leg can refuse. */
 #define KICKOS_ARMV7M_TRAP_NEED_SVC \
     (KICKOS_ARMV7M_TRAP_NEST_SVC - KICKOS_ARMV7M_TRAP_FRAME_MAX + KICKOS_ARMV7M_SPLIM_ROOM)
 #elif KICKOS_KERNEL_STACKS
@@ -271,11 +260,12 @@
 #define KICKOS_ARMV7M_CTX_OFF_STACK_LO 12
 #define KICKOS_ARMV7M_CTX_OFF_STACK_HI 16
 #define KICKOS_ARMV7M_CTX_OFF_KERNEL_SP 20
+#define KICKOS_ARMV7M_CTX_OFF_EXC_RETURN 24
 #if KICKOS_ARMV7M_SPLIM
-#define KICKOS_ARMV7M_CTX_OFF_SPLIM 24
-#define KICKOS_ARMV7M_CTX_OFF_TRACE_TID 28
+#define KICKOS_ARMV7M_CTX_OFF_SPLIM 28
+#define KICKOS_ARMV7M_CTX_OFF_TRACE_TID 32
 #else
-#define KICKOS_ARMV7M_CTX_OFF_TRACE_TID 24
+#define KICKOS_ARMV7M_CTX_OFF_TRACE_TID 28
 #endif
 
 /* THE PANIC REPORTER'S OWN STACK, which kickos_panic_stack_enter (switch.S) moves to before a
@@ -284,15 +274,11 @@
  * fault reporter is a different chain, on the dying thread's own stack, and EXIT and EXITK
  * measure it.
  *
- * FRAME IS THE HARDWARE FRAME, KICKOS_ARMV7M_TRAP_FRAME_MAX, and not 0: PRIMASK does not mask
- * a HardFault, and a wild access inside the reporter stacks that frame on this array. A plain
- * integer because check_trap_redzone.sh scrapes it as an immediate; arch_armv7m.cc asserts the
- * two agree.
+ * FRAME is 0: only a fault inside the reporter stacks one here, a bug the tests catch.
  *
  * Telemetry is its own size class, as it is for the kernel block: arch_shutdown's ring drain
- * sits under kfault_terminate, inside the reporter. The deepest readings are 160 and 760,
- * under the enforced 320 and 832. */
-#define KICKOS_ARMV7M_PANIC_FRAME 100
+ * sits under kfault_terminate, inside the reporter. */
+#define KICKOS_ARMV7M_PANIC_FRAME 0
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
 #define KICKOS_ARMV7M_PANIC_DEPTH 832
 #else
@@ -305,15 +291,36 @@
  * Any fault taken on that array ends the system from its top, through kfault_terminate.
  *
  * The class is measured on every armv7m preset, the fault reporter being the same chain on the
- * main stack of a core without limits; only a core with them allocates the array. FRAME as for
- * PANIC. Telemetry is its own size class, as for PANIC. The deepest readings are 544 and 840,
- * under the enforced 768 and 1024; on the stack-limit presets, 520. */
-#define KICKOS_ARMV7M_STKOF_FRAME 100
+ * main stack of a core without limits; only a core with them allocates the array. FRAME and
+ * telemetry as for PANIC. */
+#define KICKOS_ARMV7M_STKOF_FRAME 0
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
 #define KICKOS_ARMV7M_STKOF_DEPTH 1024
 #else
 #define KICKOS_ARMV7M_STKOF_DEPTH 768
 #endif
+
+/* IDLE'S OWN STACK, its PSP, which idle_entry runs on privileged. An interrupt stacks its
+ * hardware frame there and the PendSV that tail-chains behind it pushes its block below that,
+ * by the single-nesting argument above:
+ *
+ *   -4     the STKALIGN pad, which does not cancel below compiler frames.
+ *   -104   the hardware frame, 32 without __ARM_FP.
+ *   -96    the PendSV block, 32 without __ARM_FP. Where the core has stack limits PSPLIM sits
+ *          KICKOS_ARMV7M_SPLIM_ROOM above the base and the hardware frame must clear it, so
+ *          that room stands in for the block.
+ *
+ * DEPTH is idle_entry and arch_idle_wait, 8 measured on every preset, rounded up to 64. */
+#if defined(__ARM_FP) && KICKOS_ARMV7M_SPLIM
+#define KICKOS_ARMV7M_IDLE_FRAME 212
+#elif defined(__ARM_FP)
+#define KICKOS_ARMV7M_IDLE_FRAME 204
+#elif KICKOS_ARMV7M_SPLIM
+#define KICKOS_ARMV7M_IDLE_FRAME 140
+#else
+#define KICKOS_ARMV7M_IDLE_FRAME 68
+#endif
+#define KICKOS_ARMV7M_IDLE_DEPTH 64
 
 /* THE MAIN STACK, which the image links as _kernel_stack_size below _estack. Boot runs on it in
  * thread mode with device lines open, sched::start leaves boot's frames on it, and every
@@ -324,7 +331,7 @@
  *
  * FRAME: four exception entries stacked on the MSP, one per level above boot, each the FP
  * frame of 104 plus the STKALIGN pad of 4, and 24 bytes of PendSV's own pushes below its entry
- * at the bench and telemetry posture. 4 x 36 + 24 without an FPU. */
+ * at the telemetry posture. 4 x 36 + 24 without an FPU. */
 #if defined(__ARM_FP)
 #define KICKOS_ARMV7M_MSP_FRAME 456
 #else
@@ -364,6 +371,7 @@
  * class EXIT   frame=KICKOS_ARMV7M_TRAP_NEST_EXIT depth=KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_EXIT kstacks=0
  *
  * class PANIC  frame=KICKOS_ARMV7M_PANIC_FRAME depth=KICKOS_ARMV7M_PANIC_DEPTH stack=panic
+ * class IDLE   frame=KICKOS_ARMV7M_IDLE_FRAME depth=KICKOS_ARMV7M_IDLE_DEPTH stack=idle
  * class STKOF  frame=KICKOS_ARMV7M_STKOF_FRAME depth=KICKOS_ARMV7M_STKOF_DEPTH stack=trap
  * class MSP    frame=KICKOS_ARMV7M_MSP_FRAME depth=KICKOS_ARMV7M_MSP_DEPTH stack=main
  */

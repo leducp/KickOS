@@ -7,8 +7,9 @@
 if(NOT TARGET pspguard_svc)
   return()
 endif()
-foreach(_pg_image pspguard pspguard_svc pspguard_svcdepth pspguard_block pspguard_above
-                  pspguard_below pspguard_fp pspguard_svcstkof)
+foreach(_pg_image pspguard pspguard_svc pspguard_svcdepth pspguard_race pspguard_block
+                  pspguard_above pspguard_below pspguard_fp pspguard_fphi pspguard_framehi
+                  pspguard_svcstkof)
   if(TARGET ${_pg_image})
     kickos_emulator_judged(${_pg_image})
   endif()
@@ -19,12 +20,17 @@ endforeach()
 # measured the FP block refused it". Mode 5 expects no refusal at all and takes the same
 # argv shape with the count unused, so a call site cannot silently become the wrong arm.
 set(_pg_gate "${PROJECT_SOURCE_DIR}/tests/integration/check_pspguard.sh")
+# pspguard_race's debugger, which the gate SKIPs without.
+find_program(KICKOS_GDB NAMES gdb-multiarch)
+set(_pg_gdb gdb-multiarch)
+if(KICKOS_GDB)
+  set(_pg_gdb "${KICKOS_GDB}")
+endif()
 # The SVC site's expected byte count is the whole SVC extent, read out of the header the
 # guard on THIS arch reads, and the banner is the one that arch's fault reporter prints.
 # Both macros must stay the plain integers tests/static/check_trap_redzone.sh scrapes: a
 # header that stopped spelling them that way stops the configure instead of quietly pinning
-# a stale expectation. The PendSV arms' 36 and 100 are KICKOS_ARMV7M_TRAP_FRAME and
-# _FRAME_MAX, written out.
+# a stale expectation. The armv7m PendSV arms read FRAME and FRAME_MAX the same way.
 if(KICKOS_ARCH STREQUAL "armv6m")
   set(_pg_hdr
       "${PROJECT_SOURCE_DIR}/arch/arm/armv6m/include/kickos/arch/armv6m_trap_stack.h")
@@ -40,12 +46,14 @@ endif()
 # reads it. armv6m cannot reach that branch: Kconfig gives it range 1 1 through
 # ARCH_KERNEL_STACKS_MANDATORY, so scraping it there would demand a macro that arch has no
 # reason to define.
+# A figure the header changes must re-derive the expectation, not leave a configured one.
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_pg_hdr}")
 set(_pg_macros NEST_SVC KERNEL_DEPTH_SVC)
 if(NOT KICKOS_KERNEL_STACKS)
   list(APPEND _pg_macros NEST_SVC_DISPATCH)
 endif()
-if(KICKOS_HAVE_STACK_LIMIT)
-  list(APPEND _pg_macros FRAME_MAX)
+if(NOT KICKOS_ARCH STREQUAL "armv6m")
+  list(APPEND _pg_macros FRAME FRAME_MAX)
 endif()
 foreach(_pg_macro ${_pg_macros})
   file(STRINGS "${_pg_hdr}" _pg_hit
@@ -89,6 +97,9 @@ if(KICKOS_ARCH STREQUAL "armv6m")
   kickos_add_qemu_test(TARGET pspguard_svcdepth
     SCRIPT "${_pg_gate}" ARGS 5 ${_pg_svc_need} SVCall "no room below" ${_pg_banner}
                          contained)
+  kickos_add_qemu_test(TARGET pspguard_race
+    SCRIPT "${_pg_gate}" ARGS 8 ${_pg_svc_need} SVCall "no room below" ${_pg_banner}
+                         contained "${_pg_gdb}")
   # The block leg's room bound. THE POSTURE THE HAZARD IS REAL ON: it carves blocks and has no
   # MPU, so a thread can aim its own PSP into kernel .bss and nothing refuses the entry. 32 is
   # KICKOS_ARMV6M_TRAP_FRAME, this arch's whole PendSV push, written out the way the MPS2 arms
@@ -98,6 +109,8 @@ if(KICKOS_ARCH STREQUAL "armv6m")
     kickos_add_qemu_test(TARGET pspguard_block
       SCRIPT "${_pg_gate}" ARGS 6 32 PendSV "under stack_lo" ${_pg_banner} contained)
   endif()
+  kickos_add_qemu_test(TARGET pspguard_framehi
+    SCRIPT "${_pg_gate}" ARGS 10 32 PendSV "frame crosses stack_hi" ${_pg_banner} contained)
   # The armv6m arm set ends here; everything below is the armv7m set.
   return()
 endif()
@@ -108,46 +121,72 @@ endif()
 if(KICKOS_HAVE_STACK_LIMIT)
   set(_pg_stkof 0 none none ${_pg_banner} stkof)
   kickos_add_qemu_test(TARGET pspguard SCRIPT "${_pg_gate}" ARGS 0 ${_pg_stkof})
+  # Every entry stacks at or above the limit, so the SVC arms park above stack_hi and the
+  # upper leg refuses.
   kickos_add_qemu_test(TARGET pspguard_svc
-    SCRIPT "${_pg_gate}" ARGS 2 ${_pg_svc_need} SVCall "no room below" ${_pg_banner} contained)
+    SCRIPT "${_pg_gate}" ARGS 2 ${_pg_svc_need} SVCall "at or above stack_hi" ${_pg_banner}
+                         contained)
   kickos_add_qemu_test(TARGET pspguard_svcstkof SCRIPT "${_pg_gate}" ARGS 7 ${_pg_stkof})
   kickos_add_qemu_test(TARGET pspguard_svcdepth
     SCRIPT "${_pg_gate}" ARGS 5 ${_pg_svc_need} SVCall "no room below" ${_pg_banner} contained)
+  kickos_add_qemu_test(TARGET pspguard_race
+    SCRIPT "${_pg_gate}" ARGS 8 ${_pg_svc_need} SVCall "at or above stack_hi" ${_pg_banner}
+                         contained "${_pg_gdb}")
   if(TARGET pspguard_block)
     kickos_add_qemu_test(TARGET pspguard_block SCRIPT "${_pg_gate}" ARGS 6 ${_pg_stkof})
   endif()
   kickos_add_qemu_test(TARGET pspguard_above
-    SCRIPT "${_pg_gate}" ARGS 3 36 PendSV "at or above stack_hi" ${_pg_banner} contained)
+    SCRIPT "${_pg_gate}" ARGS 3 ${_pg_FRAME} PendSV "at or above stack_hi" ${_pg_banner}
+                         contained)
+  kickos_add_qemu_test(TARGET pspguard_framehi
+    SCRIPT "${_pg_gate}" ARGS 10 ${_pg_FRAME} PendSV "frame crosses stack_hi" ${_pg_banner}
+                         contained)
   kickos_add_qemu_test(TARGET pspguard_below SCRIPT "${_pg_gate}" ARGS 4 ${_pg_stkof})
   if(TARGET pspguard_fp)
     kickos_add_qemu_test(TARGET pspguard_fp SCRIPT "${_pg_gate}" ARGS 1 ${_pg_stkof})
+  endif()
+  # The limit bounds below only, so the upper leg refuses at the switcher's figure.
+  if(TARGET pspguard_fphi)
+    kickos_add_qemu_test(TARGET pspguard_fphi
+      SCRIPT "${_pg_gate}" ARGS 9 ${_pg_FRAME} PendSV "frame crosses stack_hi" ${_pg_banner}
+                           contained)
   endif()
   return()
 endif()
 
 kickos_add_qemu_test(TARGET pspguard
-  SCRIPT "${_pg_gate}" ARGS 0 36 PendSV "no room below" ${_pg_banner} contained)
+  SCRIPT "${_pg_gate}" ARGS 0 ${_pg_FRAME} PendSV "no room below" ${_pg_banner} contained)
 kickos_add_qemu_test(TARGET pspguard_svc
   SCRIPT "${_pg_gate}" ARGS 2 ${_pg_svc_need} SVCall "no room below" ${_pg_banner} contained)
 
 kickos_add_qemu_test(TARGET pspguard_svcdepth
   SCRIPT "${_pg_gate}" ARGS 5 ${_pg_svc_need} SVCall "no room below" ${_pg_banner} contained)
+kickos_add_qemu_test(TARGET pspguard_race
+  SCRIPT "${_pg_gate}" ARGS 8 ${_pg_svc_need} SVCall "no room below" ${_pg_banner} contained
+                         "${_pg_gdb}")
 # The block leg's room bound, on the armv7m presets that carve blocks and do NOT enforce. Built
-# only there, hence the TARGET guard: with enforcement the app is not compiled at all. 36 is
-# KICKOS_ARMV7M_TRAP_FRAME, this arch's PendSV push, written out the way the arms above write
-# theirs. The refusal classifies as `under stack_lo`, the blocks sitting below every arena
+# only there, hence the TARGET guard: with enforcement the app is not compiled at all. The
+# refusal classifies as `under stack_lo`, the blocks sitting below every arena
 # stack, and main.cc refuses to run the arm if that stops being true.
 if(TARGET pspguard_block)
   kickos_add_qemu_test(TARGET pspguard_block
-    SCRIPT "${_pg_gate}" ARGS 6 36 PendSV "under stack_lo" ${_pg_banner} contained)
+    SCRIPT "${_pg_gate}" ARGS 6 ${_pg_FRAME} PendSV "under stack_lo" ${_pg_banner} contained)
 endif()
 kickos_add_qemu_test(TARGET pspguard_above
-  SCRIPT "${_pg_gate}" ARGS 3 36 PendSV "at or above stack_hi" ${_pg_banner} contained)
+  SCRIPT "${_pg_gate}" ARGS 3 ${_pg_FRAME} PendSV "at or above stack_hi" ${_pg_banner}
+                       contained)
+kickos_add_qemu_test(TARGET pspguard_framehi
+  SCRIPT "${_pg_gate}" ARGS 10 ${_pg_FRAME} PendSV "frame crosses stack_hi" ${_pg_banner}
+                       contained)
 kickos_add_qemu_test(TARGET pspguard_below
-  SCRIPT "${_pg_gate}" ARGS 4 36 PendSV "under stack_lo" ${_pg_banner} contained)
+  SCRIPT "${_pg_gate}" ARGS 4 ${_pg_FRAME} PendSV "under stack_lo" ${_pg_banner} contained)
 if(TARGET pspguard_fp)
   kickos_add_qemu_test(TARGET pspguard_fp
-    SCRIPT "${_pg_gate}" ARGS 1 100 PendSV "no room below" ${_pg_banner} contained)
+    SCRIPT "${_pg_gate}" ARGS 1 ${_pg_FRAME_MAX} PendSV "no room below" ${_pg_banner}
+                         contained)
+  kickos_add_qemu_test(TARGET pspguard_fphi
+    SCRIPT "${_pg_gate}" ARGS 9 ${_pg_FRAME_MAX} PendSV "frame crosses stack_hi" ${_pg_banner}
+                         contained)
 
   # THE SWITCH CHAIN ACROSS A CONTAINED REFUSAL. Containment performs a physical swap without
   # going through either switcher, so it emits its own SWITCH record; kicktrace's structural

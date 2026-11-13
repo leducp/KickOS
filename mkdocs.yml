@@ -100,6 +100,7 @@ nav:
       - "KickOS invariants": reference/invariants.md
       - "Synchronous call/reply IPC: the reply capability": reference/ipc-call-reply.md
       - "KickOS porting guide": reference/porting.md
+      - "How the project works": reference/process.md
       - "House style": reference/style.md
       - "KickOS telemetry / kernel-observability": reference/telemetry.md
 plugins:

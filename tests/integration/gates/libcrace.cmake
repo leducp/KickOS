@@ -21,17 +21,6 @@ endif()
 set(KICKOS_LIBCRACE_DEAD_ARMS ${_libcrace_dead} CACHE INTERNAL
     "libcrace runs its dead malloc holder arms")
 kickos_app_judge(libcrace tests/integration/check_libcrace.sh)
-# Above one core a host CPU hog preempts the vCPU holding the kernel lock and the others wait on
-# it, so a loaded run has taken 393 s on x86_64 and 324 s on arm64 GICv2. The floor yields to a
-# larger QEMU_TIMEOUT.
-set(_libcrace_bound)
-if(KICKOS_NUM_CORES GREATER 1)
-  set(_libcrace_bound 900)
-  if(NOT "$ENV{QEMU_TIMEOUT}" STREQUAL "" AND "$ENV{QEMU_TIMEOUT}" GREATER _libcrace_bound)
-    set(_libcrace_bound "$ENV{QEMU_TIMEOUT}")
-  endif()
-  set(_libcrace_bound BOUND ${_libcrace_bound})
-endif()
 # The emulator options an image linked for another memory than the chip's needs.
 get_target_property(_libcrace_qemu libcrace KICKOS_IMAGE_QEMU_ARGS)
 if(NOT _libcrace_qemu)
@@ -43,7 +32,7 @@ if(_libcrace_qemu)
 endif()
 kickos_add_qemu_test(TARGET libcrace
   SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_libcrace.sh"
-  ARGS ${_libcrace_dead} ${_libcrace_bound} ${_libcrace_qemu_args})
+  ARGS ${_libcrace_dead} ${_libcrace_qemu_args})
 # The same run with an interrupt deliverable between any two instructions: free-running TCG
 # delivers one only between translation blocks, which hides a window inside a block.
 if(NOT TARGET libcrace_any_insn)
@@ -56,5 +45,5 @@ if(NOT _libcrace_qemu)
 endif()
 kickos_add_qemu_test(TARGET libcrace_any_insn
   SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_libcrace.sh"
-  ARGS ${_libcrace_dead} ${_libcrace_bound}
+  ARGS ${_libcrace_dead}
   QEMU_ARGS ${_libcrace_qemu} -accel tcg,one-insn-per-tb=on)

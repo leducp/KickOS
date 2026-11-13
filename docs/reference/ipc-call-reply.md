@@ -256,31 +256,20 @@ Receive-half returns, the whole set a receive can answer:
 | `-KOS_ETIMEDOUT` | `opts->timeout_us` passed |
 | `-KOS_ECANCELED` | the caller was cancelled before or during the park |
 
-**`opts->notify` IS WRITTEN BACK ON EVERY EXIT THAT PROVED THE FIELD WRITABLE**, the error
-exits included, and a reply refusal that ends the call before the receive half runs writes
-zero. That is the whole of the in-out rule: IN is the mask the caller ACCEPTS and OUT is the
-mask this call CONSUMED, so an exit that wrote nothing would report every accepted line as
-consumed and the caller would service lines that never fired. Zero is an answer, not an
-absence. Only the exits that refuse `opts` itself, the null or misaligned pointer and the
-inaccessible struct, leave the field alone: they never proved it writable, and they are out of
-reach of a caller passing the address of a real one, so the loop below may read the field on
-any code it can actually receive.
+**`opts->notify` READS WHAT THE CALL CONSUMED ON EVERY EXIT.** IN is the mask the caller
+ACCEPTS and OUT is the mask this call CONSUMED. Where a line is accepted, the kernel writes 0
+to the field before it replies or receives; if that write is refused the call answers
+`-KOS_EFAULT` and nothing has happened. The leave then writes the consumed bits over that 0 and
+takes a bit only once it is written. If that write is refused mid-call, no bit is taken, every
+bit stays pending and the field still reads 0, which is true; a received message is still
+answered with its byte count, and any other outcome answers `-KOS_EFAULT`. So a caller never
+reads its own accepted mask back as consumed bits, and must re-seat the mask before each call
+because the return overwrites it. Only the exits that refuse `opts` itself, the null or
+misaligned pointer and the inaccessible struct, leave the field alone.
 
-The write is skipped where the caller ACCEPTED no line, and the input half is what makes that
-sound: such a caller wrote 0 in, so leaving the field alone leaves 0, which is the true count
-of what the wait consumed. The observable contract is the same either way, the field holding
-the consumed bits after the call, and a caller must re-seat the accepted mask before each call
-because the return overwrites it. THE SKIP DIES WITH THE INPUT HALF: make `notify` OUT-only
-again and it starts leaving a stale value behind. Where a line WAS accepted, a refused write
-answers `-KOS_EFAULT` even though a message may have arrived, the bits otherwise being lost
-with nothing saying so.
-
-**THE RULE IS STRUCTURAL AND NOT A CONVENTION EACH EXIT KEEPS.** Everything past the point
-where the options snapshot succeeds is one callable, and the write-back is the statement after
-its single call, so an exit added anywhere inside that region lands on the write-back rather
-than stepping over it. A destructor would not serve: the write-back can be refused in its own
-right and the contract owes the caller `-KOS_EFAULT` for that, which a destructor running after
-the return value is already fixed cannot answer.
+Where the caller accepted no line it wrote 0 in, and the field is left alone, which leaves the
+true count. **THE ENTRY WRITE IS WHAT MAKES EVERY EXIT TRUE**, not a write-back each exit must
+remember: an exit added anywhere after it leaves 0 or the consumed bits, never the input mask.
 
 **CONSUMING A NOTIFICATION REARMS ITS LINE, and that is not bookkeeping.** The first-level ISR
 masks the line, and only a `needs_rearm` flag set in thread context lets a later `kos_irq_ack`,

@@ -64,25 +64,25 @@
     {                                                                         \
         __kickos_amp_shared_start = .;                                        \
         __kickos_amp_cells_start = .;                                         \
-        KEEP(*(.amp_shared.cells.request))                                    \
-        KEEP(*(.amp_shared.cells.answer))                                     \
-        KEEP(*(.amp_shared.affinity))                                         \
-        KEEP(*(.amp_shared.affinity_seated))                                  \
+        KICKOS_KERNEL_KEEP(.amp_shared.cells.request)                         \
+        KICKOS_KERNEL_KEEP(.amp_shared.cells.answer)                          \
+        KICKOS_KERNEL_KEEP(.amp_shared.affinity)                              \
+        KICKOS_KERNEL_KEEP(.amp_shared.affinity_seated)                       \
         __kickos_amp_cells_end = .;                                           \
         . = ALIGN(64);                                                        \
         __kickos_amp_window_start = .;                                        \
-        KEEP(*(.amp_shared.window))                                           \
+        KICKOS_KERNEL_KEEP(.amp_shared.window)                                \
         __kickos_amp_window_end = .;                                          \
         . = ALIGN(64);                                                        \
         __kickos_amp_counts_start = .;                                        \
-        KEEP(*(.amp_shared.counts))                                           \
+        KICKOS_KERNEL_KEEP(.amp_shared.counts)                                \
         __kickos_amp_counts_end = .;                                          \
         __kickos_amp_chip_start = .;                                          \
-        KEEP(*(.amp_shared.chip))                                             \
+        KICKOS_KERNEL_KEEP(.amp_shared.chip)                                  \
         __kickos_amp_chip_end = .;                                            \
         . = ALIGN(64);                                                        \
-        KEEP(*(.amp_shared.clock))                                            \
-        KEEP(*(.amp_shared.diag))                                             \
+        KICKOS_KERNEL_KEEP(.amp_shared.clock)                                 \
+        KICKOS_KERNEL_KEEP(.amp_shared.diag)                                  \
         __kickos_amp_shared_end = .;                                          \
     } > region
 

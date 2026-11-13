@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# The board's default composition with irq added to main's authority, for the line the waker
+# parks on.
+
+version: 1
+stdout: kernel
+ends: main
+
+tasks:
+  - name: main
+    program: main
+    priority: 2
+    ceiling: 20
+    authority: [memory, system, irq, tasks]

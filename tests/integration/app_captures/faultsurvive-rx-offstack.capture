@@ -13,5 +13,6 @@
 [fs] spawning the faulter
 [fs] worker about to fault
 
-=== RX EXCEPTION (privileged instruction) ===
-  PC=0xffc005a0 PSW=0x130003
+=== THREAD FAULT === thread 'faulter' killed, system continues
+  PC=0xffc005a0 cause=0x50
+[fs] survivor ran after the fault

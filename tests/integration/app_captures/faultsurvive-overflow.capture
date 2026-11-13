@@ -13,5 +13,7 @@
 [fs] spawning the faulter
 [fs] worker about to fault
 
-MPU FAULT: thread 'faulter' attempted write at 0x1fffc, reported
-  its stack 0x20000-0x22000
+=== THREAD FAULT === thread 'faulter' killed, system continues
+  PC=0xffc0061c MPESTS=0x6
+  ADDR=0x1fef8
+[fs] survivor ran after the fault

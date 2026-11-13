@@ -14,8 +14,7 @@
  * because that is the one the entry loads before it can address anything else. */
 #define KICKOS_X86_64_CPU_KERNEL_SP  0
 #define KICKOS_X86_64_CPU_USER_RSP   8
-#define KICKOS_X86_64_CPU_SW_START  16
-#define KICKOS_X86_64_CPU_CORE_ID   20
+#define KICKOS_X86_64_CPU_CORE_ID   16
 #define KICKOS_X86_64_CPU_CURRENT   24
 #define KICKOS_X86_64_CPU_SIZE      64
 
@@ -49,7 +48,6 @@ namespace kickos::x86_64
     {
         uint64_t kernel_sp;
         uint64_t user_rsp;
-        uint32_t sw_start;
         uint32_t core_id;
         // The running thread, kickos/arch/current_thread.h's cell.
         void* current;

@@ -4,9 +4,10 @@
 // The budgets as the syscall ABI answers them, over the budgets system.yaml states: a task at
 // its THREADS budget beside a sibling that still takes its whole one, a member sweeping its
 // capabilities still counted, the RAM budgets, a declaration's lifetime RAM across its starts,
-// the init restarting a server beside a task at its ENDPOINTS budget, capability tables of mixed
-// widths within a declaration's CAP_SLOTS across a restart, and where the backend translates, the
-// PAGES budget. Emulator images only.
+// the init restarting a server beside a task at its ENDPOINTS budget, that budget given back at
+// a release and bounding no notification, capability tables of mixed widths within a
+// declaration's CAP_SLOTS across a restart, and where the backend translates, the PAGES budget.
+// Emulator images only.
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
@@ -111,7 +112,7 @@ int main(int, char**)
 {
     // The server's first start, which the init makes once this receive makes main ready.
     kos_cap_t const svc = kos_grant_endpoint("/svc/report");
-    Report first{-1, -1, 0, 0, 0};
+    Report first{-1, -1, 0, 0, 0, 0, 0};
     kos_cap_t first_reply = KOS_CAP_NONE;
     bool const server_up = server_call(svc, &first, &first_reply);
 
@@ -124,7 +125,7 @@ int main(int, char**)
 
     // --- THREADS: a task at its budget, and a sibling taking all of its own, twice ----------
     kos_task_t hog = KOS_TASK_NONE;
-    Report h{-1, 0, -1, 0, 0};
+    Report h{-1, 0, -1, 0, 0, -1, -1};
     bool const hog_up = start("hog", "hog", ep, KOS_CAP_NONE, &hog) == 0 and receive(ep, &h);
     harness.note_rc("the hog's refused spawn", h.rc);
     harness.check(hog_up and h.rc == -KOS_EAGAIN and h.count == HOG_THREADS - 1,
@@ -132,7 +133,7 @@ int main(int, char**)
     bool sibling_ok = true;
     for (int i = 0; i < 2; i++)
     {
-        Report s{-1, -1, 0, 0, 0};
+        Report s{-1, -1, 0, 0, 0, 0, 0};
         sibling_ok = run("sibling", "all", ep, KOS_CAP_NONE, &s) and s.rc == 0
                      and s.count == SIBLING_SPAWNS and sibling_ok;
     }
@@ -141,8 +142,14 @@ int main(int, char**)
     // --- ENDPOINTS, and the init restarting a server beside the task at its budget ----------
     harness.check(hog_up and h.rc2 == -KOS_EAGAIN and h.extra == HOG_ENDPOINTS - 1,
                   "a task at its ENDPOINTS budget is refused with the budget's code");
+    harness.note_rc("the hog's endpoint_create after closing one", h.again);
+    harness.check(hog_up and h.again == 0,
+                  "releasing an endpoint gives its budget back to the task that created it");
+    harness.note_rc("the hog's notify_create at its endpoint ceiling", h.notify);
+    harness.check(hog_up and h.notify == 0,
+                  "the endpoint ceiling does not refuse a notification: the count is per pool");
     // The reply ends the server's first start, and the init starts it again.
-    Report second{-1, -1, 0, 0, 0};
+    Report second{-1, -1, 0, 0, 0, 0, 0};
     kos_cap_t second_reply = KOS_CAP_NONE;
     bool const restarted = server_up and kos_reply(first_reply, &first, sizeof(first)) == 0
                            and server_call(svc, &second, &second_reply);
@@ -153,7 +160,7 @@ int main(int, char**)
 
     // --- THREADS through a member's sweep ---------------------------------------------------
     kos_task_t sweeper = KOS_TASK_NONE;
-    Report w{-1, 0, 0, -1, 0};
+    Report w{-1, 0, 0, -1, 0, 0, 0};
     bool const swept = start("sweeper", "sweep", ep, KOS_CAP_NONE, &sweeper) == 0
                        and receive(ep, &w);
     harness.note_rc("the sweeper's refused spawn", w.rc);
@@ -166,7 +173,7 @@ int main(int, char**)
     harness.check(swept and w.rc2 == 0 and counted,
                   "a member sweeping its capabilities still counts against its THREADS budget");
     // While those members are still mid-sweep: they run below every task here.
-    Report taker{-1, -1, 0, 0, 0};
+    Report taker{-1, -1, 0, 0, 0, 0, 0};
     bool const took = run("sibling", "all", ep, KOS_CAP_NONE, &taker);
     harness.check(took and taker.rc == 0 and taker.count == SIBLING_SPAWNS,
                   "another task still obtains its whole THREADS budget");
@@ -213,7 +220,7 @@ int main(int, char**)
                   "the declared width fills every slot of the budget again, in every start");
 
     // --- RAM ---------------------------------------------------------------------------------
-    Report r{-1, 0, 0, 0, 0};
+    Report r{-1, 0, 0, 0, 0, 0, 0};
     bool const ram_ran = run("ram", "ram", ep, KOS_CAP_NONE, &r);
     harness.check(ram_ran and r.rc == 1,
                   "a kos_ram_alloc past the task's RAM_BYTES budget answers NULL");
@@ -230,7 +237,7 @@ int main(int, char**)
     harness.check(refused == RELAUNCH_BLOCKS,
                   "a declaration that allocates at every start is refused past its lifetime budget");
 #endif
-    Report one{-1, -1, 0, 0, 0};
+    Report one{-1, -1, 0, 0, 0, 0, 0};
     harness.check(run("sibling", "one", ep, KOS_CAP_NONE, &one) and one.rc == 0 and one.count == 1,
                   "and a sibling's spawn still succeeds");
 

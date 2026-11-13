@@ -76,7 +76,7 @@ namespace kickos
                 {
                     g_tail_prio_parked = g_tail->prio;
                 }
-                g_sleepq_while_parked = kernel().sleepq;
+                g_sleepq_while_parked = kernel().sleepq(kickos_kernel_core());
             }
 
             void expire(Thread*)
@@ -219,7 +219,7 @@ namespace kickos
             EXPECT_EQ(g_holder->prio, PRIO_HOLDER) << "a failed try boosted the holder";
             EXPECT_EQ(kernel().word_active, nullptr) << "a failed try queued itself";
             EXPECT_EQ(g_switches, 0u) << "a failed try switched away";
-            EXPECT_EQ(kernel().sleepq, nullptr) << "a failed try armed a deadline";
+            EXPECT_EQ(kernel().sleepq(kickos_kernel_core()), nullptr) << "a failed try armed a deadline";
 
             WordRecord* const m = own_mutex(g_holder, &g_word);
             donor_waits_on(m, PRIO_PARTIAL);
@@ -231,7 +231,7 @@ namespace kickos
             EXPECT_EQ(m->waiters.head, m->waiters.tail) << "a failed try queued itself";
             EXPECT_EQ(thread_of(m->waiters.head), donor);
             EXPECT_EQ(g_switches, 0u) << "a failed try switched away";
-            EXPECT_EQ(kernel().sleepq, nullptr) << "a failed try armed a deadline";
+            EXPECT_EQ(kernel().sleepq(kickos_kernel_core()), nullptr) << "a failed try armed a deadline";
         }
 
         // While a thread waits the record names the holder, whatever the word says: a sharer
@@ -272,7 +272,7 @@ namespace kickos
             EXPECT_EQ(m->waiters.head, m->waiters.tail) << "a refused lock queued itself";
             EXPECT_EQ(g_holder->prio, PRIO_PARTIAL) << "a refused lock boosted the holder";
             EXPECT_EQ(g_switches, 0u);
-            EXPECT_EQ(kernel().sleepq, nullptr) << "a refused lock armed a deadline";
+            EXPECT_EQ(kernel().sleepq(kickos_kernel_core()), nullptr) << "a refused lock armed a deadline";
         }
 
         // Set again, the bit keeps the holder's release in the kernel, where the waiter is.
@@ -317,7 +317,7 @@ namespace kickos
             EXPECT_EQ(kernel().word_active, nullptr) << "the emptied record was kept";
             EXPECT_EQ(g_holder->held_list, nullptr);
             EXPECT_EQ(waiter->wait_kind, WAIT_NONE);
-            EXPECT_EQ(kernel().sleepq, nullptr);
+            EXPECT_EQ(kernel().sleepq(kickos_kernel_core()), nullptr);
         }
 
         TEST_F(MutexTimed, an_expiry_reverts_the_boost_along_the_whole_chain)
@@ -344,7 +344,7 @@ namespace kickos
             EXPECT_EQ(g_tail_prio_parked, PRIO_WAITER);
             EXPECT_EQ(g_holder->prio, PRIO_HOLDER);
             EXPECT_EQ(g_tail->prio, PRIO_HOLDER) << "the tail kept the cancelled waiter's boost";
-            EXPECT_EQ(kernel().sleepq, nullptr);
+            EXPECT_EQ(kernel().sleepq(kickos_kernel_core()), nullptr);
         }
 
         // The holder keeps a lesser donor of its own: the revert lowers it to that donor and
@@ -399,7 +399,7 @@ namespace kickos
             EXPECT_EQ(g_word, waiter->lock_id) << "the hand-over wrote another owner";
             EXPECT_EQ(kernel().word_active, nullptr) << "the emptied record was kept";
             EXPECT_EQ(g_holder->prio, PRIO_HOLDER);
-            EXPECT_EQ(kernel().sleepq, nullptr) << "the granted waiter's deadline is still queued";
+            EXPECT_EQ(kernel().sleepq(kickos_kernel_core()), nullptr) << "the granted waiter's deadline is still queued";
         }
 
         TEST_F(MutexTimed, an_owner_dying_before_the_deadline_hands_the_mutex_over_held)
@@ -410,7 +410,7 @@ namespace kickos
             EXPECT_EQ(mutex_lock(va(&g_word), TIMEOUT_US), -KOS_EOWNERDEAD);
             EXPECT_EQ(g_word, waiter->lock_id) << "the death wrote another owner";
             EXPECT_EQ(g_holder->held_list, nullptr);
-            EXPECT_EQ(kernel().sleepq, nullptr);
+            EXPECT_EQ(kernel().sleepq(kickos_kernel_core()), nullptr);
         }
 
         TEST_F(MutexTimed, an_untimed_wait_never_reaches_the_timer)
@@ -572,7 +572,7 @@ namespace kickos
             EXPECT_EQ(mutex_lock(va(&g_word), TIMEOUT_US), -KOS_EDEADLK);
             EXPECT_EQ(g_holder->prio, PRIO_HOLDER);
             EXPECT_EQ(g_switches, 0u);
-            EXPECT_EQ(kernel().sleepq, nullptr);
+            EXPECT_EQ(kernel().sleepq(kickos_kernel_core()), nullptr);
         }
 
         // The boost runs to the end of a chain through every thread slot the fixture leaves, and

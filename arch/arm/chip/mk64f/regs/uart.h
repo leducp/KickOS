@@ -60,6 +60,12 @@ namespace kickos::mk64f::reg::uart
     // NOT the status vector (IRQ 31), yet they appear in the same S1 a status handler
     // reads. OR blocks RDRF while set, so a handler that ignores them wedges RX.
     constexpr uint8_t S1_RX_ERRORS = S1_OR | S1_NF | S1_FE | S1_PF;
+    // The flags that condemn the byte in D. OR does not: the overflowing word is the one lost,
+    // and the data already in the buffer "is not affected" (RM 52.3.5).
+    constexpr uint8_t S1_BYTE_ERRORS = S1_NF | S1_FE | S1_PF;
+
+    // C3 (RM 52.3.7). ORIE routes S1.OR onto the error vector.
+    constexpr uint8_t C3_ORIE = 1u << 3;
 
     // C1 frame format (RM 52.3.3). M selects a 9-bit frame; with M=0 and PE=1 the parity
     // bit REPLACES the 8th data bit (RM 52.4.4.1 Table 52-11), so 8 data bits plus parity

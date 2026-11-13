@@ -4,7 +4,7 @@
 // Per-task object budget tests using real task and thread slots.
 // Pools and capability tables have spare slots so refusals test the budget.
 // Different budgets check that each object kind uses its own limit.
-// Endpoint creation is covered by user/apps/common/objbudget.
+// Endpoint creation is covered by user/apps/common/budgetwit.
 
 #include "../common/seam_pools.h"
 

@@ -46,9 +46,6 @@
 #define CNTHCTL_EL1PCTEN (1 << 0)
 #define CNTHCTL_EL1PCEN  (1 << 1)
 
-/* SCTLR_EL1's RES1 bits with M, C and I clear: the MMU comes up below, not here. */
-#define SCTLR_EL1_RES1  0x30d00800
-
 /* The system counter feeding CNTPCT_EL0, written into CNTFRQ_EL0 at EL3: the 24 MHz base
  * divided by three, which CNTFID0 itself reads (IMX8MPRM rev 3 section 4.11.4.1.1). It divides
  * a second exactly, keeping the ns-per-tick conversion lossless. */
@@ -67,6 +64,12 @@ _start:
 
     msr     cptr_el3, xzr           /* CPTR_EL3.TFP resets UNKNOWN: it would trap the FP below */
     msr     mdcr_el3, xzr
+
+    /* MDCR_EL2's trap fields reset UNKNOWN, and EL1 writes MDSCR_EL1 and PMUSERENR_EL0. HPMN
+       resets to PMCR_EL0.N and is kept there: 0 would hand EL1 no counter. */
+    mrs     x0, pmcr_el0
+    ubfx    x0, x0, #11, #5
+    msr     mdcr_el2, x0
 
     /* EL1's access to the ICC_* registers is gated at both higher levels: without
        ICC_SRE_EL2.Enable the first ICC_* write traps to an EL2 vector nothing has written. */
@@ -91,7 +94,7 @@ _start:
     ldr     x0, =KICKOS_IMX8MP_SYSCNT_HZ
     msr     CNTFRQ_EL0, x0
 
-    ldr     x0, =SCTLR_EL1_RES1     /* MMU and caches off, RES1 bits set: EL1's reset is ours */
+    ldr     x0, =SCTLR_RES1         /* MMU and caches off, RES1 bits set: EL1's reset is ours */
     msr     SCTLR_EL1, x0
 
     ldr     x0, =SCR_EL3_VALUE

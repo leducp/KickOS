@@ -1,21 +1,11 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Two regressions on the thread-exit path, in one boot of the default system.
+// The payload of sim_multi_instance, which runs fifty kernels in one process: file-scope state
+// here would be one copy shared by every instance.
 //
-// 1. A NON-LAST thread that exits must not panic. A spawned worker runs briefly then
-// RETURNS (thread exit) while main is still alive. On an arch that defers the context
-// switch (ARM PendSV), the switch away from the exiting thread can only fire once
-// exit_current releases its crit section; taking it any earlier reaches
-// KICKOS_UNREACHABLE ("an EXITED thread was picked to run").
-//
-// 2. MAIN's exit ends the SYSTEM, not just main's thread. Main spawns a child that never
-// exits, then exits itself: its exit ends its task, which stops the child, and the task the
-// default composition `ends` on ending ends the system through the init. So the witness is
-// the exit STATUS arriving at all, and EXIT_CODE is nonzero because a shutdown that dropped
-// the status would still exit 0.
-//
-// kos_exit, not exit(): exit() and abort() reach that same KOS_SYS_EXIT on every port.
+// A worker exits while main is alive, then main exits with a child parked, which ends the system
+// with EXIT_CODE.
 
 #include <kickos/kos.h>
 

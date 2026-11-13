@@ -9,7 +9,6 @@
 
 #include <kickos/arch/arch.h>
 
-#include "bench_mpu.h"
 #include "mpu.h"
 #include "pmsav8_encode.h"
 #include "regs_v8m.h"
@@ -102,9 +101,6 @@ uint32_t arch_mpu_encode(struct arch_mpu_region const* regions, size_t n,
 // here is a per-thread grant, which is what makes the MPU_CTRL zeroing below sound.
 void kickos_arch_mpu_commit(void)
 {
-#if KICKOS_BENCH
-    uint32_t const bench_start = kickos_arm_mpu_bench_cyc();
-#endif
     struct arch_mpu_encoded const* const img = kickos_arm_mpu_pending();
     if (img == nullptr)
     {
@@ -160,9 +156,6 @@ void kickos_arch_mpu_commit(void)
     __asm volatile("dsb" ::: "memory");
     __asm volatile("isb" ::: "memory");
     __asm volatile("msr primask, %0" ::"r"(primask) : "memory");
-#if KICKOS_BENCH
-    kickos_bench_mpu_commit(kickos_arm_mpu_bench_cyc() - bench_start);
-#endif
 }
 
 // PMSAv8 is byte-granular on a 32-byte page: a window is encodable EXACTLY iff base and

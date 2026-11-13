@@ -260,7 +260,8 @@ namespace kickos
             wake_next_park(hand_the_waiter_its_event);
 
             uint32_t bits = 0;
-            EXPECT_EQ(notify_wait(waiter, cap, LINE_BIT, KOS_TIMEOUT_NONE, &bits),
+            uintptr_t const at = reinterpret_cast<uintptr_t>(&bits);
+            EXPECT_EQ(notify_wait(waiter, cap, LINE_BIT, KOS_TIMEOUT_NONE, at),
                       -KOS_ECANCELED)
                 << "a killed thread is refused the re-block";
             EXPECT_EQ(g_switches, 0u) << "and refused BEFORE parking, not woken out of one";
@@ -279,7 +280,8 @@ namespace kickos
             wake_next_park(hand_the_waiter_its_event); // as above: keep the failure an assertion
 
             uint32_t bits = 0;
-            EXPECT_EQ(notify_wait(waiter, cap, LINE_BIT, KOS_TIMEOUT_NONE, &bits),
+            uintptr_t const at = reinterpret_cast<uintptr_t>(&bits);
+            EXPECT_EQ(notify_wait(waiter, cap, LINE_BIT, KOS_TIMEOUT_NONE, at),
                       -KOS_ECANCELED)
                 << "every non-zero kind is refused, not just the cooperative one";
             EXPECT_EQ(g_switches, 0u) << "and refused before parking";
@@ -295,7 +297,8 @@ namespace kickos
             wake_next_park(hand_the_waiter_its_event);
 
             uint32_t bits = 0;
-            EXPECT_EQ(notify_wait(waiter, cap, LINE_BIT, KOS_TIMEOUT_NONE, &bits), 0)
+            uintptr_t const at = reinterpret_cast<uintptr_t>(&bits);
+            EXPECT_EQ(notify_wait(waiter, cap, LINE_BIT, KOS_TIMEOUT_NONE, at), 0)
                 << "CANCEL_NONE is not a death sentence";
             EXPECT_EQ(bits, LINE_BIT) << "and the raise it parked for is what it consumed";
             EXPECT_EQ(g_switches, 2u) << "the park switched away and the event switched back";

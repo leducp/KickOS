@@ -16,4 +16,8 @@ constexpr uint32_t FS_BAND_POISON = 0x5AFEBA5Eu;
 // Modes 2 and 7: the worker's stack and the block its SP is aimed at, each this size.
 constexpr uint32_t FS_OFF_STACK_SIZE = 2048;
 
+// Mode 10: the software traps the peer is spawned for, one per spawn, its index the argument.
+// brk is LAST: on a backend that panics on it, every entry before it still reaches the wire.
+constexpr uint32_t FS_SWTRAP_COUNT = 9;
+
 #endif

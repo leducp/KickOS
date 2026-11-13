@@ -128,18 +128,6 @@ extern "C" bool kickos_fault_frame_on_kernel_stack(void const* frame, size_t byt
 }
 #endif
 
-// How far below a thread's stack base kickos_fault_below_stack still reads an access as that
-// thread running off the bottom of its own stack. ONE RXv3 MPU region page (16 bytes:
-// RSPAGEn/REPAGEn hold addr[31:4], RX72M UM sec.17.1.2), the unit the hardware denies in.
-//
-// It must stay below the distance from a thread's stack base to the nearest legitimate
-// cross-domain target beneath it, or a legitimate cross-domain access reads as an overflow;
-// below 4 it attributes no overflow at all, the denied push an RXv3 overflow leaves behind
-// landing at base - 4.
-#ifndef KICKOS_FAULT_STACK_GUARD_BAND
-#define KICKOS_FAULT_STACK_GUARD_BAND 16u
-#endif
-
 // Where a backend's redirect puts the SP, so the stub runs with the whole stack under it
 // rather than at the depth the fault reached. 0 means DO NOT RELOCATE. See arch.h for the
 // contract the backends implement against. The answer is the thread's own kernel block where
@@ -173,28 +161,6 @@ extern "C" uintptr_t kickos_fault_stack_top(void)
         return 0;
     }
     return reinterpret_cast<uintptr_t>(c->stack_base) + c->stack_size;
-}
-
-extern "C" bool kickos_fault_below_stack(uintptr_t addr)
-{
-    ::kickos::Thread* const c = ::kickos::sched::current();
-    if (c == nullptr or c == ::kickos::sched::idle() or c->stack_base == nullptr)
-    {
-        return true;
-    }
-    uintptr_t const base = reinterpret_cast<uintptr_t>(c->stack_base);
-    if (addr >= base)
-    {
-        return false;
-    }
-    // Subtracted from the BASE rather than added to the address: the other spelling wraps, and
-    // a stack based inside the first band of the address space would then admit a wild HIGH
-    // address as an overflow.
-    if (base < KICKOS_FAULT_STACK_GUARD_BAND)
-    {
-        return true;
-    }
-    return addr >= base - KICKOS_FAULT_STACK_GUARD_BAND;
 }
 
 extern "C" bool kickos_fault_kill_thread(void* frame)

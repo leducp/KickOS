@@ -10,7 +10,7 @@
 //
 // The task's entry holds the channel window its composition grants, brings the channel up itself
 // with FDR/BRG/CCR through kos_periph_reg_write, and answers the functional CS-hold question
-// alone; the enforcement proof is xmcspi's.
+// alone; the enforcement proof is pvprobe's.
 //
 // The finding under test (RM 18.4.5.1, PCR.FEM description, printed 18-99):
 //   FEM = 0 (reset): "an end of frame is assumed if the transmit buffer TBUF does

@@ -76,13 +76,15 @@ def align_up(value, align):
 
 
 class ArenaModel:
-    """arch/common/ram_arena.h from `base`: the bump cursor and the one kept free range [gs, ge).
-    The cursor is compared with the arena's end by the caller."""
+    """arch/common/ram_arena.h from `base`, with the bank `line` no block runs across or None: the
+    bump cursor and the one kept free range [gs, ge). The cursor is compared with the arena's end
+    by the caller."""
 
-    def __init__(self, base):
+    def __init__(self, base, line=None):
         self.cursor = base
         self.gs = base
         self.ge = base
+        self.line = line
 
     def place(self, size, align):
         """The address a block of `size` on `align` lands at."""
@@ -96,6 +98,8 @@ class ArenaModel:
                 self.ge = at
             return at
         at = align_up(self.cursor, align)
+        if self.line is not None and at < self.line < at + size:
+            at = align_up(self.line, align)
         if at - self.cursor > self.ge - self.gs:
             self.gs = self.cursor
             self.ge = at

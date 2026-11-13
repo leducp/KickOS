@@ -19,9 +19,10 @@
  *           selector and CONTROL.SPSEL is RAZ/WI in handler mode), so its kernel-descent
  *           term is 0 here and MSP measures it.
  *   SVC     the syscall trap's writes on the interrupted thread's stack.
- *   SVCK    the syscall dispatch on the caller's kernel block, svc_trampoline having
- *           relocated SP to ctx.kernel_sp before it calls anything.
+ *   SVCK    the syscall dispatch on the caller's kernel block, which svc_trampoline starts
+ *           on.
  *   EXIT    the death path, below.
+ *   IDLE    idle's own stack, below.
  *   MSP     the main stack, below: boot and every exception nested on it.
  *
  * tests/static/check_trap_redzone.sh re-measures the descent figures and fails when a worst
@@ -44,41 +45,41 @@
    structural half, handler mode putting the rest on the MSP. */
 #define KICKOS_ARMV6M_TRAP_FRAME 32
 
-/* THE SVC CLASS, structural half: the bytes below the guarded PSP written by the hardware
-   and one assembly prologue, which no call graph sees. P0 is the PSP the guard validates, P1
-   the PSP the SVC's exception return leaves, where svc_trampoline starts.
+/* THE SVC CLASS, structural half: the bytes below the guarded PSP P0 that the hardware writes
+   for the thread, which no call graph sees. The SVC handler builds the trampoline's frame on
+   the kernel block and writes nothing below P0. What stands is the syscall return's window,
+   from svc_trampoline's move back onto R, the PSP the thread resumes on, to its privilege
+   drop, where a preemption stacks on R while the thread is privileged:
 
-     P1 = P0 + 32   the hardware frame exception return unstacks. ARMv6-M has no FP
-                    extension, so no posture widens it the way an ARMv7-M FP frame widens
-                    its 32 to 104.
-     -8             svc_trampoline's `push {r0, r1}`, the two scratch registers it needs to
-                    reach g_arch_current and load ctx.kernel_sp.
-     -32            the hardware frame a device IRQ or SysTick stacks if it preempts that
-                    window. Every v6-M device line sits at reset priority 0, above
-                    PRIO_SVCALL, and the window runs in THREAD mode, so ARMv6-M stacks it
-                    on the PSP.
-     -32            the PendSV that tail-chains behind it. Tail-chaining reuses the frame
-                    above, so no second hardware frame is charged, and it cannot repeat:
-                    PendSV switches away and pops the block on resume, and a further
-                    exception nests on the MSP, so at most ONE exception is ever stacked on
-                    a thread's PSP.
+     R = P0 + 32   the entry frame the return pops. ARMv6-M has no FP extension, so no posture
+                   widens it the way an ARMv7-M FP frame widens its 32 to 104.
+     -32           the hardware frame a device IRQ or SysTick stacks if it preempts that
+                   window. Every v6-M device line sits at reset priority 0, above
+                   PRIO_SVCALL, and the window runs in THREAD mode, so ARMv6-M stacks it on
+                   the PSP.
+     -32           the PendSV that tail-chains behind it. Tail-chaining reuses the frame
+                   above, so no second hardware frame is charged, and it cannot repeat:
+                   PendSV switches away and pops the block on resume, and a further
+                   exception nests on the MSP, so at most ONE exception is ever stacked on
+                   a thread's PSP.
 
    THE STKALIGN PAD CANCELS and is not a term: entry spends 4 exactly when the pre-exception
-   SP was 4-mod-8, which is also when P1 - 8 is 4-mod-8 and the preempting entry spends its
-   own 4. arch_syscall_reg reaches that posture, its two pushes being ten words together.
+   SP was 4-mod-8, which puts P0 4 bytes lower and R back on that same SP, where the
+   preempting entry spends its own 4.
 
    The {r4-r11} push of the fastpath arm is NOT added on top: it is an alternative to this
-   window, not something below it, and 40 dominates it. arch_armv6m.cc asserts the
-   domination. */
-#define KICKOS_ARMV6M_TRAP_NEST_SVC 40
+   window, not something below it, and 32 covers it. arch_armv6m.cc asserts the domination. */
+#define KICKOS_ARMV6M_TRAP_NEST_SVC 32
 
 /* THE SVCK CLASS, structural half: what stands between the top of a kernel block (T =
    ctx.kernel_sp) and the first byte syscall_dispatch may use, plus what a preemption puts
    below the deepest byte it uses.
 
-     -16   the continuation header svc_trampoline lays at T: a3 (the fifth argument, passed
+     -16   the continuation header the SVC handler lays at T: a3 (the fifth argument, passed
            on the stack by AAPCS), the caller-return, the PSP the thread resumes on, and the
-           word that keeps SP 8-aligned for the call.
+           word that keeps SP 8-aligned for the call. The trampoline's 32-byte entry frame
+           below it is popped before the dispatch descends, so it and the preemption below are
+           alternatives.
      -4    the STKALIGN pad a preempting exception spends. It does NOT cancel here: above it
            is a chain of compiler frames whose sub is a multiple of 4, so the deepest SP can
            be 4-mod-8 on its own.
@@ -90,8 +91,8 @@
 /* Worst-case bytes the kernel's C dispatch descends BELOW all of that, per class.
 
      _PENDSV   0  handler mode uses SP_main.
-     _SVC      0  svc_trampoline moves SP to ctx.kernel_sp before it calls anything, so the
-                  whole dispatch tree is measured as _SVCK.
+     _SVC      0  the SVC handler starts svc_trampoline on ctx.kernel_sp, so the whole
+                  dispatch tree is measured as _SVCK.
      _SVCK   808  616 measured on microbit and picopi, a task create cancelled at its wait:
                   syscall_dispatch[56] -> task_create_call[152] -> create_wait_death[56]
                   -> exit_current[48] -> cap_teardown[40] -> ... -> __aeabi_ldivmod[96].
@@ -116,9 +117,9 @@
 #define KICKOS_ARMV6M_TRAP_KERNEL_DEPTH_SVCK 808
 
 /* THE EXIT CLASS, structural half: NEST_SVCK's window without the 16-byte continuation
-   header, because no trampoline lays one here. The backend rewrites the exception frame so
-   the return lands in the stub with SP at kickos_fault_stack_top, and the stub is entered by
-   an exception return rather than by a call.
+   header, because no trampoline lays one here. The backend builds the exception frame the
+   return pops at kickos_fault_stack_top, so the exit is entered by an exception return with SP
+   there rather than by a call.
 
      -4    the STKALIGN pad, which does not cancel, as in the SVCK window.
      -32   the hardware frame a device IRQ or SysTick stacks. The stub runs in THREAD mode.
@@ -130,11 +131,11 @@
 
 /* The measured descent of the two stubs a dying thread runs PRIVILEGED on its own KERNEL
    BLOCK, kickos_fault_stack_top answering with ctx.kernel_sp: kickos_thread_fault_exit and
-   kickos_thread_slay_exit. 408 measured on every preset: the fault stub's record line ends in
+   kickos_thread_slay_exit. 424 measured on every preset: the fault stub's record line ends in
    the pick its console write's wake performs, with the 64-bit divide arch_timer_arm needs.
 
-   NO POSTURE LADDER: this arch has neither a telemetry nor a bench variant, and
-   ARCH_KERNEL_STACKS_MANDATORY leaves no kstacks=0 fallback class.
+   NO POSTURE LADDER: this arch has no telemetry variant, and ARCH_KERNEL_STACKS_MANDATORY
+   leaves no kstacks=0 fallback class.
 
    IT NEVER BINDS: SVCK wins the block on every preset, so 448 is rounded like a thread-stack
    figure and sizes nothing. */
@@ -149,7 +150,7 @@
 #define KICKOS_ARMV6M_TRAP_NEED_SVC \
     (KICKOS_ARMV6M_TRAP_NEST_SVC + KICKOS_ARMV6M_TRAP_KERNEL_DEPTH_SVC)
 
-/* ENTRY_FRAME is spent ABOVE the validated sp: the SVC entry's frame (NEST_SVC's P1 - P0),
+/* ENTRY_FRAME is spent ABOVE the validated sp: the SVC entry's frame (NEST_SVC's R - P0),
    which the guard does not count and the thread's own stack still pays. */
 #define KICKOS_ARMV6M_TRAP_ENTRY_FRAME 32
 
@@ -175,14 +176,15 @@
  * nothing under it. THE FAULT REPORTER IS A DIFFERENT CHAIN and is not priced here: it runs in
  * thread context on the dying thread's own block and is what EXITK still measures.
  *
- * FRAME IS THE HARDWARE FRAME and not 0: the entry sets PRIMASK before the move, but PRIMASK
- * does not mask a HardFault, and a wild access inside the reporter stacks that frame on the SP
- * the reporter is on. A plain integer because check_trap_redzone.sh scrapes it as an immediate;
- * arch_armv6m.cc asserts it against KICKOS_ARMV6M_TRAP_FRAME.
- *
- * 128 is the deepest reading, under an enforced 320. */
-#define KICKOS_ARMV6M_PANIC_FRAME 32
+ * FRAME is 0: only a fault inside the reporter stacks one here, a bug the tests catch. */
+#define KICKOS_ARMV6M_PANIC_FRAME 0
 #define KICKOS_ARMV6M_PANIC_DEPTH 320
+
+/* IDLE'S OWN STACK, its PSP, which idle_entry runs on privileged: the STKALIGN pad, an
+ * interrupt's hardware frame and the PendSV block that tail-chains behind it.
+ * DEPTH is idle_entry and arch_idle_wait, 8 measured on every preset, rounded up to 64. */
+#define KICKOS_ARMV6M_IDLE_FRAME 68
+#define KICKOS_ARMV6M_IDLE_DEPTH 64
 
 /* THE MAIN STACK, which the image links as _kernel_stack_size below _estack. Boot runs on it in
  * thread mode with device lines open, sched::start leaves boot's frames on it, and every
@@ -211,6 +213,7 @@
  * class EXITK  frame=KICKOS_ARMV6M_TRAP_NEST_EXIT depth=KICKOS_ARMV6M_TRAP_KERNEL_DEPTH_EXITK stack=kernel
  * class SVCK   frame=KICKOS_ARMV6M_TRAP_NEST_SVCK depth=KICKOS_ARMV6M_TRAP_KERNEL_DEPTH_SVCK stack=kernel
  * class PANIC  frame=KICKOS_ARMV6M_PANIC_FRAME depth=KICKOS_ARMV6M_PANIC_DEPTH stack=panic
+ * class IDLE   frame=KICKOS_ARMV6M_IDLE_FRAME depth=KICKOS_ARMV6M_IDLE_DEPTH stack=idle
  * class MSP    frame=KICKOS_ARMV6M_MSP_FRAME depth=KICKOS_ARMV6M_MSP_DEPTH stack=main
  */
 

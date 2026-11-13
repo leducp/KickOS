@@ -53,16 +53,16 @@ namespace kickos
 
 #if KICKOS_HAVE_ASPACE
     // The kernel's alias of the word through arch_aspace_acquire, held until kaccess_word_put;
-    // null where its page is gone or no longer cacheable.
+    // null where its page is gone, no longer writable, or no longer cacheable.
     uint32_t* kaccess_word_get(WordRef const& w);
     void kaccess_word_put(WordRef const& w);
 #endif
 
     // The kernel's hold on the word `w` names, reached as kaccess reaches any user byte: through
     // the kernel's alias on a translating backend, at the word's own address elsewhere. Not
-    // reached where the word's page is gone or no longer cacheable. The load is acquire, the
-    // compare-and-swap acquire and release, the store release. Caller holds IrqLock across the
-    // whole hold and parks nowhere inside it.
+    // reached where the word's page is gone, no longer writable, or no longer cacheable. The load
+    // is acquire, the compare-and-swap acquire and release, the store release. Caller holds
+    // IrqLock across the whole hold and parks nowhere inside it.
     class WordAccess
     {
       public:

@@ -2,7 +2,6 @@
 // Copyright (c) 2026 Philippe Leduc
 
 #include <kickos/time.h>
-#include <kickos/bench.h>
 #include <kickos/sched.h>
 #include <kickos/sync.h>
 #include <kickos/instance.h>
@@ -32,8 +31,6 @@ namespace kickos
 {
     namespace
     {
-        // Sorted ascending by deadline, singly-linked through tnext, rooted at the kernel.
-
         // From `*pp` on, which no later deadline precedes; answers the link after `t`.
         Thread** sleepq_insert_from(Thread** pp, Thread* t)
         {
@@ -47,9 +44,12 @@ namespace kickos
             return &t->tnext;
         }
 
+        // Onto the calling core's own queue: the park's next switch on this core is what arms
+        // the comparator for it.
         void sleepq_insert(Thread* t, bool wall)
         {
-            (void)sleepq_insert_from(&kernel().sleepq, t);
+            KICKOS_DEBUG_ASSERT(queue_core_of(t) == kickos_kernel_core());
+            (void)sleepq_insert_from(&kernel().sleepq(queue_core_of(t)), t);
             t->timer_wall = wall;
         }
 
@@ -73,13 +73,51 @@ namespace kickos
             return d + ahead;
         }
 
+        // Takes the marked deadlines off core c's queue in its order, each moved by `by_ns` and
+        // floored at `now`, which keeps that order. Answers them as a list, null for none.
+        Thread* wall_take(KernelCore c, int64_t by_ns, uint64_t now)
+        {
+            Thread* moved = nullptr;
+            Thread** tail = &moved;
+            Thread** pp = &kernel().sleepq(c);
+            while (*pp != nullptr)
+            {
+                Thread* const t = *pp;
+                if (not t->timer_wall)
+                {
+                    pp = &t->tnext;
+                    continue;
+                }
+                *pp = t->tnext;
+                t->deadline_ns = ktime_floored(now, shifted(t->deadline_ns, by_ns));
+                t->tnext = nullptr;
+                *tail = t;
+                tail = &t->tnext;
+            }
+            return moved;
+        }
+
+        // Puts wall_take's list back on core c's queue, in one pass.
+        void wall_put_back(KernelCore c, Thread* moved)
+        {
+            Thread** pp = &kernel().sleepq(c);
+            while (moved != nullptr)
+            {
+                Thread* const t = moved;
+                moved = t->tnext;
+                pp = sleepq_insert_from(pp, t);
+            }
+        }
+
+        // From any core, keyed by queue_core, which must not move while a deadline is queued.
         void sleepq_remove(Thread* t)
         {
-            Thread** pp = &kernel().sleepq;
+            Thread** pp = &kernel().sleepq(queue_core_of(t));
             while (*pp != nullptr and *pp != t)
             {
                 pp = &(*pp)->tnext;
             }
+            KICKOS_DEBUG_ASSERT(*pp == t);
             if (*pp == t)
             {
                 *pp = t->tnext;
@@ -103,9 +141,10 @@ namespace kickos
         uint64_t next_event(Thread const* incoming)
         {
             uint64_t next = UINT64_MAX;
-            if (kernel().sleepq != nullptr)
+            Thread const* const head = kernel().sleepq(kickos_kernel_core());
+            if (head != nullptr)
             {
-                next = kernel().sleepq->deadline_ns;
+                next = head->deadline_ns;
             }
 #if KICKOS_ARCH_SWITCH_LANDS_LATER
             if (kernel().switch_landing_owed[kickos_kernel_core()] != 0)
@@ -153,9 +192,6 @@ namespace kickos
 
     void ktime_rearm(Thread const* incoming, Held)
     {
-#if KICKOS_BENCH
-        BenchScope const bench_body(PH_KTIME_REARM);
-#endif
         uint64_t const next = next_event(incoming);
         // The dedup key is `next` itself, never a value re-derived from the clock: this runs on
         // every context switch, and a moving key would restart the countdown each time.
@@ -166,10 +202,9 @@ namespace kickos
         program(next);
     }
 
-#if KICKOS_ARCH_SWITCH_LANDS_LATER
     // Stamped from the clock read here, so the landed thread runs at least the min delta whatever
-    // the switch cost before this point, and armed once for everything: the booking that owed
-    // it armed nothing.
+    // the switch cost before this point. Armed through the dedup: a reprogram on every landing
+    // holds off a deadline inside the min-delta window for as long as landings keep coming.
     void ktime_land(Held held)
     {
         KernelCore const me = kickos_kernel_core();
@@ -182,20 +217,6 @@ namespace kickos
         policy_on_switch_in(t);
         ktime_rearm(t, held);
     }
-#else
-    // Reprogrammed unconditionally at the interrupt's exit, so the floor is measured from here
-    // and the landed thread runs at least the min delta whatever the handler cost after booking.
-    void ktime_land(Held)
-    {
-        KernelCore const me = kickos_kernel_core();
-        if (kernel().switch_landing_owed[me] == 0)
-        {
-            return;
-        }
-        kernel().switch_landing_owed[me] = 0;
-        program(next_event(sched::current()));
-    }
-#endif
 
     void ktime_land_at_isr_exit()
     {
@@ -281,35 +302,30 @@ namespace kickos
             return;
         }
         uint64_t const now = ktime_now();
-        // The marked deadlines leave the queue in its order, which one shift and one floor keep.
-        Thread* moved = nullptr;
-        Thread** tail = &moved;
-        Thread** pp = &kernel().sleepq;
-        while (*pp != nullptr)
+        KernelCore const me = kickos_kernel_core();
+        uint32_t peers = 0;
+        for (KernelCore const c : KernelCores::all())
         {
-            Thread* const t = *pp;
-            if (not t->timer_wall)
+            if (c == me)
             {
-                pp = &t->tnext;
                 continue;
             }
-            *pp = t->tnext;
-            t->deadline_ns = ktime_floored(now, shifted(t->deadline_ns, by_ns));
-            t->tnext = nullptr;
-            *tail = t;
-            tail = &t->tnext;
+            Thread* const moved = wall_take(c, by_ns, now);
+            if (moved != nullptr)
+            {
+                wall_put_back(c, moved);
+                peers = peers | (1u << c);
+            }
         }
+        // A deadline moved earlier on a peer's queue waits for that peer's comparator, which
+        // only its own dispatch re-arms.
+        sched_ask_at_span_end(peers);
+        Thread* const moved = wall_take(me, by_ns, now);
         if (moved == nullptr)
         {
             return;
         }
-        pp = &kernel().sleepq;
-        while (moved != nullptr)
-        {
-            Thread* const t = moved;
-            moved = t->tnext;
-            pp = sleepq_insert_from(pp, t);
-        }
+        wall_put_back(me, moved);
         ktime_rearm(sched::current(), held);
     }
 
@@ -319,9 +335,9 @@ namespace kickos
         {
             return;
         }
+        // No re-arm, even of a peer whose head this was: its comparator fires once for nothing
+        // and re-arms from its own queue.
         sleepq_remove(t);
-        // No ktime_rearm: switch_to rearms on every context switch, and a timer left armed
-        // early only costs a wakeup that finds nothing expired.
     }
 
     void ktime_sleep_ns(uint64_t ns)
@@ -358,9 +374,13 @@ namespace kickos
         sched::tick_rr(now, lock);
 
         death_leave_batch_begin();
-        while (kernel().sleepq != nullptr and kernel().sleepq->deadline_ns <= now)
+        while (true)
         {
-            Thread* t = kernel().sleepq;
+            Thread* const t = kernel().sleepq(kickos_kernel_core());
+            if (t == nullptr or t->deadline_ns > now)
+            {
+                break;
+            }
             sleepq_remove(t);
             // sleepq_remove leaves the wait edge: a timed wait is on the sleepq AND a wait
             // queue at once, and the unwind reads the edge to find the second.
@@ -379,17 +399,11 @@ extern "C" void kickos_isr_timer(void)
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
     ::kickos::ktrace_irq_enter(static_cast<uint16_t>(::kickos::trace::TRACE_TIMER_LINE));
 #endif
-#if KICKOS_BENCH_SCHED_ON
-    uint32_t const bench_was = ::kickos_bench_reason_enter(::kickos::BR_TIMER);
-#endif
 #if KICKOS_WITNESS_UACCESS
     ::kickos::witness_uaccess_timer(::kickos::sched::current());
 #endif
     ::kickos::ktime_on_timer();
     ::kickos::ktime_land_at_isr_exit();
-#if KICKOS_BENCH_SCHED_ON
-    ::kickos_bench_reason_leave(bench_was);
-#endif
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
     ::kickos::ktrace_irq_exit(static_cast<uint16_t>(::kickos::trace::TRACE_TIMER_LINE));
 #endif

@@ -9,21 +9,17 @@
  *
  * Saved-frame layout (must match arch_context_init in arch_armv7m.cc), low->high address on
  * the thread's PSP:
- *     [r4 r5 r6 r7 r8 r9 r10 r11 EXC_RETURN]   <- PendSV-saved (ctx.sp points here)
+ *     [r4 r5 r6 r7 r8 r9 r10 r11]              <- PendSV-saved (ctx.sp points here)
  *     [r0 r1 r2 r3 r12 LR PC xPSR]             <- hardware exception frame
- * On an FPU part a thread with live FP context also carries {s16-s31} between the callee
- * block and the hardware frame (saved before {r4-r11,lr}, so at higher addresses) and
- * {s0-s15,FPSCR} inside the hardware frame; both are handled conditionally on EXC_RETURN
- * bit4.
+ * EXC_RETURN is ctx.exc_return and never a stack word. On an FPU part a thread with live FP
+ * context also carries {s16-s31} between the callee block and the hardware frame (saved
+ * before {r4-r11}, so at higher addresses) and {s0-s15,FPSCR} inside the hardware frame; both
+ * are handled conditionally on EXC_RETURN bit4.
  */
 
 #include <kickos/arch/armv7m_trap_stack.h>
 /* KICKOS_KERNEL_STACK_SIZE, which PendSV_Handler compares a PSP against. */
 #include <kickos/board_config.h>
-
-#if KICKOS_BENCH && KICKOS_KERNEL_CORES > 1
-    .error "the switch stamp below is ONE word for the image, so a second core stamping it subtracts one core's open from another's close. Give this backend a per-core cell (armv8a, rv64imac and lx6 have one) before raising the kernel core count."
-#endif
 
     .syntax unified
     .thumb
@@ -31,6 +27,7 @@
     .equ F_CTX_STACK_LO, KICKOS_ARMV7M_CTX_OFF_STACK_LO
     .equ F_CTX_STACK_HI, KICKOS_ARMV7M_CTX_OFF_STACK_HI
     .equ F_CTX_KERNEL_SP, KICKOS_ARMV7M_CTX_OFF_KERNEL_SP
+    .equ F_CTX_EXC_RETURN, KICKOS_ARMV7M_CTX_OFF_EXC_RETURN
     .equ F_CTX_TRACE_TID, KICKOS_ARMV7M_CTX_OFF_TRACE_TID
 #if KICKOS_ARMV7M_SPLIM
     .equ F_CTX_SPLIM, KICKOS_ARMV7M_CTX_OFF_SPLIM
@@ -49,6 +46,33 @@
     .equ BLOCK_PSP_MAX_DROP, \
         KICKOS_KERNEL_STACK_SIZE - KICKOS_ARMV7M_TRAP_NEST_SVCK - 4
 
+/* The frame a switch-in returns through, in a stack a task-mate can write: a stacked PC with
+   bit 0 set is UNPREDICTABLE on exception return, so it is cleared in handler mode first.
+   In: \f = the frame; clobbers \t. */
+    .macro SCRUB_PC f, t
+    ldr     \t, [\f, #24]
+    bic     \t, \t, #1
+    str     \t, [\f, #24]
+    .endm
+
+/* The upper leg: the whole entry frame below stack_hi. SCRUB_PC writes its PC word in handler
+   mode at the switch-in, and an FP frame's {s0-s15, FPSCR} words were only RESERVED by the
+   entry, filled later by the lazy save the first FP instruction here or the switcher's own
+   vstmdbeq fires. Falls through when bounded. In: r0 = the PSP, r2 = the ctx*, lr =
+   EXC_RETURN; clobbers r12. PSP is word-aligned, so below hi - 28 is at or below hi - 32. */
+    .macro FRAME_UNDER_HI bad
+    ldr     r12, [r2, #F_CTX_STACK_HI]
+    sub     r12, r12, #28
+#if defined(__ARM_FP)
+    tst     lr, #0x10
+    it      eq
+    subeq   r12, r12, #(KICKOS_ARMV7M_TRAP_ENTRY_FRAME - 32)
+#endif
+    cmp     r0, r12
+    bhs     \bad                    /* a PSP above the stack would push into whatever
+                                       granted region carried the hardware frame */
+    .endm
+
 /* PSP bounds guard, used by both software pushes in this file.
    In:  \need = the room this site's class needs below the PSP, before the FP term;
         r0 = the live PSP, r2 = the running thread's arch_context*, lr = EXC_RETURN.
@@ -57,8 +81,7 @@
    between stack_lo and the PSP.
 
    \need is the class figure armv7m_trap_stack.h derives. The two sites pass DIFFERENT ones
-   because the SVC site's exception return leaves handler mode, so svc_trampoline keeps
-   descending on this PSP until it reaches ctx.kernel_sp.
+   because the syscall return comes back to the SVC site's PSP still privileged.
 
    \bad is the refusal target, and the two sites pass DIFFERENT ones because only PendSV
    spills at entry and that spill has to come back off before the shared tail runs.
@@ -83,10 +106,7 @@
                                        as psp - need could wrap under stack_lo instead */
     cmp     r12, r1
     blo     \bad
-    ldr     r12, [r2, #F_CTX_STACK_HI]
-    cmp     r0, r12
-    bhs     \bad                    /* a PSP above the stack would push into whatever
-                                       granted region carried the hardware frame */
+    FRAME_UNDER_HI \bad
     .endm
 
     .text
@@ -96,13 +116,6 @@
     .thumb_func
     .global PendSV_Handler
 PendSV_Handler:
-#if KICKOS_BENCH
-    /* DWT CYCCNT. */
-    ldr     r0, =0xE0001004
-    ldr     r0, [r0]
-    ldr     r1, =g_bench_sw_start
-    str     r0, [r1]
-#endif
     ldr     r3, =g_arch_current
     ldr     r2, [r3]                /* outgoing ctx* (0 => first start) */
 #if KICKOS_TELEMETRY
@@ -143,25 +156,33 @@ PendSV_Handler:
     /* Every PSP an entry stacked from sits at or above PSPLIM, SPLIM_ROOM over the base, and
        every stack crossing moves the limit with SP under PRIMASK: only the upper bound is left
        to software. */
-    ldr     r12, [r2, #F_CTX_STACK_HI]
-    cmp     r0, r12
-    bhs     .Lpsp_wild_pendsv_hi
+    FRAME_UNDER_HI .Lpsp_wild_pendsv_hi
 #else
     PSP_GUARD KICKOS_ARMV7M_TRAP_NEED_PENDSV, 1, .Lpsp_wild_pendsv
 #endif
 #if KICKOS_KERNEL_STACKS
+    /* OFF ITS OWN KERNEL BLOCK A CONTEXT IS SAVED AT ITS RESTING PRIVILEGE, so no privileged
+       frame rests in memory a task-mate writes. The one privileged window on a user stack, the
+       syscall return between its stack move and its privilege drop, runs correctly demoted. */
+    ldr     r1, [r2, #8]            /* ctx.resting_npriv */
+    b       5f
 3:
+    mrs     r1, control             /* the CURRENT nPRIV: a thread blocked mid-syscall */
+    and     r1, r1, #1              /* is privileged and must resume so */
+5:
+#else
+    mrs     r1, control             /* the CURRENT nPRIV: a thread blocked mid-syscall */
+    and     r1, r1, #1              /* is privileged and must resume so */
 #endif
 #if defined(__ARM_FP)
     tst     lr, #0x10               /* EXC_RETURN bit4 == 0 => FP frame active */
     it      eq
     vstmdbeq r0!, {s16-s31}
 #endif
-    stmdb   r0!, {r4-r11, lr}       /* push callee regs + EXC_RETURN */
+    stmdb   r0!, {r4-r11}
+    str     lr, [r2, #F_CTX_EXC_RETURN]
     str     r0, [r2]                /* outgoing->sp = r0 (ctx.sp is field 0) */
-    mrs     r0, control             /* the CURRENT nPRIV: a thread blocked mid-syscall */
-    and     r0, r0, #1              /* is privileged and must resume so */
-    str     r0, [r2, #4]
+    str     r1, [r2, #4]
 #if KICKOS_ARMV7M_SPLIM
     mrs     r0, psplim
     str     r0, [r2, #F_CTX_SPLIM]
@@ -177,13 +198,15 @@ PendSV_Handler:
     ldr     r1, [r1]                /* incoming ctx* */
     str     r1, [r3]                /* g_arch_current = incoming */
     ldr     r0, [r1]                /* incoming->sp */
-    ldmia   r0!, {r4-r11, lr}       /* pop callee regs + EXC_RETURN */
+    ldr     lr, [r1, #F_CTX_EXC_RETURN]
+    ldmia   r0!, {r4-r11}
 #if defined(__ARM_FP)
     tst     lr, #0x10
     it      eq
     vldmiaeq r0!, {s16-s31}
 #endif
     msr     psp, r0
+    SCRUB_PC r0, r12
 #if KICKOS_ARMV7M_SPLIM
     ldr     r12, [r1, #F_CTX_SPLIM]
     msr     psplim, r12
@@ -193,19 +216,6 @@ PendSV_Handler:
     bfi     r3, r2, #0, #1          /* CONTROL.nPRIV = incoming npriv */
     msr     control, r3
     isb
-#if KICKOS_BENCH
-    /* Read BEFORE any telemetry emit, so the window brackets the save/restore alone. The
-       push/pop keeps r1 (incoming ctx*), the telemetry spill below it, EXC_RETURN, and MSP
-       8-byte aligned. */
-    push    {r0, r1, r2, lr}
-    ldr     r0, =0xE0001004
-    ldr     r0, [r0]
-    ldr     r1, =g_bench_sw_start
-    ldr     r1, [r1]
-    subs    r0, r0, r1
-    bl      kickos_bench_switch_done
-    pop     {r0, r1, r2, lr}
-#endif
 #if KICKOS_TELEMETRY
     /* Emit {from,to} from the physically swapped contexts: r1 incoming, r2 the outgoing
        spilled at entry. from = 0xFFFF on the first switch, where the outgoing ctx* is 0. */
@@ -290,9 +300,9 @@ PendSV_Handler:
    half never having run. It expects r3 to still hold &g_arch_current, and the bl above
    clobbered it (AAPCS caller-saved); and its telemetry hook consumes a push the save half
    makes, which is not on the stack. So the sequence is repeated without those two, and the
-   bench and telemetry hooks are deliberately absent: this is a fault path, not a switch to
-   measure. lr held EXC_RETURN and the bl clobbered it, which costs nothing because the
-   incoming frame carries its own. */
+   telemetry hook is deliberately absent: this is a fault path, not a switch to measure. lr
+   held EXC_RETURN and the bl clobbered it, which costs nothing because the incoming context
+   carries its own. */
 .Lresume_contained:
     cpsid   i
     ldr     r3, =g_arch_current
@@ -306,7 +316,7 @@ PendSV_Handler:
        emitted nothing breaks the NEXT record rather than this one. Emitted before the
        register restore, which costs nothing: the record is the two contexts and not the
        register file. The push keeps MSP 8-byte aligned and carries r1 across the call; lr is
-       reloaded by the ldmia below, so the bl may clobber it. */
+       reloaded from the incoming context below, so the bl may clobber it. */
     push    {r1, r2}
     ldr     r0, [r2, #F_CTX_TRACE_TID] /* from_tid = the offender's */
     ldr     r1, [r1, #F_CTX_TRACE_TID] /* to_tid */
@@ -314,13 +324,15 @@ PendSV_Handler:
     pop     {r1, r2}
 #endif
     ldr     r0, [r1]                /* incoming->sp */
-    ldmia   r0!, {r4-r11, lr}       /* pop callee regs + EXC_RETURN */
+    ldr     lr, [r1, #F_CTX_EXC_RETURN]
+    ldmia   r0!, {r4-r11}
 #if defined(__ARM_FP)
     tst     lr, #0x10
     it      eq
     vldmiaeq r0!, {s16-s31}
 #endif
     msr     psp, r0
+    SCRUB_PC r0, r12
 #if KICKOS_ARMV7M_SPLIM
     ldr     r12, [r1, #F_CTX_SPLIM]
     msr     psplim, r12
@@ -345,9 +357,8 @@ PendSV_Handler:
 /* SVC_Handler redirects the exception return into svc_trampoline, which runs */
 /* in PRIVILEGED THREAD mode and dispatches from there, so a blocking switch  */
 /* is a real synchronous one (arch.h arch_syscall contract). The hardware     */
-/* frame already holds the args (r0=nr r1=a0 r2=a1 r3=a2 r12=a3) and, in LR,  */
-/* the return address of arch_syscall's caller, so only the stacked PC is     */
-/* rewritten.                                                                 */
+/* frame holds the args (r0=nr r1=a0 r2=a1 r3=a2 r12=a3) and, in LR, the      */
+/* return address of arch_syscall's caller.                                   */
 /* ------------------------------------------------------------------------- */
     .thumb_func
     .global SVC_Handler
@@ -355,9 +366,9 @@ SVC_Handler:
     mrs     r0, psp                 /* r0 -> user hardware frame */
     /* Guards BOTH exits from here, at the SVC figure, which is the larger of the two: the
        fastpath below pushes the callee block through this PSP and returns in handler mode,
-       while the slow path exception-returns into svc_trampoline, which runs PRIVILEGED IN
-       THREAD MODE on this same PSP until it reaches ctx.kernel_sp. The guard sits above the
-       `cmp #56` that picks the arm, so it charges whichever spends more. */
+       while the slow path's return comes back to this PSP PRIVILEGED for a few instructions,
+       where a preemption stacks below it. The guard sits above the `cmp #56` that picks the
+       arm, so it charges whichever spends more. */
     ldr     r2, =g_arch_current
     ldr     r2, [r2]
     /* Inverted so the far branch is a plain b: cbz reaches only +126 bytes and the refusal
@@ -365,7 +376,14 @@ SVC_Handler:
     cbnz    r2, 1f
     b       .Lsvc_nothread          /* no thread running, and it does not return */
 1:
+#if KICKOS_ARMV7M_SPLIM
+    /* Every entry stacks at or above PSPLIM, whose room covers the fastpath push and the
+       return window, so only the upper bound is left to software, as at PendSV. */
+    movw    r1, #KICKOS_ARMV7M_TRAP_NEED_SVC
+    FRAME_UNDER_HI .Lpsp_wild
+#else
     PSP_GUARD KICKOS_ARMV7M_TRAP_NEED_SVC, 0, .Lpsp_wild
+#endif
     /* THE SEAM. KOS_SYS_CALL_REG completes here, ahead of the exception return that lands
        in svc_trampoline for the generic dispatch. The leaf decides before it mutates, so a
        null return means nothing was committed and the fall-through carries the whole call. */
@@ -403,7 +421,7 @@ SVC_Handler:
     it      eq
     vstmdbeq r0!, {s16-s31}
 #endif
-    stmdb   r0!, {r4-r11, lr}
+    stmdb   r0!, {r4-r11}
     push    {r0, lr}                /* the frame base and EXC_RETURN, across the bl */
     bl      kickos_ipc_fastpath
     pop     {r1, lr}
@@ -419,8 +437,8 @@ SVC_Handler:
     ldr     r2, =g_arch_current
     ldr     r3, [r2]                /* outgoing ctx* (the caller) */
     str     r1, [r3]                /* outgoing->sp = this frame */
-    mrs     r1, control
-    and     r1, r1, #1              /* the caller's own nPRIV: this path never raised it */
+    str     lr, [r3, #F_CTX_EXC_RETURN]
+    ldr     r1, [r3, #8]            /* resting: only the caller's own code reaches this path */
     str     r1, [r3, #4]
 #if KICKOS_ARMV7M_SPLIM
     mrs     r1, psplim
@@ -431,13 +449,15 @@ SVC_Handler:
 #if KICKOS_TELEMETRY
     push    {r3, r12}               /* outgoing ctx*, across the CONTROL write below */
 #endif
-    ldmia   r1!, {r4-r11, lr}
+    ldr     lr, [r0, #F_CTX_EXC_RETURN]
+    ldmia   r1!, {r4-r11}
 #if defined(__ARM_FP)
     tst     lr, #0x10
     it      eq
     vldmiaeq r1!, {s16-s31}
 #endif
     msr     psp, r1
+    SCRUB_PC r1, r2
 #if KICKOS_ARMV7M_SPLIM
     ldr     r2, [r0, #F_CTX_SPLIM]
     msr     psplim, r2
@@ -476,73 +496,138 @@ SVC_Handler:
     msr     basepri, r1
     mrs     r0, psp                 /* PSP never moved; the redirect below wants it back */
 .Lsvc_slow:
+#if KICKOS_KERNEL_STACKS
+/* THE TRANSFER, built here in handler mode: the continuation header at the top T of the
+   caller's kernel block, and below it the frame the exception return pops into
+   svc_trampoline. No word that steers this privileged return is read back from the user
+   frame, which a task-mate can rewrite: only the arguments and the caller-return are copied.
+   In: r0 = the guarded user frame, lr = its EXC_RETURN. The ctx* is reloaded here, never
+   taken from a register: the refusals above branch in with r2 spent.
+
+   THE CONTINUATION HEADER, read back by the trampoline after the call:
+       [T-16]  a3, the AAPCS fifth argument, which syscall_dispatch reads at [sp]
+       [T-12]  the caller-return this exits to
+       [T-8]   the PSP the thread resumes on
+       [T-4]   the word that keeps sp 8-byte aligned for the call; with a stack limit, the
+               caller's PSPLIM, put back on the way out
+   The resume PSP lives HERE and not in a register or a second context field: a blocking
+   dispatch has PendSV freeze its continuation BELOW this header, so the header survives the
+   block for free, and ctx.sp names whichever stack the thread was preempted on.
+
+   MASKED TO THE RETURN, and the trampoline unmasks. An FP-live caller's frame is extended, and
+   its {s0-s15, FPSCR} words are popped from the built frame unless FPCCR.LSPACT is still set
+   at the return, so the copy below must see the LSPACT the return will; PRIMASK was 0 at
+   entry, an SVC being untakeable under it. */
+    cpsid   i
+    ldr     r3, =g_arch_current
+    ldr     r3, [r3]
+    ldr     r3, [r3, #F_CTX_KERNEL_SP]
+    cmp     r3, #0
+    beq.w   .Lsvc_nokstack          /* no block to build on, and it does not return */
+    add     r1, r0, #32             /* the PSP the thread resumes on, past the popped frame */
+#if defined(__ARM_FP)
+    tst     lr, #0x10
+    it      eq
+    addeq   r1, r1, #72
+#endif
+    ldr     r12, [r0, #28]
+    tst     r12, #0x200             /* and the realign word the entry spent */
+    it      ne
+    addne   r1, r1, #4
+    str     r1, [r3, #-8]
+    ldr     r12, [r0, #20]
+    str     r12, [r3, #-12]
+    ldr     r12, [r0, #16]
+    str     r12, [r3, #-16]
+#if KICKOS_ARMV7M_SPLIM
+    mrs     r12, psplim
+    str     r12, [r3, #-4]
+    movw    r12, #(KICKOS_KERNEL_STACK_SIZE - KICKOS_ARMV7M_SPLIM_ROOM)
+    sub     r12, r3, r12
+    msr     psplim, r12             /* before the PSP, which lands above it */
+#endif
+    sub     r3, r3, #48             /* the header and a basic frame */
+#if defined(__ARM_FP)
+    tst     lr, #0x10
+    it      eq
+    subeq   r3, r3, #72             /* the same frame shape the entry stacked */
+#endif
+    ldrd    r1, r12, [r0]           /* r0, r1 */
+    strd    r1, r12, [r3]
+    ldrd    r1, r12, [r0, #8]       /* r2, r3 */
+    strd    r1, r12, [r3, #8]
+    ldrd    r1, r12, [r0, #16]      /* r12, lr */
+    strd    r1, r12, [r3, #16]
     ldr     r1, =svc_trampoline
-    bic     r1, r1, #1              /* stacked PC must be halfword-aligned (bit0=0;
-                                       the T-bit comes from the stacked xPSR) */
-    str     r1, [r0, #24]           /* frame.PC := svc_trampoline (offset 6*4) */
+    bic     r1, r1, #1
+    mov     r12, #0x01000000        /* T, and no IT, ICI, IPSR or realign bit */
+#if defined(__ARM_FP) && defined(__ARM_FEATURE_CMSE)
+    /* RETPSR.SFPA, which a return to Secure state puts back in CONTROL_S.SFPA: left clear
+       under an FP frame, the caller's next FP instruction reloads FPSCR from FPDSCR. */
+    and     r2, lr, #0x50
+    cmp     r2, #0x40               /* EXC_RETURN.S set, FType clear */
+    it      eq
+    orreq   r12, r12, #0x00100000
+#endif
+    strd    r1, r12, [r3, #24]
+#if defined(__ARM_FP)
+    tst     lr, #0x10
+    bne     2f
+    ldr     r12, =0xE000EF34        /* FPCCR */
+    ldr     r12, [r12]
+    tst     r12, #1                 /* LSPACT */
+    bne     2f
+    add     r0, r0, #32
+    add     r1, r3, #32
+    movs    r2, #17                 /* {s0-s15}, FPSCR */
+1:
+    ldr     r12, [r0], #4
+    str     r12, [r1], #4
+    subs    r2, r2, #1
+    bne     1b
+2:
+#endif
+    msr     psp, r3
     mrs     r1, control
     bic     r1, r1, #1              /* CONTROL.nPRIV = 0 -> trampoline privileged */
     msr     control, r1
     isb
-    bx      lr                      /* exception-return into svc_trampoline:
-                                       r0=nr r1=a0 r2=a1 r3=a2 r12=a3
-                                       LR=arch_syscall caller-return */
+    bx      lr                      /* -> svc_trampoline on the block, r0-r3 the arguments */
 
-/* THE TRANSFER. Entered privileged in THREAD mode by the SVC's own exception return, with */
-/* the hardware frame already popped, so sp is the PSP the calling thread will resume on   */
-/* and the frame size and its STKALIGN pad are the hardware's arithmetic and not this      */
-/* code's. It relocates sp onto that thread's own kernel block and calls syscall_dispatch  */
-/* there. The only bytes spent on the thread's stack are the eight the push below writes,  */
-/* and they sit inside the frame the return just popped.                                   */
-/*                                                                                         */
-/* THE CONTINUATION HEADER, laid at the block's top T and read back after the call:        */
-/*     [T-16]  a3, the AAPCS fifth argument, which syscall_dispatch reads at [sp]          */
-/*     [T-12]  the caller-return this exits to                                             */
-/*     [T-8]   the PSP the thread resumes on                                               */
-/*     [T-4]   the word that keeps sp 8-byte aligned for the call; with a stack limit, the */
-/*             caller's PSPLIM, put back on the way out                                    */
-/* The resume PSP lives HERE and not in a register or a second context field: a blocking   */
-/* dispatch has PendSV freeze its continuation BELOW this header, so the header survives   */
-/* the block for free, and ctx.sp names whichever stack the thread was preempted on.       */
-/*                                                                                         */
-/* The drop to the caller's resting privilege comes AFTER sp is back on the thread's own   */
-/* stack: the header is kernel .bss and an unprivileged read of it faults.                 */
+/* A thread whose ctx.kernel_sp is 0 reached the syscall path, so the transfer has nowhere to
+   build; refusing here replaces a store through 0xFFFFFFF0. In handler mode, so the reporter
+   runs on the MSP. r0 is the PSP the thread would have resumed on. Noreturn, so no cpsie pairs
+   with the mask above. */
+.Lsvc_nokstack:
+    add     r0, r0, #32
+    b       kickos_arm_no_kernel_stack
+#else
+    ldr     r1, =svc_trampoline
+    bic     r1, r1, #1              /* stacked PC must be halfword-aligned (bit0=0;
+                                       the T-bit comes from the stacked xPSR) */
+    str     r1, [r0, #24]           /* frame.PC := svc_trampoline (offset 6*4) */
+    /* T and the realign bit only: IT/ICI left as the caller set them would skip the
+       trampoline's first instructions. */
+    ldr     r1, [r0, #28]
+    and     r1, r1, #0x200
+    orr     r1, r1, #0x01000000
+    str     r1, [r0, #28]
+#endif
+    mrs     r1, control
+    bic     r1, r1, #1              /* CONTROL.nPRIV = 0 -> trampoline privileged */
+    msr     control, r1
+    isb
+    bx      lr
+
     .thumb_func
     .global svc_trampoline
 svc_trampoline:
 #if KICKOS_KERNEL_STACKS
-    push    {r0, r1}                /* the two scratch registers the loads below need */
-    ldr     r0, =g_arch_current
-    ldr     r0, [r0]
-    ldr     r0, [r0, #F_CTX_KERNEL_SP]
-    /* Inverted so the far branch is a plain b: cbz reaches only +126 bytes and the refusal
-       is out of line. */
-    cbnz    r0, 1f
-    b       .Lsvc_nokstack          /* no block to build on, and it does not return */
-1:
-    add     r1, sp, #8              /* the PSP the thread resumes on: the push undone */
-    str     r1, [r0, #-8]
-    str     lr, [r0, #-12]
-    str     r12, [r0, #-16]         /* a3 into the fifth-argument slot */
-#if KICKOS_ARMV7M_SPLIM
-    /* The caller's limit rides the header's alignment word. */
-    mrs     r1, psplim
-    str     r1, [r0, #-4]
-    movw    lr, #(KICKOS_KERNEL_STACK_SIZE - KICKOS_ARMV7M_SPLIM_ROOM)
-    sub     lr, r0, lr              /* the block's limit; lr is back from the header later */
-#endif
-    sub     r12, r0, #16            /* r12 is free once a3 is in the header */
-    pop     {r0, r1}
-#if KICKOS_ARMV7M_SPLIM
-    /* Masked: an entry stacked between the limit write and the move would be checked against
-       the other stack's limit. PRIMASK is 0 here, an SVC being untakeable under it. */
-    cpsid   i
-    msr     psplim, lr
-    mov     sp, r12
+/* Entered privileged in THREAD mode on the caller's kernel block, sp at the continuation
+   header, masked by the slow path. The drop to the caller's resting privilege comes AFTER sp is
+   back on the thread's own stack: the header is kernel .bss and an unprivileged read of it
+   faults. */
     cpsie   i
-#else
-    mov     sp, r12                 /* on the calling thread's kernel block from here */
-#endif
 #if defined(KICKOS_SPLIM_PLANT_KBLOCK)
     bl      kickos_splim_plant      /* test-only: overflow this kernel block, privileged */
 #endif
@@ -551,6 +636,15 @@ svc_trampoline:
     ldr     r2, [sp, #8]            /* the resume PSP, read before sp leaves this block */
 #if KICKOS_ARMV7M_SPLIM
     ldr     r3, [sp, #12]           /* the caller's limit */
+#endif
+    /* The caller's RESTING privilege, so a privileged thread issuing a syscall keeps its
+       posture, read here because nothing after the stack move may need privilege: a
+       preemption there is saved demoted. g_arch_current is this thread again, PendSV having
+       restored it across any block. r0:r1 carry the result pair (AAPCS long long) out. */
+    ldr     r12, =g_arch_current
+    ldr     r12, [r12]
+    ldr     r12, [r12, #8]          /* ctx.resting_npriv */
+#if KICKOS_ARMV7M_SPLIM
     cpsid   i
     msr     psplim, r3
     mov     sp, r2
@@ -558,44 +652,12 @@ svc_trampoline:
 #else
     mov     sp, r2
 #endif
-    /* Restore the caller's RESTING privilege, so a privileged thread issuing a syscall keeps
-       its posture. g_arch_current is this thread again here, PendSV having restored it across
-       any block. r2/r3 only: r0:r1 carry the result pair (AAPCS long long) out of this
-       trampoline. */
-    ldr     r2, =g_arch_current
-    ldr     r2, [r2]                /* current ctx* */
-    ldr     r2, [r2, #8]            /* ctx.resting_npriv (offset 8) */
+kickos_armv7m_svc_drop:
     mrs     r3, control
-    bfi     r3, r2, #0, #1          /* CONTROL.nPRIV = resting privilege */
+    bfi     r3, r12, #0, #1         /* CONTROL.nPRIV = resting privilege */
     msr     control, r3
     isb
     bx      lr                      /* -> arch_syscall's caller, r0:r1=result */
-
-/* A thread whose ctx.kernel_sp is 0 reached the syscall path, so the transfer has nowhere to
-   build; refusing here replaces a store through 0xFFFFFFF0. r0 is the PSP the thread would
-   have resumed on.
-
-   THE REPORTER RUNS ON THE MSP. This site is in THREAD mode on the thread's own PSP, and the
-   reporter's console chain measures 488 bytes against the 180 the SVC guard reserved below
-   that PSP, so reporting on the PSP overflows the thread's stack while printing. SPSEL is
-   written after r0 is computed, so the reported PSP is the thread's; the push {r0, r1} above
-   is abandoned with it, the reporter being noreturn.
-
-   PRIMASK IS SET BEFORE SPSEL MOVES, and the order is load-bearing. The exception return into
-   svc_trampoline dropped below PRIO_SVCALL, so PendSV is live here, and its save reads r0
-   from the PSP and banks the handler's own lr as the outgoing EXC_RETURN, both assuming the
-   interrupted thread was ON that PSP. Taken after SPSEL is 0 the hardware stacked the entry
-   frame on the MSP instead, so the saved context describes a stack the thread was not running
-   on. kpanic_enter masks too, one call later, which is one call too late. Noreturn, so no
-   cpsie pairs with it. */
-.Lsvc_nokstack:
-    cpsid   i
-    add     r0, sp, #8
-    mrs     r1, control
-    bic     r1, r1, #2              /* CONTROL.SPSEL = 0: SP is the MSP from here */
-    msr     control, r1
-    isb
-    b       kickos_arm_no_kernel_stack
 #else
 /* THE UNCONVERTED DESIGN, for the armv7m chips with no MPU that keep their red zone
    (armv7m_trap_stack.h names them). syscall_dispatch runs on the calling thread's own PSP,

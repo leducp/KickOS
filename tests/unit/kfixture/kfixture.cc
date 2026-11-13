@@ -53,7 +53,6 @@ namespace kickos
         bool g_in_isr = false;
         uint64_t g_now_ns = 0;
         uint64_t g_seat_cost_ns = 0;
-        uint64_t g_timer_due = UINT64_MAX;
         uint32_t g_timer_writes = 0;
         uint32_t g_irq_saves = 0;
 
@@ -475,8 +474,13 @@ namespace kickos
             g_in_isr = false;
             g_word_fault = false;
             g_now_ns = 0;
+#ifdef KFIXTURE_REAL_TIME
+            for (uint64_t& c : g_comparator)
+            {
+                c = 0;
+            }
+#endif
             g_seat_cost_ns = 0;
-            g_timer_due = UINT64_MAX;
             g_timer_writes = 0;
             g_irq_saves = 0;
             for (int i = 0; i < FIXTURE_DOMAIN_SLOTS; i++)
@@ -836,8 +840,8 @@ namespace kickos
             w->wait_result = WAIT_RESULT_POISON;
             // Insert into the timer delta list so cancellation has an entry to remove.
             w->deadline_ns = deadline_ns;
-            w->tnext = kernel().sleepq;
-            kernel().sleepq = w;
+            w->tnext = kernel().sleepq(queue_core_of(w));
+            kernel().sleepq(queue_core_of(w)) = w;
             w->on_timer = true;
         }
 

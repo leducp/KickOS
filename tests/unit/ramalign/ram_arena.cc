@@ -2,7 +2,8 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // The allocator under arch_ram_alloc keeps the alignment run-up a block skipped, and the next
-// block that fits it takes it. Its copy in the composition tool places seeded sequences alike.
+// block that fits it takes it; a block that would run across the bank line starts at it. Its copy
+// in the composition tool places seeded sequences alike.
 
 #include "ram_arena.h"
 
@@ -23,10 +24,15 @@ namespace
         return reinterpret_cast<uintptr_t>(g_buffer);
     }
 
-    // The offset of the block, or SIZE_MAX when refused.
-    size_t take(RamArena& a, size_t size, size_t align)
+    // The offset of the block, or SIZE_MAX when refused; `line` is an offset, 0 for none.
+    size_t take(RamArena& a, size_t size, size_t align, size_t line = 0)
     {
-        void* const p = ram_arena_alloc(a, base(), TOTAL, size, align);
+        uintptr_t at = 0;
+        if (line != 0)
+        {
+            at = base() + line;
+        }
+        void* const p = ram_arena_alloc(a, base(), TOTAL, size, align, at);
         if (p == nullptr)
         {
             return SIZE_MAX;
@@ -112,15 +118,66 @@ namespace
         EXPECT_EQ(take(a, 0xf0, 16), 0x10u);
     }
 
+    TEST(RamArena, ABlockEndingAtTheLineStaysBelowIt)
+    {
+        RamArena a;
+        EXPECT_EQ(take(a, 0x1fc0, 32, 0x2000), 0u);
+        EXPECT_EQ(take(a, 0x40, 32, 0x2000), 0x1fc0u);
+        EXPECT_EQ(a.used, 0x2000u);
+        EXPECT_EQ(a.gap_len, 0u);
+    }
+
+    TEST(RamArena, ABlockStartingAtTheLineStaysThere)
+    {
+        RamArena a;
+        EXPECT_EQ(take(a, 0x2000, 32, 0x2000), 0u);
+        EXPECT_EQ(take(a, 0x60, 32, 0x2000), 0x2000u);
+        EXPECT_EQ(a.used, 0x2060u);
+        EXPECT_EQ(a.gap_len, 0u);
+    }
+
+    TEST(RamArena, ABlockThatWouldRunAcrossTheLineStartsAtItAndKeepsTheGapBelow)
+    {
+        RamArena a;
+        EXPECT_EQ(take(a, 0x1f00, 32, 0x2000), 0u);
+        EXPECT_EQ(take(a, 0x120, 32, 0x2000), 0x2000u);
+        EXPECT_EQ(a.used, 0x2120u);
+        EXPECT_EQ(a.gap_off, 0x1f00u);
+        EXPECT_EQ(a.gap_len, 0x100u);
+        // The gap below the line is the kept range, and a block that fits it takes it.
+        EXPECT_EQ(take(a, 0x100, 32, 0x2000), 0x1f00u);
+        EXPECT_EQ(a.gap_len, 0u);
+        EXPECT_EQ(a.used, 0x2120u);
+    }
+
+    TEST(RamArena, AHopPastTheArenaIsRefusedAndLeavesItAsItWas)
+    {
+        RamArena a;
+        EXPECT_EQ(take(a, 0x1f00, 32, TOTAL - 0x100), 0u);
+        EXPECT_EQ(take(a, TOTAL - 0x1f00 - 0x80, 32, TOTAL - 0x100), SIZE_MAX);
+        EXPECT_EQ(a.used, 0x1f00u);
+        EXPECT_EQ(a.gap_len, 0u);
+    }
+
     TEST(RamArena, TheCompositionToolPlacesSeededSequencesAlike)
     {
+        size_t lined = 0;
         for (GapSequence const& seq : GAP_SEQUENCES)
         {
             RamArena a;
             for (GapStep const& step : seq.steps)
             {
-                ASSERT_EQ(take(a, step.size, step.align), step.offset);
+                ASSERT_EQ(take(a, step.size, step.align, seq.line), step.offset);
+                if (seq.line != 0)
+                {
+                    EXPECT_FALSE(step.offset < seq.line and step.offset + step.size > seq.line);
+                }
+            }
+            if (seq.line != 0)
+            {
+                lined++;
             }
         }
+        EXPECT_NE(lined, 0u);
     }
 }

@@ -15,7 +15,7 @@ namespace
     // (kickos::stdout_nonblock).
     int fd_fcntl(int fd, int cmd, va_list ap)
     {
-        if (fd < 0 or fd > 2)
+        if (not kickos::console_fd_open(fd))
         {
             errno = EBADF;
             return -1;

@@ -29,7 +29,7 @@ CHIP_VERSIONS = (1,)
 BOARD_VERSIONS = (1,)
 CHIP_FIELDS = (
     "version", "chip", "manual", "arch", "protection", "cores", "clusters_coherent",
-    "partition_gate", "data_cache", "interrupts", "cycle_counter", "timebase", "c", "reserved",
+    "partition_gate", "data_cache", "interrupts", "timebase", "c", "reserved",
     "devices", "memory", "pins", "esptool_image", "family", "exits_on_fault", "cpu",
     "stack_limit", "apertures",
 )
@@ -45,12 +45,11 @@ DEVICE_FIELDS = (
     "window", "ports", "channels", "blocks", "count", "stride", "lines", "bus_master", "owner", "sysreg", "host",
     "privileged_registers", "cluster", "ref", "symbol", "gate_register", "module_gate",
 )
-MEMORY_FIELDS = ("size", "base", "at", "cluster", "arena", "link", "ref", "symbol")
+MEMORY_FIELDS = ("size", "base", "at", "cluster", "arena", "bank_line", "link", "ref", "symbol")
 # What a line's `when` may state: `doorbell`, a line the kernel takes only where a doorbell rings,
 # above one core or on a node of a partition.
 LINE_CONDITIONS = ("doorbell",)
 INTERRUPT_FIELDS = ("count", "soft_only_from", "free_from", "vectors")
-CYCLE_COUNTER_FIELDS = ("hz", "glitches")
 TIMEBASE_FIELDS = ("hz",)
 # The kinds of `partition_gate`: a region gate per security mode, a register per peripheral, and
 # one the tree programs nowhere.
@@ -245,6 +244,8 @@ class Chip:
         self.protection = {}
         # {cluster or PART: (base, size) of the memory entry its user arena is carved from}
         self.arena = {}
+        # {cluster or PART: the bank line in that arena no block may run across, or None}
+        self.arena_line = {}
         # {cluster or PART: (kind, size, ranges)} for each view whose unit has a `device_gate`,
         # ranges being a list of (base, size), or None when the gate covers every window.
         self.gates = {}
@@ -258,9 +259,8 @@ class Chip:
         self.cluster_arch = {}
         # {cluster: line_offset}
         self.line_offsets = {}
-        # {field: value} and {field: ref} of `interrupts` and `cycle_counter`
+        # {field: value} and {field: ref} of `interrupts`
         self.interrupts = {}
-        self.cycle_counter = {}
         # The rate of the counter the kernel's clock and a user read both count, or None.
         self.timebase_hz = None
         self.refs = {}
@@ -296,6 +296,8 @@ class Chip:
 
 # A part with no clusters reaches its windows as one view, named by None.
 PART = None
+M_PROFILE = ("armv6m", "armv7m")
+MAP_REGION = 0x20000000
 
 
 def check_chip(path, text, report):
@@ -341,15 +343,6 @@ def check_chip(path, text, report):
         chip.manual = check_text(f, top["manual"], "`manual`")
     if "c" in top:
         check_c(f, top["c"], chip)
-    if "cycle_counter" in top:
-        counter = f.fields(top["cycle_counter"], "`cycle_counter`", CYCLE_COUNTER_FIELDS, ())
-        if counter is not None:
-            if "hz" in counter:
-                chip.cycle_counter["hz"], chip.refs["hz"] = check_valued(
-                    f, counter["hz"], "`cycle_counter` hz", lambda node, what: f.integer(node, what, 32))
-            if "glitches" in counter:
-                chip.cycle_counter["glitches"], chip.refs["glitches"] = check_valued(
-                    f, counter["glitches"], "`cycle_counter` glitches", f.boolean)
     if "timebase" in top:
         timebase = f.fields(top["timebase"], "`timebase`", TIMEBASE_FIELDS, ("hz",))
         if timebase is not None and "hz" in timebase:
@@ -1220,13 +1213,15 @@ def check_memory(f, top, root, chip, translates, windows):
             if "link" in values:
                 f.refuse(values["link"], "form.inapplicable",
                          "%s has no `base`, the host placing it, so the link has no region to place there" % what)
+            if "bank_line" in values:
+                check_bank_line(f, values, what, None, True, chip.arch)
             if size is not None:
                 entry = Memory(name, size, {PART: None}, check_named(f, values, what))
                 entry.node = key
                 entry.host_placed = True
                 chip.memory.append(entry)
                 if PART in arenas:
-                    arenas[PART].append((values["arena"], (None, size)))
+                    arenas[PART].append((values["arena"], (None, size), None))
             continue
         if "at" in values and "cluster" in values:
             f.refuse(values["cluster"], "form.exclusive",
@@ -1254,6 +1249,7 @@ def check_memory(f, top, root, chip, translates, windows):
                 base = f.integer(cvalue, "%s base for `%s`" % (what, cluster_name), 64)
                 if cluster is not None:
                     bases[cluster] = (base, cvalue)
+        entry = None
         if size is not None and all(base is not None for base, node in bases.values()):
             entry = Memory(name, size, {view: base for view, (base, node) in bases.items()},
                            check_named(f, values, what))
@@ -1264,6 +1260,15 @@ def check_memory(f, top, root, chip, translates, windows):
         arena = False
         if "arena" in values:
             arena = f.boolean(values["arena"], "%s arena" % what)
+        line = None
+        if "bank_line" in values and entry is not None:
+            line = check_bank_line(f, values, what, entry, arena, chip.arch)
+        if chip.arch in M_PROFILE and entry is not None:
+            check_map_boundary(f, key, what, entry, line)
+            if arena and entry.link is not None and entry.link[0] != "RAM":
+                f.refuse(values["arena"], "chip.arena",
+                         "%s is the arena, which an M-profile link carves from region RAM, but it links as `%s`"
+                         % (what, entry.link[0]))
         for view, (base, node) in bases.items():
             if base is not None and size is not None and check_end(f, node, what, base + size):
                 windows.append(Window("mem", "memory `%s`" % name, base, size, (view,), node))
@@ -1272,7 +1277,7 @@ def check_memory(f, top, root, chip, translates, windows):
         carved = False
         for view in bases:
             if view in arenas:
-                arenas[view].append((values["arena"], (bases[view][0], size)))
+                arenas[view].append((values["arena"], (bases[view][0], size), line))
                 carved = True
         if not carved:
             f.refuse(values["arena"], "chip.arena",
@@ -1280,9 +1285,10 @@ def check_memory(f, top, root, chip, translates, windows):
     if not known:
         return
     for view in carving:
-        marks = [mark for mark, span in arenas[view]]
+        marks = [mark for mark, span, line in arenas[view]]
         if len(marks) == 1:
             chip.arena[view] = arenas[view][0][1]
+            chip.arena_line[view] = arenas[view][0][2]
             continue
         where = "the part"
         if view is not PART:
@@ -1293,6 +1299,44 @@ def check_memory(f, top, root, chip, translates, windows):
         for mark in marks[1:]:
             f.refuse(mark, "chip.arena",
                      "a second `arena` for %s, which carves its arena from exactly one" % where)
+
+
+def check_map_boundary(f, node, what, entry, bank_line):
+    """An M-profile entry lies within one 0.5 GB region of the address map, or states the boundary
+    as its bank line."""
+    for base in entry.bases.values():
+        line = (base // MAP_REGION + 1) * MAP_REGION
+        if line < 1 << 32 and base + entry.size > line and line != bank_line:
+            f.refuse(node, "chip.map-boundary",
+                     "%s runs across 0x%X, and an unaligned or multi-word access across a 0.5 GB boundary is "
+                     "UNPREDICTABLE on M-profile (ARMv7-M ARM B3.1): state it as the entry's `bank_line`, or "
+                     "describe each side as an entry of its own" % (what, line))
+            return
+
+
+def check_bank_line(f, values, what, entry, arena, arch):
+    """The bank line of the arena entry `entry`, or None where refused. It lies inside every base's
+    span, on a multiple of the entry's size rounded up to a power of two, which every block the
+    arena hands out is aligned to, so no free range the allocator keeps runs across it."""
+    line = f.integer(values["bank_line"], "%s bank_line" % what, 64)
+    if line is None:
+        return None
+    reason = None
+    if entry is None:
+        reason = "and the host places it, so no address of it is known"
+    elif not arena:
+        reason = "and it is not the arena, which alone keeps its blocks off a bank line"
+    elif arch not in M_PROFILE:
+        reason = "and only the M-profile link keeps the kernel's statics, the image windows and the main stack off one"
+    elif any(not base < line < base + entry.size for base in entry.bases.values()):
+        reason = "which does not lie inside it"
+    elif line % (1 << (entry.size - 1).bit_length()):
+        reason = ("which is not on a multiple of 0x%X, its size rounded up to a power of two, so a block "
+                  "aligned to it could run across the line" % (1 << (entry.size - 1).bit_length()))
+    if reason is not None:
+        f.refuse(values["bank_line"], "chip.bank-line", "%s states a bank line at 0x%X, %s" % (what, line, reason))
+        return None
+    return line
 
 
 def host_placed(f, values, chip):

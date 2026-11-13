@@ -12,8 +12,6 @@ arch: armv7m
 protection: { unit: pmsav7, granule: 32, covers_devices: true, memory_type: true }
 data_cache: false
 c: { namespace: kickos::xmc, line_enum: "node : int" }
-# DWT CYCCNT reads can glitch on this part, and a glitched read only inflates a delta.
-cycle_counter: { glitches: true }
 
 family: none
 exits_on_fault: false

@@ -99,6 +99,17 @@ namespace kickos
             return w;
         }
 
+        // Remaps the page holding `va` in `t`'s space over its own frame with `rights` and `type`,
+        // the range left as it was: what a window put where another was leaves under the kernel.
+        inline bool remap_page(Thread const* t, uintptr_t va, uint32_t rights,
+                               enum arch_map_memtype type)
+        {
+            struct arch_aspace* const sp = domain_space(thread_domain(t));
+            uintptr_t const page = va & ~static_cast<uintptr_t>(G - 1u);
+            arch_phys_addr_t const pa = arch_aspace_frame_at(sp, page);
+            return pa != 0 and arch_aspace_map(sp, page, pa, 1, rights, type) == ARCH_ASPACE_OK;
+        }
+
         struct RunCaps
         {
             int obj = FRAME_RUN_NONE;

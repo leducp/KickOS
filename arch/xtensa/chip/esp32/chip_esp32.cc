@@ -717,8 +717,6 @@ void arch_init(void)
     }
 }
 
-// The KICKOS_BENCH switch.S timestamps stay on raw CCOUNT: the top-level CMakeLists refuses
-// that knob above one kernel core, so there is only ever one base to read.
 uint64_t arch_clock_now(void)
 {
     uint64_t ticks = timg_ticks();

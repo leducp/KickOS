@@ -14,6 +14,20 @@ function(faultsurvive_image target mode)
   target_link_libraries(${target}_peer PRIVATE kickos)
   target_compile_definitions(${target}_peer PRIVATE KICKOS_FS_MODE=${mode} ${ARGN})
   set(FS_APP ${target})
+  # Mode 11's forger runs an arm per thread and hands two of them stacks it reserves itself; mode
+  # 12's faulter starts its child on a block it reserves itself; mode 13's faulter starts its
+  # spinner.
+  set(FS_PEER_THREADS 1)
+  set(FS_PEER_EXTRA "")
+  if(mode EQUAL 11)
+    set(FS_PEER_THREADS 3)
+    set(FS_PEER_EXTRA "\n    authority: [memory]")
+  elseif(mode EQUAL 12)
+    set(FS_PEER_THREADS 2)
+    set(FS_PEER_EXTRA "\n    authority: [memory]")
+  elseif(mode EQUAL 13)
+    set(FS_PEER_THREADS 2)
+  endif()
   configure_file("${CMAKE_CURRENT_SOURCE_DIR}/system.yaml.in"
                  "${CMAKE_CURRENT_BINARY_DIR}/${target}.yaml" @ONLY)
   kickos_app_system(${target} COMPOSITION "${CMAKE_CURRENT_BINARY_DIR}/${target}.yaml")
@@ -21,11 +35,21 @@ function(faultsurvive_image target mode)
 endfunction()
 
 faultsurvive_image(faultsurvive 0)
-faultsurvive_image(faultsurvive_div0 8)
-faultsurvive_image(faultsurvive_ldiv0 9)
+kickos_shape_runs(_fs_divide)
+if(_fs_divide)
+  faultsurvive_image(faultsurvive_div0 8)
+  faultsurvive_image(faultsurvive_ldiv0 9)
+endif()
 
-if(NOT KICKOS_ARCH STREQUAL "sim")
-  faultsurvive_image(faultsurvive_ovf 1)
+# Only where the trap entry builds a frame through the thread's sp: the overflow needs a guard
+# or a stack limit to fault it, the off-stack frame an unprivileged worker.
+if(KICKOS_ARCH MATCHES "^(armv7m|armv6m|rv32imac|rxv3)$")
+  if(KICKOS_MEMORY_ENFORCED OR KICKOS_HAVE_STACK_LIMIT)
+    faultsurvive_image(faultsurvive_ovf 1)
+  endif()
+  if(KICKOS_MEMORY_ENFORCED OR NOT KICKOS_ARCH STREQUAL "rxv3")
+    faultsurvive_image(faultsurvive_off 2)
+  endif()
 endif()
 # The published console of the sim is simcon's, which the composition names.
 if(KICKOS_ARCH STREQUAL "sim")
@@ -47,10 +71,6 @@ if(KICKOS_ARCH STREQUAL "sim")
   kickos_emit_image(faultsurvive_published)
 endif()
 
-if(NOT (KICKOS_ARCH STREQUAL "sim" OR KICKOS_ARCH STREQUAL "x86_64"))
-  faultsurvive_image(faultsurvive_off 2)
-endif()
-
 if(KICKOS_ARCH STREQUAL "rv32imac" OR KICKOS_ARCH STREQUAL "rxv3")
   faultsurvive_image(faultsurvive_kwrite 3)
   # Mode 5 drops SP two bytes: in bounds, deep inside the stack, and misaligned, so only the
@@ -60,10 +80,19 @@ endif()
 
 if(KICKOS_ARCH STREQUAL "rv32imac")
   faultsurvive_image(faultsurvive_lowedge 4)
+  faultsurvive_image(faultsurvive_mppforge 12)
+endif()
+
+# Software traps through INTB, a PSW forged in task memory and a wild USP left to the switcher:
+# each needs an unprivileged worker, which the RX runs only where memory is enforced.
+if(KICKOS_ARCH STREQUAL "rxv3" AND KICKOS_MEMORY_ENFORCED)
+  faultsurvive_image(faultsurvive_swtrap 10)
+  faultsurvive_image(faultsurvive_forge 11)
+  faultsurvive_image(faultsurvive_wildspin 13)
 endif()
 
 if(KICKOS_ARCH STREQUAL "rv32imac")
-  foreach(_fs_tgt faultsurvive_kwrite faultsurvive_lowedge)
+  foreach(_fs_tgt faultsurvive_kwrite faultsurvive_lowedge faultsurvive_mppforge)
     if(TARGET ${_fs_tgt}_peer)
       target_include_directories(${_fs_tgt}_peer PRIVATE
         "${PROJECT_SOURCE_DIR}/arch/riscv/rv32imac/include")

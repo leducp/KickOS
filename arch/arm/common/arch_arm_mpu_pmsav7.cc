@@ -74,12 +74,9 @@ static __attribute__((noinline)) void mpu_write_slot(uint32_t slot, uint32_t rba
 // MPU; a PARTIAL one writes only the slots whose words moved and leaves the rest standing,
 // which also narrows the reprogram window to those slots.
 //
-// THE DIFF IS UNROLLED AND THE TWO POSTURES ARE SEPARATE BODIES, and both are worth their
-// text. Written as one loop carrying the posture test, -Os re-reads the record flag and
-// re-checks the slot bound every iteration, so a SKIPPED descriptor costs 14 instructions and
-// three taken branches, which is most of what the skip was buying back; unrolled it costs
-// eight and one. Counted on f411disco-bench, where the whole commit was 247 cycles writing
-// all eight.
+// THE DIFF IS UNROLLED AND THE TWO POSTURES ARE SEPARATE BODIES: written as one loop carrying
+// the posture test, -Os re-reads the record flag and re-checks the slot bound every iteration,
+// which costs a skipped descriptor most of what the skip saves.
 static_assert(ARCH_MPU_ENCODED_SLOTS == 8, "the diff below is unrolled slot by slot");
 
 extern "C" void kickos_arm_mpu_program(struct arch_mpu_encoded const* img)

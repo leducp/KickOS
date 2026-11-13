@@ -1,12 +1,16 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The K64F UART backend's close and open (system/driver/mk64f/uart_k64.cc) over a host buffer
-// for its window. Close: the channel is stopped before the slot is re-protected, the base is
-// cleared, and a second close touches neither the channel nor the seam. Open: every refusal
-// leaves the slot as it found it, shut, whether it comes before the enable or after it.
+// The K64F UART backend's close, open and receive errors (system/driver/mk64f/uart_k64.cc) over a
+// host buffer for its window. Close: the channel and its error interrupt are stopped before the
+// slot is re-protected, the base is cleared, and a second close touches neither the channel nor
+// the seam. Open: every refusal leaves the slot as it found it, shut, whether it comes before the
+// enable or after it, and an accepted open arms the overrun interrupt. Read: an overrun is
+// cleared, counted, and costs no byte the hardware kept. S1's receive flags clear only on a read
+// of S1 followed by a read of D (K64 RM 52.3.5).
 
 #include <kickos/driver/uart.h>
+#include <kickos/io/mmio.h>
 #include <kickos/sys.h>
 #include <kickos/sys/errno.h>
 
@@ -19,17 +23,30 @@ namespace
 {
     constexpr uintptr_t C2 = 0x03u;
     constexpr uint8_t C2_RUNNING = 0x2Cu; // TE | RE | RIE
+    constexpr uintptr_t C3 = 0x06u;
+    constexpr uint8_t C3_ORIE = 0x08u;
+    constexpr uintptr_t D = 0x07u;
+    constexpr uintptr_t CFIFO = 0x11u;
+    constexpr uint8_t CFIFO_RXFLUSH = 0x40u;
 
     alignas(32) uint8_t g_window[0x20u];
 
     constexpr uintptr_t S1 = 0x04u;
     constexpr uint8_t S1_IDLE = 0xC0u; // TDRE | TC
+    constexpr uint8_t S1_RDRF = 0x20u;
+    constexpr uint8_t S1_OR = 0x08u;
+    constexpr uint8_t S1_FE = 0x02u;
+    constexpr uint8_t S1_RX_FLAGS = 0x2Fu; // RDRF | OR | NF | FE | PF
+
+    // The S1 flags a read of D clears: those set at the last S1 read.
+    uint8_t g_s1_seen = 0;
 
     uint32_t g_enables = 0;
     uint32_t g_clock_hz = 0;
     uint32_t g_disables = 0;
     uintptr_t g_disabled_base = 0;
     uint8_t g_c2_at_disable = 0;
+    uint8_t g_c3_at_disable = 0;
 
     uintptr_t window()
     {
@@ -42,10 +59,13 @@ namespace
         void SetUp() override
         {
             memset(g_window, 0, sizeof(g_window));
+            g_s1_seen = 0;
             g_window[C2] = C2_RUNNING;
+            g_window[C3] = C3_ORIE;
             g_disables = 0;
             g_disabled_base = 0;
             g_c2_at_disable = 0xFFu;
+            g_c3_at_disable = 0xFFu;
             g_enables = 0;
             g_clock_hz = 60000000u;
             memset(&uart_, 0, sizeof(uart_));
@@ -54,6 +74,29 @@ namespace
 
         struct kos_uart uart_;
     };
+}
+
+namespace kickos::testfix::mmio8
+{
+    uint8_t read(uintptr_t addr)
+    {
+        uint8_t const v = *reinterpret_cast<volatile uint8_t*>(addr);
+        if (addr == window() + S1)
+        {
+            g_s1_seen = static_cast<uint8_t>(v & S1_RX_FLAGS);
+        }
+        if (addr == window() + D)
+        {
+            g_window[S1] = static_cast<uint8_t>(g_window[S1] & ~g_s1_seen);
+            g_s1_seen = 0;
+        }
+        return v;
+    }
+
+    void write(uintptr_t addr, uint8_t value)
+    {
+        *reinterpret_cast<volatile uint8_t*>(addr) = value;
+    }
 }
 
 extern "C"
@@ -69,6 +112,7 @@ extern "C"
         g_disables++;
         g_disabled_base = base;
         g_c2_at_disable = *reinterpret_cast<volatile uint8_t*>(base + C2);
+        g_c3_at_disable = *reinterpret_cast<volatile uint8_t*>(base + C3);
         return 0;
     }
 
@@ -84,6 +128,7 @@ TEST_F(UartK64Close, the_channel_stops_before_the_slot_shuts)
     EXPECT_EQ(g_disables, 1u);
     EXPECT_EQ(g_disabled_base, window());
     EXPECT_EQ(g_c2_at_disable, 0u) << "transmit and receive were off when the slot shut";
+    EXPECT_EQ(g_c3_at_disable & C3_ORIE, 0u) << "the overrun interrupt was off when the slot shut";
     EXPECT_EQ(uart_.base, 0u) << "the closed channel keeps no base";
 }
 
@@ -169,4 +214,55 @@ TEST_F(UartK64Open, an_accepted_open_keeps_its_slot_open)
     EXPECT_EQ(g_enables, 1u);
     EXPECT_EQ(g_disables, 0u);
     EXPECT_EQ(uart_.base, window());
+    EXPECT_NE(g_window[C3] & C3_ORIE, 0u)
+        << "an overrun left with RDRF clear raises nothing but the error vector";
+}
+
+namespace
+{
+    class UartK64Read : public UartK64Close
+    {
+      protected:
+        void SetUp() override
+        {
+            UartK64Close::SetUp();
+            uart_.stats = &stats_;
+        }
+
+        struct kos_uart_stats stats_ = {};
+    };
+}
+
+TEST_F(UartK64Read, an_overrun_with_the_buffer_empty_is_cleared_and_counted)
+{
+    g_window[S1] = S1_OR;
+    unsigned char b = 0u;
+    EXPECT_EQ(kos_uart_read(&uart_, &b, 1u), 0u);
+    EXPECT_EQ(kos_counter_load(&stats_.rx_overrun), 1u);
+    EXPECT_EQ(g_window[CFIFO], CFIFO_RXFLUSH) << "the empty D read misaligns the FIFO pointers";
+    EXPECT_EQ(g_window[S1] & S1_OR, 0u) << "OR left set stops reception for good";
+}
+
+TEST_F(UartK64Read, an_overrun_keeps_the_byte_already_received)
+{
+    g_window[S1] = static_cast<uint8_t>(S1_OR | S1_RDRF);
+    g_window[D] = 'k';
+    unsigned char b = 0u;
+    EXPECT_EQ(kos_uart_read(&uart_, &b, 1u), 1u) << "OR loses the overflowing word, not D";
+    EXPECT_EQ(b, 'k');
+    EXPECT_EQ(kos_counter_load(&stats_.rx_overrun), 1u);
+    EXPECT_EQ(kos_counter_load(&stats_.rx_bytes), 1u);
+    EXPECT_EQ(g_window[CFIFO], 0u) << "a read of a full D misaligns nothing";
+    EXPECT_EQ(g_window[S1] & (S1_OR | S1_RDRF), 0u);
+}
+
+TEST_F(UartK64Read, a_framing_error_drops_its_byte)
+{
+    g_window[S1] = static_cast<uint8_t>(S1_FE | S1_RDRF);
+    g_window[D] = 'k';
+    unsigned char b = 0u;
+    EXPECT_EQ(kos_uart_read(&uart_, &b, 1u), 0u);
+    EXPECT_EQ(kos_counter_load(&stats_.rx_framing), 1u);
+    EXPECT_EQ(kos_counter_load(&stats_.rx_bytes), 0u);
+    EXPECT_EQ(g_window[S1] & S1_FE, 0u) << "FE left set inhibits reception";
 }

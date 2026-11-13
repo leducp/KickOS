@@ -28,6 +28,7 @@
 
 extern "C"
 {
+    void kickos_armv7m_ccr_init(void);
     void kickos_armv7m_init(void);
 
 #if KICKOS_HAVE_MPU && KICKOS_ARM_MPU == KICKOS_ARM_MPU_PMSAV8
@@ -147,6 +148,7 @@ void arch_shutdown(int status)
 
 void Reset_Handler(void)
 {
+    kickos_armv7m_ccr_init();
     kickos_armv7m_enable_fpu(); // before any code a hard-float ABI might emit FP into
     kickos_ranges_init();
     kickos_crt_tail();

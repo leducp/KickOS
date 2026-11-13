@@ -116,22 +116,6 @@ namespace kickos::esp32c6::apm
         return image_of(rows, count, NODE_MODE, NODE_MODES, out);
     }
 
-    // c6lpprobe programs HP_APM regions 14 and 15 and every LP_APM region past the catch-all.
-    constexpr uint32_t LP_PROBE_FIRST_HP_REGION = 14u;
-
-    inline bool lp_probe_fits(kickos_gate_row const* rows, uint16_t count)
-    {
-        uint32_t used[GATES] = {0u, 0u};
-        for (uint16_t i = 0; i < count; i++)
-        {
-            if (rows[i].gate < GATES)
-            {
-                used[rows[i].gate]++;
-            }
-        }
-        return used[0] < LP_PROBE_FIRST_HP_REGION and used[1] == 0u;
-    }
-
     using Write = void (*)(uintptr_t at, uint32_t value);
 
     // FILTER_EN is written whole: a region the rows do not name stays disabled whatever enabled it

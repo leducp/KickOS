@@ -21,7 +21,10 @@
 #include <stdlib.h>
 #include <sys/mman.h>
 
+#include <iterator>
+
 #include "kseam_test.h"
+#include "syscall_internal.h"
 
 #if defined(WORDREF_BOUNDED)
 #include <kickos/arch/atomic_cas.h>
@@ -226,6 +229,158 @@ namespace kickos
                 EXPECT_EQ(ref(caller_, block(6) + AT, &w), -KOS_EINVAL) << "device";
                 EXPECT_EQ(ref(caller_, block(5) - sizeof(uint32_t), &w), -KOS_EFAULT)
                     << "the word below an uncached block is no region's";
+            }
+
+            // The refusals come in one order whatever the set's own order: device, then write
+            // reach, then memory type, then the AMP share.
+            TEST_F(WordClasses, the_refusals_come_in_the_invariant_s_order)
+            {
+                grant(caller_, block(0), ARCH_MPU_R | ARCH_MPU_DEV);
+                grant(caller_, block(1), RW);
+                grant(caller_, block(1), ARCH_MPU_R | ARCH_MPU_DEV);
+                grant(caller_, block(2), ARCH_MPU_R | ARCH_MPU_NOCACHE);
+                grant(caller_, block(3), RW | ARCH_MPU_NOCACHE);
+                grant(caller_, block(3), ARCH_MPU_R | ARCH_MPU_NOCACHE);
+                grant(caller_, block(4), RW | ARCH_MPU_NOCACHE);
+                grant(caller_, block(4), ARCH_MPU_R | ARCH_MPU_DEV);
+                WordRef w;
+                EXPECT_EQ(ref(caller_, block(0) + AT, &w), -KOS_EINVAL) << "read-only device";
+                EXPECT_EQ(ref(caller_, block(1) + AT, &w), -KOS_EINVAL)
+                    << "a device region over a writable one";
+                EXPECT_EQ(ref(caller_, block(2) + AT, &w), -KOS_EFAULT) << "read-only uncached";
+                EXPECT_EQ(ref(caller_, block(3) + AT, &w), -KOS_EFAULT)
+                    << "a read-only region over a writable uncached one";
+                EXPECT_EQ(ref(caller_, block(4) + AT, &w), -KOS_EINVAL)
+                    << "a device region after an uncached one";
+            }
+
+            // The four scans word_key made before they were folded into one walk, over the real
+            // write predicate: what the fold must answer for every set and address.
+            int four_scan_reference(Thread const* t, uintptr_t va)
+            {
+                auto const typed = [t, va](uint32_t types)
+                {
+                    for (arch_mpu_region const& r : t->mpu)
+                    {
+                        if ((r.attr & types) != 0 and r.size != 0
+                            and va <= r.base + (r.size - 1u)
+                            and r.base <= va + (sizeof(uint32_t) - 1u))
+                        {
+                            return true;
+                        }
+                    }
+                    return false;
+                };
+                if ((va & (sizeof(uint32_t) - 1u)) != 0)
+                {
+                    return -KOS_EINVAL;
+                }
+                if (typed(ARCH_MPU_DEV))
+                {
+                    return -KOS_EINVAL;
+                }
+                bool writable = false;
+#if KICKOS_ARCH_SIM
+                uintptr_t const arena = arch_ram_base();
+                writable = va < arena or va - arena >= arch_ram_size();
+#endif
+                if (not writable and not thread_writable_ok(t, va, sizeof(uint32_t)))
+                {
+                    return -KOS_EFAULT;
+                }
+                if (typed(ARCH_MPU_NOCACHE))
+                {
+                    return -KOS_EINVAL;
+                }
+#if KICKOS_AMP_SHARE
+                if (amp_share_meets(va, va + sizeof(uint32_t)))
+                {
+                    return -KOS_EINVAL;
+                }
+#endif
+                return 0;
+            }
+
+            // Random sets over a few anchors, with the edges each scan words differently: an
+            // empty region, one ending at the top of the address space, one wrapping past it,
+            // partial overlaps and every attribute mix.
+            TEST_F(WordClasses, one_walk_answers_what_the_four_scans_answered)
+            {
+                uintptr_t const top = ~static_cast<uintptr_t>(0);
+                uintptr_t const statics = reinterpret_cast<uintptr_t>(g_statics);
+                uintptr_t const anchors[] = {block(0),
+                                             block(3),
+                                             block(7) + BLOCK,
+                                             statics,
+                                             top - (BLOCK - 1u),
+                                             top - 3u,
+#if KICKOS_AMP_SHARE
+                                             AMP_SHARE_BASE,
+                                             AMP_SHARE_BASE + AMP_SHARE_SIZE - BLOCK,
+#endif
+                                             0u};
+                uint32_t const attrs[] = {ARCH_MPU_R,
+                                          RW,
+                                          RW | ARCH_MPU_X,
+                                          ARCH_MPU_R | ARCH_MPU_X,
+                                          RW | ARCH_MPU_NOCACHE,
+                                          ARCH_MPU_R | ARCH_MPU_NOCACHE,
+                                          RW | ARCH_MPU_DEV,
+                                          ARCH_MPU_R | ARCH_MPU_DEV,
+                                          ARCH_MPU_W,
+                                          0u};
+                size_t const sizes[] = {0u, 4u, 8u, BLOCK, 2u * BLOCK, BLOCK + 4u};
+                intptr_t const shifts[] = {0, 4, -4, 8, -8, static_cast<intptr_t>(BLOCK) - 4};
+                uint32_t seed = 0x9e3779b9u;
+                auto const next = [&seed]()
+                {
+                    seed ^= seed << 13;
+                    seed ^= seed >> 17;
+                    seed ^= seed << 5;
+                    return seed;
+                };
+                uint32_t asked = 0;
+                uint32_t refused[3] = {};
+                for (uint32_t round = 0; round < 4000; round++)
+                {
+                    caller_->mpu.clear();
+                    uint32_t const n = next() % (KICKOS_MPU_MAX_REGIONS + 1u);
+                    for (uint32_t i = 0; i < n; i++)
+                    {
+                        uintptr_t const a = anchors[next() % std::size(anchors)];
+                        uintptr_t const base = a + static_cast<uintptr_t>(
+                                                       shifts[next() % std::size(shifts)]);
+                        ASSERT_TRUE(caller_->mpu.add(base, sizes[next() % std::size(sizes)],
+                                                     attrs[next() % std::size(attrs)]));
+                    }
+                    for (uintptr_t const a : anchors)
+                    {
+                        for (intptr_t const d : {-8, -4, 0, 2, 4, 8, 252, 256})
+                        {
+                            uintptr_t const va = a + static_cast<uintptr_t>(d);
+                            WordRef w;
+                            int const want = four_scan_reference(caller_, va);
+                            int const got = ref(caller_, va, &w);
+                            ASSERT_EQ(got, want) << "round " << round << " va " << va;
+                            asked++;
+                            if (want == -KOS_EINVAL)
+                            {
+                                refused[0]++;
+                            }
+                            else if (want == -KOS_EFAULT)
+                            {
+                                refused[1]++;
+                            }
+                            else
+                            {
+                                refused[2]++;
+                            }
+                        }
+                    }
+                }
+                EXPECT_GT(refused[0], asked / 20u) << "fixture: too few -KOS_EINVAL answers";
+                EXPECT_GT(refused[1], asked / 20u) << "fixture: too few -KOS_EFAULT answers";
+                EXPECT_GT(refused[2], asked / 50u) << "fixture: too few words named";
             }
 
             // The app's statics: a region on a region board, the fallback on a flat one, host

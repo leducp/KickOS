@@ -50,10 +50,15 @@ namespace
         return kernel().current(kickos_kernel_core());
     }
 
+    uint64_t due()
+    {
+        return g_comparator[kickos_kernel_core()];
+    }
+
     // The thread the core returns into runs until the comparator fires.
     void run_until_timer()
     {
-        if (g_timer_due <= g_now_ns)
+        if (due() <= g_now_ns)
         {
             return;
         }
@@ -62,10 +67,10 @@ namespace
         {
             if (c == g_pair[i])
             {
-                g_ran[i] += g_timer_due - g_now_ns;
+                g_ran[i] += due() - g_now_ns;
             }
         }
-        g_now_ns = g_timer_due;
+        g_now_ns = due();
     }
 
 #if KICKOS_ARCH_SWITCH_LANDS_LATER
@@ -84,11 +89,11 @@ namespace
         while (g_switches != g_switches_landed and g_storm < STORM_BOUND)
         {
             uint64_t const end = g_now_ns + switch_cost;
-            if (g_timer_due <= end)
+            if (due() <= end)
             {
-                if (g_timer_due > g_now_ns)
+                if (due() > g_now_ns)
                 {
-                    g_now_ns = g_timer_due;
+                    g_now_ns = due();
                 }
                 g_storm++;
                 timer_interrupt();
@@ -139,7 +144,7 @@ TEST_F(RrLanding, every_rotated_in_thread_runs_the_min_delta_before_its_expiry)
 
     for (int turn = 0; turn < TURNS; turn++)
     {
-        ASSERT_NE(g_timer_due, UINT64_MAX) << "turn " << turn << ": no expiry armed";
+        ASSERT_TRUE(due() != 0 and due() != UINT64_MAX) << "turn " << turn << ": no expiry armed";
         uint64_t const before[2] = {g_ran[0], g_ran[1]};
         Thread* const runner = running();
         run_until_timer();
@@ -182,7 +187,7 @@ namespace
         EXPECT_EQ(g_switches, booked_at);
         kickos_switch_landed(&booked->ctx);
         EXPECT_GT(booked->slice_deadline_ns, g_now_ns);
-        EXPECT_GT(g_timer_due, g_now_ns);
+        EXPECT_GT(due(), g_now_ns);
     }
 }
 
@@ -212,14 +217,14 @@ namespace
         ASSERT_EQ(running(), t);
         EXPECT_EQ(kernel().switch_landing_owed[kickos_kernel_core()], 0u)
             << "the booking left a landing owed";
-        uint64_t const due = g_timer_due;
+        uint64_t const armed = due();
         uint32_t const writes = g_timer_writes;
         uint32_t const saves = g_irq_saves;
         g_now_ns += SLOW_NS;
         kickos_switch_landed(&t->ctx);
         EXPECT_EQ(g_timer_writes, writes) << "the landing wrote the comparator";
         EXPECT_EQ(g_irq_saves, saves) << "the landing took the lock";
-        EXPECT_EQ(g_timer_due, due);
+        EXPECT_EQ(due(), armed);
     }
 }
 
@@ -234,6 +239,6 @@ TEST_F(RrLanding, a_live_slice_lands_with_no_lock_and_no_comparator_write)
     t->slice_deadline_ns = 1000000u + 10u * MIN_NS;
     lands_for_free(t);
     EXPECT_EQ(t->slice_deadline_ns, 1000000u + 10u * MIN_NS) << "the live slice was refunded";
-    EXPECT_EQ(g_timer_due, t->slice_deadline_ns) << "the booking did not arm the live slice";
+    EXPECT_EQ(due(), t->slice_deadline_ns) << "the booking did not arm the live slice";
 }
 #endif

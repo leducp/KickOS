@@ -3,6 +3,46 @@
 
 #include <kickos/grant.h>
 
+#if KICKOS_HAVE_ASPACE or KICKOS_MEMORY_ENFORCED
+namespace kickos
+{
+    namespace
+    {
+        bool inside_one_aperture(uintptr_t base, size_t size)
+        {
+            uintptr_t const last = base + size - 1u;
+            if (size == 0 or last < base)
+            {
+                return false;
+            }
+            for (struct arch_reserved_block const& a : arch_window_apertures())
+            {
+                if (base >= a.base and last <= a.base + a.size - 1u)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+    }
+
+#if KICKOS_HAVE_ASPACE
+    bool grant_memtype_at(enum arch_map_memtype type, arch_phys_addr_t pa, size_t size)
+    {
+        if (not arch_aspace_memtype_support(type))
+        {
+            return false;
+        }
+        if (type == ARCH_MAP_NORMAL or arch_aspace_entry_memtype())
+        {
+            return true;
+        }
+        return inside_one_aperture(static_cast<uintptr_t>(pa), size);
+    }
+#endif
+}
+#endif
+
 #if KICKOS_MEMORY_ENFORCED
 
 #include <kickos/ampshare.h>
@@ -10,8 +50,6 @@
 #include <kickos/domain.h> // arch_domain_static_regions
 #include <kickos/image.h>
 #include <kickos/kernel.h> // KICKOS_ASSERT
-
-#include <span>
 
 namespace kickos
 {
@@ -72,19 +110,7 @@ namespace kickos
 
     bool grant_window_in_aperture(uintptr_t base, size_t size)
     {
-        uintptr_t const last = base + size - 1u;
-        if (size == 0 or last < base)
-        {
-            return false;
-        }
-        for (struct arch_reserved_block const& a : arch_window_apertures())
-        {
-            if (base >= a.base and last <= a.base + a.size - 1u)
-            {
-                return true;
-            }
-        }
-        return false;
+        return inside_one_aperture(base, size);
     }
 
 #if KICKOS_HAVE_ASPACE
@@ -223,10 +249,10 @@ namespace kickos
         for (size_t image = 0; image < image_count(); image++)
         {
             struct arch_mpu_region statics[KICKOS_MPU_MAX_REGIONS];
-            std::span const region_set{
-                statics, arch_domain_static_regions(statics, KICKOS_MPU_MAX_REGIONS, image)};
-            for (struct arch_mpu_region const& r : region_set)
+            size_t const n = arch_domain_static_regions(statics, KICKOS_MPU_MAX_REGIONS, image);
+            for (size_t i = 0; i < n; i++)
             {
+                struct arch_mpu_region const& r = statics[i];
                 KICKOS_ASSERT(not grant_hits_reserved(r.base, r.size));
                 for (struct arch_reserved_block const& a : arch_window_apertures())
                 {

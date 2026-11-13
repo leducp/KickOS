@@ -15,7 +15,6 @@
 #include <kickos/kernel.h> // KICKOS_ASSERT
 #include <kickos/debug.h>  // KICKOS_DEBUG_ASSERT
 #include <kickos/arch/arch.h>
-#include <kickos/bench.h> // the end-to-end span's taking-core stamp
 #include <kickos/ktrace.h>
 #include <kickos/time.h>
 
@@ -216,7 +215,6 @@ namespace kickos
                 return;
             }
 #endif
-            KICKOS_BENCH_E2E_ISR_MARK(b->line);
             irq_line_op_local(b->line, LineOp::MASK);
             if (b->notify == nullptr)
             {

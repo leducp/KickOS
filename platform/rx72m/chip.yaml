@@ -100,6 +100,12 @@ devices:
     owner: kernel
     symbol: FLASH
     ref: "Table 5.1 List of I/O Registers (Address Order), p.213"
+  # The flash sequencer's registers. FWEPROR gates only program, erase and blank check: FSUACR
+  # swaps the start-up areas under the fixed vectors, and FENTRYR can stop code flash reads.
+  faci:
+    window: [0x007FE000, 0x100]
+    owner: kernel
+    ref: "Table 5.1 List of I/O Registers (Address Order), pp.292-293"
 
 memory:
   ram:

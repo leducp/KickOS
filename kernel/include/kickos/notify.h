@@ -109,14 +109,15 @@ namespace kickos
 
     // Wait for any bit of `mask`. Requires CAP_WAIT and a binding to `c`. On entry every
     // chained signaller whose badge is in `mask` and which owes a rearm is rearmed, so a
-    // driver that never acks cannot deadlock its line. Consumed bits are cleared from pending and
-    // written to *out_bits, and their signallers owe a rearm at the next wait.
+    // driver that never acks cannot deadlock its line. The bits taken are written to `c`'s word
+    // at `out` under the lock that then clears them from pending, their signallers owing a
+    // rearm at the next wait; a refused write takes none. Nothing is written on failure.
     // 0, or -KOS_E*: EBADF, EACCES (no CAP_WAIT), EPERM (`c` is not the bound thread, or above
     // one kernel core its own mask is not exactly its lines' claim core), EINVAL (an empty mask,
-    // which could only ever block forever), ETIMEDOUT, ECANCELED.
+    // which could only ever block forever), ETIMEDOUT, ECANCELED, EFAULT (the write).
     // `timeout_us` is relative; KOS_TIMEOUT_NONE waits forever.
     int notify_wait(Thread* c, uint32_t cap_handle, uint32_t mask, uint32_t timeout_us,
-                    uint32_t* out_bits);
+                    uintptr_t out);
 
     // Drop `c`'s binding at its death: clear bound and accept, drop the bind's reference, and
     // leave pending untouched. Runs in exit_current's first locked block, separately from
@@ -144,11 +145,12 @@ namespace kickos
     uint32_t notify_cap_bit(CapEntry const& e);
 
     // The fused receive's two halves, over whatever object `c` is bound to. enter() opens
-    // `mask` (rearming the signallers it covers) and answers the bits the wait may take;
-    // leave() consumes the pending bits within `opened`, closes the window and answers what
-    // it took. Both answer 0 for a thread bound to nothing. leave()'s caller holds IrqLock.
+    // `mask` (rearming the signallers it covers) and answers the bits the wait may take, 0 for
+    // a thread bound to nothing. leave() closes the window and writes the pending bits within
+    // `opened` to `c`'s word at `out`, taking them only once written: 0, or -KOS_EFAULT with
+    // none taken. Bound to nothing, it writes nothing. leave()'s caller holds IrqLock.
     uint32_t notify_wait_enter(Thread* c, uint32_t mask, Held held);
-    uint32_t notify_wait_leave(Thread* c, uint32_t opened);
+    int notify_wait_leave(Thread* c, uint32_t opened, uintptr_t out);
 
     // The pending word of whatever `c` is bound to, or 0. Caller holds IrqLock.
     uint32_t notify_pending_of(Thread* c);

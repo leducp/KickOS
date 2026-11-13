@@ -22,8 +22,7 @@ tasks:
     priority: 2
     ceiling: 30
     authority: [memory, system, pinmux, irq, console, tasks, bus_master, bootloader]
-    # Every arena block of every arm is reserved at start, and a block is never freed.
-    budgets: { ram_blocks: 48 }
+    # Its budgets and caps are those of the variant's selftest composition (CMakeLists.txt).
 
   # Started by the arms, never by the init: each runs the role its argv names.
   - name: peer0

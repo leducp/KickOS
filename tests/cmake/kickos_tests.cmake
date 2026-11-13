@@ -168,6 +168,9 @@ endfunction()
 #   BOOTS (default 1) counts the boots gate.sh charges, those of a script <script> runs
 #   included. WORK is what the test spends beside them, such as building the image it boots.
 #
+#   A <script> declaring `: "${KOS_SILENCE_S:=<s>}"` bounds its runs on console silence and not
+#   on their length (tests/lib/gate.sh run_image), so it is registered with no TIMEOUT.
+#
 #   An emulated test holds one ctest slot per emulated core.
 # ---------------------------------------------------------------------------
 function(kickos_boot_timeout test script)
@@ -177,6 +180,16 @@ function(kickos_boot_timeout test script)
   endif()
   if(NOT DEFINED QB_WORK)
     set(QB_WORK 0)
+  endif()
+  kickos_qemu_machine("${KICKOS_BOARD}" _env _machine _cpus)
+  if(NOT _machine STREQUAL "")
+    set_tests_properties("${test}" PROPERTIES PROCESSORS ${_cpus})
+  endif()
+  file(STRINGS "${script}" _silence REGEX "^[ \t]*: \"\\$\\{KOS_SILENCE_S:=[0-9]+\\}\"$"
+       LIMIT_COUNT 1)
+  if(NOT _silence STREQUAL "")
+    set_tests_properties("${test}" PROPERTIES TIMEOUT 0)
+    return()
   endif()
   set(_lib "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../lib/gate.sh")
   set(_var QEMU_TIMEOUT)
@@ -205,15 +218,11 @@ function(kickos_boot_timeout test script)
         "seconds, from ${_var}, ${script} or ${_lib}")
     endif()
   endforeach()
-  kickos_qemu_machine("${KICKOS_BOARD}" _env _machine _cpus)
   if(NOT "KICKOS_BOOT=uefi-pe" IN_LIST _env)
     set(_firmware 0)
   endif()
   math(EXPR _timeout "${QB_WORK} + ${QB_BOOTS} * (${_bound} + ${_firmware} + ${_ticks} / 5) + 1")
   set_tests_properties("${test}" PROPERTIES TIMEOUT ${_timeout})
-  if(NOT _machine STREQUAL "")
-    set_tests_properties("${test}" PROPERTIES PROCESSORS ${_cpus})
-  endif()
 endfunction()
 
 # ---------------------------------------------------------------------------

@@ -327,9 +327,16 @@ TEST_F(MigrateAsk, a_wake_that_displaces_a_thread_which_parked_instead_asks_nobo
     ASSERT_EQ(owed_at(CORE_PEER), 0) << "fixture: nothing stands against the peer core";
 
     wake_next_park(leave_parked);
+    // As endpoint_call's reply park: a parked current takes no pass from the wake, so its own
+    // reschedule is the switch.
     {
         IrqLock lock;
-        sched::wake(woken, lock);
+        Thread* taken = nullptr;
+        if (sched::wake_no_resched(woken, lock))
+        {
+            taken = woken;
+        }
+        sched::reschedule(taken, lock);
     }
 
     ASSERT_EQ(kernel().current(CORE_ME), woken) << "fixture: this core takes the woken thread";

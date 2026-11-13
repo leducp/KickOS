@@ -35,6 +35,17 @@ namespace kickos
     using UserOwner = Thread const*;
 #endif
 
+#if KICKOS_HAVE_ASPACE or KICKOS_ARCH_ARENA_DCACHE
+    // The owner of a thread's own user pointers.
+    UserOwner user_space_of(Thread const* t);
+#else
+    inline UserOwner user_space_of(Thread const* t)
+    {
+        (void)t;
+        return nullptr;
+    }
+#endif
+
     // Copy through each owning space's acquire interface, one granule at a time.
     // Failure can leave a copied prefix. Return an error rather than panic;
     // the fault reporter also uses these functions.

@@ -3,7 +3,8 @@
 //
 // _sbrk over a 4000 B window: it grows to the window's end and no further, and never moves back;
 // and kickos_heap_seat, at the image's first allocation, takes the whole window and gives it back,
-// once, under newlib's full malloc at either word size.
+// once, under newlib's full malloc at either word size; and it arms the exit's release of libc
+// scratch before its first ask.
 
 #include <gtest/gtest.h>
 
@@ -46,6 +47,8 @@ namespace
     size_t g_word = 4;
     std::vector<Ask> g_asked;
     std::vector<void*> g_freed;
+    // g_asked's size at each kickos_reent_heap_used.
+    std::vector<size_t> g_armed;
 
     // newlib's full malloc on its first request: one _sbrk of the request's chunk and the
     // smallest chunk it keeps after it. The arms make no later request.
@@ -80,6 +83,7 @@ namespace
             g_word = 4;
             g_asked.clear();
             g_freed.clear();
+            g_armed.clear();
         }
 
         // The seat's asks run down from the whole window, each refused until one fits; that one
@@ -123,6 +127,19 @@ extern "C" void* kos_ut_malloc(size_t n)
 extern "C" void kos_ut_free(void* block)
 {
     g_freed.push_back(block);
+}
+
+extern "C" void kickos_reent_heap_used(void)
+{
+    g_armed.push_back(g_asked.size());
+}
+
+TEST_F(HeapBreak, the_seat_arms_the_exit_release_before_its_first_ask)
+{
+    kickos_heap_seat();
+    ASSERT_FALSE(g_armed.empty());
+    EXPECT_EQ(g_armed.front(), 0u);
+    EXPECT_FALSE(g_asked.empty());
 }
 
 TEST_F(HeapBreak, the_seat_takes_the_whole_window_and_gives_it_back_once_on_a_32_bit_newlib)

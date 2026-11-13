@@ -210,6 +210,11 @@ namespace kickos
     // Caller holds IrqLock.
     int ram_region_admit(Thread const* granter, uintptr_t base, size_t size, uint32_t attr,
                          RamAdmit how);
+
+    // A caller-named thread stack, admitted as a R|W region `granter` names, and refused
+    // -KOS_EPERM where it meets the AMP user share: the kernel resumes the thread through
+    // frames there, and the other nodes' tasks write the share. Caller holds IrqLock.
+    int ram_stack_admit(Thread const* granter, uintptr_t base, size_t size);
 #endif
 
     // Held by the task, not by each of its threads. Three kinds of holder call these outside

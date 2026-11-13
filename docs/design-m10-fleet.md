@@ -37,7 +37,6 @@ The chip file grows in place, `version: 1`, by the fields a generated header nee
 | `owner: kernel` | a device | already in the schema; every device the kernel holds for life is now described, its line too (the F411's TIM2 at 28, the XMC's flash controller) | a reserved row and its symbols |
 | `link` | a memory entry | the linker region it is and its access, `{ region: FLASH, access: rx }` | the link values of 1.2 |
 | `interrupts` | top level | `count`, the controller's line count; `soft_only_from`, the first line no hardware raises; `free_from`, the first line no device uses; `vectors`, the RX's INTB table size | `chip_limits.h` |
-| `cycle_counter` | top level | `hz: 0` where the counter has no fixed rate (QEMU), `glitches: true` where a read can glitch (the XMC) | `chip_limits.h` |
 | `c` | top level | the C++ namespace where it is not `kickos::<chip>` (the XMC's `kickos::xmc`, the RX's `kickos::rx`) and the line enum's declaration where it is not `irq_num` | the header's form |
 | `symbol` | any entry | the C name where today's differs from the derived one | that name |
 
@@ -82,7 +81,7 @@ descriptions' rules refuse, and writes, for the built chip and cluster:
 | --- | --- | --- | --- |
 | `chip_mmap.h` | `constexpr uintptr_t` in the chip's namespace, guard unchanged | devices, channels, blocks, repeated devices, memory entries | the hand-written header, and the literals inline in `chip_*.cc` on the chips that have none |
 | `irq.h` | the line enum, form and namespace unchanged | every line, kernel-owned ones included | the hand-written `irq.h`; the ESP32-C6's CPU interrupt enum, which nothing referenced, is dropped rather than moved |
-| `chip_limits.h` | pure `#define`, as `startup.S` includes it | `interrupts`, `cycle_counter` | the hand-written header |
+| `chip_limits.h` | pure `#define`, as `startup.S` includes it | `interrupts` | the hand-written header |
 | `chip_layout.h` | pure `#define`, for linker scripts and assembly | each memory entry's base and size, each device base, each line | the `MEMORY{}` literals, `boot_layout.ld.h`'s device addresses and the RP2350's doorbell line |
 | `chip_tables.h` | `constexpr` arrays of `arch_reserved_block` | reserved rows: every `owner: kernel` window and port range; window apertures: every other device window, on a translating chip; port apertures: every other port range | each chip's static arrays |
 | `chip.cmake` | CMake facts | `protection.unit`, each link region's origin and length | `mpu.cmake`, `aspace.cmake` and the microbit's scrape of its script's RAM length |
@@ -346,13 +345,13 @@ arms not yet moved off root.
 
 **What is measured**, per image: flash (loaded text, read-only data and data's load image), static
 RAM (data, bss, the heap carve), the arena the boot and the init spend (`kickos_compose cost` and
-the chip script's arena asserts), and the thread slots left under `KICKOS_BUDGET_THREADS`. **The
+the chip script's arena asserts), and the thread slots left in the thread pool. **The
 instrument** is `size -A` over each linked ELF, B and C as deltas against A from the same tree
 with the stamp masked as 1.4 masks it, and A built twice as the null control. The table went to
 archived `M10.5_smallest_boards_meas.md` with the presets, toolchain and tree it was taken on.
 
 **What the selftest as a task costs is decided here too, per board.** Run by the init rather than
-as root, it spends a task slot and its entry thread from `KICKOS_BUDGET_THREADS`, where root's slot
+as root, it spends a task slot and its entry thread from the thread pool, where root's slot
 was outside both, and its capability table is a child's, the child width wide, where
 root's was summed. Its declared peak is 5 slots held at once plus 3 the deadlock arm skips without,
 above the `KICKOS_CAP_FIRST_DYNAMIC` reserved ones, and its composition delegates no capability at
@@ -362,7 +361,7 @@ the board's supply is 10 or more, a child's 10 slots holding the 2 reserved, the
 the 5 exactly, and their gates declare `mutex_deadlock` a skip. On `microbit` the 9 costs each
 selftest image 560 B of `.bss` and 312 to 856 B of `.text` against 6, measured on two builds of
 one tree, and no image loses a 2 KiB arena block: `selftest` keeps 320 B before the next block
-boundary and the other four 928 to 1,440 B. The row decides each small board: `KICKOS_BUDGET_THREADS` and the task pool size raised by
+boundary and the other four 928 to 1,440 B. The row decides each small board: the thread and task pool sizes raised by
 one where its RAM allows, recording nothing again; a board whose child width cannot hold the peak
 raises `KICKOS_MAX_SPAWN_GRANTS` where its RAM allows; a misfit goes to the maintainer.
 
@@ -402,7 +401,7 @@ whose child never exits (`initdemo`, `tele_pingpong`, `drvdeath`, `rootfault`) e
 | `deadstack`, `kernelhalf`, `stackguard` | 1 | the fault is `main`'s, or above one core its reader thread's; the gate reads the fault report and `KOS_EXIT_FAULT` |
 | `bench` (three images) | 2 | `irq` beside the default's three, for the lines it raises past `KICKOS_IRQ_FREE_BASE`, claimed at run time; `main`'s table being a child's, it closes each handle once its peers hold their own |
 | `benchauth` | 2 | `memory`, `system`, `irq`; its root-against-child arms become task-against-child |
-| `blink`, `chaincheck`, `chaincheck_float`, `chaincheck_full`, `clocksoak`, `cxxtest`, `fp_switch`, `hello`, `hello_c` | 1 | |
+| `blink`, `chaincheck`, `chaincheck_float`, `chaincheck_full`, `cxxtest`, `fp_switch`, `hello`, `hello_c` | 1 | |
 | `errnoprobe` | 1 | its arm on a core's first thread runs as a constructor on root, which runs the app's constructors and is still that thread; a switch-in before it is not excluded |
 | `clockretune` | 2 | `system`, `pstate` |
 | `drvdeath` | 3 | retargeted: `stdout` names the packaged `simcon` with no restart; each death knob is a death or a failed start the init reports, the kernel console back each time; `main` uses and watches `simcon`, so a failed start leaves it dependency-down, the system ending with `KOS_EXIT_CANCELLED`, and a death is read off `/init/events`; the two-thread knob's register holder is the driver task's entry, which the app releases through the driver's test hook; the root-identity arm keeps root's handle, the init's thread, `kos_thread_self` answering none on one core |
@@ -413,7 +412,7 @@ whose child never exits (`initdemo`, `tele_pingpong`, `drvdeath`, `rootfault`) e
 | `gpioblink` | 2 | the LED port's window, `pinmux` to mux its own pin, `coarse_gate` where the port holds pins the board spends; the blinking thread is the task's entry; built on the two boards whose GPIO layout it carries, `xmc4800-relax` and `frdmk64f` |
 | `initdemo` | 3 | retargeted: `console` authority, so the task publishes its own endpoint as root did, and the misroute arms are unchanged |
 | `libc_exit` | 1 | a worker's `exit` ends the worker, `main`'s ends the system |
-| `mpu_fault`, `objbudget`, `rebootdemo`, `slaypeer`, `taskleave`, `tlsprobe`, `tele_flood`, `tele_pingpong` | 1 | |
+| `mpu_fault`, `rebootdemo`, `slaypeer`, `taskleave`, `tlsprobe`, `tele_flood`, `tele_pingpong` | 1 | |
 | `pubpanic`, `simconabi` | 2 | `stdout` names `simcon` |
 | `reclaimwit` | 2 | `memory`, `system`, `console`, `tasks`; `stdout: kernel` is its precondition |
 | `rootauth` | 3 | retargeted: a task declaring `[memory, system, pinmux]` meets the same refusals, witnessing the composition's authority reaching the spawn |
@@ -423,6 +422,7 @@ whose child never exits (`initdemo`, `tele_pingpong`, `drvdeath`, `rootfault`) e
 | `selftest` | 2 | section 4.4 |
 | `sysdefault` | 1 | already |
 | `trapnest` | 2 | `irq` |
+| `uartconsole` | 2 | one composition per board: `stdout` names the packaged `k64uartirq` on the K64F, `xmcuartirq` on the XMC4800 |
 | `uartloop` | 2 | the packaged `simuart` and a task using its endpoint |
 | `usbcdcwit` | 2 | `stdout` names the packaged `rpusb` or `rt1062usb`, on a build whose service list publishes over USB |
 
@@ -432,17 +432,14 @@ whose child never exits (`initdemo`, `tele_pingpong`, `drvdeath`, `rootfault`) e
 | --- | --- | --- |
 | `esp32c6-wroom/c6blink` | 2 | the GPIO bank and `pinmux`; the ungranted poke is a child thread's fault. No `coarse_gate`, although the bank holds pins the board spends: the platform-wide `no_protection` the LP core's cluster brings subsumes it, and admission refuses it as unneeded (`enforcement.unneeded`) |
 | `esp32c6-wroom/c6intpri` | 3 | deleted: it probes INTPRI, which the kernel owns and admission refuses to grant; what it found is stated in the chip file and the chip code, and the inject doorbell it identified runs in every C6 AMP capture |
-| `esp32c6-wroom/c6lpprobe` | 1 | its flat build accepts `no_protection` already |
 | `esp32c6-wroom/c6txidle` | 1 | the default composition in the flat build, reading what a kernel-side probe recorded in M-mode: a U-mode thread's ungranted UART0 access passes no APM |
 | `esp32-wroom/lx6smp` | 3 | deleted: it starts the APP CPU by writing kernel-owned registers. Owed: esp32-wroom-smp silicon selftest (5.14), the shared kernel on both LX6 cores taking the compare-and-swap from both and reading each core's processor identity; `docs/reference/boards.md` names its capture |
 | `f411disco/f411spi` | 2 | the worked example of hand-rolled bring-up, rewritten as one: SPI1's window and line, `pinmux` for its pins; no claim by number, no task created by hand |
-| `frdmk64f/k64console` | 2 | `stdout` names the packaged `k64uartirq` |
 | `frdmk64f/k64drv` | 2 | retargeted from PIT channel 2 to LPTMR0, since PIT's AIPS slot 55 also holds the channels the kernel's time base chains and is never opened: LPTMR0 sits alone in AIPS0 slot 64 at 0x4004_0000, raises line 58, and is clocked by SCGC5 bit 0 (K64 RM 4.5.2 Table 4-2, 3.2.2.3 Table 3-5, 12.2.12). Its window and line, `device_not_isolated`, `coarse_gate` for its slot; the chip file gains the device, and `arch_periph_enable` the base, gating its clock and clearing its slot's SP bit as it does for UART0 and DSPI0. The driver counts the 1 kHz LPO (PSR PCS=01, PBYP=1; RM 42.3.2) and a thread of its task holding no window reads the counter, which succeeds, the slot being the gate: the window, 32 bytes by the SYSMPU's granule, already holds every register LPTMR0 implements, and the slot answers any other address with a transfer error (RM 4.5) |
 | `frdmk64f/k64dspi` | 2 | two compositions, chosen by `KICKOS_SPI_LOCAL_ENGINE`: the packaged `k64dspi`, whose start muxes the pins the board file wires to DSPI0, and a client using its endpoint `/svc/spi0`; and a task holding DSPI0 and `pinmux` that links the local SPI engine and muxes those pins through `k64dspi_bus_mux` |
 | `rx72m/rxdrv` | 2 | the port window, `pinmux`; the ungranted poke is a child thread's fault. The chip file's port window holds `PMR`, so it takes `coarse_gate` beside the console's pins and the kernel's LED, and the poke writes the console pin's `PB1PFS` in the MPC, which the chip file gives the kernel, instead |
 | `xmc4800-relax/conreclaim` | 3 | retargeted: `testusic`, a test-owned console driver over USIC0 CH0 in `tests/drivers`, is named `stdout` and holds the console device alone, so no plain task may hold it. It serves plain sends polled, `KOS_UART_DRAIN` with the channel's flush, and a zero-length call by scrambling the channel it holds, its clock gated last, before it answers; `main` prints through it, asks for the scramble and panics, and the verdict reaches the wire only through the kernel reclaiming the published console. Built only where `KICKOS_TEST_DRIVERS` is on, which the board preset leaves off, so an operator configures it in (`EXTRA_CMAKE=-DKICKOS_TEST_DRIVERS=ON`); `tests/integration/check_conreclaim.sh` judges the capture |
-| `xmc4800-relax/consoledemo` | 2 | `stdout` names the packaged `xmcuartirq` |
-| `inprstorm`, `pvprobe`, `xmccshold`, `xmcspi` | 2 | USIC0 CH1, and for `xmcspi` the line `/dev/usic0/sr1`; `inprstorm`'s entry holds the window and re-delegates it to a storm thread below itself, so it takes `memory` and runs on `ends: never`; `pvprobe` and `xmcspi` fault their own entry on the closing ungranted read, which ends the system, while `xmccshold` returns. Their compositions do not name `xmcssc`, so nothing else holds the window. The refusal of the old conflict is already armed: `tools/compose/tests/test_arms.py` grants each beside the golden system's `xmcssc` and reddens `ownership.device`, and `ownership.line` for `xmcspi` |
+| `inprstorm`, `pvprobe`, `xmccshold` | 2 | USIC0 CH1; `inprstorm`'s entry holds the window and re-delegates it to a storm thread below itself, so it takes `memory` and runs on `ends: never`; `pvprobe` faults its own entry on the closing ungranted read, which ends the system, while `xmccshold` returns. Their compositions do not name `xmcssc`, so nothing else holds the window. The refusal of the old conflict is already armed: `tools/compose/tests/test_arms.py` grants each beside the golden system's `xmcssc` and reddens `ownership.device` |
 | `xmc4800-relax/xmcssc` | 2 | two images in every configure: `xmcssc`, the packaged `xmcssc` and a client using its endpoint `/svc/spi0`, and `xmcssc_local`, a task holding CH1 and its line that links the local SPI engine |
 
 ### 4.4 The selftest as a task
@@ -495,8 +492,8 @@ The ceiling arms read the declared ceiling rather than a constant, so one arm ho
 | `process_data_from_image`, `irq_as_event` | root's data pages | the task's, a copy of the image's pristine data whichever way the task was made (M10.6.6, `space-data-starts-from-the-image`) |
 | an arm reading a pin a board pin map set | the default init applied it | none exists |
 
-The pools follow the task. A task's entry thread and task come out of `KICKOS_BUDGET_THREADS` and
-the task pool size, raised by one on `microbit`, `f302nucleo` and `bluepill-c8` (section 3), and its
+The pools follow the task. A task's entry thread and task come out of the thread pool and
+the task pool, raised by one on `microbit`, `f302nucleo` and `bluepill-c8` (section 3), and its
 table is a child's: a self-test defconfig states `KICKOS_MAX_SPAWN_GRANTS=9` on a board whose
 supply backs the 3 optional slots, and an AMP node's defconfig widens it for its crossings.
 
@@ -513,8 +510,8 @@ in M10.6.
 | list | becomes |
 | --- | --- |
 | the empty service list (formerly `kickos_services_none`) | the default composition |
-| the K64F service list (formerly `kickos_services_frdmk64f`; a polled console driver, since removed, and `k64dspi`) | `k64console`'s and `k64dspi`'s compositions |
-| the XMC4800 service list (formerly `kickos_services_xmc4800relax`; a polled console driver, since removed, and `xmcssc`) and its console-only list | `consoledemo`'s and `xmcssc`'s |
+| the K64F service list (formerly `kickos_services_frdmk64f`; a polled console driver, since removed, and `k64dspi`) | `uartconsole`'s and `k64dspi`'s compositions |
+| the XMC4800 service list (formerly `kickos_services_xmc4800relax`; a polled console driver, since removed, and `xmcssc`) and its console-only list | `uartconsole`'s and `xmcssc`'s |
 | each `_uartirq` list (`k64uartirq`, `xmcuartirq`, `c6uart`, `lx6uart`, `rxsci`, `f4uartirq`) | the selftest's composition naming that console driver on its board |
 | the `_usbcdc` lists (`rpusb`, `rt1062usb`) | `usbcdcwit`'s compositions and the selftest's composition naming that console driver on its board |
 | the sim service list (formerly `kickos_services_sim`, with `simcon`) and its UART list (formerly `kickos_services_simuart`) | the compositions of `drvdeath`, `pubpanic`, `simconabi`, `faultsurvive_published`, the published selftest, and `uartloop` |
@@ -764,9 +761,7 @@ grants must fit around, and none is dropped to make room. As the pages stand, no
 LP UART, which the chip file gains from Table 5.3-2, sits past LP_AON, which is the kernel's, so
 every LP peripheral granted to the LP node is refused rather than taking a region from the kernel.
 With no grant, HP_APM holds the LP node's two REE1 rows alone, leaving thirteen. Each gate's
-FILTER_EN is written whole, so a region no row names stays disabled whatever enabled it before;
-`c6lpprobe`, which programs HP_APM's regions 14 and 15 and every LP_APM region past the catch-all
-itself, refuses an image whose rows hold any of them.
+FILTER_EN is written whole, so a region no row names stays disabled whatever enabled it before.
 
 The literals the chip code programmed before the derivation opened more than this set: REE0 held
 read and write on RMT and IO_MUX, which are the kernel's, on HP SRAM and on every CPU peripheral
@@ -814,7 +809,7 @@ exists to program. The A53 `virt` machine states no gate and emits none.
   through the timer group its composition grants, TIMG1, nonzero, and from TIMG0, which the HP
   node's composition grants, zero, a denial that does not trap; node 0 reads its own TIMG0
   nonzero. Judged by `tests/integration/check_c6_amp_capture.py`, through
-  `tests/integration/check_c6_amp_gate.sh` as `bench.sh`'s `JUDGE`.
+  `tests/integration/check_c6_amp_capture.sh`.
 - `pizero2350-amp2`, when the bench holds the board: node 0 reads back UART0's ACCESSCTRL register
   as its own core's alone, its task holds UART0, enables it through `kos_periph_enable`, which the
   RP2350 gains for UART0's reset bit, and reads UARTPERIPHID0 at offset 0xFE0, 0x11 on a PL011,
@@ -836,11 +831,11 @@ the fleet reads it, and a judge per board app that prints.
 
 | board | the chain has | runs |
 | --- | --- | --- |
-| `xmc4800-relax` | probe, console, fleet | default system; selftest, kernel console and `xmcuartirq`; the golden system and the restart witness; `consoledemo`, `xmcssc` in both forms (`xmcssc`, `xmcssc_local`), the four diagnostic apps, `conreclaim` |
-| `frdmk64f` | probe, console, fleet | default system; selftest, kernel and `k64uartirq`; `k64console`, `k64drv` on LPTMR0, `k64dspi`'s LAN9252 `BYTE_TEST` |
+| `xmc4800-relax` | probe, console, fleet | default system; selftest, kernel console and `xmcuartirq`; the golden system and the restart witness; `uartconsole`, `xmcssc` in both forms (`xmcssc`, `xmcssc_local`), the four diagnostic apps, `conreclaim` |
+| `frdmk64f` | probe, console, fleet | default system; selftest, kernel and `k64uartirq`; `uartconsole`, `k64drv` on LPTMR0, `k64dspi`'s LAN9252 `BYTE_TEST` |
 | `rx72m` | probe, console, fleet | default system; selftest, kernel and `rxsci`; `rxdrv` |
 | `f302nucleo` | probe, console, fleet | default system; selftest |
-| `esp32c6-wroom` | probe, console, fleet | default system; selftest, kernel and `c6uart`; `c6blink`; from the flat build, `c6lpprobe` and `c6txidle`; the `amp2` partition with its gate witness |
+| `esp32c6-wroom` | probe, console, fleet | default system; selftest, kernel and `c6uart`; `c6blink`; from the flat build, `c6txidle`; the `amp2` partition with its gate witness |
 | `esp32-wroom` | probe, console, fleet | default system; selftest, kernel and `lx6uart`, one and two cores |
 | `f411disco` | probe, console, fleet | default system; selftest, kernel and `f4uartirq`; `f411spi` |
 | `picopi`, `pizero2350`, `teensy41` | console and capture, no probe row | default system, selftest, `usbcdcwit`; `pizero2350-amp2`'s `ampping` and gate witness |

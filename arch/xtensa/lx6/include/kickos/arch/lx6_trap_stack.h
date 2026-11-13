@@ -21,16 +21,15 @@
  * F_SIZE in xtensa_frame.h, which the entry subtracts; arch_xtensa.cc asserts the pair. */
 #define KICKOS_LX6_TRAP_FRAME 256
 
-/* What kickos_lx6_dispatch_l1 descends below that frame: 624 on esp32-wroom-benchsmp, 608 on
- * esp32-wroom-smp, 512 on -bench and 480 on esp32-wroom, the console's TX drain waking a writer
- * waiting for ring room. Above one core that wake's switch re-acquires the kernel lock and the
- * lock's spin polls the doorbell (resched_after_wake -> pick_and_seat -> klock_attach
- * -> arch_kernel_lock -> kickos_doorbell_poll -> ...); at one core it ends in
- * kickos_lx6_switch[128].
+/* What kickos_lx6_dispatch_l1 descends below that frame: 608 on esp32-wroom-smp, the console's
+ * TX drain waking a writer waiting for ring room, whose switch re-acquires the kernel lock and
+ * the lock's spin polls the doorbell (resched_after_wake -> pick_and_seat -> klock_attach
+ * -> arch_kernel_lock -> kickos_doorbell_poll -> ...); 480 on esp32-wroom, a timeout's park
+ * abort settling inheritance.
  *
  * The same figure bounds the unhandled-exception reporter on the stack that faulted: 608 at one
  * core, kprintf[336] into the console. Above one core its line waits on the kernel lock and serves
- * the doorbell there, 816 on esp32-wroom-benchsmp and 784 on esp32-wroom-smp.
+ * the doorbell there, 784 on esp32-wroom-smp.
  *
  * FRAME + 768 = 1024, and above one core FRAME + 832 = 1088: the KICKOS_MIN_STACK_SIZE floor. */
 #if KICKOS_KERNEL_CORES > 1
@@ -39,14 +38,13 @@
 #define KICKOS_LX6_TRAP_DEPTH 768
 #endif
 
-/* The panic reporter's own stack. Frame is one trap frame: the entry raises INTLEVEL to 15
- * before the move, but a window exception and an ISA exception are not maskable and both build
- * their frame on the stack in a1. arch_xtensa.cc asserts it against KICKOS_LX6_TRAP_FRAME.
+/* The panic reporter's own stack. FRAME is 0: only a fault inside the reporter stacks one here,
+ * a bug the tests catch.
  *
- * 512 on esp32-wroom-benchsmp and esp32-wroom-smp, 272 on the one-core presets.
+ * 512 on esp32-wroom-smp, 336 on esp32-wroom.
  * kickos_panic_stack_enter spends 32 bytes on the stack it leaves, the windowed ABI giving it
  * no way to write a1 without opening a frame; trap_redzone_roots.txt declares that cost. */
-#define KICKOS_LX6_PANIC_FRAME 256
+#define KICKOS_LX6_PANIC_FRAME 0
 #define KICKOS_LX6_PANIC_DEPTH 768
 
 /* idle_entry and arch_idle_wait, whose frames sit above the level-1 interrupt idle waits in:
@@ -57,11 +55,11 @@
  * asserts holds both classes. DEPTH is the deepest root of each level the roots file declares,
  * summed, and a fault is charged one trap frame, as FAULT charges it.
  *
- * MAIN, the PRO_CPU's boot at INTLEVEL 15 with a fault nested on it: 1824 on
- * esp32-wroom-benchsmp, the boot check's print waking a console writer, 1520 on esp32-wroom.
+ * MAIN, the PRO_CPU's boot at INTLEVEL 15 with a fault nested on it: 1760 on esp32-wroom-smp,
+ * the boot check's print waking a console writer, 1520 on esp32-wroom.
  *
  * CORE, the APP_CPU's park, a level-1 interrupt under its trap frame, and a fault in that, so
- * two trap frames: 1872 on esp32-wroom-benchsmp, 1824 on esp32-wroom-smp.
+ * two trap frames: 1824 on esp32-wroom-smp.
  *
  * Both are reserved at 2560. */
 #define KICKOS_LX6_CORE_FRAME 512

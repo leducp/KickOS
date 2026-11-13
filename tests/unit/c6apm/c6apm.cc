@@ -355,19 +355,6 @@ TEST(C6Apm, Ree0PastNode0sGrantsIsCaught)
     EXPECT_EQ(kernel, std::vector<std::string>{"gate 0 region 5 opens GPIO_MATRIX to REE0"});
 }
 
-TEST(C6Apm, TheLpProbeKeepsItsRegions)
-{
-    EXPECT_TRUE(apm::lp_probe_fits(NO_COMPOSITION, 2u));
-    EXPECT_FALSE(apm::lp_probe_fits(NO_COMPOSITION, count_of(NO_COMPOSITION)));
-    kickos_gate_row hp[14];
-    for (uint16_t i = 0; i < 14u; i++)
-    {
-        hp[i] = {0x60000000ull + 0x1000ull * i, 0x1000ull, 0, 0, 0, RW, 0};
-    }
-    EXPECT_TRUE(apm::lp_probe_fits(hp, 13u));
-    EXPECT_FALSE(apm::lp_probe_fits(hp, 14u));
-}
-
 TEST(C6Apm, AmppingGivesTimg1ToTheLpOnly)
 {
     FakeBus const bus = programmed(AMPPING, count_of(AMPPING), apm::NODE_MODE);

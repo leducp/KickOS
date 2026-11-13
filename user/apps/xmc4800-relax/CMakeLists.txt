@@ -7,16 +7,9 @@
 # USIC0 channel 1 SSC drivers and benches over the window each composition grants, and the
 # console-reclaim test. Each #errors without enforcement.
 if(KICKOS_HAVE_MPU)
-  add_subdirectory(xmcspi)
   add_subdirectory(xmccshold)
   add_subdirectory(xmcssc)
   add_subdirectory(pvprobe)
   add_subdirectory(inprstorm)
   add_subdirectory(conreclaim)
-endif()
-
-# Console bring-up demo: a real user-facing app, not a diagnostic. Its composition names the
-# packaged xmcuartirq as stdout; enforcement builds only.
-if(KICKOS_HAVE_MPU)
-  add_subdirectory(consoledemo)
 endif()

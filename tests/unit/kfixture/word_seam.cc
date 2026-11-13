@@ -1,19 +1,22 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The mutex word's seam (kickos/word.h) over host memory, for a posture that links neither
-// kernel/syscall/word.cc nor syscall_mem.cc: a word's key is its address, every live thread could
-// hold it, and at a translating posture the alias is the address itself and g_word_fault makes
-// every hold fail as a vanished page does. Each is weak, so a posture linking the real word.cc or
-// syscall_mem.cc beside the fixture keeps the real one. Without translation the access is
-// word.h's own.
+// The mutex word's seam (kickos/word.h) and the user write (kickos/aspace.h) over host memory,
+// for a posture that links neither kernel/syscall/word.cc nor syscall_mem.cc: a word's key is its
+// address, every live thread could hold it, and at a translating posture the alias is the address
+// itself and g_word_fault makes every hold fail as a vanished page does. Each is weak, so a
+// posture linking the real word.cc or syscall_mem.cc beside the fixture keeps the real one.
+// Without translation the access is word.h's own.
 
+#include <kickos/aspace.h>
 #include <kickos/domain.h>
 #include <kickos/sync.h>
 #include <kickos/thread.h>
 #include <kickos/word.h>
 
 #include <kickos/sys/errno.h>
+
+#include <string.h>
 
 #include "kfixture.h"
 
@@ -34,6 +37,20 @@ namespace kickos
             return c;
 #endif
         }
+    }
+
+#if KICKOS_HAVE_ASPACE or KICKOS_ARCH_ARENA_DCACHE
+    __attribute__((weak)) UserOwner user_space_of(Thread const* t)
+    {
+        return owner_of(t);
+    }
+#endif
+
+    __attribute__((weak)) bool kaccess_to_user(UserOwner, uintptr_t udst, void const* ksrc,
+                                               size_t n)
+    {
+        memcpy(reinterpret_cast<void*>(udst), ksrc, n);
+        return true;
     }
 
     __attribute__((weak)) int word_ref(Thread const* c, uintptr_t va, WordRef* out)

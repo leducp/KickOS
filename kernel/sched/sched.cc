@@ -7,7 +7,6 @@
 #include <kickos/notify.h>
 #include <kickos/sched.h>
 #include <kickos/smptrace.h>
-#include <kickos/bench.h>
 #include <kickos/cap.h>
 #include <kickos/console_tx.h>
 #include <kickos/debug.h>
@@ -71,7 +70,6 @@ namespace kickos
             t->queue_core = static_cast<uint8_t>(home);
             t->state.to<ThreadState::HANDED>();
             ring_stage(home, static_cast<uint16_t>(t - &k.threads.slots()[0]));
-            KICKOS_BENCH_SCHED_COUNT(::kickos::BS_HANDOFF);
         }
 
         // The one place a thread enters a ready structure, and only the calling core's, `me`: a
@@ -117,13 +115,11 @@ namespace kickos
             t->reseat_owed = 1u;
             ring_stage(t->queue_core,
                        static_cast<uint16_t>(SCHED_ENTRY_RESEAT | (t - &k.threads.slots()[0])));
-            KICKOS_BENCH_RESEAT_ASKED(t);
         }
 
-        void count_ask(uint32_t peers, [[maybe_unused]] uint8_t prio)
+        void count_ask([[maybe_unused]] uint32_t peers, [[maybe_unused]] uint8_t prio)
         {
             KOS_TRACE(::kickos::KOS_TR_ASK, peers, prio);
-            KICKOS_BENCH_RESCHED_ASK(peers != 0);
         }
 
         // Moves READY `t`, linked here, to where the policy's placement invariant puts it.
@@ -180,7 +176,6 @@ namespace kickos
                 out.drop_asked[h] = out.drop_asked[h].load() + 1u;
                 out.raise = out.raise | (1u << h);
                 count_ask(1u << h, static_cast<uint8_t>(mine + 1));
-                KICKOS_BENCH_DROP_ASKED(h);
             }
         }
 
@@ -201,13 +196,11 @@ namespace kickos
                 Thread* const t = policy_push_candidate(me, c, held);
                 if (t == nullptr)
                 {
-                    KICKOS_BENCH_SCHED_COUNT(::kickos::BS_DROP_IDLE);
                     continue;
                 }
                 policy_on_remove(t);
                 publish_ready(t, c, me);
                 count_ask(1u << c, t->prio);
-                KICKOS_BENCH_PUSHED(t, c);
             }
         }
 
@@ -261,7 +254,6 @@ namespace kickos
                         return;
                     }
                     t->reseat_owed = 0;
-                    KICKOS_BENCH_RESEAT_APPLIED(t, -1);
                     return;
                 }
                 t->reseat_owed = 0;
@@ -280,10 +272,8 @@ namespace kickos
                     {
                         k.seated_prio[me] = t->rq_prio;
                     }
-                    KICKOS_BENCH_RESEAT_APPLIED(t, 1);
                     return;
                 }
-                KICKOS_BENCH_RESEAT_APPLIED(t, 0);
                 if (place_it)
                 {
                     (void)place(t, me, held);
@@ -293,7 +283,6 @@ namespace kickos
             KICKOS_DEBUG_ASSERT(t->state == ThreadState::HANDED and t->queue_core == me);
             if (not sched_placeable_on(t, me))
             {
-                KICKOS_BENCH_SCHED_COUNT(::kickos::BS_HANDED_ON);
                 publish_ready(t, sched_home_for(t, me), me);
                 return;
             }
@@ -337,7 +326,6 @@ namespace kickos
                 // Retired before its thread is written, or a hand-on counts it twice.
                 in.tail[from].store(tail + 1u);
                 ring_apply(entry, me, place_it, held);
-                KICKOS_BENCH_DRAIN_APPLIED();
                 applied++;
                 dry = 0;
             }
@@ -405,8 +393,6 @@ namespace kickos
         inline __attribute__((always_inline)) void switch_book(Thread* next, KernelCore me,
                                                                Held held)
         {
-            KICKOS_BENCH_PERFORM_OPEN();
-            KICKOS_BENCH_MARK(bm_book);
             Thread* prev = kernel().current(me);
 #if KICKOS_KERNEL_CORES > 1
             Thread* displaced = nullptr;
@@ -433,25 +419,18 @@ namespace kickos
             seat_running(next, me);
             KOS_TRACE(::kickos::KOS_TR_RUN, KOS_TRACE_ID(next), next->prio);
             next->switch_count.store(next->switch_count.load() + 1u);
-            KICKOS_BENCH_SPAN(PH_SWITCH_BOOK, bm_book);
-            KICKOS_BENCH_MARK(bm_mpu);
             // What the incoming thread may touch is installed here and nowhere else.
             [[maybe_unused]] struct arch_aspace* const rspace = aspace_activate_for(next);
             next->mpu.apply();
-            KICKOS_BENCH_SPAN(PH_MPU_APPLY, bm_mpu);
 #if KICKOS_LIBC_REENT
-            KICKOS_BENCH_MARK(bm_seat);
             seat_reent(rspace, next);
-            KICKOS_BENCH_SPAN(PH_REENT_SEAT, bm_seat);
 #endif
 #if KICKOS_KERNEL_CORES > 1
-            KICKOS_BENCH_DECIDE_OPEN();
             if (displaced != nullptr)
             {
                 (void)place(displaced, me, held);
             }
             seat_level(next, me, held);
-            KICKOS_BENCH_DECIDE_CLOSE();
 #endif
 #if KICKOS_ARCH_SWITCH_LANDS_LATER
             // A slice the switch must stamp is stamped, and the comparator armed, where the arch
@@ -474,8 +453,8 @@ namespace kickos
             ktime_rearm(next, held);
             if (arch_in_isr() != 0)
             {
-                // Deferred to this interrupt's exit, whose handler tail reprograms the
-                // comparator (ktime_land_at_isr_exit).
+                // Deferred to this interrupt's exit, which stamps it again where it lands
+                // (ktime_land_at_isr_exit).
                 kernel().switch_landing_owed[me] = 1;
             }
 #endif
@@ -512,8 +491,6 @@ namespace kickos
             {
                 return nullptr;
             }
-            // Taken here and not by the caller: a trap prologue reaches this unmasked,
-            // PendSV being entered with PRIMASK and BASEPRI both clear.
             IrqLock lock;
             Kernel& k = kernel();
             KernelCore const cpu = kickos_kernel_core();
@@ -569,14 +546,7 @@ namespace kickos
             // Hold the kernel lock until the outgoing frame is saved.
             // The thread carries its nesting depth across the switch.
             uint32_t const klock_depth = klock_detach();
-            // The bench bracket's depth rides this frame for the same reason the lock's does.
-            // Its start does not: that one describes the core's masked window, which the
-            // thread resuming here continues.
-            KICKOS_BENCH_LOCK_DETACH(bench_depth);
-            KICKOS_BENCH_MARK(bm_arch);
             arch_switch(&prev->ctx, &next->ctx);
-            KICKOS_BENCH_SPAN(PH_ARCH_SWITCH, bm_arch);
-            KICKOS_BENCH_LOCK_ATTACH(bench_depth);
             klock_attach(klock_depth);
         }
 
@@ -586,12 +556,7 @@ namespace kickos
         void pick_and_seat(Thread* woken, Held held)
         {
             KernelCore const me = kickos_kernel_core();
-#if KICKOS_KERNEL_CORES > 1
-            KICKOS_BENCH_PASS_OPEN();
-#endif
-            KICKOS_BENCH_MARK(bm_pick);
             Thread* next = policy_pick_next();
-            KICKOS_BENCH_SPAN(PH_PICK_NEXT, bm_pick);
 #if KICKOS_KERNEL_CORES > 1
             if (woken != nullptr and next != woken and woken->state != ThreadState::HANDED)
             {
@@ -604,7 +569,6 @@ namespace kickos
             if (next == kernel().current(me))
             {
                 seat_level(next, me, held);
-                KICKOS_BENCH_PASS_CLOSE();
                 return;
             }
 #else
@@ -614,37 +578,8 @@ namespace kickos
                 return;
             }
 #endif
-            KICKOS_BENCH_MARK(bm_switch);
             switch_to(next, me, held);
-            KICKOS_BENCH_SPAN(PH_SWITCH_TO, bm_switch);
         }
-
-#if defined(KICKOS_WITNESS_REPASS) && KICKOS_WITNESS_REPASS
-        bool g_repass_second = false;
-        bool g_repass_back = false;
-
-        // Test-only, each once, after a doorbell pass took the core off the thread it interrupted:
-        // off a slain one, a second pass of the same exception; off the core's idle, a switch
-        // booked back onto it, its frame still the one the core stands on.
-        void witness_repass(Thread* interrupted, KernelCore me, Held held)
-        {
-            if (kernel().current(me) == interrupted)
-            {
-                return;
-            }
-            if (not g_repass_second and thread_slay_claim_pending(interrupted))
-            {
-                g_repass_second = true;
-                pick_and_seat(nullptr, held);
-            }
-            else if (not g_repass_back and interrupted == kernel().idle(me))
-            {
-                g_repass_back = true;
-                switch_to(interrupted, me, held);
-                klock_resched_self();
-            }
-        }
-#endif
     }
 
 #if KICKOS_KERNEL_CORES > 1
@@ -834,7 +769,6 @@ namespace kickos
 #if KICKOS_KERNEL_CORES > 1
             sched_flush(me);
 #endif
-            KICKOS_BENCH_LOCK_DROP();
             arch_start(&kernel().boot(me), &first->ctx);
         }
 
@@ -875,9 +809,6 @@ namespace kickos
         bool wake_no_resched(Thread* t, Held held)
         {
             KICKOS_ASSERT_EXCLUSION_HELD();
-            // The refusals below do no ready-queue work and still feed this row, so its
-            // minimum can be a refusal rather than a readying.
-            KICKOS_BENCH_MARK(bm_unpark);
             // The unpark funnel, and so the one place a timed wait's deadline is dropped.
             // Never in wq_pop_highest: a CALL_SEND_WAIT caller popped there migrates park to
             // park, and a cancel there would strip the deadline spanning both call phases.
@@ -891,7 +822,6 @@ namespace kickos
             {
                 KOS_TRACE(::kickos::KOS_TR_REFUSED, KOS_TRACE_ID(t),
                           static_cast<uint32_t>(static_cast<ThreadState>(t->state)));
-                KICKOS_BENCH_SPAN(PH_WAKE_UNPARK, bm_unpark);
                 return false;
             }
             t->state.to<ThreadState::READY>();
@@ -901,17 +831,17 @@ namespace kickos
             uint32_t const me = kickos_kernel_core();
             publish_ready(t, SCHED_HOME_FOR(t, me), me);
             KOS_TRACE(::kickos::KOS_TR_READY, KOS_TRACE_ID(t), t->prio);
-            KICKOS_BENCH_SPAN(PH_WAKE_UNPARK, bm_unpark);
             return true;
         }
 
         void resched_after_wake(Thread* t, Held held)
         {
             KICKOS_ASSERT_EXCLUSION_HELD();
-            // Do not switch before start or during exit_current cleanup.
+            // Do not switch before start, during exit_current cleanup, or before a parked
+            // current's own reschedule: on an inline swap the rest of its span waits for its wake.
             // An equal-priority wake must not rotate an exiting thread away either.
             Thread const* const c = current();
-            if (c == nullptr or c->state == ThreadState::EXITED
+            if (c == nullptr or c->state == ThreadState::EXITED or c->state == ThreadState::BLOCKED
                 or (c->dying and t->prio <= c->prio))
             {
 #if KICKOS_KERNEL_CORES > 1
@@ -1247,20 +1177,10 @@ namespace kickos
             while (not kernel().retire_waiters.empty())
             {
                 Thread* const w = thread_of(kernel().retire_waiters.head);
-                if (not thread_abort_park_no_resched(w, 0, held))
+                if (thread_abort_park_no_resched(w, 0, held))
                 {
-                    continue;
+                    sched::keep_top(w, &top, held);
                 }
-                if (top == nullptr or w->prio > top->prio)
-                {
-                    if (top != nullptr)
-                    {
-                        sched::place_ready(top, held);
-                    }
-                    top = w;
-                    continue;
-                }
-                sched::place_ready(w, held);
             }
             if (top != nullptr)
             {
@@ -1278,9 +1198,6 @@ extern "C" void kickos_kernel_core_resched_if_owed(void)
     {
         return;
     }
-#if KICKOS_BENCH_SCHED_ON
-    ::kickos::BenchReasonScope const bench_reason(::kickos::BR_RESCHED);
-#endif
     // The doorbell handler masks interrupts but still needs IrqLock on SMP.
     ::kickos::IrqLock lock;
     ::kickos::KernelCore const me = kickos_kernel_core();
@@ -1294,24 +1211,18 @@ extern "C" void kickos_kernel_core_resched_if_owed(void)
     }
     // The drain lives here and nowhere a pass can be mid-walk, and what it leaves is owed to
     // this core's next dispatch.
-    KICKOS_BENCH_DRAIN_OPEN();
     bool const over = ::kickos::ring_drain(me, ::kickos::SCHED_DRAIN_BUDGET, true, lock);
-    KICKOS_BENCH_DRAIN_CLOSE();
     if (over)
     {
-        KICKOS_BENCH_SCHED_COUNT(::kickos::BS_DRAIN_OVER);
         ::kickos::klock_resched_self();
     }
     // A drop ask always carries a raise to its holder, so the dispatch that raise enters is
     // where it is answered, and no ordinary pass reads the drop cells.
     ::kickos::push_take(me, lock);
-#if defined(KICKOS_WITNESS_REPASS) && KICKOS_WITNESS_REPASS
-    ::kickos::Thread* const interrupted = ::kickos::kernel().on_cpu[me];
-#endif
     ::kickos::sched::reschedule(nullptr, lock);
-#if defined(KICKOS_WITNESS_REPASS) && KICKOS_WITNESS_REPASS
-    ::kickos::witness_repass(interrupted, me, lock);
-#endif
+    // A peer that moved a deadline earlier on this core's queue asked for this dispatch, and a
+    // pass that switches nothing arms nothing.
+    ::kickos::ktime_rearm(::kickos::sched::current(), lock);
 #if not KICKOS_ARCH_SWITCH_LANDS_LATER
     ::kickos::ktime_land(lock);
 #endif
@@ -1330,11 +1241,5 @@ extern "C" void kickos_thread_slay_exit(void* arg)
                   or kickos_fault_frame_on_kernel_stack(__builtin_stack_address(), 0));
 #endif
     ::kickos::kconsole_slain();
-#if defined(KICKOS_WITNESS_REPASS) && KICKOS_WITNESS_REPASS
-    if (::kickos::g_repass_second and ::kickos::g_repass_back)
-    {
-        ::kickos::kputs("[repass] claimed after a second pass and a switch back\n");
-    }
-#endif
     ::kickos::sched::exit_current(KOS_EXIT_CANCELLED, ::kickos::sched::EXIT_RETURN);
 }

@@ -558,6 +558,8 @@ extern "C"
     size_t arch_domain_static_regions(struct arch_mpu_region* out, size_t max, size_t image)
     {
         size_t n = 0;
+        // KERNEL TEXT INCLUDED: a syscall return preempted at kickos_armv7m_svc_drop or
+        // kickos_armv6m_svc_drop is saved demoted and resumes UNPRIVILEGED on those instructions.
         add_static(out, &n, max, __kickos_code_start, __kickos_code_end, ARCH_MPU_R | ARCH_MPU_X);
         if (reinterpret_cast<uintptr_t>(__kickos_appdata_end)
             > reinterpret_cast<uintptr_t>(__kickos_appdata_start))

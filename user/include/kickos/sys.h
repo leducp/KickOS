@@ -255,7 +255,9 @@ int kos_reply(kos_cap_t reply_cap, void const* buf, size_t len);
 // KOS_CAP_NONE skips the reply. Returns received bytes, -KOS_ENOTIFY for an
 // accepted IRQ without a message, or -KOS_E*. Reply errors EBADF and EFAULT
 // abort receiving; ESRCH allows it because that transaction has already ended.
-// A null `opts` is a reply with no receive, answered as kos_reply answers.
+// A null `opts` is a reply with no receive, answered as kos_reply answers. On a received
+// message and on -KOS_ENOTIFY, `opts->notify` holds exactly the bits consumed, 0 for none; a
+// bit it could not report stays pending (struct kos_reply_recv_opts).
 int kos_reply_recv(kos_cap_t reply_cap, void* buf, uintptr_t lens,
                    struct kos_reply_recv_opts* opts);
 
@@ -280,7 +282,8 @@ int kos_handle_close(kos_cap_t cap);
 // TRANSFER or a right it asks to pass on, EBADF a grant naming no live cap, EBUSY an MMIO window
 // a live thread holds, ENOMEM thread pool / stack arena / domain pool, EAGAIN the task at its
 // THREADS or PAGES budget or a destination task at one of its object budgets, EOVERFLOW a
-// delegated object's refcount at its ceiling).
+// delegated object's refcount at its ceiling, ENOTSUP a RAM range, data grant, stack or memory
+// window whose memory type this chip cannot honour).
 // `*out_thread` is ALWAYS written, KOS_THREAD_NONE on every failure, and the out-pointer is
 // validated BEFORE the child is created.
 int kos_thread_create(struct kos_thread_params const* params, kos_thread_t* out_thread);
@@ -502,8 +505,7 @@ int kos_port_reg_write(uint16_t base, uint16_t offset, uint8_t value);
 // teardown done, and released.
 // ETIMEDOUT leaves termination pending and the handle valid for another wait. ECANCELED cancels
 // only the wait. Other errors: EBADF for an invalid task, KOS_TASK_NONE included, EPERM
-// for a different creator, EDEADLK for a timeout other than 0 from a member of the task. Error
-// codes are negative.
+// for a caller that did not create it, a member of the task included. Error codes are negative.
 int kos_task_slay(kos_task_t task, uint32_t timeout_us);
 
 // Wait for a thread of the caller's task, or one the caller created, with a relative
@@ -612,7 +614,8 @@ int kos_notify_unbind(kos_cap_t notify_cap);
 // every later interrupt. `timeout_us` is relative; KOS_TIMEOUT_NONE waits forever.
 // 0, or -KOS_E*: EBADF, EACCES (no KOS_CAP_WAIT), EPERM (the caller is not the bound thread,
 // or its own core mask is not exactly the core the attached lines were claimed on), EINVAL
-// (an empty mask), EFAULT, ETIMEDOUT, ECANCELED.
+// (an empty mask), EFAULT, ETIMEDOUT, ECANCELED. A bit is taken only once written to
+// *out_bits, so an EFAULT leaves every bit pending. *out_bits reads 0 on every error.
 int kos_notify_wait(kos_cap_t notify_cap, uint32_t mask, uint32_t timeout_us,
                     uint32_t* out_bits);
 // Monotonic nanoseconds. Where KICKOS_CLOCK_USER is set, a counter read in user mode with no
@@ -734,7 +737,8 @@ int kos_aspace_self(kos_cap_t* out_space);
 // va, an address off a page boundary, an undefined flag), EFAULT (va), EBADF (a capability that
 // does not resolve, a stale space capability, an unfilled run), ENOMEM (the space cannot take the
 // range there, the run's own address included), EBUSY (another mapping of the run carries
-// another memory type). *va is written only on 0.
+// another memory type), ENOTSUP (a memory type this chip cannot honour over the run's frames).
+// *va is written only on 0.
 int kos_frame_map(kos_cap_t frame, kos_cap_t space, uintptr_t* va, uint32_t flags);
 // Unmap a range mapped with kos_frame_map. A receive using that range fails with -KOS_EFAULT,
 // as does its sender. 0, or -KOS_EBADF / -KOS_EINVAL / -KOS_EPERM.
@@ -748,13 +752,6 @@ int kos_mem_count(uint32_t which, uint32_t* out);
 // Borrow the KERNEL'S single diagnostic LED, which the kernel also drives for itself (solid
 // on panic). Takes effect on a board whose diag LED the kernel knows.
 void kos_kernel_diag_led_set(int on);
-
-#if KICKOS_BENCH
-// The microbenchmark's own scaffolding, and the ONLY way an app reaches it. `op` is an enum
-// kos_bench_op (abi.h); the meaning of a0/a1 and of the return is per-op and documented
-// there. Returns -KOS_EINVAL for an unknown op or a bad IRQ line.
-int64_t kos_bench(uint32_t op, uint32_t a0, uint32_t a1);
-#endif
 
 #ifdef __cplusplus
 }

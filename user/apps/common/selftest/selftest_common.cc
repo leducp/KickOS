@@ -8,7 +8,6 @@
 #include "selftest.h"
 #include <unistd.h>
 
-#include <kickos/config/system.h> // KICKOS_BUDGET_IRQ_BINDINGS
 #include <kickos/config/priorities.h> // KICKOS_PRIO_MIN
 
 namespace selftest
@@ -246,9 +245,9 @@ namespace selftest
             lines = 1;
         }
         Refusal r;
-        if (lines > KICKOS_BUDGET_IRQ_BINDINGS)
+        if (lines > KICKOS_SELFTEST_IRQ_BINDINGS)
         {
-            note(&r, -KOS_EAGAIN, "irqs", KICKOS_BUDGET_IRQ_BINDINGS, lines);
+            note(&r, -KOS_EAGAIN, "irqs", KICKOS_SELFTEST_IRQ_BINDINGS, lines);
         }
         if (r.rc == 0 and want.workers > 0)
         {

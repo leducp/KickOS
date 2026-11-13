@@ -6,7 +6,7 @@
 // and the reply carries which. The service loop of <kickos/sys/console_service.h> and the IRQ
 // loop of <kickos/sys/uart_service.h> run here on two host threads over a fake device whose FIFO
 // empties only through kos_uart_flush, so a byte still in the FIFO when the reply goes is a drain
-// that did not wait.
+// that did not wait. Also the IRQ loop's count of the wakes that found nothing.
 
 #include <kickos/sys/driver_service.h>
 #include <kickos/sys/uart_service.h>
@@ -49,6 +49,11 @@ namespace
     std::atomic<uint32_t> g_sleeps{0u};
     std::atomic<bool> g_real_sleep{true};
 
+    // Receive errors the next device read clears, counted into g_rx_stats.
+    std::atomic<uint32_t> g_rx_errors{0u};
+    struct kos_uart_stats* g_rx_stats = nullptr;
+    std::atomic<uint32_t> g_waits{0u};
+
     // The service thread's script: what each receive delivers, a plain send or a KOS_UART_DRAIN
     // call, and what the device held when the receive after the last message was reached.
     constexpr kos_cap_t REPLY_CAP = 40;
@@ -73,6 +78,9 @@ namespace
         g_dev_flushes = 0u;
         g_sleeps = 0u;
         g_real_sleep = true;
+        g_rx_errors = 0u;
+        g_rx_stats = nullptr;
+        g_waits = 0u;
         g_script_len = 0u;
         g_receives = 0u;
         g_fifo_at_return = 0u;
@@ -164,6 +172,7 @@ extern "C"
 
     int kos_notify_wait(kos_cap_t, uint32_t, uint32_t, uint32_t*)
     {
+        g_waits.store(g_waits.load() + 1u);
         std::unique_lock<std::mutex> lk(g_lock);
         g_raised.wait(lk, [] { return g_pending or t_generation != g_generation; });
         while (t_generation != g_generation)
@@ -186,6 +195,11 @@ extern "C"
 
     uint32_t kos_uart_read(struct kos_uart*, unsigned char*, uint32_t)
     {
+        if (g_rx_errors != 0u)
+        {
+            g_rx_errors.store(g_rx_errors.load() - 1u);
+            kos_counter_increment(&g_rx_stats->rx_overrun, 1u);
+        }
         return 0u;
     }
 
@@ -319,6 +333,35 @@ namespace
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
         EXPECT_EQ(g_dev_flushes, 1u) << "a failed request is retried on every wake";
         EXPECT_NE(g_sh.flush_ack, g_sh.flush_req);
+        retire_irq_thread();
+        irq.detach();
+    }
+
+    void wait_for_waits(uint32_t n)
+    {
+        for (uint32_t i = 0; i < 20000u and g_waits < n; i++)
+        {
+            std::this_thread::sleep_for(std::chrono::microseconds(100));
+        }
+        ASSERT_EQ(g_waits, n);
+    }
+
+    TEST(UartFlush, a_wake_that_only_clears_a_receive_error_is_not_spurious)
+    {
+        arm_reset();
+        uart::shared_init(&g_sh);
+        g_rx_stats = &g_sh.stats;
+        g_rx_errors = 1u;
+        std::thread irq = start_irq_thread(&g_sh);
+        wait_for_waits(1u);
+        (void)kos_notify(uart::KOS_UART_CAP_DOORBELL);
+        wait_for_waits(2u);
+        (void)kos_notify(uart::KOS_UART_CAP_DOORBELL);
+        wait_for_waits(3u);
+        EXPECT_EQ(kos_counter_load(&g_sh.stats.rx_overrun), 1u);
+        EXPECT_EQ(kos_counter_load(&g_sh.stats.irq_wakes), 2u);
+        EXPECT_EQ(kos_counter_load(&g_sh.stats.irq_spurious), 1u)
+            << "the wake that cleared an overrun was counted as finding nothing";
         retire_irq_thread();
         irq.detach();
     }

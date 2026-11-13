@@ -89,7 +89,7 @@ fractured along this line at M1. The implementations:
 | xtensa / esp32 | `CCOUNT` (RSR) -- free-running, independent of the kernel timer (`arch_xtensa.cc`) | 32 | CPU clk | cycle-accurate. |
 | rx / rx72m | the free-running **CMTW1** the RX port already runs for `arch_clock_now` (one `CMWCNT` read; CMTW min prescaler is PCLK/8) (`arch_rxv3.cc`) | 32 | ~PCLK/8 | **not** a "cycle counter" -- RXv3 has none. |
 | riscv / rv32imac, chip `virt` (`qemu-riscv`) | `rdcycle` CSR, low 32 bits (`arch_rv32imac.cc`), read by the kernel only: the virt CPU has S-mode, and `kickos_rv32_init` opens `scounteren.TM` alone, so a U-mode `rdcycle` traps | 32 | CPU clk | emulated, so structural coverage only. |
-| riscv / rv32imac, chip `esp32c6` (`esp32c6-wroom`) | **none.** The HP core implements no Zicntr counter (C6 TRM v1.2 s1.5.1), so the arch `rdcycle` reader is an illegal instruction there, in M-mode as well as U-mode. `HAS_TRACE_CLOCK` is n and telemetry is refused at configure. | -- | -- | the part's own counters (custom `mpccr`, CLINT `MTIME`) are not wired to `arch_trace_now`; `KICKOS_BENCH` uses the latter through its own seam. |
+| riscv / rv32imac, chip `esp32c6` (`esp32c6-wroom`) | **none.** The HP core implements no Zicntr counter (C6 TRM v1.2 s1.5.1), so the arch `rdcycle` reader is an illegal instruction there, in M-mode as well as U-mode. `HAS_TRACE_CLOCK` is n and telemetry is refused at configure. | -- | -- | the part's own counters (custom `mpccr`, CLINT `MTIME`) are not wired to `arch_trace_now`. |
 
 **Why RP2040 stays at 1 us.** SysTick **is** the kernel's tickless one-shot timer
 on this port (`arch_armv6m.cc`; re-armed every switch via `ktime_rearm`), so it
@@ -407,8 +407,7 @@ everything -> this directly inflates the IRQ latency it reports). Mitigations:
 `probe_overhead` for host subtraction; (b) the saving grace -- for the **M2 MPU
 A/B comparison the constant probe cost cancels in the delta**, so even
 uncorrected the baseline-vs-MPU comparison survives (absolute baselines use
-(a)). The separate `KICKOS_BENCH` microbench brackets only the save/restore
-(before the telemetry emit), so the two instruments do not pollute each other.
+(a)).
 
 ## 10. Phasing
 

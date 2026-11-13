@@ -98,6 +98,10 @@ devices:
   ticks: { window: [0x40108000, 0x4000], owner: kernel, ref: "Table 13 Address map, p.32" }
   accessctrl: { window: [0x40060000, 0x4000], owner: kernel, ref: "Table 13 Address map, p.32" }
   watchdog: { window: [0x400D8000, 0x4000], owner: kernel, ref: "Table 13 Address map, p.32" }
+  # The cache and the QSPI interface every task's code is fetched through: XIP_CTRL powers down
+  # and pins the cache, XIP_QMI translates the XIP window and sends raw commands to the flash.
+  xip_ctrl: { window: [0x400C8000, 0x4000], owner: kernel, ref: "Table 13 Address map, p.32" }
+  xip_qmi: { window: [0x400D0000, 0x4000], owner: kernel, ref: "Table 13 Address map, p.32" }
   # GPIO output, the inter-core FIFOs, the spinlocks and the doorbells. The doorbell line is
   # core-local: each core's controller sees only its own.
   sio:

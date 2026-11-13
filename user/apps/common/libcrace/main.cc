@@ -220,11 +220,23 @@ namespace
 
 #if defined(_NEWLIB_VERSION)
 
+    // On fd 1, and its close leaves fd 1 open, since nothing reopens a closed fd. Not funopen:
+    // newlib's stream walks skip a stream with no fd.
+    FILE* console_stream()
+    {
+        FILE* const f = fdopen(1, "w");
+        if (f != nullptr)
+        {
+            f->_close = nullptr;
+        }
+        return f;
+    }
+
     // A stream on the console whose buffer comes from the heap, so its close, or a failing
     // reopen, frees it holding the stream's lock.
     FILE* heap_buffered_stream()
     {
-        FILE* const f = fdopen(1, "w");
+        FILE* const f = console_stream();
         if (f != nullptr and setvbuf(f, nullptr, _IOFBF, 32) != 0)
         {
             (void)fclose(f);
@@ -256,7 +268,7 @@ namespace
     void order_closer(void*)
     {
         (void)fclose(g_order_stream);
-        FILE* const again = fdopen(1, "w");
+        FILE* const again = console_stream();
         g_order_ok = again != nullptr;
         if (again != nullptr)
         {

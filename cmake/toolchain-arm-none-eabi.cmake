@@ -43,11 +43,7 @@ endif()
 include("${CMAKE_CURRENT_LIST_DIR}/cross_newlib.cmake")
 kickos_require_toolchain_newlib("arm" "${CMAKE_C_COMPILER}" ${_kos_cpu} -mthumb)
 
-# -mthumb: Cortex-M is Thumb-only. -mno-unaligned-access: some parts (K64F) forbid
-# unaligned/burst accesses across a RAM bank boundary (0x2000_0000, SRAM_L|SRAM_U), so the
-# compiler must never emit one.
-string(JOIN " " _kos_common ${_kos_cpu} -mthumb -mno-unaligned-access
-       -ffunction-sections -fdata-sections)
+string(JOIN " " _kos_common ${_kos_cpu} -mthumb -ffunction-sections -fdata-sections)
 kickos_toolchain_flags_init("${_kos_common}")
 
 kickos_toolchain_bare_metal_rules()

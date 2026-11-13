@@ -18,7 +18,9 @@
 #include <kickos/sys/abi.h>
 #include <kickos/sys/errno.h>
 
+#include <algorithm>
 #include <string>
+#include <vector>
 
 #include "kseam_test.h"
 
@@ -209,7 +211,7 @@ namespace kickos
 
             void note_the_timer_then_post(Thread* parked)
             {
-                g_sleepq_while_parked = kernel().sleepq;
+                g_sleepq_while_parked = kernel().sleepq(kickos_kernel_core());
                 g_on_timer_while_parked = parked->on_timer;
                 post_from_peer();
             }
@@ -259,7 +261,7 @@ namespace kickos
                     << "the kill reached a waiter the wake had already popped";
                 EXPECT_NE(g_behind_timed->state, ThreadState::BLOCKED);
                 EXPECT_NE(g_behind_untimed->state, ThreadState::BLOCKED);
-                EXPECT_EQ(kernel().sleepq, nullptr) << "a popped waiter's deadline stayed queued";
+                EXPECT_EQ(kernel().sleepq(kickos_kernel_core()), nullptr) << "a popped waiter's deadline stayed queued";
                 EXPECT_EQ(record(), nullptr);
                 EXPECT_EQ(g_word, 0u);
             }
@@ -279,6 +281,80 @@ namespace kickos
                 ListNode const* const h = m->waiters.head;
                 return h == &first->link and h->next == &second->link and h->next->next == nullptr
                        and m->waiters.tail == &second->link;
+            }
+
+            // Seven waiters at three levels, in this queue order: highest first and FIFO among
+            // equals they wake as B E G, D F, A C.
+            constexpr int CROWD = 7;
+            constexpr int SLOT_CROWD = 6;
+            constexpr uint8_t CROWD_PRIO[CROWD] = {3, 7, 3, 5, 7, 5, 7};
+            constexpr int A = 0;
+            constexpr int B = 1;
+            constexpr int C = 2;
+            constexpr int D = 3;
+            constexpr int E = 4;
+            constexpr int F = 5;
+            constexpr int G = 6;
+            constexpr int CROWD_ORDER[CROWD] = {B, E, G, D, F, A, C};
+
+            struct Crowd
+            {
+                Thread* t[CROWD];
+            };
+
+            Crowd park_crowd()
+            {
+                Crowd c{};
+                WordRecord* const m = plain_word(&g_word);
+                for (int i = 0; i < CROWD; i++)
+                {
+                    c.t[i] = seat_pool(SLOT_CROWD + i, CROWD_PRIO[i]);
+                    park_word_waiter(c.t[i], m);
+                }
+                return c;
+            }
+
+            // The first `woken` in CROWD_ORDER are off the queue, the first `handed` of them
+            // answering 1 and the rest 0; the others are still parked, in their queue order.
+            void expect_crowd(Crowd const& c, int woken, int handed)
+            {
+                for (int k = 0; k < CROWD; k++)
+                {
+                    Thread const* const t = c.t[CROWD_ORDER[k]];
+                    std::string const who =
+                        std::string{"waiter "} + static_cast<char>('A' + CROWD_ORDER[k]);
+                    if (k >= woken)
+                    {
+                        EXPECT_EQ(t->state, ThreadState::BLOCKED) << who << " was woken";
+                        EXPECT_EQ(t->wait_result, WAIT_RESULT_POISON) << who;
+                        continue;
+                    }
+                    EXPECT_NE(t->state, ThreadState::BLOCKED) << who << " was not woken";
+                    intptr_t want = 0;
+                    if (k < handed)
+                    {
+                        want = 1;
+                    }
+                    EXPECT_EQ(t->wait_result, want) << who;
+                }
+                WordRecord const* const m = record();
+                if (woken == CROWD)
+                {
+                    EXPECT_EQ(m, nullptr) << "the emptied record was kept";
+                    return;
+                }
+                ASSERT_NE(m, nullptr);
+                ListNode const* n = m->waiters.head;
+                for (int i = 0; i < CROWD; i++)
+                {
+                    if (c.t[i]->state != ThreadState::BLOCKED)
+                    {
+                        continue;
+                    }
+                    ASSERT_EQ(n, &c.t[i]->link) << "the waiters left are out of their queue order";
+                    n = n->next;
+                }
+                EXPECT_EQ(n, nullptr);
             }
 
             struct Waker
@@ -310,7 +386,7 @@ namespace kickos
             EXPECT_EQ(g_word, w.word);
             EXPECT_EQ(waiter->cancel_kind, w.kind);
             EXPECT_EQ(record(), nullptr) << "the emptied record was kept";
-            EXPECT_EQ(kernel().sleepq, nullptr) << "the waiter's deadline is still queued";
+            EXPECT_EQ(kernel().sleepq(kickos_kernel_core()), nullptr) << "the waiter's deadline is still queued";
         }
 
         // A unit handed over answers 1 and leaves the word empty with its bit cleared; a waiter
@@ -346,7 +422,7 @@ namespace kickos
             EXPECT_EQ(g_word, 3u) << "a refused wait wrote the word";
             EXPECT_EQ(g_switches, 0u) << "a refused wait switched away";
             EXPECT_EQ(record(), nullptr) << "a refused wait took a record";
-            EXPECT_EQ(kernel().sleepq, nullptr) << "a refused wait armed a deadline";
+            EXPECT_EQ(kernel().sleepq(kickos_kernel_core()), nullptr) << "a refused wait armed a deadline";
         }
 
         TEST_F(WordTimed, a_wake_with_no_waiter_adds_its_units_and_clears_the_bit)
@@ -405,6 +481,81 @@ namespace kickos
             EXPECT_EQ(g_word, 0u);
             EXPECT_EQ(record(), nullptr);
         }
+
+        TEST_F(WordTimed, a_wake_of_every_waiter_hands_its_units_highest_first_fifo_among_equals)
+        {
+            seat_waiter_over_holder();
+            Crowd const c = park_crowd();
+
+            EXPECT_EQ(wake_from_peer(0xFFFFFFFFu, 4u), CROWD);
+
+            expect_crowd(c, CROWD, 4);
+            EXPECT_EQ(g_word, 0u) << "the wake of every waiter left the bit set or banked a unit";
+        }
+
+        TEST_F(WordTimed, a_wake_of_some_waiters_takes_the_highest_and_leaves_the_rest_in_order)
+        {
+            seat_waiter_over_holder();
+            Crowd const c = park_crowd();
+
+            EXPECT_EQ(wake_from_peer(4u, 2u), 4);
+            expect_crowd(c, 4, 2);
+            EXPECT_EQ(g_word, PARKED)
+                << "a wake that left waiters cleared the bit or banked a unit";
+
+            EXPECT_EQ(wake_from_peer(0xFFFFFFFFu, 0u), CROWD - 4);
+            for (int i = 0; i < CROWD; i++)
+            {
+                EXPECT_NE(c.t[i]->state, ThreadState::BLOCKED);
+            }
+            EXPECT_EQ(c.t[F]->wait_result, 0);
+            EXPECT_EQ(c.t[A]->wait_result, 0);
+            EXPECT_EQ(c.t[C]->wait_result, 0);
+            EXPECT_EQ(record(), nullptr);
+            EXPECT_EQ(g_word, 0u);
+        }
+
+#if KICKOS_KERNEL_CORES == 1
+        // Readied highest first and FIFO among equals: each level's ready list holds its waiters
+        // in queue order, and the pass seats the first of the highest.
+        TEST_F(WordTimed, a_wake_of_every_waiter_readies_them_highest_first_fifo_among_equals)
+        {
+            seat_waiter_over_holder();
+            Crowd const c = park_crowd();
+
+            EXPECT_EQ(wake_from_peer(0xFFFFFFFFu, 0u), CROWD);
+
+            EXPECT_EQ(kernel().current(kickos_kernel_core()), c.t[B])
+                << "the pass did not seat the first of the highest waiters";
+            Thread const* const seated = kernel().current(kickos_kernel_core());
+            for (uint8_t prio : {uint8_t{7}, uint8_t{5}, uint8_t{3}})
+            {
+                std::vector<Thread const*> seen;
+                for (ListNode* n = kernel().ready[0][prio].head; n != nullptr; n = n->next)
+                {
+                    for (Thread const* t : c.t)
+                    {
+                        if (&t->link == n)
+                        {
+                            seen.push_back(t);
+                        }
+                    }
+                }
+                std::vector<Thread const*> want;
+                for (int k : CROWD_ORDER)
+                {
+                    Thread const* const t = c.t[k];
+                    bool const listed = std::find(seen.begin(), seen.end(), t) != seen.end();
+                    if (CROWD_PRIO[k] == prio and (t != seated or listed))
+                    {
+                        want.push_back(t);
+                    }
+                }
+                EXPECT_EQ(seen, want) << "level " << static_cast<int>(prio)
+                                      << " readied out of queue order";
+            }
+        }
+#endif
 
         // A sharer can write the word: one that clears the bit under a parked waiter.
         TEST_F(WordTimed, a_wake_reaches_a_waiter_whose_bit_a_sharer_cleared)
@@ -524,7 +675,7 @@ namespace kickos
             run_exit(KOS_EXIT_CANCELLED);
 
             Thread* const next = seat_pool(SLOT_WAITER, PRIO_BELOW);
-            EXPECT_EQ(kernel().sleepq, nullptr)
+            EXPECT_EQ(kernel().sleepq(kickos_kernel_core()), nullptr)
                 << "the slain waiter's deadline outlived it and now names its slot's next thread";
             EXPECT_FALSE(next->on_timer);
             next->wait_result = WAIT_RESULT_POISON;
@@ -546,7 +697,7 @@ namespace kickos
             EXPECT_TRUE(queue_is(first, g_last))
                 << "the expiry unlinked some other waiter than the one whose deadline fired";
             EXPECT_EQ(g_word, PARKED);
-            EXPECT_EQ(kernel().sleepq, nullptr);
+            EXPECT_EQ(kernel().sleepq(kickos_kernel_core()), nullptr);
         }
 
         TEST_F(WordTimed, a_wake_goes_to_the_highest_waiter_with_a_timed_one_queued_first)
@@ -574,7 +725,7 @@ namespace kickos
             EXPECT_EQ(g_word, 0u) << "the unit went to the count, not to the waiter";
             EXPECT_EQ(g_sleepq_while_parked, nullptr) << "an untimed park queued a deadline";
             EXPECT_FALSE(g_on_timer_while_parked);
-            EXPECT_EQ(kernel().sleepq, nullptr);
+            EXPECT_EQ(kernel().sleepq(kickos_kernel_core()), nullptr);
         }
 
 #if defined(WORDTIMED_BOUNDED)

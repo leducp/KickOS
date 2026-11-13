@@ -8,6 +8,7 @@
 #include <kickos/arch/amp_shared.h>
 #include <kickos/aspace.h>
 #include <kickos/domain.h>
+#include <kickos/grant.h>
 #include <kickos/instance.h>
 #include <kickos/irqlock.h>
 #include <kickos/kernel.h>
@@ -80,7 +81,7 @@ namespace kickos
         uint8_t type = ARCH_MAP_NORMAL;
         if ((w.flags & KOS_WINDOW_UNCACHED) != 0)
         {
-            if (not arch_aspace_memtype_support(ARCH_MAP_NOCACHE))
+            if (not grant_memtype_at(ARCH_MAP_NOCACHE, aspace_frame_of(w.base), pages * g))
             {
                 *rc = -KOS_ENOTSUP;
                 return true;

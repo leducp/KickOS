@@ -129,7 +129,7 @@ TEST_F(ConsoleLive, a_dark_window_writer_waits_until_the_wake)
     g_console_dark = true;
     wake_next_park([](Thread* parked) {
         g_park_kind = parked->wait_kind;
-        EXPECT_EQ(kernel().sleepq, nullptr) << "the dark window's wait is bounded";
+        EXPECT_EQ(kernel().sleepq(kickos_kernel_core()), nullptr) << "the dark window's wait is bounded";
         g_console_dark = false;
         IrqLock lock;
         console_dark_wake(lock);

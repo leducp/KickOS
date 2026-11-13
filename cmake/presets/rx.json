@@ -14,17 +14,10 @@
       "displayName": "Renesas RX72M with no RX-MPU enforcement",
       "inherits": "rx72m",
       "cacheVariables": { "KICKOS_CONFIG_VARIANT": "flat" }
-    },
-    {
-      "name": "rx72m-bench",
-      "displayName": "Renesas RX72M (RXv3) + KICKOS_BENCH - the RXv3 switch distribution, enforcing",
-      "inherits": "rx72m",
-      "cacheVariables": { "KICKOS_CONFIG_VARIANT": "bench" }
     }
   ],
   "buildPresets": [
     { "name": "rx72m", "configurePreset": "rx72m" },
-    { "name": "rx72m-flat", "configurePreset": "rx72m-flat" },
-    { "name": "rx72m-bench", "configurePreset": "rx72m-bench" }
+    { "name": "rx72m-flat", "configurePreset": "rx72m-flat" }
   ]
 }

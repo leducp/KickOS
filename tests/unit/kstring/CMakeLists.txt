@@ -10,7 +10,7 @@ kickos_add_unit_test(NAME kstring_words
   INCLUDES "${PROJECT_SOURCE_DIR}/lib/include")
 
 # x86 completes an unaligned word access, so comparing bytes can NEVER witness the
-# no-unaligned-access rule the targets depend on. UBSan's alignment check is what turns
+# aligned-word rule the armv6m and lx6 targets depend on. UBSan's alignment check is what turns
 # it into a property this gate can fail on. Optional: a host toolchain without it still
 # runs every data check, and the target builds are unaffected either way.
 include(CheckCXXSourceCompiles)

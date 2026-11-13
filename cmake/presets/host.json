@@ -13,7 +13,7 @@
       "name": "sim-telem",
       "displayName": "Host sim + telemetry (RTT ch1) - runs the telemetry CI gates",
       "inherits": "sim",
-      "cacheVariables": { "KICKOS_CONFIG_VARIANT": "telem" }
+      "cacheVariables": { "KICKOS_TEST_SHAPE": "telem", "KICKOS_CONFIG_VARIANT": "telem" }
     }
   ],
   "buildPresets": [

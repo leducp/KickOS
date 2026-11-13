@@ -59,7 +59,7 @@
 # row's args, unless JUDGE names another: an image's kickos_app_judge, or the TAP validator for a
 # selftest image, which the capture runs itself:
 #
-#   APP=xmcspi tools/bench/bench.sh xmc4800-relax
+#   APP=pvprobe tools/bench/bench.sh xmc4800-relax
 #
 # An image that no row and no JUDGE judges is refused, and so is one its row marks emulator-judged,
 # human-judged or inapplicable; JUDGE=none takes the capture unjudged.
@@ -323,20 +323,13 @@ fi
 
 # THE LABEL THAT WENT INTO THIS IMAGE, read out of the stamp the build just wrote rather than
 # asked of git here. The two answer differently the moment the tree is touched between the
-# build and the capture, and the capture chain compares the board's banner against this: asking
-# git would call a good image stale, and on the bench host there is no tree of ours to ask.
+# build and the capture, and the capture chain recovers a damaged banner label against this:
+# asking git would call a good image stale, and on the bench host there is no tree of ours to ask.
 STAMP="$BUILD/kickos_build_stamp.cc"
 EXPECT_COMMIT=$(sed -n 's|.*kickos_build_commit\[\] = "\(.*\)";.*|\1|p' "$STAMP" | tail -1)
 [ -n "$EXPECT_COMMIT" ] || { echo "REFUSING: no commit label in $STAMP, so the capture would
   have nothing to check the board's banner against" >&2; exit 1; }
 export EXPECT_COMMIT
-# THE ARCH THIS IMAGE WAS CONFIGURED FOR, which decides the rows its report owes. Read off the
-# build rather than the board name, so a preset that overrides the board's arch is judged as
-# what it built; the capture also holds it against the board's descriptor.
-EXPECT_ARCH=$(sed -n 's|^KICKOS_ARCH:[A-Z]*=||p' "$BUILD/CMakeCache.txt" 2>/dev/null | tail -1)
-[ -n "$EXPECT_ARCH" ] || { echo "REFUSING: no KICKOS_ARCH in $BUILD/CMakeCache.txt, so the
-  capture would have nothing to say which rows the report owes" >&2; exit 1; }
-export EXPECT_ARCH
 
 # An own-image AMP node's image loaded alone runs alone, as its manifest row judges it: node 0
 # starts whatever an earlier partition left in the other nodes' flash windows, so they go first.
@@ -524,7 +517,7 @@ RARGS=()
 for _ra in "$BOARD" "$APP" "$RRUN/$(basename "$IMG")" "$RLOG" "${SN:--}" "${CAP_SECS:--}" \
            "$RIG_REMOTE_ROOT" "${RIG_REMOTE_PYBIN:--}" "$CONSOLE_USB_CDC" "$EXPECT_COMMIT" \
            "${EXPECT_ARMS:--}" "${EXPECT_SKIPS:--}" "${EXPECT_PARTIALS:--}" "${EXPECT_FAULTS:--}" \
-           "$EXPECT_ARCH" "${PEER_ERASE:--}" "${LEFT_OUT:--}"; do
+           "${PEER_ERASE:--}" "${LEFT_OUT:--}"; do
   RARGS+=("$(printf '%q' "$_ra")")
 done
 "${SSH[@]}" bash -s -- "${RARGS[@]}" \
@@ -558,10 +551,9 @@ FAULTS=${14}
 [ "$SKIPS" != "-" ] && export EXPECT_SKIPS="$SKIPS"
 [ "$PARTIALS" != "-" ] && export EXPECT_PARTIALS="$PARTIALS"
 [ "$FAULTS" != "-" ] && export EXPECT_FAULTS="$FAULTS"
-export EXPECT_ARCH="${15}"
-PEER_ERASE=${16}
+PEER_ERASE=${15}
 [ "$PEER_ERASE" != "-" ] && export PEER_ERASE
-[ "${17}" != "-" ] && export SELFTEST_LEFT_OUT="${17}"
+[ "${16}" != "-" ] && export SELFTEST_LEFT_OUT="${16}"
 exec bash "$ROOT/tools/bench/bench-capture.sh" "$1" "$2" "$HOME/$3" "$HOME/$4" "$SN"
 REMOTE
 RC=${PIPESTATUS[0]}

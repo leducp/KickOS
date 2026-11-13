@@ -84,6 +84,10 @@ devices:
   aipstz2: { window: [0x4017C000, 0x4000], owner: kernel, ref: "Table 3-3 AIPS-2 memory map, p.38" }
   aipstz3: { window: [0x4027C000, 0x4000], owner: kernel, ref: "Table 3-4 AIPS-3 memory map, p.39" }
   aipstz4: { window: [0x4037C000, 0x4000], owner: kernel, ref: "Table 3-5 AIPS-4 memory map, p.40" }
+  # The controller of the flash every task's code runs from, which erases and programs it, and
+  # the engine that decrypts its reads.
+  flexspi: { window: [0x402A8000, 0x4000], owner: kernel, ref: "Table 3-4 AIPS-3 memory map, p.39" }
+  bee: { window: [0x403EC000, 0x4000], owner: kernel, ref: "Table 3-5 AIPS-4 memory map, p.40" }
 
 memory:
   # A bank of its own, apart from the FlexRAM partition, and available at reset.

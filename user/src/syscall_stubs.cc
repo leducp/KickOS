@@ -10,7 +10,6 @@
 
 #if KICKOS_LIBC_REENT
 #include <kickos/reent.h>
-#include <sys/reent.h>
 #endif
 
 #if KICKOS_CLOCK_USER and KICKOS_ARCH_SIM
@@ -312,8 +311,6 @@ void kos_exit(int code)
 #if KICKOS_LIBC_REENT
     kickos_thread_dtors_run();
     kickos_keys_thread_end();
-#endif
-#if KICKOS_LIBC_REENT && defined(_REENT_SMALL)
     kickos_reent_release();
 #endif
     arch_syscall(KOS_SYS_EXIT, static_cast<uintptr_t>(code), KOS_EXIT_THREAD, 0, 0);
@@ -612,14 +609,4 @@ void kos_kernel_diag_led_set(int on)
     arch_syscall(KOS_SYS_DIAG_LED_SET, static_cast<uintptr_t>(on), 0, 0, 0);
 }
 
-#if KICKOS_BENCH
-static_assert(sizeof(kos_bench(0, 0, 0)) == 8, "must be exactly 8 bytes");
-
-int64_t kos_bench(uint32_t op, uint32_t a0, uint32_t a1)
-{
-    return static_cast<int64_t>(arch_syscall64(KOS_SYS_BENCH, static_cast<uintptr_t>(op),
-                                               static_cast<uintptr_t>(a0),
-                                               static_cast<uintptr_t>(a1), 0));
-}
-#endif
 }

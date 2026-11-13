@@ -117,11 +117,12 @@ namespace kickos
         return e != nullptr and (e->flags & VR_NOT_RESERVED) == 0u;
     }
 
-    // Whether this range is granted with every right in `rights`. Total: a null entry grants
-    // nothing.
+    // Whether a kernel access may reach this range with every right in `rights`: device memory
+    // answers none. Total: a null entry grants nothing.
     inline bool vr_grants(VirtualRange const* e, uint32_t rights)
     {
-        return e != nullptr and e->state == VirtualState::Granted and (e->rights & rights) == rights;
+        return e != nullptr and e->state == VirtualState::Granted and (e->rights & rights) == rights
+               and e->memtype != static_cast<uint8_t>(ARCH_MAP_DEVICE);
     }
 
     // A narrow field must hold the widest value its setter can be handed, so a refused value

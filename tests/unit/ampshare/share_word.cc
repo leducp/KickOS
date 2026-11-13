@@ -96,8 +96,8 @@ extern "C"
     }
 
     // Names the frame and reaches nothing: the gate asks only what word_ref answers.
-    void* arch_aspace_acquire(struct arch_aspace* space, uintptr_t va, bool* uncached,
-                              arch_phys_addr_t* frame)
+    void* arch_aspace_acquire(struct arch_aspace* space, uintptr_t va, enum arch_aspace_access,
+                              bool* uncached, arch_phys_addr_t* frame)
     {
         if (uncached != nullptr)
         {

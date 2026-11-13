@@ -70,6 +70,15 @@ namespace kickos
             return (r.attr & ARCH_MPU_DEV) == 0;
         }
 
+#if not KICKOS_HAVE_ASPACE
+        __attribute__((always_inline)) inline bool region_denies_write(arch_mpu_region const& r,
+                                                                       uintptr_t ptr,
+                                                                       uintptr_t end)
+        {
+            return (r.attr & ARCH_MPU_W) == 0 and ptr < r.base + r.size and end > r.base;
+        }
+#endif
+
         // Whether a region of c's set without W overlaps [ptr, end), so the set answers no
         // write there: a region backend obeys one of the overlapping regions, PMSAv7 the last,
         // the PMP the first and PMSAv8 none, so a read-only window over a writable block is
@@ -84,13 +93,26 @@ namespace kickos
 #else
             for (arch_mpu_region const& r : c->mpu)
             {
-                if ((r.attr & ARCH_MPU_W) == 0 and ptr < r.base + r.size and end > r.base)
+                if (region_denies_write(r, ptr, end))
                 {
                     return true;
                 }
             }
 #endif
             return false;
+        }
+
+        // Whether r alone answers `need` across all of [ptr, end).
+        __attribute__((always_inline)) inline bool region_holds(arch_mpu_region const& r,
+                                                                uintptr_t ptr, uintptr_t end,
+                                                                uint32_t need)
+        {
+            if ((r.attr & need) != need or not region_answers_pointers(r))
+            {
+                return false;
+            }
+            uintptr_t const rend = r.base + r.size;
+            return rend >= r.base and ptr >= r.base and end <= rend;
         }
 
         // On a translating backend a non-null `found` holds what c's range list answers for
@@ -117,12 +139,7 @@ namespace kickos
             }
             for (arch_mpu_region const& r : c->mpu)
             {
-                if ((r.attr & need) != need or not region_answers_pointers(r))
-                {
-                    continue;
-                }
-                uintptr_t const rend = r.base + r.size;
-                if (rend >= r.base and ptr >= r.base and end <= rend)
+                if (region_holds(r, ptr, end, need))
                 {
                     return true;
                 }
@@ -414,6 +431,43 @@ namespace kickos
         return thread_writable(c, ptr, len, nullptr);
     }
 
+#if not KICKOS_HAVE_ASPACE
+    // region_denies_write and region_holds are thread_writable_ok's own predicates, so the two
+    // answers cannot drift apart.
+    WordReach thread_word_reach(Thread const* c, uintptr_t va)
+    {
+        WordReach out;
+        uintptr_t const end = va + sizeof(uint32_t);
+        bool denied = end < va;
+        bool held = false;
+        for (arch_mpu_region const& r : c->mpu)
+        {
+            // No two memory types share a byte, so any region meeting the word decides its type.
+            bool const meets = r.size != 0 and va <= r.base + (r.size - 1u)
+                               and r.base <= va + (sizeof(uint32_t) - 1u);
+            if (meets and (r.attr & ARCH_MPU_DEV) != 0)
+            {
+                out.device = true;
+                return out;
+            }
+            if (meets and (r.attr & ARCH_MPU_NOCACHE) != 0)
+            {
+                out.uncached = true;
+            }
+            if (region_denies_write(r, va, end))
+            {
+                denied = true;
+            }
+            if (region_holds(r, va, end, ARCH_MPU_W))
+            {
+                held = true;
+            }
+        }
+        out.writable = (held and not denied) or arch_user_data_writable(va, sizeof(uint32_t));
+        return out;
+    }
+#endif
+
 #if KICKOS_HAVE_ASPACE
     bool thread_writable_found(Thread const* c, uintptr_t ptr, size_t len,
                                VirtualRange const* found)
@@ -571,7 +625,7 @@ namespace kickos
                 bool d_uncached = false;
                 if (dspace != nullptr)
                 {
-                    d = arch_aspace_acquire(dspace, dst, &d_uncached, nullptr);
+                    d = arch_aspace_acquire(dspace, dst, ARCH_ASPACE_WRITE, &d_uncached, nullptr);
                     if (d == nullptr)
                     {
                         return false;
@@ -582,7 +636,7 @@ namespace kickos
                 bool s_uncached = false;
                 if (sspace != nullptr)
                 {
-                    s = arch_aspace_acquire(sspace, src, &s_uncached, nullptr);
+                    s = arch_aspace_acquire(sspace, src, ARCH_ASPACE_READ, &s_uncached, nullptr);
                     if (s == nullptr)
                     {
                         if (dspace != nullptr)
@@ -712,7 +766,7 @@ namespace kickos
 #if KICKOS_HAVE_ASPACE
         if (dspace != nullptr)
         {
-            d = arch_aspace_acquire(dspace, udst, &uncached, nullptr);
+            d = arch_aspace_acquire(dspace, udst, ARCH_ASPACE_WRITE, &uncached, nullptr);
             if (d == nullptr)
             {
                 return false;
@@ -750,7 +804,7 @@ namespace kickos
             return nullptr;
         }
         bool uncached = false;
-        void* const p = arch_aspace_acquire(w.space, w.va, &uncached, nullptr);
+        void* const p = arch_aspace_acquire(w.space, w.va, ARCH_ASPACE_WRITE, &uncached, nullptr);
         // A cacheable alias of an uncached word cannot be compared and swapped atomically.
         if (p != nullptr and uncached)
         {
@@ -863,14 +917,7 @@ namespace kickos
             }
         }
         presync_release(rc == 0);
-        int const delivered = static_cast<int>(cap_out_deliver(out, rc, cap));
-        if (rc == 0 and delivered != 0)
-        {
-            // An unnameable run would stay charged to the task until its holder dies.
-            IrqLock lock;
-            (void)handle_close(c, cap, lock);
-        }
-        return delivered;
+        return static_cast<int>(cap_out_deliver(out, rc, cap));
     }
 
     int aspace_self_call(uintptr_t out)
@@ -887,13 +934,7 @@ namespace kickos
             rc = cap_install(c, domain_handle(thread_domain(c)), CapType::CAP_ASPACE, CAP_TRANSFER,
                              &cap);
         }
-        int const delivered = static_cast<int>(cap_out_deliver(out, rc, cap));
-        if (rc == 0 and delivered != 0)
-        {
-            IrqLock lock;
-            (void)handle_close(c, cap, lock);
-        }
-        return delivered;
+        return static_cast<int>(cap_out_deliver(out, rc, cap));
     }
 
     int mem_count_call(uintptr_t which, uintptr_t out)
@@ -934,7 +975,7 @@ namespace kickos
             }
         }
         KICKOS_DEBUG_ASSERT(count <= UINT32_MAX);
-        return static_cast<int>(cap_out_deliver(out, 0, static_cast<uint32_t>(count)));
+        return static_cast<int>(out_word_deliver(out, 0, static_cast<uint32_t>(count)));
     }
 #endif
 }

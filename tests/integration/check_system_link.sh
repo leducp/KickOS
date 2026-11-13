@@ -24,6 +24,9 @@
 #   nocc      a project that does not enable C: kickos_compose refuses it at configure
 #   rerun     no arm of the link: an unchanged configure does not run the host tool, and a
 #             changed composition, or a changed default under a composition naming no board, does
+#   capture   an image holding a live object in each section only the kernel supplies: the link
+#             names each an unplaced orphan; and where the final link places the images, an image
+#             holding one in .text.init links with it in its own code span
 #
 # Every composition is the package's default one with one field changed, so each arm differs
 # from a system the build itself links by that field alone.
@@ -31,7 +34,7 @@
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
 
-USAGE="usage: check_system_link.sh <kickos-build> <kickos-source> <cmake> none|two|program|stack|arena|heap|noheap|refused|notool|nocc|rerun"
+USAGE="usage: check_system_link.sh <kickos-build> <kickos-source> <cmake> none|two|program|stack|arena|heap|noheap|refused|notool|nocc|rerun|capture"
 KICKOS_BUILD="${1:?$USAGE}"
 KICKOS_SRC="${2:?$USAGE}"
 CMAKE="${3:?$USAGE}"
@@ -199,6 +202,14 @@ $((BASE + 2 * S)), so a stack of $S need not fail on this board"
         EXTRA=-DKICKOS_UV=/bin/false
         EXPECT='kickos_compose\(probe_system\): could not run the host tool'
         ALSO='uv and Python >=' ;;
+    capture)
+        # Every name a kernel-only selector of some board KEEPs. No image template or program
+        # script places any of them, so every board refuses every one.
+        CAPTURED='.isr_vector .fcf .boot_fcb .boot_ivt .boot_data .boot2 .image_def .init .fini .rvectors .fvectors .ofsm .vectors .amp_shared.chip'
+        PROBE_ARM=capture
+        cp "$DEFAULT" "$COMPOSITION"
+        EXTRA="-DKICKOS_PROBE_SECTIONS=$(printf '%s' "$CAPTURED" | tr ' ' ';')"
+        EXPECT='unplaced orphan section' ;;
     *)
         fail "$USAGE" ;;
 esac
@@ -247,6 +258,52 @@ fi
 if [ "$ARM" = none ] && grep -q 'referenced in expression' "$TMP/build.log"; then
     grep -m 1 'referenced in expression' "$TMP/build.log" >&2
     fail "the link stopped on a symbol of the chip script before it named its required one"
+fi
+if [ "$ARM" = capture ]; then
+    for _cs in $CAPTURED; do
+        grep -qF "unplaced orphan section \`$_cs'" "$TMP/build.log" || {
+            grep -E 'error|overflow' "$TMP/build.log" | sed -n '1,20p' >&2
+            fail "an image's $_cs is not refused as an orphan: a kernel selector placed it (see above)"
+        }
+    done
+    echo "PASS: every kernel-only section name an image held was refused:"
+    grep -F 'unplaced orphan section' "$TMP/build.log" | sed -n '1,3p'
+    # An embedding package links each image on its own, so no kernel selector sees its sections.
+    if [ -n "$(find "$TMP/prefix" -name '*.program.ld' | head -n 1)" ]; then
+        exit 0
+    fi
+    configure capture "$COMPOSITION" "$TMP/absorbed" -DKICKOS_PROBE_SECTIONS=.text.init \
+        || fail "the .text.init probe did not configure"
+    "$CMAKE" --build "$TMP/absorbed" >"$TMP/absorbed.log" 2>&1 || {
+        sed -n '1,30p' "$TMP/absorbed.log" >&2
+        fail "an image holding .text.init did not link (see above)"
+    }
+    NM="$(sed -n 's/^CMAKE_NM:FILEPATH=//p' "$TMP/absorbed/CMakeCache.txt")"
+    "$NM" "$TMP/absorbed/probe" > "$TMP/absorbed.nm" || fail "nm could not read the probe"
+    # nm pads every address of one image to one width, so "x" prefixed addresses compare as
+    # strings in address order.
+    _outside="$(awk '$3 ~ /^_*kickos_probe_section_0$/ { copy[++nc] = "x" $1 }
+                     $3 ~ /^_*__kickos_image[0-9]+_code_start$/ {
+                         n = $3; sub(/^_*__kickos_image/, "", n); sub(/_code_start$/, "", n)
+                         lo[n] = "x" $1 }
+                     $3 ~ /^_*__kickos_image[0-9]+_code_end$/ {
+                         n = $3; sub(/^_*__kickos_image/, "", n); sub(/_code_end$/, "", n)
+                         hi[n] = "x" $1 }
+                     END {
+                         if (nc == 0) { print "none"; exit }
+                         for (i = 1; i <= nc; i++) {
+                             inside = 0
+                             for (n in lo) {
+                                 if ((n in hi) && copy[i] >= lo[n] && copy[i] < hi[n]) { inside = 1 }
+                             }
+                             if (!inside) { printf "%s ", substr(copy[i], 2) }
+                         }
+                     }' "$TMP/absorbed.nm")"
+    [ "$_outside" != none ] || fail "the probe holds no copy of its .text.init object"
+    [ -z "$_outside" ] \
+        || fail "an image's .text.init lies outside every image code span, at $_outside: a kernel selector placed it"
+    echo "PASS: an image's .text.init linked inside its own code span"
+    exit 0
 fi
 echo "PASS: the $ARM arm's link failed naming its rule:"
 grep -m 1 -E "$EXPECT" "$TMP/build.log"

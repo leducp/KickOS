@@ -39,6 +39,12 @@ namespace kickos
         // Every map answers ENOMEM while set.
         void refuse_map(bool on);
 
+        // While set, a page entry carries no memory type, as on RISC-V without Svpbmt.
+        void untyped_entries(bool on);
+
+        // While set, the backend maps no device memory.
+        void refuse_device_type(bool on);
+
         // Whether the page holding `va` was still mapped when its space was last destroyed.
         void watch_destroy(uintptr_t va);
         extern bool g_watched_at_destroy;

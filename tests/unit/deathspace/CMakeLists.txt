@@ -47,6 +47,7 @@ kickos_add_unit_test(NAME domain_unwind
           "${PROJECT_SOURCE_DIR}/tests/unit/common/host_aspace.cc"
           "${PROJECT_SOURCE_DIR}/tests/unit/common/host_frame_pool.cc"
           "${PROJECT_SOURCE_DIR}/kernel/domain/domain.cc" ${_aspace}
+          "${PROJECT_SOURCE_DIR}/kernel/grant/grant.cc"
           "${PROJECT_SOURCE_DIR}/kernel/init/instance.cc"
   INCLUDES "${PROJECT_SOURCE_DIR}/tests/unit/common"
   DEFINITIONS DOMAIN_UNWIND_IMAGE_BYTES=${_image_bytes}

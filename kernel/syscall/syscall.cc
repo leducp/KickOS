@@ -8,7 +8,6 @@
 #include <kickos/ampwindow.h>
 #include <kickos/chip_limits.h> // KICKOS_MAX_IRQ
 #include <kickos/aspace.h>
-#include <kickos/bench.h>
 #include <kickos/cap.h>
 #include <kickos/config.h>
 #include <kickos/grant.h>
@@ -406,10 +405,6 @@ extern "C" uint64_t syscall_dispatch(uintptr_t nr,
     {
         sched::exit_current(KOS_EXIT_CANCELLED, sched::EXIT_RETURN);
     }
-#if KICKOS_BENCH_SCHED_ON
-    // A syscall enters from userspace, so leaving restores that on whichever core it returns.
-    (void)kickos_bench_reason_enter(BR_SYSCALL);
-#endif
     uint64_t rc = 0;
 #if KICKOS_PRESYNC
     // One call site keeps syscall_body inlined: a second adds its frame to the trap red zone.
@@ -429,9 +424,6 @@ extern "C" uint64_t syscall_dispatch(uintptr_t nr,
     }
 #else
     rc = syscall_body(nr, a0, a1, a2, a3);
-#endif
-#if KICKOS_BENCH_SCHED_ON
-    kickos_bench_reason_leave(BR_OTHER);
 #endif
     return rc;
 }
@@ -553,7 +545,7 @@ uint64_t syscall_body(uintptr_t nr,
             }
             uint32_t count = 0;
             rc = amp::count_read(node, which, &count);
-            return cap_out_deliver(a2, rc, count);
+            return out_word_deliver(a2, rc, count);
         }
 #endif
         case KOS_SYS_SEND:
@@ -571,22 +563,6 @@ uint64_t syscall_body(uintptr_t nr,
             // can carry the deadline. endpoint_call is the sole validator of them: the stub
             // only saturates, so an oversize length still arrives here out of range.
             uint32_t const timeout = static_cast<uint32_t>(a3);
-#if KICKOS_BENCH_SCHED_ON
-            if (timeout == KOS_TIMEOUT_NONE)
-            {
-                uint32_t const rt_core = kickos_kernel_core();
-                KICKOS_BENCH_MARK(bm_rt);
-                int32_t const rt_rc = endpoint_call(static_cast<uint32_t>(a0), a1,
-                                                    kos_call_lens_send(a2),
-                                                    kos_call_lens_recv(a2), KOS_TIMEOUT_NONE);
-                // The two stamps must come from one core's counter.
-                if (kickos_kernel_core() == rt_core)
-                {
-                    KICKOS_BENCH_DIST_SPAN(BD_CALL_RT, bm_rt);
-                }
-                return static_cast<uint64_t>(rt_rc);
-            }
-#endif
             return static_cast<uint64_t>(
                 endpoint_call(static_cast<uint32_t>(a0), a1, kos_call_lens_send(a2),
                               kos_call_lens_recv(a2), timeout));
@@ -629,9 +605,8 @@ uint64_t syscall_body(uintptr_t nr,
             {
                 return static_cast<uint64_t>(rc);
             }
-            kos_thread_t h = KOS_THREAD_NONE;
-            rc = thread_create_call(reinterpret_cast<kos_thread_params const*>(a0), &h);
-            return created(cap_out_deliver(a1, rc, h));
+            rc = thread_create_call(reinterpret_cast<kos_thread_params const*>(a0), a1);
+            return created(static_cast<uint64_t>(rc));
         }
         case KOS_SYS_TASK_CREATE:
         {
@@ -641,9 +616,8 @@ uint64_t syscall_body(uintptr_t nr,
             {
                 return static_cast<uint64_t>(rc);
             }
-            kos_task_t h = KOS_TASK_NONE;
-            rc = task_create_call(static_cast<uint32_t>(a0), a1, static_cast<uint32_t>(a3), &h);
-            return created(cap_out_deliver(a2, rc, h));
+            rc = task_create_call(static_cast<uint32_t>(a0), a1, static_cast<uint32_t>(a3), a2);
+            return created(static_cast<uint64_t>(rc));
         }
         case KOS_SYS_PROGRAM_FIND:
         {
@@ -686,7 +660,7 @@ uint64_t syscall_body(uintptr_t nr,
             {
                 return static_cast<uint64_t>(state);
             }
-            uint64_t const rc = cap_out_deliver(a1, 0, static_cast<uint32_t>(status));
+            uint64_t const rc = out_word_deliver(a1, 0, static_cast<uint32_t>(status));
             if (rc != 0)
             {
                 return rc;
@@ -1197,10 +1171,9 @@ uint64_t syscall_body(uintptr_t nr,
             {
                 return static_cast<uint64_t>(rc);
             }
-            uint32_t bits = 0;
-            rc = notify_wait(sched::current(), static_cast<uint32_t>(a0),
-                             static_cast<uint32_t>(a1), static_cast<uint32_t>(a2), &bits);
-            return cap_out_deliver(a3, rc, bits);
+            return static_cast<uint64_t>(notify_wait(sched::current(), static_cast<uint32_t>(a0),
+                                                     static_cast<uint32_t>(a1),
+                                                     static_cast<uint32_t>(a2), a3));
         }
         case KOS_SYS_IRQ_BIND_NOTIFY:
         {
@@ -1247,171 +1220,6 @@ uint64_t syscall_body(uintptr_t nr,
         case KOS_SYS_WITNESS_REWINDS:
         {
             return static_cast<uint64_t>(witness_rewinds());
-        }
-#endif
-#if KICKOS_WITNESS_NODE
-        case KOS_SYS_WITNESS_NODE:
-        {
-            return static_cast<uint64_t>(witness_node(a0, a1));
-        }
-#endif
-#if KICKOS_BENCH
-        case KOS_SYS_BENCH:
-        {
-            // Print without IrqLock held. Counts are validated here to keep checks out of the
-            // measured helpers.
-            // These ops attach a kernel handler to a line, which a claim does only under
-            // AUTH_IRQ; reaching a line through here must not be the cheaper route.
-            if ((a0 == KOS_BENCH_OP_IRQ_SETUP or a0 == KOS_BENCH_OP_IRQ_SWEEP
-                 or a0 == KOS_BENCH_OP_IRQ_WCASE)
-                and not cap_check_authority(sched::current(), AUTH_IRQ))
-            {
-                return static_cast<uint64_t>(-KOS_EPERM);
-            }
-            switch (a0)
-            {
-                case KOS_BENCH_OP_RESET:
-                {
-                    // The fastpath's own count, handed in: a counter of the bench's own would
-                    // be a second truth about the same swap.
-                    bench_reset(ipc_fast_taken_count());
-                    return 0;
-                }
-                case KOS_BENCH_OP_CYCCNT_HZ:
-                {
-                    return bench_cyccnt_hz();
-                }
-                case KOS_BENCH_OP_FASTPATH_WATCH:
-                {
-#if KICKOS_BENCH_FASTPATH_WATCH
-                    bench_fastpath_watch_print(ipc_fast_taken_count());
-                    return 0;
-#else
-                    return static_cast<uint64_t>(-KOS_ENOSYS);
-#endif
-                }
-                case KOS_BENCH_OP_DIST_PRINT:
-                {
-                    if (a1 == KOS_BENCH_DIST_SWITCH_VEC)
-                    {
-                        return bench_dist_print_switch_vec();
-                    }
-                    if (a1 != 0)
-                    {
-                        return static_cast<uint64_t>(-KOS_EINVAL);
-                    }
-                    return bench_dist_print(ipc_fast_taken_count());
-                }
-                case KOS_BENCH_OP_IRQ_SETUP:
-                {
-                    int const line = static_cast<int>(a1);
-                    if (line < 0 or line >= KICKOS_MAX_IRQ)
-                    {
-                        return static_cast<uint64_t>(-KOS_EINVAL);
-                    }
-                    return static_cast<uint64_t>(bench_irq_setup(line));
-                }
-                case KOS_BENCH_OP_IRQ_SWEEP:
-                case KOS_BENCH_OP_IRQ_WCASE:
-                {
-                    if (a1 > KOS_BENCH_SAMPLES_MAX)
-                    {
-                        return static_cast<uint64_t>(-KOS_EINVAL);
-                    }
-                    if (a0 == KOS_BENCH_OP_IRQ_WCASE)
-                    {
-                        return bench_irq_wcase_sweep(static_cast<uint32_t>(a1));
-                    }
-                    return bench_irq_sweep(static_cast<uint32_t>(a1));
-                }
-                case KOS_BENCH_OP_E2E_ARM:
-                {
-                    // The span's line is the one the caller's OWN cap names, never a bare
-                    // number: the raise that follows takes no authority, so this is where the
-                    // line stops being attacker-chosen.
-                    IrqLock lock;
-                    int err = 0;
-                    IrqBinding* const b = static_cast<IrqBinding*>(
-                        cap_resolve_e(sched::current(), static_cast<uint32_t>(a1),
-                                      CapType::CAP_IRQ, CAP_WAIT, &err));
-                    if (b == nullptr)
-                    {
-                        return static_cast<uint64_t>(-err);
-                    }
-                    return static_cast<uint64_t>(bench_e2e_arm(b->line));
-                }
-                case KOS_BENCH_OP_E2E_RAISE:
-                {
-                    return static_cast<uint64_t>(bench_e2e_raise());
-                }
-                case KOS_BENCH_OP_E2E_QUIET:
-                {
-                    return static_cast<uint64_t>(bench_e2e_quiet());
-                }
-                case KOS_BENCH_OP_E2E_TARE:
-                {
-                    return static_cast<uint64_t>(bench_e2e_tare());
-                }
-                case KOS_BENCH_OP_E2E_CLOSE:
-                {
-                    return static_cast<uint64_t>(bench_e2e_close());
-                }
-                case KOS_BENCH_OP_SCHED_PRINT:
-                {
-#if KICKOS_BENCH_SCHED_ON
-                    bench_sched_print(static_cast<uint32_t>(a1));
-                    return 0;
-#else
-                    return static_cast<uint64_t>(-KOS_ENOSYS);
-#endif
-                }
-                case KOS_BENCH_OP_E2E_PRINT:
-                {
-                    // NOT bounded: a1 drives no kernel work, only echoed beside the raises the
-                    // kernel let through.
-                    bench_e2e_print(static_cast<uint32_t>(a1));
-                    return 0;
-                }
-                case KOS_BENCH_OP_PHASE_PRINT:
-                {
-                    bench_phase_print();
-                    return 0;
-                }
-                case KOS_BENCH_OP_OWNER_PRINT:
-                {
-                    return static_cast<uint64_t>(static_cast<int64_t>(
-                        bench_owner_print(static_cast<uint32_t>(a1), static_cast<uint32_t>(a2))));
-                }
-                case KOS_BENCH_OP_LOCK_PROBE:
-                {
-                    bench_lock_probe_print();
-                    return 0;
-                }
-                case KOS_BENCH_OP_DOORBELL_PROBE:
-                {
-#if KICKOS_KERNEL_CORES > 1
-                    // Every round runs under ONE IrqLock and raises an IPI on every peer, so
-                    // the round count is how long this core stays masked and how hard the
-                    // others are hammered.
-                    if (not cap_check_authority(sched::current(), AUTH_IRQ))
-                    {
-                        return static_cast<uint64_t>(-KOS_EPERM);
-                    }
-                    if (a1 >= KICKOS_KERNEL_CORES or a2 > KOS_BENCH_ROUNDS_MAX)
-                    {
-                        return static_cast<uint64_t>(-KOS_EINVAL);
-                    }
-                    return bench_doorbell_probe_print(static_cast<uint32_t>(a1),
-                                                      static_cast<uint32_t>(a2));
-#else
-                    return static_cast<uint64_t>(-KOS_ENOSYS);
-#endif
-                }
-                default:
-                {
-                    return static_cast<uint64_t>(-KOS_EINVAL);
-                }
-            }
         }
 #endif
         case KOS_SYS_DIAG_LED_SET:

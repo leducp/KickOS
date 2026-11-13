@@ -19,4 +19,4 @@ tasks:
     priority: 10
     ceiling: 10
     start: on_request
-    budgets: { threads: 1 }
+    budgets: { threads: @FS_PEER_THREADS@ }@FS_PEER_EXTRA@

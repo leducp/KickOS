@@ -12,7 +12,6 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <kickos/bench.h>
 #include <kickos/cap.h>
 #include <kickos/instance.h>
 #include <kickos/pools.h>
@@ -76,9 +75,6 @@ namespace kickos
 #if KICKOS_KERNEL_CORES > 1
         KICKOS_POOL_LAYOUT_FIELD(h, KernelPools, sched_rings);
         KICKOS_POOL_LAYOUT_FIELD(h, KernelPools, sched_ring_depth);
-#endif
-#if KICKOS_BENCH
-        KICKOS_POOL_LAYOUT_FIELD(h, KernelPools, bench_moves);
 #endif
         KICKOS_POOL_LAYOUT_FIELD(h, KernelPools, thread_slots);
         KICKOS_POOL_LAYOUT_FIELD(h, KernelPools, tasks);
@@ -151,9 +147,6 @@ namespace kickos
 #if KICKOS_KERNEL_STACKS
         h = pool_layout_mix(h, KICKOS_KERNEL_STACK_SIZE);
         h = pool_layout_mix(h, KICKOS_STACK_ALIGN);
-#endif
-#if KICKOS_BENCH_SCHED_ON
-        h = pool_layout_type<BenchMoveStamp>(h);
 #endif
         return pool_layout_descriptor(h);
     }
@@ -280,15 +273,12 @@ namespace kickos
         TaskLinks task_links[Tasks] = {};
 
         // What one machine keeps once, however many kernel instances it hosts: the arch's
-        // residency rows, a row per domain slot, and the scheduler bench's move stamps.
+        // residency rows, a row per domain slot.
         struct Shared
         {
 #if KICKOS_HAVE_ASPACE
             aspace::ResidencyRow residency_rows[Domains] = {};
             uint32_t residency_taken[(Domains + 31) / 32] = {};
-#endif
-#if KICKOS_BENCH_SCHED_ON
-            BenchMoveStamp bench_moves[Threads] = {};
 #endif
         };
 
@@ -323,12 +313,6 @@ namespace kickos
             d.sched_rings = first->sched_rings;
             d.sched_ring_depth = RING_DEPTH;
 #endif
-#if KICKOS_BENCH
-            d.bench_moves = nullptr;
-#if KICKOS_BENCH_SCHED_ON
-            d.bench_moves = shared->bench_moves;
-#endif
-#endif
             d.thread_slots = Threads;
             d.tasks = first->tasks;
             d.task_links = first->task_links;
@@ -358,7 +342,7 @@ namespace kickos
 }
 
 // The machine's one copy of PoolStorage::Shared, where it holds anything.
-#if KICKOS_HAVE_ASPACE or KICKOS_BENCH_SCHED_ON
+#if KICKOS_HAVE_ASPACE
 #define KICKOS_POOLS_SHARED_DEFINE(pools) constinit pools::Shared system_shared;
 #define KICKOS_POOLS_SHARED (&system_shared)
 #else

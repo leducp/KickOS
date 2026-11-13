@@ -91,14 +91,11 @@ cat > "$TMP/tree/CMakePresets.json" <<'EOF'
     { "name": "rx72m-flat", "generator": "Ninja", "binaryDir": "b1" },
     { "name": "esp32c6-wroom-amp2-n0", "generator": "Ninja", "binaryDir": "b2" },
     { "name": "esp32c6-wroom-amp2-n1", "generator": "Ninja", "binaryDir": "b3" },
-    { "name": "esp32-wroom-smp", "generator": "Ninja", "binaryDir": "b5" },
-    { "name": "esp32-wroom-bench", "generator": "Ninja", "binaryDir": "b6" }
+    { "name": "esp32-wroom-smp", "generator": "Ninja", "binaryDir": "b5" }
   ]
 }
 EOF
 printf 'RIG_SESSION=%s\n' "$TMP/session" > "$TMP/rig.conf"
-mkdir -p "$TMP/tree/boards/esp32-wroom/configs/bench" "$TMP/tree/boards/rx72m/configs/base"
-printf 'CONFIG_KICKOS_BENCH=y\n' > "$TMP/tree/boards/esp32-wroom/configs/bench/defconfig"
 
 F="$TMP/fixture"
 {
@@ -242,8 +239,7 @@ grep -q '^rx72m  *REFUSED (the tree was not able to list its presets' "$TMP/flee
     || bad "a tree whose presets cannot be listed is not reported"
 cp "$TMP/presets.keep" "$TMP/tree/CMakePresets.json"
 
-# Every variant the tree declares for a board, each under its own tag; a measurement posture is
-# reported and not flashed.
+# Every variant the tree declares for a board, each under its own tag.
 {
     printf 'hello|kernel|tests/integration/check_qemu_hello.sh|\n'
     printf 'cxxtest|kernel|tests/integration/check_qemu_cxxtest.sh|\n'
@@ -252,7 +248,6 @@ cp "$TMP/presets.keep" "$TMP/tree/CMakePresets.json"
     cat "$F/esp32-wroom.images"
     printf 'slaypeer|kernel|tests/integration/check_slaypeer.sh|\n'
 } > "$F/esp32-wroom-smp.images"
-printf 'bench|kernel|-|\n' > "$F/esp32-wroom-bench.images"
 ESP_BUS='1a86:7523 CH340'
 fleet "$ESP_BUS" esp32-wroom
 got=$?
@@ -262,13 +257,8 @@ for row in 'esp32-wroom - hello 0 planted' 'esp32-wroom - cxxtest 0 planted' \
            'esp32-wroom smp slaypeer 0 plantedsmp'; do
     grep -qxF "$row" "$F/flashed" || bad "the esp32-wroom pass did not flash [$row]"
 done
-if grep -q '^esp32-wroom bench ' "$F/flashed"; then
-    bad "the esp32-wroom pass flashed its KICKOS_BENCH variant, which the bench sweep measures"
-fi
 grep -qE '^  esp32-wroom +cxxtest \(smp\) +captured$' "$TMP/fleet.out" \
     || bad "the esp32-wroom coverage table does not show cxxtest (smp) captured"
-grep -qE '^  esp32-wroom +variant bench +measurement posture' "$TMP/fleet.out" \
-    || bad "the esp32-wroom coverage table does not report its measurement variant"
 printf 'slaypeer|kernel|-|\n' >> "$F/esp32-wroom-smp.images"
 fleet "$ESP_BUS" esp32-wroom
 got=$?
@@ -537,9 +527,9 @@ has '^=== 0 present, 0 absent, 1 not decidable' "blackpill on the shared J-Link 
 
 [ "$rc" -eq 0 ] || exit 1
 echo "PASS: an absent board fails the pass; every declared variant is captured under its own tag"
-echo "  and label, a measurement posture is reported and not flashed; a failure its board allows is"
-echo "  owed and a pass of it fails the pass; a loopback is judged only where the rig declares its"
-echo "  fitting; boards sharing nothing are captured at once and boards sharing a cable or a probe"
-echo "  one after the other, every image built first; bench-present asks this box when BENCH_HOST"
-echo "  is set empty, reads BOOTSEL, HalfKay, a KickOS console and a bare cable for what each is,"
-echo "  and reports a probe or a cable more than one board names as SHARED"
+echo "  and label; a failure its board allows is owed and a pass of it fails the pass; a loopback"
+echo "  is judged only where the rig declares its fitting; boards sharing nothing are captured at"
+echo "  once and boards sharing a cable or a probe one after the other, every image built first;"
+echo "  bench-present asks this box when BENCH_HOST is set empty, reads BOOTSEL, HalfKay, a KickOS"
+echo "  console and a bare cable for what each is, and reports a probe or a cable more than one"
+echo "  board names as SHARED"

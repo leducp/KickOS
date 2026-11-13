@@ -26,10 +26,6 @@
 
 extern "C" void kfault_terminate(void) __attribute__((noreturn));
 extern "C" void kickos_rv64_init(void);
-#if KICKOS_BENCH && KICKOS_KERNEL_CORES > 1
-// Declared, not included: this TU is below <kickos/bench.h>.
-extern "C" void kickos_bench_lock_draw(uint32_t retries, uint32_t queued);
-#endif
 
 namespace
 {
@@ -130,7 +126,6 @@ int kickos_rv64_doorbell_pending(void)
 // request covers all of them.
 //
 // A hart must run SFENCE.VMA itself: the ISA gives no way to perform it for another hart.
-// FENCE.I is absent (no Zifencei in this board's ISA baseline).
 kickos::doorbell::Fenced kickos::doorbell::service_fence(Observed)
 {
     __asm volatile("sfence.vma zero, zero" ::: "memory");
@@ -170,8 +165,7 @@ void arch_ipi_fence(void)
     __asm volatile("fence rw, rw" ::: "memory");
 }
 
-// Makes every peer run its own SFENCE.VMA, there being no broadcast form. FENCE.I is absent
-// from this board's ISA baseline and is not covered.
+// Makes every peer run its own SFENCE.VMA, there being no broadcast form.
 void kickos_rv64_translation_rendezvous(uint32_t peers)
 {
     arch_ipi_send(peers);
@@ -182,10 +176,6 @@ void kickos_rv64_translation_rendezvous(uint32_t peers)
 void arch_kernel_lock(void)
 {
     uint32_t const ticket = kernel_lock_draw();
-#if KICKOS_BENCH
-    // amoadd.w cannot retry, so retries is always zero.
-    kickos_bench_lock_draw(0u, ticket - now_serving());
-#endif
     kickos::doorbell::await_turn([ticket] { return now_serving() == ticket; });
     // Acquire half; no Zalasr load-acquire in this baseline.
     __asm volatile("fence r, rw" ::: "memory");

@@ -130,7 +130,7 @@ namespace selftest
     constexpr bool SELFTEST_OWNS_RESET = true;
 #endif
 
-    // main's `authority` in system.yaml, consoles/*.yaml and systems/: `bootloader` only on the
+    // main's `authority` in system*.yaml, consoles/*.yaml and systems/: `bootloader` only on the
     // node owning the chip's reset, the partition refusing it elsewhere. Never KOS_AUTH_PSTATE:
     // a retune would retime every deadline the timing arms assert.
     constexpr uint32_t selftest_authority(void)
@@ -822,6 +822,7 @@ namespace selftest
     KICKOS_SELFTEST_LOCAL void t_vector_survives_preempt();
     KICKOS_SELFTEST_LOCAL void t_vector_starts_clean();
     KICKOS_SELFTEST_LOCAL void t_vector_fault_contained();
+    KICKOS_SELFTEST_LOCAL void t_el0_control_bits();
     KICKOS_SELFTEST_LOCAL void t_vector_survives_migrate();
     KICKOS_SELFTEST_LOCAL void t_grant_kernel_word_refused();
     KICKOS_SELFTEST_LOCAL void t_uncached_alias_sync();

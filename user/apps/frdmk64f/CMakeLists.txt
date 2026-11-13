@@ -6,8 +6,7 @@
 
 add_subdirectory(k64drv)
 
-# Each #errors without enforcement.
+# It #errors without enforcement.
 if(KICKOS_HAVE_MPU)
   add_subdirectory(k64dspi)
-  add_subdirectory(k64console)
 endif()

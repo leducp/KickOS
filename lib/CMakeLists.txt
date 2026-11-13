@@ -30,10 +30,6 @@ if(NOT KICKOS_ARCH STREQUAL "sim" AND NOT KICKOS_HAVE_ASPACE)
   kickos_export_targets(kickos_string)
 endif()
 
-# The ch1 telemetry writer runs in the ARM PendSV tail with an FP context live.
-if(KICKOS_TELEMETRY_ON AND (KICKOS_ARCH STREQUAL "armv7m" OR KICKOS_ARCH STREQUAL "armv6m"))
-  set_source_files_properties(rtt.cc PROPERTIES COMPILE_OPTIONS "-mgeneral-regs-only")
-endif()
 target_include_directories(kickos_lib PUBLIC
   "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
   "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>")

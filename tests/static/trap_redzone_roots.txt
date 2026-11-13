@@ -69,8 +69,8 @@
 # one; the match must be UNIQUE, and an ambiguous name is refused rather than guessed at.
 #
 # The top-level CMakeLists registers the gate on every preset of an arch that has a trap-stack
-# header: KICKOS_BENCH, KICKOS_TELEMETRY, the memory model and the console backend each move
-# a chain, and a board's variants differ by those.
+# header: KICKOS_TELEMETRY, the memory model and the console backend each move a chain, and a
+# board's variants differ by those.
 #
 # lx6 carries two thread-stack classes, PREEMPT and the unhandled-exception reporter's FAULT:
 # CHIP_ESP32 selects no HAS_MPU, so the syscall classes have no one to protect, while an
@@ -134,10 +134,9 @@
 # FAULT is the accepted U-mode fault: .Lfault runs the reporter with sp on the frame the entry
 # built, which is the kernel block, so the whole dump chain lands there.
 #
-# SWITCH is the one class still on a thread stack and must not be deleted: .Lswitch and
-# arch_start call kickos_arch_mpu_commit with sp = incoming->sp, which for a thread that has
-# never trapped is the frame arch_context_init fabricated on its USER stack. Measuring 0 there
-# is what says no privileged C frame stands on user memory.
+# SWITCH must not be deleted: .Lswitch and arch_start call kickos_arch_mpu_commit with sp =
+# incoming->sp, the incoming thread's kernel block or idle's stack, and the SYS requirement and
+# idle's floor both add this figure.
 #
 # MAIN is the stack boot runs on, _kernel_stack_size below _estack, which no trap shares.
 arch    rv32imac header=arch/riscv/rv32imac/include/kickos/arch/rv_trap_stack.h
@@ -151,7 +150,6 @@ root    rv32imac TRAP ?kickos_c6_amp_doorbell_service
 # Called from the prologue/epilogue itself, on the same stack, so charged to every class.
 root    rv32imac TRAP kickos_arch_mpu_commit
 root    rv32imac TRAP ?kickos_trace_switch_done
-root    rv32imac TRAP ?kickos_bench_switch_done
 
 # .Lecall_slow mrets into svc_trampoline, which calls syscall_dispatch; .Lecall calls
 # kickos_ipc_fastpath inline, and the taken fastpath runs the same hooks.
@@ -159,7 +157,6 @@ root    rv32imac SYS  syscall_dispatch
 root    rv32imac SYS  kickos_ipc_fastpath
 root    rv32imac SYS  kickos_arch_mpu_commit
 root    rv32imac SYS  ?kickos_trace_switch_done
-root    rv32imac SYS  ?kickos_bench_switch_done
 
 
 # .Lfault, for a U-mode fault the entry ACCEPTED: the reporter and the stack-top query run on
@@ -179,7 +176,6 @@ root    rv32imac IDLE  kmain.cc:idle_entry
 # What .Lswitch itself calls, below the frame it just saved.
 root    rv32imac SWITCH kickos_arch_mpu_commit
 root    rv32imac SWITCH ?kickos_trace_switch_done
-root    rv32imac SWITCH ?kickos_bench_switch_done
 
 # The four .Lintr arms again, an M-mode entry running them on the trap stack instead, plus
 # .Lfault's reporter. kickos_arch_mpu_commit is NOT here: .Lswitch and .Lecall are its only
@@ -217,42 +213,27 @@ unsized rv32imac __udivdi3 0 reason: measured from the ELF, frameless register-o
 unsized rv32imac __umoddi3 0 reason: measured from the ELF, frameless register-only leaf
 unsized rv32imac __clzsi2  0 reason: measured from the ELF, frameless register-only leaf
 unsized rv32imac kickos_panic_stack_enter 0 reason: switch.S, three instructions that write no stack; jal leaves the return address in ra and the body never spills it
-unsized rv32imac __divdi3  0 reason: measured from libgcc.a for this multilib, frameless register-only leaf: its body touches sp nowhere and ends in a bare ret, exactly as the two above. It is in every board's graph and only a KICKOS_BENCH measurement REACHES it, that arm's print dividing signed 64-bit where nothing else in the trap path does.
+unsized rv32imac __divdi3  0 reason: measured from libgcc.a for this multilib, frameless register-only leaf: its body touches sp nowhere and ends in a bare ret, exactly as the two above.
 unsized rv32imac __moddi3  0 reason: measured from the rv32imac libgcc.a disassembly, register-only body with no sp access
 
-# gcc emits the complete-object destructor as a triangle node with no "bytes (static)" and an
-# edge to the base-object one, and the two are the same address, so 0 is its own frame and the
-# edge below it carries the real cost.
-unsized rv32imac _ZN6kickos10BenchScopeD1Ev 0 reason: measured from the object, a same-address alias of the base-object destructor rather than a body of its own
-
 # --- rxv3 ----------------------------------------------------------------------
-# FOUR classes. PENDSW is the deferred-switch vector (INTB[27]); the syscall trap then splits,
-# kickos_rx_syscall_trap's `cmp #56, r1` picking between a generic arm that stashes the
-# [userPC][userPSW] head and RTEs into svc_trampoline, and a fastpath arm that saves the whole
-# 236-byte context and runs kickos_ipc_fastpath inline. Different frame AND different descent,
-# so each is its own class.
+# PENDSW is the deferred-switch vector (INTB[27]); the syscall trap then splits,
+# kickos_rx_syscall_trap's `cmp #56, r1` picking between a generic arm that lays the return
+# state on the caller's kernel block and RTEs into svc_trampoline there, and a fastpath arm
+# that saves the whole context on the caller's USP and runs kickos_ipc_fastpath inline. The
+# generic arm writes nothing on the thread's stack, so only the fastpath arm has a class there.
 #
-# The generic arm's dispatch is SYSK, stack=kernel, svc_trampoline's first act being to move R0
-# onto the calling thread's own kernel block.
-#
-# The SYS class must not be deleted, and it is the one class here with no root at all. The head
-# the trap commits before its RTE still lands on the thread's own stack, because RTE pops PC
-# then PSW from R0 and R0 is the USP while PSW.U is set, so the resume USP is that head's
-# address plus eight. KICKOS_RX_TRAP_NEST_SYS prices the head plus the switcher zone a SWINT can
-# put below it while svc_trampoline is still on that stack.
+# Neither thread-stack class runs C: the restore epilogue makes every call on the ISP.
 arch    rxv3 header=arch/rx/rxv3/include/kickos/arch/rx_trap_stack.h
 
-root    rxv3 PENDSW kickos_arch_mpu_commit
-root    rxv3 PENDSW ?kickos_trace_switch_done
-root    rxv3 PENDSW ?kickos_bench_switch_done
-
-root    rxv3 SYS    NONE reason: svc_trampoline moves R0 to ctx.kernel_sp before it calls anything, so syscall_dispatch and the tree under it are measured as SYSK. What is left on the thread's own USP at this site writes no C frame: the trap's [userPC][userPSW] head, which the RTE's resume-USP arithmetic requires there. KICKOS_RX_TRAP_NEST_SYS prices it plus the switcher zone a SWINT can put below it. THE SECOND DOOR runs no C frame here either: .Lsvc_nokstack reaches kickos_rx_no_kernel_stack, whose console chain is far past what this class reserves, and clrpsw u puts that reporter on the ISP before the call.
+root    rxv3 PENDSW NONE reason: the save is plain stores, and the restore epilogue clears PSW.U before its MPU commit, the landing and the trace call, so they run on the ISP and are priced there
 
 root    rxv3 SYSK   syscall_dispatch
 root    rxv3 SYSK   kickos_ipc_fastpath
 
 root    rxv3 EXITK  kickos_thread_fault_exit
 root    rxv3 EXITK  kickos_thread_slay_exit
+root    rxv3 IDLE   kmain.cc:idle_entry
 
 # The reporter, on its own array: kickos_panic_stack_enter is switch.S, so this root is the only
 # way into the console tail.
@@ -260,11 +241,7 @@ root    rxv3 PANIC  kickos_panic_report
 exclude rxv3 console_chip_writer_leave class=PANIC reason: a panic stores PANICKED before it prints, nothing leaves PANICKED, and a PANICKED writer is not counted, so no line of the panic leaves the bracket
 exclude rxv3 ?console.cc:line_wake class=PANIC reason: the line state is written only by a KERNEL_OWNED or RECLAIMED line, and a panic stores PANICKED before it prints, so no line of the panic wakes a writer parked on that state
 
-# The taken fastpath switches, so it runs the same epilogue hooks the switcher does, and after
-# the transfer that epilogue is ALL it runs on a thread stack.
-root    rxv3 SYS_FAST kickos_arch_mpu_commit
-root    rxv3 SYS_FAST ?kickos_trace_switch_done
-root    rxv3 SYS_FAST ?kickos_bench_switch_done
+root    rxv3 SYS_FAST NONE reason: the save is plain stores, kickos_ipc_fastpath runs on the kernel block as SYSK, and the restore epilogue the taken arm enters runs its C on the ISP
 
 # On rx-elf the unit `bytes (static)` reports is the prologue push plus the incoming
 # return-address slot, so a frameless leaf reports 4 and not 0: arch_bitband_present
@@ -284,7 +261,7 @@ unsized rxv3 __clzsi2     4 reason: measured from libgcc.a, frameless leaf so th
 # on another, nor on boot: the IPL ladder (regs.h IPL_PENDSW 1, IPL_DEVICE 4) orders acceptance
 # and never nests. An exception is accepted whatever I holds, so it nests on any of them.
 level   rxv3 ISP boot reason: rx_reset_handler, which runs with PSW.I clear; its deepest frame bounds the one arch_start leaves
-level   rxv3 ISP interrupt reason: one first-level ISR, or the refusal of kickos_rx_pendsw or of the syscall trap, both on the ISP, or kickos_rx_no_kernel_stack, which svc_trampoline enters on the ISP with I clear, or the landing _kickos_rx_restore makes on the ISP with I clear
+level   rxv3 ISP interrupt reason: one first-level ISR, or the refusal of kickos_rx_pendsw or of the syscall trap, both on the ISP, or kickos_rx_no_kernel_stack, which the syscall trap enters on the ISP with I clear, or the MPU commit, landing and trace call _kickos_rx_restore and its entries make on the ISP with I clear
 level   rxv3 ISP fault reason: an exception, nested on any of the above; NMI is never enabled, and the fixed vectors send it to the same reporter
 root    rxv3 ISP rx_reset_handler level=boot
 root    rxv3 ISP kickos_rx_timer_isr level=interrupt
@@ -296,14 +273,24 @@ root    rxv3 ISP kickos_rx_sci6_rxi_isr level=interrupt
 root    rxv3 ISP kickos_rx_bad_usp level=interrupt
 root    rxv3 ISP kickos_rx_no_kernel_stack level=interrupt
 root    rxv3 ISP kickos_switch_landed level=interrupt
+root    rxv3 ISP kickos_arch_mpu_commit level=interrupt
+root    rxv3 ISP ?kickos_trace_switch_done level=interrupt
 root    rxv3 ISP kickos_rx_fault_report level=fault
-unsized rxv3 arch_start 4 reason: switch.S, the return-address slot the caller's bsr pushed on the ISP, which the body leaves for the USP before it writes anything
+root    rxv3 ISP kickos_rx_soft_trap_report level=fault
+unsized rxv3 arch_start 4 reason: switch.S, the return-address slot the caller's bsr pushed on the ISP; the trace call and the restore epilogue it reaches run on the same stack and are priced at the interrupt level, which nests on boot's
 table   rxv3 _g_rvectors prefix=_ reason: INTB, the relocatable table
 table   rxv3 _g_fvectors prefix=_ reason: the fixed table, reset in its last word
 vector  rxv3 start level=boot reason: startup.S, seats the ISP and branches to rx_reset_handler
-vector  rxv3 kickos_rx_pendsw level=interrupt reason: switch.S, calls kickos_rx_bad_usp and the landing on the ISP and everything else on a USP
-vector  rxv3 kickos_rx_syscall_trap level=interrupt reason: switch.S, calls kickos_rx_bad_usp and the landing on the ISP and the fastpath on the kernel block
+vector  rxv3 kickos_rx_pendsw level=fault reason: switch.S, calls kickos_rx_bad_usp and the landing on the ISP and everything else on a USP, or branches to kickos_rx_soft_trap
+vector  rxv3 kickos_rx_syscall_trap level=interrupt reason: switch.S, calls kickos_rx_bad_usp, kickos_rx_no_kernel_stack and the landing on the ISP and the fastpath on the kernel block
 vector  rxv3 rx_trap level=fault reason: startup.S, calls kickos_rx_fault_report
+vector  rxv3 kickos_rx_soft_trap level=fault reason: switch.S, calls kickos_rx_soft_trap_report
+vector  rxv3 kickos_rx_intb_default level=fault reason: switch.S, branches to kickos_rx_default_irq or to kickos_rx_soft_trap
+vector  rxv3 kickos_rx_intb_swint2 level=fault reason: switch.S, branches to kickos_rx_swint2 or to kickos_rx_soft_trap
+vector  rxv3 kickos_rx_intb_timer level=fault reason: switch.S, branches to kickos_rx_timer_isr or to kickos_rx_soft_trap
+vector  rxv3 kickos_rx_intb_clock level=fault reason: switch.S, branches to kickos_rx_clock_isr or to kickos_rx_soft_trap
+vector  rxv3 kickos_rx_intb_sci6_rxi level=fault reason: switch.S, branches to kickos_rx_sci6_rxi_isr or to kickos_rx_soft_trap
+vector  rxv3 kickos_rx_intb_console_txi level=fault reason: switch.S, branches to kickos_rx_console_txi_isr or to kickos_rx_soft_trap
 vector  rxv3 rx_ex_priv level=fault reason: startup.S, calls kickos_rx_fault_report
 vector  rxv3 rx_ex_access level=fault reason: startup.S, calls kickos_rx_fault_report
 vector  rxv3 rx_ex_undef level=fault reason: startup.S, calls kickos_rx_fault_report
@@ -313,8 +300,8 @@ init    rxv3 ___init_array_start ___init_array_end reason: rx_reset_handler@1/1 
 
 # --- armv7m --------------------------------------------------------------------
 # THREE classes, two of them the same dispatch under the two entry designs this arch compiles.
-# KICKOS_KERNEL_STACKS picks which one an image links: at 1 svc_trampoline moves SP onto the
-# calling thread's own kernel block before it calls anything, so the dispatch is SVCK,
+# KICKOS_KERNEL_STACKS picks which one an image links: at 1 svc_trampoline starts on the
+# calling thread's own kernel block, so the dispatch is SVCK,
 # stack=kernel; at 0 it runs the dispatch on the caller's own PSP and the dispatch is SVC, on
 # the thread stack. armv7m_trap_stack.h says which chips take which.
 #
@@ -349,8 +336,11 @@ root    armv7m PANIC  kickos_panic_report
 exclude armv7m console_chip_writer_leave class=PANIC reason: a panic stores PANICKED before it prints, nothing leaves PANICKED, and a PANICKED writer is not counted, so no line of the panic leaves the bracket
 exclude armv7m ?console.cc:line_wake class=PANIC reason: the line state is written only by a KERNEL_OWNED or RECLAIMED line, and a panic stores PANICKED before it prints, so no line of the panic wakes a writer parked on that state
 unsized armv7m kickos_panic_stack_enter 0 reason: switch.S, a limit write and an SP move that write no stack; bl leaves the return address in LR and the body never spills it
-unsized armv7m kickos_rp_rom_call 16 reason: rp2xxx/rom_call.S, push {r4-r6,lr}; the bootrom routine it calls runs on kickos_rp_rom_stack, which no class measures
+unsized armv7m kickos_rp_rom_call 24 reason: rp2xxx/rom_call.S, push {r4-r8,lr} under KICKOS_HAVE_STACK_LIMIT, which rp2350, the one armv7m chip that assembles it, sets; the bootrom routine it calls runs on kickos_rp_rom_stack, which no class measures
+unsized armv7m _ZN6kickos6rp2xxx9wait_maskEjm 0 reason: measured from the ELF, a same-address alias of rp2xxx clocktree::wait, so 0 is its own frame and the edge below it carries the real cost
 asmcall armv7m kickos_splim_plant reason: switch.S under KICKOS_SPLIM_PLANT_KBLOCK, a deliberate overflow of the kernel block that only check_splim_plant.sh's own scratch tree compiles (arch/CMakeLists.txt refuses it anywhere else), so no image this gate measures makes the call
+
+root    armv7m IDLE   kmain.cc:idle_entry
 
 # The main stack's overflow report, on the array kickos_armv7m_stkof moves to; that naked body
 # branches to the first root. The second is the same reporter wherever no limit exists to call
@@ -373,15 +363,14 @@ unsized armv7m __aeabi_uldivmod 56 reason: measured, 16-byte head plus __udivmod
 # so the configurable faults keep their reset 0 and HardFault is -1. Equal priorities do not
 # preempt each other.
 level   armv7m MSP boot reason: Reset_Handler, in thread mode on the MSP with PRIMASK and BASEPRI clear, so each line arch_init or a driver enables, and SysTick once armed, can nest every level below under its deepest frame; after sched::start the frames it leaves are no deeper than that
-level   armv7m MSP pendsv reason: the lowest exception: PendSV (0xF0), and the SVC handler (0xE0), which only thread code can take, so whichever runs first nests on boot's frames. kickos_arm_no_kernel_stack is here too: it runs in thread mode on the MSP with PRIMASK set, below boot's frames, where only a fault can nest on it
+level   armv7m MSP pendsv reason: the lowest exception: PendSV (0xF0), and the SVC handler (0xE0), which only thread code can take, so whichever runs first nests on boot's frames. kickos_arm_no_kernel_stack is here too: it runs in the SVC handler with PRIMASK set, where only a fault can nest on it
 level   armv7m MSP systick reason: SysTick (0xE0) preempts PendSV (0xF0). Charged over the SVC handler as well, which it cannot preempt at the same priority, so the sum over-counts that pairing
 level   armv7m MSP device reason: every device line at PRIO_DEVICE 0x30, one band, so one device handler at a time, above SysTick and PendSV
-level   armv7m MSP fault reason: MemManage, BusFault and UsageFault at their reset priority 0 and HardFault at -1, all vectored to HardFault_Handler, which branches to the reporter without a push. A fault inside the reporter itself is a second fault of the reporter and is not priced
+level   armv7m MSP fault reason: MemManage, BusFault and UsageFault at their reset priority 0 and HardFault at -1, all vectored to HardFault_Handler, which calls the reporter without a push. A fault inside the reporter itself is a second fault of the reporter and is not priced
 root    armv7m MSP Reset_Handler level=boot
 root    armv7m MSP kickos_arch_mpu_commit level=pendsv
 root    armv7m MSP kickos_switch_landed level=pendsv
 root    armv7m MSP ?kickos_trace_switch_done level=pendsv
-root    armv7m MSP ?kickos_bench_switch_done level=pendsv
 root    armv7m MSP kickos_ipc_fastpath level=pendsv
 root    armv7m MSP kickos_arm_bad_psp level=pendsv
 root    armv7m MSP ?kickos_arm_no_kernel_stack level=pendsv
@@ -397,7 +386,7 @@ unsized armv7m arch_start 0 reason: switch.S, stores and a pend that write no st
 table   armv7m g_isr_vector first=1 reason: word 0 is the initial MSP
 vector  armv7m PendSV_Handler level=pendsv reason: switch.S, its calls are this level's roots
 vector  armv7m SVC_Handler level=pendsv reason: switch.S, its calls are this level's roots
-vector  armv7m HardFault_Handler level=fault reason: naked, branches to kickos_armv7m_fault_report or, with a stack limit, to kickos_armv7m_stkof, which leaves the main stack first
+vector  armv7m HardFault_Handler level=fault reason: naked, calls kickos_armv7m_fault_report and returns through the EXC_RETURN it answers, or, with a stack limit, branches to kickos_armv7m_stkof, which leaves the main stack first
 vector  armv7m NMI_Handler NONE reason: a branch to itself, and no NMI source is enabled
 
 # --- armv6m --------------------------------------------------------------------
@@ -414,7 +403,7 @@ vector  armv7m NMI_Handler NONE reason: a branch to itself, and no NMI source is
 arch    armv6m header=arch/arm/armv6m/include/kickos/arch/armv6m_trap_stack.h
 
 root    armv6m PENDSV NONE reason: PendSV_Handler runs in handler mode, where ARMv6-M forces SP_main, so everything it calls descends on the MSP and MSP measures it.
-root    armv6m SVC    NONE reason: svc_trampoline moves SP to ctx.kernel_sp before it calls anything, so syscall_dispatch and the tree under it are measured as SVCK. What is left on the thread's PSP at this site writes no C frame at all: the fastpath arm's callee block, in handler mode, and the trampoline's own scratch push. NEST_SVC prices both plus the exception pair that can preempt the window between them.
+root    armv6m SVC    NONE reason: the SVC handler starts svc_trampoline on ctx.kernel_sp, so syscall_dispatch and the tree under it are measured as SVCK. What is left on the thread's PSP at this site writes no C frame at all: the fastpath arm's callee block, in handler mode, and the exception pair that can preempt the syscall return's window. NEST_SVC prices both.
 
 # svc_trampoline's only call, on the calling thread's kernel block. The fastpath is reached with
 # lr still an EXC_RETURN, in handler mode, on the MSP, so it roots nothing here.
@@ -422,6 +411,7 @@ root    armv6m SVCK   syscall_dispatch
 
 root    armv6m EXITK  kickos_thread_fault_exit
 root    armv6m EXITK  kickos_thread_slay_exit
+root    armv6m IDLE   kmain.cc:idle_entry
 
 # The reporter, on its own array: kickos_panic_stack_enter is switch.S, so this root is the only
 # way into the console tail.
@@ -429,7 +419,8 @@ root    armv6m PANIC  kickos_panic_report
 exclude armv6m console_chip_writer_leave class=PANIC reason: a panic stores PANICKED before it prints, nothing leaves PANICKED, and a PANICKED writer is not counted, so no line of the panic leaves the bracket
 exclude armv6m ?console.cc:line_wake class=PANIC reason: the line state is written only by a KERNEL_OWNED or RECLAIMED line, and a panic stores PANICKED before it prints, so no line of the panic wakes a writer parked on that state
 unsized armv6m kickos_panic_stack_enter 0 reason: switch.S, six instructions that write no stack; bl leaves the return address in LR and the body never spills it
-unsized armv6m kickos_rp_rom_call 16 reason: rp2xxx/rom_call.S, push {r4-r6,lr}; the bootrom routine it calls runs on kickos_rp_rom_stack, which no class measures
+unsized armv6m kickos_rp_rom_call 16 reason: rp2xxx/rom_call.S, push {r4-r6,lr} without KICKOS_HAVE_STACK_LIMIT, which rp2040 does not set; the bootrom routine it calls runs on kickos_rp_rom_stack, which no class measures
+unsized armv6m _ZN6kickos6rp2xxx9wait_maskEjm 0 reason: measured from the ELF, a same-address alias of rp2xxx clocktree::wait, so 0 is its own frame and the edge below it carries the real cost
 
 # The AEABI helpers are libgcc, with no .ci entry and none for anything they call, so each
 # figure is the symbol's own prologue plus the deepest chain below it, from libgcc.a for this
@@ -451,9 +442,9 @@ unsized armv6m __ctzsi2           0 reason: measured, frameless register-only le
 # at its reset priority 0, this profile's kickos_arm_irq_line_prio writing nothing; HardFault is
 # -1. Equal priorities do not preempt each other.
 level   armv6m MSP boot reason: Reset_Handler, in thread mode on the MSP with PRIMASK clear, so each line arch_init or a driver enables, and SysTick once armed, can nest every level below under its deepest frame; after sched::start the frames it leaves are no deeper than that
-level   armv6m MSP system reason: PendSV, SVCall and SysTick, all at 0xC0, so one of them at a time. kickos_arm_no_kernel_stack is here too: it runs in thread mode on the MSP with PRIMASK set, below boot's frames, where only HardFault can nest on it
+level   armv6m MSP system reason: PendSV, SVCall and SysTick, all at 0xC0, so one of them at a time. kickos_arm_no_kernel_stack is here too: it runs in the SVC handler, unmasked, so the device band nests on it as on the other handlers here
 level   armv6m MSP device reason: every device line at priority 0, one band, so one device handler at a time, above the 0xC0 handlers
-level   armv6m MSP fault reason: HardFault at -1, the profile's only fault, which branches to the reporter without a push. A fault inside the reporter itself is a lockup, not a nest
+level   armv6m MSP fault reason: HardFault at -1, the profile's only fault, which calls the reporter without a push. A fault inside the reporter itself is a lockup, not a nest
 root    armv6m MSP Reset_Handler level=boot
 root    armv6m MSP kickos_arch_mpu_commit level=system
 root    armv6m MSP kickos_switch_landed level=system
@@ -469,7 +460,7 @@ unsized armv6m arch_start 0 reason: switch.S, stores and a pend that write no st
 table   armv6m g_isr_vector first=1 reason: word 0 is the initial MSP
 vector  armv6m PendSV_Handler level=system reason: switch.S, its calls are this level's roots
 vector  armv6m SVC_Handler level=system reason: switch.S, its calls are this level's roots
-vector  armv6m HardFault_Handler level=fault reason: naked, branches to kickos_armv6m_fault_report
+vector  armv6m HardFault_Handler level=fault reason: naked, calls kickos_armv6m_fault_report and returns through the EXC_RETURN it answers
 vector  armv6m NMI_Handler NONE reason: a branch to itself, and no NMI source is enabled
 init    armv6m __init_array_start __init_array_end reason: Reset_Handler@1/1 is bound NONE
 
@@ -497,14 +488,12 @@ arch    lx6 header=arch/xtensa/lx6/include/kickos/arch/lx6_trap_stack.h
 # the doorbell interrupt it takes there.
 arch    armv8a header=arch/arm64/armv8a/include/kickos/arch/armv8a_trap_stack.h
 
-# The IRQ entry's call, and at its exit the incoming thread's unlock and bench close, which run
-# below that thread's parked frame whichever stack it is on.
+# The IRQ entry's call, and at its exit the incoming thread's unlock, which runs below that
+# thread's parked frame whichever stack it is on.
 root    armv8a IRQ     kickos_armv8a_irq
 root    armv8a IRQ     ?kickos_switch_unlock
-root    armv8a IRQ     ?kickos_bench_switch_done
 root    armv8a IRQK    kickos_armv8a_irq
 root    armv8a IRQK    ?kickos_switch_unlock
-root    armv8a IRQK    ?kickos_bench_switch_done
 # The syscall, the containment call a fault makes, and the reporter the kill rule declines to.
 root    armv8a SYSK    syscall_dispatch
 root    armv8a SYSK    kickos_fault_kill_thread
@@ -520,14 +509,14 @@ root    armv8a PANIC   kickos_panic_report
 exclude armv8a console_chip_writer_leave class=PANIC reason: a panic stores PANICKED before it prints, nothing leaves PANICKED, and a PANICKED writer is not counted, so no line of the panic leaves the bracket
 exclude armv8a ?console.cc:line_wake class=PANIC reason: the line state is written only by a KERNEL_OWNED or RECLAIMED line, and a panic stores PANICKED before it prints, so no line of the panic wakes a writer parked on that state
 
-exclude armv8a kickos_armv8a_switch_now class=IRQ,IRQK,EXITK reason: below kickos_armv8a_irq isr_depth is nonzero for the whole dispatch, so arch_switch takes its deferred arm and never calls the swap; the IRQ exit's unlock and bench close run inside the masked swap, and a swap reached from either would be a cycle SYSK refuses. EXITK prices an interrupt nested at the deepest byte, and none nests below a switch frame, arch_switch running under the kernel IrqLock; EXITKSW walks the swap instead
+exclude armv8a kickos_armv8a_switch_now class=IRQ,IRQK,EXITK reason: below kickos_armv8a_irq isr_depth is nonzero for the whole dispatch, so arch_switch takes its deferred arm and never calls the swap; the IRQ exit's unlock runs inside the masked swap, and a swap reached from either would be a cycle SYSK refuses. EXITK prices an interrupt nested at the deepest byte, and none nests below a switch frame, arch_switch running under the kernel IrqLock; EXITKSW walks the swap instead
 
 # switch.S bodies. From the linked qemu-arm64-smp image: kickos_armv8a_switch_now opens with
 # `sub sp, sp, #0x320` and touches the stack nowhere else, its bl leaving the return address in
-# x30, then moves sp onto the incoming frame and calls SWITCH_UNLOCK's kickos_switch_unlock and,
-# under KICKOS_BENCH, kickos_bench_switch_done there. Those calls are its only edges.
-unsized armv8a kickos_armv8a_switch_now 800 cores=1 calls=?kickos_bench_switch_done reason: SAVE_FRAME, measured from the linked image; SWITCH_UNLOCK expands to nothing at one kernel core
-unsized armv8a kickos_armv8a_switch_now 800 cores>1 calls=kickos_switch_unlock,?kickos_bench_switch_done reason: SAVE_FRAME, measured from the linked image, then the unlock on the incoming frame
+# x30, then moves sp onto the incoming frame and calls SWITCH_UNLOCK's kickos_switch_unlock
+# there. That call is its only edge.
+unsized armv8a kickos_armv8a_switch_now 800 cores=1 reason: SAVE_FRAME, measured from the linked image; SWITCH_UNLOCK expands to nothing at one kernel core
+unsized armv8a kickos_armv8a_switch_now 800 cores>1 calls=kickos_switch_unlock reason: SAVE_FRAME, measured from the linked image, then the unlock on the incoming frame
 unsized armv8a kickos_panic_stack_enter 0 reason: switch.S, three instructions that write no stack: msr daifset, mov sp and a b into the reporter
 
 # The page-table walks of arch/common/aspace_walk.h recurse once per level from the root down,
@@ -538,12 +527,11 @@ level   armv8a MAIN fault reason: the EL1h synchronous slot, whose VEC_SLOT bran
 root    armv8a MAIN Reset_Handler level=boot
 root    armv8a MAIN kickos_armv8a_exception level=fault
 level   armv8a CORE boot reason: kickos_armv8a_park_core, secondary.S calling it on the stack it seated from kickos_armv8a_boot_sp, a g_core_stack row; the park opens interrupts only to wait, and kickos_kernel_core_start leaves this stack for the core's first thread
-level   armv8a CORE interrupt reason: the EL1h IRQ slot, which builds SAVE_FRAME on the parked sp and runs its dispatch masked, so one interrupt at a time; the exit's unlock and bench close are the IRQ class's
+level   armv8a CORE interrupt reason: the EL1h IRQ slot, which builds SAVE_FRAME on the parked sp and runs its dispatch masked, so one interrupt at a time; the exit's unlock is the IRQ class's
 level   armv8a CORE fault reason: a synchronous exception, nested on either level above without a push, as on MAIN
 root    armv8a CORE kickos_armv8a_park_core level=boot
 root    armv8a CORE kickos_armv8a_irq level=interrupt
 root    armv8a CORE ?kickos_switch_unlock level=interrupt
-root    armv8a CORE ?kickos_bench_switch_done level=interrupt
 root    armv8a CORE kickos_armv8a_exception level=fault
 unsized armv8a kickos_armv8a_start 0 reason: switch.S, loads the first thread's sp and erets, writing nothing on the stack it leaves
 init    armv8a __init_array_start __init_array_end reason: Reset_Handler@1/1 is bound to armv8a_boot_publish where a secondary core exists and NONE elsewhere
@@ -600,9 +588,9 @@ exclude rv64imac kickos_rv64_switch_now class=IRQ,IRQK,EXITK reason: below .Lint
 
 # switch.S bodies. kickos_rv64_switch_now opens with `addi sp, sp, -FRAME` and touches the stack
 # nowhere else, its caller's ra in the frame, then moves sp onto the incoming frame and calls
-# BENCH_SW_CLOSE's kickos_bench_switch_done and SWITCH_UNLOCK's kickos_switch_unlock there.
-unsized rv64imac kickos_rv64_switch_now 256 cores=1 calls=?kickos_bench_switch_done reason: KICKOS_RV64_FRAME; SWITCH_UNLOCK expands to nothing at one kernel core
-unsized rv64imac kickos_rv64_switch_now 256 cores>1 calls=kickos_switch_unlock,?kickos_bench_switch_done reason: KICKOS_RV64_FRAME, then the unlock on the incoming frame
+# SWITCH_UNLOCK's kickos_switch_unlock there.
+unsized rv64imac kickos_rv64_switch_now 256 cores=1 reason: KICKOS_RV64_FRAME; SWITCH_UNLOCK expands to nothing at one kernel core
+unsized rv64imac kickos_rv64_switch_now 256 cores>1 calls=kickos_switch_unlock reason: KICKOS_RV64_FRAME, then the unlock on the incoming frame
 unsized rv64imac kickos_panic_stack_enter 0 reason: switch.S, a csrci, a mv and a tail into the reporter, none of which writes the stack
 # cmake/kernel_runtime_rv64imac.syms rewrites the kernel archives' calls to these two libgcc
 # names onto libgcc_rv64imac.cc's bodies, so the edge is the rename and the frame is theirs.
@@ -673,11 +661,9 @@ exclude x86_64 kickos_x86_64_switch_now class=IRQ,IRQK,IST,EXITK reason: below k
 
 # switch.S bodies, each charged its own return-address slot as gcc charges a C body.
 # kickos_x86_64_switch_now is the call's 8, `pushfq` and `subq $KOS_FRAME_SIZE`, then it moves
-# rsp onto the incoming frame and calls kickos_bench_switch_done under KICKOS_BENCH, then
-# kickos_switch_unlock above one kernel core, there.
-unsized x86_64 kickos_x86_64_switch_now 192 cores=1 calls=?kickos_bench_switch_done reason: 8 + 8 + 176 read off switch.S; the incoming frame's resume is a jmp and runs no C
-unsized x86_64 kickos_x86_64_switch_now 192 cores>1 calls=kickos_switch_unlock,?kickos_bench_switch_done reason: 8 + 8 + 176 read off switch.S, then the unlock on the incoming frame
-unsized x86_64 kickos_x86_64_bench_open 8 reason: switch.S under KICKOS_BENCH, the call's return address alone: lfence, rdtsc, a store through the gs base and a ret
+# rsp onto the incoming frame and calls kickos_switch_unlock there above one kernel core.
+unsized x86_64 kickos_x86_64_switch_now 192 cores=1 reason: 8 + 8 + 176 read off switch.S; the incoming frame's resume is a jmp and runs no C
+unsized x86_64 kickos_x86_64_switch_now 192 cores>1 calls=kickos_switch_unlock reason: 8 + 8 + 176 read off switch.S, then the unlock on the incoming frame
 level   x86_64 UEFI boot reason: efi_main on the stack firmware hands over, kickos_x86_64_landed's constructors included; kickos_x86_64_kernel_main is reached by a stack switch no graph sees, so BOOT prices it. Firmware's own timer interrupt, live until the cli, and the boot services called here run firmware code no graph sizes, inside the 128 KiB UEFI 2.11 section 2.3.4 promises
 level   x86_64 UEFI fault reason: an exception after early_idt_load, through the stopgap gate onto the stack it interrupted, into the reporter, which halts
 root    x86_64 UEFI efi_main level=boot
@@ -714,14 +700,14 @@ recurse x86_64 aspace_x86_64.cc:map_into 5 reason: one activation per level, the
 # within one.
 #
 # EVERY RECORD NAMES ITS SCOPE: a minimum is only a minimum over the presets actually swept.
-floor   armv7m   files=85 nodes=600 reason: the armv7m presets swept 2026-10-13; smallest 158 files on due, largest 1486 nodes on pizero2350-amp2-n0
-floor   armv6m   files=85 nodes=600 reason: all 3 declared armv6m presets swept 2026-10-13; smallest 162 files on picopi-flat and 1274 nodes on microbit, largest 171 files on microbit and 1396 nodes on picopi
-floor   rv32imac files=75 nodes=700 reason: all 8 declared rv32imac presets swept 2026-10-13; smallest 154 files/1326 nodes on qemu-riscv-flat, largest 213 files/1437 nodes on esp32c6-wroom-bench
-floor   rxv3     files=75 nodes=650 reason: all 3 declared rxv3 presets swept 2026-10-13; smallest 148 files/1325 nodes on rx72m-flat, largest 156 files/1441 nodes on rx72m-bench
-floor   armv8a   files=90 nodes=700 reason: all 16 declared armv8a presets swept 2026-09-26; smallest 134 files/1174 nodes on qemu-arm64, largest 142 files and 1360 nodes on qemu-arm64-benchsmp12
-floor   rv64imac files=90 nodes=700 reason: all 6 declared rv64imac presets swept 2026-09-25; smallest 133 files/1206 nodes on qemu-riscv64 and -sv48, largest 137 files on -benchsmp and -benchsmp2 and 1372 nodes on -benchsmp
-floor   x86_64   files=60 nodes=550 reason: all 7 declared x86_64 presets swept 2026-10-23, counted after the units no kernel map LOADs, a program's own link being no part of it; smallest 81 files/752 nodes on qemu-x86_64, largest 82 files on -bench and the five SMP presets and 879 nodes on the SMP presets
-floor   lx6      files=75 nodes=650 reason: all 5 declared lx6 presets swept, the first three 2026-09-12, esp32-wroom-bench 2026-09-13 and esp32-wroom-benchsmp 2026-09-22; smallest 103 files/909 nodes on esp32-wroom, largest 127 files/1182 nodes on esp32-wroom-benchsmp
+floor   armv7m   files=85 nodes=600 reason: all 25 declared armv7m presets swept 2026-11-10; smallest 380 files/1563 nodes on qemu-telem, largest 637 files on pizero2350 and 2065 nodes on pizero2350-amp2-n0
+floor   armv6m   files=85 nodes=600 reason: all 3 declared armv6m presets swept 2026-11-10; smallest 496 files/1777 nodes on microbit, largest 522 files/2072 nodes on picopi
+floor   rv32imac files=75 nodes=700 reason: all 6 declared rv32imac presets swept 2026-11-10; smallest 405 files/1738 nodes on qemu-riscv-flat, largest 693 files on esp32c6-wroom and 1987 nodes on qemu-riscv
+floor   rxv3     files=75 nodes=650 reason: both declared rxv3 presets swept 2026-11-10; smallest 467 files/1955 nodes on rx72m-flat, largest 506 files/2044 nodes on rx72m
+floor   armv8a   files=90 nodes=700 reason: all 14 declared armv8a presets swept 2026-11-10; smallest 288 files/2080 nodes on qemu-arm64-amp, largest 488 files/2446 nodes on qemu-arm64-smp
+floor   rv64imac files=90 nodes=700 reason: all 4 declared rv64imac presets swept 2026-11-10; smallest 329 files/2112 nodes on qemu-riscv64-smp2, largest 507 files/2442 nodes on qemu-riscv64-smp
+floor   x86_64   files=60 nodes=550 reason: all 6 declared x86_64 presets swept 2026-11-10, counted after the units no kernel map LOADs, a program's own link being no part of it; 84 files on every one, smallest 924 nodes on qemu-x86_64, largest 1017 nodes on qemu-x86_64-smp2
+floor   lx6      files=75 nodes=650 reason: both declared lx6 presets swept 2026-11-10; smallest 440 files/1947 nodes on esp32-wroom, largest 454 files/2090 nodes on esp32-wroom-smp
 root    lx6 PREEMPT kickos_lx6_dispatch_l1
 # The level-1 exit, when the dispatch booked a switch: the trace record on the interrupted
 # frame, then SWITCH_UNLOCK below the incoming one, a 256-byte interrupt frame or a switch frame.
@@ -762,5 +748,5 @@ root    lx6 CORE ?kickos_switch_unlock level=interrupt
 root    lx6 CORE kickos_lx6_fault_report level=fault
 init    lx6 __init_array_start __init_array_end reason: Reset_Handler@1/1 is bound NONE
 unsized lx6 arch_start 32 calls=?kickos_trace_switch_done reason: switch.S, entry a1 32 on the boot stack and, under KICKOS_TELEMETRY, the first switch record there, before it leaves for the first thread's frame
-unsized lx6 kickos_lx6_switch 128 cores=1 calls=?kickos_bench_switch_done,?kickos_trace_switch_done reason: at one kernel core SWITCH_UNLOCK (arch/xtensa/lx6/include/kickos/arch/lx6_switch_unlock.inc) expands to nothing and the swap calls only its KICKOS_BENCH and KICKOS_TELEMETRY hooks, its own entry a1 being 32 in the linked esp32-wroom image. 128 is the swap-unlock descent this record carried before the rings, kept so the one-core figure does not move, and 96 of it is reserved unused, which is the safe direction
-unsized lx6 kickos_lx6_switch 32 cores>1 calls=kickos_switch_unlock,?kickos_bench_switch_done,?kickos_trace_switch_done reason: entry a1 32 in the linked esp32-wroom-smp image, its KICKOS_BENCH and KICKOS_TELEMETRY hooks first, and the swap ends in SWITCH_UNLOCK (arch/xtensa/lx6/include/kickos/arch/lx6_switch_unlock.inc), a call4 into kickos_switch_unlock, whose descent the graph carries
+unsized lx6 kickos_lx6_switch 128 cores=1 calls=?kickos_trace_switch_done reason: at one kernel core SWITCH_UNLOCK (arch/xtensa/lx6/include/kickos/arch/lx6_switch_unlock.inc) expands to nothing and the swap calls only its KICKOS_TELEMETRY hook, its own entry a1 being 32 in the linked esp32-wroom image. 128 is the swap-unlock descent this record carried before the rings, kept so the one-core figure does not move, and 96 of it is reserved unused, which is the safe direction
+unsized lx6 kickos_lx6_switch 32 cores>1 calls=kickos_switch_unlock,?kickos_trace_switch_done reason: entry a1 32 in the linked esp32-wroom-smp image, its KICKOS_TELEMETRY hook first, and the swap ends in SWITCH_UNLOCK (arch/xtensa/lx6/include/kickos/arch/lx6_switch_unlock.inc), a call4 into kickos_switch_unlock, whose descent the graph carries

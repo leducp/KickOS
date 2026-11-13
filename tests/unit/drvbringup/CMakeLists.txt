@@ -39,9 +39,9 @@ kickos_add_unit_test(NAME drv_spi_serve
   INCLUDES "${PROJECT_SOURCE_DIR}/user/include" "${PROJECT_SOURCE_DIR}/system/include"
            "${PROJECT_BINARY_DIR}/generated/include")
 
-# KOS_UART_DRAIN on a buffered UART console answers the drain's result: the service and IRQ loops
-# of uart_service.h on two host threads over a fake device. HOST-ONLY: uart_flush.cc defines public
-# kos_* names.
+# KOS_UART_DRAIN on a buffered UART console answers the drain's result, and the IRQ loop counts
+# the wakes that found nothing: the service and IRQ loops of uart_service.h on two host threads
+# over a fake device. HOST-ONLY: uart_flush.cc defines public kos_* names.
 kickos_add_unit_test(NAME drv_uart_flush
   SOURCES uart_flush.cc
           "${PROJECT_SOURCE_DIR}/user/src/uart_service.cc"
@@ -83,8 +83,9 @@ kickos_add_unit_test(NAME drv_dspi_stall
            "${PROJECT_BINARY_DIR}/generated/include")
 target_compile_options(drv_dspi_stall PRIVATE -include "${CMAKE_CURRENT_SOURCE_DIR}/dspi_mmap.h")
 
-# The K64F UART backend's close and refused opens over a host buffer for its window. HOST-ONLY:
-# uart_k64_close.cc defines public kos_* names.
+# The K64F UART backend's close, opens and receive errors over a host buffer for its window, whose
+# S1 receive flags clear the way the part clears them (k64mmio/).
+# HOST-ONLY: uart_k64_close.cc defines public kos_* names.
 kickos_add_unit_test(NAME drv_uart_k64_close
   SOURCES uart_k64_close.cc
           "${PROJECT_SOURCE_DIR}/system/driver/mk64f/uart_k64.cc"
@@ -93,6 +94,7 @@ kickos_add_unit_test(NAME drv_uart_k64_close
            "${PROJECT_SOURCE_DIR}/arch/arm/chip/mk64f/class"
            "${PROJECT_SOURCE_DIR}/user/include" "${PROJECT_SOURCE_DIR}/system/include"
            "${PROJECT_BINARY_DIR}/generated/include")
+target_include_directories(drv_uart_k64_close BEFORE PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/k64mmio")
 
 # The driver witness's serve loop over its own two fakes: a reply to a caller whose timed call
 # expired is not the driver's failure. HOST-ONLY: serve_reply.cc defines public kos_* names.
@@ -118,9 +120,18 @@ foreach(_esp_chip "esp32c6;riscv" "esp32;xtensa")
     -include "${CMAKE_CURRENT_SOURCE_DIR}/esp_mmap.h")
 endforeach()
 
-# The USB CDC class layer's bulk IN pump and the service's flush over a recording fake
-# controller. HOST-ONLY: usb_zlp.cc defines public kos_* names.
+# The USB CDC class layer's bulk IN pump, held while the bus is suspended, and the service's flush
+# over a recording fake controller. HOST-ONLY: usb_zlp.cc defines public kos_* names.
 kickos_add_unit_test(NAME drv_usb_zlp
   SOURCES usb_zlp.cc "${PROJECT_SOURCE_DIR}/user/src/console_ring.cc"
   INCLUDES "${PROJECT_SOURCE_DIR}/user/include" "${PROJECT_SOURCE_DIR}/system/include"
            "${PROJECT_BINARY_DIR}/generated/include")
+
+# The RP USB backend's suspend and resume report over a model of its controller. seam/ is searched
+# first: its MMIO accessors call the model, so a case can act between two register accesses.
+kickos_add_unit_test(NAME drv_rpusb_events
+  SOURCES rpusb_events.cc
+  INCLUDES "${PROJECT_SOURCE_DIR}/system/driver/rp2xxx/rpusb"
+           "${PROJECT_SOURCE_DIR}/user/include" "${PROJECT_SOURCE_DIR}/system/include"
+           "${PROJECT_BINARY_DIR}/generated/include")
+target_include_directories(drv_rpusb_events BEFORE PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/seam")

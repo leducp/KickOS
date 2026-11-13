@@ -15,13 +15,10 @@
 //   - Descriptor writes are Normal memory and the doorbell is Device, so the M7 may
 //     reorder them; every prime is preceded by a DSB.
 //
-// One transfer per endpoint direction at a time, so RM 42.5.6.6.3 Case 1 applies at every
-// add and the ATDTW loop of Case 2 is unused.
+// One transfer per endpoint direction at a time: every add is RM 42.5.6.6.3 Case 1.
 
-#include <kickos/kos.h>
 #include <kickos/sys.h>
 
-#include <kickos/chip_mmap.h>
 #include <kickos/driver/declared/rt1062usb.h>
 #include <kickos/io/mmio.h>
 #include <kickos/sys/atomic.h>
@@ -54,9 +51,8 @@ namespace
     constexpr uint32_t SPIN_MAX = 200000u;
     constexpr uint32_t SUTW_TRIES = 16u;
 
-    // How far the IRQ thread got, which it reports before it traps (report_stage). Its task
-    // serves the published console, so that report reaches the wire only where the kernel
-    // console is live. stage_reason() spells each value out.
+    // How far the IRQ thread got, reported before it traps. The report reaches the wire only
+    // where the kernel console is live.
     enum stage
     {
         STAGE_NONE = 0,
@@ -75,10 +71,9 @@ namespace
         STAGE_ATTACHED = 11
     };
 
-    // Bounded spins that EXPIRED, one BIT POSITION each in Block::stalls. A spin that gives up
-    // still reaches the loop, so without this a wait that is silently too short looks like
-    // success. STALL_COUNT sizes stall_reason's text table, so a slot added here without a
-    // string fails the build, and the order below is report priority: the first slot set wins.
+    // Bounded spins that EXPIRED, one bit each in Block::stalls: a spin that gives up still
+    // reaches the loop. Each slot needs its STALL_TEXT line, and the order is report priority:
+    // the first slot set wins.
     enum stall_slot
     {
         STALL_RESET,
@@ -93,7 +88,7 @@ namespace
     struct alignas(BLOCK_SIZE) Block
     {
         reg::Dqh qh[reg::QH_COUNT]; // MUST BE FIRST: this address goes in ENDPTLISTADDR
-        reg::Dtd td[reg::QH_COUNT]; // one per queue head; only five are ever primed
+        reg::Dtd td[reg::QH_COUNT]; // one per queue head
         uint8_t ep0_in_buf[KOS_USB_CDC_EP0_MAX_PACKET];
         uint8_t ep0_out_buf[KOS_USB_CDC_EP0_MAX_PACKET];
         uint8_t bulk_in_buf[KOS_USB_CDC_BULK_MAX_PACKET];
@@ -132,7 +127,7 @@ namespace
     constexpr uint16_t READY_OFFSET =
         static_cast<uint16_t>(offsetof(Block, sh) + usb::KOS_USB_READY_OFFSET);
 
-    // Every method touches the granted window, which only the IRQ thread holds (k_desc below).
+    // Every method touches the granted window: IRQ thread only.
     struct RtUsb
     {
         Block* blk;
@@ -177,9 +172,6 @@ namespace
             uintptr_t const a = regs + reg::endptctrl(ep);
             r32(a) = (r32(a) & ~clear) | set;
         }
-
-        // ------------------------------------------------------------------------------
-        // Descriptor construction.
 
         // RM 42.5.6.5.1: legal only while the endpoint is un-primed with no dTD outstanding.
         void qh_init(uint8_t qi, uint32_t max_packet, bool ios)
@@ -394,8 +386,8 @@ namespace
             // would wake this thread every millisecond for nothing.
             r32(regs + reg::USBINTR) = reg::USBINTR_UE | reg::USBINTR_UEE | reg::USBINTR_PCE
                                        | reg::USBINTR_URE | reg::USBINTR_SLE;
-            // RS is left clear: RM 42.5.6.1 wants the endpoint-zero queue heads built before
-            // the device attaches, so attach() does it after ep_open_all.
+            // RS stays clear: RM 42.5.6.1 wants the endpoint-zero queue heads built before
+            // the device attaches.
             set_stage(STAGE_ARMED);
             return 0;
         }
@@ -444,7 +436,6 @@ namespace
             r32(regs + reg::endptctrl(KOS_USB_CDC_EP_DATA)) =
                 reg::EPCTRL_TXE | reg::EPCTRL_TXR | (data_type << reg::EPCTRL_TXT_SHIFT)
                 | reg::EPCTRL_RXE | reg::EPCTRL_RXR | (data_type << reg::EPCTRL_RXT_SHIFT);
-            // Nothing is primed here; an un-primed endpoint NAKs (RM 42.7.35).
             set_stage(STAGE_EP_OPEN);
         }
 
@@ -472,14 +463,27 @@ namespace
                 kos_counter_increment(&stats_block()->stats.rx_overrun, 1u);
             }
 
+            // SLI on entering suspend, PCI on reaching FS or HS again, a resume included
+            // (RM 42.7.19); PORTSC1.SUSP orders the two.
+            uint32_t ev = 0;
+            if ((act & (reg::USBSTS_SLI | reg::USBSTS_PCI)) != 0u)
+            {
+                if ((r32(regs + reg::PORTSC1) & reg::PORTSC1_SUSP) != 0u)
+                {
+                    ev |= usb::KOS_USB_EV_SUSPEND;
+                }
+                else
+                {
+                    ev |= usb::KOS_USB_EV_RESUME;
+                }
+            }
             if ((act & reg::USBSTS_URI) != 0u)
             {
-                // A bus reset supersedes the rest of this pass: handling it re-initialises the
-                // queue heads, so a setup reported alongside it would be decoded out of a
-                // buffer on_bus_reset had just zeroed.
-                return usb::KOS_USB_EV_BUS_RESET;
+                // A bus reset supersedes the setups and completions of this pass: handling it
+                // re-initialises the queue heads, so a setup reported alongside it would be
+                // decoded out of a buffer on_bus_reset had just zeroed.
+                return ev | usb::KOS_USB_EV_BUS_RESET;
             }
-            uint32_t ev = 0;
             // A setup and a completion are found in their own registers, not in USBSTS: one
             // USBSTS_UI can carry both, and either can be pending with UI already cleared.
             if (r32(regs + reg::ENDPTSETUPSTAT) != 0u)
@@ -649,7 +653,7 @@ namespace
         {
             if (ep != KOS_USB_CDC_EP_DATA)
             {
-                return; // the notification endpoint is declared but never queued
+                return;
             }
             if (n > KOS_USB_CDC_BULK_MAX_PACKET)
             {
@@ -732,14 +736,6 @@ namespace
         // FIRST statement, before anything that can fault: it separates a thread that never
         // ran from one that ran and died.
         blk->stage = STAGE_ENTERED;
-#ifdef KICKOS_RTUSB_UNGRANTED_PROBE
-        // USBPHY1 is kernel-only and outside this service's grant, so an enforcing MPU must
-        // refuse this read. It does NOT separate an MPU refusal from a bridge one: USBPHY1 is
-        // an off-platform AIPS peripheral too.
-        uint32_t const phy = r32(kickos::imxrt1062::mmap::USBPHY1_BASE);
-        (void)phy;
-        kos::print("[rtusb] CONTROL: the ungranted read RETURNED; this thread is unrestricted\n");
-#endif
         RtUsb dev;
         dev.blk = blk;
         dev.regs = reg::USB1_BASE;
@@ -750,7 +746,7 @@ namespace
             report_stage();
             drv::trap();
         }
-        usb::irq_loop(cdc, &blk->sh); // parks in irq_wait; never returns
+        usb::irq_loop(cdc, &blk->sh); // never returns
     }
 
     void rtusb_service_thread(void* arg)
@@ -869,8 +865,7 @@ namespace
         drv::report(buf);
     }
 
-    // Indexed by stall_slot, so the enum is the only list; the assert below is what keeps the
-    // mapping total.
+    // Indexed by stall_slot.
     constexpr char const* STALL_TEXT[] = {
         "  a bounded wait EXPIRED: USBCMD.RST never cleared\n",
         "  the endpoints would not QUIESCE: two flush rounds left them primed\n",

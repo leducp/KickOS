@@ -25,7 +25,8 @@ tasks:
     uses: [/amp/2, /amp/5]
     maps: { /shm/share: rw }
     # Every arena block of every arm is reserved at start, and a block is never freed.
-    budgets: { ram_blocks: 48 }
+    budgets: { ram_blocks: 48, endpoints: 9, notifications: 7, irq_bindings: 7 }
+    caps: { width: 16 }
 
   # Started by the arms, never by the init: each runs the role its argv names.
   - name: peer0

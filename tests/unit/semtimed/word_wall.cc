@@ -134,7 +134,7 @@ namespace kickos
                 << "the deadline is not the wall time left on the monotonic clock";
             EXPECT_EQ(g_deadline_after, now + KICKOS_TIMER_MIN_DELTA_NS)
                 << "the set did not move the passed deadline to the soonest the timer takes";
-            EXPECT_EQ(kernel().sleepq, nullptr);
+            EXPECT_EQ(kernel().sleepq(kickos_kernel_core()), nullptr);
         }
 
         TEST_F(WordWall, a_backward_set_pushes_a_realtime_deadline_out_by_the_set)
@@ -167,7 +167,7 @@ namespace kickos
             EXPECT_EQ(wait_wall(BASE_NS), -KOS_ETIMEDOUT);
             EXPECT_EQ(wait_wall(0u), -KOS_ETIMEDOUT);
             EXPECT_EQ(g_switches, 0u) << "a passed deadline switched away";
-            EXPECT_EQ(kernel().sleepq, nullptr) << "a passed deadline armed one";
+            EXPECT_EQ(kernel().sleepq(kickos_kernel_core()), nullptr) << "a passed deadline armed one";
         }
 
         TEST_F(WordWall, a_limit_the_abi_does_not_define_is_refused)
@@ -175,7 +175,7 @@ namespace kickos
             seat_waiter_over_holder();
             EXPECT_EQ(word_wait(word_va(), g_word, WaitLimit(1000u, 1u)), -KOS_EINVAL);
             EXPECT_EQ(mutex_lock(word_va(), WaitLimit(1000u, 0x40000000u)), -KOS_EINVAL);
-            EXPECT_EQ(kernel().sleepq, nullptr);
+            EXPECT_EQ(kernel().sleepq(kickos_kernel_core()), nullptr);
         }
 
         // Marked deadlines among relative ones: each set moves the marked ones alone, by its
@@ -212,14 +212,14 @@ namespace kickos
             }
             auto order = []() {
                 std::vector<Thread*> v;
-                for (Thread* t = kernel().sleepq; t != nullptr; t = t->tnext)
+                for (Thread* t = kernel().sleepq(kickos_kernel_core()); t != nullptr; t = t->tnext)
                 {
                     v.push_back(t);
                 }
                 return v;
             };
             auto sorted = []() {
-                for (Thread* t = kernel().sleepq; t != nullptr and t->tnext != nullptr;
+                for (Thread* t = kernel().sleepq(kickos_kernel_core()); t != nullptr and t->tnext != nullptr;
                      t = t->tnext)
                 {
                     if (t->deadline_ns > t->tnext->deadline_ns)
@@ -251,7 +251,7 @@ namespace kickos
             EXPECT_EQ(q[3].t->deadline_ns, now + 25u * MS_NS) << "a relative deadline moved";
 
             advance(HOUR_NS + 30u * MS_NS);
-            EXPECT_EQ(kernel().sleepq, nullptr) << "a deadline outlived every set";
+            EXPECT_EQ(kernel().sleepq(kickos_kernel_core()), nullptr) << "a deadline outlived every set";
             for (Queued const& e : q)
             {
                 EXPECT_EQ(e.t->wait_result, -KOS_ETIMEDOUT);

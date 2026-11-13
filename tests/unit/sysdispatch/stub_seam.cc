@@ -112,6 +112,7 @@ namespace kickos
         uintptr_t g_context_entry = 0;
         uintptr_t g_second_arg = 0;
         uint64_t g_clock_now = 0;
+        bool g_device_reserved = false;
     }
 }
 
@@ -182,6 +183,12 @@ extern "C"
 
     struct arch_reserved_span arch_reserved_blocks(void)
     {
+        static arch_reserved_block const kernel_device[] = {
+            {kickos::testfix::STUB_DEVICE_BASE, kickos::testfix::STUB_DEVICE_SIZE}};
+        if (kickos::testfix::g_device_reserved)
+        {
+            return kernel_device;
+        }
         return {};
     }
 

@@ -27,10 +27,6 @@
 #include <stdint.h>
 
 extern "C" void kfault_terminate(void) __attribute__((noreturn));
-#if KICKOS_BENCH && KICKOS_KERNEL_CORES > 1
-// Declared rather than included: this TU is below <kickos/bench.h>.
-extern "C" void kickos_bench_lock_draw(uint32_t retries, uint32_t queued);
-#endif
 
 namespace
 {
@@ -90,23 +86,10 @@ namespace
     //
     // The instruction plays the role of both acquire and release on its own (4.3.13.5, p.122),
     // but it sits on the DRAW here, which grants nothing: the acquire is owed by the wait.
-    uint32_t kernel_lock_draw(uint32_t& retries)
+    uint32_t kernel_lock_draw(void)
     {
         uint32_t cur = 0u;
         uint32_t want = 0u;
-#if KICKOS_BENCH
-        uint32_t tries = 0u;
-        __asm volatile("1:  addi %[n], %[n], 1\n\t"
-                       "    l32ai %[cur], %[addr], 0\n\t"
-                       "    wsr.scompare1 %[cur]\n\t"
-                       "    addi %[want], %[cur], 1\n\t"
-                       "    s32c1i %[want], %[addr], 0\n\t"
-                       "    bne %[want], %[cur], 1b"
-                       : [cur] "=&a"(cur), [want] "=&a"(want), [n] "+a"(tries)
-                       : [addr] "a"(&g_next_ticket)
-                       : "memory");
-        retries = tries - 1u;
-#else
         __asm volatile("1:  l32ai %[cur], %[addr], 0\n\t"
                        "    wsr.scompare1 %[cur]\n\t"
                        "    addi %[want], %[cur], 1\n\t"
@@ -115,8 +98,6 @@ namespace
                        : [cur] "=&a"(cur), [want] "=&a"(want)
                        : [addr] "a"(&g_next_ticket)
                        : "memory");
-        (void)retries;
-#endif
         return cur;
     }
 
@@ -180,11 +161,7 @@ void arch_ipi_raise(uint32_t cores)
 #if KICKOS_KERNEL_CORES > 1
 void arch_kernel_lock(void)
 {
-    uint32_t retries = 0u;
-    uint32_t const ticket = kernel_lock_draw(retries);
-#if KICKOS_BENCH
-    kickos_bench_lock_draw(retries, ticket - now_serving());
-#endif
+    uint32_t const ticket = kernel_lock_draw();
     kickos::doorbell::await_turn([ticket] { return now_serving() == ticket; });
     kickos::klock::owner_take();
 }

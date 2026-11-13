@@ -10,10 +10,11 @@
 // TDRE (S1 bit 7) resets SET and re-asserts while the TWFIFO.TXWATER condition holds
 // (RM 52.3.5), so arming TIE on an idle channel raises immediately.
 //
-// OR/NF/FE/PF raise IRQ 32 while TDRE/TC/RDRF raise IRQ 31 (RM 3.2.2.3 Table 3-5), so
-// kos_uart_read services the error flags out of S1 itself. FE inhibits further reception and
-// OR blocks RDRF until cleared (RM 52.3.5), so a reader that ignores those flags leaves the
-// receiver permanently dead.
+// OR/NF/FE/PF raise IRQ 32 while TDRE/TC/RDRF raise IRQ 31 (RM 3.2.2.3 Table 3-5). FE
+// inhibits reception and OR blocks RDRF until cleared (RM 52.3.5), so kos_uart_read clears
+// them out of S1. OR can be left set with RDRF clear (it lands between the S1 read and the D
+// read that clears RDRF), which raises nothing on IRQ 31: open arms C3.ORIE, so a consumer
+// must wait on IRQ 32 as well.
 
 #include <kickos/driver/uart.h>
 
@@ -191,8 +192,8 @@ int32_t kos_uart_open(struct kos_uart* u, struct kos_uart_config const* cfg)
     }
     if (not drained)
     {
-        // Nothing in the channel has been written yet, so this leaves it as it was found, the
-        // slot shut again; the refusal is the answer whatever the disable says.
+        // Nothing was written yet, so the channel is as found. The refusal stands whatever
+        // the disable says.
         (void)kos_periph_disable(u->base);
         u->base = 0u;
         return -KOS_EBUSY;
@@ -207,7 +208,8 @@ int32_t kos_uart_open(struct kos_uart* u, struct kos_uart_config const* cfg)
     r8(u->base + ru::CFIFO_OFFSET) =
         static_cast<uint8_t>(ru::CFIFO_TXFLUSH | ru::CFIFO_RXFLUSH);
     r8(u->base + ru::MODEM_OFFSET) = 0u; // TXCTSE: an absent CTS stalls every byte
-    r8(u->base + ru::C3_OFFSET) = 0u;    // TXINV: an inverted TX corrupts every frame
+    // TXINV clear: an inverted TX corrupts every frame.
+    r8(u->base + ru::C3_OFFSET) = ru::C3_ORIE;
     r8(u->base + ru::S2_OFFSET) = 0u;    // LBKDE: prevents RDRF from ever setting
     r8(u->base + ru::C5_OFFSET) = 0u;    // TDMAS/RDMAS: a DMA request in place of ours
     r8(u->base + ru::IR_OFFSET) = 0u;    // IREN: infrared modulation on the TX pin
@@ -250,43 +252,40 @@ uint32_t kos_uart_read(struct kos_uart* u, unsigned char* dst, uint32_t n)
         // S1 is the FIRST HALF of every clear sequence on this part (RM 52.3.5, "read the
         // status register followed by a read or write to D"), so it is re-read per iteration.
         uint8_t const s1 = r8(u->base + ru::S1_OFFSET);
-        if ((s1 & ru::S1_RX_ERRORS) != 0u)
-        {
-            if ((s1 & ru::S1_OR) != 0u)
-            {
-                kos_counter_increment(&u->stats->rx_overrun, 1u);
-            }
-            if ((s1 & ru::S1_FE) != 0u)
-            {
-                kos_counter_increment(&u->stats->rx_framing, 1u);
-            }
-            if ((s1 & ru::S1_PF) != 0u)
-            {
-                kos_counter_increment(&u->stats->rx_parity, 1u);
-            }
-            // NF flags noise on a byte that framed correctly, so it is not folded into
-            // rx_framing; it is still cleared with the others.
-            //
-            // Through a named copy, not a cast to void: discarding a volatile lvalue does not
-            // perform the access at all, and the ACCESS is the second half of the clear
-            // sequence.
-            unsigned char const bad = r8(u->base + ru::D_OFFSET);
-            (void)bad;
-            // OR sets with the receive buffer EMPTY (RM 52.3.5), so the mandated read above
-            // is a read of an empty D, which "causes the FIFO pointers to become misaligned.
-            // A receive FIFO flush reinitializes the pointers" (RM 52.3.5 note). Without the
-            // flush the first overrun corrupts reception permanently.
-            if ((s1 & ru::S1_RDRF) == 0u)
-            {
-                r8(u->base + ru::CFIFO_OFFSET) = ru::CFIFO_RXFLUSH;
-            }
-            continue;
-        }
-        if ((s1 & ru::S1_RDRF) == 0u)
+        if ((s1 & (ru::S1_RDRF | ru::S1_RX_ERRORS)) == 0u)
         {
             break;
         }
-        dst[got] = r8(u->base + ru::D_OFFSET);
+        if ((s1 & ru::S1_OR) != 0u)
+        {
+            kos_counter_increment(&u->stats->rx_overrun, 1u);
+        }
+        if ((s1 & ru::S1_FE) != 0u)
+        {
+            kos_counter_increment(&u->stats->rx_framing, 1u);
+        }
+        if ((s1 & ru::S1_PF) != 0u)
+        {
+            kos_counter_increment(&u->stats->rx_parity, 1u);
+        }
+        // NF is noise on a byte that framed correctly: counted nowhere, cleared with the rest.
+        //
+        // Into a named copy even when the byte is dropped: discarding a volatile lvalue does
+        // not perform the access, and the ACCESS is the second half of the clear sequence.
+        unsigned char const b = r8(u->base + ru::D_OFFSET);
+        if ((s1 & ru::S1_RDRF) == 0u)
+        {
+            // OR with the buffer empty: the read above "causes the FIFO pointers to become
+            // misaligned. A receive FIFO flush reinitializes the pointers" (RM 52.3.5 note).
+            // Without the flush the first overrun corrupts reception permanently.
+            r8(u->base + ru::CFIFO_OFFSET) = ru::CFIFO_RXFLUSH;
+            continue;
+        }
+        if ((s1 & ru::S1_BYTE_ERRORS) != 0u)
+        {
+            continue;
+        }
+        dst[got] = b;
         got++;
         kos_counter_increment(&u->stats->rx_bytes, 1u);
     }
@@ -332,10 +331,10 @@ int32_t kos_uart_close(struct kos_uart* u)
     {
         return 0; // never opened, or already closed
     }
-    // TRUNCATES a frame still shifting, which is why the class contract puts flush before
-    // close. C2 is writable at any time (RM 52.3.4).
+    // TRUNCATES a frame still shifting. C2 is writable at any time (RM 52.3.4).
     r8(u->base + ru::C2_OFFSET) = 0u;
-    // Last: the store above needs the slot open.
+    r8(u->base + ru::C3_OFFSET) = 0u;
+    // Last: the stores above need the slot open.
     int32_t const rc = kos_periph_disable(u->base);
     u->base = 0u;
     return rc;

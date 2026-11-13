@@ -43,8 +43,9 @@ namespace
         return kos_thread_create(&p, &t);
     }
 
-    // Spawns parked threads until refused, then fills its endpoints until refused, reports both
-    // and holds everything until main slays the task.
+    // Spawns parked threads until refused, then fills its endpoints until refused, closes one and
+    // creates it again, creates a notification at the endpoint ceiling, reports and holds
+    // everything until main slays the task.
     int role_hog()
     {
         Report r{};
@@ -61,14 +62,23 @@ namespace
         kos_cap_t held = KOS_CAP_NONE;
         while (r.extra < SPAWN_CAP)
         {
-            int const rc = kos_endpoint_create(&held);
+            kos_cap_t ep = KOS_CAP_NONE;
+            int const rc = kos_endpoint_create(&ep);
             if (rc != 0)
             {
                 r.rc2 = rc;
                 break;
             }
+            held = ep;
             r.extra++;
         }
+        r.again = kos_handle_close(held);
+        if (r.again == 0)
+        {
+            r.again = kos_endpoint_create(&held);
+        }
+        kos_cap_t note = KOS_CAP_NONE;
+        r.notify = kos_notify_create(&note);
         report(REPORT, r);
         kos_sem_wait(&g_never, KOS_TIMEOUT_NONE);
         return 0;

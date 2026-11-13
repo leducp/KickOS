@@ -25,6 +25,7 @@ namespace
     {
         kos_thread_params p;
         kos_cap_grant grant;
+        kos_thread_t out;
     };
     GrantBlock g_grants;
 
@@ -88,8 +89,9 @@ namespace kickos
             g_grants.grant.rights_mask = KOS_CAP_SIGNAL;
             p.caps = &g_grants.grant;
             p.cap_count = 1;
-            kos_thread_t out = KOS_THREAD_NONE;
-            ASSERT_EQ(thread_create_call(&p, &out), 0) << "fixture: the spawn was refused";
+            ASSERT_EQ(thread_create_call(&p, reinterpret_cast<uintptr_t>(&g_grants.out)), 0)
+                << "fixture: the spawn was refused";
+            kos_thread_t const out = g_grants.out;
 
             Thread* child = nullptr;
             {

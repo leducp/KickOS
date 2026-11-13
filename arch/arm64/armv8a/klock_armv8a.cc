@@ -31,9 +31,6 @@
 extern "C"
 {
     void kfault_terminate(void) __attribute__((noreturn));
-#if KICKOS_BENCH && KICKOS_KERNEL_CORES > 1
-    void kickos_bench_lock_draw(uint32_t retries, uint32_t queued);
-#endif
 }
 
 namespace
@@ -59,25 +56,6 @@ namespace
     // maintenance, exception generating or return instruction, indirect branch or BL between a
     // failing Store-Exclusive and the Load-Exclusive retry, or a PE without FEAT_LSE loses its
     // forward-progress guarantee (DDI 0487 M.b B2.12.5, condition 2).
-#if KICKOS_BENCH
-    uint32_t kernel_lock_draw(uint32_t& retries)
-    {
-        uint32_t tick = 0;
-        uint32_t want = 0;
-        uint32_t res = 0;
-        uint32_t tries = 0;
-        __asm volatile("1:     add     %w3, %w3, #1\n"
-                       "       ldxr    %w0, [%4]\n"
-                       "       add     %w1, %w0, #1\n"
-                       "       stxr    %w2, %w1, [%4]\n"
-                       "       cbnz    %w2, 1b\n"
-                       : "=&r"(tick), "=&r"(want), "=&r"(res), "+r"(tries)
-                       : "r"(&g_next_ticket)
-                       : "memory");
-        retries = tries - 1u;
-        return tick;
-    }
-#else
     uint32_t kernel_lock_draw(void)
     {
         uint32_t tick = 0;
@@ -92,7 +70,6 @@ namespace
                        : "memory");
         return tick;
     }
-#endif
 #endif
 
     struct Part
@@ -178,13 +155,7 @@ void kickos_arm64_instruction_side_rendezvous(uint32_t peers)
 #if KICKOS_KERNEL_CORES > 1
 void arch_kernel_lock(void)
 {
-#if KICKOS_BENCH
-    uint32_t retries = 0;
-    uint32_t const ticket = kernel_lock_draw(retries);
-    kickos_bench_lock_draw(retries, ticket - now_serving());
-#else
     uint32_t const ticket = kernel_lock_draw();
-#endif
     kickos::doorbell::await_turn([ticket] { return now_serving() == ticket; });
     kickos::klock::owner_take();
 }

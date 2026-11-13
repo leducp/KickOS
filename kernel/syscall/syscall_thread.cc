@@ -5,6 +5,7 @@
 
 #include <kickos/ampshare.h>
 #include <kickos/arch/arch.h>
+#include <kickos/aspace.h>
 #include <kickos/cap.h>
 #include <kickos/config.h>
 #include <kickos/console_tx.h>
@@ -64,9 +65,13 @@ namespace kickos
         {
             return -KOS_EINVAL;
         }
-        if (grant_hits_reserved(base, size) or not arch_aspace_memtype_support(ARCH_MAP_DEVICE))
+        if (grant_hits_reserved(base, size))
         {
             return -KOS_EPERM; // the kernel's own device
+        }
+        if (not grant_memtype_at(ARCH_MAP_DEVICE, static_cast<arch_phys_addr_t>(base), size))
+        {
+            return -KOS_ENOTSUP;
         }
 #else
         // Inside an aperture the chip states, which holds no RAM, as a translating build asks.
@@ -257,7 +262,8 @@ namespace kickos
                 uint8_t type = ARCH_MAP_NORMAL;
                 if ((w.flags & KOS_WINDOW_UNCACHED) != 0)
                 {
-                    if (not arch_aspace_memtype_support(ARCH_MAP_NOCACHE))
+                    if (not grant_memtype_at(ARCH_MAP_NOCACHE, aspace_frame_of(w.base),
+                                             static_cast<size_t>(e->pages) * g))
                     {
                         return -KOS_ENOTSUP;
                     }
@@ -469,8 +475,7 @@ namespace kickos
 #else
                 // An out-of-arena stack_base would grant an R|W window over peripheral or kernel
                 // SRAM.
-                int const arc = ram_region_admit(sched::current(), base, p->stack_size,
-                                                 ARCH_MPU_R | ARCH_MPU_W, RAM_ADMIT_GRANT);
+                int const arc = ram_stack_admit(sched::current(), base, p->stack_size);
                 if (arc != 0)
                 {
                     return arc;
@@ -909,10 +914,16 @@ namespace kickos
         }
     }
 
-    // `p` is the kernel's copy. `kname` is the thread's name in kernel memory, or null for the
-    // default; `args` the argv block the stack's top takes, with p->arg the task's shared block
-    // it names, or null. `into` is the task a create's entry thread starts, null for a thread
-    // of the caller's own task.
+    // Drops the references the first `n` grants of a spawn took.
+    static void spawn_refs_undo(uint8_t const* kind, int const* obj, int n)
+    {
+        for (int ci = 0; ci < n; ci++)
+        {
+            obj_ref_undo(static_cast<CapType>(kcap_grant_type(kind[ci])), obj[ci],
+                         kcap_grant_rights(kind[ci]));
+        }
+    }
+
     // The width a spawn seats: its params', or its task's where they ask none.
     static uint32_t spawn_cap_width(kos_thread_params const* p, Task const* tk)
     {
@@ -923,8 +934,14 @@ namespace kickos
         return task_cap_width(tk);
     }
 
+    // `p` is the kernel's copy. `kname` is the thread's name in kernel memory, or null for the
+    // default; `args` the argv block the stack's top takes, with p->arg the task's shared block
+    // it names, or null. `into` is the task a create's entry thread starts, which comes back in
+    // *child out of the scheduler for its create to start; null for a thread of the caller's own
+    // task, whose handle goes to the caller's word at `out` before the thread exists, so a
+    // refused write is a refused spawn.
     static int spawn_locked(kos_thread_params const* p, char const* kname, ArgBlock const* args,
-                            Task* into, Held lock, kos_thread_t* out_thread)
+                            Task* into, uintptr_t out, Held lock, Thread** child)
     {
         Thread* const spawner = sched::current();
         Task* tk = into;
@@ -1262,8 +1279,9 @@ namespace kickos
             return -KOS_EAGAIN; // the destination task holds its ceiling of one of the pools
         }
 
-        // obj_ref_inc must stay the last fallible step: after thread_create the unwind would
-        // also owe the task reference and the child's already-seated caps.
+        // Every fallible step precedes thread_create, after which the unwind would also owe the
+        // task reference and the child's seated caps. The handle write is the last of them: a
+        // refusal after it would leave the caller a name for nothing.
         for (int ci = 0; ci < ncaps; ci++)
         {
             if (obj_ref_inc(static_cast<CapType>(kcap_grant_type(deleg_kind[ci])), deleg_obj[ci],
@@ -1271,44 +1289,50 @@ namespace kickos
             {
                 continue;
             }
-            for (int cj = 0; cj < ci; cj++)
-            {
-                obj_ref_undo(static_cast<CapType>(kcap_grant_type(deleg_kind[cj])),
-                             deleg_obj[cj], kcap_grant_rights(deleg_kind[cj]));
-            }
+            spawn_refs_undo(deleg_kind, deleg_obj, ci);
             cap_slab_detach(attr.cap_dir, &attr.cap_free_head, &attr.cap_width);
             spawn_unwind(k, attr, tk, stack, stack_size, i);
             return -KOS_EOVERFLOW; // an object refcount is at its ceiling
         }
+        if (into == nullptr)
+        {
+            kos_thread_t const named = k.threads.handle_for(i);
+            if (not kaccess_to_user(user_space_of(spawner), out, &named, sizeof(named)))
+            {
+                spawn_refs_undo(deleg_kind, deleg_obj, ncaps);
+                cap_slab_detach(attr.cap_dir, &attr.cap_free_head, &attr.cap_width);
+                spawn_unwind(k, attr, tk, stack, stack_size, i);
+                return -KOS_EFAULT;
+            }
+        }
         thread_create(&k.threads.slots()[i], p->entry, arg, stack, stack_size, attr);
         // Nothing below here may fail: the validation above guarantees each install succeeds,
         // and the reference loop already holds a reference for every cap seated here.
-        Thread* const child = &k.threads.slots()[i];
+        Thread* const made = &k.threads.slots()[i];
         task_run_join(tk, i);
-        cap_install_defaults(child, lock);
-        cap_seat_authority(child, p->authority);
+        cap_install_defaults(made, lock);
+        cap_seat_authority(made, p->authority);
         for (int ci = 0; ci < ncaps; ci++)
         {
-            cap_install_at(child, static_cast<int>(deleg_dest[ci]), deleg_obj[ci],
+            cap_install_at(made, static_cast<int>(deleg_dest[ci]), deleg_obj[ci],
                            static_cast<CapType>(kcap_grant_type(deleg_kind[ci])),
                            kcap_grant_rights(deleg_kind[ci]), deleg_badge[ci]);
         }
         // Stays inside the lock: a spawner slain between an allocated child and sched::add never
         // returns to its continuation (switch_book redirects a CANCEL_SLAY thread to the exit
         // stub), leaving a fully built INACTIVE orphan that nothing frees.
-        if (not driver_entry)
+        if (into == nullptr)
         {
-            sched::add(child, lock);
+            sched::add(made, lock);
         }
         presync_commit();
-        *out_thread = k.threads.handle_for(i);
+        *child = made;
         return 0;
     }
 
-    static int spawn_masked(kos_thread_params const* p, kos_thread_t* out_thread)
+    static int spawn_masked(kos_thread_params const* p, uintptr_t out)
     {
         IrqLock lock;
-        *out_thread = KOS_THREAD_NONE; // seated before every early return
         if (p == nullptr)
         {
             return -KOS_EINVAL;
@@ -1367,12 +1391,13 @@ namespace kickos
                 kname = namebuf;
             }
         }
-        return spawn_locked(&params, kname, nullptr, nullptr, lock, out_thread);
+        Thread* child = nullptr;
+        return spawn_locked(&params, kname, nullptr, nullptr, out, lock, &child);
     }
 
-    int thread_create_call(kos_thread_params const* p, kos_thread_t* out_thread)
+    int thread_create_call(kos_thread_params const* p, uintptr_t out)
     {
-        return spawn_masked(p, out_thread);
+        return spawn_masked(p, out);
     }
 
     namespace
@@ -1456,13 +1481,8 @@ namespace kickos
             {
                 return rc;
             }
-            // The caller parks first: thread_cancel_kind switches to a victim that outranks the
-            // caller, and on a backend that swaps inline that victim can reach EXITED first, its
-            // exit sweep then finding nobody parked on it. park_queueless also detaches
-            // `current`, which the cancel may have republished. Its epoch is the one sampled
-            // there: the victim may run, die and wake this thread inside the cancel, and an
-            // epoch read afterwards would already carry the resume, so wq_confirm_resume would
-            // spin to KICKOS_POLL_SPIN_MAX and panic.
+            // Parked first, so the cancel takes no pass: from a running caller it could run the
+            // victim to its exit, whose sweep would then find nobody parked on it.
             epoch = park_queueless(ask)(c, WAIT_JOIN, t, lock);
             ktime_deadline_arm(c, timeout_us, lock);
             thread_cancel_kind(t, cancel, lock);
@@ -2169,7 +2189,6 @@ namespace kickos
         struct Created
         {
             Thread* entry = nullptr;
-            kos_task_t handle = KOS_TASK_NONE;
             bool published = false;
             CreateWait wait = CreateWait::NONE;
             int16_t decl = -1; // the declaration the wait is for
@@ -2232,9 +2251,11 @@ namespace kickos
             return CreateWait::NONE;
         }
 
-        // The locked pass of an instance's create. A console create returns with `out->published`
-        // and its entry thread out of the scheduler, a failure having ended the task.
-        int task_create_locked(uint32_t prog, uintptr_t pu, Created* out)
+        // The locked pass of an instance's create, which writes the task's handle to the
+        // caller's word at `uout` before its entry runs, a refused write ending the task. A
+        // console create returns with `out->published` and its entry thread out of the
+        // scheduler, a failure having ended the task.
+        int task_create_locked(uint32_t prog, uintptr_t pu, uintptr_t uout, Created* out)
         {
             IrqLock lock;
             Thread* const c = sched::current();
@@ -2319,8 +2340,8 @@ namespace kickos
             {
                 return rc;
             }
-            kos_thread_t entry = KOS_THREAD_NONE;
-            rc = spawn_locked(&p, image_decl_name(&d), &args, t, lock, &entry);
+            Thread* held = nullptr;
+            rc = spawn_locked(&p, image_decl_name(&d), &args, t, 0, lock, &held);
             if (rc != 0)
             {
                 task_drop_hold(t, lock);
@@ -2330,14 +2351,7 @@ namespace kickos
             {
                 task_ready_seat(t, ready);
             }
-            out->handle = task_handle(t);
-            if (not driver)
-            {
-                task_mark_started(t);
-                return 0;
-            }
-            Thread* const held = kernel().threads.resolve(entry);
-            bool const console = (d.flags & KOS_DECL_CONSOLE) != 0;
+            bool const console = driver and (d.flags & KOS_DECL_CONSOLE) != 0;
             if (console)
             {
                 rc = driver_publish(c, tp, d, t, lock);
@@ -2348,12 +2362,21 @@ namespace kickos
                 }
                 out->published = true;
             }
-            // Past the publish, which frees the console's own line from the kernel's handler.
-            rc = driver_lines(c, held, tp, d);
-            if (rc != 0)
+            if (driver)
+            {
+                // Past the publish, which frees the console's own line from the kernel's handler.
+                rc = driver_lines(c, held, tp, d);
+                if (rc != 0)
+                {
+                    task_drop_hold(t, lock);
+                    return rc;
+                }
+            }
+            kos_task_t const named = task_handle(t);
+            if (not kaccess_to_user(user_space_of(c), uout, &named, sizeof(named)))
             {
                 task_drop_hold(t, lock);
-                return rc;
+                return -KOS_EFAULT;
             }
             out->entry = held;
             if (not console)
@@ -2449,9 +2472,8 @@ namespace kickos
     }
 
     // An instance of the program, its entry thread started at the declared priority.
-    int task_create_call(uint32_t prog, uintptr_t pu, uint32_t timeout_us, kos_task_t* out_task)
+    int task_create_call(uint32_t prog, uintptr_t pu, uint32_t timeout_us, uintptr_t out)
     {
-        *out_task = KOS_TASK_NONE; // seated before every early return
 #if KICKOS_PRESYNC
         // One deadline across the rounds the dispatch sends the call through.
         uint64_t until = 0;
@@ -2472,7 +2494,7 @@ namespace kickos
         while (true)
         {
             made = Created{};
-            rc = task_create_locked(prog, pu, &made);
+            rc = task_create_locked(prog, pu, out, &made);
             if (until == 0 or made.wait == CreateWait::NONE)
             {
                 break;
@@ -2514,12 +2536,7 @@ namespace kickos
                 sched::add(made.entry, lock);
             }
         }
-        if (rc != 0)
-        {
-            return rc;
-        }
-        *out_task = made.handle;
-        return 0;
+        return rc;
     }
 
     int program_find_call(uintptr_t name, uint32_t* out_prog)
@@ -2562,11 +2579,7 @@ namespace kickos
             {
                 return -KOS_EPERM;
             }
-            // The group cancel runs before the hold is dropped: dropping it first can free the
-            // slot outright when the group is already empty, and `t` would then be a dangling
-            // name.
-            task_stop(t, lock);
-            task_drop_hold(t, lock);
+            task_stop_and_drop_hold(t, lock);
             return 0;
         }
         uint32_t epoch = 0;
@@ -2588,10 +2601,6 @@ namespace kickos
             {
                 return -KOS_EPERM;
             }
-            if (task_has_thread(t, c))
-            {
-                return -KOS_EDEADLK; // a member would wait on its own death
-            }
             // Already empty and swept: nothing could wake a park here. A member still sweeping
             // wakes it at the end of its sweep.
             if (task_member_count(t) == 0 and task_sweeping(t) == 0)
@@ -2599,9 +2608,8 @@ namespace kickos
                 task_drop_hold(t, lock);
                 return 0;
             }
-            // Parked before the group cancel, and the epoch sampled before it, as in
-            // thread_cancel_call: a member that outranks this thread can reach its own exit from
-            // inside that call on a backend that swaps inline.
+            // Parked before the stop, as in thread_cancel_call, so the stop takes no pass: every
+            // member is marked and every park ended before the reschedule below switches.
             epoch = death_park(ask)(c, t, lock);
             ktime_deadline_arm(c, timeout_us, lock);
             task_stop(t, lock);

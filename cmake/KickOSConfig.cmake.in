@@ -27,6 +27,8 @@ endif()
 set(KICKOS_BOARD "@KICKOS_BOARD@")
 set(KICKOS_ARCH "@KICKOS_ARCH@")
 set(KICKOS_CHIP "@KICKOS_CHIP@")
+# What a consumer's composition compiles its kernel tables with, as the package's kernel was.
+set(KICKOS_KERNEL_HALF_FLAGS "@KICKOS_KERNEL_HALF_FLAGS@")
 if(NOT "@KICKOS_CHIP_ESPTOOL_IMAGE@" STREQUAL "")
   set(KICKOS_CHIP_ESPTOOL_IMAGE "@KICKOS_CHIP_ESPTOOL_IMAGE@")
 endif()

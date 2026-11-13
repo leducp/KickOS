@@ -1,32 +1,30 @@
 /* SPDX-License-Identifier: CECILL-C
  * Copyright (c) 2026 Philippe Leduc
  *
- * The extents the RXv3 trap sites (switch.S) reserve: two at the BOTTOM of a thread's own
- * stack, before they write through the live USP, and one at the top of that thread's
- * per-thread KERNEL block, which the syscall trap's generic arm transfers to.
+ * The extents the RXv3 trap sites (switch.S) reserve: at the BOTTOM of a thread's own stack,
+ * before they write a save through the live USP, and at the top of that thread's per-thread
+ * KERNEL block, which the syscall trap's generic arm transfers to.
  *
  * AN EXTENT AND NOT A POINTER TEST. Every store these sites make through a live USP runs
  * SUPERVISOR, and the RX MPU checks user mode only (RX72M UM sec.17.1.1), so supervisor
  * bypasses it. A test that only asked whether the USP lies inside [stack_lo, stack_hi) would
  * let a user thread park it one word above stack_lo and have the kernel write supervisor into
- * the NEIGHBOUR's saved frame, there being no padding between pool stacks: the rte resuming
- * the neighbour pops PC then PSW from it, so clearing PSW.PM there hands it supervisor.
+ * the NEIGHBOUR's saved frame, there being no padding between pool stacks.
  *
- * THE SYSCALL DISPATCH IS ON THE KERNEL BLOCK, svc_trampoline relocating R0 onto the calling
- * thread's block (ctx.kernel_sp) first, so it is a requirement on KICKOS_KERNEL_STACK_SIZE.
- * The eight-byte [userPC][userPSW] head the generic arm leaves on the thread's own stack is
- * not optional: RX has no way to leave user mode but RTE, RTE pops PC then PSW from R0, and
- * R0 is the USP while PSW.U is set, so the resume USP IS the head's address plus eight.
+ * NO PC OR PSW IS EVER SAVED ON A THREAD'S STACK. The PSW an RTE loads carries PM, so the pair a
+ * thread resumes with lives in its context (ctx.resume_pc, ctx.resume_psw) or in the kernel
+ * block's continuation header, and every RTE pops it off the ISP. What a save leaves on the
+ * thread's stack is that thread's own registers.
  *
  * The classes, separated by WHICH STACK they land on:
- *   PENDSW    the deferred switcher's context save on the interrupted thread's own stack; it
- *             is that thread's saved context and ctx.sp names it, so it does not move.
- *   SYS       the generic arm's leavings on that same stack: the head above plus the switcher
- *             zone a SWINT can put below it. No C frame at all, so the class has no root.
- *   SYS_FAST  the fastpath arm's 236-byte save on the caller's own USP, that frame BEING the
- *             caller's saved context, plus the restore descent it pays on resume.
+ *   PENDSW    the deferred switcher's save on the interrupted thread's own stack; it is that
+ *             thread's saved context and ctx.sp names it, so it does not move.
+ *   SYS_FAST  the fastpath arm's save on the caller's own USP, that frame BEING the caller's
+ *             saved context.
  *   SYSK      both C dispatches on the caller's kernel block.
- *   ISP       the interrupt stack, below: boot and every interrupt and exception nested on it.
+ *   ISP       the interrupt stack, below: boot, every interrupt and exception nested on it, and
+ *             every C call of the switch landing.
+ * The generic syscall arm writes nothing on the thread's stack, so it has no class there.
  *
  * tests/static/check_trap_redzone.sh re-measures the descent figures below and fails when a
  * worst case exceeds what the class reserves. The measured half and the structural half stay
@@ -46,141 +44,114 @@
  * code (rx-elf-objdump on a linked image, -misa=v3 -mdfpu):
  *
  *   pendsw / the syscall trap's fastpath arm, the same frame in both:
- *     sub #12 (the [R15][PC][PSW] head)               12
- *     pushm r1-r14                            56 ->   68
- *     push.l x7 (FPSW, A1 gu/hi/lo, A0 gu/hi/lo)      96
- *     dpushm.d dr0-dr15                      128 ->  224
- *     dpushm.l dpsw-decnt                     12 ->  236
+ *     pushm r1-r15 (pendsw), or R15 and pushm r1-r14       60
+ *     push.l x7 (FPSW, A1 gu/hi/lo, A0 gu/hi/lo)      88
+ *     dpushm.d dr0-dr15                      128 ->  216
+ *     dpushm.l dpsw-decnt                     12 ->  228
  *   switch.S checks this itself: FRAME_R1_OFF (168, the `add #FRAME_R1_OFF, r1` the fastpath
- *   arm emits) plus the 68 above r1 is the 236 below.
+ *   arm emits) plus the 60 of R1-R15 is the 228 below.
  *
- * A DFPU-less build writes 96 rather than 236, so these are the -mdfpu worst case. */
-#define KICKOS_RX_TRAP_FRAME_PENDSW 236
-#define KICKOS_RX_TRAP_FRAME_SYS_FAST 236
+ * A DFPU-less build writes 88 rather than 228, so these are the -mdfpu worst case. */
+#define KICKOS_RX_TRAP_FRAME_PENDSW 228
+#define KICKOS_RX_TRAP_FRAME_SYS_FAST 228
 
-/* THE SYS CLASS, structural half: everything the generic arm can put below the USP the guard
- * validates, with no C frame among it. P0 is that USP.
- *
- *   -8     the [userPC][userPSW] head, stored and committed with mvtc before the trap rewrites
- *          the stacked PC and RTEs. svc_trampoline's own rte pops the pair back off it, so P0
- *          is what the thread resumes on.
- *   -300   ONE WHOLE PENDSW ZONE, at KICKOS_RX_TRAP_REDZONE_PENDSW. The RTE restores the
- *          caller's PSW.I, so a timer can be accepted from the head's address onwards and a
- *          SWINT pended over it rebuilds its 236-byte save on this USP plus the 64-byte
- *          restore descent. Charged once, covering both sides of the write of R0.
- *
- * It CANNOT REPEAT: the switcher runs with PSW.I clear throughout and switches away, so at
- * most one such save is ever stacked on a thread's USP. */
-#define KICKOS_RX_TRAP_NEST_SYS 308
+/* Both frame builders bank the DPFPU file at a fixed multiple of this below the USP they arrive
+ * on (switch.S refuses a frame where it is not), and a double at 4 mod 8 moves in two 64-bit
+ * beats (RX72M UM sec.2.8.5, 16.2.1). arch_irq_restore and arch_syscall_reg align the USP to it
+ * before a trap can bank, since only they can: the frame's top IS the resume USP. */
+#define KICKOS_RX_TRAP_BANK_ALIGN 8
+
+/* The continuation header the syscall trap's generic arm lays at the top T of the caller's
+ * kernel block before it points the USP there: [T-16] a3, the fifth argument the psABI passes
+ * on the stack, [T-12] userPC, [T-8] userPSW, [T-4] the USP the thread resumes on. A blocking
+ * dispatch has the switcher freeze its continuation BELOW it, so it survives the block. */
+#define KICKOS_RX_TRAP_SYSK_HEADER 16
 
 /* THE SYSK CLASS, structural half: what stands between the top of a kernel block (T =
  * ctx.kernel_sp) and the first byte syscall_dispatch may use, plus what a preemption puts
  * below the deepest byte it uses.
  *
- *   -8     the continuation header svc_trampoline lays at T: at [T-8] a3, the fifth argument
- *          the psABI passes on the stack, and at [T-4] the USP the thread resumes on. That
- *          USP lives HERE because a blocking dispatch has the switcher freeze its
- *          continuation BELOW this header, so the header survives the block for free. No pad
- *          term: RX stack alignment is 4 bytes and every store here is a word store.
- *   -300   ONE WHOLE PENDSW ZONE again, below the deepest byte of the dispatch.
- *
- * 308 is the same figure the SYS class carries and for a different reason, so the two stay
- * separate macros. */
-#define KICKOS_RX_TRAP_NEST_SYSK 308
+ *   -16    the continuation header above. No pad term: RX stack alignment is 4 bytes and
+ *          every store here is a word store.
+ *   -228   ONE WHOLE PENDSW ZONE, below the deepest byte of the dispatch. */
+#define KICKOS_RX_TRAP_NEST_SYSK 244
 
 /* Worst-case bytes the kernel's C dispatch descends BELOW each of those, per class, as the
  * longest weighted path over the merged call graph (MinSizeRel, -fcallgraph-info=su,da) from
  * the roots switch.S branches to. On rx-elf the compiler's reported frame ALREADY includes the
  * incoming return-address slot, so the chains below are not missing a per-level 4.
  *
- *   _PENDSW      44  the only C the restore epilogue runs below an incoming frame, which the
- *                    INCOMING thread's stack pays, checked against this same figure when it
- *                    was switched out. 44 on rx72m-bench, whose phase bracket is the deepest:
- *                    kickos_arch_mpu_commit[32] -> kickos_bench_mpu_commit[4]
- *                    -> bench_phase_add[8]. 32 on rx72m,
- *                    kickos_arch_mpu_commit[28] -> arch_irq_restore[4], and 4 on rx72m-flat.
- *   _SYS          0  svc_trampoline moves R0 to ctx.kernel_sp before it calls anything.
- *   _SYS_FAST    44  the same epilogue and so the same chain as _PENDSW, kept a macro of its
- *                    own because it is a distinct SITE with its own guard.
- *   _SYSK       796  ENFORCED over 764 measured, as headroom. THE PANIC REPORTER IS NOT ON
+ *   _PENDSW       0  the restore epilogue runs its C on the ISP, so nothing descends below an
+ *                    incoming frame.
+ *   _SYS_FAST     0  the same epilogue, kept a macro of its own because it is a distinct SITE
+ *                    with its own guard.
+ *   _SYSK       796  ENFORCED over 656 measured, as headroom. THE PANIC REPORTER IS NOT ON
  *                    THIS CHAIN: kpanic leaves this stack before it prints
  *                    (kickos_panic_stack_enter, switch.S). kickos_ipc_fastpath is the other
- *                    root and is dominated. rx72m-bench sets the measurement, its bench arm
- *                    printing:
- *                    syscall_dispatch[48] -> bench_irq_sweep[104] -> dist_print_fmt[96]
- *                    -> kprintf_paced[284] -> console_emit[36]
- *                    -> console_chip_writer_leave[12] -> console_dark_wake[24] -> wake[8]
- *                    -> resched_after_wake[4] -> pick_and_seat[32] -> ktime_rearm[28]
- *                    -> arch_timer_arm[24] -> arch_clock_now[32] -> __divdi3[32].
- *                    rx72m reads 636, a task create of 9 grants seating its default
- *                    capabilities; arch_rxv3.cc refuses more than 9:
- *                    syscall_dispatch[44] -> task_create_call[132] -> spawn_locked[240]
+ *                    root and is dominated. rx72m sets the measurement, a task create of 9
+ *                    grants seating its default capabilities; arch_rxv3.cc refuses more
+ *                    than 9:
+ *                    syscall_dispatch[48] -> task_create_call[136] -> spawn_locked[252]
  *                    -> cap_install_defaults[20] -> cap_seat_stdout[52] -> obj_ref_drop[28]
  *                    -> irq_ref_drop[28] -> irq_detach[12] -> irq_line_op[4]
  *                    -> arch_irq_mask[12] -> kickos_rx_group_arm[32]
  *                    -> kickos_rx_icu_line_arm[4] -> icu_ier_set[24] -> arch_irq_restore[4].
- *                    rx72m-flat reads 596, the same create, spawn_locked[200].
+ *                    rx72m-flat reads 616, the same create, spawn_locked[212].
  *                    ONE FIGURE COVERS EVERY POSTURE, as rv32imac's _SYS does.
  *
  * ENFORCED figures are those measurements rounded up to 64, or above them as headroom where a
  * figure says so. _SYSK is NOT rounded, a kernel block being sized to it directly, so a byte of
  * slack there costs a byte per thread slot.
  *
- * rx72m is the only chip that selects ARCH_RXV3 and the gate runs on all three of its presets,
- * so a figure here is the worst of three readings. No telemetry build is among
- * them: _PENDSW's optional trace root is ABSENT from every graph. A re-measurement MUST carry
- * this board's -misa=v3 -mdfpu baseline; at the compiler's default -misa=v1 with no DFPU every
- * figure comes out smaller than the truth. */
-#define KICKOS_RX_TRAP_KERNEL_DEPTH_PENDSW 64
-#define KICKOS_RX_TRAP_KERNEL_DEPTH_SYS 0
-#define KICKOS_RX_TRAP_KERNEL_DEPTH_SYS_FAST 64
-/* THE ZONE IS 308 + 796 = 1104, which needs 1108 bytes of block once the canary word below it
- * is counted, and thread.cc rounds the block to KICKOS_STACK_ALIGN: 1120. So 12 of that
+ * rx72m is the only chip that selects ARCH_RXV3 and the gate runs on both of its presets,
+ * so a figure here is the worst of two readings. A re-measurement MUST carry this board's
+ * -misa=v3 -mdfpu baseline; at the compiler's default -misa=v1 with no DFPU every figure comes
+ * out smaller than the truth. */
+#define KICKOS_RX_TRAP_KERNEL_DEPTH_PENDSW 0
+#define KICKOS_RX_TRAP_KERNEL_DEPTH_SYS_FAST 0
+/* THE ZONE IS 244 + 796 = 1040, which needs 1044 bytes of block once the canary word below it
+ * is counted, and thread.cc rounds the block to KICKOS_STACK_ALIGN: 1056. So 12 of that
  * block's apparent slack is alignment fill and NOT room a depth may grow into. */
 #define KICKOS_RX_TRAP_KERNEL_DEPTH_SYSK 796
 
 /* THE EXIT CLASS, structural half: what a preemption puts below the deepest byte the DEATH
- * PATH uses. One whole PENDSW zone, 236 of save plus the 64 restore descent below it, which
- * is KICKOS_RX_TRAP_REDZONE_PENDSW read from the other end and what switch.S computes as
- * BLOCK_USP_MAX_DROP = SIZE - REDZONE_PENDSW - 4. A FRAME TERM and not 0: the stub runs at
- * PSW.I = 1 with IPL = 0, which is what lets its exit_current reschedule.
+ * PATH uses. One whole PENDSW zone, which is KICKOS_RX_TRAP_REDZONE_PENDSW read from the other
+ * end and what switch.S computes as BLOCK_USP_MAX_DROP = SIZE - REDZONE_PENDSW - 4. A FRAME
+ * TERM and not 0: the stub runs at PSW.I = 1 with IPL = 0, which is what lets its exit_current
+ * reschedule.
  *
  * PLUS THE EIGHT BYTES THE ENTRY SKIPS. arch_fault_redirect_to_exit seats the USP at
  * kernel_sp - 8, because kickos_rx_pendsw's block leg tests the distance with bleu and reads
  * a USP exactly at the top as zero distance, refusing it. Those 8 bytes sit above every byte
- * the descent uses, so the block holds them too: 8 + 300 is 308.
+ * the descent uses, so the block holds them too: 8 + 228 is 236.
  *
  * A PLAIN INTEGER and not the expression, because check_trap_redzone.sh scrapes this macro as
  * an immediate and REFUSES a figure it cannot find as one. arch_rxv3.cc asserts the
  * composition instead. */
-#define KICKOS_RX_TRAP_NEST_EXIT 308
+#define KICKOS_RX_TRAP_NEST_EXIT 236
 
 /* The measured descent of the two stubs a dying thread runs PRIVILEGED on its own KERNEL
  * BLOCK, kickos_fault_stack_top answering with ctx.kernel_sp: kickos_thread_fault_exit and
- * kickos_thread_slay_exit. 428 on rx72m-bench and 404 on the other two presets: the fault
- * stub's record line descends the timer rearm of the wake that ends its console write. On
- * rx72m-bench:
+ * kickos_thread_slay_exit. 416 on rx72m and rx72m-flat: the fault stub's record line descends
+ * the timer rearm of the wake that ends its console write:
  *   kickos_thread_fault_exit[8] -> fault_record_print[56] -> kprintf_record[24]
- *   -> kvprintf_fault[108] -> console_emit[36] -> console_chip_writer_leave[12]
+ *   -> kvprintf_fault[108] -> console_emit[32] -> console_chip_writer_leave[8]
  *   -> console_dark_wake[24] -> wake[8]
- *   -> resched_after_wake[4] -> pick_and_seat[32] -> ktime_rearm[28] -> arch_timer_arm[24]
+ *   -> resched_after_wake[4] -> pick_and_seat[24] -> ktime_rearm[32] -> arch_timer_arm[24]
  *   -> arch_clock_now[32] -> __divdi3[32]
  *
- * Rounded like a thread-stack figure because it never binds: 308 + 448 = 756 against 1116
- * usable, where SYSK asks 1104. 448 is enforced over the 428 measured. */
+ * Rounded like a thread-stack figure because it never binds: 236 + 448 = 684 against 1052
+ * usable, where SYSK asks 1040. 448 is enforced over the 416 measured. */
 #define KICKOS_RX_TRAP_KERNEL_DEPTH_EXITK 448
 
 /* What each guard enforces: room below the USP, in bytes.
  *
  * The syscall figure is ONE constant covering both arms: the guard sits at the top of
  * kickos_rx_syscall_trap, above the `cmp #56, r1` that chooses the arm, so it runs before the
- * arm is known, and arch_rxv3.cc static_asserts that it dominates both arms in both
- * directions. THE GENERIC ARM SETS IT, at 308; the fastpath's 236 + 64 is smaller because it
- * carries no switcher zone of its own, checking PSW.I, refusing an entry still carrying it,
- * and setting it nowhere. The 64 is its restore descent, paid below its own save on resume. */
+ * arm is known. The fastpath arm sets it; the generic arm writes nothing below the USP. */
 #define KICKOS_RX_TRAP_REDZONE_PENDSW \
     (KICKOS_RX_TRAP_FRAME_PENDSW + KICKOS_RX_TRAP_KERNEL_DEPTH_PENDSW)
-#define KICKOS_RX_TRAP_REDZONE_SYS 308
+#define KICKOS_RX_TRAP_REDZONE_SYS 228
 
 /* ENTRY_FRAME is spent ABOVE the validated USP: nothing, the INT trap and every interrupt being
  * accepted on the ISP. */
@@ -193,30 +164,18 @@
 #define KICKOS_RX_TRAP_NEED_SYSK \
     (KICKOS_RX_TRAP_NEST_SYSK + KICKOS_RX_TRAP_KERNEL_DEPTH_SYSK)
 
-/* The [userPC][userPSW] head kickos_rx_syscall_trap commits on the calling thread's stack
- * before its RTE, and which svc_trampoline's R0 sits below. Two words, because RTE pops PC
- * then PSW and nothing else. switch.S consumes this rather than repeating the literal, so the
- * head and the displacements that step over it cannot drift apart.
- *
- * NOT KICKOS_RX_TRAP_HEAD_ABOVE_SYS, which is 8 for a different reason: that one is how far
- * ABOVE the entry USP the trap path reads. The kernel block's continuation header is a THIRD
- * 8 with a third derivation. */
-#define KICKOS_RX_TRAP_HEAD_SYS 8
-
 /* Bytes the trap path reads ABOVE the USP the syscall guard validates, which the bound on that
- * USP has to reserve. svc_trampoline reads a3 with `mov.l 12[r0], r5`, and its R0 is the entry
- * USP minus the eight-byte head the trap committed, so the read lands at entry+4 and ends at
- * entry+8: the psABI fifth-argument slot arch_syscall left at [R0+4]. A bound that merely kept
- * the USP AT OR BELOW stack_hi would let that read run past the top of the stack. */
+ * USP has to reserve: the generic arm reads a3, the psABI fifth argument arch_syscall left at
+ * [USP+4], so the read ends at USP+8. A bound that merely kept the USP AT OR BELOW stack_hi
+ * would let that read run past the top of the stack. */
 #define KICKOS_RX_TRAP_HEAD_ABOVE_SYS 8
 
 /* Alignment the guards require of a live USP. Every store in both frame builds is a word store
- * (mov.l, push.l, pushm, and the DPFPU bank on top of them), the head the generic arm stores
- * is two more, and arch_context_init aligns the stack top to 4. It is enforced because an
- * in-bounds MISALIGNED USP makes every one of those stores misaligned: on a core that traps
- * them the nested trap re-enters the same prologue, rebuilds one frame lower, faults again,
- * and descends per iteration with no watchdog, so no write lands and the kernel live-locks on
- * an unprivileged thread's say-so. */
+ * (mov.l, push.l, pushm, and the DPFPU bank on top of them), and arch_context_init aligns the
+ * stack top to 4. It is enforced because an in-bounds MISALIGNED USP makes every one of those
+ * stores misaligned: on a core that traps them the nested trap re-enters the same prologue,
+ * rebuilds one frame lower, faults again, and descends per iteration with no watchdog, so no
+ * write lands and the kernel live-locks on an unprivileged thread's say-so. */
 #define KICKOS_RX_TRAP_SP_ALIGN 4
 
 /* struct arch_context field offsets the trap sites read as plain displacements. switch.S
@@ -229,11 +188,15 @@
 #define KICKOS_RX_CTX_OFF_STACK_LO 8
 #define KICKOS_RX_CTX_OFF_STACK_HI 12
 #define KICKOS_RX_CTX_OFF_KERNEL_SP 16
+#define KICKOS_RX_CTX_OFF_RESUME_PC 20
+#define KICKOS_RX_CTX_OFF_RESUME_PSW 24
 #else
 #define KICKOS_RX_CTX_OFF_SP 0
 #define KICKOS_RX_CTX_OFF_STACK_LO 4
 #define KICKOS_RX_CTX_OFF_STACK_HI 8
 #define KICKOS_RX_CTX_OFF_KERNEL_SP 12
+#define KICKOS_RX_CTX_OFF_RESUME_PC 16
+#define KICKOS_RX_CTX_OFF_RESUME_PSW 20
 #endif
 
 /* THE PANIC REPORTER'S OWN STACK, which kickos_panic_stack_enter (switch.S) moves to before a
@@ -246,24 +209,34 @@
  * there on and an exception, which RX accepts on the ISP, lands on a stack this array does not
  * share.
  *
- * 200 MEASURED on rx72m and rx72m-flat and 216 on rx72m-bench, under an enforced 320,
- * and what the reporter descends is the UART RECLAIM's baud arithmetic, from its refusal arm:
- *   kickos_panic_report[8] -> refusal_report[28] -> kfault_terminate[20] -> kpanic_enter[12]
- *   -> console_flush_then_reclaim[8] -> arch_console_reclaim[12] -> rx::reg::sci::baud_select[80]
- *   -> __divdi3[32]
+ * 200 MEASURED on rx72m and rx72m-flat, under an enforced 320, and what the reporter
+ * descends is the UART RECLAIM's baud arithmetic, from its refusal arm:
+ *   kickos_panic_report[8] -> refusal_report[28] -> kfault_terminate[20]
+ *   -> kickos_terminal_outcome_apply[4] -> arch_reboot[12] -> kpanic_enter_unlocked[4]
+ *   -> arch_console_reclaim[12] -> rx::reg::sci::baud_select[80] -> __divdi3[32]
  * KICKOS_PANIC_STACK_SIZE (Kconfig) cuts the array and is what the gate compares this against;
  * arch_rxv3.cc static_asserts the two agree. */
 #define KICKOS_RX_PANIC_FRAME 0
 #define KICKOS_RX_PANIC_DEPTH 320
 
+/* IDLE'S OWN STACK, the USP idle_entry runs on privileged. Every interrupt is accepted on the
+ * ISP, so what lands here is one whole PENDSW zone, the save a switch away from idle builds. A
+ * plain integer the gate scrapes;
+ * arch_rxv3.cc asserts it equals KICKOS_RX_TRAP_REDZONE_PENDSW.
+ *
+ * DEPTH is idle_entry and arch_idle_wait, 8 measured on every preset, rounded up to 64. */
+#define KICKOS_RX_TRAP_NEST_IDLE 228
+#define KICKOS_RX_TRAP_DEPTH_IDLE 64
+
 /* THE INTERRUPT STACK, which the image links as _kernel_stack_size below _istack. Boot runs on
  * it, arch_start leaves boot's frames on it, and an interrupt and then an exception nest below
  * them (trap_redzone_roots.txt derives the levels). DEPTH is boot's deepest chain plus the
- * deepest root of each level: 1868 on rx72m-bench, 1792 on rx72m, 1600 on rx72m-flat, against
+ * deepest root of each level: 1828 on rx72m, 1636 on rx72m-flat, against
  * the 8 KiB rx72m.ld links.
  *
  * FRAME: the PC and PSW an acceptance pushes, twice, and the R15 kickos_rx_pendsw still holds
- * on the ISP when it calls the refusal. */
+ * on the ISP when it calls the refusal. The pair the restore stages for its RTE sits where the
+ * acceptance's own pair sat. */
 #define KICKOS_RX_ISP_FRAME 20
 #define KICKOS_RX_ISP_DEPTH 2304
 
@@ -273,7 +246,6 @@
  * every class.
  *
  * class PENDSW   frame=KICKOS_RX_TRAP_FRAME_PENDSW depth=KICKOS_RX_TRAP_KERNEL_DEPTH_PENDSW
- * class SYS      frame=KICKOS_RX_TRAP_NEST_SYS depth=KICKOS_RX_TRAP_KERNEL_DEPTH_SYS
  * class SYS_FAST frame=KICKOS_RX_TRAP_FRAME_SYS_FAST depth=KICKOS_RX_TRAP_KERNEL_DEPTH_SYS_FAST
  * class SYSK     frame=KICKOS_RX_TRAP_NEST_SYSK depth=KICKOS_RX_TRAP_KERNEL_DEPTH_SYSK stack=kernel
  *
@@ -283,6 +255,7 @@
  *
  * class EXITK    frame=KICKOS_RX_TRAP_NEST_EXIT depth=KICKOS_RX_TRAP_KERNEL_DEPTH_EXITK stack=kernel
  * class PANIC    frame=KICKOS_RX_PANIC_FRAME depth=KICKOS_RX_PANIC_DEPTH stack=panic
+ * class IDLE     frame=KICKOS_RX_TRAP_NEST_IDLE depth=KICKOS_RX_TRAP_DEPTH_IDLE stack=idle
  * class ISP      frame=KICKOS_RX_ISP_FRAME depth=KICKOS_RX_ISP_DEPTH stack=main
  */
 

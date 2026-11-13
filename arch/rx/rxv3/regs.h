@@ -103,6 +103,10 @@ namespace kickos
         // source (IRn exists only for 16..255), so a low number cannot collide with a
         // device line. Vector 0 is BRK.
         constexpr int SYSCALL_VECTOR = 1;
+
+        // The fault cause of an INT #n or BRK through any other INTB slot: past every
+        // fixed-vector offset (0x00..0x7C), which is what the other causes are.
+        constexpr uint32_t RX_CAUSE_SOFT_TRAP = 0x100;
     }
 }
 

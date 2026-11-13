@@ -398,7 +398,7 @@ namespace kickos
                 EXPECT_EQ(g_mutex.word, waiter->lock_id) << "the wait returned without the mutex";
                 EXPECT_EQ(g_cond.word, PARKED);
                 EXPECT_EQ(record_of(&g_cond.word), nullptr);
-                EXPECT_EQ(kernel().sleepq, nullptr) << "the waiter's deadline is still queued";
+                EXPECT_EQ(kernel().sleepq(kickos_kernel_core()), nullptr) << "the waiter's deadline is still queued";
                 EXPECT_EQ(kos_cond_signal(&g_cond), 0);
                 EXPECT_EQ(g_cond.word, 1u) << "the signal left the dead bit set";
             }

@@ -166,6 +166,12 @@ void release_secondaries(void)
 }
 #endif
 
+// No Svpbmt: QEMU's PMAs make every device range I/O and DRAM cacheable memory.
+bool arch_aspace_entry_memtype(void)
+{
+    return false;
+}
+
 void arch_init(void)
 {
     // stimecmp's reset value is not architecturally all-ones, so the comparator is parked

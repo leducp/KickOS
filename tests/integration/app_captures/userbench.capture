@@ -1,0 +1,53 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+# Recorded under QEMU on qemu-x86_64-smp2.
+
+  ==============================================
+   KickOS 0.5.1  -  microkernel RTOS
+  ==============================================
+   board   qemu-x86_64
+   arch    x86_64
+   cpu     x86-64-v3
+   mmu     enforce
+   uaccess smep smap
+   sched   tickless
+   heap    16 KiB available
+   kstack  4096 B x 9 = 36864 B
+
+# smp sched: 2 core(s) in the scheduler
+microbenchmark: switch, IPC, spawn and wake costs, each timed from user space
+cpu clock: 1996221636 Hz (0 = the backend states none)
+bench: posture: cores 2, clock fine, vector yes, aspace yes, flash no, threads 6
+
+  word-wake: 1478 ns/waiter  (k=0 2786 ns, k=3 8125 ns, k=5 10180 ns; median of 16)
+  owner-exit: 6387 ns/waiter  (k=0 87005 ns, k=2 99148 ns, k=4 112553 ns; median of 16)
+  reach-lost: 2925 ns/waiter  (k=0 19597 ns, k=2 29075 ns, k=4 31299 ns; median of 16)
+  call/reply: 8 B  29669 ns/round-trip  (33704 round-trips/s over 20000 calls / 593 ms)
+  call/reply: 16 B  29639 ns/round-trip  (33739 round-trips/s over 20000 calls / 592 ms)
+  call/reply: 32 B  29512 ns/round-trip  (33884 round-trips/s over 20000 calls / 590 ms)
+  call/reply: 64 B  29950 ns/round-trip  (33388 round-trips/s over 20000 calls / 599 ms)
+  call/reply: 128 B  29507 ns/round-trip  (33889 round-trips/s over 20000 calls / 590 ms)
+  call/reply: 256 B  29904 ns/round-trip  (33439 round-trips/s over 20000 calls / 598 ms)
+  call/reply: 8 B  29613 ns/round-trip  (33768 round-trips/s over 20000 calls / 592 ms) [generic path]
+  call/reply: 16 B  30058 ns/round-trip  (33268 round-trips/s over 20000 calls / 601 ms) [generic path]
+  call/reply: 32 B  29551 ns/round-trip  (33839 round-trips/s over 20000 calls / 591 ms) [generic path]
+  call/reply: 64 B  29603 ns/round-trip  (33780 round-trips/s over 20000 calls / 592 ms) [generic path]
+  call/reply: 128 B  29389 ns/round-trip  (34025 round-trips/s over 20000 calls / 587 ms) [generic path]
+  call/reply: 256 B  29780 ns/round-trip  (33578 round-trips/s over 20000 calls / 595 ms) [generic path]
+  call/reply: 32 B  30481 ns/round-trip  (32807 round-trips/s over 20000 calls / 609 ms) [caller outranks server, D1 donates]
+
+  throughput: 83460 ctx-sw/s  (11981 ns/sw avg over 40000 switches / 479 ms)
+  throughput: 82809 ctx-sw/s  (12075 ns/sw avg over 40000 switches / 483 ms)
+  throughput: 82559 ctx-sw/s  (12112 ns/sw avg over 40000 switches / 484 ms)
+  switch-vec: 234 ns/sw  (dirty 12346 - clean 12112 ns/sw, 40000 switches)
+  e2e-local: 20399/27622/2315224 ns  (p50/p99/max, n=1000) [tare 60 ns]
+  xcore-wake 0-1: 67763/81078/119210 ns  (p50/p99/max, n=1000) [round trip / 2]
+  w2: 20000 switches in 203525 us
+  w3: 10000 switches in 129177 us
+  w4-push: 200 rounds in 26856 us
+  w4-reseat: 500 rounds in 3075 us
+  xtask ping-pong: 34995 ns/switch  (40000 switches / 1399 ms)
+  xtask call/reply: 16 B  73226 ns/round-trip  (13656 round-trips/s over 20000 calls / 1464 ms)
+  spawn/exit: thread 171848 ns  (200 reps / 34 ms)
+  spawn/exit: task 335747 ns  (200 reps / 67 ms)
+bench: done

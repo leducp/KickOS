@@ -73,18 +73,6 @@ site rv32imac esp32c6-wroom-amp2-n1 console_tx.cc:drain_in_producer@1/2 NONE
 site rv32imac esp32c6-wroom-amp2-n1 console_tx.cc:drain_in_producer@2/2 NONE
 
 
-site rxv3 rx72m-bench console_tx.cc:wait_slot@1/1  chip_rx72m.cc:rx_tx_slot_free
-site rxv3 rx72m-bench console_tx_flush_sync@2/2 chip_rx72m.cc:rx_tx_push
-site rxv3 rx72m-bench console_tx_isr@1/3           chip_rx72m.cc:rx_tx_slot_free
-site rxv3 rx72m-bench console_tx_isr@2/3           chip_rx72m.cc:rx_tx_push
-site rxv3 rx72m-bench console_tx_isr@3/3           chip_rx72m.cc:rx_tx_irq_disable
-site rxv3 rx72m-bench console_tx_flush_sync@1/2    chip_rx72m.cc:rx_tx_irq_disable
-site rxv3 rx72m-bench console_tx_deinit@1/1        chip_rx72m.cc:rx_tx_irq_disable
-site rxv3 rx72m-bench console_tx.cc:insert_locked@1/3 chip_rx72m.cc:rx_tx_irq_enable
-site rxv3 rx72m-bench console_tx.cc:insert_locked@2/3 chip_rx72m.cc:rx_tx_slot_free
-site rxv3 rx72m-bench console_tx.cc:insert_locked@3/3 chip_rx72m.cc:rx_tx_push
-site rxv3 rx72m-bench console_tx.cc:drain_in_producer@1/2 chip_rx72m.cc:rx_tx_slot_free
-site rxv3 rx72m-bench console_tx.cc:drain_in_producer@2/2 chip_rx72m.cc:rx_tx_push
 
 # The three translating arches. Each preset carries its own chip's backend, so a board added
 # on any of them needs a scope of its own here.
@@ -102,18 +90,6 @@ site armv8a qemu-arm64 console_tx.cc:insert_locked@3/3 chip_virt_arm64.cc:pl011_
 site armv8a qemu-arm64 console_tx.cc:drain_in_producer@1/2 chip_virt_arm64.cc:pl011_tx_slot_free
 site armv8a qemu-arm64 console_tx.cc:drain_in_producer@2/2 chip_virt_arm64.cc:pl011_tx_push
 
-site armv8a qemu-arm64-bench console_tx.cc:wait_slot@1/1  chip_virt_arm64.cc:pl011_tx_slot_free
-site armv8a qemu-arm64-bench console_tx_flush_sync@2/2 chip_virt_arm64.cc:pl011_tx_push
-site armv8a qemu-arm64-bench console_tx_isr@1/3           chip_virt_arm64.cc:pl011_tx_slot_free
-site armv8a qemu-arm64-bench console_tx_isr@2/3           chip_virt_arm64.cc:pl011_tx_push
-site armv8a qemu-arm64-bench console_tx_isr@3/3           chip_virt_arm64.cc:pl011_tx_irq_disable
-site armv8a qemu-arm64-bench console_tx_flush_sync@1/2    chip_virt_arm64.cc:pl011_tx_irq_disable
-site armv8a qemu-arm64-bench console_tx_deinit@1/1        chip_virt_arm64.cc:pl011_tx_irq_disable
-site armv8a qemu-arm64-bench console_tx.cc:insert_locked@1/3   chip_virt_arm64.cc:pl011_tx_irq_enable
-site armv8a qemu-arm64-bench console_tx.cc:insert_locked@2/3   chip_virt_arm64.cc:pl011_tx_slot_free
-site armv8a qemu-arm64-bench console_tx.cc:insert_locked@3/3   chip_virt_arm64.cc:pl011_tx_push
-site armv8a qemu-arm64-bench console_tx.cc:drain_in_producer@1/2 chip_virt_arm64.cc:pl011_tx_slot_free
-site armv8a qemu-arm64-bench console_tx.cc:drain_in_producer@2/2 chip_virt_arm64.cc:pl011_tx_push
 
 site armv8a qemu-arm64-smp console_tx.cc:wait_slot@1/1  chip_virt_arm64.cc:pl011_tx_slot_free
 site armv8a qemu-arm64-smp console_tx_flush_sync@2/2 chip_virt_arm64.cc:pl011_tx_push
@@ -128,67 +104,31 @@ site armv8a qemu-arm64-smp console_tx.cc:insert_locked@3/3   chip_virt_arm64.cc:
 site armv8a qemu-arm64-smp console_tx.cc:drain_in_producer@1/2 chip_virt_arm64.cc:pl011_tx_slot_free
 site armv8a qemu-arm64-smp console_tx.cc:drain_in_producer@2/2 chip_virt_arm64.cc:pl011_tx_push
 
-site armv8a qemu-arm64-benchsmp console_tx.cc:wait_slot@1/1  chip_virt_arm64.cc:pl011_tx_slot_free
-site armv8a qemu-arm64-benchsmp console_tx_flush_sync@2/2 chip_virt_arm64.cc:pl011_tx_push
-site armv8a qemu-arm64-benchsmp console_tx_isr@1/3           chip_virt_arm64.cc:pl011_tx_slot_free
-site armv8a qemu-arm64-benchsmp console_tx_isr@2/3           chip_virt_arm64.cc:pl011_tx_push
-site armv8a qemu-arm64-benchsmp console_tx_isr@3/3           chip_virt_arm64.cc:pl011_tx_irq_disable
-site armv8a qemu-arm64-benchsmp console_tx_flush_sync@1/2    chip_virt_arm64.cc:pl011_tx_irq_disable
-site armv8a qemu-arm64-benchsmp console_tx_deinit@1/1        chip_virt_arm64.cc:pl011_tx_irq_disable
-site armv8a qemu-arm64-benchsmp console_tx.cc:insert_locked@1/3   chip_virt_arm64.cc:pl011_tx_irq_enable
-site armv8a qemu-arm64-benchsmp console_tx.cc:insert_locked@2/3   chip_virt_arm64.cc:pl011_tx_slot_free
-site armv8a qemu-arm64-benchsmp console_tx.cc:insert_locked@3/3   chip_virt_arm64.cc:pl011_tx_push
-site armv8a qemu-arm64-benchsmp console_tx.cc:drain_in_producer@1/2 chip_virt_arm64.cc:pl011_tx_slot_free
-site armv8a qemu-arm64-benchsmp console_tx.cc:drain_in_producer@2/2 chip_virt_arm64.cc:pl011_tx_push
-site armv8a qemu-arm64-benchsched console_tx.cc:wait_slot@1/1  chip_virt_arm64.cc:pl011_tx_slot_free
-site armv8a qemu-arm64-benchsched console_tx_flush_sync@2/2 chip_virt_arm64.cc:pl011_tx_push
-site armv8a qemu-arm64-benchsched console_tx_isr@1/3           chip_virt_arm64.cc:pl011_tx_slot_free
-site armv8a qemu-arm64-benchsched console_tx_isr@2/3           chip_virt_arm64.cc:pl011_tx_push
-site armv8a qemu-arm64-benchsched console_tx_isr@3/3           chip_virt_arm64.cc:pl011_tx_irq_disable
-site armv8a qemu-arm64-benchsched console_tx_flush_sync@1/2    chip_virt_arm64.cc:pl011_tx_irq_disable
-site armv8a qemu-arm64-benchsched console_tx_deinit@1/1        chip_virt_arm64.cc:pl011_tx_irq_disable
-site armv8a qemu-arm64-benchsched console_tx.cc:insert_locked@1/3   chip_virt_arm64.cc:pl011_tx_irq_enable
-site armv8a qemu-arm64-benchsched console_tx.cc:insert_locked@2/3   chip_virt_arm64.cc:pl011_tx_slot_free
-site armv8a qemu-arm64-benchsched console_tx.cc:insert_locked@3/3   chip_virt_arm64.cc:pl011_tx_push
-site armv8a qemu-arm64-benchsched console_tx.cc:drain_in_producer@1/2 chip_virt_arm64.cc:pl011_tx_slot_free
-site armv8a qemu-arm64-benchsched console_tx.cc:drain_in_producer@2/2 chip_virt_arm64.cc:pl011_tx_push
-site armv8a qemu-arm64-benchgicv3 console_tx.cc:wait_slot@1/1  chip_virt_arm64.cc:pl011_tx_slot_free
-site armv8a qemu-arm64-benchgicv3 console_tx_flush_sync@2/2 chip_virt_arm64.cc:pl011_tx_push
-site armv8a qemu-arm64-benchgicv3 console_tx_isr@1/3           chip_virt_arm64.cc:pl011_tx_slot_free
-site armv8a qemu-arm64-benchgicv3 console_tx_isr@2/3           chip_virt_arm64.cc:pl011_tx_push
-site armv8a qemu-arm64-benchgicv3 console_tx_isr@3/3           chip_virt_arm64.cc:pl011_tx_irq_disable
-site armv8a qemu-arm64-benchgicv3 console_tx_flush_sync@1/2    chip_virt_arm64.cc:pl011_tx_irq_disable
-site armv8a qemu-arm64-benchgicv3 console_tx_deinit@1/1        chip_virt_arm64.cc:pl011_tx_irq_disable
-site armv8a qemu-arm64-benchgicv3 console_tx.cc:insert_locked@1/3   chip_virt_arm64.cc:pl011_tx_irq_enable
-site armv8a qemu-arm64-benchgicv3 console_tx.cc:insert_locked@2/3   chip_virt_arm64.cc:pl011_tx_slot_free
-site armv8a qemu-arm64-benchgicv3 console_tx.cc:insert_locked@3/3   chip_virt_arm64.cc:pl011_tx_push
-site armv8a qemu-arm64-benchgicv3 console_tx.cc:drain_in_producer@1/2 chip_virt_arm64.cc:pl011_tx_slot_free
-site armv8a qemu-arm64-benchgicv3 console_tx.cc:drain_in_producer@2/2 chip_virt_arm64.cc:pl011_tx_push
-site armv8a qemu-arm64-benchsmp2 console_tx.cc:wait_slot@1/1  chip_virt_arm64.cc:pl011_tx_slot_free
-site armv8a qemu-arm64-benchsmp2 console_tx_flush_sync@2/2 chip_virt_arm64.cc:pl011_tx_push
-site armv8a qemu-arm64-benchsmp2 console_tx_isr@1/3           chip_virt_arm64.cc:pl011_tx_slot_free
-site armv8a qemu-arm64-benchsmp2 console_tx_isr@2/3           chip_virt_arm64.cc:pl011_tx_push
-site armv8a qemu-arm64-benchsmp2 console_tx_isr@3/3           chip_virt_arm64.cc:pl011_tx_irq_disable
-site armv8a qemu-arm64-benchsmp2 console_tx_flush_sync@1/2    chip_virt_arm64.cc:pl011_tx_irq_disable
-site armv8a qemu-arm64-benchsmp2 console_tx_deinit@1/1        chip_virt_arm64.cc:pl011_tx_irq_disable
-site armv8a qemu-arm64-benchsmp2 console_tx.cc:insert_locked@1/3   chip_virt_arm64.cc:pl011_tx_irq_enable
-site armv8a qemu-arm64-benchsmp2 console_tx.cc:insert_locked@2/3   chip_virt_arm64.cc:pl011_tx_slot_free
-site armv8a qemu-arm64-benchsmp2 console_tx.cc:insert_locked@3/3   chip_virt_arm64.cc:pl011_tx_push
-site armv8a qemu-arm64-benchsmp2 console_tx.cc:drain_in_producer@1/2 chip_virt_arm64.cc:pl011_tx_slot_free
-site armv8a qemu-arm64-benchsmp2 console_tx.cc:drain_in_producer@2/2 chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64-smp2 console_tx.cc:wait_slot@1/1  chip_virt_arm64.cc:pl011_tx_slot_free
+site armv8a qemu-arm64-smp2 console_tx_flush_sync@2/2 chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64-smp2 console_tx_isr@1/3           chip_virt_arm64.cc:pl011_tx_slot_free
+site armv8a qemu-arm64-smp2 console_tx_isr@2/3           chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64-smp2 console_tx_isr@3/3           chip_virt_arm64.cc:pl011_tx_irq_disable
+site armv8a qemu-arm64-smp2 console_tx_flush_sync@1/2    chip_virt_arm64.cc:pl011_tx_irq_disable
+site armv8a qemu-arm64-smp2 console_tx_deinit@1/1        chip_virt_arm64.cc:pl011_tx_irq_disable
+site armv8a qemu-arm64-smp2 console_tx.cc:insert_locked@1/3   chip_virt_arm64.cc:pl011_tx_irq_enable
+site armv8a qemu-arm64-smp2 console_tx.cc:insert_locked@2/3   chip_virt_arm64.cc:pl011_tx_slot_free
+site armv8a qemu-arm64-smp2 console_tx.cc:insert_locked@3/3   chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64-smp2 console_tx.cc:drain_in_producer@1/2 chip_virt_arm64.cc:pl011_tx_slot_free
+site armv8a qemu-arm64-smp2 console_tx.cc:drain_in_producer@2/2 chip_virt_arm64.cc:pl011_tx_push
 
-site armv8a qemu-arm64-benchsmp12 console_tx.cc:wait_slot@1/1  chip_virt_arm64.cc:pl011_tx_slot_free
-site armv8a qemu-arm64-benchsmp12 console_tx_flush_sync@2/2 chip_virt_arm64.cc:pl011_tx_push
-site armv8a qemu-arm64-benchsmp12 console_tx_isr@1/3           chip_virt_arm64.cc:pl011_tx_slot_free
-site armv8a qemu-arm64-benchsmp12 console_tx_isr@2/3           chip_virt_arm64.cc:pl011_tx_push
-site armv8a qemu-arm64-benchsmp12 console_tx_isr@3/3           chip_virt_arm64.cc:pl011_tx_irq_disable
-site armv8a qemu-arm64-benchsmp12 console_tx_flush_sync@1/2    chip_virt_arm64.cc:pl011_tx_irq_disable
-site armv8a qemu-arm64-benchsmp12 console_tx_deinit@1/1        chip_virt_arm64.cc:pl011_tx_irq_disable
-site armv8a qemu-arm64-benchsmp12 console_tx.cc:insert_locked@1/3   chip_virt_arm64.cc:pl011_tx_irq_enable
-site armv8a qemu-arm64-benchsmp12 console_tx.cc:insert_locked@2/3   chip_virt_arm64.cc:pl011_tx_slot_free
-site armv8a qemu-arm64-benchsmp12 console_tx.cc:insert_locked@3/3   chip_virt_arm64.cc:pl011_tx_push
-site armv8a qemu-arm64-benchsmp12 console_tx.cc:drain_in_producer@1/2 chip_virt_arm64.cc:pl011_tx_slot_free
-site armv8a qemu-arm64-benchsmp12 console_tx.cc:drain_in_producer@2/2 chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64-smp12 console_tx.cc:wait_slot@1/1  chip_virt_arm64.cc:pl011_tx_slot_free
+site armv8a qemu-arm64-smp12 console_tx_flush_sync@2/2 chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64-smp12 console_tx_isr@1/3           chip_virt_arm64.cc:pl011_tx_slot_free
+site armv8a qemu-arm64-smp12 console_tx_isr@2/3           chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64-smp12 console_tx_isr@3/3           chip_virt_arm64.cc:pl011_tx_irq_disable
+site armv8a qemu-arm64-smp12 console_tx_flush_sync@1/2    chip_virt_arm64.cc:pl011_tx_irq_disable
+site armv8a qemu-arm64-smp12 console_tx_deinit@1/1        chip_virt_arm64.cc:pl011_tx_irq_disable
+site armv8a qemu-arm64-smp12 console_tx.cc:insert_locked@1/3   chip_virt_arm64.cc:pl011_tx_irq_enable
+site armv8a qemu-arm64-smp12 console_tx.cc:insert_locked@2/3   chip_virt_arm64.cc:pl011_tx_slot_free
+site armv8a qemu-arm64-smp12 console_tx.cc:insert_locked@3/3   chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64-smp12 console_tx.cc:drain_in_producer@1/2 chip_virt_arm64.cc:pl011_tx_slot_free
+site armv8a qemu-arm64-smp12 console_tx.cc:drain_in_producer@2/2 chip_virt_arm64.cc:pl011_tx_push
 
 site armv8a qemu-arm64-smpiso console_tx.cc:wait_slot@1/1  chip_virt_arm64.cc:pl011_tx_slot_free
 site armv8a qemu-arm64-smpiso console_tx_flush_sync@2/2 chip_virt_arm64.cc:pl011_tx_push
@@ -335,18 +275,6 @@ site rv64imac qemu-riscv64 console_tx.cc:insert_locked@3/3 chip_virt_rv64.cc:ns1
 site rv64imac qemu-riscv64 console_tx.cc:drain_in_producer@1/2 chip_virt_rv64.cc:ns16550_tx_slot_free
 site rv64imac qemu-riscv64 console_tx.cc:drain_in_producer@2/2 chip_virt_rv64.cc:ns16550_tx_push
 
-site rv64imac qemu-riscv64-bench console_tx.cc:wait_slot@1/1  chip_virt_rv64.cc:ns16550_tx_slot_free
-site rv64imac qemu-riscv64-bench console_tx_flush_sync@2/2 chip_virt_rv64.cc:ns16550_tx_push
-site rv64imac qemu-riscv64-bench console_tx_isr@1/3           chip_virt_rv64.cc:ns16550_tx_slot_free
-site rv64imac qemu-riscv64-bench console_tx_isr@2/3           chip_virt_rv64.cc:ns16550_tx_push
-site rv64imac qemu-riscv64-bench console_tx_isr@3/3           chip_virt_rv64.cc:ns16550_tx_irq_disable
-site rv64imac qemu-riscv64-bench console_tx_flush_sync@1/2    chip_virt_rv64.cc:ns16550_tx_irq_disable
-site rv64imac qemu-riscv64-bench console_tx_deinit@1/1        chip_virt_rv64.cc:ns16550_tx_irq_disable
-site rv64imac qemu-riscv64-bench console_tx.cc:insert_locked@1/3   chip_virt_rv64.cc:ns16550_tx_irq_enable
-site rv64imac qemu-riscv64-bench console_tx.cc:insert_locked@2/3   chip_virt_rv64.cc:ns16550_tx_slot_free
-site rv64imac qemu-riscv64-bench console_tx.cc:insert_locked@3/3   chip_virt_rv64.cc:ns16550_tx_push
-site rv64imac qemu-riscv64-bench console_tx.cc:drain_in_producer@1/2 chip_virt_rv64.cc:ns16550_tx_slot_free
-site rv64imac qemu-riscv64-bench console_tx.cc:drain_in_producer@2/2 chip_virt_rv64.cc:ns16550_tx_push
 
 site rv64imac qemu-riscv64-sv48 console_tx.cc:wait_slot@1/1  chip_virt_rv64.cc:ns16550_tx_slot_free
 site rv64imac qemu-riscv64-sv48 console_tx_flush_sync@2/2 chip_virt_rv64.cc:ns16550_tx_push
@@ -374,30 +302,18 @@ site rv64imac qemu-riscv64-smp console_tx.cc:insert_locked@3/3   chip_virt_rv64.
 site rv64imac qemu-riscv64-smp console_tx.cc:drain_in_producer@1/2 chip_virt_rv64.cc:ns16550_tx_slot_free
 site rv64imac qemu-riscv64-smp console_tx.cc:drain_in_producer@2/2 chip_virt_rv64.cc:ns16550_tx_push
 
-site rv64imac qemu-riscv64-benchsmp console_tx.cc:wait_slot@1/1  chip_virt_rv64.cc:ns16550_tx_slot_free
-site rv64imac qemu-riscv64-benchsmp console_tx_flush_sync@2/2 chip_virt_rv64.cc:ns16550_tx_push
-site rv64imac qemu-riscv64-benchsmp console_tx_isr@1/3           chip_virt_rv64.cc:ns16550_tx_slot_free
-site rv64imac qemu-riscv64-benchsmp console_tx_isr@2/3           chip_virt_rv64.cc:ns16550_tx_push
-site rv64imac qemu-riscv64-benchsmp console_tx_isr@3/3           chip_virt_rv64.cc:ns16550_tx_irq_disable
-site rv64imac qemu-riscv64-benchsmp console_tx_flush_sync@1/2    chip_virt_rv64.cc:ns16550_tx_irq_disable
-site rv64imac qemu-riscv64-benchsmp console_tx_deinit@1/1        chip_virt_rv64.cc:ns16550_tx_irq_disable
-site rv64imac qemu-riscv64-benchsmp console_tx.cc:insert_locked@1/3   chip_virt_rv64.cc:ns16550_tx_irq_enable
-site rv64imac qemu-riscv64-benchsmp console_tx.cc:insert_locked@2/3   chip_virt_rv64.cc:ns16550_tx_slot_free
-site rv64imac qemu-riscv64-benchsmp console_tx.cc:insert_locked@3/3   chip_virt_rv64.cc:ns16550_tx_push
-site rv64imac qemu-riscv64-benchsmp console_tx.cc:drain_in_producer@1/2 chip_virt_rv64.cc:ns16550_tx_slot_free
-site rv64imac qemu-riscv64-benchsmp console_tx.cc:drain_in_producer@2/2 chip_virt_rv64.cc:ns16550_tx_push
-site rv64imac qemu-riscv64-benchsmp2 console_tx.cc:wait_slot@1/1  chip_virt_rv64.cc:ns16550_tx_slot_free
-site rv64imac qemu-riscv64-benchsmp2 console_tx_flush_sync@2/2 chip_virt_rv64.cc:ns16550_tx_push
-site rv64imac qemu-riscv64-benchsmp2 console_tx_isr@1/3           chip_virt_rv64.cc:ns16550_tx_slot_free
-site rv64imac qemu-riscv64-benchsmp2 console_tx_isr@2/3           chip_virt_rv64.cc:ns16550_tx_push
-site rv64imac qemu-riscv64-benchsmp2 console_tx_isr@3/3           chip_virt_rv64.cc:ns16550_tx_irq_disable
-site rv64imac qemu-riscv64-benchsmp2 console_tx_flush_sync@1/2    chip_virt_rv64.cc:ns16550_tx_irq_disable
-site rv64imac qemu-riscv64-benchsmp2 console_tx_deinit@1/1        chip_virt_rv64.cc:ns16550_tx_irq_disable
-site rv64imac qemu-riscv64-benchsmp2 console_tx.cc:insert_locked@1/3   chip_virt_rv64.cc:ns16550_tx_irq_enable
-site rv64imac qemu-riscv64-benchsmp2 console_tx.cc:insert_locked@2/3   chip_virt_rv64.cc:ns16550_tx_slot_free
-site rv64imac qemu-riscv64-benchsmp2 console_tx.cc:insert_locked@3/3   chip_virt_rv64.cc:ns16550_tx_push
-site rv64imac qemu-riscv64-benchsmp2 console_tx.cc:drain_in_producer@1/2 chip_virt_rv64.cc:ns16550_tx_slot_free
-site rv64imac qemu-riscv64-benchsmp2 console_tx.cc:drain_in_producer@2/2 chip_virt_rv64.cc:ns16550_tx_push
+site rv64imac qemu-riscv64-smp2 console_tx.cc:wait_slot@1/1  chip_virt_rv64.cc:ns16550_tx_slot_free
+site rv64imac qemu-riscv64-smp2 console_tx_flush_sync@2/2 chip_virt_rv64.cc:ns16550_tx_push
+site rv64imac qemu-riscv64-smp2 console_tx_isr@1/3           chip_virt_rv64.cc:ns16550_tx_slot_free
+site rv64imac qemu-riscv64-smp2 console_tx_isr@2/3           chip_virt_rv64.cc:ns16550_tx_push
+site rv64imac qemu-riscv64-smp2 console_tx_isr@3/3           chip_virt_rv64.cc:ns16550_tx_irq_disable
+site rv64imac qemu-riscv64-smp2 console_tx_flush_sync@1/2    chip_virt_rv64.cc:ns16550_tx_irq_disable
+site rv64imac qemu-riscv64-smp2 console_tx_deinit@1/1        chip_virt_rv64.cc:ns16550_tx_irq_disable
+site rv64imac qemu-riscv64-smp2 console_tx.cc:insert_locked@1/3   chip_virt_rv64.cc:ns16550_tx_irq_enable
+site rv64imac qemu-riscv64-smp2 console_tx.cc:insert_locked@2/3   chip_virt_rv64.cc:ns16550_tx_slot_free
+site rv64imac qemu-riscv64-smp2 console_tx.cc:insert_locked@3/3   chip_virt_rv64.cc:ns16550_tx_push
+site rv64imac qemu-riscv64-smp2 console_tx.cc:drain_in_producer@1/2 chip_virt_rv64.cc:ns16550_tx_slot_free
+site rv64imac qemu-riscv64-smp2 console_tx.cc:drain_in_producer@2/2 chip_virt_rv64.cc:ns16550_tx_push
 
 # Every x86_64 preset uses the q35 COM1 backend, including SMP variants.
 site x86_64 * console_tx.cc:wait_slot@1/1  console_q35.cc:q35_tx_slot_free
@@ -416,44 +332,38 @@ site x86_64 * console_tx.cc:drain_in_producer@2/2 console_q35.cc:q35_tx_push
 
 # POINTER B: Kernel::irq_table[irq].handler.
 # irq_init fills every entry with irq_default_handler. Userspace cannot install
-# handlers; bench_irq_handler exists only in benchmark builds.
+# handlers.
 # On rv32imac and rxv3, arch_switch requests a deferred switch and returns,
 # so IRQ delivery does not re-enter the scheduler on this stack. Revisit this
 # binding if a backend changes to inline switching.
 site rv32imac * kickos_isr_irq@1/1 irq.cc:irq_default_handler \
                                    irq.cc:irq_event_isr \
-                                   console_tx.cc:console_tx_isr_trampoline \
-                                   ?bench.cc:bench_irq_handler
+                                   console_tx.cc:console_tx_isr_trampoline
 site rxv3     * kickos_isr_irq@1/1 irq.cc:irq_default_handler \
                                    irq.cc:irq_event_isr \
-                                   console_tx.cc:console_tx_isr_trampoline \
-                                   ?bench.cc:bench_irq_handler
+                                   console_tx.cc:console_tx_isr_trampoline
 # armv8a: arch_switch defers while kickos_armv8a_irq holds
 # isr_depth, so none of these re-enters the scheduler's swap on this stack.
 site armv8a * kickos_isr_irq@1/1 irq.cc:irq_default_handler \
                                  irq.cc:irq_event_isr \
-                                 console_tx.cc:console_tx_isr_trampoline \
-                                 ?bench.cc:bench_irq_handler
+                                 console_tx.cc:console_tx_isr_trampoline
 # rv64imac: arch_switch books its target while .Lintr holds
 # isr_depth, so none of these re-enters the scheduler's swap on this stack.
 site rv64imac * kickos_isr_irq@1/1 irq.cc:irq_default_handler \
                                    irq.cc:irq_event_isr \
-                                   console_tx.cc:console_tx_isr_trampoline \
-                                   ?bench.cc:bench_irq_handler
+                                   console_tx.cc:console_tx_isr_trampoline
 # x86_64: arch_switch books its target while kickos_x86_64_isr
 # holds g_isr_depth, so none of these re-enters the scheduler's swap on this stack.
 site x86_64 * kickos_isr_irq@1/1 irq.cc:irq_default_handler \
                                irq.cc:irq_event_isr \
-                               console_tx.cc:console_tx_isr_trampoline \
-                               ?bench.cc:bench_irq_handler
+                               console_tx.cc:console_tx_isr_trampoline
 
 # --- armv7m: the IRQ table ------------------------------------------------------
 # armv7m pends PendSV and returns, so notify_raise -> sched::wake -> ... -> arch_switch does not
 # re-enter the scheduler on this stack.
 site armv7m * kickos_isr_irq@1/1 irq.cc:irq_default_handler \
                                  irq.cc:irq_event_isr \
-                                 console_tx.cc:console_tx_isr_trampoline \
-                                 ?bench.cc:bench_irq_handler
+                                 console_tx.cc:console_tx_isr_trampoline
 
 # --- armv7m: ConsoleTxRing::backend, per board ----------------------------------
 # The console backend is per BOARD, so every armv7m preset is bound: a '*' record would bind a
@@ -672,18 +582,6 @@ site armv7m xmc4800-relax-flat console_tx.cc:drain_in_producer@1/2 usic_uart.cc:
 site armv7m xmc4800-relax-flat console_tx.cc:drain_in_producer@2/2 usic_uart.cc:xmc_tx_push
 
 
-site armv7m xmc4800-relax-bench console_tx.cc:wait_slot@1/1  usic_uart.cc:xmc_tx_slot_free
-site armv7m xmc4800-relax-bench console_tx_flush_sync@2/2 usic_uart.cc:xmc_tx_push
-site armv7m xmc4800-relax-bench console_tx_isr@1/3           usic_uart.cc:xmc_tx_slot_free
-site armv7m xmc4800-relax-bench console_tx_isr@2/3           usic_uart.cc:xmc_tx_push
-site armv7m xmc4800-relax-bench console_tx_isr@3/3           usic_uart.cc:xmc_tx_irq_disable
-site armv7m xmc4800-relax-bench console_tx_flush_sync@1/2    usic_uart.cc:xmc_tx_irq_disable
-site armv7m xmc4800-relax-bench console_tx_deinit@1/1        usic_uart.cc:xmc_tx_irq_disable
-site armv7m xmc4800-relax-bench console_tx.cc:insert_locked@1/3 usic_uart.cc:xmc_tx_irq_enable
-site armv7m xmc4800-relax-bench console_tx.cc:insert_locked@2/3 usic_uart.cc:xmc_tx_slot_free
-site armv7m xmc4800-relax-bench console_tx.cc:insert_locked@3/3 usic_uart.cc:xmc_tx_push
-site armv7m xmc4800-relax-bench console_tx.cc:drain_in_producer@1/2 usic_uart.cc:xmc_tx_slot_free
-site armv7m xmc4800-relax-bench console_tx.cc:drain_in_producer@2/2 usic_uart.cc:xmc_tx_push
 
 site armv7m f411disco console_tx.cc:wait_slot@1/1  chip_stm32f411.cc:f4_tx_slot_free
 site armv7m f411disco console_tx_flush_sync@2/2 chip_stm32f411.cc:f4_tx_push
@@ -712,18 +610,6 @@ site armv7m f411disco-flat console_tx.cc:drain_in_producer@1/2 chip_stm32f411.cc
 site armv7m f411disco-flat console_tx.cc:drain_in_producer@2/2 chip_stm32f411.cc:f4_tx_push
 
 
-site armv7m f411disco-bench console_tx.cc:wait_slot@1/1  chip_stm32f411.cc:f4_tx_slot_free
-site armv7m f411disco-bench console_tx_flush_sync@2/2 chip_stm32f411.cc:f4_tx_push
-site armv7m f411disco-bench console_tx_isr@1/3           chip_stm32f411.cc:f4_tx_slot_free
-site armv7m f411disco-bench console_tx_isr@2/3           chip_stm32f411.cc:f4_tx_push
-site armv7m f411disco-bench console_tx_isr@3/3           chip_stm32f411.cc:f4_tx_irq_disable
-site armv7m f411disco-bench console_tx_flush_sync@1/2    chip_stm32f411.cc:f4_tx_irq_disable
-site armv7m f411disco-bench console_tx_deinit@1/1        chip_stm32f411.cc:f4_tx_irq_disable
-site armv7m f411disco-bench console_tx.cc:insert_locked@1/3 chip_stm32f411.cc:f4_tx_irq_enable
-site armv7m f411disco-bench console_tx.cc:insert_locked@2/3 chip_stm32f411.cc:f4_tx_slot_free
-site armv7m f411disco-bench console_tx.cc:insert_locked@3/3 chip_stm32f411.cc:f4_tx_push
-site armv7m f411disco-bench console_tx.cc:drain_in_producer@1/2 chip_stm32f411.cc:f4_tx_slot_free
-site armv7m f411disco-bench console_tx.cc:drain_in_producer@2/2 chip_stm32f411.cc:f4_tx_push
 
 site armv7m blackpill console_tx.cc:wait_slot@1/1  chip_stm32f411.cc:f4_tx_slot_free
 site armv7m blackpill console_tx_flush_sync@2/2 chip_stm32f411.cc:f4_tx_push
@@ -832,8 +718,7 @@ site armv7m pizero2350-flat console_tx.cc:drain_in_producer@2/2 chip_rp2xxx.cc:t
 # re-enter the scheduler on this stack.
 site armv6m * kickos_isr_irq@1/1 irq.cc:irq_default_handler \
                                  irq.cc:irq_event_isr \
-                                 console_tx.cc:console_tx_isr_trampoline \
-                                 ?bench.cc:bench_irq_handler
+                                 console_tx.cc:console_tx_isr_trampoline
 
 # --- armv6m: ConsoleTxRing::backend, per board ----------------------------------
 # nrf51 binds the semihosting slots. rp2040 has a real PL011 backend, so picopi binds each
@@ -870,18 +755,6 @@ site rv32imac qemu-riscv-flat console_tx.cc:insert_locked@3/3 semihost_console.c
 site rv32imac qemu-riscv-flat console_tx.cc:drain_in_producer@1/2 semihost_console.cc:semihost_tx_slot_free
 site rv32imac qemu-riscv-flat console_tx.cc:drain_in_producer@2/2 semihost_console.cc:semihost_tx_push
 
-site rv32imac qemu-riscv-bench console_tx.cc:wait_slot@1/1  semihost_console.cc:semihost_tx_slot_free
-site rv32imac qemu-riscv-bench console_tx_flush_sync@2/2 semihost_console.cc:semihost_tx_push
-site rv32imac qemu-riscv-bench console_tx_isr@1/3           semihost_console.cc:semihost_tx_slot_free
-site rv32imac qemu-riscv-bench console_tx_isr@2/3           semihost_console.cc:semihost_tx_push
-site rv32imac qemu-riscv-bench console_tx_isr@3/3           semihost_console.cc:semihost_tx_irq_disable
-site rv32imac qemu-riscv-bench console_tx_flush_sync@1/2    semihost_console.cc:semihost_tx_irq_disable
-site rv32imac qemu-riscv-bench console_tx_deinit@1/1        semihost_console.cc:semihost_tx_irq_disable
-site rv32imac qemu-riscv-bench console_tx.cc:insert_locked@1/3 semihost_console.cc:semihost_tx_irq_enable
-site rv32imac qemu-riscv-bench console_tx.cc:insert_locked@2/3 semihost_console.cc:semihost_tx_slot_free
-site rv32imac qemu-riscv-bench console_tx.cc:insert_locked@3/3 semihost_console.cc:semihost_tx_push
-site rv32imac qemu-riscv-bench console_tx.cc:drain_in_producer@1/2 semihost_console.cc:semihost_tx_slot_free
-site rv32imac qemu-riscv-bench console_tx.cc:drain_in_producer@2/2 semihost_console.cc:semihost_tx_push
 
 site rv32imac esp32c6-wroom console_tx.cc:wait_slot@1/1  kickos::espuart::console::tx_slot_free
 site rv32imac esp32c6-wroom console_tx_flush_sync@2/2 kickos::espuart::console::tx_push
@@ -909,18 +782,6 @@ site rv32imac esp32c6-wroom-flat console_tx.cc:insert_locked@3/3 kickos::espuart
 site rv32imac esp32c6-wroom-flat console_tx.cc:drain_in_producer@1/2 kickos::espuart::console::tx_slot_free
 site rv32imac esp32c6-wroom-flat console_tx.cc:drain_in_producer@2/2 kickos::espuart::console::tx_push
 
-site rv32imac esp32c6-wroom-bench console_tx.cc:wait_slot@1/1  kickos::espuart::console::tx_slot_free
-site rv32imac esp32c6-wroom-bench console_tx_flush_sync@2/2 kickos::espuart::console::tx_push
-site rv32imac esp32c6-wroom-bench console_tx_isr@1/3           kickos::espuart::console::tx_slot_free
-site rv32imac esp32c6-wroom-bench console_tx_isr@2/3           kickos::espuart::console::tx_push
-site rv32imac esp32c6-wroom-bench console_tx_isr@3/3           kickos::espuart::console::tx_irq_disable
-site rv32imac esp32c6-wroom-bench console_tx_flush_sync@1/2    kickos::espuart::console::tx_irq_disable
-site rv32imac esp32c6-wroom-bench console_tx_deinit@1/1        kickos::espuart::console::tx_irq_disable
-site rv32imac esp32c6-wroom-bench console_tx.cc:insert_locked@1/3 kickos::espuart::console::tx_irq_enable
-site rv32imac esp32c6-wroom-bench console_tx.cc:insert_locked@2/3 kickos::espuart::console::tx_slot_free
-site rv32imac esp32c6-wroom-bench console_tx.cc:insert_locked@3/3 kickos::espuart::console::tx_push
-site rv32imac esp32c6-wroom-bench console_tx.cc:drain_in_producer@1/2 kickos::espuart::console::tx_slot_free
-site rv32imac esp32c6-wroom-bench console_tx.cc:drain_in_producer@2/2 kickos::espuart::console::tx_push
 
 # The other two rx72m presets, same board and so the same SCI backend.
 
@@ -979,8 +840,7 @@ site armv6m picopi-flat console_tx.cc:drain_in_producer@2/2 chip_rp2xxx.cc:tx_pu
 # xtensa: the IRQ table, as on the other arches.
 site lx6 * kickos_isr_irq@1/1 irq.cc:irq_default_handler \
                               irq.cc:irq_event_isr \
-                              console_tx.cc:console_tx_isr_trampoline \
-                              ?bench.cc:bench_irq_handler
+                              console_tx.cc:console_tx_isr_trampoline
 # The console ring's TX backend, one static ConsoleTxBackend per chip (chip_esp32.cc:306).
 site lx6 * console_tx_isr@1/3 kickos::espuart::console::tx_slot_free
 site lx6 * console_tx_isr@2/3 kickos::espuart::console::tx_push
@@ -1025,15 +885,6 @@ site lx6 * kickos::task_create_call@indirect NONE reason: no indirect call in th
 site lx6 * kickos::task_create_declared@indirect NONE reason: no indirect call in the emitted body
 site lx6 * syscall_thread.cc:spawn_locked@indirect NONE reason: no indirect call in the emitted body
 site lx6 * syscall_thread.cc:driver_admit@indirect NONE reason: no indirect call in the emitted body
-site lx6 esp32-wroom-bench bench.cc:dist_reset_one@indirect NONE reason: no indirect call in the emitted body
-site lx6 esp32-wroom-bench bench.cc:dist_total@indirect     NONE reason: no indirect call in the emitted body
-site lx6 esp32-wroom-bench kickos::bench_reset@indirect     NONE reason: no indirect call in the emitted body
-site lx6 esp32-wroom-bench kickos::bench_owner_print@indirect NONE reason: no indirect call in the emitted body
-site lx6 esp32-wroom-benchsmp bench.cc:dist_reset_one@indirect NONE reason: no indirect call in the emitted body
-site lx6 esp32-wroom-benchsmp bench.cc:dist_total@indirect     NONE reason: no indirect call in the emitted body
-site lx6 esp32-wroom-benchsmp kickos::bench_reset@indirect     NONE reason: no indirect call in the emitted body
-site lx6 esp32-wroom-benchsmp kickos::bench_owner_print@indirect NONE reason: no indirect call in the emitted body
-site lx6 esp32-wroom-benchsmp kickos::dist_print_fmt@indirect  NONE reason: no indirect call in the emitted body
 
 # --- The task entry of a driver an app creates (user/apps/common/sinkdrv) ----------------------
 # A `?` before a caller binds its site where a graph links it and nothing where it does not.
@@ -1084,6 +935,16 @@ site rv64imac * ?thread_atexit.cc:run_list@1/1 NONE reason: only a thread that u
 site armv8a * ?thread_atexit.cc:run_list@1/1 NONE reason: only a thread that used a thread_local with a destructor has one to run, and no thread declared here uses one
 site x86_64 * ?thread_atexit.cc:run_list@1/1 NONE reason: only a thread that used a thread_local with a destructor has one to run, and no thread declared here uses one
 
+# --- The release of a dead thread's libc scratch at its exit (user/src/newlib_reent.cc) -------
+site armv7m * ?kickos_reent_release@1/1 newlib_reent.cc:release_scratch reason: the one pointer the heap seat sets
+site armv6m * ?kickos_reent_release@1/1 newlib_reent.cc:release_scratch reason: the one pointer the heap seat sets
+site rv32imac * ?kickos_reent_release@1/1 newlib_reent.cc:release_scratch reason: the one pointer the heap seat sets
+site rxv3 * ?kickos_reent_release@1/1 newlib_reent.cc:release_scratch reason: the one pointer the heap seat sets
+site lx6 * ?kickos_reent_release@1/1 newlib_reent.cc:release_scratch reason: the one pointer the heap seat sets
+site rv64imac * ?kickos_reent_release@1/1 newlib_reent.cc:release_scratch reason: the one pointer the heap seat sets
+site armv8a * ?kickos_reent_release@1/1 newlib_reent.cc:release_scratch reason: the one pointer the heap seat sets
+site x86_64 * ?kickos_reent_release@1/1 newlib_reent.cc:release_scratch reason: the one pointer the heap seat sets
+
 # --- Boot, on the main stack (the stack=main classes) ------------------------------------------
 # The reset handler's walk of .init_array, which cortexm.ld.h and rx72m.ld fill from the kernel
 # and arch archives alone.
@@ -1104,7 +965,6 @@ site x86_64 * ?kickos_x86_64_ap_reserve@1/1 NONE reason: AllocatePages, firmware
 site armv8a cores>1 Reset_Handler@1/1 arch_armv8a.cc:armv8a_boot_publish
 site armv8a qemu-arm64-amp Reset_Handler@1/1 arch_armv8a.cc:armv8a_boot_publish
 site armv8a qemu-arm64 Reset_Handler@1/1 NONE reason: one core, so no constructor is linked
-site armv8a qemu-arm64-bench Reset_Handler@1/1 NONE reason: one core, so no constructor is linked
 site armv8a imx8mp-evk Reset_Handler@1/1 NONE reason: one core, so no constructor is linked
 site armv8a qemu-arm64-amp2-n0 Reset_Handler@1/1 NONE reason: one core, so no constructor is linked
 site armv8a qemu-arm64-amp2-n1 Reset_Handler@1/1 NONE reason: one core, so no constructor is linked

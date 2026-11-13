@@ -48,7 +48,7 @@ switch is a trap today; what a cooperative path could catch is the subset where
   ineligible ones are RR slice expiry (`sched::tick_rr`, reached from `kickos_isr_timer`) and
   a wake raised by a device ISR.
 - The n=40001 `SWITCH` population is the semaphore ping-pong window alone (20000 rounds x 2
-  switches, `user/apps/common/bench/main.cc` 51 and 348; the reporter resets the row and
+  switches, the in-kernel era's bench app; the reporter resets the row and
   prints inside the gate). Those threads never sleep and switch about every 19 us, far inside
   any RR slice, so the timer does not fire in the window. **That population is essentially
   100 percent eligible.**
@@ -58,7 +58,7 @@ So the item does not die of an empty population. It dies of its denominator.
 **The register fastpath removes the wrong switch from the round trip, and leaves the eligible
 one.** In the 8-byte call/reply round trip the caller's `kos_call` takes
 `kickos_ipc_fastpath` (`switch.S` `.Lecall`), which swaps inline and is deliberately outside
-`BD_SWITCH` (`kernel/bench/bench.cc` 389). The server's `kos_reply_recv` is
+`BD_SWITCH` (the in-kernel bench, since removed). The server's `kos_reply_recv` is
 `KOS_SYS_REPLY_RECV` = 68, which has no fastpath: it runs the generic dispatch, wakes the
 caller, parks, and takes **exactly one msip switch per round trip** -- and that one is
 eligible. The cooperative path would catch it.
@@ -162,9 +162,9 @@ reflecting the silicon and never a toolchain capability.
 
 ### The bench bracket, and what a comparison owes
 
-The instrument is in the tree and it is the one the numbers above were taken on. The rv32
-`KICKOS_BENCH` SWITCH window opens in `trap_entry` above the register save and closes at the
-end of the restore, so it prices the same software save and restore the armv7m window does
+The instrument the numbers above were taken on was the in-kernel bench, removed in M10.6.12. The
+rv32 SWITCH window opened in `trap_entry` above the register save and closed at the
+end of the restore, so it priced the same software save and restore the armv7m window does
 around its `stmdb`/`ldmia` -- with the standing caveat that armv7m executes eight more words
 each way that no bracket charges it for. The deferred MPU commit and the telemetry hook sit
 between the two halves and stay outside the window, as they do on armv7m; the MPU commit owns

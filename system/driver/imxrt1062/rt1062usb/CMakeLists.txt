@@ -16,9 +16,3 @@ kickos_add_driver(rt1062usb SOURCES rt1062usb.cc
                   POSTURE handover CONSOLE USB_DEVICE START rtusb_console_start
                   THREAD rtusbirq PRIORITY 1 ENTRY rtusb_irq_thread ARG block WINDOW regs CAPS notify:wait irq:wait
                   THREAD service ENTRY rtusb_service_thread ARG block CAPS ep:wait notify:signal:doorbell)
-
-# Off unless a bench run asks for it: makes the IRQ thread read a kernel-only address, so a
-# capture says whether an enforcing MPU refuses this thread at all.
-if(KICKOS_RTUSB_UNGRANTED_PROBE)
-    target_compile_definitions(kickos_rt1062usb PRIVATE KICKOS_RTUSB_UNGRANTED_PROBE=1)
-endif()

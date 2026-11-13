@@ -8,7 +8,6 @@
 #include <kickos/arch/console_poll.h>
 #include "pin_guard.h"
 #include <kickos/arch/clk_anchor.h>
-#include <kickos/arch/clock_fallback.h>
 #include <kickos/console_tx.h>
 #include <kickos/io/mmio.h>
 
@@ -16,7 +15,7 @@
 
 #include <stdint.h>
 
-#include "bench_mpu.h"
+#include "clock_bringup.h"
 #include "regs.h"
 #include <kickos/chip_mmap.h>
 #include "board_pins.h"
@@ -38,6 +37,7 @@
 namespace mmap = kickos::mk64f::mmap;
 namespace reg = kickos::mk64f::reg;
 namespace irq = kickos::mk64f::irq;
+namespace clocktree = kickos::mk64f::clocktree;
 
 namespace kickos
 {
@@ -47,6 +47,7 @@ namespace kickos
 
 extern "C"
 {
+    void kickos_armv7m_ccr_init(void);
     void kickos_armv7m_init(void);
 
     extern void (*__init_array_start[])();
@@ -183,78 +184,6 @@ namespace
         r16(reg::wdog::STCTRLH) = reg::wdog::STCTRLH_DISABLE;
     }
 
-    bool mcg_wait(uint8_t mask, uint8_t want)
-    {
-        return kickos::arch::wait_bits<uint8_t>(r8(reg::mcg::S), mask, want);
-    }
-
-    // Returns the MCG to the FEI reset posture SystemCoreClock still reflects: after a partial
-    // bring-up the core would run at 50/120 MHz while software believes 20.97 MHz, with CLKS=EXT
-    // armed so a late reference completes the switch mid-run. The landed Hz is ASSUMED, not
-    // confirmed: the two mcg_wait results are best-effort and the caller sets SystemCoreClock
-    // = 20971520 unconditionally.
-    bool fail_to_fei()
-    {
-        r8(reg::mcg::C6) = 0;
-        r8(reg::mcg::C5) = 0;
-        r8(reg::mcg::C1) = reg::mcg::C1_IREFS_INT;
-        mcg_wait(reg::mcg::S_IREFST, reg::mcg::S_IREFST);
-        mcg_wait(reg::mcg::S_CLKST_MASK, 0);
-        return false;
-    }
-
-    // FEI -> FBE -> PBE -> PEE off the FRDM's 50 MHz external clock; a failure after the external
-    // switch restores FEI. The caller widens SIM_CLKDIV1 before the rise and records the landed Hz.
-    bool mcg_to_pee()
-    {
-        // EREFS0=0 bypasses the crystal oscillator.
-        r8(reg::osc::CR) = reg::osc::CR_ERCLKEN;
-        r8(reg::mcg::C2) = reg::mcg::C2_RANGE_VHF;
-
-        // /1536 keeps the unused FLL input inside its 31.25-39.0625 kHz window.
-        r8(reg::mcg::C1) = reg::mcg::C1_CLKS_EXT | reg::mcg::C1_FRDIV_1536;
-        if (not mcg_wait(reg::mcg::S_IREFST, 0))
-        {
-            return fail_to_fei();
-        }
-        if (not mcg_wait(reg::mcg::S_CLKST_MASK, reg::mcg::S_CLKST_EXT))
-        {
-            return fail_to_fei();
-        }
-
-        // PLL ref 2.5 MHz, VCO 120 MHz.
-        r8(reg::mcg::C5) = reg::mcg::C5_PRDIV_20;
-        r8(reg::mcg::C6) = reg::mcg::C6_PLLS | reg::mcg::C6_VDIV_48;
-        if (not mcg_wait(reg::mcg::S_PLLST, reg::mcg::S_PLLST))
-        {
-            return fail_to_fei();
-        }
-        if (not mcg_wait(reg::mcg::S_LOCK0, reg::mcg::S_LOCK0) or KICKOS_WITNESS_CLOCK_FALLBACK)
-        {
-            return fail_to_fei();
-        }
-
-        r8(reg::mcg::C1) = reg::mcg::C1_CLKS_PLL | reg::mcg::C1_FRDIV_1536;
-        if (not mcg_wait(reg::mcg::S_CLKST_MASK, reg::mcg::S_CLKST_PLL))
-        {
-            return fail_to_fei();
-        }
-        return true;
-    }
-
-    bool clock_init()
-    {
-        // Dividers BEFORE the core scales up, else bus and flash overrun when MCGOUTCLK jumps
-        // (RM 26).
-        r32(reg::sim::CLKDIV1) = CLKDIV1_120MHZ;
-        if (mcg_to_pee())
-        {
-            SystemCoreClock = 120000000u;
-            return true;
-        }
-        return false;
-    }
-
     // From the live SystemCoreClock, with TE/RE clear. BDH goes before BDL, whose write latches
     // the divisor. ALWAYS inlined: reclaim stays straight-line stores.
     inline __attribute__((always_inline)) void uart0_set_baud(void)
@@ -336,7 +265,7 @@ extern "C"
 void arch_init(void)
 {
     // Clock first: the baud and SysTick derive from the final SystemCoreClock.
-    clock_init();
+    SystemCoreClock = clocktree::bring_up(CLKDIV1_120MHZ);
     pit_clock_init();
     g_clk.init(SystemCoreClock / BUS_DIV);
     uart0_init();
@@ -376,20 +305,20 @@ uint64_t arch_cpu_clock_set(uint32_t target)
     {
         // Dividers BEFORE MCGOUTCLK climbs (RM 26).
         r32(reg::sim::CLKDIV1) = CLKDIV1_120MHZ;
-        if (mcg_to_pee())
+        if (clocktree::mcg_to_pee())
         {
-            landed = 120000000u;
+            landed = clocktree::PEE_HZ;
         }
         else
         {
-            landed = 20971520u; // relock failed: parked on FEI
+            landed = clocktree::FEI_HZ; // relock failed: parked on FEI
         }
     }
     else
     {
         // The wider dividers are safe at any lower core clock and stay.
-        fail_to_fei();
-        landed = 20971520u;
+        clocktree::fail_to_fei();
+        landed = clocktree::FEI_HZ;
     }
 
     SystemCoreClock = landed;
@@ -487,9 +416,6 @@ static bool g_mpu_held_valid = false;
 // otherwise preempt a half-written (VLD-cleared) descriptor set.
 extern "C" void kickos_arch_mpu_commit(void)
 {
-#if KICKOS_BENCH
-    uint32_t const bench_start = kickos_arm_mpu_bench_cyc();
-#endif
     struct arch_mpu_encoded const* const img = kickos_arm_mpu_pending();
     if (img == nullptr)
     {
@@ -563,9 +489,6 @@ extern "C" void kickos_arch_mpu_commit(void)
     __asm volatile("dsb" ::: "memory");
     __asm volatile("isb" ::: "memory");
     __asm volatile("msr primask, %0" ::"r"(primask) : "memory");
-#if KICKOS_BENCH
-    kickos_bench_mpu_commit(kickos_arm_mpu_bench_cyc() - bench_start);
-#endif
 }
 #endif
 
@@ -721,6 +644,7 @@ int arch_pinmux_set(uint32_t port, uint32_t pin, uint32_t func)
 void Reset_Handler(void)
 {
     wdog_disable(); // first: the watchdog would reset the part mid-bring-up
+    kickos_armv7m_ccr_init();
     kickos_armv7m_enable_fpu(); // before ANY later code: a hard-float ABI could emit FP anywhere
 
     kickos_ranges_init();

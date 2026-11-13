@@ -90,7 +90,7 @@ flash_resolve() {
     fi
 
     # Build dir defaults to build/<board>; override with FLASH_BUILD to flash a
-    # variant preset's output (e.g. FLASH_BUILD=build/f411disco-bench).
+    # variant preset's output (e.g. FLASH_BUILD=build/f411disco).
     local bd="${FLASH_BUILD:-$FL_ROOT/build/$FL_BOARD}"
     # kickos_emit_image outputs: ELF, .hex, .bin, and .app.bin for Espressif.
     # In-tree apps are looked up with _app_base (board-specific dir, then common/).
