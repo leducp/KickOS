@@ -955,7 +955,7 @@ unprivileged. The walk through a contended `kos_mutex_lock` into the kernel is
 
 **Where:** `system/init/compose/entry.cc`, `kickos_init_entry`; `system/init/compose/walk.cc`,
 `Walk::run`, `Walk::boot`, `Walk::start`, `Walk::create`; `boards/qemu/composition.yaml`;
-`user/src/syscall_stubs.cc`, `kos_task_create`, `kos_task_watch`
+`user/src/syscall_stubs.cc`, `kos_task_create`, `kos_watch`
 
 After the constructors, root becomes the **init**. `kickos_init_entry` walks a table that the
 build generated from the composition (`boards/qemu/composition.yaml`). For a plain application
@@ -974,7 +974,7 @@ tasks:
 `Walk::boot` first lowers root to the init's priority (2) and finds the image's program with
 `kos_program_find`. `Walk::start` then calls `Walk::create`, which asks the kernel to build the
 task and start it with `kos_task_create`. Then it sets a watch on the task with
-`kos_task_watch`. Both are ordinary syscalls; [08](08-spawn-and-caps.md) walks them in full.
+`kos_watch`. Both are ordinary syscalls; [08](08-spawn-and-caps.md) walks them in full.
 
 ```c++
         kos_task_params p = {};

@@ -90,13 +90,12 @@ namespace kickos
         // The ceiling is UNCONDITIONAL where the core set is not: without it any unprivileged
         // thread can take the top of the run queue, a starvation hole on a one-core board too.
         uint8_t prio_ceiling = 0;
-        // TASK_MARK_* bits (task.cc): the armed endpoint has been waited on since the task last
-        // emptied, which is what "ready" means for the creator's watch (kos_task_watch); the
-        // task has ended and its status is set; it is dead, every member swept; it serves the
-        // published console.
+        // TASK_MARK_* bits (task.cc): the ready endpoint has been waited on since the task last
+        // emptied; the task has ended and its status is set; it is dead, every member swept; it
+        // serves the published console.
         uint8_t marks = 0;
-        // The bit to raise, the arming capability's badge, as an index: one bit is all a
-        // capability ever raises.
+        // The creator's watch (kos_watch): the bit to raise, the arming capability's badge, as an
+        // index in the low bits, and the events it asks for above them (task.cc).
         uint8_t watch_bit = 0;
         // Members released and still sweeping their capabilities: the death is reported once
         // the task is empty and this is back to zero.
@@ -106,11 +105,11 @@ namespace kickos
 #if KICKOS_KERNEL_CORES > 1
         uint32_t core_set = 0;
 #endif
-        // The notification a death or a first receive raises, by generational object handle
-        // biased by one (notify_bound_store), 0 for none. Never held: freeing the notification
-        // zeroes it.
+        // The notification the watch raises, by generational object handle biased by one
+        // (notify_bound_store), 0 for none. Never held: freeing the notification zeroes it.
         int32_t watch_notify = 0;
-        // The endpoint whose first receive means ready, biased the same way; compared only.
+        // The declaration's ready endpoint, whose first receive means ready, biased the same way,
+        // 0 where it names none; compared only.
         int32_t watch_ep = 0;
         // The status the task ended with, which kos_task_state answers once it has ended.
         int32_t exit_status = 0;
@@ -184,11 +183,15 @@ namespace kickos
     // task_stop, then task_drop_hold: the hold is gone on return.
     void task_stop_and_drop_hold(Task* t, Held held);
 
-    // The creator's reports (kos_task_watch). Arm or replace the watch on `task`, or disarm
-    // it with KOS_CAP_NONE for `notify_cap`: 0, -KOS_EBADF (no such task, or a cap naming
-    // nothing of its kind), -KOS_EPERM (not the creator), -KOS_EACCES (the notification cap
-    // lacks SIGNAL).
-    int task_watch_call(kos_task_t task, uint32_t notify_cap, uint32_t ready_ep);
+    // The TASK watch's halves (kernel/notify/watch.cc). Caller holds IrqLock.
+    // The task `task` names, created by `c`'s task; else null with *err KOS_EBADF or KOS_EPERM.
+    Task* task_watch_source(Thread* c, kos_task_t task, int* err);
+    // Whether `t`'s declaration names a ready endpoint.
+    bool task_watch_ready_named(Task const* t);
+    void task_watch_disarm(Task* t);
+    // Replace `t`'s watch with one raising bit `bit` of notification `notify_obj` at each of
+    // `events` (KOS_TASK_READY, DEAD, ENDED), at once for one already reported.
+    void task_watch_arm(Task* t, int notify_obj, uint32_t bit, uint32_t events);
 
     // The image whose code and data `t`'s threads run (<kickos/image.h>): its declaration's for
     // a declared instance, and image 0, the init's, for a task the boot seats. Null-safe: image 0.
@@ -229,7 +232,7 @@ namespace kickos
     // it ended with where ENDED is set, or -KOS_EBADF / -KOS_EPERM.
     int task_state_call(kos_task_t task, int32_t* status);
     // The task ends, its entry thread having died by any cause, or a member faulted or exited
-    // with the task scope: it takes no member from here on, the creator's watch is raised, and
+    // with the task scope: it takes no member from here on, a watch asking for ENDED is raised, and
     // `code` is its status when `latch` holds, the ending thread being uncancelled; otherwise it
     // keeps KOS_EXIT_CANCELLED. A later end raises and latches nothing. Every other member is
     // slain (CANCEL_SLAY), with or without a creator.

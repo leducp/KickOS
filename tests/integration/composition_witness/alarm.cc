@@ -50,7 +50,7 @@ int main(int, char**)
     }
     if (rc == 0)
     {
-        rc = kos_irq_bind_notify(line.cap, badged);
+        rc = kos_watch(KOS_WATCH_IRQ, KOS_IRQ_FIRED, line.cap, badged, 0);
     }
     if (rc != 0)
     {

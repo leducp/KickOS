@@ -570,9 +570,10 @@ namespace fake
             }
         }
 
-        void raise(Task const& task)
+        // The watch, where it asks for any of `events`, the ones just reported.
+        void raise(Task const& task, uint32_t events)
         {
-            if (task.watch_object >= 0 and task.watch_badge >= 0)
+            if (task.watch_object >= 0 and task.watch_badge >= 0 and (task.watch_events & events) != 0u)
             {
                 g_objects[static_cast<size_t>(task.watch_object)].pending |= 1u << task.watch_badge;
             }
@@ -689,7 +690,7 @@ namespace fake
     {
         Task& task = current(name);
         task.state = task.state | KOS_TASK_READY;
-        raise(task);
+        raise(task, KOS_TASK_READY);
     }
 
     void end(char const* name, int status)
@@ -700,7 +701,7 @@ namespace fake
             task.status = status;
         }
         task.state = task.state | KOS_TASK_ENDED;
-        raise(task);
+        raise(task, KOS_TASK_ENDED);
     }
 
     void die(char const* name)
@@ -730,7 +731,7 @@ namespace fake
             }
         }
         task.state = task.state | KOS_TASK_ENDED | KOS_TASK_DEAD;
-        raise(task);
+        raise(task, KOS_TASK_ENDED | KOS_TASK_DEAD);
         release_if_done(task);
     }
 
@@ -747,7 +748,7 @@ namespace fake
         {
             task.state = task.state | KOS_TASK_DEAD;
         }
-        raise(task);
+        raise(task, task.state & (KOS_TASK_ENDED | KOS_TASK_DEAD));
         release_if_done(task);
     }
 
@@ -770,7 +771,7 @@ namespace fake
         if ((task.state & KOS_TASK_ENDED) != 0u and (task.state & KOS_TASK_DEAD) == 0u)
         {
             task.state = task.state | KOS_TASK_DEAD;
-            raise(task);
+            raise(task, KOS_TASK_DEAD);
         }
         release_if_done(task);
     }
@@ -783,7 +784,7 @@ namespace fake
                 and (task.state & KOS_TASK_LIVE) != 0u)
             {
                 task.state = task.state | KOS_TASK_READY;
-                raise(task);
+                raise(task, KOS_TASK_READY);
             }
         }
     }
@@ -935,6 +936,7 @@ namespace fake
         task.creator = INIT_THREAD + 1u;
         task.watch_object = -1;
         task.watch_badge = -1;
+        task.watch_events = 0u;
         task.ready_object = -1;
         task.ceiling = KICKOS_PRIO_MAX;
         task.core_mask = 0xFFFFFFFFu;
@@ -1492,7 +1494,6 @@ int kos_task_create(kos_program_t prog, struct kos_task_params const* params, ko
     }
     task->decl = decl + 1;
     task->ready_object = ready;
-    task->ready_seated = true;
     *out_task = handle;
     return finish(call, 0);
 }
@@ -1567,6 +1568,7 @@ static int create_task(void* mem_base, uint32_t mem_size, uint32_t mem_flags, ui
     }
     task.watch_object = -1;
     task.watch_badge = -1;
+    task.watch_events = 0u;
     task.ready_object = -1;
     task.held = true;
     g_tasks.push_back(task);
@@ -1578,45 +1580,35 @@ static int create_task(void* mem_base, uint32_t mem_size, uint32_t mem_flags, ui
     return finish(call, 0);
 }
 
-int kos_task_watch(kos_task_t task, kos_cap_t notify_cap, kos_cap_t ready_ep)
+// kernel/notify/watch.cc, watch_call: the spec, the kind's source, its authority and state, then
+// the notification and the kind's arm.
+static int watch_task(uint32_t events, uintptr_t source, kos_cap_t notify_cap)
 {
-    size_t const call = record("kos_task_watch", {task, notify_cap, ready_ep});
-    int const rc = scripted(call);
-    if (rc != 1)
-    {
-        return finish(call, rc);
-    }
     Task* t = nullptr;
-    int const err = resolve(task, &t);
+    int const err = resolve(static_cast<kos_task_t>(source), &t);
     if (err != 0)
     {
-        return finish(call, err);
+        return err;
+    }
+    if (events == 0u)
+    {
+        t->watch_object = -1;
+        t->watch_badge = -1;
+        t->watch_events = 0u;
+        return 0;
+    }
+    if ((events & KOS_TASK_READY) != 0u and t->ready_object < 0)
+    {
+        return -KOS_EINVAL;
     }
     Cap const* const n = find_cap(notify_cap);
     if (n == nullptr or g_objects[n->object].kind != Kind::NOTIFY)
     {
-        return finish(call, -KOS_EBADF);
+        return -KOS_EBADF;
     }
     if ((n->rights & KOS_CAP_SIGNAL) == 0u)
     {
-        return finish(call, -KOS_EACCES);
-    }
-    if (t->ready_seated and ready_ep != KOS_CAP_NONE)
-    {
-        return finish(call, -KOS_EINVAL);
-    }
-    int64_t ready = t->ready_object;
-    if (ready_ep != KOS_CAP_NONE)
-    {
-        ready = object_of(ready_ep);
-        if (ready < 0 or g_objects[static_cast<size_t>(ready)].kind != Kind::ENDPOINT)
-        {
-            return finish(call, -KOS_EBADF);
-        }
-    }
-    else if (not t->ready_seated)
-    {
-        ready = -1;
+        return -KOS_EACCES;
     }
     t->watch_object = static_cast<int64_t>(n->object);
     t->watch_badge = n->badge;
@@ -1624,13 +1616,76 @@ int kos_task_watch(kos_task_t task, kos_cap_t notify_cap, kos_cap_t ready_ep)
     {
         t->watch_badge = 0;
     }
-    t->ready_object = ready;
-    // kernel/task/task.cc, task_watch_call: what happened before the arming is raised as it arms.
-    if ((t->state & (KOS_TASK_ENDED | KOS_TASK_READY)) != 0u)
+    t->watch_events = events;
+    // kernel/task/task.cc, task_watch_arm: what happened before the arming is raised as it arms.
+    raise(*t, t->state & (KOS_TASK_READY | KOS_TASK_DEAD | KOS_TASK_ENDED));
+    return 0;
+}
+
+static int watch_line(uint32_t events, uintptr_t source, kos_cap_t notify_cap)
+{
+    Cap const* const line = find_cap(static_cast<kos_cap_t>(source));
+    if (line == nullptr or g_objects[line->object].kind != Kind::LINE)
     {
-        raise(*t);
+        return -KOS_EBADF;
     }
-    return finish(call, 0);
+    if ((line->rights & KOS_CAP_WAIT) == 0u)
+    {
+        return -KOS_EACCES;
+    }
+    if (events == 0u)
+    {
+        return -KOS_ENOTSUP;
+    }
+    if (g_objects[line->object].binding >= 0)
+    {
+        return -KOS_EBUSY;
+    }
+    Cap const* const note = find_cap(notify_cap);
+    if (note == nullptr or g_objects[note->object].kind != Kind::NOTIFY)
+    {
+        return -KOS_EBADF;
+    }
+    if ((note->rights & KOS_CAP_SIGNAL) == 0u)
+    {
+        return -KOS_EACCES;
+    }
+    g_objects[line->object].binding = static_cast<int64_t>(note->object);
+    g_objects[note->object].refs++;
+    return 0;
+}
+
+int kos_watch(enum kos_watch_kind kind, uint32_t events, uintptr_t source, kos_cap_t notify_cap,
+              uintptr_t arg)
+{
+    size_t const call = record("kos_watch", {kind, events, source, notify_cap, arg});
+    int const rc = scripted(call);
+    if (rc != 1)
+    {
+        return finish(call, rc);
+    }
+    uint32_t defined = 0u;
+    if (kind == KOS_WATCH_TASK)
+    {
+        defined = KOS_TASK_READY | KOS_TASK_DEAD | KOS_TASK_ENDED;
+    }
+    else if (kind == KOS_WATCH_IRQ)
+    {
+        defined = KOS_IRQ_FIRED;
+    }
+    if (defined == 0u or (events & ~defined) != 0u or arg != 0u)
+    {
+        return finish(call, -KOS_EINVAL);
+    }
+    if (kind == KOS_WATCH_TASK)
+    {
+        if (events == 0u and notify_cap != KOS_CAP_NONE)
+        {
+            return finish(call, -KOS_EINVAL);
+        }
+        return finish(call, watch_task(events, source, notify_cap));
+    }
+    return finish(call, watch_line(events, source, notify_cap));
 }
 
 kos_thread_t kos_thread_self(void)
@@ -2159,34 +2214,6 @@ static void publish(kos_cap_t ep, int64_t served_by)
     g_owner = Owner::USER;
     g_console_task = served_by;
     settle();
-}
-
-int kos_irq_bind_notify(kos_cap_t irq_cap, kos_cap_t notify_cap)
-{
-    size_t const call = record("kos_irq_bind_notify", {irq_cap, notify_cap});
-    int const rc = scripted(call);
-    if (rc != 1)
-    {
-        return finish(call, rc);
-    }
-    Cap const* const line = find_cap(irq_cap);
-    Cap const* const note = find_cap(notify_cap);
-    if (line == nullptr or g_objects[line->object].kind != Kind::LINE or note == nullptr
-        or g_objects[note->object].kind != Kind::NOTIFY)
-    {
-        return finish(call, -KOS_EBADF);
-    }
-    if ((line->rights & KOS_CAP_WAIT) == 0u or (note->rights & KOS_CAP_SIGNAL) == 0u)
-    {
-        return finish(call, -KOS_EACCES);
-    }
-    if (g_objects[line->object].binding >= 0)
-    {
-        return finish(call, -KOS_EBUSY);
-    }
-    g_objects[line->object].binding = static_cast<int64_t>(note->object);
-    g_objects[note->object].refs++;
-    return finish(call, 0);
 }
 
 void kos_print(char const* s)

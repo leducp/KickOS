@@ -101,15 +101,15 @@ milestone does not close while any of them still composes a system.
       only the wait for the instance's last incarnation to finish dying, which reads as a bound on
       the create itself. The create answers `-KOS_EAGAIN` while the last incarnation is dying, its
       members, lines or IRQ bindings still retiring, and a creator waits for "this instance can
-      start again" through a notification, as `kos_task_watch` reports an end. The smallest surface
-      that does it, a new event of the existing watch before a new call, and it folds into "ONE
+      start again" through a notification, as the task watch (formerly `kos_task_watch`) reports
+      an end. The smallest surface that does it, a new event of the existing watch before a new call, and it folds into "ONE
       CALL TIES ANY EVENT SOURCE TO A NOTIFICATION" when that lands (maintainer: a new API now,
       merged later). Whether that one call lands in M10.7 instead is checked first against its
       design (maintainer, 2026-11-09: "seems a good moment yes, but to check").
       **RULED (maintainer, 2026-11-10: "that's the idea yes"):** the one call lands in M10.7 with
-      the task, IRQ and "can start again" events, and `kos_task_watch` and `kos_irq_bind_notify`
-      go, rather than a new event on the old call first; every wait takes a deadline of the
-      instant type below.
+      the task, IRQ and "can start again" events, and the two calls
+      (formerly `kos_task_watch` and `kos_irq_bind_notify`) go, rather than a new event on the old
+      call first; every wait takes a deadline of the instant type below.
       **RULED (maintainer, 2026-11-09):** "design [the one watch call] to be able to match this
       epoll style later, even if this is not provided in the first version". The shape leaves room for a
       message-waiting source (an endpoint kind, or a notification bound to the thread), several
@@ -419,9 +419,9 @@ by ruling and sits in `roadmap.md`'s `Later`.
 ## Later, from the M10.6.10 rulings (maintainer, 2026-10-29)
 
 - [ ] **ONE CALL TIES ANY EVENT SOURCE TO A NOTIFICATION.** Each source has its own call today:
-      `kos_task_watch` for a task's end, death and readiness, `kos_irq_bind_notify` for a line. One
-      generic watch, its parameters naming the source and the events, would replace them, so a new
-      source adds a kind and no new call.
+      a task's end, death and readiness (formerly `kos_task_watch`), and a line
+      (formerly `kos_irq_bind_notify`). One generic watch, its parameters naming the source and
+      the events, would replace them, so a new source adds a kind and no new call.
       **RULED (maintainer, 2026-11-05):** deferred to M11 (the driver era), to land with the first
       device-event kind. Design: `.session/reports/2026-11-05-event-source-watch.md`. One watch call
       takes a spec, a source, a notification capability and an argument; a kind is a table row, and

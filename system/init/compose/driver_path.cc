@@ -140,7 +140,7 @@ namespace kickos::init::driver_path
         if (rc == 0)
         {
             // The task runs already: a watch armed after its end or its readiness reports it.
-            walk.check(kos_task_watch(handle, badged, KOS_CAP_NONE), "kos_task_watch", task);
+            walk.check(walk.watch(task, handle, badged), "kos_watch", task);
             if (narrows_at_handover(walk, task))
             {
                 rc = handover(walk, task, &handle);

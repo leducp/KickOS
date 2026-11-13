@@ -17,7 +17,9 @@
 #include <kickos/sched.h>
 #include <kickos/task.h>
 #include <kickos/thread.h>
+#include <kickos/watch.h>
 
+#include <kickos/sys/abi.h>
 #include <kickos/sys/errno.h>
 
 #include "syscall_internal.h"
@@ -30,6 +32,11 @@ namespace kickos
     {
         namespace
         {
+            uint32_t watch_spec(uint32_t kind, uint32_t events)
+            {
+                return (kind << KOS_WATCH_KIND_SHIFT) | events;
+            }
+
             class TaskBudget : public KSeam
             {
             };
@@ -373,7 +380,7 @@ namespace kickos
                 ASSERT_EQ(irq_claim(c, LINE_A, 0, &line), 0);
                 uint32_t signalled = KCAP_INVALID;
                 ASSERT_EQ(notify_create(c, &signalled), 0);
-                ASSERT_EQ(irq_bind_notify(c, line, signalled), 0);
+                ASSERT_EQ(watch_call(c, watch_spec(KOS_WATCH_IRQ, KOS_IRQ_FIRED), line, signalled, 0), 0);
                 ASSERT_EQ(handle_close(c, signalled, kickos::IrqLock()), 0);
                 ASSERT_EQ(live_notifies(), 1)
                     << "fixture: the binding's own reference keeps the slot allocated";
@@ -402,7 +409,7 @@ namespace kickos
                 ASSERT_EQ(notify_create(c, &held), 0);
                 uint32_t line = KCAP_INVALID;
                 ASSERT_EQ(irq_claim(c, LINE_A, 0, &line), 0);
-                ASSERT_EQ(irq_bind_notify(c, line, held), 0);
+                ASSERT_EQ(watch_call(c, watch_spec(KOS_WATCH_IRQ, KOS_IRQ_FIRED), line, held, 0), 0);
                 ASSERT_EQ(notify_bind(c, held), 0);
 
                 for (int i = 1; i < KICKOS_SEAM_BUDGET_NOTIFICATIONS; i++)
@@ -422,7 +429,9 @@ namespace kickos
                 ASSERT_EQ(irq_claim(maker, LINE_A, 0, &line), 0);
                 uint32_t signalled = KCAP_INVALID;
                 ASSERT_EQ(notify_create(maker, &signalled), 0);
-                ASSERT_EQ(irq_bind_notify(maker, line, signalled), 0);
+                ASSERT_EQ(watch_call(maker, watch_spec(KOS_WATCH_IRQ, KOS_IRQ_FIRED), line,
+                                     signalled, 0),
+                          0);
 
                 Thread* const dest = creator_in_task(SLOT_SECOND, 1);
                 for (int i = 0; i < KICKOS_SEAM_BUDGET_NOTIFICATIONS; i++)
@@ -451,7 +460,9 @@ namespace kickos
                 ASSERT_EQ(irq_claim(maker, LINE_A, 0, &line), 0);
                 uint32_t signalled = KCAP_INVALID;
                 ASSERT_EQ(notify_create(maker, &signalled), 0);
-                ASSERT_EQ(irq_bind_notify(maker, line, signalled), 0);
+                ASSERT_EQ(watch_call(maker, watch_spec(KOS_WATCH_IRQ, KOS_IRQ_FIRED), line,
+                                     signalled, 0),
+                          0);
 
                 Thread* const dest = creator_in_task(SLOT_SECOND, 1);
                 for (int i = 0; i < KICKOS_SEAM_BUDGET_NOTIFICATIONS - 1; i++)
@@ -477,7 +488,9 @@ namespace kickos
                 ASSERT_EQ(irq_claim(maker, LINE_A, 0, &line), 0);
                 uint32_t signalled = KCAP_INVALID;
                 ASSERT_EQ(notify_create(maker, &signalled), 0);
-                ASSERT_EQ(irq_bind_notify(maker, line, signalled), 0);
+                ASSERT_EQ(watch_call(maker, watch_spec(KOS_WATCH_IRQ, KOS_IRQ_FIRED), line,
+                                     signalled, 0),
+                          0);
                 int const shared = object_of(maker, signalled);
 
                 Thread* const dest = creator_in_task(SLOT_SECOND, 1);
@@ -529,7 +542,9 @@ namespace kickos
                 uint32_t signalled = KCAP_INVALID;
                 kernel().current(kickos_kernel_core()) = donor;
                 ASSERT_EQ(notify_create(donor, &signalled), 0);
-                EXPECT_EQ(irq_bind_notify(donor, line, signalled), -KOS_EAGAIN)
+                EXPECT_EQ(watch_call(donor, watch_spec(KOS_WATCH_IRQ, KOS_IRQ_FIRED), line,
+                                     signalled, 0),
+                          -KOS_EAGAIN)
                     << "the attach would seat this object on a peer that has no room for it";
                 EXPECT_GT(KICKOS_SEAM_NOTIFY - live_notifies(), 0)
                     << "the pool still has slots to spare, so this was not exhaustion";
@@ -558,7 +573,9 @@ namespace kickos
                 uint32_t signalled = KCAP_INVALID;
                 kernel().current(kickos_kernel_core()) = donor;
                 ASSERT_EQ(notify_create(donor, &signalled), 0);
-                EXPECT_EQ(irq_bind_notify(donor, line, signalled), 0)
+                EXPECT_EQ(watch_call(donor, watch_spec(KOS_WATCH_IRQ, KOS_IRQ_FIRED), line,
+                                     signalled, 0),
+                          0)
                     << "one slot of room in the peer is what this attach needs";
             }
 

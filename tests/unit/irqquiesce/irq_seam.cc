@@ -24,6 +24,7 @@
 #include <kickos/irqlock.h>
 #include <kickos/kernel.h>
 #include <kickos/sync.h>
+#include <kickos/task.h>
 #include <kickos/thread.h>
 
 #include <kickos/sys/errno.h>
@@ -351,6 +352,32 @@ namespace kickos
     bool task_object_admit_binding_notify(int, int)
     {
         return true;
+    }
+
+    // The seam's one notification entry is unbadged.
+    uint32_t notify_cap_bit(CapEntry const&)
+    {
+        return 0;
+    }
+
+    // kernel/notify/watch.cc's TASK half: no task is nameable here.
+    Task* task_watch_source(Thread*, kos_task_t, int* err)
+    {
+        *err = KOS_EBADF;
+        return nullptr;
+    }
+
+    bool task_watch_ready_named(Task const*)
+    {
+        return false;
+    }
+
+    void task_watch_disarm(Task*)
+    {
+    }
+
+    void task_watch_arm(Task*, int, uint32_t, uint32_t)
+    {
     }
 
     void* cap_resolve_e(Thread*, uint32_t, CapType want, uint8_t need, int* err)

@@ -130,6 +130,9 @@ kickos_add_unit_test(NAME sys_periph_disable SOURCES periph_disable.cc
 # The console write's wait flag, from the call's own argument.
 kickos_add_unit_test(NAME sys_kconsole_flags SOURCES kconsole_flags.cc
   LIBRARIES kickos_kseam_sysdispatch_region)
+# The watch call's spec, each kind's refusal order and disarm, and the events a TASK watch raises.
+kickos_add_unit_test(NAME sys_watch_decode SOURCES watch_decode.cc
+  LIBRARIES kickos_kseam_sysdispatch_region)
 # The fused reply's null options, answered by the reply alone before any receive validation.
 kickos_add_unit_test(NAME sys_reply_alone SOURCES reply_alone.cc
   LIBRARIES kickos_kseam_sysdispatch_region)
@@ -144,7 +147,7 @@ kickos_add_unit_test(NAME sys_witness_on SOURCES witness_gate.cc
 target_compile_definitions(sys_witness_on PRIVATE KICKOS_WITNESS_UACCESS=1)
 kickos_add_unit_test(NAME sys_witness_off SOURCES witness_gate.cc
   LIBRARIES kickos_kseam_sysdispatch_region)
-foreach(_gate IN ITEMS sys_ram_clear spawn_unwind sys_shutdown sys_realtime sys_thread_join sys_periph_disable sys_kconsole_flags sys_witness_on
+foreach(_gate IN ITEMS sys_ram_clear spawn_unwind sys_shutdown sys_realtime sys_thread_join sys_periph_disable sys_kconsole_flags sys_watch_decode sys_witness_on
                        sys_witness_off sys_spawn_share)
   target_link_options(${_gate} PRIVATE -Wl,--gc-sections)
 endforeach()

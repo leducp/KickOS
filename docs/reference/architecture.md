@@ -938,7 +938,7 @@ API. Two flavors:
   no-execute); (2) **IRQ-as-event** -- a `CAP_IRQ` capability on the line, minted by a
   creator holding `AUTH_IRQ` (`kos_irq_claim`, or a packaged driver's create, which binds each
   declared line itself) and DELEGATED to the driver at spawn, which binds the line to a
-  notification (`kos_irq_bind_notify`) and then loops `kos_notify_wait` / service.
+  notification (`kos_watch`, `KOS_WATCH_IRQ`) and then loops `kos_notify_wait` / service.
   The kernel's generic ISR stub masks the line, raises the binding's bit in that notification,
   flags reschedule -> PendSV switches to the now-ready driver task; the next `kos_notify_wait`
   re-arms the consumed line, so no explicit ack is needed (`kos_irq_ack` stays an OPTIONAL early
@@ -1244,8 +1244,8 @@ feeds the slave app.
   its own stack: argc, the declaration's index, the shared block `params.block` names, the argv
   vector and its strings, which the kernel copies from the caller, one copy per string, at most
   `KICKOS_ARGV_MAX` bytes; with no argv it is `{ instance name }`. A declaration naming a ready
-  endpoint takes it from `params.caps`, so `kos_task_watch` reports a first receive on it whenever
-  the watch is armed, and a watch armed after the task ended raises at once. A declared device,
+  endpoint takes it from `params.caps`, so a `KOS_WATCH_TASK` watch reports a first receive on it
+  whenever the watch is armed, and a watch armed after the task ended raises at once. A declared device,
   line or console asks the creator for `AUTH_MEMORY`, `AUTH_IRQ` or `AUTH_CONSOLE`.
 - **A packaged driver's create.** Its declaration's device windows are the entry thread's, and
   the caller passes none (`-KOS_EINVAL`). A declared console is published through the caller's

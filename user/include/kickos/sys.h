@@ -393,8 +393,8 @@ int kos_program_find(char const* name, kos_program_t* out_prog);
 // lowest-numbered one the caller may start that is not live. The creator holds KOS_AUTH_TASKS
 // and every authority bit, the ceiling and the cores the declaration names; only the init
 // starts a task declared `start: init`. An instance is live from its create until it is dead.
-// A declaration naming a ready endpoint takes it from params->caps, and kos_task_watch reports
-// a first receive on it even when armed after it. A packaged driver's declaration takes no
+// A declaration naming a ready endpoint takes it from params->caps, and a KOS_WATCH_TASK watch
+// reports a first receive on it even when armed after it. A packaged driver's declaration takes no
 // params->windows: the kernel seats its device windows on the entry thread, claims its lines into
 // the entry thread's table at the slots it names, bound to the notification it names in
 // params->caps, and publishes a declared console through the creator's capability on the ready
@@ -419,27 +419,33 @@ int kos_program_find(char const* name, kos_program_t* out_prog);
 int kos_task_create(kos_program_t prog, struct kos_task_params const* params,
                     kos_monotonic_t until, kos_task_t* out_task);
 
-// Watch a task YOU created: `notify_cap`'s badge is raised when the task ends, when it is dead,
-// every member's teardown done, and the first time a member waits to receive on `ready_ep`
-// (KOS_CAP_NONE: no readiness). For a task whose declaration names its own ready endpoint,
-// `ready_ep` is KOS_CAP_NONE (-KOS_EINVAL otherwise) and that endpoint is watched. A watch armed
-// after the task ended or became ready is raised at once. The watch names the notification
-// object, not the capability:
-// closing notify_cap does not end it, and it reaches whoever still holds or is bound to the object.
-// The task's slot being freed ends it, as does re-arming, or disarming with KOS_CAP_NONE. A
-// creator's hold keeps the task's slot: release it with kos_task_slay(task, KOS_POLL) before
-// creating the next instance. Returns 0, -KOS_EBADF, -KOS_EPERM (not the creator) or -KOS_EACCES
-// (notify_cap lacks SIGNAL).
-int kos_task_watch(kos_task_t task, kos_cap_t notify_cap, kos_cap_t ready_ep);
+// Tie an event source of `kind` to a notification: `notify_cap`'s badge bit is raised on each of
+// `events` the source reports. The watch names the notification object, not the capability:
+// closing notify_cap does not end it. `arg` is 0. Returns >= 0, or the first refusal in the
+// order KOS_SYS_WATCH lists.
+//   KOS_WATCH_TASK: `source` is a task YOU created. KOS_TASK_ENDED is raised at its end, DEAD once
+//     every member's teardown is done, and READY the first time a member waits to receive on the
+//     ready endpoint its declaration names (asked of a task naming none: -KOS_EINVAL). An event
+//     reported before the arming is raised at once. One watch per task: arming replaces it,
+//     events 0 with KOS_CAP_NONE disarms it, and the task's slot being freed ends it. A creator's
+//     hold keeps the task's slot: release it with kos_task_slay(task, KOS_POLL) before creating
+//     the next instance.
+//   KOS_WATCH_IRQ: `source` is a line capability with KOS_CAP_WAIT, the event KOS_IRQ_FIRED. The
+//     ISR raises the bit, one signaller among others on the object, so badge the capability first
+//     if the object carries more than one source. ONE-WAY and once per line: a disarm answers
+//     -KOS_ENOTSUP, a second watch -KOS_EBUSY; the binding holds a reference on the notification.
+int kos_watch(enum kos_watch_kind kind, uint32_t events, uintptr_t source, kos_cap_t notify_cap,
+              uintptr_t arg);
 
 // The enum kos_task_state bits for the task `task` names, or -KOS_EBADF once its slot is
 // freed, -KOS_EPERM for a task you did not create, -KOS_EINVAL / -KOS_EFAULT for a bad `status`.
 // ENDED comes first, at the end's cause, with its members stopped and possibly still tearing
 // down; DEAD, not the absence of LIVE, is the death: it is set once every member's teardown is
-// done, and the watch is raised at each. Where ENDED is set and `status` is not NULL, *status is
-// the status the task ended with: its entry thread's exit code (0 when the entry returned),
-// KOS_EXIT_FAULT when a member faulted first, and KOS_EXIT_CANCELLED when the entry was
-// cancelled, every member was cancelled, or the end was caused by a thread already cancelled.
+// done, and a watch asking for either is raised at it. Where ENDED is set and `status` is not
+// NULL, *status is the status the task ended with: its entry thread's exit code (0 when the
+// entry returned), KOS_EXIT_FAULT when a member faulted first, and KOS_EXIT_CANCELLED when the
+// entry was cancelled, every member was cancelled, or the end was caused by a thread already
+// cancelled.
 // The entry is the first thread a non-member seats in the task. *status is written only then.
 int kos_task_state(kos_task_t task, int* status);
 
@@ -583,13 +589,6 @@ void kos_panic(char const* msg) __attribute__((noreturn));
 // -KOS_ENOMEM (binding pool) or -KOS_EMFILE (the caller's cap table); the cap lands in
 // *out_cap.
 int kos_irq_claim(int line, unsigned int flags, kos_cap_t* out_cap);
-// Attach this line to a notification as one signaller among others. The ISR raises
-// `notify_cap`'s BADGE bit there, so badge the capability first if the object carries more
-// than one source. Needs KOS_CAP_WAIT on the line and KOS_CAP_SIGNAL on the notification.
-// ONE-WAY and once only: 0, -KOS_EBUSY (this line already signals something), -KOS_EBADF,
-// -KOS_EACCES (a missing right), -KOS_EPERM (the notification already carries a line claimed
-// on another core), -KOS_EAGAIN (a holding task's notification budget) or -KOS_EOVERFLOW.
-int kos_irq_bind_notify(kos_cap_t irq_cap, kos_cap_t notify_cap);
 // Rearm early after servicing the device, allowing IRQs during later work.
 // Optional: kos_notify_wait rearms on entry. Repeated acks have no effect.
 // -KOS_EINVAL for a line attached to no notification: arming it would open a source whose
@@ -611,8 +610,8 @@ int kos_irq_raise(kos_cap_t irq_cap);
 
 // --- Notifications -----------------------------------------------------------------------
 // A notification is a word of 32 badge bits with at most one bound waiter. An IRQ line
-// attached with kos_irq_bind_notify is one signaller; a holder of a KOS_CAP_SIGNAL copy
-// calling kos_notify is another. Nothing here needs an authority bit or a line: a
+// watched with KOS_WATCH_IRQ is one signaller; a holder of a KOS_CAP_SIGNAL copy calling
+// kos_notify is another. Nothing here needs an authority bit or a line: a
 // notification with no line attached is a complete object, and the badge on a capability is
 // what confines its holder to one bit.
 //

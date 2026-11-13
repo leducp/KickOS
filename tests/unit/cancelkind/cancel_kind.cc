@@ -15,7 +15,9 @@
 #include <kickos/sched.h>
 #include <kickos/task.h>
 #include <kickos/thread.h>
+#include <kickos/watch.h>
 
+#include <kickos/sys/abi.h>
 #include <kickos/sys/errno.h>
 
 #include "kseam_test.h"
@@ -26,6 +28,11 @@ namespace kickos
     {
         namespace
         {
+            uint32_t watch_spec(uint32_t kind, uint32_t events)
+            {
+                return (kind << KOS_WATCH_KIND_SHIFT) | events;
+            }
+
             class CancelWiring : public KSeam
             {
             };
@@ -57,7 +64,7 @@ namespace kickos
                     << "fixture: the waiter owns the line";
                 uint32_t note = 0;
                 EXPECT_EQ(notify_create(owner, &note), 0);
-                EXPECT_EQ(irq_bind_notify(owner, line, note), 0)
+                EXPECT_EQ(watch_call(owner, watch_spec(KOS_WATCH_IRQ, KOS_IRQ_FIRED), line, note, 0), 0)
                     << "fixture: the line signals the object the waiter waits on";
                 EXPECT_EQ(notify_bind(owner, note), 0)
                     << "fixture: the waiter is that object's bound thread";

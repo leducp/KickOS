@@ -479,21 +479,6 @@ enum kos_syscall_nr
                                //   EMFILE (caller's cap table), EOVERFLOW (the object's
                                //   reference count). MINTS a second name for the same object,
                                //   badged with `bit` and carrying the source's rights.
-    KOS_SYS_IRQ_BIND_NOTIFY = 70, // (irq_cap, notify_cap) -> 0, or -KOS_E*: EBADF, EACCES (the
-                               //   line's cap lacks WAIT, or the notification's lacks SIGNAL),
-                               //   EPERM (the notification carries a line claimed on another
-                               //   core), EBUSY (this line already signals something), EAGAIN
-                               //   (a holding task's notification budget), EOVERFLOW (the
-                               //   object's reference count is at its ceiling). ONE-WAY:
-                               //   nothing detaches a live binding.
-    KOS_SYS_TASK_WATCH = 72,   // (kos_task_t, notify_cap, ready_ep) -> 0, or -KOS_E*: EBADF
-                               //   (stale task, or a cap naming nothing of its kind), EPERM
-                               //   (not the creator), EACCES (notify cap lacks SIGNAL), EINVAL
-                               //   (a ready_ep for a task whose declaration names its own).
-                               //   Raises the notify cap's badge when the task ends, when it
-                               //   is dead, its members' teardown done, and the first time a
-                               //   member waits on ready_ep, at once for what happened before
-                               //   the arming. KOS_CAP_NONE for notify_cap disarms.
     KOS_SYS_WINDOW_GET = 74,   // (index, struct kos_window* out) -> 0 with *out the index-th
                                //   window of the caller's spawn list, its base where the caller
                                //   reaches it, or -KOS_EINVAL (index past the list, or out),
@@ -590,8 +575,26 @@ enum kos_syscall_nr
     KOS_SYS_REALTIME_NOW = 87,  // () -> Unix-epoch nanoseconds (u64, in registers; cannot
                                 //   fail): the monotonic clock plus the offset the last
                                 //   KOS_SYS_REALTIME_SET stored, none before it
-    KOS_SYS_REALTIME_SET = 88   // (ns_lo, ns_hi) -> 0, or -KOS_EPERM (no KOS_AUTH_REALTIME).
+    KOS_SYS_REALTIME_SET = 88,  // (ns_lo, ns_hi) -> 0, or -KOS_EPERM (no KOS_AUTH_REALTIME).
                                 //   The realtime clock reads ns from now on
+    KOS_SYS_WATCH = 89          // (spec, source, notify_cap, arg) -> >= 0,
+                                //   or -KOS_E*, the first that applies in this order: EINVAL (kind
+                                //   0 or unknown, an event bit the kind does not define, a flag
+                                //   bit, arg not 0, a TASK disarm naming a notification), EBADF
+                                //   (a stale task, a capability naming nothing of the kind),
+                                //   EPERM (TASK: not the creator), EINVAL (TASK: READY of a task
+                                //   whose declaration names no ready endpoint), EACCES (IRQ: the
+                                //   line's capability lacks WAIT), ENOTSUP (IRQ: a disarm), EBUSY
+                                //   (IRQ: the line already signals something), EBADF and EACCES
+                                //   (the notification: no such capability, or it lacks SIGNAL),
+                                //   EPERM (IRQ: the notification carries a line claimed on
+                                //   another core), EAGAIN (IRQ: a holding task's notification
+                                //   budget), EOVERFLOW (IRQ: the object's reference count).
+                                //   Raises notify_cap's badge bit on each event asked. TASK
+                                //   (kos_task_t): replaces the task's one watch, raises at once
+                                //   for an event already reported, events 0 with KOS_CAP_NONE
+                                //   disarms. IRQ (line capability): ONE-WAY and once per line,
+                                //   holding a reference on the notification
 };
 // The raw console write's number, refused in an app as kos_kconsole_write is (<kickos/sys.h>).
 #if defined(KICKOS_APP_IMAGE)
@@ -630,10 +633,22 @@ enum kos_cancel
 enum kos_task_state
 {
     KOS_TASK_LIVE = 1 << 0,  // it has members
-    KOS_TASK_READY = 1 << 1, // a member has waited on the watched endpoint since it last emptied
+    KOS_TASK_READY = 1 << 1, // a member has waited on its ready endpoint since it last emptied
     KOS_TASK_DEAD = 1 << 2,  // it is empty and every member's teardown is done: its death
     KOS_TASK_ENDED = 1 << 3  // its status is set and it takes no member; set by its death too
 };
+
+// KOS_SYS_WATCH's spec: the kind in bits 31-24, flags in 23-16 (none defined, each refused),
+// the kind's events in 15-0.
+enum kos_watch_kind
+{
+    KOS_WATCH_TASK = 1, // source: a kos_task_t you created; events: KOS_TASK_READY, DEAD, ENDED
+    KOS_WATCH_IRQ = 2   // source: a line capability with KOS_CAP_WAIT; events: KOS_IRQ_FIRED
+};
+#define KOS_IRQ_FIRED 1u
+#define KOS_WATCH_KIND_SHIFT 24
+#define KOS_WATCH_FLAGS_SHIFT 16
+#define KOS_WATCH_EVENTS_MASK 0xFFFFu
 
 // What KOS_SYS_MEM_COUNT reads, each when the call runs.
 enum kos_mem_count_id

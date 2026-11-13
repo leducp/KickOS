@@ -13,7 +13,9 @@
 #include <kickos/notify.h>
 #include <kickos/sched.h>
 #include <kickos/thread.h>
+#include <kickos/watch.h>
 
+#include <kickos/sys/abi.h>
 #include <kickos/sys/errno.h>
 
 #include "kseam_test.h"
@@ -23,6 +25,11 @@ using namespace kickos::testfix;
 
 namespace
 {
+    uint32_t watch_spec(uint32_t kind, uint32_t events)
+    {
+        return (kind << KOS_WATCH_KIND_SHIFT) | events;
+    }
+
     constexpr int LINE = 5;
     constexpr uint8_t PRIO_SERVER = 10;
 
@@ -96,7 +103,7 @@ namespace
         EXPECT_EQ(notify_bind(b.server, b.note), 0);
         EXPECT_EQ(bound_thread(b.obj), b.server);
         EXPECT_EQ(irq_claim(b.server, LINE, 0, &b.claim), 0);
-        EXPECT_EQ(irq_bind_notify(b.server, b.claim, b.note), 0);
+        EXPECT_EQ(watch_call(b.server, watch_spec(KOS_WATCH_IRQ, KOS_IRQ_FIRED), b.claim, b.note, 0), 0);
         return b;
     }
 }

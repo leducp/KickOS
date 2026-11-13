@@ -4,7 +4,7 @@
 // The notification object: a word of pending bits, at most one bound waiter, the mask that
 // waiter currently accepts, and the chain of signallers that raise into it. A CAP_NOTIFY
 // carries a badge, which is the bit a signal through that capability sets; an IRQ binding
-// attached with kos_irq_bind_notify is one signaller among others, and a CAP_SIGNAL holder
+// attached with a KOS_WATCH_IRQ watch is one signaller among others, and a CAP_SIGNAL holder
 // calling kos_notify is another. An object with no line attached is a complete notification.
 //
 // Rights: CAP_WAIT to bind, unbind and wait; CAP_SIGNAL to signal and to be installed as a

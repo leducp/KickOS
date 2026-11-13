@@ -13,6 +13,7 @@
 #include <kickos/sched.h>
 #include <kickos/task.h>
 #include <kickos/thread.h>
+#include <kickos/watch.h>
 
 #include <kickos/sys/abi.h>
 #include <kickos/sys/errno.h>
@@ -24,11 +25,17 @@ using namespace kickos::testfix;
 
 namespace
 {
+    uint32_t watch_spec(uint32_t kind, uint32_t events)
+    {
+        return (kind << KOS_WATCH_KIND_SHIFT) | events;
+    }
+
     class StaleWatch : public KSeam
     {
     };
 
     constexpr uint32_t WRAP = 1u << 16;
+    uint32_t const ENDS = watch_spec(KOS_WATCH_TASK, KOS_TASK_ENDED | KOS_TASK_DEAD);
 
     Task* new_task(Thread* creator)
     {
@@ -57,7 +64,7 @@ TEST_F(StaleWatch, a_watch_kept_across_a_generation_wrap_of_its_notification_rai
     ASSERT_NE(watched, nullptr);
     uint32_t note = KCAP_INVALID;
     ASSERT_EQ(notify_create(creator, &note), 0);
-    ASSERT_EQ(task_watch_call(task_handle(watched), note, KOS_CAP_NONE), 0);
+    ASSERT_EQ(watch_call(creator, ENDS, task_handle(watched), note, 0), 0);
 
     Kernel& k = kernel();
     int obj = 0;
@@ -103,7 +110,7 @@ TEST_F(StaleWatch, a_watch_kept_across_a_generation_wrap_of_its_notification_rai
                               &fresh),
                   0);
     }
-    ASSERT_EQ(task_watch_call(task_handle(second), fresh, KOS_CAP_NONE), 0);
+    ASSERT_EQ(watch_call(creator, ENDS, task_handle(second), fresh, 0), 0);
     stop(second);
     EXPECT_EQ(n->pending, 1u) << "the control watch raised nothing";
 }

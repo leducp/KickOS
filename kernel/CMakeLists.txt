@@ -47,6 +47,7 @@ set(KICKOS_KERNEL_SOURCES
   syscall/word.cc
   irq/irq.cc
   notify/notify.cc
+  notify/watch.cc
   irq/irq_route.cc
   klib/slotpool.cc)
 

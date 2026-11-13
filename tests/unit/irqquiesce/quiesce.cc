@@ -24,8 +24,11 @@
 #include <kickos/irq_route.h>
 #include <kickos/notify.h>
 #include <kickos/irqlock.h>
-#include <kickos/sys/errno.h>
 #include <kickos/thread.h>
+#include <kickos/watch.h>
+
+#include <kickos/sys/abi.h>
+#include <kickos/sys/errno.h>
 
 using kickos::irqfix::OP_IPI_SEND;
 using kickos::irqfix::OP_IPI_WAIT;
@@ -33,6 +36,11 @@ using kickos::irqfix::OP_MASK;
 
 namespace
 {
+    uint32_t watch_spec(uint32_t kind, uint32_t events)
+    {
+        return (kind << KOS_WATCH_KIND_SHIFT) | events;
+    }
+
     // Two kernel cores, so the peer of core zero is core one and a rendezvous mask is 0b10.
     static_assert(KICKOS_KERNEL_CORES == 2,
                   "these arms speak as core one against core zero; a different count makes "
@@ -333,7 +341,7 @@ namespace
         // object it signals, completed delivery leaves the bit pending there.
         kickos::IrqBinding* target = nullptr;
 
-        // The bit the target raises: irq_bind_notify copies the capability's badge, and an
+        // The bit the target raises: the IRQ watch copies the capability's badge, and an
         // unbadged one is bit 0.
         bool target_posted() const
         {
@@ -380,7 +388,9 @@ namespace
             // every "the post completed" assertion below would read as a failure. The seam's
             // one object, reached through the real attach path.
             kickos::irqfix::the_notification()->pending = 0;
-            ASSERT_EQ(kickos::irq_bind_notify(&g_claim_thread, cap, 0u), 0);
+            ASSERT_EQ(kickos::watch_call(&g_claim_thread,
+                                         watch_spec(KOS_WATCH_IRQ, KOS_IRQ_FIRED), cap, 0u, 0),
+                      0);
         }
 
         // Run the teardown as core zero with core one wedged inside the dispatch entry.
@@ -901,7 +911,10 @@ namespace
                 {
                     // Attach the new binding and rearm its bit, which is what a wait over
                     // that bit does and the only half of the wait this arm is about.
-                    bool ok = kickos::irq_bind_notify(&g_claim_thread, again, 0u) == 0;
+                    bool ok = kickos::watch_call(&g_claim_thread,
+                                                 watch_spec(KOS_WATCH_IRQ, KOS_IRQ_FIRED),
+                                                 again, 0u, 0)
+                              == 0;
                     if (ok)
                     {
                         kickos::IrqLock lock;

@@ -87,7 +87,7 @@ user task the init:
    `core`, its core grant to that core, so threads the task creates stay within its declaration,
    and starts its entry thread at the declared priority and authority, FIFO, its served endpoint
    recorded as the one whose first receive makes the task ready;
-4. arms the watch, `kos_task_watch(task, copy, KOS_CAP_NONE)`, which reports an end or a
+4. arms the watch, `kos_watch(KOS_WATCH_TASK, ...)` into `copy`, which reports an end or a
    readiness that came before it;
 5. closes the lines it claimed, resets its affinity and closes the badged copy.
 

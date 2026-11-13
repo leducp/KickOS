@@ -21,6 +21,7 @@
 #include <kickos/sched.h>
 #include <kickos/sync.h>
 #include <kickos/thread.h>
+#include <kickos/watch.h>
 
 #include <kickos/sys/abi.h>
 #include <kickos/sys/errno.h>
@@ -34,6 +35,11 @@ using namespace kickos::testfix;
 
 namespace
 {
+    uint32_t watch_spec(uint32_t kind, uint32_t events)
+    {
+        return (kind << KOS_WATCH_KIND_SHIFT) | events;
+    }
+
     constexpr uint32_t CORE_ME = 0; // server and fixture core
     constexpr uint32_t CORE_PEER = 1; // peer core
 
@@ -155,10 +161,10 @@ namespace
     {
         l->irq = KCAP_INVALID;
         l->note = KCAP_INVALID;
-        l->bit = 1u << 0; // irq_bind_notify copies the capability's badge; unbadged is bit 0
+        l->bit = 1u << 0; // the IRQ watch copies the capability's badge; unbadged is bit 0
         ASSERT_EQ(irq_claim(l->server, 5, 0, &l->irq), 0);
         ASSERT_EQ(notify_create(l->server, &l->note), 0);
-        ASSERT_EQ(irq_bind_notify(l->server, l->irq, l->note), 0);
+        ASSERT_EQ(watch_call(l->server, watch_spec(KOS_WATCH_IRQ, KOS_IRQ_FIRED), l->irq, l->note, 0), 0);
         ASSERT_EQ(notify_bind(l->server, l->note), 0);
         ASSERT_EQ(notify_pending_of(l->server), 0u);
     }

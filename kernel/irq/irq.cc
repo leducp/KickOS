@@ -831,34 +831,19 @@ namespace kickos
         }
     }
 
-    int irq_bind_notify(Thread* c, uint32_t irq_cap, uint32_t notify_cap)
+    IrqBinding* irq_watch_source(Thread* c, uint32_t irq_cap, int* err)
     {
-        IrqLock lock;
-        int err = 0;
-        IrqBinding* const b = binding_of_cap(c, irq_cap, CAP_WAIT, &err);
-        if (b == nullptr)
-        {
-            return -err;
-        }
-        // The attachment lasts until the binding is released, keeping the ISR pointer valid.
-        if (b->notify != nullptr)
-        {
-            return -KOS_EBUSY;
-        }
-        Notification* const n = static_cast<Notification*>(
-            cap_resolve_e(c, notify_cap, CapType::CAP_NOTIFY, CAP_SIGNAL, &err));
-        if (n == nullptr)
-        {
-            return -err;
-        }
-        CapEntry const* const ne = cap_lookup(c, notify_cap);
-        uint32_t const stored = cap_badge(*ne);
-        uint8_t bit = 0;
-        if (stored != KCAP_BADGE_NONE)
-        {
-            bit = static_cast<uint8_t>(stored - 1u);
-        }
-        return bind_chain(b, n, static_cast<int>(ne->obj), bit);
+        return binding_of_cap(c, irq_cap, CAP_WAIT, err);
+    }
+
+    bool irq_watch_bound(IrqBinding const* b)
+    {
+        return b->notify != nullptr;
+    }
+
+    int irq_watch_arm(IrqBinding* b, Notification* n, int notify_obj, uint8_t bit)
+    {
+        return bind_chain(b, n, notify_obj, bit);
     }
 
     void irq_signallers_rearm(Notification* n, uint32_t mask, Held held)

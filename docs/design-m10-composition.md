@@ -213,8 +213,8 @@ only what that creator passes, so it takes no `uses`, `maps`, `devices`, `lines`
 no line, and `serves` the endpoint its creator passes it: the kernel console serves until the
 create publishes the declared console through that capability, `stdout` stays `kernel`, and no
 other task takes the console beside it. A `program` may `serves` too: the create takes the
-endpoint from the creator's capabilities, and `kos_task_watch` reports the task's first receive
-on it. A task with neither `restart` nor
+endpoint from the creator's capabilities, and a `KOS_WATCH_TASK` watch reports the task's first
+receive on it. A task with neither `restart` nor
 `start: on_request` starts once: `kos_task_create` answers `-KOS_EPERM` for a second start, on
 every board. Where `.data` loads where it runs (RV32, the ESP32), only a task that may start again
 keeps a copy of its image's `.data`. A task name, a line name, a role name and a

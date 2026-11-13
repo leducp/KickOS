@@ -325,20 +325,24 @@ namespace selftest
         g_pl_stop = 1;
     }
 
-    void t_migrate_running()
+    // The first core after the boot core that is not isolated, or 0 when there is none.
+    constexpr uint32_t nonisolated_peer_core()
     {
-        uint32_t const iso = KOS_ISOLATED_CORES;
-        // The boot core is the destination because it can never be isolated. The source must not
-        // be isolated either: a move involving an isolated core is a different claim.
-        uint32_t away = 0;
         for (uint32_t c = 1; c < static_cast<uint32_t>(KICKOS_KERNEL_CORES); c++)
         {
-            if ((iso & (1u << c)) == 0)
+            if ((KOS_ISOLATED_CORES & (1u << c)) == 0)
             {
-                away = c;
-                break;
+                return c;
             }
         }
+        return 0;
+    }
+
+    void t_migrate_running()
+    {
+        // The boot core is the destination because it can never be isolated. The source must not
+        // be isolated either: a move involving an isolated core is a different claim.
+        uint32_t const away = nonisolated_peer_core();
         TAP_SKIP_UNLESS(away != 0, "a migration needs a non-isolated core beside the boot core");
         TAP_ASK(.workers = 2);
         pl_reset();
@@ -975,16 +979,7 @@ namespace selftest
     }
     void t_resched_reaches_pinned_caller()
     {
-        uint32_t const iso = KOS_ISOLATED_CORES;
-        uint32_t away = 0;
-        for (uint32_t c = 1; c < static_cast<uint32_t>(KICKOS_KERNEL_CORES); c++)
-        {
-            if ((iso & (1u << c)) == 0)
-            {
-                away = c;
-                break;
-            }
-        }
+        uint32_t const away = nonisolated_peer_core();
         TAP_SKIP_UNLESS(away != 0,
                         "a cross-core wake needs a non-isolated core beside the boot core");
         TAP_ASK(.workers = 3, .endpoints = 1);
@@ -1093,16 +1088,7 @@ namespace selftest
     }
     void t_sem_units_across_cores()
     {
-        uint32_t const iso = KOS_ISOLATED_CORES;
-        uint32_t away = 0;
-        for (uint32_t c = 1; c < static_cast<uint32_t>(KICKOS_KERNEL_CORES); c++)
-        {
-            if ((iso & (1u << c)) == 0)
-            {
-                away = c;
-                break;
-            }
-        }
+        uint32_t const away = nonisolated_peer_core();
         TAP_SKIP_UNLESS(away != 0, "a count across cores needs a non-isolated core beside core 0");
         TAP_ASK(.workers = 5);
         TAP_CHECK(kos_sem_init(&g_tc_sem, 0) == 0);
@@ -1227,16 +1213,7 @@ namespace selftest
     }
     void t_cond_turns_across_cores()
     {
-        uint32_t const iso = KOS_ISOLATED_CORES;
-        uint32_t away = 0;
-        for (uint32_t c = 1; c < static_cast<uint32_t>(KICKOS_KERNEL_CORES); c++)
-        {
-            if ((iso & (1u << c)) == 0)
-            {
-                away = c;
-                break;
-            }
-        }
+        uint32_t const away = nonisolated_peer_core();
         TAP_SKIP_UNLESS(away != 0, "turns across cores need a non-isolated core beside core 0");
         TAP_ASK(.workers = 2);
         g_cx_cond = KOS_COND_INIT;
@@ -1413,7 +1390,7 @@ namespace selftest
         {
             return rc;
         }
-        rc = kos_irq_bind_notify(*irq, *note);
+        rc = kos_watch(KOS_WATCH_IRQ, KOS_IRQ_FIRED, *irq, *note, 0);
         if (rc != 0)
         {
             return rc;

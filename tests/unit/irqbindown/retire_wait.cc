@@ -18,7 +18,9 @@
 #include <kickos/sync.h>
 #include <kickos/task.h>
 #include <kickos/thread.h>
+#include <kickos/watch.h>
 
+#include <kickos/sys/abi.h>
 #include <kickos/sys/errno.h>
 
 #include <new>
@@ -30,6 +32,11 @@ using namespace kickos::testfix;
 
 namespace
 {
+    uint32_t watch_spec(uint32_t kind, uint32_t events)
+    {
+        return (kind << KOS_WATCH_KIND_SHIFT) | events;
+    }
+
     static_assert(KICKOS_KERNEL_CORES == 2, "core one's dispatch entry is the peer of core zero");
 
     constexpr int LINE_A = 5;
@@ -109,7 +116,7 @@ namespace
         ASSERT_EQ(kernel().current(core_at(1)), peer) << "fixture: core one runs nothing";
         ASSERT_EQ(notify_create(g_holder, &g_note), 0);
         ASSERT_EQ(irq_claim(g_holder, LINE_A, 0, &g_line), 0);
-        ASSERT_EQ(irq_bind_notify(g_holder, g_line, g_note), 0);
+        ASSERT_EQ(watch_call(g_holder, watch_spec(KOS_WATCH_IRQ, KOS_IRQ_FIRED), g_line, g_note, 0), 0);
         ASSERT_TRUE(irq_attach(LINE_CARRIER, release_and_park, nullptr));
         g_inside = Inside{false, false, 0u, false, 0u};
     }

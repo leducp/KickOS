@@ -26,39 +26,7 @@ namespace
 
     constexpr uint32_t KEPT = KOS_CAP_SIGNAL | KOS_CAP_TRANSFER | KOS_CAP_HANDOUT;
 
-    class Driver : public ::testing::Test
-    {
-    protected:
-        void use(char const* name)
-        {
-            system_ = &systems::find(name);
-            fake::reset(harness::config(*system_));
-        }
-
-        void use(harness::Patched const& patched)
-        {
-            system_ = &patched.system();
-            fake::reset(harness::config(*system_));
-        }
-
-        void use(char const* name, fake::Config const& config)
-        {
-            system_ = &systems::find(name);
-            fake::reset(config);
-        }
-
-        Outcome run()
-        {
-            return harness::run(*system_);
-        }
-
-        kickos::init::StatusFields status(char const* task)
-        {
-            return harness::status(harness::index_of(*system_, task));
-        }
-
-        systems::System const* system_ = nullptr;
-    };
+    using Driver = harness::Fixture;
 
     // The zero-length sends on stdout: the handover's probe.
     std::vector<fake::Call> probes()
@@ -179,7 +147,7 @@ namespace
 
         std::vector<std::string> const expected = {
             "kos_notify_create", "kos_notify_badge", "kos_task_create", "kos_handle_close", "kos_handle_close",
-            "kos_task_watch", "kos_cap_narrow", "kos_send"};
+            "kos_watch", "kos_cap_narrow", "kos_send"};
         EXPECT_EQ(start_of("console", 0), expected);
         EXPECT_EQ(fake::calls_of("kos_endpoint_create").size(), 3u) << "every endpoint the init's, made at boot";
         EXPECT_TRUE(fake::calls_of("kos_irq_claim").empty()) << "the create claims the declared lines";
@@ -333,7 +301,7 @@ namespace
 
         std::vector<std::string> const expected = {
             "kos_notify_create", "kos_notify_badge", "kos_task_create", "kos_handle_close", "kos_handle_close",
-            "kos_task_watch", "kos_cap_narrow", "kos_send"};
+            "kos_watch", "kos_cap_narrow", "kos_send"};
         ASSERT_EQ(creates_of("console").size(), 2u);
         EXPECT_EQ(start_of("console", 0), expected);
         EXPECT_EQ(start_of("console", 1), expected) << "created, watched, narrowed, probed";

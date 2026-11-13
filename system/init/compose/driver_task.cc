@@ -252,11 +252,11 @@ namespace
                 {
                     return hosted_fail(name, "kos_notify_badge of a line failed\n");
                 }
-                int const rc = kos_irq_bind_notify(st->at[at], bit);
+                int const rc = kos_watch(KOS_WATCH_IRQ, KOS_IRQ_FIRED, st->at[at], bit, 0);
                 (void)kos_handle_close(bit);
                 if (rc != 0)
                 {
-                    return hosted_fail(name, "kos_irq_bind_notify failed\n");
+                    return hosted_fail(name, "kos_watch of a line failed\n");
                 }
             }
             line++;

@@ -333,7 +333,7 @@ namespace
             rc = kos_notify_create(&note);
             if (rc == 0)
             {
-                rc = kos_irq_bind_notify(irq, note);
+                rc = kos_watch(KOS_WATCH_IRQ, KOS_IRQ_FIRED, irq, note, 0);
             }
             if (rc != 0)
             {

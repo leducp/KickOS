@@ -24,6 +24,7 @@
 #include <kickos/console_tx.h>
 #include <kickos/domain.h>
 #include <kickos/task.h>
+#include <kickos/watch.h>
 
 #include <kickos/sys/abi.h>
 
@@ -636,12 +637,11 @@ uint64_t syscall_body(uintptr_t nr,
             rc = program_find_call(a0, &h);
             return cap_out_deliver(a1, rc, h);
         }
-        case KOS_SYS_TASK_WATCH:
+        case KOS_SYS_WATCH:
         {
-            // UNGATED by authority, gated by creatorship inside (task.cc).
-            return static_cast<uint64_t>(task_watch_call(static_cast<kos_task_t>(a0),
-                                                         static_cast<uint32_t>(a1),
-                                                         static_cast<uint32_t>(a2)));
+            // UNGATED by authority: each kind gates on its source (watch.cc).
+            return static_cast<uint64_t>(watch_call(sched::current(), static_cast<uint32_t>(a0),
+                                                    a1, static_cast<uint32_t>(a2), a3));
         }
         case KOS_SYS_WINDOW_GET:
         {
@@ -1172,12 +1172,6 @@ uint64_t syscall_body(uintptr_t nr,
         {
             return static_cast<uint64_t>(
                 notify_wait(sched::current(), static_cast<uint32_t>(a0), ktime_limit_word(a1, a2)));
-        }
-        case KOS_SYS_IRQ_BIND_NOTIFY:
-        {
-            return static_cast<uint64_t>(irq_bind_notify(sched::current(),
-                                                         static_cast<uint32_t>(a0),
-                                                         static_cast<uint32_t>(a1)));
         }
         case KOS_SYS_IRQ_CLAIM:
         {
