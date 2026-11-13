@@ -22,6 +22,7 @@
 
 #include <vector>
 
+#include "../common/watch_lists.h"
 #include "sys_fixture.h"
 #include "syscall_internal.h"
 
@@ -373,8 +374,7 @@ namespace kickos
             EXPECT_EQ(spawn(main_, p, MAIN_OUT, &t), -KOS_EACCES) << "a watch was delegated";
             EXPECT_EQ(close(main_, cap), 0);
             EXPECT_LT(k.notifies.live_index(handle), 0) << "the watch's close left its reference";
-            EXPECT_TRUE(k.start_watches == 0 or k.start_watches == 0xFFFFFFFFu)
-                << "the closed watch is still armed";
+            EXPECT_TRUE(testfix::no_watch_listed()) << "the closed watch is still listed";
         }
     }
 }

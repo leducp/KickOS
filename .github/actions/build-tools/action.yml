@@ -3,7 +3,7 @@
 # Build tools from apt, for the packages the runner image does not already carry. The
 # runner ships most of them, so the common path installs nothing and never reaches the
 # network: apt-get update is what hangs, and a job that does not call it cannot hang in it.
-# And uv, pinned, which every configured build's host gates run tools/compose under.
+# And uv, pinned, which every configured build's host tests run tools/compose under.
 name: Install build tools
 description: apt only the packages whose command is missing, with a bounded retry, and uv.
 

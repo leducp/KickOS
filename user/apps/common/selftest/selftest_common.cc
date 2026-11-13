@@ -26,13 +26,27 @@ namespace selftest
                == static_cast<int>(len);
     }
 
+    namespace
+    {
+        // Slays *h and joins it within ARM_SLAY_US: 0 once it is gone, -KOS_EBADF for one already
+        // gone, else the cancel's or the join's answer.
+        int thread_slay_gone(kos::thread::Handle const* h)
+        {
+            int const slain = h->cancel(KOS_CANCEL_SLAY);
+            if (slain != 0)
+            {
+                return slain;
+            }
+            return h->join_for(std::chrono::microseconds{ARM_SLAY_US});
+        }
+    }
+
     int thread_end(kos::thread::Handle* h, uint32_t bound_us)
     {
         int const rc = h->join_for(std::chrono::microseconds{bound_us});
         if (rc != 0)
         {
-            int const slain =
-                h->cancel_for(KOS_CANCEL_SLAY, std::chrono::microseconds{ARM_SLAY_US});
+            int const slain = thread_slay_gone(h);
             if (slain != 0 and slain != -KOS_EBADF)
             {
                 tap::fail("thread %u: join answered %d, slay %d", static_cast<unsigned>(h->id()),
@@ -44,13 +58,30 @@ namespace selftest
         return rc;
     }
 
-    int task_end(kos_task_t* t, uint32_t bound_us)
+    int slay_dead(kos_task_t t, kos_monotonic_t until, kos_cap_t note)
     {
-        int const rc = kos_task_slay(*t, after_us(bound_us));
+        if (note == KOS_CAP_NONE)
+        {
+            return kickos::apps::slay_until_dead(t, until);
+        }
+        kos_cap_t badged = KOS_CAP_NONE;
+        int const rc = kos_notify_badge(note, PEER_START_BIT, &badged);
+        if (rc != 0)
+        {
+            (void)kos_task_slay(t);
+            return rc;
+        }
+        int const dead = kickos::apps::slay_until_dead(t, until, badged, PEER_START_BIT);
+        (void)kos_handle_close(badged);
+        return dead;
+    }
+
+    int task_end(kos_task_t* t, uint32_t bound_us, kos_cap_t note)
+    {
+        int const rc = slay_dead(*t, after_us(bound_us), note);
         if (rc != 0)
         {
             tap::fail("task %u: slay answered %d", static_cast<unsigned>(*t), rc);
-            return rc;
         }
         *t = KOS_TASK_NONE;
         return rc;
@@ -314,7 +345,7 @@ namespace selftest
 
     int irq_claim_await(int line, kos_cap_t* out)
     {
-        kos_monotonic_t const deadline = kos_after(kos_monotonic_now(), kos_ns(IRQ_EDGE_BUDGET_NS));
+        kos_monotonic_t const deadline = after_us(STALL_TOLERANT_US);
         int rc = kos_irq_claim(line, KOS_IRQ_EDGE, out);
         while (rc == -KOS_EAGAIN or rc == -KOS_ENOMEM)
         {
@@ -344,9 +375,8 @@ namespace selftest
         return h;
     }
 
-    bool ArmHold::joined()
+    bool ArmHold::joined_until(kos_monotonic_t deadline)
     {
-        kos_monotonic_t const deadline = after_us(bound_us_);
         bool all = true;
         for (int i = 0; i < n_; i++)
         {
@@ -364,8 +394,61 @@ namespace selftest
         return all;
     }
 
+    bool ArmHold::joined()
+    {
+        return joined_until(after_us(bound_us_));
+    }
+
+    bool ArmHold::joined_rounds(Atomic<uint32_t, Order::RELAXED> const* rounds, int n,
+                                Atomic<uint32_t, Order::RELAXED> const* stalls)
+    {
+        kos_monotonic_t const t0 = kos_monotonic_now();
+        uint64_t last = 0;
+        for (int p = 0; p < n; p++)
+        {
+            last += rounds[p].load();
+        }
+        while (true)
+        {
+            if (joined_until(after_us(STALL_TOLERANT_US)))
+            {
+                return true;
+            }
+            uint64_t sum = 0;
+            for (int p = 0; p < n; p++)
+            {
+                sum += rounds[p].load();
+            }
+            if (sum != last)
+            {
+                last = sum;
+                continue;
+            }
+            tap::diag("no round for %u ms, %u ms in",
+                      static_cast<unsigned>(STALL_TOLERANT_US / 1000u),
+                      static_cast<unsigned>(kos_between(t0, kos_monotonic_now()).ns / 1000000));
+            for (int p = 0; p < n; p++)
+            {
+                if (stalls == nullptr)
+                {
+                    tap::diag("player %d: %u rounds", p, static_cast<unsigned>(rounds[p].load()));
+                }
+                else
+                {
+                    tap::diag("player %d: %u rounds, %u stalls", p,
+                              static_cast<unsigned>(rounds[p].load()),
+                              static_cast<unsigned>(stalls[p].load()));
+                }
+            }
+            return false;
+        }
+    }
+
     void ArmHold::release()
     {
+        // The death waits go through the arm's own bound notification where it holds one, so
+        // they cost no object beyond the arm's ask.
+        kos_cap_t bound = KOS_CAP_NONE;
         for (int i = 0; i < n_; i++)
         {
             Held const& h = held_[i];
@@ -373,9 +456,9 @@ namespace selftest
             {
                 (void)kos_mutex_unlock(h.mutex);
             }
-            if (h.kind == Kind::BOUND and *h.cap != KOS_CAP_NONE)
+            if (h.kind == Kind::BOUND and *h.cap != KOS_CAP_NONE and bound == KOS_CAP_NONE)
             {
-                (void)kos_notify_unbind(*h.cap);
+                bound = *h.cap;
             }
         }
         for (int i = 0; i < n_; i++)
@@ -385,15 +468,20 @@ namespace selftest
             {
                 continue;
             }
-            int const slain = kos_task_slay(*h.task, after_us(ARM_SLAY_US));
-            if (slain == 0)
-            {
-                *h.task = KOS_TASK_NONE;
-            }
-            else
+            int const slain = slay_dead(*h.task, after_us(ARM_SLAY_US), bound);
+            if (slain != 0)
             {
                 tap::fail("ArmHold: slay of task %u answered %d", static_cast<unsigned>(*h.task),
                           slain);
+            }
+            *h.task = KOS_TASK_NONE;
+        }
+        for (int i = 0; i < n_; i++)
+        {
+            Held const& h = held_[i];
+            if (h.kind == Kind::BOUND and *h.cap != KOS_CAP_NONE)
+            {
+                (void)kos_notify_unbind(*h.cap);
             }
         }
         kos_monotonic_t const deadline = after_us(bound_us_);
@@ -409,9 +497,8 @@ namespace selftest
             {
                 continue;
             }
-            int const slain =
-                h.thread->cancel_for(KOS_CANCEL_SLAY, std::chrono::microseconds{ARM_SLAY_US});
-            if (slain != 0)
+            int const slain = thread_slay_gone(h.thread);
+            if (slain != 0 and slain != -KOS_EBADF)
             {
                 tap::fail("ArmHold: slay of thread %u answered %d",
                           static_cast<unsigned>(h.thread->id()), slain);

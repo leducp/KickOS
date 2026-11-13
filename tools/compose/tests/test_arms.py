@@ -1295,6 +1295,10 @@ MANIFEST_ARMS = [
     ("manifest.amp", [("    node: 0\n", "    node: 2\n")], False),
     ("manifest.amp", [("    node: 0\n", "    node: 0\n    reset_owner: 2\n")], False),
     ("manifest.amp", [("[[0, 2], [1, 3]]", "[[0, 2], [2, 3]]")], False),
+    ("manifest.amp", [("    share_cache: uncached\n", "    share_cache: uncached\n    slices: [[0x20000000, 0x40000]]\n")],
+     False),
+    ("form.type", [("    share_cache: uncached\n", "    share_cache: uncached\n    slices: [0x20000000, 0x40000]\n")],
+     False),
     ("form.missing", [("    share: 0x4000\n", "")], True),
     ("form.range", [("    share: 0x4000\n", "    share: 0x100000000\n")], False),
     ("form.missing", [("    share_cache: uncached\n", "")], True),
@@ -1956,16 +1960,17 @@ def amp_of(text, kernel_cores, ports, share, cache, slices, window):
 
 
 ARM64_AMP = amp_of(MANIFESTS["qemu-arm64.yaml"], 4, "[[0, 2], [1, 3], [1, 4]]", "0x200000", "uncached",
-                   "[0x40000000, 0x4000000]", "[0x48000000, 0x400000]")
-C6_AMP = amp_of(C6_MANIFEST, 1, "[[0, 2], [1, 3]]", "0x4000", "cached", "[0x40800000, 0x3C000]",
-                "[0x40878000, 0x8000]")
+                   "[[0x40000000, 0x4000000], [0x44000000, 0x4000000]]", "[0x48000000, 0x400000]")
+C6_AMP = amp_of(C6_MANIFEST, 1, "[[0, 2], [1, 3]]", "0x4000", "cached",
+                "[[0x40800000, 0x3C000], [0x4083C000, 0x3C000]]", "[0x40878000, 0x8000]")
 RP_MANIFEST = manifest_of("pizero2350", "rp2350", "armv7m", XMC_PROTECTION, 1, REGION_POOLS,
                           (960, 8192, 512, 8192, "none"))
-RP_AMP = amp_of(RP_MANIFEST, 1, "[[0, 2], [1, 3]]", "0x4000", "cached", "[0x20000000, 0x3C000]",
-                "[0x20078000, 0x8000]")
+RP_AMP = amp_of(RP_MANIFEST, 1, "[[0, 2], [1, 3]]", "0x4000", "cached",
+                "[[0x20000000, 0x3C000], [0x2003C000, 0x3C000]]", "[0x20078000, 0x8000]")
 IMX_AMP = amp_of(manifest_of("imx8mp-evk", "imx8mp", "armv8a", XMC_PROTECTION.replace("enforced: true", "enforced: false"),
                              1, ARM64_POOLS, (2816, 12288, 4096, 20480, "none")),
-                 1, "[[0, 2], [1, 3]]", "0x10000", "cached", "[0x40000000, 0x4000000]", "[0x48000000, 0x20000]")
+                 1, "[[0, 2], [1, 3]]", "0x10000", "cached",
+                 "[[0x40000000, 0x4000000], [0x44000000, 0x4000000]]", "[0x48000000, 0x20000]")
 
 PING = """version: 1
 board: %s
@@ -2031,7 +2036,10 @@ LONE = [("shared:\n  - name: /shm/book\n    size: 64\n    cache: cached\n    par
 ARM64_CROSSING_ONLY = [("shared:\n  - name: /shm/book\n    size: 64\n    cache: uncached\n    partition: true\n", ""),
                        ("    maps: { /shm/book: rw }\n", "")]
 LOCAL = ("    partition: true\n", "")
-ARM64_AMP3 = mutate(ARM64_AMP, [("    nodes: 2\n", "    nodes: 3\n")])[0]
+ARM64_AMP3 = mutate(ARM64_AMP, [("    nodes: 2\n", "    nodes: 3\n"),
+                                ("[[0x40000000, 0x4000000], [0x44000000, 0x4000000]]",
+                                 "[[0x40000000, 0x4000000], [0x44000000, 0x4000000], [0x48000000, 0x4000000]]"),
+                                ("[0x48000000, 0x400000]", "[0x4C000000, 0x400000]")])[0]
 ARM64_SHARED = mutate(ARM64_AMP, [("    share_cache: uncached\n", "    share_cache: uncached\n    image: shared\n")])[0]
 ARM64_AMP_OWNER1 = mutate(ARM64_AMP, [("    nodes: 2\n", "    nodes: 2\n    reset_owner: 1\n")])[0]
 BOOTLOADER = ("    maps: { /shm/book: rw }\n", "    maps: { /shm/book: rw }\n    authority: [system, bootloader]\n")

@@ -21,6 +21,7 @@
 #include "clint_rv32.h"
 #include "crt_tail.h"
 #include "pin_guard.h"
+#include <amp_partition.ld.h>
 #include <kickos/arch/amp_shared.h>
 #include <kickos/arch/rv_trap_ids.h>
 #include <kickos/config/limits.h> // KICKOS_POLL_SPIN_MAX
@@ -885,7 +886,8 @@ void arch_amp_release_peers(void)
 {
     uintptr_t const stub_begin = reinterpret_cast<uintptr_t>(kickos_c6_amp_lp_stub_start);
     uintptr_t const stub_end = reinterpret_cast<uintptr_t>(kickos_c6_amp_lp_stub_end);
-    uintptr_t const image_base = KICKOS_AMP_PARTITION_BASE + KICKOS_AMP_NODE_SHARE;
+    // Node 1's slice begins where node 0's, this image's, ends.
+    uintptr_t const image_base = KICKOS_AMP_IMAGE_END;
     uintptr_t const stub_size = stub_end - stub_begin;
     // The ROM placed both nodes' LOAD segments; node 0 copies only the reset vector to LP SRAM.
     if (r32(image_base) == 0u or stub_size == 0u or stub_size > 1024u

@@ -520,7 +520,7 @@ namespace kickos
     // Returns bytes received or -KOS_E*. On park, sets parked and epoch; the caller
     // must run wq_confirm_resume before reading wait_result.
     int32_t endpoint_recv_locked(ParkToken const& ask, Thread* c, uint32_t cap, uintptr_t buf,
-                                 size_t cap_len, uintptr_t badge_out, WaitLimit limit,
+                                 size_t cap_len, uintptr_t badge_out, WaitLimit const& limit,
                                  DeferredWake* dw, bool* parked, uint32_t* epoch)
     {
         *parked = false;
@@ -632,7 +632,10 @@ namespace kickos
         ktime_limit_arm(c, limit, dw->held());
         *epoch = wq_park(ask)(e->recv_waiters, WAIT_EP_RECV, e, dw->held());
         // Before the switch, which on an inline swap returns only at the wake.
-        notify_lend_window(c, dw->held());
+        if (c->notify_bound != KOS_NOTIFY_UNBOUND)
+        {
+            notify_lend_window(c, dw->held());
+        }
         // Transfer the pending wake to the park's reschedule, including peer notification.
         sched::reschedule(dw->take(), dw->held());
         *parked = true;

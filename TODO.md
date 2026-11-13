@@ -97,7 +97,7 @@ milestone does not close while any of them still composes a system.
         - Replace `initwalk`'s scripted fake kernel (about 3k lines) with the real kernel through a
           bridge.
 
-- [ ] **M10.7: `kos_task_create` NO LONGER WAITS (maintainer, 2026-11-09).** Its timeout bounds
+- [x] **M10.7: `kos_task_create` NO LONGER WAITS (maintainer, 2026-11-09).** Its timeout bounds
       only the wait for the instance's last incarnation to finish dying, which reads as a bound on
       the create itself. The create answers `-KOS_EAGAIN` while the last incarnation is dying, its
       members, lines or IRQ bindings still retiring, and a creator waits for "this instance can
@@ -125,8 +125,12 @@ milestone does not close while any of them still composes a system.
       no handle can wait; the caller pays for each such watch with an entry of its own capability
       table (a watch capability holding the notification), so no new budget kind: closing it
       disarms and the task's death sweeps it.
+      **RULED (maintainer, 2026-11-16):** one "can start again" watch per thread per instance; a
+      re-arm reuses that watch, so no kernel walk grows with how often a thread arms.
+      **LANDED (M10.7.2 to M10.7.4).** A slain task's handle reads ENDED until its death is
+      reported, then names nothing; the kernel releases the creator's hold there.
 
-- [ ] **M10.7: THE C++ API CARRIES TIME AS `std::chrono` DURATIONS (maintainer, 2026-11-09).** A C++
+- [x] **M10.7: THE C++ API CARRIES TIME AS `std::chrono` DURATIONS (maintainer, 2026-11-09).** A C++
       header takes and returns a duration, so its names drop the `_us` suffix (the USB console's
       `max_irq_wait_us` first). Done across the whole C++ surface at once (`kickos/kos.h`, the
       driver headers, the system services), never one function, and "no limit" keeps one spelling
@@ -161,6 +165,22 @@ milestone does not close while any of them still composes a system.
       making a clash with POSIX unlikely. The clocks are named alike: `kos_monotonic_now` and
       `kos_realtime_now`, POSIX's "realtime" kept. The C++ side keeps `kos::now()`, a
       `steady_clock` time point built straight from the monotonic clock.
+      **LANDED (M10.7.1).**
+
+- [ ] **A THREAD PRINTING IN A CONSOLE DARK WINDOW LENDS NO PRIORITY (found by the M10.7.4
+      review).** A print while a dying console driver still owns the device parks in the dark
+      wait, which lends nothing to that driver's members, so a middle-priority spinner can delay
+      the reclaim for any printer. The init avoids it by waiting on the driver's death watch
+      first; every other thread still meets it. The dark wait knows its holder, so it can lend
+      as a mutex wait does.
+- [ ] **ON CORTEX-M4F A 64-BIT TIME VALUE CAN MAKE A THREAD FP-LIVE (measured in M10.7).** GCC
+      keeps a 64-bit deadline such as `KOS_NEVER` live across calls in `d8`, so a thread with
+      no floating point of its own pays the FP context save on every switch: 65 to 72 cycles per
+      call/reply round trip on f411disco, most of the 1.5 to 2.8 percent M10.7 still costs there
+      against M10.6.12 (`userbench`, 2026-11-14). The kernel and the user runtime use no VFP
+      register; the cost lands in application code. **RULED (maintainer, 2026-11-15): accepted.**
+      The FPU entry under "MEASURE FIRST" does not remove it: that thread really holds state in
+      an FP register, so its save is owed under any switching scheme that does not leak.
 
 - [ ] **M10.8: THE EXIT RECORD.** Reconcile `roadmap.md`, `docs/reference/architecture.md`,
       `docs/reference/invariants.md` and `STATE.md` against what shipped, and record what the green
@@ -189,6 +209,23 @@ milestone does not close while any of them still composes a system.
         allocated in its task's heap.
       - The journey: stop 08's create comment and stop 09's diagnostics lines.
       - roadmap.md's M10.6.10 row, against what shipped.
+      - M10.7, by source (each a mechanism or wording line unless marked ruled):
+        - invariants.md: `syscall-in-priv-thread-context`, the continuation header's contents and
+          its PSPLIM word (five argument words on every arch); `timer-min-delta-guard`, a passed
+          deadline is never armed: a wait answers at once and a sleep yields;
+          `notification-is-the-delivery-object`, the bind alone authorises the wait (ruled);
+          `fault-record-is-printed-only-by-its-owner`, the "timed park floors any deadline"
+          sentence; `task-scoped-death-and-a-cancel-that-reaches-every-park`, the slay returns at
+          once and the hold is released at the death report (ruled), and its source list; the
+          `bind_notify` wording at the IRQ entries; `WAIT_TASK_EMPTY` and `WAIT_RETIRE` in the
+          wait-kind list;
+        - architecture.md: the cancel's timeout-0 mode and park, "the slay is the form that
+          waits", the ETIMEDOUT promise worded on `timeout_us`, the IRQ notify call and
+          `kos::Irq`, the create and its task watch; ipc-call-reply.md: the line attach and the
+          notification wait's capability; bench.md: the image listing's capture-window field;
+        - the journey and design pages that name removed calls (`check_doc_names.sh` holds the
+          unfenced ones; the fenced ones and the prose wait for this pass); stop 18 of the
+          journey names the init's PENDING phase, now one WAITING phase.
       - M10.6.11, by source:
         - the `pe_image.ld` rewrite: `docs/reference/architecture.md:356-358` ("the linker's own
           default layout plus section wildcards"); `docs/design-m10-toolchain.md:638` (`.eh_frame`
@@ -301,6 +338,13 @@ milestone does not close while any of them still composes a system.
       admitted, however late. Not established: whether any route takes a region from a parked
       thread's own set (a retype, a block given back) before its delivery. If one does, the late
       write needs a re-check of the set at the access, or the wait must end with the region.
+- [ ] **AN EXITING THREAD THAT HOLDS AN IRQ LINE SCANS ITS WHOLE CAPABILITY TABLE UNDER ONE LOCK
+      (M10.7 external review, 2026-11-16).** The capability teardown releases IRQ lines before its
+      first lock gap so a supervisor can claim them after the `EPIPE` wake, and that pass reads
+      every entry of the table the caller sized, under one lock, when the thread holds any IRQ
+      capability. Every other teardown pass is chunked. Debug builds add full-table checks too.
+      The interrupt-masked time therefore grows with the capability table, not with what the
+      thread holds. Not caused by M10.7.
 
 **DEFERRED UNTIL A CONSUMER NEEDS ONE, AND NOT WORK OF THIS MILESTONE.** The seal, a
 create-suspended spawn, and an authority for placing a thread of another task, a dynamic mint and
@@ -449,7 +493,12 @@ by ruling and sits in `roadmap.md`'s `Later`.
 - [ ] **M11, FIRST: RAM-RESIDENT CODE LIMITS WHAT A NODE OR A SMALL BOARD CAN RUN.** Where the code
       is copied to RAM, each byte of text is a byte the arena loses, so an image's code caps its
       thread pool. The ESP32-C6 AMP nodes link `cxxtest` only on nano newlib, with 1,776 B to spare
-      on the HP node (measured 2026-11-03). Code runs from RAM today on two boards. On
+      on the HP node (measured 2026-11-03); M10.7.3 alone was about 2 KB short (measured
+      2026-11-14), so M10.7.3 and M10.7.4 merge together (maintainer, 2026-11-15). Since the
+      uneven slices below, the HP node keeps about 8 KB and the LP node, which runs no `cxxtest`,
+      976 B of a link it never boots (2026-11-16); this item lands when the margin runs out, not
+      before. Building on the LP node only the images it runs, about 76 KB more for the HP node,
+      is not done: XIP supersedes it (maintainer, 2026-11-16). Code runs from RAM today on two boards. On
       `esp32c6-wroom` (rv32imac) every configuration links the kernel and every image into the
       512 KiB HP SRAM, the LP core's node included, and the flash cache is unused. On
       `esp32-wroom` (Xtensa LX6) the kernel's text is in SRAM1 and every image's in SRAM0, with the
@@ -457,10 +506,9 @@ by ruling and sits in `roadmap.md`'s `Later`.
       and `teensy41` through their XIP caches). The emulated `qemu-riscv` and the MMU boards load
       into DRAM, their only memory. So the concern is not one arch: rv32imac and Xtensa today, and
       any later chip whose loader copies the image to RAM. Two levers:
-      - **Uneven AMP node slices.** The C6 `amp2` configuration gives the LP-core node the same
-        240 KiB as the HP node, since `KICKOS_AMP_NODE_SHARE` is one value for every node (the
-        `pizero2350` and `qemu-arm64` partitions too). A size per node gives the RAM to the node
-        that runs the larger images.
+      - **Uneven AMP node slices. LANDED (M10.7.4, maintainer 2026-11-16):** `KICKOS_AMP_NODE_SLICES`
+        gives each node its own size, and the C6 `amp2` configuration gives the HP node 0x3D000
+        and the LP node 0x3B000; an empty list keeps `KICKOS_AMP_NODE_SHARE` for every node.
       - **Execute code from flash through the chip's cache (XIP)** instead of copying it to RAM,
         leaving RAM to data and stacks. The protection windows over each image's code then cover
         its flash address. On the ESP32 it is the second half of "M10.6.11: ESP32 CODE PAST SRAM0
@@ -714,8 +762,8 @@ tests, tools and apps, with no ratio (maintainer, 2026-10-09); no gate is writte
         - [ ] On -amp2: the HP and LP doorbell through the shared body, the ring both ways with no
               lost wake under load, the HP writer's wait for room; the MPU stash; the AMP window
               cleared by the primary alone; the node that does not own the reset is refused one.
-        - [ ] `ampping-c6.capture` re-taken: it carries lines no source prints, and its 160 MHz
-              line was edited in by hand.
+        - [x] `ampping-c6.capture` re-taken on silicon with the uneven slices (2026-11-17); no
+              line is edited by hand.
         - [ ] M10.6.7's dummy `sc` at `.Lrestore` (`arch/riscv/rv32imac/switch.S`), which QEMU's
               trap hides by dropping the reservation itself: first record whether the HP core's
               `mret` keeps a reservation. If it does, an arm still to write in which a thread cut
@@ -3627,6 +3675,10 @@ follows is what survived that.
       tree and on this one alike, so a loaded box turns its bound into a failure.
       **PARTLY:** above one core the stress gate's bound is 1400 s
       (`tests/integration/gates/stress.cmake`); a one-core preset keeps the 20 s default.
+- [ ] **M10.8: `image_restart_churn` SCALES WITH HOST LOAD FAR WORSE THAN ANY OTHER ARM.** Its
+      1,000 start-and-poll cycles each sleep 1 ms: 1.4 s on an idle host, 29 to 65 s under a
+      heavy one on `qemu-arm64-smp12`, where the whole selftest then crosses ctest's 180 s
+      limit on M10.6.12 and M10.7 alike (measured 2026-11-18).
 - [ ] **M10.8: The `qemu-arm64` expected faults `was` and `wro` never fault.** The gate accepts
       the absence.
 - [ ] **M10.8: A far call answers empty where a local call waits.** The two paths of one call

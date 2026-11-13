@@ -24,7 +24,8 @@
 ENTRY(Reset_Handler)
 
 /* Text executes from XIP flash and data lives in SRAM, so an own-image node takes a slice of
-   each: the same slice arithmetic over different bases and strides. The region every node
+   each: its SRAM slice from the partition's slice list, its text slice its index times
+   KICKOS_AMP_TEXT_SHARE into the flash aperture. The region every node
    writes sits in SRAM and never in flash, because LDREX/STREX succeed only over
    0x2000_0000..0x2008_2000 (datasheet 2.1.6.2) and the rendezvous cells are the one thing every
    node read-modify-writes. */
@@ -33,9 +34,8 @@ ENTRY(Reset_Handler)
 #define KICKOS_RP2350_FLASH_BASE \
     KICKOS_AMP_SLICE_BASE(KICKOS_AMP_TEXT_BASE, KICKOS_AMP_TEXT_SHARE)
 #define KICKOS_RP2350_FLASH_SIZE KICKOS_AMP_TEXT_SHARE
-#define KICKOS_RP2350_RAM_BASE \
-    KICKOS_AMP_SLICE_BASE(KICKOS_AMP_PARTITION_BASE, KICKOS_AMP_NODE_SHARE)
-#define KICKOS_RP2350_RAM_SIZE   KICKOS_AMP_NODE_SHARE
+#define KICKOS_RP2350_RAM_BASE   KICKOS_AMP_IMAGE_BASE
+#define KICKOS_RP2350_RAM_SIZE   KICKOS_AMP_IMAGE_SIZE
 #endif
 
 MEMORY
@@ -108,7 +108,7 @@ ASSERT(__kickos_amp_chip_end > __kickos_amp_chip_start,
 
 /* A node's text and its data are sliced out of different apertures with different strides,
    so neither span implies the other. */
-KICKOS_AMP_SLICE_ASSERT(ORIGIN(RAM), _estack, KICKOS_AMP_PARTITION_BASE, KICKOS_AMP_NODE_SHARE)
+KICKOS_AMP_IMAGE_ASSERT(ORIGIN(RAM), _estack)
 KICKOS_AMP_SLICE_ASSERT(ORIGIN(FLASH), ORIGIN(FLASH) + LENGTH(FLASH),
                         KICKOS_AMP_TEXT_BASE, KICKOS_AMP_TEXT_SHARE)
 
@@ -116,7 +116,7 @@ KICKOS_AMP_SLICE_ASSERT(ORIGIN(FLASH), ORIGIN(FLASH) + LENGTH(FLASH),
    node's text lies in the first 16 MiB: bootable content must (datasheet 5.1.2.1) and XIP
    window 0 is 16 MiB per chip select (12.14). */
 ASSERT(KICKOS_AMP_PARTITION_END <= KICKOS_LAYOUT_SRAM_BASE + KICKOS_LAYOUT_SRAM_SIZE,
-       "KickOS: the AMP partition runs past the RP2350's striped SRAM end at 0x20080000. The two 4 KiB banks above it are non-striped, sit in the SRAM1 power domain, and are reserved for per-core stacks. Narrow KICKOS_AMP_NODE_SHARE or KICKOS_AMP_SHARED_SIZE")
+       "KickOS: the AMP partition runs past the RP2350's striped SRAM end at 0x20080000. The two 4 KiB banks above it are non-striped, sit in the SRAM1 power domain, and are reserved for per-core stacks. Narrow the nodes' slices or KICKOS_AMP_SHARED_SIZE")
 ASSERT(KICKOS_AMP_TEXT_BASE + KICKOS_AMP_NODES * KICKOS_AMP_TEXT_SHARE
            <= KICKOS_LAYOUT_XIP_FLASH_BASE + KICKOS_LAYOUT_XIP_FLASH_SIZE,
        "KickOS: the AMP partition's text runs past the RP2350's first 16 MiB flash window. Bootable content must lie wholly inside it and XIP window 0 ends at 0x11000000. Narrow KICKOS_AMP_TEXT_SHARE")

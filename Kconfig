@@ -270,15 +270,27 @@ config KICKOS_AMP_NODE_SHARE
 	depends on KICKOS_AMP_POSTURE_OWN_IMAGE
 	default 0x0
 	help
-	  The stride between node images and the bound on one image's own allocations.
-	  Uniform across nodes, so a node's base is its index times this.
+	  The stride between node images and the bound on one image's own allocations,
+	  the same for every node, so a node's base is its index times this. Zero where
+	  KICKOS_AMP_NODE_SLICES sizes each node instead.
+
+config KICKOS_AMP_NODE_SLICES
+	string "Bytes of the partition each node's image owns, in node order"
+	depends on KICKOS_AMP_POSTURE_OWN_IMAGE
+	default ""
+	help
+	  One size per node, comma-separated, node 0 first, for a partition whose
+	  nodes run images of different sizes. A node's base is the partition base
+	  plus the sizes of the nodes before it, and the shared region sits above
+	  them all. Empty gives every node KICKOS_AMP_NODE_SHARE. genconfig.py
+	  refuses both stated.
 
 config KICKOS_AMP_SHARED_SIZE
 	hex "Bytes reserved for the region every node writes"
 	depends on KICKOS_AMP_POSTURE_OWN_IMAGE
 	default 0x0
 	help
-	  Sits above every node's share and holds the window, the doorbell's rendezvous
+	  Sits above every node's slice and holds the window, the doorbell's rendezvous
 	  cells and the per-node counts. Sized so a part whose protection unit can
 	  describe the partition has one region to name.
 

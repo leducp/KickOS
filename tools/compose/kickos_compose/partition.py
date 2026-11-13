@@ -336,8 +336,8 @@ def derive_gate(chip, manifest, grants, nodes, refuse):
         mine = [(k, grant) for k, grant in grants if fronted(unit, grant)]
         for k in range(1, nodes):
             if manifest.amp_slices is not None and manifest.amp_window is not None:
-                slice_base = manifest.amp_slices[0] + k * manifest.amp_slices[1]
-                for base, size, access in ((slice_base, manifest.amp_slices[1], "rwx"),
+                slice_base, slice_size = manifest.amp_slices[k]
+                for base, size, access in ((slice_base, slice_size, "rwx"),
                                            (manifest.amp_window[0], manifest.amp_window[1], "rw")):
                     if any(m_base <= base and base + size <= m_base + m_size for m_base, m_size in unit.memory):
                         gate_rows.append(Row(index, k, base, size, access))

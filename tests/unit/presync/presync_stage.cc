@@ -70,6 +70,8 @@ namespace
     kickos::Thread* g_current = nullptr;
     // The calling thread's own space.
     struct arch_aspace* g_own_space = nullptr;
+    // A map at this address is refused, 0 for none.
+    uintptr_t g_refused_va = 0;
 
     struct arch_aspace* const SPACE_A = reinterpret_cast<struct arch_aspace*>(0x1000);
     struct arch_aspace* const SPACE_B = reinterpret_cast<struct arch_aspace*>(0x2000);
@@ -90,6 +92,10 @@ extern "C"
                                             arch_phys_addr_t pa, size_t pages, uint32_t rights,
                                             enum arch_map_memtype)
     {
+        if (g_refused_va != 0 and va == g_refused_va)
+        {
+            return ARCH_ASPACE_ENOMEM;
+        }
         if (g_map_count < MAPS_MAX)
         {
             g_map_log[g_map_count] = MapCall{space, va, pa, pages, rights};
@@ -239,6 +245,7 @@ namespace
             g_syncs = 0;
             g_map_count = 0;
             g_slay_at = 0;
+            g_refused_va = 0;
             g_own_space = SPACE_A;
             ASSERT_TRUE(ranges_.init(G));
             ASSERT_EQ(host_pool_used(), g_base_frames);
@@ -318,10 +325,10 @@ namespace
         }
 
         // The round's end, the lock released: true when the call goes round again.
-        bool end_round()
+        bool end_round(bool succeeded = false)
         {
             bool const again = kickos::presync_end();
-            kickos::presync_release(false);
+            kickos::presync_release(succeeded and not again);
             return again;
         }
 
@@ -344,7 +351,7 @@ namespace
         HostPoolMark const before = host_pool_mark();
         ASSERT_TRUE(spawn_round());
         int const pokes = kickos::g_pokes;
-        EXPECT_FALSE(end_round());
+        EXPECT_FALSE(end_round(true));
         EXPECT_EQ(kickos::g_pokes, pokes) << "a stage the create consumed asked its watches for a look";
         EXPECT_EQ(host_pool_used(), g_base_frames + DATA_PAGES) << "the new space holds its copy";
         EXPECT_EQ(g_windows, static_cast<int>(DATA_PAGES));
@@ -353,6 +360,27 @@ namespace
         MapCall const* const data = mapped(SPACE_NEW, g_home_data.va);
         ASSERT_NE(data, nullptr);
         EXPECT_TRUE(frames_hold(data->pa, DATA_PAGES, PRISTINE)) << "the first space's bytes";
+        kickos::testfix::host_pool_free_since(before);
+    }
+
+    // The locked pass takes the stage, clearing its stager mark, and its map is then refused:
+    // the create unwinds with nothing left staged, and only the release can owe the look.
+    TEST_F(PresyncStage, a_stage_taken_by_a_create_that_unwinds_asks_its_watches_for_a_look)
+    {
+        g_refused_va = g_home_data.va;
+        EXPECT_FALSE(spawn_round()) << "the data's map was not refused";
+        EXPECT_EQ(kickos::g_decl_stager, 0u) << "fixture: the locked pass did not take the stage";
+        EXPECT_EQ(kickos::presync_record()->staged, 0u);
+        EXPECT_EQ(host_pool_used(), g_base_frames) << "the refused map kept its run";
+        int const pokes = kickos::g_pokes;
+        EXPECT_FALSE(end_round());
+        EXPECT_EQ(kickos::g_pokes, pokes + 1) << "the unwound create asked the watches for no look";
+        g_refused_va = 0;
+        HostPoolMark const before = host_pool_mark();
+        ASSERT_TRUE(spawn_round()) << "a later round, the map no longer refused";
+        int const later = kickos::g_pokes;
+        EXPECT_FALSE(end_round(true));
+        EXPECT_EQ(kickos::g_pokes, later) << "the unwound round's debt outlived it";
         kickos::testfix::host_pool_free_since(before);
     }
 

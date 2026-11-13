@@ -65,7 +65,7 @@ void kos_sleep_until(kos_monotonic_t until)
 
 // Holds the "always written" guarantee on the paths the kernel never reaches: a null or
 // unwritable out-pointer is refused at the boundary.
-static void cap_out_clear(kos_cap_t* out_cap)
+static inline __attribute__((always_inline)) void cap_out_clear(kos_cap_t* out_cap)
 {
     if (out_cap != nullptr)
     {
@@ -161,24 +161,10 @@ int kos_reply(kos_cap_t reply_cap, void const* buf, size_t len)
                                          kos_call_lens_pack(len, 0), 0, 0));
 }
 
-// For the calls whose KOS_POLL is a mode of its own: a negative deadline is a passed one, never
-// that mode's word.
-static uint64_t kickos_limit_word_not_poll(int64_t ns)
+int kos_thread_cancel(kos_thread_t thread, enum kos_cancel kind)
 {
-    if (ns < 0)
-    {
-        return 1u;
-    }
-    return kos_limit_word(ns);
-}
-
-int kos_thread_cancel(kos_thread_t thread, enum kos_cancel kind, kos_monotonic_t until)
-{
-    uint64_t const limit = kickos_limit_word_not_poll(until.ns);
-    return static_cast<int>(arch_syscall(KOS_SYS_THREAD_CANCEL,
-                                         static_cast<uintptr_t>(thread),
-                                         static_cast<uintptr_t>(kind), kos_u64_lo(limit),
-                                         kos_u64_hi(limit), 0));
+    return static_cast<int>(arch_syscall(KOS_SYS_THREAD_CANCEL, static_cast<uintptr_t>(thread),
+                                         static_cast<uintptr_t>(kind), 0, 0, 0));
 }
 
 int kos_thread_affinity(kos_thread_t thread, uint32_t core_mask)
@@ -294,11 +280,9 @@ int kos_port_reg_write(uint16_t base, uint16_t offset, uint8_t value)
     return static_cast<int>(arch_syscall(KOS_SYS_PORT_REG_WRITE, base, offset, value, 0, 0));
 }
 
-int kos_task_slay(kos_task_t task, kos_monotonic_t until)
+int kos_task_slay(kos_task_t task)
 {
-    uint64_t const limit = kickos_limit_word_not_poll(until.ns);
-    return static_cast<int>(arch_syscall(KOS_SYS_TASK_SLAY, static_cast<uintptr_t>(task),
-                                         kos_u64_lo(limit), kos_u64_hi(limit), 0, 0));
+    return static_cast<int>(arch_syscall(KOS_SYS_TASK_SLAY, static_cast<uintptr_t>(task), 0, 0, 0, 0));
 }
 
 int kos_thread_join(kos_thread_t thread, kos_monotonic_t until)

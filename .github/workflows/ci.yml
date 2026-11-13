@@ -27,7 +27,7 @@ jobs:
     timeout-minutes: 10
     outputs:
       tree: ${{ steps.scope.outputs.tree }}
-      doc_gates: ${{ steps.scope.outputs.doc_gates }}
+      docs_tree: ${{ steps.scope.outputs.docs_tree }}
       host: ${{ steps.scope.outputs.host }}
       arm: ${{ steps.scope.outputs.arm }}
       arm64: ${{ steps.scope.outputs.arm64 }}
@@ -57,15 +57,15 @@ jobs:
           esac
           .github/scripts/ci-scope.sh "$range" | tee -a "$GITHUB_OUTPUT"
 
-  # The tree gates whose corpus holds a docs file. code-quality runs them on any other change.
-  doc-gates:
+  # The tree checks whose corpus holds a docs file. code-quality runs them on any other change.
+  docs-tree:
     needs: changes
-    if: needs.changes.outputs.doc_gates == 'true'
+    if: needs.changes.outputs.docs_tree == 'true'
     runs-on: ubuntu-26.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - name: Run the gates that read the docs
+      - name: Run the tree checks that read the docs
         run: |
           rc=0
           for g in doc_names ascii spdx dash_punct shell_special_names; do
@@ -192,13 +192,13 @@ jobs:
           packages: cmake ninja-build g++ zsh
       - run: cmake --preset sim
       - run: ctest --preset sim -L tree --no-tests=error --output-on-failure
-      - name: the description, composition and judge gates, by name
+      - name: the description, composition and judge tests, by name
         run: |
           out=$(tests/ci/ctest_named.sh '^app_judges$|^amp_share$|^chip_kconfig$|^chip_protection$|^platform_descriptions$|^platform_compositions$|^platform_arms$|^platform_coverage$|^platform_tables$|^no_eh_runtime_controls$|^rig_shells$' \
             --preset sim -L tree --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
           case "$out" in
-            *Skipped*) echo "a named gate SKIPPED, which ctest reports as success"; exit 1 ;;
+            *Skipped*) echo "a named test SKIPPED, which ctest reports as success"; exit 1 ;;
           esac
 
   # Run the host suite, excluding the source-only checks above.
@@ -218,14 +218,14 @@ jobs:
       - run: cmake --preset sim -DCMAKE_PREFIX_PATH="$KICKOS_GTEST_PREFIX" -DKICKOS_BUILD_UNIT_TESTS=ON
       - run: cmake --build --preset sim
       - run: ctest --preset sim -LE tree --no-tests=error --output-on-failure
-      - name: the AMP share, partition gate, RAM owner and alias host units, by name
+      - name: the AMP share, RP2350 partition, RAM owner and alias host units, by name
         run: |
           tests/ci/ctest_named.sh 'AmpShare\.|AmpShareWindow\.|AmpShareType\.|cached_AmpShareType\.|C6Apm\.|Rp2350Gate\.|OwnerInstances\.|AliasSync\.' \
             --preset sim --no-tests=error --output-on-failure
       # Build every unit test at the telemetry posture, so each one links there, and run only
       # the two additional telemetry checks and the console reclaim with RTT beside the chip
       # console. The main sim build runs the unit tests.
-      - name: the ch1 trace decoder gates and the console reclaim beside RTT (sim-telem)
+      - name: the ch1 trace decoder tests and the console reclaim beside RTT (sim-telem)
         run: |
           cmake --preset sim-telem -DCMAKE_PREFIX_PATH="$KICKOS_GTEST_PREFIX" -DKICKOS_BUILD_UNIT_TESTS=ON
           cmake --build --preset sim-telem
@@ -282,11 +282,11 @@ jobs:
       - uses: ./.github/actions/kickos-toolchain
         with:
           family: arm-none-eabi
-      - name: the emulator every image gate in this job boots on
+      - name: the emulator every image test in this job boots on
         run: |
           command -v qemu-system-arm >/dev/null 2>&1 \
             || { echo "qemu-system-arm is absent: every image arm below would SKIP and ctest would still exit 0"; exit 1; }
-      # Retry only polled ARM gates: the coarse clock and runner load can delay output.
+      # Retry only polled ARM tests: the coarse clock and runner load can delay output.
       # Each attempt still has its own timeout.
       - name: armv7m (mps2-an386)
         if: matrix.part == 'an386'
@@ -299,13 +299,13 @@ jobs:
           tests/ci/ctest_named.sh 'mpu_fault|rootfault' \
             --preset qemu --no-tests=error --output-on-failure --repeat until-pass:2
           tests/ci/ctest_named.sh '^qemu_sysdefault$|qemu_sysdefault_spin|qemu_sysdefault_no_eh_runtime|qemu_sysdefault_no_driver_path|^qemu_cxxterm$|qemu_cxxterm_eh_control|qemu_nvic|^qemu_svcfp$' --preset qemu --no-tests=error --output-on-failure
-          # The programs' gates, which a missing gdb or emulator would SKIP, and the two systems
+          # The programs' tests, which a missing gdb or emulator would SKIP, and the two systems
           # of different pool sizes over the package's one set of kernel archives.
           out=$(tests/ci/ctest_named.sh '^qemu_tlsprobe$|^qemu_gdb_main$|^qemu_pool_abi_two$|^qemu_pool_abi_skew$|^qemu_pspguard_fphi$|^qemu_privwindow_svc$|^qemu_privwindow_fault$|^qemu_privwindow_callreg$|^qemu_privwindow_resume$|^qemu_pspguard_framehi$' \
             --preset qemu --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
           case "$out" in
-            *Skipped*) echo "a required gate SKIPPED, which ctest reports as success"; exit 1 ;;
+            *Skipped*) echo "a required test SKIPPED, which ctest reports as success"; exit 1 ;;
           esac
       - name: armv7m with the periodic scheduler tick (mps2-an386)
         if: matrix.part == 'an386-tick'
@@ -327,13 +327,13 @@ jobs:
           tests/ci/ctest_named.sh 'mpu_fault|rootfault' \
             --preset qemu-m33 --no-tests=error --output-on-failure --repeat until-pass:2
           tests/ci/ctest_named.sh '^qemu_m33_sysdefault$|qemu_m33_sysdefault_spin|qemu_m33_sysdefault_no_eh_runtime|qemu_m33_sysdefault_no_driver_path|^qemu_m33_cxxterm$|qemu_m33_cxxterm_eh_control|qemu_m33_nvic|^qemu_m33_svcfp$' --preset qemu-m33 --no-tests=error --output-on-failure
-          # Require the stack-limit gates, the splim plant this MPU build registers, and the TLS and
+          # Require the stack-limit tests, the splim plant this MPU build registers, and the TLS and
           # reent probes under PMSAv8.
           out=$(tests/ci/ctest_named.sh '^qemu_m33_faultoverflow$|^qemu_m33_faultoverflow_mpu$|^qemu_m33_pspguard$|^qemu_m33_pspguard_svcstkof$|^qemu_m33_pspguard_race$|^qemu_m33_pspguard_fphi$|^qemu_m33_privwindow_svc$|^qemu_m33_privwindow_fault$|^qemu_m33_privwindow_callreg$|^qemu_m33_privwindow_resume$|^qemu_m33_pspguard_framehi$|^qemu_m33_splim_plant$|^qemu_m33_tlsprobe$|^qemu_m33_errnoprobe$' \
             --preset qemu-m33 --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
           case "$out" in
-            *Skipped*) echo "a stack-limit gate SKIPPED, which ctest reports as success"; exit 1 ;;
+            *Skipped*) echo "a stack-limit test SKIPPED, which ctest reports as success"; exit 1 ;;
           esac
       - name: armv7m (mps2-an500, Cortex-M7)
         if: matrix.part == 'm7'
@@ -346,12 +346,12 @@ jobs:
           tests/ci/ctest_named.sh 'mpu_fault|rootfault' \
             --preset qemu-m7 --no-tests=error --output-on-failure --repeat until-pass:2
           tests/ci/ctest_named.sh '^qemu_m7_sysdefault$|qemu_m7_sysdefault_spin|qemu_m7_sysdefault_no_eh_runtime|qemu_m7_sysdefault_no_driver_path|^qemu_m7_cxxterm$|qemu_m7_cxxterm_eh_control|qemu_m7_nvic|^qemu_m7_svcfp$' --preset qemu-m7 --no-tests=error --output-on-failure
-          # The FP-high and frame-high stack guards and the privilege-window gates need gdb: a missing one would SKIP.
+          # The FP-high and frame-high stack guards and the privilege-window tests need gdb: a missing one would SKIP.
           out=$(tests/ci/ctest_named.sh '^qemu_m7_pspguard_fphi$|^qemu_m7_privwindow_svc$|^qemu_m7_privwindow_fault$|^qemu_m7_privwindow_callreg$|^qemu_m7_privwindow_resume$|^qemu_m7_pspguard_framehi$' \
             --preset qemu-m7 --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
           case "$out" in
-            *Skipped*) echo "a gdb gate SKIPPED, which ctest reports as success"; exit 1 ;;
+            *Skipped*) echo "a gdb test SKIPPED, which ctest reports as success"; exit 1 ;;
           esac
       - name: armv7m soft-float (mps2-an385, Cortex-M3)
         if: matrix.part == 'm3'
@@ -365,15 +365,15 @@ jobs:
           tests/ci/ctest_named.sh 'mpu_fault|rootfault' \
             --preset qemu-m3 --no-tests=error --output-on-failure --repeat until-pass:2
           tests/ci/ctest_named.sh '^qemu_m3_sysdefault$|qemu_m3_sysdefault_spin|qemu_m3_sysdefault_no_eh_runtime|qemu_m3_sysdefault_no_driver_path|^qemu_m3_cxxterm$|qemu_m3_cxxterm_eh_control|qemu_m3_nvic' --preset qemu-m3 --no-tests=error --output-on-failure
-          # The frame-high stack guard and the privilege-window gates need gdb: a missing one would SKIP.
+          # The frame-high stack guard and the privilege-window tests need gdb: a missing one would SKIP.
           out=$(tests/ci/ctest_named.sh '^qemu_m3_privwindow_svc$|^qemu_m3_privwindow_fault$|^qemu_m3_privwindow_callreg$|^qemu_m3_privwindow_resume$|^qemu_m3_pspguard_framehi$' \
             --preset qemu-m3 --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
           case "$out" in
-            *Skipped*) echo "a gdb gate SKIPPED, which ctest reports as success"; exit 1 ;;
+            *Skipped*) echo "a gdb test SKIPPED, which ctest reports as success"; exit 1 ;;
           esac
       # Test privilege rings with MPU enforcement disabled.
-      - name: ARM ring-only run gates (no PMSA enforcement)
+      - name: ARM ring-only runs (no PMSA enforcement)
         if: startsWith(matrix.part, 'flat-')
         env:
           PART: ${{ matrix.part }}
@@ -393,13 +393,13 @@ jobs:
             t=$(printf '%s' "$b" | tr - _)
             tests/ci/ctest_named.sh "^${t}_cxxterm\$|${t}_cxxterm_eh_control|${t}_nvic" \
               --preset "$b-flat" --no-tests=error --output-on-failure
-            # The flat M33 build registers the stack-limit gates too, all but the MPU-only ones.
+            # The flat M33 build registers the stack-limit tests too, all but the MPU-only ones.
             if [ "$b" = qemu-m33 ]; then
               out=$(tests/ci/ctest_named.sh '^qemu_m33_faultoverflow$|^qemu_m33_pspguard$|^qemu_m33_pspguard_svcstkof$' \
                 --preset "$b-flat" --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
               printf '%s\n' "$out"
               case "$out" in
-                *Skipped*) echo "a stack-limit gate SKIPPED, which ctest reports as success"; exit 1 ;;
+                *Skipped*) echo "a stack-limit test SKIPPED, which ctest reports as success"; exit 1 ;;
               esac
             fi
           done
@@ -440,7 +440,7 @@ jobs:
       - uses: ./.github/actions/kickos-toolchain
         with:
           family: aarch64-none-elf
-      - name: the emulator every image gate in this job boots on
+      - name: the emulator every image test in this job boots on
         run: |
           command -v qemu-system-aarch64 >/dev/null 2>&1 \
             || { echo "qemu-system-aarch64 is absent: every image arm below would SKIP and ctest would still exit 0"; exit 1; }
@@ -454,7 +454,7 @@ jobs:
             --preset qemu-arm64 --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
           case "$out" in
-            *Skipped*) echo "a required gate SKIPPED, which ctest reports as success"; exit 1 ;;
+            *Skipped*) echo "a required test SKIPPED, which ctest reports as success"; exit 1 ;;
           esac
       # The runner has no i.MX 8M Plus emulator. Check the build and host tests only.
       - name: armv8a (NXP i.MX 8M Plus EVK) link surface
@@ -466,7 +466,7 @@ jobs:
             --preset imx8mp-evk --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
           case "$out" in
-            *Skipped*) echo "a system link gate SKIPPED, which ctest reports as success"; exit 1 ;;
+            *Skipped*) echo "a system link test SKIPPED, which ctest reports as success"; exit 1 ;;
           esac
 
   # Four-core AArch64 with and without core isolation. Check the configured
@@ -491,7 +491,7 @@ jobs:
       - uses: ./.github/actions/kickos-toolchain
         with:
           family: aarch64-none-elf
-      - name: the emulator every image gate in this job boots on
+      - name: the emulator every image test in this job boots on
         run: |
           command -v qemu-system-aarch64 >/dev/null 2>&1 \
             || { echo "qemu-system-aarch64 is absent: every image arm below would SKIP and ctest would still exit 0"; exit 1; }
@@ -505,7 +505,7 @@ jobs:
             --preset qemu-arm64-smp --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
           case "$out" in
-            *Skipped*) echo "a required gate SKIPPED, which ctest reports as success"; exit 1 ;;
+            *Skipped*) echo "a required test SKIPPED, which ctest reports as success"; exit 1 ;;
           esac
       - name: armv8a (virt) four cores, core 3 isolated
         run: |
@@ -523,7 +523,7 @@ jobs:
             --preset qemu-arm64-smpiso --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
           case "$out" in
-            *Skipped*) echo "a required gate SKIPPED, which ctest reports as success"; exit 1 ;;
+            *Skipped*) echo "a required test SKIPPED, which ctest reports as success"; exit 1 ;;
           esac
 
   # The other kernel-core counts, apart from the four-core job so that neither runs into the job
@@ -542,7 +542,7 @@ jobs:
       - uses: ./.github/actions/kickos-toolchain
         with:
           family: aarch64-none-elf
-      - name: armv8a (virt) two and twelve cores, built with their host gates
+      - name: armv8a (virt) two and twelve cores, built with their host tests
         run: |
           for p in qemu-arm64-smp2 qemu-arm64-smp12; do
             cmake --preset "$p"
@@ -569,7 +569,7 @@ jobs:
       - uses: ./.github/actions/kickos-toolchain
         with:
           family: aarch64-none-elf
-      - name: the emulator and the core every image gate in this job boots on
+      - name: the emulator and the core every image test in this job boots on
         run: |
           command -v qemu-system-aarch64 >/dev/null 2>&1 \
             || { echo "qemu-system-aarch64 is absent: every image arm below would SKIP and ctest would still exit 0"; exit 1; }
@@ -586,7 +586,7 @@ jobs:
             --preset qemu-arm64-a710 --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
           case "$out" in
-            *Skipped*) echo "a required gate SKIPPED, which ctest reports as success"; exit 1 ;;
+            *Skipped*) echo "a required test SKIPPED, which ctest reports as success"; exit 1 ;;
           esac
 
   # Exercise shared-kernel GICv3 doorbells. The other SMP job uses GICv2;
@@ -608,7 +608,7 @@ jobs:
       - uses: ./.github/actions/kickos-toolchain
         with:
           family: aarch64-none-elf
-      - name: the emulator every image gate in this job boots on
+      - name: the emulator every image test in this job boots on
         run: |
           command -v qemu-system-aarch64 >/dev/null 2>&1 \
             || { echo "qemu-system-aarch64 is absent: every image arm below would SKIP and ctest would still exit 0"; exit 1; }
@@ -629,7 +629,7 @@ jobs:
             --preset qemu-arm64-gicv3 --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
           case "$out" in
-            *Skipped*) echo "a required gate SKIPPED, which ctest reports as success"; exit 1 ;;
+            *Skipped*) echo "a required test SKIPPED, which ctest reports as success"; exit 1 ;;
           esac
 
   # Test shared-image AMP indexing, separate-image bounds, two running kernels, and three running
@@ -652,7 +652,7 @@ jobs:
       - uses: ./.github/actions/kickos-toolchain
         with:
           family: aarch64-none-elf
-      - name: the emulator every image gate in this job boots on
+      - name: the emulator every image test in this job boots on
         run: |
           command -v qemu-system-aarch64 >/dev/null 2>&1 \
             || { echo "qemu-system-aarch64 is absent: every image arm below would SKIP and ctest would still exit 0"; exit 1; }
@@ -667,7 +667,7 @@ jobs:
             --preset qemu-arm64-amp --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
           case "$out" in
-            *Skipped*) echo "a required gate SKIPPED, which ctest reports as success"; exit 1 ;;
+            *Skipped*) echo "a required test SKIPPED, which ctest reports as success"; exit 1 ;;
           esac
       - name: armv8a (virt) AMP, node 0 of a two-image partition
         run: |
@@ -680,7 +680,7 @@ jobs:
             --preset qemu-arm64-amp2-n0 --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
           case "$out" in
-            *Skipped*) echo "a required gate SKIPPED, which ctest reports as success"; exit 1 ;;
+            *Skipped*) echo "a required test SKIPPED, which ctest reports as success"; exit 1 ;;
           esac
       - name: armv8a (virt) AMP, node 1 of a two-image partition
         run: |
@@ -693,7 +693,7 @@ jobs:
             --preset qemu-arm64-amp2-n1 --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
           case "$out" in
-            *Skipped*) echo "a required gate SKIPPED, which ctest reports as success"; exit 1 ;;
+            *Skipped*) echo "a required test SKIPPED, which ctest reports as success"; exit 1 ;;
           esac
       - name: armv8a (virt) AMP, a three-image partition over a cached share
         run: |
@@ -704,13 +704,13 @@ jobs:
             . ./.github/scripts/amp-pin.sh "build/qemu-arm64-amp3-n$n" "$n" own 3
             cmake --build --preset "qemu-arm64-amp3-n$n"
           done
-          # Node 0 builds the peer images and boots the three kernels, one gate at a time: each
-          # gate builds the partition first.
+          # Node 0 builds the peer images and boots the three kernels, one test at a time: each
+          # test builds the partition first.
           out=$(tests/ci/ctest_named.sh '^amp_partition$|^amp_peer_arms$' \
             --preset qemu-arm64-amp3-n0 -j1 --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
           case "$out" in
-            *Skipped*) echo "a required gate SKIPPED, which ctest reports as success"; exit 1 ;;
+            *Skipped*) echo "a required test SKIPPED, which ctest reports as success"; exit 1 ;;
           esac
 
   # rv32imac/ilp32, the riscv64-none-elf family's multilib, without PMP enforcement, and the RV32
@@ -732,12 +732,12 @@ jobs:
       - uses: ./.github/actions/kickos-toolchain
         with:
           family: riscv64-none-elf
-      - name: the emulator every image gate in this job boots on
+      - name: the emulator every image test in this job boots on
         run: |
           command -v qemu-system-riscv32 >/dev/null 2>&1 \
             || { echo "qemu-system-riscv32 is absent: every image arm below would SKIP and ctest would still exit 0"; exit 1; }
       # The flat variant registers freestanding tests without PMP enforcement.
-      - name: rv32imac (virt) run gate, no PMP enforcement
+      - name: rv32imac (virt) run, no PMP enforcement
         run: |
           cmake --preset qemu-riscv-flat
           cmake --build --preset qemu-riscv-flat
@@ -746,7 +746,7 @@ jobs:
             --preset qemu-riscv-flat --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
           case "$out" in
-            *Skipped*) echo "a required gate SKIPPED, which ctest reports as success"; exit 1 ;;
+            *Skipped*) echo "a required test SKIPPED, which ctest reports as success"; exit 1 ;;
           esac
       # The ROM boots esptool's image format alone: without esptool no .app.bin is built and
       # the flash text image goes unjudged.
@@ -766,13 +766,13 @@ jobs:
             || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
           case "$out" in
-            *Skipped*) echo "the esp segments gate SKIPPED, which ctest reports as success"; exit 1 ;;
+            *Skipped*) echo "the esp segments test SKIPPED, which ctest reports as success"; exit 1 ;;
           esac
           out=$(tests/ci/ctest_named.sh 'esp32c6_wroom_system_link_none|esp32c6_wroom_system_link_two|esp32c6_wroom_system_link_program|esp32c6_wroom_system_link_refused|esp32c6_wroom_system_link_notool|esp32c6_wroom_system_link_nocc|esp32c6_wroom_system_link_rerun|esp32c6_wroom_system_link_noheap|esp32c6_wroom_system_link_capture|esp32c6_wroom_system_link_stack|esp32c6_wroom_system_link_arena|esp32c6_wroom_system_link_heap' \
             --test-dir build/esp32c6-wroom --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
           case "$out" in
-            *Skipped*) echo "a system link gate SKIPPED, which ctest reports as success"; exit 1 ;;
+            *Skipped*) echo "a system link test SKIPPED, which ctest reports as success"; exit 1 ;;
           esac
           cmake --preset esp32c6-wroom-flat
           cmake --build --preset esp32c6-wroom-flat
@@ -781,7 +781,7 @@ jobs:
             --test-dir build/esp32c6-wroom-flat --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
           case "$out" in
-            *Skipped*) echo "a system link gate SKIPPED, which ctest reports as success"; exit 1 ;;
+            *Skipped*) echo "a system link test SKIPPED, which ctest reports as success"; exit 1 ;;
           esac
           # Build both C6 AMP nodes and their one-flash partition; silicon capture stays on the bench.
           cmake --preset esp32c6-wroom-amp2-n0
@@ -791,7 +791,7 @@ jobs:
             --test-dir build/esp32c6-wroom-amp2-n0 --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
           case "$out" in
-            *Skipped*) echo "a system link gate SKIPPED, which ctest reports as success"; exit 1 ;;
+            *Skipped*) echo "a system link test SKIPPED, which ctest reports as success"; exit 1 ;;
           esac
           cmake --preset esp32c6-wroom-amp2-n1
           cmake --build --preset esp32c6-wroom-amp2-n1
@@ -800,7 +800,7 @@ jobs:
             --test-dir build/esp32c6-wroom-amp2-n1 --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
           case "$out" in
-            *Skipped*) echo "a system link gate SKIPPED, which ctest reports as success"; exit 1 ;;
+            *Skipped*) echo "a system link test SKIPPED, which ctest reports as success"; exit 1 ;;
           esac
 
   # Check C++ exceptions and global-pointer placement under PMP enforcement. The enforcing
@@ -824,11 +824,11 @@ jobs:
       - uses: ./.github/actions/kickos-toolchain
         with:
           family: riscv64-none-elf
-      - name: the emulator every image gate in this job boots on
+      - name: the emulator every image test in this job boots on
         run: |
           command -v qemu-system-riscv32 >/dev/null 2>&1 \
             || { echo "qemu-system-riscv32 is absent: every image arm below would SKIP and ctest would still exit 0"; exit 1; }
-      - name: rv32imac (virt) enforcement gate
+      - name: rv32imac (virt) enforcement
         run: |
           cmake --preset qemu-riscv
           cmake --build --preset qemu-riscv
@@ -838,7 +838,7 @@ jobs:
             --preset qemu-riscv --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
           case "$out" in
-            *Skipped*) echo "a required gate SKIPPED, which ctest reports as success"; exit 1 ;;
+            *Skipped*) echo "a required test SKIPPED, which ctest reports as success"; exit 1 ;;
           esac
 
   # RV64 base, Sv48, and four-core shared-kernel tests, on qemu-system-riscv64 from
@@ -861,11 +861,11 @@ jobs:
       - uses: ./.github/actions/kickos-toolchain
         with:
           family: riscv64-none-elf
-      - name: the emulator every image gate in this job boots on
+      - name: the emulator every image test in this job boots on
         run: |
           command -v qemu-system-riscv64 >/dev/null 2>&1 \
             || { echo "qemu-system-riscv64 is absent: every image arm below would SKIP and ctest would still exit 0"; exit 1; }
-      - name: rv64imac (virt) sv39 gate
+      - name: rv64imac (virt) sv39
         run: |
           cmake --preset qemu-riscv64
           cmake --build --preset qemu-riscv64
@@ -875,9 +875,9 @@ jobs:
             --preset qemu-riscv64 --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
           case "$out" in
-            *Skipped*) echo "a required gate SKIPPED, which ctest reports as success"; exit 1 ;;
+            *Skipped*) echo "a required test SKIPPED, which ctest reports as success"; exit 1 ;;
           esac
-      - name: rv64imac (virt) sv48 gate
+      - name: rv64imac (virt) sv48
         run: |
           cmake --preset qemu-riscv64-sv48
           cmake --build --preset qemu-riscv64-sv48
@@ -886,7 +886,7 @@ jobs:
             --preset qemu-riscv64-sv48 --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
           case "$out" in
-            *Skipped*) echo "a required gate SKIPPED, which ctest reports as success"; exit 1 ;;
+            *Skipped*) echo "a required test SKIPPED, which ctest reports as success"; exit 1 ;;
           esac
       - name: rv64imac (virt) four harts
         run: |
@@ -898,9 +898,9 @@ jobs:
             --preset qemu-riscv64-smp --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
           case "$out" in
-            *Skipped*) echo "a required gate SKIPPED, which ctest reports as success"; exit 1 ;;
+            *Skipped*) echo "a required test SKIPPED, which ctest reports as success"; exit 1 ;;
           esac
-      - name: rv64imac (virt) two harts, built with its host gates
+      - name: rv64imac (virt) two harts, built with its host tests
         run: |
           cmake --preset qemu-riscv64-smp2
           cmake --build --preset qemu-riscv64-smp2
@@ -927,10 +927,10 @@ jobs:
           family: x86_64-elf
       - name: The OVMF firmware pair
         run: tests/ci/resolve_ovmf.sh >> "$GITHUB_ENV"
-      - name: x86_64 (q35) UEFI handover gate
+      - name: x86_64 (q35) UEFI handover
         run: |
           command -v qemu-system-x86_64 >/dev/null 2>&1 \
-            || { echo "qemu-system-x86_64 is absent: every image gate below would SKIP and ctest would still exit 0"; exit 1; }
+            || { echo "qemu-system-x86_64 is absent: every image test below would SKIP and ctest would still exit 0"; exit 1; }
           # Report whether this linker needs -b elf64-x86-64 to extract ELF archive
           # members under i386pep. Both outcomes are supported; the real link tests the flag.
           tc=$(sed -n 's/^set(KICKOS_TOOLCHAIN_BIN_x86_64-elf "\(.*\)")$/\1/p' "$KICKOS_TOOLCHAIN/kickos-toolchain.cmake")
@@ -954,17 +954,17 @@ jobs:
           printf '%s\n' "$out"
           # No test in this single-core selection is expected to skip.
           case "$out" in
-            *Skipped*) echo "a gate SKIPPED, which ctest reports as success"; exit 1 ;;
+            *Skipped*) echo "a test SKIPPED, which ctest reports as success"; exit 1 ;;
           esac
           # Require the architecture-specific boot checks and the debugger's view of the images.
           tests/ci/ctest_named.sh 'x86_64_no_vector|x86_64_entry_cld|x86_64_weak_undef_selftest|^qemu_x86_64_gdb_space$' \
             --preset qemu-x86_64 --no-tests=error --output-on-failure
-          # Require the default system's gates.
+          # Require the default system's tests.
           out=$(tests/ci/ctest_named.sh '^qemu_x86_64_sysdefault$|qemu_x86_64_sysdefault_spin|qemu_x86_64_sysdefault_no_eh_runtime|qemu_x86_64_sysdefault_no_driver_path|^qemu_x86_64_cxxterm$|qemu_x86_64_cxxterm_eh_control|qemu_x86_64_system_link_none|qemu_x86_64_system_link_two|qemu_x86_64_system_link_program|qemu_x86_64_system_link_refused|qemu_x86_64_system_link_notool|qemu_x86_64_system_link_nocc|qemu_x86_64_system_link_rerun|qemu_x86_64_system_link_noheap|qemu_x86_64_system_link_capture' \
             --preset qemu-x86_64 --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
           case "$out" in
-            *Skipped*) echo "a default system gate SKIPPED, which ctest reports as success"; exit 1 ;;
+            *Skipped*) echo "a default system test SKIPPED, which ctest reports as success"; exit 1 ;;
           esac
 
   # Above one core, apart from the one-core job so that neither runs into the job bound.
@@ -989,19 +989,19 @@ jobs:
       - name: x86_64 (q35) two cores
         run: |
           command -v qemu-system-x86_64 >/dev/null 2>&1 \
-            || { echo "qemu-system-x86_64 is absent: every image gate below would SKIP and ctest would still exit 0"; exit 1; }
+            || { echo "qemu-system-x86_64 is absent: every image test below would SKIP and ctest would still exit 0"; exit 1; }
           cmake --preset qemu-x86_64-smp2
           cmake --build build/qemu-x86_64-smp2
           ctest --test-dir build/qemu-x86_64-smp2 -E "_gdb_(main|space)$" -LE tree --no-tests=error --output-on-failure
-          # Require the golden system, the default system's and the out-of-tree app's gates, and the
+          # Require the golden system, the default system's and the out-of-tree app's tests, and the
           # peer-core read of a dead thread's stack.
           out=$(tests/ci/ctest_named.sh 'qemu_x86_64_golden_system|qemu_x86_64_deadstack|qemu_x86_64_restart_witness|^qemu_x86_64_sysdefault$|qemu_x86_64_sysdefault_spin|qemu_x86_64_oot_mcu_app|qemu_x86_64_system_link_none|qemu_x86_64_system_link_two|qemu_x86_64_system_link_program|qemu_x86_64_system_link_refused|qemu_x86_64_system_link_notool|qemu_x86_64_system_link_nocc|qemu_x86_64_system_link_rerun|qemu_x86_64_system_link_noheap|qemu_x86_64_system_link_capture' \
             --test-dir build/qemu-x86_64-smp2 --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
           case "$out" in
-            *Skipped*) echo "a required two-core gate SKIPPED, which ctest reports as success"; exit 1 ;;
+            *Skipped*) echo "a required two-core test SKIPPED, which ctest reports as success"; exit 1 ;;
           esac
-      - name: x86_64 (q35) four, eight and twelve cores, built with their host gates
+      - name: x86_64 (q35) four, eight and twelve cores, built with their host tests
         run: |
           for p in qemu-x86_64-smp4 qemu-x86_64-smp8 qemu-x86_64-smp12; do
             cmake --preset "$p"
@@ -1038,7 +1038,7 @@ jobs:
             --test-dir build/qemu-x86_64-smp2root1 --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
           case "$out" in
-            *Skipped*) echo "the AP first-thread gate SKIPPED, which ctest reports as success"; exit 1 ;;
+            *Skipped*) echo "the AP first-thread test SKIPPED, which ctest reports as success"; exit 1 ;;
           esac
 
   # Build LX6 application and selftest images. Run host checks for the
@@ -1063,7 +1063,7 @@ jobs:
         run: |
           uv tool install esptool==5.3.1
           echo "$(uv tool dir --bin)" >> "$GITHUB_PATH"
-      - name: xtensa lx6 (esp32-wroom) build gate
+      - name: xtensa lx6 (esp32-wroom) build
         run: |
           esptool version
           cmake --preset esp32-wroom
@@ -1074,7 +1074,7 @@ jobs:
             || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
           case "$out" in
-            *Skipped*) echo "the esp segments gate SKIPPED, which ctest reports as success"; exit 1 ;;
+            *Skipped*) echo "the esp segments test SKIPPED, which ctest reports as success"; exit 1 ;;
           esac
           tests/ci/ctest_named.sh 'esp32_wroom_system_link_none|esp32_wroom_system_link_two|esp32_wroom_system_link_program|esp32_wroom_system_link_refused|esp32_wroom_system_link_notool|esp32_wroom_system_link_nocc|esp32_wroom_system_link_rerun|esp32_wroom_system_link_noheap|esp32_wroom_system_link_capture' --test-dir build/esp32-wroom --no-tests=error --output-on-failure
       - name: xtensa lx6 on both cores
@@ -1144,10 +1144,10 @@ jobs:
       - run: cmake --preset ${{ matrix.preset }}
       - run: cmake --build --preset ${{ matrix.preset }}
       # Run host checks here; qemu-telem image tests are selected separately below. Require the
-      # system link gates of each preset built.
+      # system link tests of each preset built.
       - name: host checks
         run: |
-          # The system link gates <preset> registers: its default composition's refusals.
+          # The system link tests <preset> registers: its default composition's refusals.
           links() { # <preset>
             case "$1" in
               frdmk64f-flat) printf '%s' 'frdmk64f_system_link_none|frdmk64f_system_link_two|frdmk64f_system_link_program|frdmk64f_system_link_refused|frdmk64f_system_link_notool|frdmk64f_system_link_nocc|frdmk64f_system_link_rerun|frdmk64f_system_link_noheap|frdmk64f_system_link_capture' ;;
@@ -1159,7 +1159,7 @@ jobs:
               due) printf '%s' 'due_system_link_none|due_system_link_two|due_system_link_program|due_system_link_refused|due_system_link_notool|due_system_link_nocc|due_system_link_rerun|due_system_link_noheap|due_system_link_capture' ;;
               teensy41-flat) printf '%s' 'teensy41_system_link_none|teensy41_system_link_two|teensy41_system_link_program|teensy41_system_link_refused|teensy41_system_link_notool|teensy41_system_link_nocc|teensy41_system_link_rerun|teensy41_system_link_noheap|teensy41_system_link_capture' ;;
               pizero2350-flat) printf '%s' 'pizero2350_system_link_none|pizero2350_system_link_two|pizero2350_system_link_program|pizero2350_system_link_refused|pizero2350_system_link_notool|pizero2350_system_link_nocc|pizero2350_system_link_rerun|pizero2350_system_link_noheap|pizero2350_system_link_capture' ;;
-              *) echo "no system link gates are listed for $1" >&2; return 1 ;;
+              *) echo "no system link tests are listed for $1" >&2; return 1 ;;
             esac
           }
           ctest --test-dir build/${{ matrix.preset }} -L host -LE tree --no-tests=error --output-on-failure
@@ -1201,12 +1201,12 @@ jobs:
           family: arm-none-eabi
       - run: cmake --preset ${{ matrix.preset }}
       - run: cmake --build --preset ${{ matrix.preset }}
-      # Require the system link gates of each preset built; on xmc4800-relax also the golden
+      # Require the system link tests of each preset built; on xmc4800-relax also the golden
       # system and the restart witness linked against the package of a board no emulator runs,
       # and a default package that carries no test driver.
       - name: checks
         run: |
-          # The system link gates <preset> registers: its default composition's refusals.
+          # The system link tests <preset> registers: its default composition's refusals.
           links() { # <preset>
             case "$1" in
               frdmk64f) printf '%s' 'frdmk64f_system_link_none|frdmk64f_system_link_two|frdmk64f_system_link_program|frdmk64f_system_link_refused|frdmk64f_system_link_notool|frdmk64f_system_link_nocc|frdmk64f_system_link_rerun|frdmk64f_system_link_noheap|frdmk64f_system_link_capture|frdmk64f_system_link_heap' ;;
@@ -1216,7 +1216,7 @@ jobs:
               pizero2350) printf '%s' 'pizero2350_system_link_none|pizero2350_system_link_two|pizero2350_system_link_program|pizero2350_system_link_refused|pizero2350_system_link_notool|pizero2350_system_link_nocc|pizero2350_system_link_rerun|pizero2350_system_link_noheap|pizero2350_system_link_capture|pizero2350_system_link_heap' ;;
               teensy41) printf '%s' 'teensy41_system_link_none|teensy41_system_link_two|teensy41_system_link_program|teensy41_system_link_refused|teensy41_system_link_notool|teensy41_system_link_nocc|teensy41_system_link_rerun|teensy41_system_link_noheap|teensy41_system_link_capture|teensy41_system_link_heap' ;;
               picopi) printf '%s' 'picopi_system_link_none|picopi_system_link_two|picopi_system_link_program|picopi_system_link_refused|picopi_system_link_notool|picopi_system_link_nocc|picopi_system_link_rerun|picopi_system_link_noheap|picopi_system_link_capture|picopi_system_link_heap' ;;
-              *) echo "no system link gates are listed for $1" >&2; return 1 ;;
+              *) echo "no system link tests are listed for $1" >&2; return 1 ;;
             esac
           }
           ctest --test-dir build/${{ matrix.preset }} -LE tree --no-tests=error --output-on-failure

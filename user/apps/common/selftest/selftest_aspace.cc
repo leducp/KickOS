@@ -116,7 +116,10 @@ namespace selftest
         {
             return true;
         }
-        (void)w.cancel_for(KOS_CANCEL_SLAY, std::chrono::microseconds{ARM_SLAY_US});
+        if (w.cancel(KOS_CANCEL_SLAY) == 0)
+        {
+            (void)w.join_for(std::chrono::microseconds{ARM_SLAY_US});
+        }
         return false;
     }
 
@@ -417,7 +420,7 @@ namespace selftest
             if (last == 0)
             {
                 admitted++;
-                (void)kos_task_slay(t, after_us(STALL_TOLERANT_US));
+                (void)slay_dead(t, after_us(STALL_TOLERANT_US));
             }
         }
         rep->w[0] = admitted;
@@ -436,7 +439,7 @@ namespace selftest
             p.block = mine;
             p.size = SNP_BLK;
             rep->w[4] = kos_task_create(prog, &p, &ok);
-            rep->w[5] = kos_task_slay(ok, after_us(STALL_TOLERANT_US));
+            rep->w[5] = slay_dead(ok, after_us(STALL_TOLERANT_US));
         }
         (void)kos_handle_close(prog);
     }
@@ -869,7 +872,7 @@ namespace selftest
         {
             (void)kos_reply(opts.info.reply_cap, &dead, sizeof(dead));
         }
-        TAP_CHECK(task_end(&t) == 0);
+        TAP_CHECK(task_end(&t, STALL_TOLERANT_US, note) == 0);
         // The grandchild's task, and the dead task's domain it held, go once it has its answer.
         TAP_CHECK(spaces_back(spaces0));
         tap::diag("space capability: %d while its task lived, %d once it was dead",
@@ -1713,7 +1716,7 @@ namespace selftest
             rep[LR_RC] = static_cast<uint64_t>(static_cast<uint32_t>(-rc));
             if (rc == 0)
             {
-                (void)kos_task_slay(t, after_us(STALL_TOLERANT_US));
+                (void)slay_dead(t, after_us(STALL_TOLERANT_US));
             }
             rep[LR_SPACES1] = mem_count(KOS_MEM_SPACES_HELD);
             rep[LR_FRAMES1] = mem_count(KOS_MEM_FRAMES_FREE);
@@ -1803,7 +1806,7 @@ namespace selftest
             rc = kos_task_create(prog, &p, &t);
             if (rc == 0)
             {
-                (void)kos_task_slay(t, after_us(STALL_TOLERANT_US));
+                (void)slay_dead(t, after_us(STALL_TOLERANT_US));
             }
             (void)kos_handle_close(prog);
         }
@@ -2100,7 +2103,8 @@ namespace selftest
         TAP_CHECK(PeerRun(client, at_b.s).caps(ccaps, 1).block(bb, PI_BLK).bound(seated).start(&tb)
                   == 0);
         TAP_CHECK(peer_dead_status(ta) == 0 and peer_dead_status(tb) == 0);
-        TAP_CHECK(task_end(&ta) == 0 and task_end(&tb) == 0);
+        TAP_CHECK(task_end(&ta, STALL_TOLERANT_US, seated) == 0
+                  and task_end(&tb, STALL_TOLERANT_US, seated) == 0);
         run->oa = sa;
         run->ob = sb;
         run->ran = true;
@@ -2562,13 +2566,13 @@ namespace selftest
         out->slain[0] = 0;
         if (out->spare == 0)
         {
-            out->slain[0] = kos_task_slay(t, after_us(STALL_TOLERANT_US));
+            out->slain[0] = slay_dead(t, after_us(STALL_TOLERANT_US));
         }
         out->bus_master = PeerRun("nop").windows(&g_wa_bm_dev, 1).start(&t, prog);
         out->slain[1] = 0;
         if (out->bus_master == 0)
         {
-            out->slain[1] = kos_task_slay(t, after_us(STALL_TOLERANT_US));
+            out->slain[1] = slay_dead(t, after_us(STALL_TOLERANT_US));
         }
         (void)kos_handle_close(prog);
     }
@@ -3448,11 +3452,8 @@ namespace selftest
         char inside = 0;
         TAP_CHECK(report_await(trigger, &inside, 0));
         // Its main has not run: the entry is parked in the constructor walk.
-        int const slain = kos_task_slay(t, after_us(STALL_TOLERANT_US));
-        if (slain == 0)
-        {
-            t = KOS_TASK_NONE;
-        }
+        int const slain = slay_dead(t, after_us(STALL_TOLERANT_US));
+        t = KOS_TASK_NONE;
         tap::diag("task start: a starter slain inside its constructors: slay %d, main ran %lu",
                   slain, static_cast<unsigned long>(out[DS_ENTRY]));
         TAP_CHECK(slain == 0);

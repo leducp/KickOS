@@ -213,7 +213,7 @@ int main(int, char**)
         } while (rc == -KOS_ETIMEDOUT);
         // Drops main's hold on a group that is already dead, so the slot goes back here rather
         // than at main's own exit.
-        (void)kos_task_slay(victim, KOS_POLL);
+        (void)kos_task_slay(victim);
         if (rc != 0)
         {
             break;

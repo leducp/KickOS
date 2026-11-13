@@ -293,13 +293,12 @@ namespace kickos
             return pool_span(kickos_kernel_pools.word_records, kickos_kernel_pools.thread_slots);
         }
         WordRecord* word_active = nullptr;
-        // Every thread parked on a task's death (WAIT_TASK_EMPTY), linked through its `link`: on
-        // death_dirty while its task's threads owe a recompute of what it lends them.
-        HeadList death_waiters;
-        HeadList death_dirty;
-        // The armed INSTANCE watches, linked through their capability entries
-        // (kernel/task/start_watch.cc): 0 for none.
-        uint32_t start_watches = 0;
+        // Per declaration, by its dense index, the head of its INSTANCE watches, linked through
+        // their capability entries (kernel/task/start_watch.cc).
+        PoolSpan<uint16_t> start_watches() const
+        {
+            return pool_span(kickos_kernel_pools.start_watches, kickos_kernel_pools.decl_count);
+        }
         // Endpoint (IPC rendezvous) pool and its object-side refcount, owned by the cap layer:
         // how many caps name slot i. alloc sets 1, delegate bumps, close decrements, and 0
         // frees the slot; obj_ref_inc refuses with -KOS_EOVERFLOW at the uint8_t ceiling rather
@@ -312,10 +311,6 @@ namespace kickos
         uint16_t hold_sweep = 0;
         // Per core: a switch booked for a later exception has not landed yet (ktime_land).
         uint8_t switch_landing_owed[KICKOS_KERNEL_CORES] = {};
-        // Inside death_leave_batch_begin..end each death-wait leave defers its lend to the end.
-        bool death_leave_batch = false;
-        bool death_leave_owed = false;
-        uint8_t death_leave_top = 0;
         // Idle's TCB; the thread pool below never seats it. Its stack comes from the arena
         // (boot_stack_alloc).
         Thread idle_tcb;

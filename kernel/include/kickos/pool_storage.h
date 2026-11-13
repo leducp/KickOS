@@ -80,6 +80,8 @@ namespace kickos
         KICKOS_POOL_LAYOUT_FIELD(h, KernelPools, tasks);
         KICKOS_POOL_LAYOUT_FIELD(h, KernelPools, task_links);
         KICKOS_POOL_LAYOUT_FIELD(h, KernelPools, task_count);
+        KICKOS_POOL_LAYOUT_FIELD(h, KernelPools, start_watches);
+        KICKOS_POOL_LAYOUT_FIELD(h, KernelPools, decl_count);
         KICKOS_POOL_LAYOUT_FIELD(h, KernelPools, domains);
         KICKOS_POOL_LAYOUT_FIELD(h, KernelPools, domain_count);
         KICKOS_POOL_LAYOUT_FIELD(h, KernelPools, endpoints);
@@ -171,9 +173,19 @@ namespace kickos
         }
     };
 
+    // An array of `n` elements, one where `n` is 0.
+    constexpr int pool_rows(int n)
+    {
+        if (n < 1)
+        {
+            return 1;
+        }
+        return n;
+    }
+
     template <int Threads, int Tasks, int Domains, int Endpoints, int Notifies, int IrqBindings,
               int FrameRuns, int RamOwners, uint32_t CapSlots, uint32_t DirLength,
-              uint32_t RootWidth>
+              uint32_t RootWidth, int Decls>
     struct PoolStorage
     {
         static constexpr uint32_t DIR_LENGTH = DirLength;
@@ -194,6 +206,8 @@ namespace kickos
         static_assert(Tasks <= KICKOS_TASK_SLOT_CEILING and KICKOS_TASK_SLOT_CEILING < UINT8_MAX,
                       "Task::image holds an image index in a byte, and a creator's list an "
                       "index plus one");
+        static_assert(Decls >= 0 and Decls <= Tasks,
+                      "each declaration owns a record of the task pool");
         static_assert(Domains > 2,
                       "the domain pool must seat both immortal singletons and still leave a "
                       "slot to hand out");
@@ -271,6 +285,7 @@ namespace kickos
         uint16_t thread_gen_hi[Threads] = {};
         ThreadLinks thread_links[Threads] = {};
         TaskLinks task_links[Tasks] = {};
+        uint16_t start_watches[pool_rows(Decls)] = {};
 
         // What one machine keeps once, however many kernel instances it hosts: the arch's
         // residency rows, a row per domain slot.
@@ -317,6 +332,8 @@ namespace kickos
             d.tasks = first->tasks;
             d.task_links = first->task_links;
             d.task_count = Tasks;
+            d.start_watches = first->start_watches;
+            d.decl_count = Decls;
             d.domains = first->domains;
             d.domain_count = Domains;
             d.endpoints = first->endpoints.store();
@@ -354,20 +371,21 @@ namespace kickos
 #define KICKOS_POOLS_STR(x) KICKOS_POOLS_STR_(x)
 
 // The pools of one system, each count a figure the composer emitted: the object pools, the
-// capability slab's slots, a directory row's chunks and the init's table width, then the init's
-// budgets in enum kos_budget_kind order. In one TU of the system's kernel archive: the storage,
-// the one descriptor the kernel reads, the layout witness, and the absolute symbol
-// kickos_pool_stacks, the default stacks the chip script's arena assert prices
+// capability slab's slots, a directory row's chunks, the init's table width and the declarations,
+// then the init's budgets in enum kos_budget_kind order. In one TU of the system's kernel
+// archive: the storage, the one descriptor the kernel reads, the layout witness, and the
+// absolute symbol kickos_pool_stacks, the default stacks the chip script's arena assert prices
 // (<boot_arena.ld.h>): every slot's but root's, whose stack is the boot replay's.
 #define KICKOS_SYSTEM_POOLS(threads, tasks, domains, endpoints, notifies, irq_bindings,      \
-                            frame_runs, ram_owners, cap_slots, cap_dir, root_width, ...)      \
+                            frame_runs, ram_owners, cap_slots, cap_dir, root_width, decls,    \
+                            ...)                                                              \
     namespace kickos                                                                          \
     {                                                                                         \
         namespace                                                                             \
         {                                                                                     \
             using SystemPools = PoolStorage<threads, tasks, domains, endpoints, notifies,      \
                                             irq_bindings, frame_runs, ram_owners, cap_slots,   \
-                                            cap_dir, root_width>;                              \
+                                            cap_dir, root_width, decls>;                       \
             constinit SystemPools system_pools[KICKOS_MAX_INSTANCES];                         \
             KICKOS_POOLS_SHARED_DEFINE(SystemPools)                                           \
             constexpr uint32_t system_init_budgets[] = {__VA_ARGS__};                         \

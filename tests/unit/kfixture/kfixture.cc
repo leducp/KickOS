@@ -24,6 +24,7 @@
 #include <kickos/irqlock.h>
 #include <kickos/kernel.h>
 #include <kickos/list.h>
+#include <kickos/notify.h>
 #include <kickos/sched.h>
 #include <kickos/sync.h>
 #include <kickos/time.h>
@@ -877,15 +878,28 @@ namespace kickos
             m->waiters.push_back(&w->link);
         }
 
-        void park_death_waiter(Thread* w, Task* t)
+        void park_watch_waiter(Thread* w, Task* t)
         {
+            // Bound as notify_bind leaves it, the bind's reference the only one.
+            Kernel& k = kernel();
+            int const i = k.notifies.alloc(w->task);
+            Notification* const n = k.notifies.at(i);
+            KICKOS_ASSERT(n != nullptr);
+            *n = Notification{};
+            n->bound = w;
+            k.notifies.refs()[i] = 1;
+            int const obj = k.notifies.handle_for(i);
+            w->notify_bound = notify_bound_store(obj);
+            t->marks = static_cast<uint8_t>(t->marks | KOS_TASK_ENDED);
+            IrqLock lock;
+            task_watch_arm(t, obj, 0u, KOS_TASK_DEAD, lock);
             testfix::seat_blocked(w);
             detach_ready(w);
+            n->accept = 1u;
             w->wait_queue = nullptr;
-            w->wait_kind = WAIT_TASK_EMPTY;
-            w->wait_obj = t;
+            w->wait_kind = WAIT_NOTIFY;
+            w->wait_obj = n;
             w->wait_result = WAIT_RESULT_POISON;
-            kernel().death_waiters.push(&w->link);
         }
 
         void run_exit(int code)

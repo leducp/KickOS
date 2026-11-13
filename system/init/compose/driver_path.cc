@@ -40,9 +40,38 @@ namespace kickos::init::driver_path
             (void)kickos::kconsole_offer(s, strlen(s));
         }
 
+        // Slays `handle` and waits, until the deadline, for its death on its watch's bit through
+        // `badged`: that wait lends the init's priority to the dying members, and the console's
+        // dark wait the report would park in otherwise lends them nothing. The slay's answer.
+        int slay_and_wait(uint16_t task, kos_task_t handle, kos_cap_t badged)
+        {
+            uint32_t const bit = 1u << (task % 32u);
+            int const armed = kos_watch(KOS_WATCH_TASK, KOS_TASK_DEAD, handle, badged, 0, nullptr);
+            int const slain = kos_task_slay(handle);
+            bool taken = false;
+            if (slain == 0 and armed == 0)
+            {
+                kos_monotonic_t const until = kos::after(kickos::driver::KOS_DRV_HANDOVER_PROBE);
+                uint32_t bits = 0u;
+                // The slay's hold goes at the death, so the handle naming nothing is the death.
+                while (kos_task_state(handle, nullptr) >= 0
+                       and kos_notify_wait(bit, until, &bits) == 0)
+                {
+                    taken = true;
+                }
+            }
+            // The bit is also every other task's that shares it, and the walk's next wake reads a
+            // task's state only where its bit is raised.
+            if (taken)
+            {
+                (void)kos_notify(badged);
+            }
+            return slain;
+        }
+
         // The end of a console's handover: the WAIT the publish seated goes, then a zero-length
         // rendezvous through stdout, bounded by the readiness wait its receiver may sit in first.
-        int handover(Walk& walk, uint16_t task, kos_task_t* handle)
+        int handover(Walk& walk, uint16_t task, kos_task_t* handle, kos_cap_t badged)
         {
             TaskRecord& r = walk.record(task);
             (void)kos_cap_narrow(r.endpoint, kickos::driver::KOS_DRV_HANDOVER_KEPT);
@@ -53,8 +82,8 @@ namespace kickos::init::driver_path
             {
                 return 0;
             }
-            // Its end is what gives the kernel its console back, so the report reaches the wire.
-            if (kos_task_slay(*handle, kos::after(kickos::driver::KOS_DRV_HANDOVER_PROBE)) == 0)
+            // Its death is what gives the kernel its console back, so the report reaches the wire.
+            if (slay_and_wait(task, *handle, badged) == 0)
             {
                 *handle = KOS_TASK_NONE;
             }
@@ -152,7 +181,7 @@ namespace kickos::init::driver_path
             walk.check(walk.watch(task, handle, badged), "kos_watch", task);
             if (narrows_at_handover(walk, task))
             {
-                rc = handover(walk, task, &handle);
+                rc = handover(walk, task, &handle, badged);
             }
         }
         else if (rc != PARKED and narrows_at_handover(walk, task))

@@ -1199,25 +1199,39 @@ namespace
         EXPECT_EQ(fake::console(), "init: `sensor` is dead and released\n");
     }
 
-    TEST_F(Walk, a_failed_start_whose_slay_does_not_empty_waits_for_its_death)
+    // The start is counted dead once the handover's wait for the death gives up; the members still
+    // sweeping are in the way of a restart, which waits on the instance's watch.
+    TEST_F(Walk, a_failed_start_whose_members_still_sweep_is_counted_dead_past_its_handover_s_wait)
     {
         // A console driver's handover fails after its task exists; a user task's start never does.
-        fake::Config c = harness::config(systems::find("golden_xmc"));
-        c.console_receives = false;
-        use("golden_xmc", c);
-        fake::refuse("kos_task_slay", -KOS_ETIMEDOUT, 2);
+        harness::Patched patched{systems::find("golden_xmc")};
+        patched.task("console").restart_max = 1u;
+        use(patched);
+        fake::set_console_receives(false);
+        fake::on_spawn = [](fake::Thread const&)
+        {
+            if (fake::instance("console") != nullptr)
+            {
+                fake::stall("console");
+            }
+        };
         fake::script({
+            // The handover's wait for the death, to its deadline.
+            step::nothing(),
             [this]
             {
-                // Held, not yet counted, and not started again.
-                EXPECT_EQ(status("console").deaths, 0u);
-                ASSERT_EQ(fake::slays().size(), 2u) << "the handover's, then the failed start's";
-                fake::die_task(static_cast<kos_task_t>(fake::slays()[1].args[0]));
+                EXPECT_EQ(status("console").deaths, 1u) << "not counted once the handover gave up";
+                EXPECT_EQ(fake::spawned("console").size(), 1u) << "restarted over its sweeping members";
+                ASSERT_EQ(fake::slays().size(), 1u) << "the handover's, the failed start holding no handle";
+                fake::on_spawn = nullptr;
+                fake::sweep("console");
             },
+            step::nothing(),
         });
         expect_idle(run());
-        EXPECT_EQ(status("console").deaths, 1u) << "counted once, at its death";
-        EXPECT_EQ(fake::releases().size(), 1u);
+        EXPECT_EQ(fake::spawned("console").size(), 2u) << "the restart did not follow the sweep";
+        EXPECT_EQ(status("console").deaths, 2u) << "each failed start counted once";
+        EXPECT_TRUE(fake::releases().empty()) << "a slain task released again";
     }
 
     // --- the generation ----------------------------------------------------------------------

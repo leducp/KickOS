@@ -195,8 +195,9 @@ namespace selftest
     static_assert(KICKOS_SELFTEST_PEERS >= 0 and KICKOS_SELFTEST_PEERS <= SELFTEST_PEERS);
     // The handle main holds on stpeer for the run, or KOS_CAP_NONE where no peer is declared.
     extern KICKOS_SELFTEST_LOCAL kos_program_t g_peer_prog;
-    // The bit a peer start's instance watch raises on the notification its creating thread is
-    // bound to: an arm passing that notification raises nothing else on it.
+    // The bit a peer start's instance watch, or a slay's death watch (slay_dead), raises on the
+    // notification its thread is bound to: an arm passing that notification raises nothing else
+    // on it.
     constexpr uint32_t PEER_START_BIT = 31;
     // Starts the lowest-numbered of peer0 to peer3 not live with `p` through `prog`, waiting out
     // one whose last incarnation is still dying instead of passing it, or p.instance, or for a
@@ -335,11 +336,11 @@ namespace selftest
 #define TAP_ADD_PINNED(name, ...) TAP_ADD(name, __VA_ARGS__)
 #endif
 
-    // Releases what an arm holds however it returns, a failing TAP_CHECK included: unlocks and
-    // unbinds, slays tasks, joins threads, slays the ones the joins left, unmaps, and closes
+    // Releases what an arm holds however it returns, a failing TAP_CHECK included: unlocks, slays
+    // tasks, unbinds, joins threads, slays the ones the joins left, unmaps, and closes
     // capabilities last: a close wakes no waiter, and an unmap under a live thread of main's
     // task faults the whole task. The joins share one bound, each slay waits at most
-    // ARM_SLAY_US, and a slay that does not finish is reported and its handle kept.
+    // ARM_SLAY_US for its end, and one that does not end is reported.
     // Declare it after every variable it holds, and register through TAP_HOLD.
     // A crowd of one thread per kernel core and one more, beside a capability.
     constexpr int arm_hold_max()
@@ -423,6 +424,14 @@ namespace selftest
         // main's last wait: every thread joined, all within the hold's one bound. A thread that
         // exited and whose slot a later spawn took counts as joined.
         KICKOS_SELFTEST_LOCAL bool joined();
+        // main's last wait on round players, each storing its count in rounds[i] every round:
+        // every thread joined, however long, while the sum of rounds[0..n) moves within each
+        // STALL_TOLERANT_US. A whole bound without a round prints every player's rounds, and its
+        // stalls[i] where `stalls` is given, and answers false.
+        KICKOS_SELFTEST_LOCAL bool joined_rounds(Atomic<uint32_t, Order::RELAXED> const* rounds,
+                                                 int n,
+                                                 Atomic<uint32_t, Order::RELAXED> const* stalls
+                                                 = nullptr);
 
     private:
         enum class Kind : uint8_t
@@ -448,6 +457,7 @@ namespace selftest
             Kind kind;
         };
         KICKOS_SELFTEST_LOCAL Held* add(Kind kind, kos_cap_t* c);
+        KICKOS_SELFTEST_LOCAL bool joined_until(kos_monotonic_t deadline);
         KICKOS_SELFTEST_LOCAL void release();
 
         Held held_[MAX];
@@ -477,10 +487,9 @@ namespace selftest
     }
 #endif
 
-    // A bounded POSITIVE edge. A helper waiting on one reports whether the state was REACHED and
-    // never that it was not: an absence has no event to wait on, so no arm may read a refusal
-    // that outlived the bound as a verdict about ordering.
-    constexpr uint64_t IRQ_EDGE_BUDGET_NS = 2000000000ull;
+    // A bounded POSITIVE edge, STALL_TOLERANT_US at most. A helper waiting on one reports whether
+    // the state was REACHED and never that it was not: an absence has no event to wait on, so no
+    // arm may read a refusal that outlived the bound as a verdict about ordering.
     constexpr uint64_t IRQ_EDGE_POLL_NS = 100000ull;
 
     // A retired line comes back with its publication record's grace period, which ends when
@@ -507,13 +516,20 @@ namespace selftest
     // main_back gives main its own priority again. False when the change was refused.
     KICKOS_SELFTEST_LOCAL bool main_above(uint8_t prio);
     KICKOS_SELFTEST_LOCAL bool main_back();
-    // Joins *h within `bound_us` and slays it past that; answers the join. The handle is dropped
-    // once the thread is gone, and kept for the arm's ArmHold after a refused slay, which fails
-    // the arm.
+    // Joins *h within `bound_us` and slays it past that, joining it again; answers the first join.
+    // The handle is dropped once the thread is gone, and kept for the arm's ArmHold after a slay
+    // that does not end it, which fails the arm.
     KICKOS_SELFTEST_LOCAL int thread_end(kos::thread::Handle* h,
                                          uint32_t bound_us = STALL_TOLERANT_US);
-    // Slays *t within `bound_us`; on 0 it names no task, and a refusal fails the arm.
-    KICKOS_SELFTEST_LOCAL int task_end(kos_task_t* t, uint32_t bound_us = STALL_TOLERANT_US);
+    // kos_task_slay of `t`, then its death waited until `until` through a KOS_WATCH_TASK watch:
+    // on PEER_START_BIT of `note` where the calling thread is bound to it, else on a notification
+    // of its own (kickos::apps::slay_until_dead).
+    KICKOS_SELFTEST_LOCAL int slay_dead(kos_task_t t, kos_monotonic_t until,
+                                        kos_cap_t note = KOS_CAP_NONE);
+    // slay_dead of *t within `bound_us`, after which *t names no task; any answer but 0 fails the
+    // arm.
+    KICKOS_SELFTEST_LOCAL int task_end(kos_task_t* t, uint32_t bound_us = STALL_TOLERANT_US,
+                                       kos_cap_t note = KOS_CAP_NONE);
     // main's free capability slots, or -1 where an object pool ran out before the table did.
     KICKOS_SELFTEST_LOCAL long cap_census();
     // What an arm holds at once: workers beside main, tasks out of the task pool, objects out of

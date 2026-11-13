@@ -230,17 +230,14 @@ namespace kickos
     }
 
     // No clock runs here; deadlines are recorded but never expire.
-    bool ktime_limit_passed(WaitLimit)
+    bool ktime_limit_word_passed(uint64_t, uint32_t)
     {
         return false;
     }
 
-    void ktime_limit_arm(Thread* t, WaitLimit limit, Held)
+    void ktime_limit_word_arm(Thread* t, uint64_t, uint32_t, Held)
     {
-        if (not limit.none())
-        {
-            t->on_timer = true;
-        }
+        t->on_timer = true;
     }
 
     // No comparator here: a switch an interrupt books has nothing to reprogram at its exit.
@@ -363,7 +360,7 @@ namespace kickos
     }
 
     // kernel/notify/watch.cc's TASK half: no task is nameable here.
-    Task* task_watch_source(Thread*, kos_task_t, int* err)
+    Task* task_resolve_created(Thread*, kos_task_t, int* err)
     {
         *err = KOS_EBADF;
         return nullptr;

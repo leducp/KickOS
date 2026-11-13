@@ -270,6 +270,6 @@ int main(int, char**)
                  "does not translate");
 #endif
 
-    (void)kos_task_slay(hog, kos::after(CALL_BOUND));
+    (void)kickos::apps::slay_until_dead(hog, kos::after(CALL_BOUND));
     return harness.verdict();
 }

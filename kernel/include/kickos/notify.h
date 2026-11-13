@@ -182,8 +182,8 @@ namespace kickos
     // `w` parked or left its park with a window open on its bound notification, or its priority
     // moved while parked: every task a watch on whose death raises there is owed a recompute
     // (task_watch_lend_owe), and the mark goes where there is none. Whether one was owed. O(the
-    // task pool + the armed INSTANCE watches) where the object is marked, else O(1). Caller holds
-    // IrqLock.
+    // task pool + the declarations + the INSTANCE watches armed on the dying ones) where the
+    // object is marked, else O(1). Caller holds IrqLock.
     bool notify_lend_owe(Thread* w);
 
 #if KICKOS_KERNEL_CORES > 1

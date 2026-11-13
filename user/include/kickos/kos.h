@@ -581,32 +581,12 @@ namespace kos::thread
         {
             return err_;
         }
-        // See kos_thread_cancel: the overload with no time waits for the thread to be gone, a
-        // duration of zero or less is KOS_POLL and only raises the cancel, and a positive one,
-        // however short, is a wait that may time out. Returns -KOS_EBADF on a failed create:
-        // KOS_THREAD_NONE names nothing to cancel.
+        // Raise the cancel and return (see kos_thread_cancel); join() waits for the end.
+        // Returns -KOS_EBADF on a failed create: KOS_THREAD_NONE names nothing to cancel.
         int cancel(enum kos_cancel kind) const
         {
-            return kos_thread_cancel(id_, kind, KOS_NEVER);
+            return kos_thread_cancel(id_, kind);
         }
-        template <class Rep, class Period>
-        int cancel_for(enum kos_cancel kind, std::chrono::duration<Rep, Period> d) const
-        {
-            kos_duration_t const wait = to_kos(d);
-            if (wait.ns <= 0)
-            {
-                return kos_thread_cancel(id_, kind, KOS_POLL);
-            }
-            return kos_thread_cancel(id_, kind, kos_after(kos_monotonic_now(), wait));
-        }
-#if __STDC_HOSTED__
-        template <class Duration>
-        int cancel_until(enum kos_cancel kind,
-                         std::chrono::time_point<std::chrono::steady_clock, Duration> t) const
-        {
-            return kos_thread_cancel(id_, kind, to_kos(t));
-        }
-#endif
         // Wait for the thread to be gone (see kos_thread_join): 0 also for a thread that
         // had already exited, and -KOS_EBADF on a failed create.
         int join() const

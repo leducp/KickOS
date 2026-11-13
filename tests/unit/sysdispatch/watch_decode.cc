@@ -133,7 +133,7 @@ namespace kickos
                     uint16_t const gen = task_gen(task_);
                     {
                         IrqLock lock;
-                        task_report_death(task_, gen);
+                        task_report_death(task_, gen, lock);
                     }
                     EXPECT_EQ(pending(), 1u << bit);
                 }
@@ -146,7 +146,7 @@ namespace kickos
                         task_stop(task_, lock);
                     }
                     IrqLock lock;
-                    task_report_death(task_, gen);
+                    task_report_death(task_, gen, lock);
                 }
 
                 Thread* creator_ = nullptr;
@@ -251,7 +251,7 @@ namespace kickos
             uint16_t const gen = task_gen(task_);
             {
                 IrqLock lock;
-                task_report_death(task_, gen);
+                task_report_death(task_, gen, lock);
             }
             EXPECT_EQ(pending(), 1u) << "the death was missed";
         }
@@ -266,7 +266,7 @@ namespace kickos
             uint16_t const gen = task_gen(task_);
             {
                 IrqLock lock;
-                task_report_death(task_, gen);
+                task_report_death(task_, gen, lock);
             }
             EXPECT_EQ(pending(), 0u) << "the death raised the end a second time";
         }
@@ -290,7 +290,7 @@ namespace kickos
             uint16_t const gen = task_gen(task_);
             {
                 IrqLock lock;
-                task_report_death(task_, gen);
+                task_report_death(task_, gen, lock);
             }
             EXPECT_EQ(pending(), 1u) << "a DEAD watch missed the death";
         }
@@ -302,7 +302,7 @@ namespace kickos
             uint16_t const gen = task_gen(task_);
             {
                 IrqLock lock;
-                task_report_death(task_, gen);
+                task_report_death(task_, gen, lock);
             }
             EXPECT_EQ(pending(), 1u);
         }

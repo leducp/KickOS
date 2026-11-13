@@ -12,7 +12,7 @@ kickos_add_kseam(kickos_kseam_ipc_smp
 kickos_add_unit_test(NAME fused_wake SOURCES owed_set.cc
   LIBRARIES kickos_kseam_ipc_smp)
 
-# A death waiter's lend over the real IPC and scheduler at two cores.
-kickos_add_unit_test(NAME death_lend_ipc SOURCES death_lend.cc
+# A watch waiter's lend over the real IPC and scheduler at two cores.
+kickos_add_unit_test(NAME watch_lend_ipc SOURCES watch_lend.cc
   INCLUDES "${PROJECT_SOURCE_DIR}/kernel/syscall"
   LIBRARIES kickos_kseam_ipc_smp)

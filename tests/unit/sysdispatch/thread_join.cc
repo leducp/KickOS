@@ -66,12 +66,11 @@ namespace kickos
                                          kos_u64_hi(deadline), 0, 0));
                 }
 
-                int32_t cancel_as(Thread* caller, uint64_t deadline = KOS_LIMIT_POLL)
+                int32_t cancel_as(Thread* caller)
                 {
                     kernel().current(kickos_kernel_core()) = caller;
                     return static_cast<int32_t>(
-                        syscall_dispatch(KOS_SYS_THREAD_CANCEL, handle_, KOS_CANCEL_KILL,
-                                         kos_u64_lo(deadline), kos_u64_hi(deadline), 0));
+                        syscall_dispatch(KOS_SYS_THREAD_CANCEL, handle_, KOS_CANCEL_KILL, 0, 0, 0));
                 }
 
                 Task* group_ = nullptr;
@@ -101,26 +100,19 @@ namespace kickos
             EXPECT_EQ(join_as(stranger_, 0u), 0);
         }
 
-        // Only KOS_POLL raises the cancel and answers 0: a deadline that passed before the call
-        // raises it too and answers as a wait that timed out.
-        TEST_F(SysThreadJoin, a_cancel_given_a_passed_deadline_raises_and_times_out)
+        // The cancel answers once it is raised, the target still alive; the join is what waits.
+        TEST_F(SysThreadJoin, a_cancel_raises_and_answers_at_once_and_the_join_reports_the_end)
         {
             target_->spawner_tag = kernel().threads.kill_tag_of(joiner_);
-            g_now_ns = 2000;
 
-            EXPECT_EQ(cancel_as(joiner_, 1000u), -KOS_ETIMEDOUT);
-
-            EXPECT_EQ(target_->cancel_kind, CANCEL_KILL);
-        }
-
-        TEST_F(SysThreadJoin, a_cancel_given_kos_poll_raises_and_answers_0_on_a_running_clock)
-        {
-            target_->spawner_tag = kernel().threads.kill_tag_of(joiner_);
-            g_now_ns = 2000;
-
-            EXPECT_EQ(cancel_as(joiner_, KOS_LIMIT_POLL), 0);
+            EXPECT_EQ(cancel_as(joiner_), 0);
 
             EXPECT_EQ(target_->cancel_kind, CANCEL_KILL);
+            EXPECT_EQ(joiner_->wait_kind, WAIT_NONE) << "the cancel parked its caller";
+            EXPECT_NE(target_->state, ThreadState::EXITED) << "the cancel waited for the end";
+            EXPECT_EQ(join_as(joiner_, 0u), -KOS_ETIMEDOUT) << "a join before the end";
+            exit_target();
+            EXPECT_EQ(join_as(joiner_, 0u), 0) << "the join did not report the cancelled end";
         }
     }
 }

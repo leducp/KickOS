@@ -297,13 +297,11 @@ namespace kickos
     // or -KOS_EDEADLK.
     int thread_join(kos_thread_t thread, uint64_t deadline);
 
-    // Cancels a thread the caller spawned with `kind`, a kos_cancel: a kill breaks whatever park
-    // it is in with -KOS_ECANCELED so it reaches its own death point, a slay also claims its next
-    // resume, so it executes no further unprivileged instruction. A passed deadline answers once
-    // the cancel is raised; any other blocks on the terms of thread_join, no caller-held IrqLock,
-    // and answers 0 once the target is gone, -KOS_ETIMEDOUT with the cancel irrevocable and the
-    // capability sweep unfinished.
-    int thread_cancel_call(kos_thread_t thread, uintptr_t kind, uint64_t deadline);
+    // Cancels a thread the caller spawned with `kind`, a kos_cancel, and answers once the cancel
+    // is raised: a kill breaks whatever park it is in with -KOS_ECANCELED so it reaches its own
+    // death point, a slay also claims its next resume, so it executes no further unprivileged
+    // instruction.
+    int thread_cancel_call(kos_thread_t thread, uintptr_t kind);
 #if KICKOS_KERNEL_CORES > 1
     // Placement, and the task's core read: each answers a mask, which cannot reach bit 31, or
     // -KOS_E*. The thread call sets the mask it answers, or reads it for KOS_AFFINITY_QUERY,
@@ -315,9 +313,9 @@ namespace kickos
     // The caller's own base priority. Takes the whole argument word, so a value that would
     // truncate into range is refused rather than read.
     int thread_set_priority(uintptr_t priority);
-    // Cancels a task's whole group, gated on the creator being the caller. A passed deadline drops
-    // the creator's hold and answers at once; any other blocks on the terms of thread_join.
-    int task_slay(kos_task_t task, uint64_t deadline);
+    // Cancels a task's whole group and drops the creator's hold, gated on the creator being the
+    // caller. Never waits.
+    int task_slay(kos_task_t task);
 }
 
 #endif

@@ -236,8 +236,27 @@ namespace
 #if KICKOS_AMP_OWN_IMAGE
     char const BAD_NODE_ON[] = "KickOS: PSCI CPU_ON refused for AMP node %x%x, status 0x%lx\n";
 
-    // The partition primary starts every other node at its image base: node index times the
-    // per-node share, above the partition's base.
+    constexpr uintptr_t AMP_SLICE[KICKOS_AMP_NODES] = KICKOS_AMP_SLICE_LIST;
+
+    // The sum of the slices below `node`, in the form a uniform list folds to node * AMP_SLICE[0].
+    constexpr uintptr_t amp_node_offset(uint32_t node)
+    {
+        uintptr_t offset = static_cast<uintptr_t>(node) * AMP_SLICE[0];
+        for (uint32_t k = 1; k < KICKOS_AMP_NODES; k++)
+        {
+            if (k < node)
+            {
+                offset += AMP_SLICE[k] - AMP_SLICE[0];
+            }
+        }
+        return offset;
+    }
+    static_assert(amp_node_offset(KICKOS_AMP_NODE_ID) == KICKOS_AMP_IMAGE_OFFSET
+                      and amp_node_offset(KICKOS_AMP_NODES) == KICKOS_AMP_SLICES_SIZE,
+                  "the slice list and the geometry this image is linked at disagree");
+
+    // The partition primary starts every other node at its image base, the partition's base plus
+    // the slices below it.
     //
     // Called after the window is seated: a peer released before the shared region is zeroed
     // would publish into bytes its starter is about to clear.
@@ -261,8 +280,7 @@ namespace
                 continue;
             }
             uintptr_t const entry = static_cast<uintptr_t>(KICKOS_AMP_PARTITION_BASE)
-                                    + static_cast<uintptr_t>(node)
-                                          * static_cast<uintptr_t>(KICKOS_AMP_NODE_SHARE);
+                                    + amp_node_offset(node);
             uint64_t const core = kickos_amp_node_core(node);
             long const rc = psci_hvc(PSCI_FN64_CPU_ON, cluster | core, entry, 0);
             if (rc != PSCI_SUCCESS)

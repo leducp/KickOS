@@ -205,7 +205,8 @@ namespace kickos
     // End a round: true when the locked pass was refused and the call goes round again.
     bool presync_end();
     // No lock held: free a staged run the round did not take, which a call that `succeeded`
-    // and was not sent round cannot have.
+    // and was not sent round cannot have. Pokes the INSTANCE watches (start_watch_poke) where
+    // this drops a declaration's stager mark, or where the call took one and did not succeed.
     void presync_release(bool succeeded);
     // The calling thread is leaving inside a call: drop its record and free its stage.
     void presync_exit();

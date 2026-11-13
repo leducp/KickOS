@@ -404,7 +404,7 @@ EOF
   # at 1, so a figure in the table below belongs to an image rather than to the board. A console
   # driver is only in the images whose composition names it, so a green kernel-console run says
   # nothing about the driver.
-  while IFS='|' read -r img _stdout judge args <&4; do
+  while IFS='|' read -r img _stdout judge args _window <&4; do
     [ -n "$img" ] || continue
     wanted "$img" || continue
     take_image "$board" "$img" "$img" "$judge" "$args"
@@ -453,7 +453,7 @@ ROWS
     fi
     rm -f "$LERR"
     note_shipped "$board" "$VAR_IMAGES"
-    while IFS='|' read -r img _stdout judge args <&4; do
+    while IFS='|' read -r img _stdout judge args _window <&4; do
       [ -n "$img" ] || continue
       wanted "$img" || continue
       if [ "$variant" = "$FLAT_VARIANT" ] \

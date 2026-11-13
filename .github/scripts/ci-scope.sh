@@ -10,7 +10,7 @@
 # Run it at the head of the range: a board's or a chip's family is read from the tree checked out.
 #
 #   tree       code-quality, for any change that is not to the docs alone
-#   doc_gates  the tree gates that read the docs, for a change to the docs alone
+#   docs_tree  the tree checks that read the docs, for a change to the docs alone
 #   host       sim and sim-ubsan, whose unit tests compile every family's arch code
 #   arm, arm64, riscv, x86, xtensa, rx   the jobs that build that family's boards
 
@@ -111,12 +111,12 @@ if [ "$full" = true ]; then
     families=" $FAMILIES "
 fi
 
-doc_gates=true
+docs_tree=true
 if [ "$tree" = true ]; then
-    doc_gates=false
+    docs_tree=false
 fi
 echo "tree=$tree"
-echo "doc_gates=$doc_gates"
+echo "docs_tree=$docs_tree"
 echo "host=$host"
 for f in $FAMILIES; do
     v=false

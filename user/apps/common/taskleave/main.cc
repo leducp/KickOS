@@ -77,7 +77,7 @@ int main(int, char**)
         {
         }
         // The group is dead, so this drops main's creator hold and releases the space.
-        (void)kos_task_slay(group, KOS_POLL);
+        (void)kos_task_slay(group);
         if (during_rc != 0)
         {
             kos::print("[taskleave] ERROR: the live space count is unreadable\n");

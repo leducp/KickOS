@@ -1030,9 +1030,6 @@ namespace selftest
     // compare-and-swaps on the other core move it.
     constexpr uint32_t TC_ROUNDS = 200000;
     constexpr uint8_t TC_PRIO = 10;
-    // Rounds enough for the race to land under emulation take seconds there, and past a minute
-    // on a loaded host.
-    constexpr uint32_t TC_BOUND_US = 24u * STALL_TOLERANT_US;
     kos_sem_t g_tc_sem = KOS_SEM_INIT(0);
     // Each thread's own count, by the index its spawn names: [0..1] the takers, [2..3] the
     // posters, whose rounds are TC_ROUNDS plus their index less 2.
@@ -1051,40 +1048,39 @@ namespace selftest
             if (kos_word_wake(&g_tc_sem.word, 1u, 1u) >= 0)
             {
                 done++;
+                g_tc_done[me] = done;
             }
             else
             {
                 refused++;
+                g_tc_refused[me] = refused;
             }
         }
-        g_tc_done[me] = done;
-        g_tc_refused[me] = refused;
     }
     void tc_taker(void* arg)
     {
         uintptr_t const me = reinterpret_cast<uintptr_t>(arg);
         uint32_t done = 0;
-        uint32_t refused = 0;
-        kos_monotonic_t const until = after_us(TC_BOUND_US);
         while (done < TC_ROUNDS)
         {
             int const rc = kos_sem_wait(&g_tc_sem, KOS_POLL);
             if (rc == 0)
             {
                 done++;
+                g_tc_done[me] = done;
             }
-            else if (rc != -KOS_ETIMEDOUT or kos_monotonic_now().ns > until.ns)
+            else if (rc != -KOS_ETIMEDOUT)
             {
-                refused++;
+                g_tc_refused[me] = 1;
                 break;
             }
         }
-        g_tc_done[me] = done;
-        g_tc_refused[me] = refused;
     }
+    // Unbounded: the first post comes several of main's steps after the park, and
+    // joined_rounds bounds the wait.
     void tc_waiter(void*)
     {
-        g_tc_first = kos_sem_wait(&g_tc_sem, after_us(TC_BOUND_US));
+        g_tc_first = kos_sem_wait(&g_tc_sem, KOS_NEVER);
     }
     void t_sem_units_across_cores()
     {
@@ -1103,7 +1099,7 @@ namespace selftest
         kos::thread::Handle w;
         kos::thread::Handle t[2];
         kos::thread::Handle p[2];
-        ArmHold hold(TC_BOUND_US);
+        ArmHold hold;
         TAP_HOLD(hold.thread(&w) and hold.thread(&t[0]) and hold.thread(&t[1])
                  and hold.thread(&p[0]) and hold.thread(&p[1]));
         w = kos::thread::create_caps(tc_waiter, nullptr, "tcW", TC_PRIO + 1, nullptr, 0,
@@ -1131,7 +1127,7 @@ namespace selftest
             TAP_CHECK(p[i].valid());
         }
         kos_monotonic_t const t0 = kos_monotonic_now();
-        TAP_CHECK(hold.joined());
+        bool const moved = hold.joined_rounds(g_tc_done, 4);
         uint32_t const ms =
             static_cast<uint32_t>(kos_between(t0, kos_monotonic_now()).ns / 1000000u);
         uint32_t const left = g_tc_sem.word;
@@ -1148,6 +1144,7 @@ namespace selftest
                   static_cast<int>(g_tc_first.load()), static_cast<unsigned>(posted),
                   static_cast<unsigned>(taken), static_cast<unsigned>(refused),
                   static_cast<unsigned>(left), static_cast<unsigned>(ms));
+        TAP_CHECK(moved);
         TAP_CHECK(parked == KOS_WORD_WAITERS);
         TAP_CHECK(g_tc_first.load() == 0);
         TAP_CHECK(posted == 2u * TC_ROUNDS + 1u);
@@ -1162,8 +1159,6 @@ namespace selftest
     // waiter's release and its park shows as a wait that ran out with the turn its own.
     constexpr uint32_t CX_ROUNDS = 2000;
     constexpr uint8_t CX_PRIO = 10;
-    constexpr uint32_t CX_STALL_US = STALL_TOLERANT_US / 5u;
-    constexpr uint32_t CX_BOUND_US = 4u * STALL_TOLERANT_US;
     kos_cond_t g_cx_cond = KOS_COND_INIT;
     kos_mutex_t g_cx_m = KOS_MUTEX_INIT;
     // Written under g_cx_m.
@@ -1183,10 +1178,11 @@ namespace selftest
             rc = kos_mutex_lock(&g_cx_m, KOS_NEVER);
             while (rc == 0 and g_cx_turn != me)
             {
-                rc = kos_cond_wait(&g_cx_cond, &g_cx_m, after_us(CX_STALL_US));
+                rc = kos_cond_wait(&g_cx_cond, &g_cx_m, after_us(STALL_TOLERANT_US));
                 if (rc == -KOS_ETIMEDOUT)
                 {
                     stalls++;
+                    g_cx_stalls[me] = stalls;
                     rc = 0;
                 }
             }
@@ -1196,6 +1192,7 @@ namespace selftest
             }
             g_cx_turn = 1u - me;
             done++;
+            g_cx_done[me] = done;
             if (me == 0)
             {
                 rc = kos_cond_signal(&g_cx_cond);
@@ -1207,8 +1204,6 @@ namespace selftest
                 rc = kos_cond_signal(&g_cx_cond);
             }
         }
-        g_cx_done[me] = done;
-        g_cx_stalls[me] = stalls;
         g_cx_rc[me] = rc;
     }
     void t_cond_turns_across_cores()
@@ -1226,7 +1221,7 @@ namespace selftest
             g_cx_rc[i] = -99;
         }
         kos::thread::Handle p[2];
-        ArmHold hold(CX_BOUND_US);
+        ArmHold hold;
         TAP_HOLD(hold.thread(&p[0]) and hold.thread(&p[1]));
         uint32_t const cores[2] = {1u << PL_HOME, 1u << away};
         for (int i = 0; i < 2; i++)
@@ -1237,7 +1232,7 @@ namespace selftest
             TAP_CHECK(p[i].valid());
         }
         kos_monotonic_t const t0 = kos_monotonic_now();
-        TAP_CHECK(hold.joined());
+        bool const moved = hold.joined_rounds(g_cx_done, 2, g_cx_stalls);
         uint32_t const ms =
             static_cast<uint32_t>(kos_between(t0, kos_monotonic_now()).ns / 1000000u);
         tap::diag("turns across cores: %u and %u rounds, %u and %u stalls, rc %d %d, %u ms",
@@ -1246,6 +1241,7 @@ namespace selftest
                   static_cast<unsigned>(g_cx_stalls[0].load()),
                   static_cast<unsigned>(g_cx_stalls[1].load()), static_cast<int>(g_cx_rc[0].load()),
                   static_cast<int>(g_cx_rc[1].load()), static_cast<unsigned>(ms));
+        TAP_CHECK(moved);
         TAP_CHECK(g_cx_rc[0].load() == 0 and g_cx_rc[1].load() == 0);
         TAP_CHECK(g_cx_done[0].load() == CX_ROUNDS and g_cx_done[1].load() == CX_ROUNDS);
         TAP_CHECK(g_cx_stalls[0].load() == 0u and g_cx_stalls[1].load() == 0u);
@@ -1373,8 +1369,8 @@ namespace selftest
     constexpr uint32_t XIRQ_QUIET_US = 20000u;
     constexpr uint8_t XIRQ_PRIO = 12;
     constexpr int32_t XIRQ_UNSET = -99;
-    // An owner's claim, its wake and its raiser's join, each bounded, in turn.
-    constexpr uint32_t XIRQ_JOIN_US = 3u * STALL_TOLERANT_US;
+    // An owner's start, claim, wake and raiser's join, in turn, and its quiet wait.
+    constexpr uint32_t XIRQ_JOIN_US = 4u * STALL_TOLERANT_US + XIRQ_QUIET_US;
 
     // Claims `line` and makes the caller the waiter of a fresh notification it signals. 0, or
     // the first refusal.
@@ -1637,7 +1633,11 @@ namespace selftest
     constexpr uint8_t IR_BUSY_PRIO = 9;
     // The holder's report, raised through an unbadged grant of the creator's notification.
     constexpr uint32_t IR_CLAIMED = 1u << 0;
-    constexpr uint32_t IR_JOIN_US = 5u * STALL_TOLERANT_US;
+    // A report covers two events: its sender's start and its claim.
+    constexpr uint32_t IR_UP_US = 2u * STALL_TOLERANT_US;
+    // The creator's steps: the raiser's report (2), the holder's start, each round's report (2)
+    // and end, the raiser's join and the last holder's slay.
+    constexpr uint32_t IR_JOIN_US = (3u * IR_ROUNDS + 5u) * STALL_TOLERANT_US;
 #if KICKOS_SELFTEST_PEER
     // Claims and attaches IR_HELD_LINE on XIRQ_CLAIM_CORE, reports, and parks until main's
     // release: 0 with the line held to its end, else 1.
@@ -1733,7 +1733,7 @@ namespace selftest
                  kos_task_t* t, IrRound* out)
     {
         uint32_t bits = 0;
-        out->claimed = kos_notify_wait(IR_CLAIMED, after_us(STALL_TOLERANT_US), &bits);
+        out->claimed = kos_notify_wait(IR_CLAIMED, after_us(IR_UP_US), &bits);
         if (out->claimed != 0)
         {
             return out->claimed;
@@ -1793,7 +1793,7 @@ namespace selftest
         }
         if (pre == 0)
         {
-            pre = kos_sem_wait(&g_ir_up, after_us(STALL_TOLERANT_US));
+            pre = kos_sem_wait(&g_ir_up, after_us(IR_UP_US));
         }
         if (pre == 0)
         {
@@ -1825,7 +1825,7 @@ namespace selftest
         }
         if (t != KOS_TASK_NONE)
         {
-            (void)kos_task_slay(t, after_us(STALL_TOLERANT_US));
+            (void)slay_dead(t, after_us(STALL_TOLERANT_US), n);
         }
         (void)kos_notify_unbind(n);
         (void)kos_handle_close(n);
@@ -1881,7 +1881,6 @@ namespace selftest
     constexpr unsigned RE_SWITCHERS = 2;
     constexpr unsigned RE_WORKERS = RE_SWITCHERS + 1;
     constexpr uint32_t RE_ROUNDS = 2000;
-    constexpr uint64_t RE_BUDGET_NS = 2000000000ull; // 2 s
     constexpr uint32_t RE_CHECK_CORE = 1;
     constexpr uint32_t RE_SWITCH_CORE = 0;
     Atomic<uint32_t, Order::RELAXED> g_re_go{0};
@@ -1892,7 +1891,6 @@ namespace selftest
     Atomic<uint32_t, Order::RELAXED> g_re_core[RE_WORKERS];
     Atomic<uint32_t, Order::RELAXED> g_re_reads{0};
     Atomic<uint32_t, Order::RELAXED> g_re_seen{0};
-    Atomic<uint32_t, Order::RELAXED> g_re_finished{0};
 
     // strtol, not an assignment: the value must be written through libc's own state lookup.
     int re_provoke_einval()
@@ -1952,19 +1950,14 @@ namespace selftest
         }
         uint32_t const before = re_rounds_total();
         g_re_armed = 1;
-        uint64_t const start = kos_monotonic_now().ns;
         uint32_t reads = 0;
-        while (not re_switchers_done() and kos_monotonic_now().ns - start < RE_BUDGET_NS)
+        while (not re_switchers_done())
         {
             if (errno != EINVAL)
             {
                 bad++;
             }
             reads++;
-        }
-        if (re_switchers_done())
-        {
-            g_re_finished = 1;
         }
         g_re_seen = re_rounds_total() - before;
         g_re_reads = reads;
@@ -2005,7 +1998,6 @@ namespace selftest
         g_re_armed = 0;
         g_re_reads = 0;
         g_re_seen = 0;
-        g_re_finished = 0;
         for (unsigned i = 0; i < RE_SWITCHERS; i++)
         {
             g_re_rounds[i] = 0;
@@ -2044,7 +2036,7 @@ namespace selftest
             }
         }
         g_re_go = 1;
-        TAP_CHECK(hold.joined());
+        bool const moved = hold.joined_rounds(g_re_rounds, RE_SWITCHERS);
         tap::diag("checker on core %u read errno %u times across %u switcher rounds on cores "
                   "%u/%u: bad checker %u, switchers %u/%u",
                   static_cast<unsigned>(g_re_core[0].load()),
@@ -2055,6 +2047,7 @@ namespace selftest
                   static_cast<unsigned>(g_re_bad[0].load()),
                   static_cast<unsigned>(g_re_bad[1].load()),
                   static_cast<unsigned>(g_re_bad[2].load()));
+        TAP_CHECK(moved);
         TAP_CHECK(pinned == 0);
         // The precondition: both cores busy with threads of this task for the whole window.
         TAP_CHECK(g_re_core[0].load() == RE_CHECK_CORE);
@@ -2065,17 +2058,6 @@ namespace selftest
         for (unsigned i = 0; i < RE_WORKERS; i++)
         {
             TAP_CHECK(g_re_bad[i].load() == 0u);
-        }
-        // A clean window the wall clock cut short proves the state stayed apart for fewer
-        // rounds than claimed, not that it mixed.
-        if (g_re_finished.load() == 0u)
-        {
-            TAP_SKIP_VACUOUS("the %u ms budget ended the check %u of %u switcher rounds in, "
-                             "none of them bad",
-                             static_cast<unsigned>(RE_BUDGET_NS / 1000000ull),
-                             static_cast<unsigned>(g_re_seen.load()),
-                             static_cast<unsigned>(RE_SWITCHERS * RE_ROUNDS));
-            return;
         }
         TAP_CHECK(g_re_seen.load() == RE_SWITCHERS * RE_ROUNDS);
         TAP_CHECK(g_re_reads.load() > 0u);

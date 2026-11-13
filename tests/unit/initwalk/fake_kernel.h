@@ -8,8 +8,8 @@
 // its peaks.
 //
 // A task's member that ends stops running at once and keeps what it holds until its sweep
-// finishes. The task's DEAD bit is set, and its watch raised, once every member is swept; a slay
-// returns 0 only then, and a kill releases the task only then. A reservation comes back filled
+// finishes. The task's DEAD bit is set, and its watch raised, once every member is swept, a slain
+// task's included; a slay's creator's hold goes at that DEAD. A reservation comes back filled
 // with DIRTY, every 32-bit word of it odd, so the walk reads nothing it has not written. A run
 // that makes more calls than any walk needs throws Panic{"fake: runaway"}.
 //
@@ -116,7 +116,8 @@ namespace fake
         uint16_t decl;        // its declaration plus one, 0 for an undeclared task
         uint32_t state;
         int status;
-        bool held;     // its creator's hold, which a kill drops
+        bool held;     // its creator's hold
+        bool slain;    // its hold goes at its DEAD
         bool stalled;  // its members' sweeps wait for sweep()
         bool released; // its slot freed: a held slay or a dropped hold, every member swept
         std::vector<size_t> members; // into threads()
@@ -203,9 +204,9 @@ namespace fake
     // The first `times` calls of `fn` that `when` selects answer `result`.
     void refuse_if(char const* fn, int result, uint32_t times, std::function<bool(Call const&)> when);
 
-    // One step per kos_notify_wait, run before it reads the bits: a wait with no bit raised runs
-    // the next step, or with a deadline times out after advancing the clock to it, or with none
-    // and no step left throws Idle.
+    // One step per kos_notify_wait but a KOS_POLL one, run before it reads the bits: a wait with
+    // no bit raised runs the next step, or with a deadline times out after advancing the clock to
+    // it, or with none and no step left throws Idle.
     void script(std::vector<std::function<void()>> steps);
     void advance(uint64_t ns);
     uint64_t now();
@@ -245,7 +246,7 @@ namespace fake
     std::vector<Call> const& calls();
     // The calls to `fn`, in order.
     std::vector<Call> calls_of(char const* fn);
-    // The task slays toward a deadline, and those with KOS_POLL, which release the task.
+    // The slays of a task not yet dead, and those of a dead one, which only release it.
     std::vector<Call> slays();
     std::vector<Call> releases();
     // The names of the calls, in order, the ones in `fns` only.

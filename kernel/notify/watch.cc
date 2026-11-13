@@ -57,7 +57,7 @@ namespace kickos
         int watch_task(Thread* c, uint32_t events, uint32_t source, uint32_t notify_cap, Held held)
         {
             int err = 0;
-            Task* const t = task_watch_source(c, static_cast<kos_task_t>(source), &err);
+            Task* const t = task_resolve_created(c, static_cast<kos_task_t>(source), &err);
             if (t == nullptr)
             {
                 return -err;

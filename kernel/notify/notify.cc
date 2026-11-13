@@ -364,9 +364,14 @@ namespace kickos
 
     namespace
     {
-        // notify_lend_owe over `n`, the object handle `obj` names, which carries the mark.
-        inline __attribute__((always_inline)) bool lend_owe(Notification* n, int obj)
+        // notify_lend_owe over `n`, the object `w` is bound to.
+        __attribute__((always_inline)) inline bool lend_owe(Notification* n, Thread const* w)
         {
+            if (n->lend_mark == 0)
+            {
+                return false;
+            }
+            int const obj = notify_bound_handle(w->notify_bound);
             bool owed = task_watch_owe_into(obj);
             if (start_watch_owe_into(obj))
             {
@@ -378,26 +383,16 @@ namespace kickos
             }
             return owed;
         }
-
-        // A wait parked on `n` or left its park: one byte test where no ended task is watched into
-        // it.
-        inline void lend_window(Notification* n, int32_t bound, Held held)
-        {
-            if (n->lend_mark != 0 and lend_owe(n, notify_bound_handle(bound)))
-            {
-                watch_lend_settle(held);
-            }
-        }
     }
 
     bool notify_lend_owe(Thread* w)
     {
         Notification* const n = bound_object_of(w);
-        if (n == nullptr or n->lend_mark == 0)
+        if (n == nullptr)
         {
             return false;
         }
-        return lend_owe(n, notify_bound_handle(w->notify_bound));
+        return lend_owe(n, w);
     }
 
 #if KICKOS_KERNEL_CORES > 1
@@ -426,20 +421,22 @@ namespace kickos
         return mask;
     }
 
-    void notify_lend_window(Thread* c, Held held)
-    {
-        Notification* const n = bound_object_of(c);
-        if (n != nullptr and n->accept != 0)
-        {
-            lend_window(n, c->notify_bound, held);
-        }
-    }
-
     bool notify_lend_woken(Thread* t)
     {
         Notification* const n = bound_object_of(t);
-        return n != nullptr and n->accept != 0 and n->lend_mark != 0
-               and lend_owe(n, notify_bound_handle(t->notify_bound));
+        if (n == nullptr or n->accept == 0 or n->lend_mark == 0)
+        {
+            return false;
+        }
+        return lend_owe(n, t);
+    }
+
+    void notify_lend_window(Thread* c, Held held)
+    {
+        if (notify_lend_woken(c))
+        {
+            watch_lend_settle(held);
+        }
     }
 
     int notify_wait_leave(Thread* c, uint32_t opened, uintptr_t out, Held)
@@ -500,7 +497,10 @@ namespace kickos
             c->wait_result = 0; // normal delivery leaves this result unchanged
             epoch = park_queueless(ask)(c, WAIT_NOTIFY, n, lock);
             ktime_limit_arm(c, limit, lock);
-            lend_window(n, c->notify_bound, lock);
+            if (lend_owe(n, c))
+            {
+                watch_lend_settle(lock);
+            }
             sched::reschedule(nullptr, lock);
         }
         // Mandatory, and outside the lock: where the switch is only pended when the block

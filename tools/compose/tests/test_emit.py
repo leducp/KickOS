@@ -607,6 +607,11 @@ class Partitioned(unittest.TestCase):
             (1, 1, 0x70000000, 0x400, "rwx", 0),
         ])
 
+    def test_the_c6_rows_give_node_1_the_slice_the_list_sizes(self):
+        uneven = C6_AMP.replace("[[0x40800000, 0x3C000], [0x4083C000, 0x3C000]]",
+                                "[[0x40800000, 0x50000], [0x40850000, 0x28000]]")
+        self.assertIn((0, 1, 0x40850000, 0x28000, "rwx", 0), self.rows(C6_PAIR, uneven))
+
     def test_the_rp2350_rows_name_each_granted_register(self):
         hp = ("    uses: [/amp/3]\n", "    uses: [/amp/3]\n    devices: [/dev/uart0]\n")
         self.assertEqual(self.rows(RP_PAIR, RP_AMP, {0: [hp]}), [(0, 0, 0x40070000, 0x4000, "rw", 0xA0)])
@@ -623,7 +628,8 @@ class Partitioned(unittest.TestCase):
         self.assertEqual((report.refusals, text), ([], None))
         write(self.manifest, mutate(C6_AMP, [("  amp:\n    node: 0\n    nodes: 2\n    ports: [[0, 2], [1, 3]]\n"
                                               "    share: 0x4000\n    share_cache: cached\n"
-                                              "    slices: [0x40800000, 0x3C000]\n    window: [0x40878000, 0x8000]\n", "")])[0])
+                                              "    slices: [[0x40800000, 0x3C000], [0x4083C000, 0x3C000]]\n"
+                                              "    window: [0x40878000, 0x8000]\n", "")])[0])
         report, text = emit.emit_gate(self.manifest)
         self.assertIn("kickos_gate_row_count = 0;", text)
 

@@ -387,7 +387,10 @@ namespace kickos
                 }
                 arch_phys_addr_t const staged = r->staged;
                 r->staged = 0;
-                presync_unstage(*r);
+                if (presync_unstage(*r))
+                {
+                    r->stage_taken = true;
+                }
                 return data_map(payer, space, ranges, data, staged, g);
             }
 #endif
@@ -871,7 +874,20 @@ namespace kickos
     {
         Thread const* const c = sched::current();
         PresyncRecord* const r = presync_of(c);
-        if (r == nullptr or r->staged == 0)
+        if (r == nullptr)
+        {
+            return;
+        }
+        if (r->stage_taken)
+        {
+            IrqLock lock;
+            r->stage_taken = false;
+            if (not succeeded)
+            {
+                start_watch_poke();
+            }
+        }
+        if (r->staged == 0)
         {
             return;
         }
@@ -961,10 +977,11 @@ namespace kickos
             return;
         }
         presync_drop(*r);
-        if (presync_unstage(*r))
+        if (presync_unstage(*r) or r->stage_taken)
         {
             start_watch_poke();
         }
+        r->stage_taken = false;
         r->noted.count = 0;
         r->edits.count = 0;
         r->refused = false;

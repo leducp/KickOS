@@ -304,6 +304,10 @@ namespace kickos
             r.count++;
             r.decls = r.decls + h->decl_count;
         }
+        if (r.decls > static_cast<size_t>(kickos_kernel_pools.decl_count))
+        {
+            kpanic("image declarations");
+        }
         kickos_image_thread_return
             = reinterpret_cast<void (*)(void)>(header_of(0)->thread_return);
     }

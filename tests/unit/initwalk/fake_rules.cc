@@ -255,8 +255,7 @@ namespace
         kos_task_t const foreign = fake::foreign_task();
         int status = 0;
         EXPECT_EQ(kos_task_state(foreign, nullptr), -KOS_EPERM);
-        EXPECT_EQ(kos_task_slay(foreign, KOS_POLL), -KOS_EPERM);
-        EXPECT_EQ(kos_task_slay(foreign, soon()), -KOS_EPERM);
+        EXPECT_EQ(kos_task_slay(foreign), -KOS_EPERM);
         EXPECT_EQ(kos_task_state(foreign, &status), -KOS_EPERM);
         EXPECT_EQ(spawn(params(foreign)), -KOS_EPERM);
     }
@@ -406,38 +405,37 @@ namespace
         }
     }
 
-    TEST_F(Fake, a_slay_returns_once_every_member_is_swept)
-    {
-        kos_task_t const t = task();
-        ASSERT_EQ(spawn(params(t)), 0);
-        fake::stall("t");
-        uint64_t const before = fake::now();
-        EXPECT_EQ(kos_task_slay(t, soon()), -KOS_ETIMEDOUT);
-        EXPECT_EQ(fake::now() - before, 1000000u) << "parked to its deadline";
-        EXPECT_FALSE(fake::tasks().at(0).released);
-        EXPECT_EQ(kos_task_state(t, nullptr) & KOS_TASK_DEAD, 0);
-        fake::sweep("t");
-        EXPECT_NE(kos_task_state(t, nullptr) & KOS_TASK_DEAD, 0);
-        EXPECT_EQ(kos_task_slay(t, soon()), 0);
-        EXPECT_TRUE(fake::tasks().at(0).released);
-    }
-
-    TEST_F(Fake, a_kill_drops_the_hold_and_the_slot_goes_once_every_member_is_swept)
+    // The slay answers at once; the watch armed before it reports the end then, and the death once
+    // every member is swept, the hold going with it.
+    TEST_F(Fake, a_slay_keeps_the_hold_until_every_member_is_swept)
     {
         fake::Config c;
         c.reuse_handles = true;
         with(c);
+        kos_cap_t note = KOS_CAP_NONE;
+        ASSERT_EQ(kos_notify_create(&note), 0);
+        ASSERT_EQ(kos_notify_bind(note), 0);
+        kos_cap_t copy = KOS_CAP_NONE;
+        ASSERT_EQ(kos_notify_badge(note, 3u, &copy), 0);
         kos_task_t const t = task();
         ASSERT_EQ(spawn(params(t)), 0);
+        ASSERT_EQ(kos_watch(KOS_WATCH_TASK, KOS_TASK_DEAD, t, copy, 0u, nullptr), 0);
         fake::stall("t");
-        EXPECT_EQ(kos_task_slay(t, KOS_POLL), 0);
+        uint64_t const before = fake::now();
+        EXPECT_EQ(kos_task_slay(t), 0);
+        EXPECT_EQ(fake::now(), before) << "the slay waited";
+        uint32_t bits = 0;
+        EXPECT_EQ(kos_notify_wait(1u << 3, KOS_POLL, &bits), -KOS_ETIMEDOUT) << "dead mid-sweep";
         EXPECT_FALSE(fake::tasks().at(0).released) << "a member still sweeping";
-        EXPECT_GE(kos_task_state(t, nullptr), 0) << "resolvable until its slot is freed";
-        EXPECT_EQ(kos_task_slay(t, KOS_POLL), -KOS_EBADF) << "the creator's hold is gone";
+        EXPECT_EQ(kos_task_state(t, nullptr), static_cast<int>(KOS_TASK_ENDED))
+            << "the hold went before the death";
+        EXPECT_EQ(kos_task_slay(t), 0) << "a second slay before the death";
         EXPECT_NE(task(), t) << "its handle is not handed out again yet";
         fake::sweep("t");
+        EXPECT_EQ(kos_notify_wait(1u << 3, KOS_POLL, &bits), 0) << "the death went unreported";
         EXPECT_TRUE(fake::tasks().at(0).released);
-        EXPECT_EQ(kos_task_state(t, nullptr), -KOS_EBADF);
+        EXPECT_EQ(kos_task_state(t, nullptr), -KOS_EBADF) << "the hold outlived the death";
+        EXPECT_EQ(kos_task_slay(t), -KOS_EBADF);
         EXPECT_EQ(task(), t);
     }
 
@@ -495,7 +493,7 @@ namespace
         ASSERT_EQ(kos_endpoint_create(&ep), 0);
         kos_task_t const served = task();
         ASSERT_EQ(fake::publish_console(ep, served), 0);
-        ASSERT_EQ(kos_task_slay(served, KOS_POLL), 0);
+        ASSERT_EQ(kos_task_slay(served), 0);
         // The creator's WAIT goes before any receiver is seated.
         ASSERT_EQ(kos_cap_narrow(ep, KOS_CAP_SIGNAL | KOS_CAP_TRANSFER | KOS_CAP_HANDOUT), 0);
         kos_cap_grant const wait[] = {{ep, KOS_CAP_WAIT}};
@@ -544,7 +542,7 @@ namespace
         EXPECT_EQ(fake::now(), before) << "a send of no deadline parked";
         EXPECT_THROW(kos_send(KOS_CAP_STDOUT, "x", 1u, KOS_NEVER), fake::Panic);
         EXPECT_EQ(fake::reclaims(), 0u) << "the last WAIT going reclaimed the console";
-        ASSERT_EQ(kos_task_slay(served, KOS_POLL), 0);
+        ASSERT_EQ(kos_task_slay(served), 0);
         EXPECT_EQ(kos_send(KOS_CAP_STDOUT, "x", 1u, KOS_NEVER), -KOS_EAGAIN)
             << "a HANDOUT holder remains";
         EXPECT_EQ(fake::reclaims(), 1u);

@@ -134,7 +134,7 @@ namespace selftest
             killed = kos::thread::create_caps(wkp_worker, nullptr, "wkpk", 10, nullptr, 0);
             TAP_CHECK(killed.valid());
             TAP_CHECK(kos_sem_wait(&g_done, after_us(STALL_TOLERANT_US)) == 0);
-            TAP_CHECK(killed.cancel_for(KOS_CANCEL_KILL, std::chrono::microseconds{0}) == 0);
+            TAP_CHECK(killed.cancel(KOS_CANCEL_KILL) == 0);
             TAP_CHECK(thread_end(&killed) == 0);
         }
         if (g_wkp_wait != -KOS_ECANCELED)
@@ -192,7 +192,7 @@ namespace selftest
         peer = word_spawn(wkh_peer, nullptr, "wkhQ", TAP_PRIO_PARKS, nullptr, 0);
         TAP_CHECK(peer.valid() and word_parked());
         uint32_t const contended = g_wkh_sem.word;
-        TAP_CHECK(poster.cancel_for(KOS_CANCEL_KILL, std::chrono::microseconds{0}) == 0);
+        TAP_CHECK(poster.cancel(KOS_CANCEL_KILL) == 0);
         TAP_CHECK(hold.joined());
         tap::diag("killed poster: word 0x%x before, park %ld, post %ld, peer %ld",
                   static_cast<unsigned>(contended), static_cast<long>(g_wkh_wait.load()),
@@ -234,8 +234,8 @@ namespace selftest
         TAP_CHECK(holder.valid());
         TAP_CHECK(kos_sem_wait(&g_done, after_us(STALL_TOLERANT_US)) == 0);
         kos_thread_t const dead = holder.id();
-        TAP_CHECK(holder.cancel_for(KOS_CANCEL_SLAY, std::chrono::microseconds{STALL_TOLERANT_US})
-                  == 0);
+        TAP_CHECK(holder.cancel(KOS_CANCEL_SLAY) == 0);
+        TAP_CHECK(holder.join_for(std::chrono::microseconds{STALL_TOLERANT_US}) == 0);
         holder = kos::thread::Handle();
         // The lowest exited slot is the one the slay just emptied.
         reuser = kos::thread::create_caps(wsh_reuser, nullptr, "wshR", 10, nullptr, 0);
@@ -417,7 +417,8 @@ namespace selftest
         k = word_spawn(cv_killed, nullptr, "cvK", TAP_PRIO_PARKS, nullptr, 0);
         TAP_CHECK(k.valid() and word_parked());
         uint32_t const parked = g_cv.word;
-        TAP_CHECK(k.cancel_for(KOS_CANCEL_KILL, std::chrono::microseconds{STALL_TOLERANT_US}) == 0);
+        TAP_CHECK(k.cancel(KOS_CANCEL_KILL) == 0);
+        TAP_CHECK(k.join_for(std::chrono::microseconds{STALL_TOLERANT_US}) == 0);
         uint32_t const left = g_cv_m.word;
         w = word_spawn(cv_waiter, cv_arg(1), "cvW", TAP_PRIO_PARKS, nullptr, 0);
         TAP_CHECK(w.valid() and word_parked());

@@ -195,8 +195,8 @@ printf '%s\n' "$EXTRA_WANT" > "$EXTRA_STAMP"
 # Written by tests/integration/gates/selftest.cmake, which is the file that hands the same three
 # sets to the CTest entries, so nothing here is a second statement of them.
 MANIFEST="$BUILD/kickos-selftest-manifest.txt"
-# EVERY IMAGE THIS CONFIGURE EMITS, one `<image>|<stdout>|<judge>|<args>` row each. Written by the
-# root CMakeLists.txt.
+# EVERY IMAGE THIS CONFIGURE EMITS, one `<image>|<stdout>|<judge>|<args>|<window>` row each.
+# Written by the root CMakeLists.txt.
 IMAGES="$BUILD/kickos-images.txt"
 [ -s "$IMAGES" ] || { echo "REFUSING: $PRESET configured but listed no image at $IMAGES" >&2; exit 1; }
 TAP_JUDGE=tests/integration/check_tap_stream.sh
@@ -224,10 +224,15 @@ APP_ROW=$(awk -F '|' -v app="$APP" '$1 == app { print; exit }' "$IMAGES")
 APP_STDOUT=""
 APP_JUDGE=""
 APP_JUDGE_ARGS=""
+APP_WINDOW=""
 if [ -n "$APP_ROW" ]; then
-  IFS='|' read -r _ APP_STDOUT APP_JUDGE APP_JUDGE_ARGS <<AROW
+  IFS='|' read -r _ APP_STDOUT APP_JUDGE APP_JUDGE_ARGS APP_WINDOW <<AROW
 $APP_ROW
 AROW
+fi
+if [ -z "${CAP_SECS:-}" ] && [ -n "$APP_WINDOW" ] && [ "$APP_WINDOW" != "-" ]; then
+  CAP_SECS=$APP_WINDOW
+  export CAP_SECS
 fi
 APP_EMULATED=""
 APP_HUMAN=""

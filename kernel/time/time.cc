@@ -312,31 +312,28 @@ namespace kickos
         sleepq_insert(t, wall);
     }
 
-    bool ktime_limit_passed(WaitLimit limit)
+    bool ktime_limit_word_passed(uint64_t word, uint32_t kind)
     {
-        if (limit.none())
+        uint64_t now = 0;
+        if (kind == KOS_LIMIT_REALTIME)
         {
-            return false;
+            now = realtime_now();
         }
-        if (limit.kind == KOS_LIMIT_REALTIME)
+        else
         {
-            return limit.word <= realtime_now();
+            now = ktime_now();
         }
-        return limit.word <= ktime_now();
+        return word <= now;
     }
 
-    void ktime_limit_arm(Thread* t, WaitLimit limit, Held held)
+    void ktime_limit_word_arm(Thread* t, uint64_t word, uint32_t kind, Held held)
     {
-        if (limit.none())
+        if (kind == KOS_LIMIT_REALTIME)
         {
+            realtime_deadline_arm(t, word, held);
             return;
         }
-        if (limit.kind == KOS_LIMIT_REALTIME)
-        {
-            realtime_deadline_arm(t, limit.word, held);
-            return;
-        }
-        ktime_deadline_arm_at(t, ktime_floored(ktime_now(), limit.word), false, held);
+        ktime_deadline_arm_at(t, ktime_floored(ktime_now(), word), false, held);
     }
 
     void ktime_wall_shift(int64_t by_ns, Held held)
@@ -397,7 +394,6 @@ namespace kickos
         // as a sleeper wake.
         sched::tick_rr(now, lock);
 
-        death_leave_batch_begin();
         while (true)
         {
             Thread* const t = kernel().sleepq(kickos_kernel_core());
@@ -410,7 +406,6 @@ namespace kickos
             // queue at once, and the unwind reads the edge to find the second.
             thread_abort_park(t, -KOS_ETIMEDOUT, lock);
         }
-        death_leave_batch_end(lock);
 
         ktime_rearm(sched::current(), lock);
     }

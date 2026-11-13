@@ -231,7 +231,7 @@ namespace
                    == -KOS_ETIMEDOUT)
             {
             }
-            (void)kos_task_slay(task, KOS_POLL);
+            (void)kos_task_slay(task);
         }
         if (prog != KOS_CAP_NONE)
         {

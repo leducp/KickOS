@@ -402,8 +402,8 @@ namespace
                                           nullptr, 0, HOLDER_CORES);
         if (not w.valid() or not h.valid())
         {
-            (void)w.cancel_for(KOS_CANCEL_KILL, std::chrono::nanoseconds{0});
-            (void)h.cancel_for(KOS_CANCEL_KILL, std::chrono::nanoseconds{0});
+            (void)w.cancel(KOS_CANCEL_KILL);
+            (void)h.cancel(KOS_CANCEL_KILL);
             if (w.valid())
             {
                 (void)w.join();
@@ -438,14 +438,14 @@ namespace
                                           nullptr, 0, HOLDER_CORES);
         if (created != 0 or not h.valid())
         {
-            (void)h.cancel_for(KOS_CANCEL_KILL, std::chrono::nanoseconds{0});
+            (void)h.cancel(KOS_CANCEL_KILL);
             if (h.valid())
             {
                 (void)h.join();
             }
             if (created == 0)
             {
-                (void)kos_task_slay(peer, KOS_POLL);
+                (void)kos_task_slay(peer);
             }
             return false;
         }
@@ -455,7 +455,7 @@ namespace
         {
         }
         *d_ns = kos_monotonic_now().ns - t0;
-        (void)kos_task_slay(peer, KOS_POLL);
+        (void)kos_task_slay(peer);
         return true;
     }
 #endif
@@ -698,8 +698,8 @@ namespace
                                           nullptr, 0, HOLDER_CORES);
         if (not w.valid() or not h.valid())
         {
-            (void)w.cancel_for(KOS_CANCEL_KILL, std::chrono::nanoseconds{0});
-            (void)h.cancel_for(KOS_CANCEL_KILL, std::chrono::nanoseconds{0});
+            (void)w.cancel(KOS_CANCEL_KILL);
+            (void)h.cancel(KOS_CANCEL_KILL);
             if (w.valid())
             {
                 (void)w.join();

@@ -30,6 +30,7 @@ FIX = os.path.join(SRC, "boards", "xmc4800-relax", "configs", "base", "defconfig
 AMP = os.path.join(SRC, "boards", "qemu-arm64", "configs", "amp", "defconfig")
 # An own-image node of two, the one its seed and fingerprint are written for.
 AMP_OWN = os.path.join(SRC, "boards", "qemu-arm64", "configs", "amp2", "defconfig")
+AMP_OWN3 = os.path.join(SRC, "boards", "qemu-arm64", "configs", "amp3", "defconfig")
 CMAKE = None
 
 sys.path.insert(0, HERE)
@@ -358,6 +359,45 @@ class Genconfig(unittest.TestCase):
                      'set(KICKOS_AMP_PORT_NODE_INIT "0,1,1")', 'set(KICKOS_AMP_PORT_PORT_INIT "2,3,4")'):
             self.assertIn(line, frag)
 
+    def test_amp_slices(self):
+        # One share sizes every node alike; a list sizes each, and both derive every base from it.
+        for requests, lines in (
+                ((), ('set(KICKOS_AMP_SLICE_LIST "67108864,67108864")', "set(KICKOS_AMP_IMAGE_OFFSET 0)",
+                      "set(KICKOS_AMP_IMAGE_SIZE 67108864)", "set(KICKOS_AMP_SLICES_SIZE 134217728)")),
+                (("assert:KICKOS_AMP_NODE_ID=1",),
+                 ("set(KICKOS_AMP_IMAGE_OFFSET 67108864)", "set(KICKOS_AMP_IMAGE_SIZE 67108864)")),
+                (("assert:KICKOS_AMP_NODE_SHARE=0x0", "assert:KICKOS_AMP_NODE_SLICES=0x2000000,0x6000000"),
+                 ('set(KICKOS_AMP_SLICE_LIST "33554432,100663296")', "set(KICKOS_AMP_IMAGE_OFFSET 0)",
+                  "set(KICKOS_AMP_IMAGE_SIZE 33554432)", "set(KICKOS_AMP_SLICES_SIZE 134217728)")),
+                (("assert:KICKOS_AMP_NODE_SHARE=0x0", "assert:KICKOS_AMP_NODE_SLICES=0x2000000,0x6000000",
+                  "assert:KICKOS_AMP_NODE_ID=1"),
+                 ("set(KICKOS_AMP_IMAGE_OFFSET 33554432)", "set(KICKOS_AMP_IMAGE_SIZE 100663296)",
+                  "set(KICKOS_AMP_SLICES_SIZE 134217728)"))):
+            with self.subTest(requests=requests):
+                frag = self.accepted(AMP_OWN, *requests)
+                for line in lines:
+                    self.assertIn(line, frag)
+        frag = self.accepted(AMP_OWN3, "assert:KICKOS_AMP_NODE_SHARE=0x0",
+                             "assert:KICKOS_AMP_NODE_SLICES=0x2000000,0x4000000,0x6000000",
+                             "assert:KICKOS_AMP_NODE_ID=2")
+        for line in ("set(KICKOS_AMP_IMAGE_OFFSET 100663296)", "set(KICKOS_AMP_IMAGE_SIZE 100663296)",
+                     "set(KICKOS_AMP_SLICES_SIZE 201326592)"):
+            self.assertIn(line, frag)
+        for requests, phrase in (
+                (["assert:KICKOS_AMP_NODE_SHARE=0x0"], "KICKOS_AMP_NODE_SHARE is unstated"),
+                (["assert:KICKOS_AMP_NODE_SLICES=0x2000000,0x6000000"], "both size the nodes' slices"),
+                (["assert:KICKOS_AMP_NODE_SHARE=0x0", "assert:KICKOS_AMP_NODE_SLICES=0x8000000"],
+                 "it sizes 1 slice(s) for a partition of 2 node(s)"),
+                (["assert:KICKOS_AMP_NODE_SHARE=0x0", "assert:KICKOS_AMP_NODE_SLICES=0x2000000,0"],
+                 "entry '0' is not a size in bytes above zero"),
+                (["assert:KICKOS_AMP_NODE_SHARE=0x0", "assert:KICKOS_AMP_NODE_SLICES=0x2000000, 0x6000000"],
+                 "entry ' 0x6000000' is not a size in bytes above zero")):
+            with self.subTest(requests=requests):
+                run, _ = gen(AMP_OWN, *requests)
+                self.assertNotEqual(run.returncode, 0, "%s was accepted" % requests)
+                self.assertIn("REFUSED", run.stderr)
+                self.assertIn(phrase, run.stderr)
+
     def test_amp_partition_refusals(self):
         for requests, phrase in (
                 (["assert:KICKOS_AMP_SHARED_SIZE=0"], "KICKOS_AMP_SHARED_SIZE is unstated"),
@@ -395,6 +435,12 @@ class Genconfig(unittest.TestCase):
         self.assertEqual(len(node0), 2)
         self.assertEqual(node0, fp("assert:KICKOS_AMP_NODE_ID=1"))
         self.assertNotEqual(node0, fp("assert:KICKOS_BUDGET_THREADS=12"))
+        # A peer built against another slice list is refused by build-partition.sh as a peer of
+        # another partition.
+        uneven = fp("assert:KICKOS_AMP_NODE_SHARE=0x0", "assert:KICKOS_AMP_NODE_SLICES=0x2000000,0x6000000")
+        self.assertNotEqual(uneven, fp("assert:KICKOS_AMP_NODE_SHARE=0x0",
+                                       "assert:KICKOS_AMP_NODE_SLICES=0x6000000,0x2000000",
+                                       "assert:KICKOS_AMP_NODE_ID=1"))
 
     def test_amp_seed_configures_a_peer_alike(self):
         run, out = gen(AMP_OWN, "assert:KICKOS_AMP_NODE_ID=1")

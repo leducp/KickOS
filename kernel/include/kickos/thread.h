@@ -83,8 +83,6 @@ namespace kickos
         WAIT_EP_FAR_REPLY,
         WAIT_SLEEP,     // wait_obj: none; on the timer delta list
         WAIT_JOIN,      // wait_obj: the TARGET thread; queue-less on no list at all
-        // wait_obj: the TASK; on Kernel::death_waiters or death_dirty, wait_queue null
-        WAIT_TASK_EMPTY,
         WAIT_CONSOLE,    // wait_obj: none; queue-less, a user kernel console write waiting to offer again
         WAIT_WORD,       // wait_obj: the word's PLAIN WordRecord; on its waiters
     };
@@ -462,14 +460,6 @@ namespace kickos
                 return nullptr;
             }
             return static_cast<Notification*>(wait_obj);
-        }
-        Task* wait_task_target() const
-        {
-            if (wait_kind != WAIT_TASK_EMPTY)
-            {
-                return nullptr;
-            }
-            return static_cast<Task*>(wait_obj);
         }
     };
 

@@ -17,18 +17,11 @@
 namespace
 {
     int64_t g_now_ns = 0;
-    kos_monotonic_t g_cancel_until = KOS_NEVER;
 }
 
 extern "C" int64_t kickos_monotonic_now(void)
 {
     return g_now_ns;
-}
-
-extern "C" int kos_thread_cancel(kos_thread_t, enum kos_cancel, kos_monotonic_t until)
-{
-    g_cancel_until = until;
-    return 0;
 }
 
 namespace
@@ -174,22 +167,5 @@ namespace
         EXPECT_LT(kos::after(milliseconds::min()).ns, 0) << "min() is a passed deadline";
         EXPECT_EQ(kos::now().time_since_epoch(), nanoseconds{5000000});
         g_now_ns = 0;
-    }
-
-    // KOS_POLL selects the cancel's no-wait mode: a duration of zero or less hands it whatever the
-    // clock reads, and a positive one never does, even on a clock at its epoch.
-    TEST(KosChrono, a_cancel_polls_for_a_duration_of_zero_or_less_alone)
-    {
-        kos::thread::Handle const h{1u, 0};
-        g_now_ns = 5000000;
-        (void)h.cancel_for(KOS_CANCEL_KILL, nanoseconds{0});
-        EXPECT_EQ(g_cancel_until.ns, KOS_POLL.ns);
-        (void)h.cancel_for(KOS_CANCEL_KILL, milliseconds{-10});
-        EXPECT_EQ(g_cancel_until.ns, KOS_POLL.ns);
-        (void)h.cancel_for(KOS_CANCEL_KILL, picoseconds{1});
-        EXPECT_EQ(g_cancel_until.ns, 5000001);
-        g_now_ns = 0;
-        (void)h.cancel_for(KOS_CANCEL_KILL, duration<double, std::pico>{0.001});
-        EXPECT_EQ(g_cancel_until.ns, 1) << "a sub-nanosecond wait polled";
     }
 }

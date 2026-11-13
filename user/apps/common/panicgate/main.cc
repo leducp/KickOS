@@ -87,7 +87,7 @@ namespace
             kos::print("[panicgate] ERROR: the task ended with another status\n");
             return 1;
         }
-        (void)kos_task_slay(t, KOS_POLL);
+        (void)kos_task_slay(t);
         kos::print("[panicgate] the task ended with KOS_EXIT_PANIC, the system runs on\n");
         return 0;
     }

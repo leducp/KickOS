@@ -33,7 +33,7 @@
 #if KICKOS_AMP_OWN_IMAGE
 #include <amp_partition.ld.h>
 #define KICKOS_ARM64_DRAM_BASE  KICKOS_AMP_IMAGE_BASE
-#define KICKOS_ARM64_DRAM_SIZE  KICKOS_AMP_NODE_SHARE
+#define KICKOS_ARM64_DRAM_SIZE  KICKOS_AMP_IMAGE_SIZE
 #else
 #include <chip_layout.h>
 #define KICKOS_ARM64_DRAM_BASE  KICKOS_LAYOUT_DRAM_BASE
@@ -372,8 +372,7 @@ ASSERT(__kickos_ram_start <= __kickos_ram_end,
 /* The bounds are the partition's own constants, not this script's regions: an assert reading
    ORIGIN(SHARED) against LENGTH(SHARED) passes wherever the region is repointed. */
 KICKOS_AMP_SHARED_ASSERT(ADDR(.amp_shared) - KICKOS_ARM64_VA_BASE)
-KICKOS_AMP_SLICE_ASSERT(ORIGIN(BOOT), _estack - KICKOS_ARM64_VA_BASE,
-                        KICKOS_AMP_PARTITION_BASE, KICKOS_AMP_NODE_SHARE)
+KICKOS_AMP_IMAGE_ASSERT(ORIGIN(BOOT), _estack - KICKOS_ARM64_VA_BASE)
 
 /* A peer is started at its image base with its MMU off, so the entry must be the base. */
 ASSERT(_start == ORIGIN(BOOT),

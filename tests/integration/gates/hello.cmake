@@ -150,7 +150,7 @@ if(KICKOS_CHIP STREQUAL "virt_arm64" AND KICKOS_AMP_OWN_IMAGE
   math(EXPR _hello_share_size "${KICKOS_AMP_USER_SHARE_SIZE}")
 endif()
 if(_hello_share_size GREATER 0)
-  math(EXPR _hello_share_base "${KICKOS_AMP_PARTITION_BASE} + ${KICKOS_AMP_NODES} * ${KICKOS_AMP_NODE_SHARE} + ${KICKOS_AMP_SHARED_SIZE} - ${_hello_share_size}")
+  math(EXPR _hello_share_base "${KICKOS_AMP_PARTITION_BASE} + ${KICKOS_AMP_SLICES_SIZE} + ${KICKOS_AMP_SHARED_SIZE} - ${_hello_share_size}")
   set(_hello_share_slot 0)
   if(KICKOS_AMP_USER_SHARE_UNCACHED)
     set(_hello_share_slot 2)
