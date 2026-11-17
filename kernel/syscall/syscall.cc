@@ -248,7 +248,7 @@ namespace
 namespace
 {
     uint64_t syscall_body(uintptr_t nr, uintptr_t a0, uintptr_t a1,
-                          uintptr_t a2, uintptr_t a3);
+                          uintptr_t a2, uintptr_t a3, uintptr_t a4);
 
 #if KICKOS_HAVE_ASPACE
     enum arch_map_memtype map_memtype_of(uint32_t attr)
@@ -312,7 +312,7 @@ namespace
 
     // noinline: its frame must not sit below presync_run's interrupt windows (SYSWIN).
     __attribute__((noinline)) void presync_plan(uintptr_t nr, uintptr_t a0, uintptr_t a1,
-                                                uintptr_t a2, uintptr_t a3)
+                                                uintptr_t a2, uintptr_t a3, uintptr_t a4)
     {
         {
             IrqLock lock;
@@ -324,7 +324,7 @@ namespace
             }
             if (nr == KOS_SYS_TASK_CREATE and entering)
             {
-                task_spawn_presync_enter(a1, static_cast<uint32_t>(a3));
+                task_spawn_presync_enter(a1, ktime_limit_word(a3, a4));
             }
             if (c != nullptr and c->task != nullptr)
             {
@@ -354,9 +354,9 @@ namespace
     }
 
     __attribute__((noinline)) void presync_prepare(uintptr_t nr, uintptr_t a0, uintptr_t a1,
-                                                   uintptr_t a2, uintptr_t a3)
+                                                   uintptr_t a2, uintptr_t a3, uintptr_t a4)
     {
-        presync_plan(nr, a0, a1, a2, a3);
+        presync_plan(nr, a0, a1, a2, a3, a4);
         presync_run();
     }
 
@@ -395,7 +395,7 @@ namespace
 // be lost with the waiter left parked.
 extern "C" uint64_t syscall_dispatch(uintptr_t nr,
                                      uintptr_t a0, uintptr_t a1,
-                                     uintptr_t a2, uintptr_t a3)
+                                     uintptr_t a2, uintptr_t a3, uintptr_t a4)
 {
     Thread* const caller = sched::current();
     // Every thread starts behind sched::start, which seats current.
@@ -413,9 +413,9 @@ extern "C" uint64_t syscall_dispatch(uintptr_t nr,
     {
         if (synced)
         {
-            presync_prepare(nr, a0, a1, a2, a3);
+            presync_prepare(nr, a0, a1, a2, a3, a4);
         }
-        rc = syscall_body(nr, a0, a1, a2, a3);
+        rc = syscall_body(nr, a0, a1, a2, a3, a4);
         if (not synced or not presync_retry(rc == 0))
         {
             break;
@@ -423,7 +423,7 @@ extern "C" uint64_t syscall_dispatch(uintptr_t nr,
         presync_yield();
     }
 #else
-    rc = syscall_body(nr, a0, a1, a2, a3);
+    rc = syscall_body(nr, a0, a1, a2, a3, a4);
 #endif
     return rc;
 }
@@ -441,7 +441,7 @@ uint64_t created(uint64_t answer)
 
 uint64_t syscall_body(uintptr_t nr,
                       uintptr_t a0, uintptr_t a1,
-                      uintptr_t a2, uintptr_t a3)
+                      uintptr_t a2, uintptr_t a3, uintptr_t a4)
 {
     KTRACE_SYSCALL_SCOPE(nr);
     switch (nr)
@@ -473,11 +473,10 @@ uint64_t syscall_body(uintptr_t nr,
             sched::yield();
             return 0;
         }
-        case KOS_SYS_SLEEP_NS:
+        case KOS_SYS_SLEEP:
         {
-            ktime_sleep_ns(kos_u64_join(static_cast<uint32_t>(a0),
-                                        static_cast<uint32_t>(a1)));
-            return 0;
+            return static_cast<uint64_t>(ktime_sleep(
+                kos_u64_join(static_cast<uint32_t>(a0), static_cast<uint32_t>(a1)), a2));
         }
         case KOS_SYS_HANDLE_CLOSE:
         {
@@ -487,9 +486,13 @@ uint64_t syscall_body(uintptr_t nr,
         }
         case KOS_SYS_MUTEX_LOCK:
         {
+            if (not ktime_limit_kind_ok(a3))
+            {
+                return static_cast<uint64_t>(-KOS_EINVAL);
+            }
             // -KOS_EOWNERDEAD is negative but still an ACQUIRE.
-            return static_cast<uint64_t>(mutex_lock(
-                a0, WaitLimit(static_cast<uint32_t>(a1), static_cast<uint32_t>(a2))));
+            return static_cast<uint64_t>(
+                mutex_lock(a0, ktime_limit_word(a1, a2), static_cast<uint32_t>(a3)));
         }
         case KOS_SYS_MUTEX_UNLOCK:
         {
@@ -497,9 +500,13 @@ uint64_t syscall_body(uintptr_t nr,
         }
         case KOS_SYS_WORD_WAIT:
         {
-            return static_cast<uint64_t>(
-                word_wait(a0, static_cast<uint32_t>(a1),
-                          WaitLimit(static_cast<uint32_t>(a2), static_cast<uint32_t>(a3))));
+            if (not ktime_limit_kind_ok(a4))
+            {
+                return static_cast<uint64_t>(-KOS_EINVAL);
+            }
+            return static_cast<uint64_t>(word_wait(a0, static_cast<uint32_t>(a1),
+                                                   ktime_limit_word(a2, a3),
+                                                   static_cast<uint32_t>(a4)));
         }
         case KOS_SYS_WORD_WAKE:
         {
@@ -554,23 +561,22 @@ uint64_t syscall_body(uintptr_t nr,
             // park, and a spanning caller lock would livelock ARM.
             return static_cast<uint64_t>(endpoint_send(static_cast<uint32_t>(a0), a1,
                                                        static_cast<size_t>(a2),
-                                                       static_cast<uint32_t>(a3)));
+                                                       ktime_limit_word(a3, a4)));
         }
         case KOS_SYS_CALL:
         {
             // No dispatch IrqLock, as for SEND: a spanning caller lock would keep BASEPRI
-            // raised across the resume barrier and livelock ARM. a2 carries both lengths so a3
-            // can carry the deadline. endpoint_call is the sole validator of them: the stub
-            // only saturates, so an oversize length still arrives here out of range.
-            uint32_t const timeout = static_cast<uint32_t>(a3);
+            // raised across the resume barrier and livelock ARM. endpoint_call is the sole
+            // validator of the lengths: the stub only saturates, so an oversize length still
+            // arrives here out of range.
             return static_cast<uint64_t>(
                 endpoint_call(static_cast<uint32_t>(a0), a1, kos_call_lens_send(a2),
-                              kos_call_lens_recv(a2), timeout));
+                              kos_call_lens_recv(a2), ktime_limit_word(a3, a4)));
         }
         case KOS_SYS_CALL_REG:
         {
             // Reached only when the trap-handler fastpath declined, or this backend has
-            // none. The register payload never arrives: dispatch is handed five words and
+            // none. The register payload never arrives: dispatch is handed six words and
             // the request occupies more, so the retry re-issues from the stub's own copy.
             return static_cast<uint64_t>(static_cast<uintptr_t>(
                 static_cast<uint32_t>(KOS_CALL_REG_FALLBACK)));
@@ -610,13 +616,13 @@ uint64_t syscall_body(uintptr_t nr,
         }
         case KOS_SYS_TASK_CREATE:
         {
-            // Blocks for a timeout other than 0.
+            // Blocks for a deadline not passed.
             int rc = cap_out_check(a2);
             if (rc != 0)
             {
                 return static_cast<uint64_t>(rc);
             }
-            rc = task_create_call(static_cast<uint32_t>(a0), a1, static_cast<uint32_t>(a3), a2);
+            rc = task_create_call(static_cast<uint32_t>(a0), a1, ktime_limit_word(a3, a4), a2);
             return created(static_cast<uint64_t>(rc));
         }
         case KOS_SYS_PROGRAM_FIND:
@@ -676,7 +682,7 @@ uint64_t syscall_body(uintptr_t nr,
         {
             // Blocks, so no dispatch IrqLock. Parenthood-gated inside.
             return static_cast<uint64_t>(
-                thread_join(static_cast<kos_thread_t>(a0), static_cast<uint32_t>(a1)));
+                thread_join(static_cast<kos_thread_t>(a0), ktime_limit_word(a1, a2)));
         }
 #if KICKOS_KERNEL_CORES > 1
         case KOS_SYS_CORE_CURRENT:
@@ -701,16 +707,16 @@ uint64_t syscall_body(uintptr_t nr,
         case KOS_SYS_THREAD_CANCEL:
         {
             // UNGATED by authority, gated by parenthood inside (syscall_thread.cc). Blocks for
-            // a timeout other than 0, so no dispatch IrqLock.
+            // a deadline not passed, so no dispatch IrqLock.
             return static_cast<uint64_t>(thread_cancel_call(static_cast<kos_thread_t>(a0), a1,
-                                                            static_cast<uint32_t>(a2)));
+                                                            ktime_limit_word(a2, a3)));
         }
         case KOS_SYS_TASK_SLAY:
         {
-            // Blocks for a timeout other than 0. UNGATED by authority, gated by creatorship
+            // Blocks for a deadline not passed. UNGATED by authority, gated by creatorship
             // inside (syscall_thread.cc).
             return static_cast<uint64_t>(
-                task_slay(static_cast<kos_task_t>(a0), static_cast<uint32_t>(a1)));
+                task_slay(static_cast<kos_task_t>(a0), ktime_limit_word(a1, a2)));
         }
         case KOS_SYS_EXIT:
         {
@@ -774,18 +780,18 @@ uint64_t syscall_body(uintptr_t nr,
             return static_cast<uint64_t>(
                 terminal_outcome_set(sched::current(), static_cast<uint32_t>(a0)));
         }
-        case KOS_SYS_CLOCK_NOW:
+        case KOS_SYS_MONOTONIC_NOW:
         {
             // No user pointer and no way to fail: every value in the u64 range is a valid
             // instant, so this arm is OUT of the -KOS_E* scheme.
             return arch_clock_now();
         }
-        case KOS_SYS_CLOCK_REALTIME:
+        case KOS_SYS_REALTIME_NOW:
         {
             // Out of the -KOS_E* scheme as the monotonic clock is.
             return realtime_now();
         }
-        case KOS_SYS_CLOCK_SET_REALTIME:
+        case KOS_SYS_REALTIME_SET:
         {
             return static_cast<uint64_t>(realtime_set(
                 sched::current(),
@@ -1164,16 +1170,8 @@ uint64_t syscall_body(uintptr_t nr,
         }
         case KOS_SYS_NOTIFY_WAIT:
         {
-            // The out-word is validated BEFORE the park: a caller that cannot be written to
-            // must not be blocked first and refused after.
-            int rc = cap_out_check(a3);
-            if (rc != 0)
-            {
-                return static_cast<uint64_t>(rc);
-            }
-            return static_cast<uint64_t>(notify_wait(sched::current(), static_cast<uint32_t>(a0),
-                                                     static_cast<uint32_t>(a1),
-                                                     static_cast<uint32_t>(a2), a3));
+            return static_cast<uint64_t>(
+                notify_wait(sched::current(), static_cast<uint32_t>(a0), ktime_limit_word(a1, a2)));
         }
         case KOS_SYS_IRQ_BIND_NOTIFY:
         {

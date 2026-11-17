@@ -76,7 +76,7 @@ int main(int, char**)
 #if KICKOS_PRIVWINDOW_MODE == 0
     for (uint32_t i = 0; i < 100000u; i++)
     {
-        (void)kos_clock_now();
+        (void)kos_monotonic_now().ns;
     }
     kos::print("[privwindow] ERROR: the debugger never caught the syscall return\n");
     return 1;
@@ -95,11 +95,11 @@ int main(int, char**)
     kos::print("[privwindow] call_reg: answered by the dispatch\n");
     return 0;
 #elif KICKOS_PRIVWINDOW_MODE == 3
-    uint64_t const before = kos_clock_now();
+    uint64_t const before = kos_monotonic_now().ns;
     g_pw_armed = 1u;
-    uint64_t const at = kos_clock_now();
+    uint64_t const at = kos_monotonic_now().ns;
     g_pw_armed = 0u;
-    uint64_t const after = kos_clock_now();
+    uint64_t const after = kos_monotonic_now().ns;
     uint32_t control = 0;
     __asm volatile("mrs %0, control" : "=r"(control));
     if ((control & 1u) == 0u)

@@ -32,8 +32,8 @@ if ! judging_capture; then
 fi
 # C a clock read, S a sleep, P a print, in source order with comments gone.
 SHAPE="$(sed 's|//.*||' "$SRC" | awk '
-    /clock_now\(|steady_clock::now\(/ { printf "C" }
-    /sleep_ns\(/ { printf "S" }
+    /kos::now\(|steady_clock::now\(/ { printf "C" }
+    /sleep_for\(/ { printf "S" }
     /print\(|printf\(|puts\(/ { printf "P" }')"
 case "$SHAPE" in
     *CSC*) ;;

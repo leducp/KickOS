@@ -129,10 +129,10 @@ int main(int, char**)
     for (int i = 0; i < CYCLES; i++)
     {
         gpio_drive(win, bit, 1);
-        kos_sleep_ns(EDGE_NS);
+        kos_sleep_for(kos_ns(EDGE_NS));
         int const r1 = gpio_read(win, PIN);
         gpio_drive(win, bit, 0);
-        kos_sleep_ns(EDGE_NS);
+        kos_sleep_for(kos_ns(EDGE_NS));
         int const r0 = gpio_read(win, PIN);
         printf("[gpioblink] cycle %d led=1 readback=%d / led=0 readback=%d\n", i, r1, r0);
         fflush(stdout);
@@ -156,8 +156,8 @@ int main(int, char**)
     while (true)
     {
         gpio_drive(win, bit, 1);
-        kos_sleep_ns(EDGE_NS * 2u);
+        kos_sleep_for(kos_ns(EDGE_NS * 2u));
         gpio_drive(win, bit, 0);
-        kos_sleep_ns(EDGE_NS * 2u);
+        kos_sleep_for(kos_ns(EDGE_NS * 2u));
     }
 }

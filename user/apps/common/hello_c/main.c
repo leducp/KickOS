@@ -27,8 +27,8 @@ static void ping(void* arg)
     (void)arg;
     for (int n = 1; n <= ROUNDS; n++)
     {
-        kos_sem_wait(&g_ping, KOS_TIMEOUT_NONE);
-        kos_sleep_ns(BEAT_NS);
+        kos_sem_wait(&g_ping, KOS_NEVER);
+        kos_sleep_for(kos_ns(BEAT_NS));
         say("ping", n);
         kos_sem_post(&g_pong);
     }
@@ -39,8 +39,8 @@ static void pong(void* arg)
     (void)arg;
     for (int n = 1; n <= ROUNDS; n++)
     {
-        kos_sem_wait(&g_pong, KOS_TIMEOUT_NONE);
-        kos_sleep_ns(BEAT_NS);
+        kos_sem_wait(&g_pong, KOS_NEVER);
+        kos_sleep_for(kos_ns(BEAT_NS));
         say("pong", n);
         kos_sem_post(&g_ping);
     }
@@ -70,6 +70,6 @@ int main(int argc, char** argv)
     spawn(ping, "ping");
     spawn(pong, "pong");
 
-    kos_sem_wait(&g_done, KOS_TIMEOUT_NONE);
+    kos_sem_wait(&g_done, KOS_NEVER);
     return 0;
 }

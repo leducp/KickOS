@@ -53,7 +53,8 @@ int main(int, char**)
         kos::print("worker spawn refused\n");
         return 0;
     }
-    kos::sleep_ns(300000000ull); // main blocks, so the worker runs and exits first
+    // Main blocks, so the worker runs and exits first.
+    kos::sleep_for(std::chrono::milliseconds{300});
     kos::print("main: survived the worker\n");
     exit(EXIT_CODE);
 }

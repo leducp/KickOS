@@ -18,7 +18,7 @@ namespace
 
     void service(void*)
     {
-        kos_sleep_ns(SETTLE_NS);
+        kos_sleep_for(kos_ns(SETTLE_NS));
         int const rc = testdrivers::serve(KOS_SPAWN_DELEGATED_CAP0);
         if (rc < 0)
         {

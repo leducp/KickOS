@@ -40,12 +40,12 @@ namespace kickos
         unreached("endpoint_badge");
     }
 
-    int32_t endpoint_send(uint32_t, uintptr_t, size_t, uint32_t)
+    int32_t endpoint_send(uint32_t, uintptr_t, size_t, uint64_t)
     {
         unreached("endpoint_send");
     }
 
-    int32_t endpoint_call(uint32_t, uintptr_t, size_t, size_t, uint32_t)
+    int32_t endpoint_call(uint32_t, uintptr_t, size_t, size_t, uint64_t)
     {
         unreached("endpoint_call");
     }
@@ -70,9 +70,9 @@ namespace kickos
         unreached("cpu_clock_set");
     }
 
-    void ktime_sleep_ns(uint64_t)
+    int ktime_sleep(uint64_t, uintptr_t)
     {
-        unreached("ktime_sleep_ns");
+        unreached("ktime_sleep");
     }
 
     int kconsole_write_user(char const*, size_t n, bool wait)

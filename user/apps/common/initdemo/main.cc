@@ -41,7 +41,7 @@ namespace
     int32_t sink_bytes(kos_cap_t ep)
     {
         char buf[KOS_EP_MSG_MAX] = {'Q'};
-        int32_t const n = kos_call(ep, buf, 1, sizeof(buf), 1000000u);
+        int32_t const n = kos_call(ep, buf, 1, sizeof(buf), kos::after(std::chrono::seconds{1}));
         if (n != static_cast<int32_t>(sizeof(int32_t)))
         {
             return -1;
@@ -94,7 +94,7 @@ int main(int, char**)
     params.caps = caps;
     params.cap_count = 1;
     kos_task_t sink_task = KOS_TASK_NONE;
-    int const created = kos_task_create(prog, &params, 0, &sink_task);
+    int const created = kos_task_create(prog, &params, KOS_POLL, &sink_task);
     (void)kos_handle_close(prog);
     if (created != 0)
     {
@@ -122,7 +122,7 @@ int main(int, char**)
         {
             break;
         }
-        kos_sleep_ns(10000000ull); // 10 ms
+        kos_sleep_for(kos_ms(10));
     }
     for (int i = 0; i < 50; i++)
     {
@@ -130,7 +130,7 @@ int main(int, char**)
         {
             break;
         }
-        kos_sleep_ns(10000000ull);
+        kos_sleep_for(kos_ms(10));
     }
 
     int rc = 1;

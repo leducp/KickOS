@@ -14,8 +14,8 @@
 
 namespace
 {
-    constexpr uint64_t PERIOD_NS = 100000000ull; // 10 readings a second
-    constexpr uint32_t CALL_TIMEOUT_US = 500000u;
+    constexpr int64_t PERIOD_MS = 100; // 10 readings a second
+    constexpr int64_t CALL_WAIT_MS = 500;
     // Identical readings in a row: 2 s, longer than the slowest sensor here, a clock that
     // moves once a second.
     constexpr unsigned FROZEN_AFTER = 20u;
@@ -34,7 +34,8 @@ int main(int, char**)
     while (true)
     {
         struct sample s = {};
-        int32_t const n = kos_call(sensor, &s, 0u, sizeof(s), CALL_TIMEOUT_US);
+        int32_t const n =
+            kos_call(sensor, &s, 0u, sizeof(s), kos_after(kos_monotonic_now(), kos_ms(CALL_WAIT_MS)));
         // No answer is ever a park: each code says what became of the request. A motor
         // controller would brake on all three.
         if (n == -KOS_EPIPE)
@@ -68,6 +69,6 @@ int main(int, char**)
             witness_own_check("app", 3u);
             printf("sensor: %lu from /svc/sensor\n", static_cast<unsigned long>(s.value));
         }
-        kos_sleep_ns(PERIOD_NS);
+        kos_sleep_for(kos_ms(PERIOD_MS));
     }
 }

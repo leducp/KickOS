@@ -179,14 +179,11 @@ namespace kickos
                     return note()->pending;
                 }
 
-                // KOS_SYS_NOTIFY_WAIT on BIT, the bits answered at EDIT_OUT.
-                int32_t wait(uint32_t* bits)
+                // KOS_SYS_NOTIFY_WAIT on BIT with no deadline, its whole 64-bit answer.
+                uint64_t wait()
                 {
-                    *host<uint32_t>(uva(EDIT_OUT)) = 0;
-                    int32_t const rc = err(call_as(main_, KOS_SYS_NOTIFY_WAIT, note_, BIT,
-                                                   KOS_TIMEOUT_NONE, uva(EDIT_OUT)));
-                    *bits = *host<uint32_t>(uva(EDIT_OUT));
-                    return rc;
+                    return call_as(main_, KOS_SYS_NOTIFY_WAIT, BIT, kos_u64_lo(KOS_LIMIT_NONE),
+                                   kos_u64_hi(KOS_LIMIT_NONE));
                 }
 
                 uint32_t note_ = KCAP_INVALID;
@@ -246,93 +243,32 @@ namespace kickos
                 EXPECT_EQ(kernel().task_holds, holds + 1u);
             }
 
-            TEST_F(OutDeliver, a_wait_whose_bits_are_refused_leaves_them_pending)
+            TEST_F(OutDeliver, a_wait_answers_the_bits_it_takes_in_the_high_half)
             {
                 ASSERT_EQ(err(call_as(main_, KOS_SYS_NOTIFY_BIND, note_)), 0);
                 ASSERT_TRUE(notify_raise(note(), BIT));
 
-                refuse_acquire(uva(EDIT_OUT), 1);
-                uint32_t bits = 0;
-                EXPECT_EQ(wait(&bits), -KOS_EFAULT);
-                EXPECT_EQ(bits, 0u);
-                EXPECT_EQ(pending(), BIT) << "the refused wait consumed its bits";
-
-                EXPECT_EQ(wait(&bits), 0);
-                EXPECT_EQ(bits, BIT);
-                EXPECT_EQ(pending(), 0u);
+                EXPECT_EQ(wait(), static_cast<uint64_t>(notify_wait_bits(BIT)));
+                EXPECT_EQ(pending(), 0u) << "the answered bits stayed pending";
             }
 
-            // The page the parked wait's out word sits in, as the hook leaves it.
-            struct Turned
-            {
-                uint32_t rights;
-                enum arch_map_memtype type;
-            };
-            Turned g_turned = {};
-            uintptr_t g_turned_va = 0;
-
-            void turn_then_raise(Thread* parked)
-            {
-                parked->wait_result = 0;
-                EXPECT_TRUE(remap_page(parked, g_turned_va, g_turned.rights, g_turned.type));
-                (void)notify_raise(g_raised, BIT);
-            }
-
-            class OutTurned : public OutDeliver, public ::testing::WithParamInterface<Turned>
-            {
-            };
-
-            // The out word was in a sibling's writable window when the wait parked; the window
-            // was replaced at the same address by one the kernel must not write.
-            TEST_P(OutTurned, a_parked_wait_whose_out_word_turned_unwritable_is_refused)
-            {
-                constexpr uint32_t UNTOUCHED = 0xA5A5A5A5u;
-                ASSERT_EQ(err(call_as(main_, KOS_SYS_NOTIFY_BIND, note_)), 0);
-                uintptr_t const blk = reserve(main_, G, 0);
-                ASSERT_NE(blk, 0u);
-                kos_thread_t h = KOS_THREAD_NONE;
-                ASSERT_EQ(spawn(main_, spawn_params(MAIN_PARAMS, blk, G, 0), MAIN_OUT, &h), 0);
-                Thread* const holder = kernel().threads.resolve(h);
-                ASSERT_NE(holder, nullptr);
-                uintptr_t const got = uva(MAIN_OUT, sizeof(uint64_t));
-                ASSERT_EQ(err(call_as(holder, KOS_SYS_WINDOW_GET, 0, got)), 0);
-                uintptr_t const out = host<kos_window>(got)->base + sizeof(uint64_t);
-                uint32_t* const word = host<uint32_t>(blk + sizeof(uint64_t));
-                *word = UNTOUCHED;
-
-                g_raised = note();
-                g_turned = GetParam();
-                g_turned_va = out;
-                wake_next_park(turn_then_raise);
-                int32_t const rc = err(call_as(main_, KOS_SYS_NOTIFY_WAIT, note_, BIT,
-                                               KOS_TIMEOUT_NONE, out));
-                running() = main_;
-                EXPECT_EQ(rc, -KOS_EFAULT);
-                EXPECT_EQ(*word, UNTOUCHED) << "the delivery wrote the page";
-                EXPECT_EQ(pending(), BIT) << "the refused wait consumed the bits it parked for";
-            }
-
-            INSTANTIATE_TEST_SUITE_P(ReadOnlyOrDevice, OutTurned,
-                                     ::testing::Values(Turned{ARCH_MAP_R, ARCH_MAP_NORMAL},
-                                                       Turned{ARCH_MAP_R | ARCH_MAP_W,
-                                                              ARCH_MAP_DEVICE}));
-
-            TEST_F(OutDeliver, a_parked_wait_whose_bits_are_refused_leaves_them_pending)
+            TEST_F(OutDeliver, a_parked_wait_answers_the_bits_it_was_woken_for)
             {
                 ASSERT_EQ(err(call_as(main_, KOS_SYS_NOTIFY_BIND, note_)), 0);
                 g_raised = note();
                 wake_next_park(raise_bit);
 
-                refuse_acquire(uva(EDIT_OUT), 1);
-                uint32_t bits = 0;
-                EXPECT_EQ(wait(&bits), -KOS_EFAULT);
+                EXPECT_EQ(wait(), static_cast<uint64_t>(notify_wait_bits(BIT)));
                 running() = main_;
-                EXPECT_EQ(bits, 0u);
-                EXPECT_EQ(pending(), BIT) << "the refused wait consumed the bits it parked for";
+                EXPECT_EQ(pending(), 0u) << "the answered bits stayed pending";
+            }
 
-                EXPECT_EQ(wait(&bits), 0);
-                EXPECT_EQ(bits, BIT);
-                EXPECT_EQ(pending(), 0u);
+            TEST_F(OutDeliver, a_wait_by_a_thread_bound_to_nothing_is_refused)
+            {
+                ASSERT_TRUE(notify_raise(note(), BIT));
+
+                EXPECT_EQ(err(wait()), -KOS_EPERM);
+                EXPECT_EQ(pending(), BIT) << "a refused wait consumed the bits";
             }
         }
     }

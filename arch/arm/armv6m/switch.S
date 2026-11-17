@@ -434,10 +434,10 @@ SVC_Handler:
    In: r0 = the guarded user frame, lr = EXC_RETURN.
 
    THE CONTINUATION HEADER, read back by the trampoline after the call:
-       [T-16]  a3, the AAPCS fifth argument, which syscall_dispatch reads at [sp]
-       [T-12]  the caller-return this exits to
-       [T-8]   the PSP the thread resumes on
-       [T-4]   the word that keeps sp 8-byte aligned for the call
+       [T-16]  a3, the AAPCS fifth argument, which syscall_dispatch reads at [sp], from r12
+       [T-12]  a4, the sixth, at [sp+4], from the r4 the stub loaded
+       [T-8]   the caller-return this exits to
+       [T-4]   the PSP the thread resumes on
    The resume PSP lives HERE and not in a register or a second context field: a blocking
    dispatch has PendSV freeze its continuation BELOW this header, so the header survives the
    block for free, and ctx.sp names whichever stack the thread was preempted on. */
@@ -447,6 +447,8 @@ SVC_Handler:
     cmp     r3, #0
     beq     .Lsvc_nokstack          /* no block to build on, and it does not return */
     push    {r4-r7}                 /* the caller's, back before the return */
+    subs    r3, #16
+    str     r4, [r3, #4]            /* a4, before r4 is spent */
     ldr     r4, [r0, #28]
     movs    r5, #32                 /* the PSP the thread resumes on, past the popped frame */
     lsrs    r4, r4, #10             /* and the realign word the entry spent: xPSR bit 9 */
@@ -454,12 +456,11 @@ SVC_Handler:
     adds    r5, #4
 1:
     adds    r5, r5, r0
-    subs    r3, #16
     ldr     r4, [r0, #16]
     ldr     r6, [r0, #20]
     str     r4, [r3, #0]
-    str     r6, [r3, #4]
-    str     r5, [r3, #8]
+    str     r6, [r3, #8]
+    str     r5, [r3, #12]
     subs    r3, #32                 /* the frame, under the header */
     ldmia   r0!, {r4-r7}            /* r0-r3 */
     stmia   r3!, {r4-r7}
@@ -494,8 +495,8 @@ SVC_Handler:
     .thumb_func
     .global svc_trampoline
 svc_trampoline:
-    bl      syscall_dispatch        /* (r0..r3, [sp]=a3) -> result in r0:r1 */
-    ldr     r2, [sp, #4]            /* the caller-return */
+    bl      syscall_dispatch        /* (r0..r3, [sp]=a3, [sp+4]=a4) -> result in r0:r1 */
+    ldr     r2, [sp, #8]            /* the caller-return */
     mov     lr, r2
     /* The caller's resting privilege, read here because nothing after the stack move may need
        privilege: a preemption there is saved demoted. r2/r3 ONLY: r0:r1 carry the AAPCS long
@@ -504,7 +505,7 @@ svc_trampoline:
     ldr     r3, =g_arch_current
     ldr     r3, [r3]
     ldr     r3, [r3, #8]            /* ctx.resting_npriv */
-    ldr     r2, [sp, #8]            /* the resume PSP, read before sp leaves this block */
+    ldr     r2, [sp, #12]           /* the resume PSP, read before sp leaves this block */
     mov     sp, r2
 kickos_armv6m_svc_drop:
     mrs     r2, control

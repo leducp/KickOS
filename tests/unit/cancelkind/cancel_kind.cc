@@ -48,9 +48,8 @@ namespace kickos
             constexpr uint32_t LINE_BIT = 1u << 0;
 
             // The notification the arms below wait on, with the line attached to it on bit 0
-            // and `owner` bound. Answers the notification capability, which is what the wait
-            // takes.
-            uint32_t claim_the_line(Thread* owner)
+            // and `owner` bound.
+            void claim_the_line(Thread* owner)
             {
                 attach_caps(owner, CAP_WIDTH);
                 uint32_t line = 0;
@@ -62,7 +61,6 @@ namespace kickos
                     << "fixture: the line signals the object the waiter waits on";
                 EXPECT_EQ(notify_bind(owner, note), 0)
                     << "fixture: the waiter is that object's bound thread";
-                return note;
             }
 
             // The waiter must be CURRENT, since notify_wait parks whoever calls it, and the peer
@@ -100,6 +98,15 @@ namespace kickos
                     sched::wake(parked, lock);
                 }
             }
+
+            Notification* bound_object(Thread const* t)
+            {
+                return kernel().notifies.resolve(notify_bound_handle(t->notify_bound));
+            }
+
+            class NotifyWaitContract : public KSeam
+            {
+            };
 
             // Every TCB the kernel can reach, so an assertion of ABSENCE is over the whole
             // population rather than over the slots one arm happened to name.
@@ -249,7 +256,7 @@ namespace kickos
         TEST_F(CancelWiring, the_reblock_refusal_reads_kill)
         {
             Thread* const waiter = seat_waiter_over_a_peer();
-            uint32_t const cap = claim_the_line(waiter);
+            claim_the_line(waiter);
             {
                 IrqLock lock;
                 thread_cancel(waiter, lock);
@@ -259,10 +266,7 @@ namespace kickos
             // dropped at reset().
             wake_next_park(hand_the_waiter_its_event);
 
-            uint32_t bits = 0;
-            uintptr_t const at = reinterpret_cast<uintptr_t>(&bits);
-            EXPECT_EQ(notify_wait(waiter, cap, LINE_BIT, KOS_TIMEOUT_NONE, at),
-                      -KOS_ECANCELED)
+            EXPECT_EQ(notify_wait(waiter, LINE_BIT, KOS_LIMIT_NONE), -KOS_ECANCELED)
                 << "a killed thread is refused the re-block";
             EXPECT_EQ(g_switches, 0u) << "and refused BEFORE parking, not woken out of one";
             EXPECT_EQ(waiter->wait_kind, WAIT_NONE) << "it never took a wait edge";
@@ -275,14 +279,11 @@ namespace kickos
         TEST_F(CancelWiring, the_reblock_refusal_is_total_over_the_kinds)
         {
             Thread* const waiter = seat_waiter_over_a_peer();
-            uint32_t const cap = claim_the_line(waiter);
+            claim_the_line(waiter);
             waiter->cancel_kind = CANCEL_SLAY;
             wake_next_park(hand_the_waiter_its_event); // as above: keep the failure an assertion
 
-            uint32_t bits = 0;
-            uintptr_t const at = reinterpret_cast<uintptr_t>(&bits);
-            EXPECT_EQ(notify_wait(waiter, cap, LINE_BIT, KOS_TIMEOUT_NONE, at),
-                      -KOS_ECANCELED)
+            EXPECT_EQ(notify_wait(waiter, LINE_BIT, KOS_LIMIT_NONE), -KOS_ECANCELED)
                 << "every non-zero kind is refused, not just the cooperative one";
             EXPECT_EQ(g_switches, 0u) << "and refused before parking";
             EXPECT_EQ(waiter->wait_kind, WAIT_NONE) << "it never took a wait edge";
@@ -293,16 +294,79 @@ namespace kickos
         TEST_F(CancelWiring, an_uncancelled_waiter_still_parks)
         {
             Thread* const waiter = seat_waiter_over_a_peer();
-            uint32_t const cap = claim_the_line(waiter);
+            claim_the_line(waiter);
             wake_next_park(hand_the_waiter_its_event);
 
-            uint32_t bits = 0;
-            uintptr_t const at = reinterpret_cast<uintptr_t>(&bits);
-            EXPECT_EQ(notify_wait(waiter, cap, LINE_BIT, KOS_TIMEOUT_NONE, at), 0)
-                << "CANCEL_NONE is not a death sentence";
-            EXPECT_EQ(bits, LINE_BIT) << "and the raise it parked for is what it consumed";
+            EXPECT_EQ(notify_wait(waiter, LINE_BIT, KOS_LIMIT_NONE), notify_wait_bits(LINE_BIT))
+                << "CANCEL_NONE is not a death sentence, and the raise it parked for is what it "
+                   "consumed";
             EXPECT_EQ(g_switches, 2u) << "the park switched away and the event switched back";
             EXPECT_EQ(waiter->cancel_kind, CANCEL_NONE) << "a park writes no kind";
+        }
+
+        // --- notify_wait's contract: the binding is the authority, the bits come back in the
+        // result's high half -----------------------------------------------------------------
+
+        // No waker is armed in the arms that must not park: a park ends the arm with the
+        // fixture's refusal.
+        TEST_F(NotifyWaitContract, an_empty_mask_is_refused_before_anything)
+        {
+            Thread* const waiter = seat_waiter_over_a_peer();
+            claim_the_line(waiter);
+            EXPECT_EQ(notify_wait(waiter, 0u, KOS_LIMIT_NONE), -KOS_EINVAL);
+            EXPECT_EQ(g_switches, 0u);
+        }
+
+        TEST_F(NotifyWaitContract, a_thread_bound_to_nothing_is_refused)
+        {
+            Thread* const waiter = seat_waiter_over_a_peer();
+            attach_caps(waiter, CAP_WIDTH);
+            EXPECT_EQ(notify_wait(waiter, LINE_BIT, KOS_LIMIT_NONE), -KOS_EPERM);
+            EXPECT_EQ(g_switches, 0u) << "a refused wait parked";
+            EXPECT_EQ(waiter->wait_kind, WAIT_NONE);
+        }
+
+        TEST_F(NotifyWaitContract, a_cancel_outranks_a_missing_binding)
+        {
+            Thread* const waiter = seat_waiter_over_a_peer();
+            attach_caps(waiter, CAP_WIDTH);
+            {
+                IrqLock lock;
+                thread_cancel(waiter, lock);
+            }
+            EXPECT_EQ(notify_wait(waiter, LINE_BIT, KOS_LIMIT_NONE), -KOS_ECANCELED);
+            EXPECT_EQ(g_switches, 0u);
+        }
+
+        TEST_F(NotifyWaitContract, a_passed_deadline_with_nothing_pending_times_out_at_once)
+        {
+            Thread* const waiter = seat_waiter_over_a_peer();
+            claim_the_line(waiter);
+            EXPECT_EQ(notify_wait(waiter, LINE_BIT, KOS_POLL.ns), -KOS_ETIMEDOUT);
+            EXPECT_EQ(g_switches, 0u) << "a passed deadline parked";
+            EXPECT_EQ(waiter->wait_kind, WAIT_NONE);
+            EXPECT_FALSE(waiter->on_timer) << "a passed deadline armed a timer";
+        }
+
+        TEST_F(NotifyWaitContract, the_taken_bits_come_back_in_the_high_half_and_leave_pending)
+        {
+            constexpr uint32_t HIGH_BIT = 1u << 31;
+            constexpr uint32_t UNACCEPTED = 1u << 3;
+            Thread* const waiter = seat_waiter_over_a_peer();
+            claim_the_line(waiter);
+            Notification* const n = bound_object(waiter);
+            ASSERT_NE(n, nullptr);
+            n->pending = LINE_BIT | HIGH_BIT | UNACCEPTED;
+
+            int64_t const rc = notify_wait(waiter, LINE_BIT | HIGH_BIT, KOS_POLL.ns);
+
+            EXPECT_EQ(rc, notify_wait_bits(LINE_BIT | HIGH_BIT))
+                << "a pending bit waits for no deadline";
+            EXPECT_EQ(kos_u64_lo(static_cast<uint64_t>(rc)), 0u) << "the low half is not 0";
+            EXPECT_EQ(kos_u64_hi(static_cast<uint64_t>(rc)), LINE_BIT | HIGH_BIT);
+            EXPECT_EQ(n->pending, UNACCEPTED)
+                << "the taken bits stayed pending, or an unaccepted one went";
+            EXPECT_EQ(g_switches, 0u);
         }
     }
 }

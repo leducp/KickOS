@@ -282,7 +282,7 @@ namespace
             }
             else if (rc == 0)
             {
-                kos_sleep_ns(RETRY_DELAY_NS);
+                kos_sleep_for(kos_ns(RETRY_DELAY_NS));
             }
         }
 

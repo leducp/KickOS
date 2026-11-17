@@ -148,15 +148,15 @@ namespace
 
 extern "C"
 {
-    int32_t kos_send(kos_cap_t ep, void const* buf, size_t len, uint32_t timeout_us)
+    int32_t kos_send(kos_cap_t ep, void const* buf, size_t len, kos_monotonic_t until)
     {
         EXPECT_EQ(ep, KOS_CAP_STDOUT);
         g_sends = g_sends + 1;
-        if (timeout_us != 0u)
+        if (until.ns > 0)
         {
             g_waiting_sends = g_waiting_sends + 1;
         }
-        if (g_rendezvous and timeout_us == KOS_TIMEOUT_NONE)
+        if (g_rendezvous and until.ns == KOS_NEVER.ns)
         {
             return rendezvous(buf, len);
         }
@@ -180,7 +180,7 @@ extern "C"
     }
 
     // _exit's only call, KOS_SYS_EXIT.
-    uintptr_t arch_syscall(uintptr_t, uintptr_t, uintptr_t, uintptr_t, uintptr_t)
+    uintptr_t arch_syscall(uintptr_t, uintptr_t, uintptr_t, uintptr_t, uintptr_t, uintptr_t)
     {
         abort();
     }

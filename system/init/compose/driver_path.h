@@ -46,7 +46,7 @@ namespace kickos::init::driver_path
     bool narrows_at_handover(Walk const& walk, uint16_t task);
 
     // Before the system ends, where a console driver holds stdout: kos_console_flush, bounded by
-    // KOS_DRV_HANDOVER_PROBE_US (1.5).
+    // KOS_DRV_HANDOVER_PROBE (1.5).
     void drain(Walk const& walk);
 }
 

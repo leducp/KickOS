@@ -89,7 +89,7 @@ namespace selftest
     {
         while (g_pl_go.load() == 0)
         {
-            kos_sleep_ns(PLACE_STEP_NS);
+            kos_sleep_for(kos_ns(PLACE_STEP_NS));
         }
     }
 
@@ -103,7 +103,7 @@ namespace selftest
         for (unsigned i = 0; i < PL_SAMPLES; i++)
         {
             uint32_t const c = pl_core();
-            if (static_cast<int>(arch_syscall(KOS_SYS_CORE_CURRENT, 0, 0, 0, 0))
+            if (static_cast<int>(arch_syscall(KOS_SYS_CORE_CURRENT, 0, 0, 0, 0, 0))
                 != kos_core_current())
             {
                 split++;
@@ -126,7 +126,7 @@ namespace selftest
         ArmHold hold;
         TAP_HOLD(hold.thread(&w));
         w = kos::thread::create_caps(pl_sample_worker, nullptr, "plsmp", 12, nullptr, 0,
-                                     KOS_POLICY_FIFO, 0, 0, nullptr, nullptr, 0, mask);
+                                     KOS_POLICY_FIFO, 0ns, 0, nullptr, nullptr, 0, mask);
         TAP_CHECK(w.valid());
         if (place)
         {
@@ -141,7 +141,7 @@ namespace selftest
     {
         while (g_pl_stop.load() == 0)
         {
-            kos_sleep_ns(PLACE_STEP_NS);
+            kos_sleep_for(kos_ns(PLACE_STEP_NS));
         }
     }
 
@@ -253,9 +253,9 @@ namespace selftest
             rep[XS_ONE] = kos::thread::pin(s.id(), 1);
             rep[XS_ZERO] = kos::thread::pin(s.id(), 0);
             g_pl_stop = 1;
-            (void)s.join(STALL_TOLERANT_US);
+            (void)s.join_for(std::chrono::microseconds{STALL_TOLERANT_US});
         }
-        (void)kos_send(child_cap(0), rep, sizeof(rep), KOS_TIMEOUT_NONE);
+        (void)kos_send(child_cap(0), rep, sizeof(rep), KOS_NEVER);
         return 0;
     }
 #endif
@@ -351,7 +351,7 @@ namespace selftest
         ArmHold hold(2u * STALL_TOLERANT_US);
         TAP_HOLD(hold.thread(&w) and hold.thread(&d));
         w = kos::thread::create_caps(pl_spin_worker, nullptr, "migr", 12, nullptr, 0,
-                                     KOS_POLICY_FIFO, 0, 0, nullptr, nullptr, 0, 1u << away);
+                                     KOS_POLICY_FIFO, 0ns, 0, nullptr, nullptr, 0, 1u << away);
         TAP_CHECK(w.valid());
         // Set before the driver exists, so the relaxed cell needs no publication order.
         g_pl_victim = w.id();
@@ -383,7 +383,7 @@ namespace selftest
     {
         peer_seat(9);
         kos_thread_t const self = kos_thread_self();
-        (void)kos_send(child_cap(0), &self, sizeof(self), KOS_TIMEOUT_NONE);
+        (void)kos_send(child_cap(0), &self, sizeof(self), KOS_NEVER);
         peer_park(child_cap(1));
         return 0;
     }
@@ -426,7 +426,7 @@ namespace selftest
         rep[GN_AFF] =
             static_cast<int32_t>(kos_thread_affinity(kos_thread_self(), KOS_AFFINITY_QUERY));
         rep[GN_CORE] = static_cast<int32_t>(kos_core_current());
-        (void)kos_send(child_cap(0), rep, sizeof(rep), KOS_TIMEOUT_NONE);
+        (void)kos_send(child_cap(0), rep, sizeof(rep), KOS_NEVER);
         return 0;
     }
 #endif
@@ -580,7 +580,7 @@ namespace selftest
         // creates the second.
         pl_wait_go();
         uint32_t const from = g_pl_pass[other].load();
-        uint64_t const start = kos_clock_now();
+        uint64_t const start = kos_monotonic_now().ns;
         uint64_t last = start;
         uint64_t ran = 0;
         uint32_t pass = 0;
@@ -588,7 +588,7 @@ namespace selftest
         uint32_t rotated = PL_SPENT;
         while (true)
         {
-            uint64_t const now = kos_clock_now();
+            uint64_t const now = kos_monotonic_now().ns;
             if (now - start >= STALL_TOLERANT_US * 1000ull)
             {
                 break;
@@ -630,8 +630,8 @@ namespace selftest
     void pl_burn_worker(void*)
     {
         pl_wait_go();
-        uint64_t const start = kos_clock_now();
-        while (not pl_pair_done() and kos_clock_now() - start < 2ull * STALL_TOLERANT_US * 1000ull)
+        kos_monotonic_t const until = after_us(2ull * STALL_TOLERANT_US);
+        while (not pl_pair_done() and kos_monotonic_now().ns < until.ns)
         {
         }
     }
@@ -665,16 +665,16 @@ namespace selftest
 
         // The quantum must be resolvable by the monotonic clock or no slice can expire under a
         // burn, and an emulated clock's granule is coarse, so the granule is measured.
-        uint64_t e0 = kos_clock_now();
+        uint64_t e0 = kos_monotonic_now().ns;
         uint64_t e1 = e0;
         while (e1 == e0)
         {
-            e1 = kos_clock_now();
+            e1 = kos_monotonic_now().ns;
         }
         uint64_t e2 = e1;
         while (e2 == e1)
         {
-            e2 = kos_clock_now();
+            e2 = kos_monotonic_now().ns;
         }
         uint64_t const granule = e2 - e1;
         uint64_t quantum = 1000000ull; // 1 ms on a fine clock
@@ -726,7 +726,7 @@ namespace selftest
                 w[i] = kos::thread::create_caps(entry,
                                                 reinterpret_cast<void*>(static_cast<uintptr_t>(i)),
                                                 "burn", PL_CROWD_PRIO, nullptr, 0,
-                                                KOS_POLICY_RR, static_cast<uint32_t>(quantum), 0,
+                                                KOS_POLICY_RR, std::chrono::nanoseconds{quantum}, 0,
                                                 nullptr, nullptr, 0, pin);
             }
             g_pl_go = 1;
@@ -807,7 +807,7 @@ namespace selftest
         unsigned const me = static_cast<unsigned>(reinterpret_cast<uintptr_t>(arg));
         pl_wait_go();
         g_pl_spread_aff[me] = pl_affinity();
-        uint64_t const start = kos_clock_now();
+        uint64_t const start = kos_monotonic_now().ns;
         uint32_t seen = 0;
         uint32_t passes = 0;
         while (true)
@@ -826,7 +826,7 @@ namespace selftest
             {
                 break;
             }
-            if (kos_clock_now() - start >= PL_SPREAD_BUDGET_NS)
+            if (kos_monotonic_now().ns - start >= PL_SPREAD_BUDGET_NS)
             {
                 break;
             }
@@ -941,7 +941,7 @@ namespace selftest
     {
         char buf[16];
         struct kos_reply_recv_opts opts;
-        kos_reply_recv_opts_init(&opts, child_cap(0), 0, KOS_TIMEOUT_NONE);
+        kos_reply_recv_opts_init(&opts, child_cap(0), 0, KOS_NEVER);
         int32_t const got =
             kos_reply_recv(KOS_CAP_NONE, buf, kos_call_lens_pack(0, sizeof(buf)), &opts);
         if (got < 0 or opts.info.reply_cap == KOS_CAP_NONE)
@@ -950,9 +950,9 @@ namespace selftest
             return;
         }
         // Reply only once the caller is parked for it and the spinner holds the caller's core.
-        kos_sem_wait(&g_xc_gate, KOS_TIMEOUT_NONE);
+        kos_sem_wait(&g_xc_gate, KOS_NEVER);
         kos_cap_t const reply = opts.info.reply_cap;
-        kos_reply_recv_opts_init(&opts, child_cap(0), 0, KOS_TIMEOUT_NONE);
+        kos_reply_recv_opts_init(&opts, child_cap(0), 0, KOS_NEVER);
         memcpy(buf, "pong!", 5);
         g_xc_serve_rc = kos_reply_recv(reply, buf, kos_call_lens_pack(5, sizeof(buf)), &opts);
     }
@@ -960,7 +960,7 @@ namespace selftest
     {
         char buf[16];
         memcpy(buf, "ping", 4);
-        g_xc_call_rc = kos_call(child_cap(0), buf, 4, sizeof(buf), KOS_TIMEOUT_NONE);
+        g_xc_call_rc = kos_call(child_cap(0), buf, 4, sizeof(buf), KOS_NEVER);
     }
     // The spinner yields its core only to a preemption and the reply follows its post, so the
     // core it posts from is held when the reply lands. A spin count cannot witness that: a
@@ -1003,20 +1003,20 @@ namespace selftest
         kos_cap_grant vcaps[] = {{g_xc_ep, KOS_CAP_WAIT}};
         kos_cap_grant ccaps[] = {{g_xc_ep, KOS_CAP_SIGNAL}};
         sv = kos::thread::create_caps(xc_server, nullptr, "xcS", XC_SERVER_PRIO, vcaps, 1,
-                                      KOS_POLICY_FIFO, 0, 0, nullptr, nullptr, 0, 1u << PL_HOME);
+                                      KOS_POLICY_FIFO, 0ns, 0, nullptr, nullptr, 0, 1u << PL_HOME);
         TAP_CHECK(sv.valid());
         // The spinner shares the caller's core below it, so it runs only once the caller parks.
         cl = kos::thread::create_caps(xc_caller, nullptr, "xcC", XC_CALLER_PRIO, ccaps, 1,
-                                      KOS_POLICY_FIFO, 0, 0, nullptr, nullptr, 0, 1u << away);
+                                      KOS_POLICY_FIFO, 0ns, 0, nullptr, nullptr, 0, 1u << away);
         TAP_CHECK(cl.valid());
         sp = kos::thread::create_caps(xc_spinner, nullptr, "xcP", XC_SPIN_PRIO, nullptr, 0,
-                                      KOS_POLICY_FIFO, 0, 0, nullptr, nullptr, 0, 1u << away);
+                                      KOS_POLICY_FIFO, 0ns, 0, nullptr, nullptr, 0, 1u << away);
         TAP_CHECK(sp.valid());
         // Bounded so a missing reschedule request fails instead of hanging.
-        int const cjoined = cl.join(STALL_TOLERANT_US);
+        int const cjoined = cl.join_for(std::chrono::microseconds{STALL_TOLERANT_US});
         g_xc_stop = 1;
         // Releases the server from its final receive.
-        (void)kos_send(g_xc_ep, "", 0, STALL_TOLERANT_US);
+        (void)kos_send(g_xc_ep, "", 0, after_us(STALL_TOLERANT_US));
         TAP_CHECK(hold.joined());
         uint32_t const spin_core = g_xc_spin_core;
         tap::diag("caller pinned to core %u under a spinner on core %u: join %d, call %d",
@@ -1070,15 +1070,15 @@ namespace selftest
         uintptr_t const me = reinterpret_cast<uintptr_t>(arg);
         uint32_t done = 0;
         uint32_t refused = 0;
-        uint64_t const until = kos_clock_now() + uint64_t{TC_BOUND_US} * 1000u;
+        kos_monotonic_t const until = after_us(TC_BOUND_US);
         while (done < TC_ROUNDS)
         {
-            int const rc = kos_sem_wait(&g_tc_sem, 0);
+            int const rc = kos_sem_wait(&g_tc_sem, KOS_POLL);
             if (rc == 0)
             {
                 done++;
             }
-            else if (rc != -KOS_ETIMEDOUT or kos_clock_now() > until)
+            else if (rc != -KOS_ETIMEDOUT or kos_monotonic_now().ns > until.ns)
             {
                 refused++;
                 break;
@@ -1089,7 +1089,7 @@ namespace selftest
     }
     void tc_waiter(void*)
     {
-        g_tc_first = kos_sem_wait(&g_tc_sem, TC_BOUND_US);
+        g_tc_first = kos_sem_wait(&g_tc_sem, after_us(TC_BOUND_US));
     }
     void t_sem_units_across_cores()
     {
@@ -1121,34 +1121,35 @@ namespace selftest
         TAP_HOLD(hold.thread(&w) and hold.thread(&t[0]) and hold.thread(&t[1])
                  and hold.thread(&p[0]) and hold.thread(&p[1]));
         w = kos::thread::create_caps(tc_waiter, nullptr, "tcW", TC_PRIO + 1, nullptr, 0,
-                                     KOS_POLICY_FIFO, 0, 0, nullptr, nullptr, 0, peer);
+                                     KOS_POLICY_FIFO, 0ns, 0, nullptr, nullptr, 0, peer);
         TAP_CHECK(w.valid());
-        uint64_t const until = kos_clock_now() + uint64_t{STALL_TOLERANT_US} * 1000u;
-        while (g_tc_sem.word != KOS_WORD_WAITERS and kos_clock_now() < until)
+        kos_monotonic_t const until = after_us(STALL_TOLERANT_US);
+        while (g_tc_sem.word != KOS_WORD_WAITERS and kos_monotonic_now().ns < until.ns)
         {
-            kos_sleep_ns(PLACE_STEP_NS);
+            kos_sleep_for(kos_ns(PLACE_STEP_NS));
         }
         uint32_t const parked = g_tc_sem.word;
         for (int i = 0; i < 2; i++)
         {
             void* const me = reinterpret_cast<void*>(static_cast<uintptr_t>(i));
             t[i] = kos::thread::create_caps(tc_taker, me, "tcT", TC_PRIO, nullptr, 0,
-                                            KOS_POLICY_FIFO, 0, 0, nullptr, nullptr, 0, peer);
+                                            KOS_POLICY_FIFO, 0ns, 0, nullptr, nullptr, 0, peer);
             TAP_CHECK(t[i].valid());
         }
         for (int i = 0; i < 2; i++)
         {
             uintptr_t const me = 2u + static_cast<uintptr_t>(i);
             p[i] = kos::thread::create_caps(tc_poster, reinterpret_cast<void*>(me), "tcP",
-                                            TC_PRIO, nullptr, 0, KOS_POLICY_FIFO, 0, 0, nullptr,
+                                            TC_PRIO, nullptr, 0, KOS_POLICY_FIFO, 0ns, 0, nullptr,
                                             nullptr, 0, home);
             TAP_CHECK(p[i].valid());
         }
-        uint64_t const t0 = kos_clock_now();
+        kos_monotonic_t const t0 = kos_monotonic_now();
         TAP_CHECK(hold.joined());
-        uint32_t const ms = static_cast<uint32_t>((kos_clock_now() - t0) / 1000000u);
+        uint32_t const ms =
+            static_cast<uint32_t>(kos_between(t0, kos_monotonic_now()).ns / 1000000u);
         uint32_t const left = g_tc_sem.word;
-        int const after = kos_sem_wait(&g_tc_sem, 0);
+        int const after = kos_sem_wait(&g_tc_sem, KOS_POLL);
         uint32_t const taken = g_tc_done[0].load() + g_tc_done[1].load();
         uint32_t const posted = g_tc_done[2].load() + g_tc_done[3].load();
         uint32_t refused = 0;
@@ -1193,10 +1194,10 @@ namespace selftest
         int rc = 0;
         while (rc == 0 and done < CX_ROUNDS)
         {
-            rc = kos_mutex_lock(&g_cx_m, KOS_TIMEOUT_NONE);
+            rc = kos_mutex_lock(&g_cx_m, KOS_NEVER);
             while (rc == 0 and g_cx_turn != me)
             {
-                rc = kos_cond_wait(&g_cx_cond, &g_cx_m, CX_STALL_US);
+                rc = kos_cond_wait(&g_cx_cond, &g_cx_m, after_us(CX_STALL_US));
                 if (rc == -KOS_ETIMEDOUT)
                 {
                     stalls++;
@@ -1255,12 +1256,13 @@ namespace selftest
         {
             void* const me = reinterpret_cast<void*>(static_cast<uintptr_t>(i));
             p[i] = kos::thread::create_caps(cx_player, me, "cxP", CX_PRIO, nullptr, 0,
-                                            KOS_POLICY_FIFO, 0, 0, nullptr, nullptr, 0, cores[i]);
+                                            KOS_POLICY_FIFO, 0ns, 0, nullptr, nullptr, 0, cores[i]);
             TAP_CHECK(p[i].valid());
         }
-        uint64_t const t0 = kos_clock_now();
+        kos_monotonic_t const t0 = kos_monotonic_now();
         TAP_CHECK(hold.joined());
-        uint32_t const ms = static_cast<uint32_t>((kos_clock_now() - t0) / 1000000u);
+        uint32_t const ms =
+            static_cast<uint32_t>(kos_between(t0, kos_monotonic_now()).ns / 1000000u);
         tap::diag("turns across cores: %u and %u rounds, %u and %u stalls, rc %d %d, %u ms",
                   static_cast<unsigned>(g_cx_done[0].load()),
                   static_cast<unsigned>(g_cx_done[1].load()),
@@ -1304,8 +1306,9 @@ namespace selftest
     // Until `flag` is set or `ns` has passed, on the CPU.
     void pd_spin(Atomic<uint32_t, Order::RELAXED> const* flag, uint64_t ns)
     {
-        uint64_t const until = kos_clock_now() + ns;
-        while (kos_clock_now() < until)
+        kos_monotonic_t const until =
+            kos_after(kos_monotonic_now(), kos_ns(static_cast<int64_t>(ns)));
+        while (kos_monotonic_now().ns < until.ns)
         {
             if (flag != nullptr and flag->load() != 0)
             {
@@ -1343,12 +1346,12 @@ namespace selftest
         // FIFO at one level: W is queued behind the spinner on A from its creation.
         if (away != home)
         {
-            x = kos::thread::create(pd_spinner, nullptr, "pdX", PD_EQUAL, KOS_POLICY_FIFO, 0,
+            x = kos::thread::create(pd_spinner, nullptr, "pdX", PD_EQUAL, KOS_POLICY_FIFO, 0ns,
                                     nullptr, 0, nullptr, 0, nullptr, 0, 0, nullptr, 1u << away);
         }
         if (x.valid())
         {
-            w = kos::thread::create(pd_waiter, nullptr, "pdW", PD_EQUAL, KOS_POLICY_FIFO, 0,
+            w = kos::thread::create(pd_waiter, nullptr, "pdW", PD_EQUAL, KOS_POLICY_FIFO, 0ns,
                                     nullptr, 0, nullptr, 0, nullptr, 0, 0, nullptr, 1u << away);
         }
         int widened = -99;
@@ -1421,7 +1424,7 @@ namespace selftest
     kos::thread::Handle xirq_spawn(void (*entry)(void*), void* arg, char const* name, uint32_t core)
     {
         return kos::thread::create_caps(entry, arg, name, XIRQ_PRIO, nullptr, 0, KOS_POLICY_FIFO,
-                                        0, KOS_AUTH_IRQ, nullptr, nullptr, 0, 1u << core);
+                                        0ns, KOS_AUTH_IRQ, nullptr, nullptr, 0, 1u << core);
     }
 
     Atomic<int32_t, Order::RELAXED> g_xr_rc{XIRQ_UNSET};
@@ -1441,7 +1444,7 @@ namespace selftest
         g_xr_core = 0xffu;
         kos_cap_grant const caps[] = {{irq, KOS_CAP_SIGNAL}};
         auto r = kos::thread::create_caps(xirq_raiser, nullptr, "xirqR", XIRQ_PRIO, caps, 1,
-                                          KOS_POLICY_FIFO, 0, 0, nullptr, nullptr, 0, 1u << core);
+                                          KOS_POLICY_FIFO, 0ns, 0, nullptr, nullptr, 0, 1u << core);
         if (not r.valid())
         {
             g_xr_unmade = 1;
@@ -1452,7 +1455,7 @@ namespace selftest
     // The raise's answer once `r` has ended, or XIRQ_UNSET when it was never made or did not end.
     int32_t xirq_raiser_join(kos::thread::Handle const& r)
     {
-        if (not r.valid() or r.join(STALL_TOLERANT_US) != 0)
+        if (not r.valid() or r.join_for(std::chrono::microseconds{STALL_TOLERANT_US}) != 0)
         {
             return XIRQ_UNSET;
         }
@@ -1485,11 +1488,11 @@ namespace selftest
             if (r.valid())
             {
                 uint32_t bits = 0;
-                g_xw_first = kos_notify_wait(note, XIRQ_ALL, STALL_TOLERANT_US, &bits);
+                g_xw_first = kos_notify_wait(XIRQ_ALL, after_us(STALL_TOLERANT_US), &bits);
                 g_xw_core = pl_core();
                 g_xw_bits = bits;
                 bits = 0;
-                g_xw_second = kos_notify_wait(note, XIRQ_ALL, XIRQ_QUIET_US, &bits);
+                g_xw_second = kos_notify_wait(XIRQ_ALL, after_us(XIRQ_QUIET_US), &bits);
                 g_xw_raise = xirq_raiser_join(r);
                 g_xw_raise_core = g_xr_core.load();
             }
@@ -1574,12 +1577,12 @@ namespace selftest
         if (g_xs_own[leg].load() == 0)
         {
             uint32_t bits = 0;
-            g_xs_first[leg] = kos_notify_wait(note, XIRQ_ALL, XIRQ_QUIET_US, &bits);
+            g_xs_first[leg] = kos_notify_wait(XIRQ_ALL, after_us(XIRQ_QUIET_US), &bits);
             auto const r = xirq_raiser_spawn(irq, XIRQ_OTHER_CORE);
             if (r.valid())
             {
                 bits = 0;
-                g_xs_second[leg] = kos_notify_wait(note, XIRQ_ALL, STALL_TOLERANT_US, &bits);
+                g_xs_second[leg] = kos_notify_wait(XIRQ_ALL, after_us(STALL_TOLERANT_US), &bits);
                 g_xs_core[leg] = pl_core();
                 g_xs_raise[leg] = xirq_raiser_join(r);
             }
@@ -1704,7 +1707,7 @@ namespace selftest
     {
         while (g_re_go.load() == 0)
         {
-            kos_sleep_ns(PLACE_STEP_NS);
+            kos_sleep_for(kos_ns(PLACE_STEP_NS));
         }
     }
 
@@ -1721,9 +1724,9 @@ namespace selftest
         }
         uint32_t const before = re_rounds_total();
         g_re_armed = 1;
-        uint64_t const start = kos_clock_now();
+        uint64_t const start = kos_monotonic_now().ns;
         uint32_t reads = 0;
-        while (not re_switchers_done() and kos_clock_now() - start < RE_BUDGET_NS)
+        while (not re_switchers_done() and kos_monotonic_now().ns - start < RE_BUDGET_NS)
         {
             if (errno != EINVAL)
             {

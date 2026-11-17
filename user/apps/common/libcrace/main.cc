@@ -42,7 +42,7 @@ namespace
     // The racing workers of main's task: the others run in the peer's.
     constexpr int MAIN_WORKERS = static_cast<int>(TASK_RACERS);
     // How long main waits for an arm's threads.
-    constexpr uint32_t ARM_WAIT_US = 20000000;
+    constexpr std::chrono::seconds ARM_WAIT{20};
 
     // The sim's host libc has no lock to hold.
     void malloc_holder(void*)
@@ -51,7 +51,7 @@ namespace
         __malloc_lock(_REENT);
 #endif
         kos_sem_post(&gates()->held);
-        kos_sem_wait(&gates()->release, KOS_TIMEOUT_NONE);
+        kos_sem_wait(&gates()->release, KOS_NEVER);
 #if defined(_NEWLIB_VERSION)
         __malloc_unlock(_REENT);
 #endif
@@ -97,8 +97,9 @@ namespace
     {
         __malloc_lock(_REENT);
         auto victim = spawn_in(reask_victim, nullptr, "mreask", VICTIM_PRIO, g_core_mask);
-        bool parked = victim.valid() and kos_sem_wait(&g_gates->entering, KOS_TIMEOUT_NONE) == 0;
-        bool const killed = victim.valid() and victim.cancel(KOS_CANCEL_KILL, 0) == 0;
+        bool parked = victim.valid() and kos_sem_wait(&g_gates->entering, KOS_NEVER) == 0;
+        bool const killed =
+            victim.valid() and victim.cancel_for(KOS_CANCEL_KILL, std::chrono::nanoseconds{0}) == 0;
         __malloc_unlock(_REENT);
         g_reask_ran = parked and killed and victim.join() == 0;
     }
@@ -106,7 +107,7 @@ namespace
     void getenv_after_kill(void*)
     {
         kos_sem_post(&gates()->entering);
-        (void)kos_sem_wait(&gates()->release, KOS_TIMEOUT_NONE);
+        (void)kos_sem_wait(&gates()->release, KOS_NEVER);
         g_env = getenv("KICKOS_LIBCRACE_UNSET");
         __atomic_store_n(&g_env_after_kill, 1u, __ATOMIC_RELAXED);
         kos_yield();
@@ -120,7 +121,7 @@ namespace
         (void)kos_sem_init(&g_gates->release, 0);
         *holder = kos::thread::create(malloc_holder, nullptr, "mholder", WORKER_PRIO);
         bool holding = holder->valid();
-        if (holding and kos_sem_wait(&g_gates->held, KOS_TIMEOUT_NONE) != 0)
+        if (holding and kos_sem_wait(&g_gates->held, KOS_NEVER) != 0)
         {
             holding = false;
             kos_sem_post(&g_gates->release);
@@ -148,7 +149,8 @@ namespace
         if (hold_malloc(&holder))
         {
             auto victim = spawn_parked(entry, name, core_mask);
-            ended = victim.valid() and victim.cancel(KOS_CANCEL_KILL, 0) == 0
+            ended = victim.valid()
+                    and victim.cancel_for(KOS_CANCEL_KILL, std::chrono::nanoseconds{0}) == 0
                     and victim.join() == 0;
             end_hold(holder);
         }
@@ -162,7 +164,7 @@ namespace
     {
 #if defined(_NEWLIB_VERSION)
         kos_mutex_t* const lock = kos_libc_file_lock(stdout);
-        if (kos_mutex_lock(lock, 0) != -KOS_EOWNERDEAD)
+        if (kos_mutex_lock(lock, KOS_POLL) != -KOS_EOWNERDEAD)
         {
             return false;
         }
@@ -210,8 +212,9 @@ namespace
         // The child outranks main on main's core, so main, woken by its post, runs again only
         // once it has parked on the release gate.
         auto child = spawn_in(getenv_after_kill, nullptr, "menv", VICTIM_PRIO, core_mask);
-        bool const ran = child.valid() and kos_sem_wait(&g_gates->entering, KOS_TIMEOUT_NONE) == 0
-                         and child.cancel(KOS_CANCEL_KILL, 0) == 0 and child.join() == 0;
+        bool const ran = child.valid() and kos_sem_wait(&g_gates->entering, KOS_NEVER) == 0
+                         and child.cancel_for(KOS_CANCEL_KILL, std::chrono::nanoseconds{0}) == 0
+                         and child.join() == 0;
         *read = __atomic_load_n(&g_env_after_kill, __ATOMIC_RELAXED) != 0;
         unpin_main(core_mask);
         return ran;
@@ -248,15 +251,19 @@ namespace
     // True once a thread waits on `m`, within the arms' bound.
     bool parked_on(kos_mutex_t const* m)
     {
-        for (uint32_t waited = 0; waited < ARM_WAIT_US; waited += 1000u)
+        kos_monotonic_t const until = kos::after(ARM_WAIT);
+        while (true)
         {
             if ((__atomic_load_n(&m->word, __ATOMIC_ACQUIRE) & KOS_WORD_WAITERS) != 0)
             {
                 return true;
             }
-            kos::sleep_ns(1000000ull);
+            if (kos_monotonic_now().ns >= until.ns)
+            {
+                return false;
+            }
+            kos::sleep_for(std::chrono::milliseconds{1});
         }
-        return false;
     }
 
     FILE* g_order_stream = nullptr;
@@ -324,7 +331,7 @@ namespace
         __malloc_unlock(_REENT);
         for (int k = 0; k < 2 and ran; k++)
         {
-            ran = kos_sem_wait(&g_order_done, ARM_WAIT_US) == 0;
+            ran = kos_sem_wait(&g_order_done, kos::after(ARM_WAIT)) == 0;
         }
         if (not ran)
         {
@@ -368,7 +375,7 @@ namespace
             }
             else
             {
-                kos::sleep_ns(1000000ull);
+                kos::sleep_for(std::chrono::milliseconds{1});
             }
         }
     }
@@ -377,7 +384,7 @@ namespace
     {
         flockfile(stdout);
         kos_sem_post(&g_exit_holds);
-        (void)kos_sem_wait(&g_exit_running, ARM_WAIT_US);
+        (void)kos_sem_wait(&g_exit_running, kos::after(ARM_WAIT));
         (void)atexit(exit_noop);
         funlockfile(stdout);
         kos_sem_post(&g_exit_registered);
@@ -394,12 +401,12 @@ namespace
             return false;
         }
         auto registrar = spawn_in(exit_registrar, nullptr, "mexit", WORKER_PRIO, 0);
-        if (not registrar.valid() or kos_sem_wait(&g_exit_holds, KOS_TIMEOUT_NONE) != 0)
+        if (not registrar.valid() or kos_sem_wait(&g_exit_holds, KOS_NEVER) != 0)
         {
             return false;
         }
         __cxa_finalize(&g_exit_dso);
-        bool const ran = kos_sem_wait(&g_exit_registered, ARM_WAIT_US) == 0;
+        bool const ran = kos_sem_wait(&g_exit_registered, kos::after(ARM_WAIT)) == 0;
         if (ran)
         {
             registrar.join();
@@ -440,10 +447,11 @@ namespace
             if (running_)
             {
                 status = -99;
-                while (kickos::apps::wait_dead(task_, &status, 1000u) == -KOS_ETIMEDOUT)
+                while (kickos::apps::wait_dead(task_, &status, std::chrono::seconds{1})
+                       == -KOS_ETIMEDOUT)
                 {
                 }
-                (void)kos_task_slay(task_, 0);
+                (void)kos_task_slay(task_, KOS_POLL);
                 running_ = false;
             }
             if (prog_ != KOS_CAP_NONE)
@@ -481,7 +489,7 @@ namespace
         }
         auto print = kos::thread::create(printer, nullptr, "mprint", WORKER_PRIO);
         bool const started = print.valid();
-        if (started and kos_sem_wait(&g_gates->printed, PRINT_WAIT_US) == 0)
+        if (started and kos_sem_wait(&g_gates->printed, kos::after(PRINT_WAIT)) == 0)
         {
             kos::print("libcrace: a printf completed while malloc was held\n");
         }
@@ -744,12 +752,12 @@ int main(int, char**)
     started += static_cast<int>(main_started);
     if (ballast != nullptr and started == WORKERS)
     {
-        kos_sem_wait(&g_gates->starved, KOS_TIMEOUT_NONE);
+        kos_sem_wait(&g_gates->starved, KOS_NEVER);
     }
     release_heap(ballast);
     for (uint32_t w = 0; w < main_started; w++)
     {
-        kos_sem_wait(&g_gates->done, KOS_TIMEOUT_NONE);
+        kos_sem_wait(&g_gates->done, KOS_NEVER);
     }
     if (racers.running())
     {

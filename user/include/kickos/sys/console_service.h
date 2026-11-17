@@ -148,7 +148,7 @@ int32_t console_serve_loop(Shared* sh)
 {
     uint8_t msg[KOS_EP_MSG_MAX];
     struct kos_reply_recv_opts opts;
-    kos_reply_recv_opts_init(&opts, KOS_CONSOLE_CAP_EP, 0u, KOS_TIMEOUT_NONE);
+    kos_reply_recv_opts_init(&opts, KOS_CONSOLE_CAP_EP, 0u, KOS_NEVER);
     // Send this reply when receiving the next request.
     kos_cap_t reply_cap = KOS_CAP_NONE;
     size_t reply_len = 0;

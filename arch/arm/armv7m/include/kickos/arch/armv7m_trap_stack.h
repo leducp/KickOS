@@ -106,24 +106,25 @@
 #define KICKOS_ARMV7M_TRAP_NEST_SVC 96
 
 /* The window with the dispatch inside it, which is the KICKOS_KERNEL_STACKS 0 posture: the
- * trampoline runs on R from its first instruction, so its `push {r12, lr}` adds 8, and the
+ * trampoline runs on R from its first instruction, so its argument and return store adds 16, and the
  * STKALIGN pad the preempting entry spends is a term: the dispatch's own frames are
  * word-granular, so the deepest SP can be 4-mod-8 on its own.
  *
  * It is a frame term and not rounding in the depth. Here the gate compares DEPTH >= D for
  * every parity of D; folded into the depth it would compare D against a figure that already
  * spent 4 on the pad, and pass a dispatch 4 bytes past what the site can hold. */
-#define KICKOS_ARMV7M_TRAP_NEST_SVC_DISPATCH 108
+#define KICKOS_ARMV7M_TRAP_NEST_SVC_DISPATCH 116
 
 /* THE SVCK CLASS, structural half: what stands between the top of a kernel block (T =
  * ctx.kernel_sp) and the first byte syscall_dispatch may use, plus what a preemption puts
  * below the deepest byte it uses.
  *
- *   -16    the continuation header the SVC handler lays at T: a3 (the fifth argument, passed
- *          on the stack by AAPCS), the caller-return, the PSP the thread resumes on, and the
- *          word that keeps SP 8-aligned for the call. The trampoline's entry frame below it,
- *          at most 104, is popped before the dispatch descends, so it and the preemption
- *          below are alternatives: 16 + 104 + 96 tail-chained onto it stays inside the sum.
+ *   -24    the continuation header the SVC handler lays at T: a3 and a4 (the fifth and sixth
+ *          arguments, passed on the stack by AAPCS), the caller-return, the PSP the thread
+ *          resumes on, the caller's PSPLIM where the core has one, and the word that keeps SP
+ *          8-aligned for the call. The trampoline's entry frame below it, at most 104, is
+ *          popped before the dispatch descends, so it and the preemption below are
+ *          alternatives: 24 + 104 + 96 tail-chained onto it stays inside the sum.
  *   -4     the STKALIGN pad a preempting exception spends. It does NOT cancel here: above it
  *          is a chain of compiler frames whose sub is a multiple of 4, so the deepest SP can
  *          be 4-mod-8 on its own.
@@ -132,7 +133,7 @@
  *   -96    the PendSV that tail-chains behind it, by the single-nesting argument above.
  *
  * The FP terms are unconditional: an FP-live caller's dispatch runs with CONTROL.FPCA set. */
-#define KICKOS_ARMV7M_TRAP_NEST_SVCK 220
+#define KICKOS_ARMV7M_TRAP_NEST_SVCK 228
 
 /* Worst-case bytes the kernel's C dispatch descends BELOW all of that, per class.
  *
@@ -174,7 +175,7 @@
 #define KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_SVCK 768
 #endif
 
-/* THE EXIT CLASS, structural half: NEST_SVCK's window without the 16-byte continuation
+/* THE EXIT CLASS, structural half: NEST_SVCK's window without the 24-byte continuation
  * header, which no trampoline lays here. The backend builds the exception frame the return
  * pops at kickos_fault_stack_top, so the exit starts with sp there.
  *

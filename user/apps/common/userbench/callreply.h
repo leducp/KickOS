@@ -41,7 +41,7 @@ namespace bench
         struct kos_reply_recv_opts opts;
         memset(&opts, 0, sizeof(opts));
         opts.ep = child_cap(0);
-        opts.timeout_us = KOS_TIMEOUT_NONE;
+        opts.until = KOS_NEVER;
         kos_cap_t reply_cap = KOS_CAP_NONE;
         size_t reply_len = 0;
         for (uint32_t i = 0; i < CALLREPLY_REPS; i++)
@@ -77,13 +77,13 @@ namespace bench
         bool const generic = (params & CR_GENERIC) != 0;
         int32_t const want = static_cast<int32_t>(len);
         int32_t got = want;
-        uint64_t t0 = kos::clock_now();
+        uint64_t t0 = kos_monotonic_now().ns;
         uint32_t reps = 0;
         if (generic)
         {
             while (reps < CALLREPLY_REPS)
             {
-                got = kos_call_generic(child_cap(0), buf, len, len, KOS_TIMEOUT_NONE);
+                got = kos_call_generic(child_cap(0), buf, len, len, KOS_NEVER);
                 if (got != want)
                 {
                     break;
@@ -96,7 +96,7 @@ namespace bench
             while (reps < CALLREPLY_REPS)
             {
                 // In place: the reply lands back in the request buffer.
-                got = kos_call(child_cap(0), buf, len, len, KOS_TIMEOUT_NONE);
+                got = kos_call(child_cap(0), buf, len, len, KOS_NEVER);
                 if (got != want)
                 {
                     break;
@@ -104,7 +104,7 @@ namespace bench
                 reps++;
             }
         }
-        uint64_t d_ns = kos::clock_now() - t0;
+        uint64_t d_ns = kos_monotonic_now().ns - t0;
         if (reps != CALLREPLY_REPS)
         {
             char f[96];
@@ -193,23 +193,23 @@ namespace bench
             own = &w->leader;
             peer = &w->follower;
         }
-        uint64_t const t0 = kos::clock_now();
+        uint64_t const t0 = kos_monotonic_now().ns;
         uint32_t r = 0;
         for (; r < XT_ROUNDS; r++)
         {
             if (leads)
             {
-                if (kos_sem_post(peer) != 0 or kos_sem_wait(own, KOS_TIMEOUT_NONE) != 0)
+                if (kos_sem_post(peer) != 0 or kos_sem_wait(own, KOS_NEVER) != 0)
                 {
                     break;
                 }
             }
-            else if (kos_sem_wait(own, KOS_TIMEOUT_NONE) != 0 or kos_sem_post(peer) != 0)
+            else if (kos_sem_wait(own, KOS_NEVER) != 0 or kos_sem_post(peer) != 0)
             {
                 break;
             }
         }
-        uint64_t const d_ns = kos::clock_now() - t0;
+        uint64_t const d_ns = kos_monotonic_now().ns - t0;
         if (leads and r == XT_ROUNDS)
         {
             char s[160];

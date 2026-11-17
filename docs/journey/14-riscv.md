@@ -104,7 +104,7 @@ before one is asked for. Then `kickos_rv32_init` sets up the core, one CSR at a 
   supervisor mode, and then a user-mode read needs `scounteren` as well, so `kickos_rv32_init`
   writes it with the time bit alone when `misa` reports that mode. With both open, a thread reads
   the time counter itself (`rdtimeh`, `rdtime`, `rdtimeh`, until the two high halves agree), so
-  `kos_clock_now` on this board makes no system call.
+  `kos_monotonic_now` on this board makes no system call.
 - The **bootstrap PMP entry**. On ARM, an unprivileged thread with no MPU region can reach
   everything. RISC-V PMP is the other way round: once a core implements PMP, a user-mode access
   that matches no entry faults. Without this entry the first user thread could not fetch its

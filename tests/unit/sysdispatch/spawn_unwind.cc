@@ -19,7 +19,7 @@
 #include "syscall_internal.h"
 
 extern "C" uint64_t syscall_dispatch(uintptr_t nr, uintptr_t a0, uintptr_t a1, uintptr_t a2,
-                                     uintptr_t a3);
+                                     uintptr_t a3, uintptr_t a4);
 
 #if not KICKOS_MEMORY_ENFORCED or not KICKOS_HAVE_MPU or KICKOS_HAVE_ASPACE
 #error "this gate refuses a spawn over a region set"

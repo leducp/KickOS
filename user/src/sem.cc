@@ -10,41 +10,33 @@
 
 namespace
 {
-    uint32_t us_until(uint64_t deadline_ns)
+    int word_wait(uint32_t* word, uint32_t expected, int64_t ns, uint32_t kind)
     {
-        uint64_t const now = kos_clock_now();
-        if (now >= deadline_ns)
-        {
-            return 0u;
-        }
-        return static_cast<uint32_t>((deadline_ns - now) / 1000u);
+        uint64_t const limit = kos_limit_word(ns);
+        return static_cast<int>(arch_syscall(KOS_SYS_WORD_WAIT, reinterpret_cast<uintptr_t>(word),
+                                             static_cast<uintptr_t>(expected), kos_u64_lo(limit),
+                                             kos_u64_hi(limit), static_cast<uintptr_t>(kind)));
     }
 }
 
 extern "C"
 {
 
-int kos_word_wait(uint32_t* word, uint32_t expected, uint32_t timeout_us)
+int kos_word_wait(uint32_t* word, uint32_t expected, kos_monotonic_t until)
 {
-    return static_cast<int>(arch_syscall(KOS_SYS_WORD_WAIT, reinterpret_cast<uintptr_t>(word),
-                                         static_cast<uintptr_t>(expected),
-                                         static_cast<uintptr_t>(timeout_us), 0));
+    return word_wait(word, expected, until.ns, KOS_LIMIT_MONOTONIC);
 }
 
-int kos_word_wait_realtime(uint32_t* word, uint32_t expected, uint64_t unix_ns)
+int kos_word_wait_realtime(uint32_t* word, uint32_t expected, kos_realtime_t until)
 {
-    uint64_t const at = kos_limit_realtime(unix_ns);
-    return static_cast<int>(arch_syscall(KOS_SYS_WORD_WAIT, reinterpret_cast<uintptr_t>(word),
-                                         static_cast<uintptr_t>(expected),
-                                         static_cast<uintptr_t>(kos_u64_lo(at)),
-                                         static_cast<uintptr_t>(kos_u64_hi(at))));
+    return word_wait(word, expected, until.ns, KOS_LIMIT_REALTIME);
 }
 
 int kos_word_wake(uint32_t* word, uint32_t n, uint32_t units)
 {
     return static_cast<int>(arch_syscall(KOS_SYS_WORD_WAKE, reinterpret_cast<uintptr_t>(word),
                                          static_cast<uintptr_t>(n),
-                                         static_cast<uintptr_t>(units), 0));
+                                         static_cast<uintptr_t>(units), 0, 0));
 }
 
 int kos_sem_init(kos_sem_t* s, uint32_t initial)
@@ -57,12 +49,9 @@ int kos_sem_init(kos_sem_t* s, uint32_t initial)
     return 0;
 }
 
-int kos_sem_wait(kos_sem_t* s, uint32_t timeout_us)
+int kos_sem_wait(kos_sem_t* s, kos_monotonic_t until)
 {
     uint32_t v = __atomic_load_n(&s->word, __ATOMIC_RELAXED);
-    uint32_t wait_us = timeout_us;
-    uint64_t deadline_ns = 0;
-    bool started = false;
     while (true)
     {
         if ((v & ~KOS_WORD_WAITERS) != 0u)
@@ -75,27 +64,19 @@ int kos_sem_wait(kos_sem_t* s, uint32_t timeout_us)
             v = seen;
             continue;
         }
-        if (started and timeout_us != KOS_TIMEOUT_NONE)
-        {
-            wait_us = us_until(deadline_ns);
-        }
-        if (wait_us == 0u)
+        // A try, a passed deadline included, leaves the word as it found it, with no waiters bit
+        // for a post to enter for.
+        if (kos_limit_word(until.ns) == 0u)
         {
             return -KOS_ETIMEDOUT;
-        }
-        // Read before the waiters bit is set, so a kill landing at the clock's own entry leaves
-        // the word as it found it.
-        if (not started)
-        {
-            started = true;
-            if (timeout_us != KOS_TIMEOUT_NONE)
-            {
-                deadline_ns = kos_clock_now() + static_cast<uint64_t>(timeout_us) * 1000u;
-            }
         }
         uint32_t const want = v | KOS_WORD_WAITERS;
         if (want != v)
         {
+            if (until.ns != KOS_NEVER.ns and until.ns <= kos_monotonic_now().ns)
+            {
+                return -KOS_ETIMEDOUT;
+            }
             uint32_t const seen = kickos_user_cas(&s->word, v, want);
             if (seen != v)
             {
@@ -103,7 +84,7 @@ int kos_sem_wait(kos_sem_t* s, uint32_t timeout_us)
                 continue;
             }
         }
-        int const rc = kos_word_wait(&s->word, want, wait_us);
+        int const rc = kos_word_wait(&s->word, want, until);
         if (rc == 1)
         {
             return 0;

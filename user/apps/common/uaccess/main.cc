@@ -59,7 +59,7 @@ int main(int, char**)
     kos_print(msg);
     int const armed_on = kos_core_current();
     long long const rc = static_cast<long long>(static_cast<int64_t>(
-        arch_syscall(KOS_SYS_WITNESS_UACCESS, KICKOS_UACCESS_OP, at, arg, 0)));
+        arch_syscall(KOS_SYS_WITNESS_UACCESS, KICKOS_UACCESS_OP, at, arg, 0, 0)));
     if (KICKOS_UACCESS_OP == KOS_WITNESS_UREAD_AT_FAULT_EXIT and rc == 0)
     {
         // The kill's redirect runs the fault-exit stub, where the armed read waits.
@@ -69,7 +69,7 @@ int main(int, char**)
     {
         // The arm must outlive what reprograms a core's timer before its due time: a park whose
         // own deadline fires first and whose resume rearms, and a move to another core.
-        kos_sleep_ns(PARK_NS);
+        kos_sleep_for(kos_ns(PARK_NS));
         int const from = kos_core_current();
         int const cores = kos_thread_affinity(kos_thread_self(), KOS_AFFINITY_QUERY);
         for (int core = 0; cores > 0 and core < 31; core++)

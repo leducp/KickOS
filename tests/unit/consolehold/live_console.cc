@@ -77,9 +77,9 @@ namespace
         ASSERT_FALSE(endpoint_receiving(l->ep));
     }
 
-    int32_t send(Live const& l, uint32_t timeout_us)
+    int32_t send(Live const& l, uint64_t deadline)
     {
-        return endpoint_send(l.cap, reinterpret_cast<uintptr_t>(l.buf), sizeof(l.buf), timeout_us);
+        return endpoint_send(l.cap, reinterpret_cast<uintptr_t>(l.buf), sizeof(l.buf), deadline);
     }
 }
 
@@ -93,7 +93,7 @@ TEST_F(ConsoleLive, a_send_parks_on_a_live_console_with_no_receiver_until_its_ta
         IrqLock lock;
         task_end(g_live.served, 0, true, lock);
     });
-    int32_t const rc = send(g_live, KOS_TIMEOUT_NONE);
+    int32_t const rc = send(g_live, KOS_LIMIT_NONE);
     EXPECT_TRUE(g_parked_on_send) << "the send was refused rather than parked";
     EXPECT_EQ(rc, -KOS_ECONNREFUSED) << "the task's end did not answer the parked sender";
     EXPECT_EQ(g_console_noted, 1u);
@@ -103,7 +103,7 @@ TEST_F(ConsoleLive, a_send_parks_on_a_live_console_with_no_receiver_until_its_ta
 TEST_F(ConsoleLive, a_console_no_task_serves_refuses_a_send_at_once)
 {
     ASSERT_NO_FATAL_FAILURE(stage(&g_live, false));
-    EXPECT_EQ(send(g_live, KOS_TIMEOUT_NONE), -KOS_ECONNREFUSED);
+    EXPECT_EQ(send(g_live, KOS_LIMIT_NONE), -KOS_ECONNREFUSED);
 }
 
 // A send of no deadline never parks: a park here would find no waker and fail the fixture.
@@ -205,7 +205,7 @@ TEST_F(ConsoleLive, no_line_is_handed_to_a_receiver_once_the_task_ended)
         IrqLock lock;
         task_end(g_live.served, 0, true, lock);
     }
-    EXPECT_EQ(send(g_live, KOS_TIMEOUT_NONE), -KOS_EAGAIN);
+    EXPECT_EQ(send(g_live, KOS_LIMIT_NONE), -KOS_EAGAIN);
     EXPECT_EQ(g_receiver->wait_kind, WAIT_EP_RECV) << "the line was handed to the receiver";
     EXPECT_EQ(g_receiver_buf[0], 0);
     IrqLock lock;
@@ -217,12 +217,12 @@ TEST_F(ConsoleLive, a_receiver_of_a_live_console_takes_the_line)
 {
     ASSERT_NO_FATAL_FAILURE(stage(&g_live, true));
     park_receiver(&g_live);
-    EXPECT_EQ(send(g_live, KOS_TIMEOUT_NONE), 4);
+    EXPECT_EQ(send(g_live, KOS_LIMIT_NONE), 4);
     EXPECT_EQ(memcmp(g_receiver_buf, "abcd", 4), 0);
 }
 
-// A send of timeout 0, the libc of a non-blocking task, never parks on the console.
-TEST_F(ConsoleLive, a_send_of_timeout_zero_never_parks_on_the_console)
+// A send with a passed deadline, the libc of a non-blocking task, never parks on the console.
+TEST_F(ConsoleLive, a_send_with_a_passed_deadline_never_parks_on_the_console)
 {
     ASSERT_NO_FATAL_FAILURE(stage(&g_live, true));
     uint32_t const parked = g_parked;
@@ -230,8 +230,8 @@ TEST_F(ConsoleLive, a_send_of_timeout_zero_never_parks_on_the_console)
     EXPECT_EQ(g_parked, parked);
 }
 
-// The control: a send of no timeout parks, until the task's end answers it.
-TEST_F(ConsoleLive, a_send_of_no_timeout_parks_on_the_console)
+// The control: a send with no deadline parks, until the task's end answers it.
+TEST_F(ConsoleLive, a_send_with_no_deadline_parks_on_the_console)
 {
     ASSERT_NO_FATAL_FAILURE(stage(&g_live, true));
     join_task(g_live.writer, task(1));
@@ -240,7 +240,7 @@ TEST_F(ConsoleLive, a_send_of_no_timeout_parks_on_the_console)
         IrqLock lock;
         task_end(g_live.served, 0, true, lock);
     });
-    EXPECT_EQ(send(g_live, KOS_TIMEOUT_NONE), -KOS_ECONNREFUSED);
+    EXPECT_EQ(send(g_live, KOS_LIMIT_NONE), -KOS_ECONNREFUSED);
     EXPECT_TRUE(g_parked_on_send);
 }
 
@@ -267,7 +267,7 @@ TEST_F(ConsoleLive, a_writer_parked_on_a_replaced_console_is_answered_and_follow
         cap_console_serve(g_live.served, lock);
     });
     int32_t const rc = endpoint_send(KOS_CAP_STDOUT, reinterpret_cast<uintptr_t>(g_live.buf),
-                                     sizeof(g_live.buf), KOS_TIMEOUT_NONE);
+                                     sizeof(g_live.buf), KOS_LIMIT_NONE);
     EXPECT_TRUE(g_parked_on_send);
     EXPECT_EQ(rc, -KOS_EAGAIN) << "the writer was not answered, or told the seat is gone";
     EXPECT_EQ(cap_slot(g_live.writer->caps, KOS_CAP_STDOUT)->obj, g_next_console)

@@ -154,115 +154,24 @@ namespace
         __builtin_unreachable();
     }
 
-    // A wait cancelled by a kill asks again at the kernel's entry, which ends the thread there.
-    int take(kos_mutex_t* m, uint32_t timeout_us)
+    // Toward the deadline `ns` on the clock `kind` names. A wait cancelled by a kill asks again at
+    // the kernel's entry, which ends the thread there.
+    int take_until(kos_mutex_t* m, int64_t ns, uint32_t kind)
     {
-        int rc = kos_mutex_lock(m, timeout_us);
-        while (rc == -KOS_ECANCELED)
+        int rc = 0;
+        if (kind == KOS_LIMIT_REALTIME)
         {
-            rc = kickos_mutex_lock_entry(m, timeout_us);
-        }
-        if (rc == -KOS_EOWNERDEAD)
-        {
-            owner_died();
-        }
-        return rc;
-    }
-
-    constexpr uint64_t NS_PER_SEC = 1000000000u;
-
-    bool nsec_valid(__gthread_time_t const* abs)
-    {
-        return abs->tv_nsec >= 0 and abs->tv_nsec < 1000000000;
-    }
-
-    // Nanoseconds from now on `clock` to the absolute `abs`, 0 once it has passed; -1 for a time
-    // that is not one or a clock with no wait.
-    int64_t ns_until(clockid_t clock, __gthread_time_t const* abs)
-    {
-        if (not nsec_valid(abs))
-        {
-            return -1;
-        }
-        struct timespec now;
-        if (clock == CLOCK_MONOTONIC)
-        {
-            uint64_t const ns = kos_clock_now();
-            now.tv_sec = static_cast<time_t>(ns / NS_PER_SEC);
-            now.tv_nsec = static_cast<long>(ns % NS_PER_SEC);
-        }
-        else if (clock == CLOCK_REALTIME)
-        {
-            (void)clock_gettime(CLOCK_REALTIME, &now);
+            kos_realtime_t const until = {ns};
+            rc = kos_mutex_lock_realtime(m, until);
         }
         else
         {
-            return -1;
+            kos_monotonic_t const until = {ns};
+            rc = kos_mutex_lock(m, until);
         }
-        int64_t const sec = static_cast<int64_t>(abs->tv_sec) - static_cast<int64_t>(now.tv_sec);
-        int64_t const nsec = static_cast<int64_t>(abs->tv_nsec) - now.tv_nsec;
-        if (sec < 0)
-        {
-            return 0;
-        }
-        if (sec > INT64_MAX / 1000000000 - 1)
-        {
-            return INT64_MAX;
-        }
-        int64_t const left = sec * 1000000000 + nsec;
-        if (left < 0)
-        {
-            return 0;
-        }
-        return left;
-    }
-
-    // A realtime `abs` as Unix-epoch nanoseconds, 0 before the epoch and UINT64_MAX past what a
-    // uint64_t holds; false for a time that is not one.
-    bool wall_ns(__gthread_time_t const* abs, uint64_t* out)
-    {
-        if (not nsec_valid(abs))
-        {
-            return false;
-        }
-        *out = 0;
-        if (abs->tv_sec < 0)
-        {
-            return true;
-        }
-        uint64_t const sec = static_cast<uint64_t>(abs->tv_sec);
-        if (sec > (UINT64_MAX - NS_PER_SEC) / NS_PER_SEC)
-        {
-            *out = UINT64_MAX;
-            return true;
-        }
-        *out = sec * NS_PER_SEC + static_cast<uint64_t>(abs->tv_nsec);
-        return true;
-    }
-
-    // A relative timeout in microseconds, rounded up, below KOS_TIMEOUT_NONE: a longer wait
-    // ends early and its caller asks again.
-    uint32_t us_of(int64_t ns)
-    {
-        int64_t us = ns / 1000;
-        if (ns % 1000 != 0)
-        {
-            us++;
-        }
-        if (us >= static_cast<int64_t>(KOS_TIMEOUT_NONE))
-        {
-            return KOS_TIMEOUT_NONE - 1u;
-        }
-        return static_cast<uint32_t>(us);
-    }
-
-    // take toward a realtime deadline, which the kernel holds against the wall clock.
-    int take_wall(kos_mutex_t* m, uint64_t unix_ns)
-    {
-        int rc = kos_mutex_lock_realtime(m, unix_ns);
         while (rc == -KOS_ECANCELED)
         {
-            rc = kickos_mutex_lock_entry_realtime(m, unix_ns);
+            rc = kickos_mutex_lock_entry(m, kos_limit_word(ns), kind);
         }
         if (rc == -KOS_EOWNERDEAD)
         {
@@ -271,37 +180,58 @@ namespace
         return rc;
     }
 
-    // A monotonic deadline is read again after each kernel wait that times out, the kernel's
-    // timeout having a ceiling.
+    int take(kos_mutex_t* m)
+    {
+        return take_until(m, KOS_NEVER.ns, KOS_LIMIT_MONOTONIC);
+    }
+
+    // The absolute `abs` on `clock` as a deadline of the kind that clock's waits take, in
+    // nanoseconds since its epoch and saturating: CLOCK_MONOTONIC's timespec is the monotonic
+    // clock's own count, so no clock is read. False for a time that is not one or a clock with no
+    // wait.
+    bool deadline_of(clockid_t clock, __gthread_time_t const* abs, uint32_t* kind, int64_t* ns)
+    {
+        if (abs->tv_nsec < 0 or abs->tv_nsec >= 1000000000)
+        {
+            return false;
+        }
+        if (clock == CLOCK_MONOTONIC)
+        {
+            *kind = KOS_LIMIT_MONOTONIC;
+        }
+        else if (clock == CLOCK_REALTIME)
+        {
+            *kind = KOS_LIMIT_REALTIME;
+        }
+        else
+        {
+            return false;
+        }
+        int64_t const sec = static_cast<int64_t>(abs->tv_sec);
+        if (sec < 0)
+        {
+            *ns = -1;
+        }
+        else if (sec > (INT64_MAX - 999999999) / 1000000000)
+        {
+            *ns = INT64_MAX;
+        }
+        else
+        {
+            *ns = sec * 1000000000 + static_cast<int64_t>(abs->tv_nsec);
+        }
+        return true;
+    }
+
     int timed_take(kos_mutex_t* m, clockid_t clock, __gthread_time_t const* abs)
     {
-        if (clock == CLOCK_REALTIME)
-        {
-            uint64_t at = 0;
-            if (not wall_ns(abs, &at))
-            {
-                return EINVAL;
-            }
-            return errno_of(take_wall(m, at));
-        }
-        int64_t left = ns_until(clock, abs);
-        if (left < 0)
+        uint32_t kind = 0;
+        int64_t at = 0;
+        if (not deadline_of(clock, abs, &kind, &at))
         {
             return EINVAL;
         }
-        while (true)
-        {
-            int const rc = take(m, us_of(left));
-            if (rc != -KOS_ETIMEDOUT or left == 0)
-            {
-                return errno_of(rc);
-            }
-            left = ns_until(clock, abs);
-            if (left == 0)
-            {
-                return ETIMEDOUT;
-            }
-        }
+        return errno_of(take_until(m, at, kind));
     }
 
     uint32_t holder_of(kos_mutex_t const* m)
@@ -310,8 +240,9 @@ namespace
     }
 
     // 0 with the recursive mutex held one level deeper, or the errno of a take that failed.
+    // `untimed` bounds a take with no `abs`.
     int recursive_take(__gthread_recursive_mutex_t* m, clockid_t clock,
-                       __gthread_time_t const* abs, uint32_t timeout_us)
+                       __gthread_time_t const* abs, kos_monotonic_t untimed)
     {
         kos_mutex_t* const w = word_of(m);
         if (holder_of(w) == kickos_self_lock_id())
@@ -326,7 +257,7 @@ namespace
         }
         else
         {
-            rc = errno_of(take(w, timeout_us));
+            rc = errno_of(take_until(w, untimed.ns, KOS_LIMIT_MONOTONIC));
         }
         if (rc == 0)
         {
@@ -344,38 +275,28 @@ namespace
         return errno_of(rc);
     }
 
-    int cond_wait(__gthread_cond_t* c, kos_mutex_t* m, uint32_t timeout_us)
+    int cond_wait(__gthread_cond_t* c, kos_mutex_t* m)
     {
-        return cond_answer(kos_cond_wait(reinterpret_cast<kos_cond_t*>(c), m, timeout_us));
+        return cond_answer(kos_cond_wait(reinterpret_cast<kos_cond_t*>(c), m, KOS_NEVER));
     }
 
-    // A monotonic wait that ended at the timeout's ceiling, before the deadline, returns 0, a
-    // spurious wake.
     int cond_timed(__gthread_cond_t* c, __gthread_mutex_t* m, clockid_t clock,
                    __gthread_time_t const* abs)
     {
-        int64_t const left = ns_until(clock, abs);
-        if (left < 0)
+        uint32_t kind = 0;
+        int64_t at = 0;
+        if (not deadline_of(clock, abs, &kind, &at))
         {
             return EINVAL;
         }
-        if (left == 0)
+        kos_cond_t* const cv = reinterpret_cast<kos_cond_t*>(c);
+        if (kind == KOS_LIMIT_REALTIME)
         {
-            return ETIMEDOUT;
+            kos_realtime_t const until = {at};
+            return cond_answer(kos_cond_wait_realtime(cv, word_of(m), until));
         }
-        if (clock == CLOCK_REALTIME)
-        {
-            uint64_t at = 0;
-            (void)wall_ns(abs, &at);
-            return cond_answer(
-                kos_cond_wait_realtime(reinterpret_cast<kos_cond_t*>(c), word_of(m), at));
-        }
-        int const rc = cond_wait(c, word_of(m), us_of(left));
-        if (rc == ETIMEDOUT and ns_until(clock, abs) != 0)
-        {
-            return 0;
-        }
-        return rc;
+        kos_monotonic_t const until = {at};
+        return cond_answer(kos_cond_wait(cv, word_of(m), until));
     }
 
     void unlink(Run** list, Run* r)
@@ -394,7 +315,7 @@ namespace
     // Off the registry, for the caller alone.
     Run* claim(__gthread_t thread)
     {
-        (void)take(&s_runs_lock, KOS_TIMEOUT_NONE);
+        (void)take(&s_runs_lock);
         Run* r = s_runs;
         while (r != nullptr and r->handle != thread)
         {
@@ -466,7 +387,7 @@ namespace
         r->ret = r->func(r->arg);
         if (kickos_user_cas(&r->state, RUN_LIVE, RUN_RETURNED) == RUN_DETACHED)
         {
-            (void)take(&s_runs_lock, KOS_TIMEOUT_NONE);
+            (void)take(&s_runs_lock);
             unlink(&s_detached, r);
             (void)kos_mutex_unlock(&s_runs_lock);
             free(r);
@@ -485,12 +406,12 @@ int __kickos_gthr_mutex_destroy(__gthread_mutex_t*)
 
 int __kickos_gthr_mutex_lock(__gthread_mutex_t* m)
 {
-    return errno_of(take(word_of(m), KOS_TIMEOUT_NONE));
+    return errno_of(take(word_of(m)));
 }
 
 int __kickos_gthr_mutex_trylock(__gthread_mutex_t* m)
 {
-    int const rc = take(word_of(m), 0);
+    int const rc = take_until(word_of(m), KOS_POLL.ns, KOS_LIMIT_MONOTONIC);
     if (rc == -KOS_ETIMEDOUT or rc == -KOS_EDEADLK)
     {
         return EBUSY;
@@ -521,12 +442,12 @@ int __kickos_gthr_recursive_mutex_destroy(__gthread_recursive_mutex_t*)
 
 int __kickos_gthr_recursive_mutex_lock(__gthread_recursive_mutex_t* m)
 {
-    return recursive_take(m, CLOCK_REALTIME, nullptr, KOS_TIMEOUT_NONE);
+    return recursive_take(m, CLOCK_REALTIME, nullptr, KOS_NEVER);
 }
 
 int __kickos_gthr_recursive_mutex_trylock(__gthread_recursive_mutex_t* m)
 {
-    int const rc = recursive_take(m, CLOCK_REALTIME, nullptr, 0);
+    int const rc = recursive_take(m, CLOCK_REALTIME, nullptr, KOS_POLL);
     if (rc == ETIMEDOUT)
     {
         return EBUSY;
@@ -537,13 +458,13 @@ int __kickos_gthr_recursive_mutex_trylock(__gthread_recursive_mutex_t* m)
 int __kickos_gthr_recursive_mutex_timedlock(__gthread_recursive_mutex_t* m,
                                             __gthread_time_t const* abs)
 {
-    return recursive_take(m, CLOCK_REALTIME, abs, 0);
+    return recursive_take(m, CLOCK_REALTIME, abs, KOS_NEVER);
 }
 
 int __kickos_gthr_recursive_mutex_clocklock(__gthread_recursive_mutex_t* m, clockid_t clock,
                                             __gthread_time_t const* abs)
 {
-    return recursive_take(m, clock, abs, 0);
+    return recursive_take(m, clock, abs, KOS_NEVER);
 }
 
 int __kickos_gthr_recursive_mutex_unlock(__gthread_recursive_mutex_t* m)
@@ -578,7 +499,7 @@ int __kickos_gthr_cond_signal(__gthread_cond_t* c)
 
 int __kickos_gthr_cond_wait(__gthread_cond_t* c, __gthread_mutex_t* m)
 {
-    return cond_wait(c, word_of(m), KOS_TIMEOUT_NONE);
+    return cond_wait(c, word_of(m));
 }
 
 int __kickos_gthr_cond_timedwait(__gthread_cond_t* c, __gthread_mutex_t* m,
@@ -596,7 +517,7 @@ int __kickos_gthr_cond_clockwait(__gthread_cond_t* c, __gthread_mutex_t* m, cloc
 int __kickos_gthr_cond_wait_recursive(__gthread_cond_t* c, __gthread_recursive_mutex_t* m)
 {
     uint32_t const depth = m->__depth;
-    int const rc = cond_wait(c, word_of(m), KOS_TIMEOUT_NONE);
+    int const rc = cond_wait(c, word_of(m));
     if (rc != EPERM)
     {
         m->__depth = depth;
@@ -681,7 +602,7 @@ int __kickos_gthr_create(__gthread_t* thread, void* (*func)(void*), void* arg)
         free(r);
         return errno_of(rc);
     }
-    (void)take(&s_runs_lock, KOS_TIMEOUT_NONE);
+    (void)take(&s_runs_lock);
     r->handle = h;
     r->next = s_runs;
     s_runs = r;
@@ -719,10 +640,10 @@ int __kickos_gthr_join(__gthread_t thread, void** value)
     {
         return ESRCH;
     }
-    int rc = kos_thread_join(r->handle, KOS_TIMEOUT_NONE);
+    int rc = kos_thread_join(r->handle, KOS_NEVER);
     while (rc == -KOS_ECANCELED)
     {
-        rc = kos_thread_join(r->handle, KOS_TIMEOUT_NONE);
+        rc = kos_thread_join(r->handle, KOS_NEVER);
     }
     if (value != nullptr)
     {
@@ -735,7 +656,7 @@ int __kickos_gthr_join(__gthread_t thread, void** value)
 // A thread that has returned is freed here, and a running one frees its record on return.
 int __kickos_gthr_detach(__gthread_t thread)
 {
-    (void)take(&s_runs_lock, KOS_TIMEOUT_NONE);
+    (void)take(&s_runs_lock);
     Run* r = s_runs;
     while (r != nullptr and r->handle != thread)
     {

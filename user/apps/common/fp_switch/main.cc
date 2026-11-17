@@ -66,11 +66,12 @@ namespace
     }
     void fp_bank_cycle(fp_word const* in, fp_word* out)
     {
-        register uintptr_t x0 __asm("x0") = KOS_SYS_SLEEP_NS;
+        register uintptr_t x0 __asm("x0") = KOS_SYS_SLEEP;
         register uintptr_t x1 __asm("x1") = BLOCK_NS;
         register uintptr_t x2 __asm("x2") = 0;
-        register uintptr_t x3 __asm("x3") = 0;
+        register uintptr_t x3 __asm("x3") = KOS_LIMIT_RELATIVE;
         register uintptr_t x4 __asm("x4") = 0;
+        register uintptr_t x5 __asm("x5") = 0;
         __asm volatile(
             "ldp q0, q1, [%[in], #0]\n\t"
             "ldp q2, q3, [%[in], #32]\n\t"
@@ -105,9 +106,9 @@ namespace
             "stp q26, q27, [%[out], #416]\n\t"
             "stp q28, q29, [%[out], #448]\n\t"
             "stp q30, q31, [%[out], #480]\n\t"
-            : "+r"(x0), "+r"(x1), "+r"(x2), "+r"(x3), "+r"(x4)
+            : "+r"(x0), "+r"(x1), "+r"(x2), "+r"(x3), "+r"(x4), "+r"(x5)
             : [in] "r"(in), [out] "r"(out)
-            : "x5", "x6", "x7", "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15", "x16",
+            : "x6", "x7", "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15", "x16",
               "x17", "x18", "x30",
               "v0", "v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11",
               "v12", "v13", "v14", "v15", "v16", "v17", "v18", "v19", "v20", "v21", "v22",
@@ -169,11 +170,12 @@ namespace
     }
     void fp_bank_cycle(fp_word const* in, fp_word* out)
     {
-        register uintptr_t rdi __asm("rdi") = KOS_SYS_SLEEP_NS;
+        register uintptr_t rdi __asm("rdi") = KOS_SYS_SLEEP;
         register uintptr_t rsi __asm("rsi") = BLOCK_NS;
         register uintptr_t rdx __asm("rdx") = 0;
-        register uintptr_t r10 __asm("r10") = 0;
+        register uintptr_t r10 __asm("r10") = KOS_LIMIT_RELATIVE;
         register uintptr_t r8 __asm("r8") = 0;
+        register uintptr_t r9 __asm("r9") = 0;
         __asm volatile(
             "movdqu 0(%[in]), %%xmm0\n\t"
             "movdqu 16(%[in]), %%xmm1\n\t"
@@ -208,9 +210,9 @@ namespace
             "movdqu %%xmm13, 208(%[out])\n\t"
             "movdqu %%xmm14, 224(%[out])\n\t"
             "movdqu %%xmm15, 240(%[out])\n\t"
-            : "+r"(rdi), "+r"(rsi), "+r"(rdx), "+r"(r10), "+r"(r8)
+            : "+r"(rdi), "+r"(rsi), "+r"(rdx), "+r"(r10), "+r"(r8), "+r"(r9)
             : [in] "r"(in), [out] "r"(out)
-            : "rax", "rcx", "r9", "r11",
+            : "rax", "rcx", "r11",
               "xmm0", "xmm1", "xmm2", "xmm3", "xmm4", "xmm5", "xmm6", "xmm7", "xmm8", "xmm9",
               "xmm10", "xmm11", "xmm12", "xmm13", "xmm14", "xmm15", "cc", "memory");
     }
@@ -242,7 +244,7 @@ namespace
     inline void fp_bank_load(fp_word const*) {}
     void fp_bank_cycle(fp_word const*, fp_word* out)
     {
-        kos::sleep_ns(BLOCK_NS);
+        kos::sleep_for(std::chrono::nanoseconds{BLOCK_NS});
         out[0] = 0;
     }
 
@@ -345,7 +347,7 @@ namespace
                 : "f0", "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11",
               "f12", "f13", "f14", "f15", "memory");
             g_preempts = g_preempts + 1u;
-            kos::sleep_ns(1000000u);
+            kos::sleep_for(std::chrono::milliseconds{1});
         }
     }
 #else
@@ -366,7 +368,7 @@ namespace
     __attribute__((always_inline)) inline void fp_bank_cycle(float const* in, float* out)
     {
         fp_bank_load(in);
-        kos::sleep_ns(BLOCK_NS);
+        kos::sleep_for(std::chrono::nanoseconds{BLOCK_NS});
         __asm volatile("vstmia %0, {s16-s31}" ::"r"(out) : "memory");
     }
     inline unsigned long long fp_ctl_read()
@@ -509,12 +511,14 @@ int main(int, char**)
     }
     core_mask = static_cast<uint32_t>(cores) & (0u - static_cast<uint32_t>(cores));
 #endif
-    auto const c = kos::thread::create(checker, nullptr, "checker", 20, KOS_POLICY_FIFO, 0,
-                                       nullptr, 0, nullptr, 0, nullptr, 0, 0, nullptr, core_mask);
+    auto const c = kos::thread::create(checker, nullptr, "checker", 20, KOS_POLICY_FIFO,
+                                       std::chrono::nanoseconds{0}, nullptr, 0, nullptr, 0, nullptr,
+                                       0, 0, nullptr, core_mask);
     bool ok = c.valid();
 #if defined(__XTENSA__)
-    auto const p = kos::thread::create(preempter, nullptr, "preempter", 25, KOS_POLICY_FIFO, 0,
-                                       nullptr, 0, nullptr, 0, nullptr, 0, 0, nullptr, core_mask);
+    auto const p = kos::thread::create(preempter, nullptr, "preempter", 25, KOS_POLICY_FIFO,
+                                       std::chrono::nanoseconds{0}, nullptr, 0, nullptr, 0, nullptr,
+                                       0, 0, nullptr, core_mask);
     ok = ok and p.valid();
 #endif
     if (not ok)
@@ -523,8 +527,9 @@ int main(int, char**)
         return 1;
     }
     // Last: a created thread that outranks main runs at once, and the trasher never blocks.
-    auto const t = kos::thread::create(trasher, nullptr, "trasher", 5, KOS_POLICY_FIFO, 0,
-                                       nullptr, 0, nullptr, 0, nullptr, 0, 0, nullptr, core_mask);
+    auto const t = kos::thread::create(trasher, nullptr, "trasher", 5, KOS_POLICY_FIFO,
+                                       std::chrono::nanoseconds{0}, nullptr, 0, nullptr, 0, nullptr,
+                                       0, 0, nullptr, core_mask);
     if (not t.valid())
     {
         kos::print("  FP FAIL: a test thread could not be created\n");

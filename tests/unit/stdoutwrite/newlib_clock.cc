@@ -25,32 +25,32 @@ namespace
     int g_sets = 0;
     uint64_t g_set_to = 0;
     int g_sleeps = 0;
-    uint64_t g_slept = 0;
+    int64_t g_slept = 0;
 }
 
 extern "C"
 {
-    uint64_t kos_clock_now(void)
+    int64_t kickos_monotonic_now(void)
     {
-        return g_now;
+        return static_cast<int64_t>(g_now);
     }
 
-    uint64_t kos_clock_realtime(void)
+    int64_t kickos_realtime_now(void)
     {
-        return g_realtime;
+        return static_cast<int64_t>(g_realtime);
     }
 
-    int kos_clock_set_realtime(uint64_t unix_ns)
+    int kos_realtime_set(kos_realtime_t t)
     {
         g_sets = g_sets + 1;
-        g_set_to = unix_ns;
+        g_set_to = static_cast<uint64_t>(t.ns);
         return g_set_rc;
     }
 
-    void kos_sleep_ns(uint64_t ns)
+    void kos_sleep_for(kos_duration_t d)
     {
         g_sleeps = g_sleeps + 1;
-        g_slept = ns;
+        g_slept = d.ns;
     }
 
     int _gettimeofday(struct timeval* tv, void* tz);
@@ -154,7 +154,7 @@ namespace
         struct timespec rem = {9, 9};
         ASSERT_EQ(kos_ut_nanosleep(&req, &rem), 0);
         EXPECT_EQ(g_sleeps, 1);
-        EXPECT_EQ(g_slept, 2 * NS + 500u);
+        EXPECT_EQ(g_slept, static_cast<int64_t>(2 * NS + 500u));
         EXPECT_EQ(rem.tv_sec, 9) << "an unbroken sleep leaves rem alone";
     }
 
@@ -162,6 +162,6 @@ namespace
     {
         struct timespec const req = {INT64_MAX, 999999999};
         ASSERT_EQ(kos_ut_nanosleep(&req, nullptr), 0);
-        EXPECT_EQ(g_slept, UINT64_MAX);
+        EXPECT_EQ(g_slept, KOS_FOREVER.ns);
     }
 }

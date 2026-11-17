@@ -49,7 +49,7 @@ int32_t flush(Shared* sh)
         {
             return 0;
         }
-        kos_sleep_ns(console::KOS_CONSOLE_FLUSH_SLEEP_NS);
+        kos::sleep_for(console::KOS_CONSOLE_FLUSH_SLEEP);
     }
     if (sh->flush_ack == req)
     {

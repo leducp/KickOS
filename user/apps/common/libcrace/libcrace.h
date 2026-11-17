@@ -33,9 +33,9 @@ namespace libcrace
     constexpr int ROUNDS = 300;
     constexpr int PAYLOAD = 40;
     constexpr int BLOCKS = 3;
-    constexpr uint32_t QUANTUM_NS = LIBCRACE_QUANTUM_NS;
+    constexpr std::chrono::nanoseconds QUANTUM{LIBCRACE_QUANTUM_NS};
     constexpr uint8_t WORKER_PRIO = 10;
-    constexpr uint32_t PRINT_WAIT_US = 3000000;
+    constexpr std::chrono::seconds PRINT_WAIT{3};
     constexpr uint8_t VICTIM_PRIO = KICKOS_PRIO_MAX;
 
     // The semaphores between a task's driver thread and the threads it spawns.
@@ -105,14 +105,14 @@ namespace libcrace
     {
         if (began < TASK_RACERS)
         {
-            kos_sem_wait(&g_gates->begun, KOS_TIMEOUT_NONE);
+            kos_sem_wait(&g_gates->begun, KOS_NEVER);
             return;
         }
         uint32_t bits = 0;
         (void)kos_notify(MEET_OTHER);
         if (kos_notify_bind(MEET_OWN) == 0)
         {
-            (void)kos_notify_wait(MEET_OWN, 1u, KOS_TIMEOUT_NONE, &bits);
+            (void)kos_notify_wait(1u, KOS_NEVER, &bits);
             (void)kos_notify_unbind(MEET_OWN);
         }
         for (uint32_t k = 1; k < TASK_RACERS; k++)
@@ -123,11 +123,11 @@ namespace libcrace
 
     // `entry` in the caller's task.
     inline kos::thread::Handle spawn_in(void (*entry)(void*), void* arg, char const* name,
-                                        uint8_t prio, uint32_t core_mask,
-                                        uint8_t policy = KOS_POLICY_FIFO, uint32_t quantum_ns = 0)
+                                        uint8_t prio, uint32_t core_mask)
     {
-        return kos::thread::create(entry, arg, name, prio, policy, quantum_ns, nullptr, 0,
-                                   nullptr, 0, nullptr, 0, 0, nullptr, core_mask);
+        return kos::thread::create(entry, arg, name, prio, KOS_POLICY_FIFO,
+                                   std::chrono::nanoseconds{0}, nullptr, 0, nullptr, 0, nullptr, 0,
+                                   0, nullptr, core_mask);
     }
 
     // A racer of this task, holding `own` at MEET_OWN and `other` at MEET_OTHER.
@@ -136,7 +136,7 @@ namespace libcrace
     {
         void* const arg = reinterpret_cast<void*>(static_cast<uintptr_t>(w));
         kos_cap_grant const meet[2] = {{own, KOS_CAP_WAIT}, {other, KOS_CAP_SIGNAL}};
-        return kos::thread::create(entry, arg, "racer", WORKER_PRIO, KOS_POLICY_RR, QUANTUM_NS,
+        return kos::thread::create(entry, arg, "racer", WORKER_PRIO, KOS_POLICY_RR, QUANTUM,
                                    nullptr, 0, nullptr, 0, meet, 2);
     }
 
@@ -175,7 +175,7 @@ namespace libcrace
         kos_sem_post(&g->held);
         while (true)
         {
-            (void)kos_sem_wait(&g->release, KOS_TIMEOUT_NONE);
+            (void)kos_sem_wait(&g->release, KOS_NEVER);
         }
     }
 #endif
@@ -200,7 +200,7 @@ namespace libcrace
 
     inline void release_setter(void*)
     {
-        (void)kos_sem_wait(&gates()->go, KOS_TIMEOUT_NONE);
+        (void)kos_sem_wait(&gates()->go, KOS_NEVER);
         __atomic_store_n(&g_release_go, 1u, __ATOMIC_RELEASE);
     }
 
@@ -240,9 +240,9 @@ namespace libcrace
     {
         (void)kos_sem_init(&g_gates->entering, 0);
         auto victim = spawn_in(entry, nullptr, name, VICTIM_PRIO, core_mask);
-        if (victim.valid() and kos_sem_wait(&g_gates->entering, KOS_TIMEOUT_NONE) != 0)
+        if (victim.valid() and kos_sem_wait(&g_gates->entering, KOS_NEVER) != 0)
         {
-            victim.cancel(KOS_CANCEL_KILL, 0);
+            victim.cancel_for(KOS_CANCEL_KILL, std::chrono::nanoseconds{0});
             victim.join();
             return kos::thread::Handle();
         }
@@ -292,7 +292,7 @@ namespace libcrace
                     starved = true;
                     kos_sem_post(&g->starved);
                 }
-                kos::sleep_ns(QUANTUM_NS);
+                kos::sleep_for(QUANTUM);
             }
             if (i == 0)
             {

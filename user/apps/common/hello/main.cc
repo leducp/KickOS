@@ -28,7 +28,7 @@ namespace
         for (int n = 1; n <= ROUNDS; n++)
         {
             g_ping.wait();
-            kos::sleep_ns(BEAT_NS);
+            kos::sleep_for(std::chrono::nanoseconds{BEAT_NS});
             say("ping", n);
             g_pong.post();
         }
@@ -38,7 +38,7 @@ namespace
         for (int n = 1; n <= ROUNDS; n++)
         {
             g_pong.wait();
-            kos::sleep_ns(BEAT_NS);
+            kos::sleep_for(std::chrono::nanoseconds{BEAT_NS});
             say("pong", n);
             g_ping.post();
         }

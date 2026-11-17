@@ -69,7 +69,7 @@ namespace kickos
             constexpr int SLOT_FIRST = 2;
             constexpr int SLOT_LAST = 3;
             constexpr int SLOT_EXTRA = 5;
-            constexpr uint32_t TIMEOUT_US = 1000;
+            constexpr uint64_t WAIT_NS = 1000000;
             constexpr uint32_t PARKED = KOS_WORD_WAITERS;
 #if KICKOS_KERNEL_CORES > 1
             constexpr uint32_t CORE_WAKER = KICKOS_KERNEL_CORES - 1;
@@ -118,7 +118,7 @@ namespace kickos
             // The clock reaches the deadline and its interrupt is taken.
             void deadline_fires()
             {
-                g_now_ns += static_cast<uint64_t>(TIMEOUT_US) * 1000u + KICKOS_TIMER_MIN_DELTA_NS;
+                g_now_ns += WAIT_NS + KICKOS_TIMER_MIN_DELTA_NS;
                 ktime_on_timer();
             }
 
@@ -157,11 +157,17 @@ namespace kickos
             }
 
             // A semaphore's wait as the user library makes it: the waiters bit set, then the
-            // wait on the word holding it.
-            int timed_wait(uint32_t timeout_us)
+            // wait on the word holding it until `span_ns` past the clock, KOS_LIMIT_NONE for no
+            // deadline.
+            int timed_wait(uint64_t span_ns)
             {
                 g_word = g_word | KOS_WORD_WAITERS;
-                return word_wait(word_va(), g_word, timeout_us);
+                uint64_t deadline = KOS_LIMIT_NONE;
+                if (span_ns != KOS_LIMIT_NONE)
+                {
+                    deadline = deadline_in(span_ns);
+                }
+                return word_wait(word_va(), g_word, deadline);
             }
 
             // The waiter is CURRENT, and the holder the only other runnable thread on its core,
@@ -246,7 +252,7 @@ namespace kickos
                 park_word_waiter(g_behind_untimed, m);
                 {
                     IrqLock lock;
-                    ktime_deadline_arm(g_behind_timed, TIMEOUT_US, lock);
+                    ktime_limit_arm(g_behind_timed, WaitLimit(deadline_in(WAIT_NS)), lock);
                 }
                 g_switched_away = false;
                 run_at_next_switch(during);
@@ -268,7 +274,7 @@ namespace kickos
 
             void wait_while_cancelled()
             {
-                (void)timed_wait(KOS_TIMEOUT_NONE);
+                (void)timed_wait(KOS_LIMIT_NONE);
             }
 
             bool queue_is(Thread const* first, Thread const* second)
@@ -361,7 +367,7 @@ namespace kickos
             {
                 char const* name;
                 ParkWaker waker;
-                uint32_t timeout_us;
+                uint64_t span_ns;
                 int rc;
                 uint32_t word;
                 uint8_t kind;
@@ -382,7 +388,7 @@ namespace kickos
             Thread* const waiter = seat_waiter_over_holder();
             wake_next_park(w.waker);
 
-            EXPECT_EQ(timed_wait(w.timeout_us), w.rc);
+            EXPECT_EQ(timed_wait(w.span_ns), w.rc);
             EXPECT_EQ(g_word, w.word);
             EXPECT_EQ(waiter->cancel_kind, w.kind);
             EXPECT_EQ(record(), nullptr) << "the emptied record was kept";
@@ -396,14 +402,14 @@ namespace kickos
             Park, WordWaker,
             ::testing::Values(
                 Waker{"a_wake_landing_first_at_the_deadline_hands_its_unit", post_then_expire,
-                      TIMEOUT_US, 1, 0u, CANCEL_NONE},
+                      WAIT_NS, 1, 0u, CANCEL_NONE},
                 Waker{"an_expiry_landing_first_leaves_the_wake_banked", expire_then_post,
-                      TIMEOUT_US, -KOS_ETIMEDOUT, 1u, CANCEL_NONE},
+                      WAIT_NS, -KOS_ETIMEDOUT, 1u, CANCEL_NONE},
                 Waker{"a_cancel_answers_ecanceled_before_the_deadline", cancel_then_expire,
-                      TIMEOUT_US, -KOS_ECANCELED, PARKED, CANCEL_KILL},
+                      WAIT_NS, -KOS_ECANCELED, PARKED, CANCEL_KILL},
                 Waker{"a_slay_answers_ecanceled_before_the_deadline", slay_then_expire,
-                      TIMEOUT_US, -KOS_ECANCELED, PARKED, CANCEL_SLAY},
-                Waker{"an_untimed_cancel_answers_ecanceled", cancel, KOS_TIMEOUT_NONE,
+                      WAIT_NS, -KOS_ECANCELED, PARKED, CANCEL_SLAY},
+                Waker{"an_untimed_cancel_answers_ecanceled", cancel, KOS_LIMIT_NONE,
                       -KOS_ECANCELED, PARKED, CANCEL_KILL}),
             [](::testing::TestParamInfo<Waker> const& p)
             {
@@ -417,7 +423,7 @@ namespace kickos
             // No waker is armed: a park here ends the arm with the fixture's refusal.
             EXPECT_EQ(timed_wait(0), -KOS_ETIMEDOUT) << "a try waited";
             g_word = 3u;
-            EXPECT_EQ(word_wait(word_va(), 2u, TIMEOUT_US), -KOS_EAGAIN)
+            EXPECT_EQ(word_wait(word_va(), 2u, deadline_in(WAIT_NS)), -KOS_EAGAIN)
                 << "a word that is not the expected value parked its caller";
             EXPECT_EQ(g_word, 3u) << "a refused wait wrote the word";
             EXPECT_EQ(g_switches, 0u) << "a refused wait switched away";
@@ -613,7 +619,7 @@ namespace kickos
             Thread* const parked = seat_pool(SLOT_LAST, PRIO_BELOW);
             park_word_waiter(parked, plain_word(&g_word));
             uint32_t const plain = g_word;
-            EXPECT_EQ(mutex_lock(word_va(), TIMEOUT_US), -KOS_EINVAL);
+            EXPECT_EQ(mutex_lock(word_va(), deadline_in(WAIT_NS)), -KOS_EINVAL);
             EXPECT_EQ(mutex_unlock(word_va()), -KOS_EINVAL);
             EXPECT_EQ(g_word, plain);
             EXPECT_EQ(parked->wait_kind, WAIT_WORD);
@@ -623,7 +629,7 @@ namespace kickos
             park_mutex_waiter(pi_waiter, own_mutex(holder, &pi_word));
             uint32_t const held = pi_word;
             uintptr_t const pi = reinterpret_cast<uintptr_t>(&pi_word);
-            EXPECT_EQ(word_wait(pi, held, TIMEOUT_US), -KOS_EINVAL);
+            EXPECT_EQ(word_wait(pi, held, deadline_in(WAIT_NS)), -KOS_EINVAL);
             EXPECT_EQ(word_wake(pi, 1u, 1u), -KOS_EINVAL);
             EXPECT_EQ(pi_word, held);
             EXPECT_EQ(pi_waiter->wait_kind, WAIT_MUTEX);
@@ -671,7 +677,7 @@ namespace kickos
         {
             seat_waiter_over_holder();
             wake_next_park(slay);
-            ASSERT_EQ(timed_wait(TIMEOUT_US), -KOS_ECANCELED);
+            ASSERT_EQ(timed_wait(WAIT_NS), -KOS_ECANCELED);
             run_exit(KOS_EXIT_CANCELLED);
 
             Thread* const next = seat_pool(SLOT_WAITER, PRIO_BELOW);
@@ -691,7 +697,7 @@ namespace kickos
             park_word_waiter(first, plain_word(&g_word));
             wake_next_park(queue_last_then_expire);
 
-            int const rc = timed_wait(TIMEOUT_US);
+            int const rc = timed_wait(WAIT_NS);
 
             EXPECT_EQ(rc, -KOS_ETIMEDOUT);
             EXPECT_TRUE(queue_is(first, g_last))
@@ -705,7 +711,7 @@ namespace kickos
             seat_waiter_over_holder();
             wake_next_park(queue_above_post_then_expire);
 
-            int const rc = timed_wait(TIMEOUT_US);
+            int const rc = timed_wait(WAIT_NS);
 
             EXPECT_EQ(g_above->wait_result, 1) << "the wake did not go to the highest waiter";
             EXPECT_NE(g_above->state, ThreadState::BLOCKED);
@@ -719,7 +725,7 @@ namespace kickos
             seat_waiter_over_holder();
             wake_next_park(note_the_timer_then_post);
 
-            int const rc = timed_wait(KOS_TIMEOUT_NONE);
+            int const rc = timed_wait(KOS_LIMIT_NONE);
 
             EXPECT_EQ(rc, 1);
             EXPECT_EQ(g_word, 0u) << "the unit went to the count, not to the waiter";

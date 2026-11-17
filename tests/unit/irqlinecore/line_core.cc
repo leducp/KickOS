@@ -199,10 +199,7 @@ TEST_F(IrqLineCore, a_wait_refuses_a_waiter_whose_own_mask_excludes_the_claim_co
     raise_on(LINE_ONE, CORE_A);
     c.t->affinity = 1u << CORE_B;
 
-    uint32_t bits = 0;
-    uintptr_t const at = reinterpret_cast<uintptr_t>(&bits);
-    EXPECT_EQ(notify_wait(c.t, c.note, ALL_BITS, KOS_TIMEOUT_NONE, at), -KOS_EPERM);
-    EXPECT_EQ(bits, 0u);
+    EXPECT_EQ(notify_wait(c.t, ALL_BITS, KOS_LIMIT_NONE), -KOS_EPERM);
     EXPECT_EQ(pending_of(c.t, c.note), 1u) << "a refused wait consumed the raise";
     EXPECT_EQ(c.t->affinity, 1u << CORE_B) << "the admission rewrote the waiter's mask";
 }
@@ -213,10 +210,7 @@ TEST_F(IrqLineCore, a_wait_admits_a_waiter_pinned_to_the_claim_core)
     raise_on(LINE_ONE, CORE_A);
 
     c.t->affinity = 1u << CORE_A;
-    uint32_t bits = 0;
-    uintptr_t const at = reinterpret_cast<uintptr_t>(&bits);
-    EXPECT_EQ(notify_wait(c.t, c.note, ALL_BITS, KOS_TIMEOUT_NONE, at), 0);
-    EXPECT_EQ(bits, 1u);
+    EXPECT_EQ(notify_wait(c.t, ALL_BITS, KOS_LIMIT_NONE), notify_wait_bits(1u));
 }
 
 TEST_F(IrqLineCore, a_wait_refuses_a_waiter_whose_mask_merely_contains_the_claim_core)
@@ -225,9 +219,7 @@ TEST_F(IrqLineCore, a_wait_refuses_a_waiter_whose_mask_merely_contains_the_claim
     raise_on(LINE_ONE, CORE_A);
 
     c.t->affinity = BOTH;
-    uint32_t bits = 0;
-    uintptr_t const at = reinterpret_cast<uintptr_t>(&bits);
-    EXPECT_EQ(notify_wait(c.t, c.note, ALL_BITS, KOS_TIMEOUT_NONE, at), -KOS_EPERM);
+    EXPECT_EQ(notify_wait(c.t, ALL_BITS, KOS_LIMIT_NONE), -KOS_EPERM);
     EXPECT_EQ(pending_of(c.t, c.note), 1u) << "a refused wait consumed the raise";
     EXPECT_EQ(c.t->affinity, BOTH) << "the admission rewrote the waiter's mask";
 }
@@ -239,9 +231,7 @@ TEST_F(IrqLineCore, a_wait_is_done_before_a_task_mate_can_re_mask_its_waiter)
     c.t->affinity = 1u << CORE_A;
     remask_at_first_release_of(c.t);
 
-    uint32_t bits = 0;
-    uintptr_t const at = reinterpret_cast<uintptr_t>(&bits);
-    ASSERT_EQ(notify_wait(c.t, c.note, ALL_BITS, KOS_TIMEOUT_NONE, at), 0);
+    ASSERT_EQ(notify_wait(c.t, ALL_BITS, KOS_LIMIT_NONE), notify_wait_bits(1u));
     EXPECT_EQ(c.t->affinity, 1u << CORE_B) << "fixture: the re-mask never landed";
     EXPECT_TRUE(g_armed_at_gap)
         << "the wait's admission dropped the lock before its rearm, so a waiter re-masked off "

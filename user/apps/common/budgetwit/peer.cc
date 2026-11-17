@@ -23,13 +23,13 @@ namespace
 
     void parked(void*)
     {
-        kos_sem_wait(&g_never, KOS_TIMEOUT_NONE);
+        kos_sem_wait(&g_never, KOS_NEVER);
     }
 
     template <class R>
     void report(kos_cap_t ep, R const& r)
     {
-        (void)kos_send(ep, &r, sizeof(r), KOS_TIMEOUT_NONE);
+        (void)kos_send(ep, &r, sizeof(r), KOS_NEVER);
     }
 
     // A parked thread of this task, or the spawn's refusal.
@@ -80,7 +80,7 @@ namespace
         kos_cap_t note = KOS_CAP_NONE;
         r.notify = kos_notify_create(&note);
         report(REPORT, r);
-        kos_sem_wait(&g_never, KOS_TIMEOUT_NONE);
+        kos_sem_wait(&g_never, KOS_NEVER);
         return 0;
     }
 
@@ -152,7 +152,7 @@ namespace
             uint32_t word = 0;
             if (kos_cap_narrow(wake, KOS_CAP_SIGNAL) == 0)
             {
-                r.extra = kos_send(wake, &word, sizeof(word), CALL_US);
+                r.extra = kos_send(wake, &word, sizeof(word), kos::after(CALL_BOUND));
             }
             (void)kos_handle_close(wake);
             // Woken by the child's sweep, which stays paused below this entry.
@@ -217,7 +217,7 @@ namespace
         Worker* const w = static_cast<Worker*>(arg);
         w->seated = table_room();
         (void)kos_sem_post(&g_seated);
-        (void)kos_sem_wait(&w->release, KOS_TIMEOUT_NONE);
+        (void)kos_sem_wait(&w->release, KOS_NEVER);
         w->kept = table_room();
     }
 
@@ -233,7 +233,7 @@ namespace
         int const rc = kos_thread_create(&p, &w->thread);
         if (rc == 0)
         {
-            (void)kos_sem_wait(&g_seated, CALL_US);
+            (void)kos_sem_wait(&g_seated, kos::after(CALL_BOUND));
         }
         return rc;
     }
@@ -242,7 +242,7 @@ namespace
     void width_end(Worker* w)
     {
         (void)kos_sem_post(&w->release);
-        (void)kos_thread_join(w->thread, CALL_US);
+        (void)kos_thread_join(w->thread, kos::after(CALL_BOUND));
     }
 
     // Workers at widths that grow past the declared one and the budget's refusals beside them,
@@ -350,7 +350,7 @@ namespace
         Report r{};
         kos_cap_t own = KOS_CAP_NONE;
         r.rc = kos_endpoint_create(&own);
-        (void)kos_call(kos_grant_endpoint("/svc/report"), &r, sizeof(r), sizeof(r), KOS_TIMEOUT_NONE);
+        (void)kos_call(kos_grant_endpoint("/svc/report"), &r, sizeof(r), sizeof(r), KOS_NEVER);
         return 0;
     }
 
@@ -422,13 +422,13 @@ namespace
     void racer(void* arg)
     {
         uintptr_t const i = reinterpret_cast<uintptr_t>(arg);
-        kos_sem_wait(&g_race_go, KOS_TIMEOUT_NONE);
+        kos_sem_wait(&g_race_go, KOS_NEVER);
         if (kos_ram_alloc(g_race_bytes) != nullptr)
         {
             g_race_won[i].store(1u);
         }
         g_race_done[i].store(1u);
-        kos_sem_wait(&g_race_leave, KOS_TIMEOUT_NONE);
+        kos_sem_wait(&g_race_leave, KOS_NEVER);
     }
 
     int role_race()
@@ -452,7 +452,7 @@ namespace
         (void)kos_sem_post(&g_race_go);
         while (g_race_done[0].load() == 0u or g_race_done[1].load() == 0u)
         {
-            kos_sleep_ns(1000000ull);
+            kos_sleep_for(kos_ms(1));
         }
         r.won = g_race_won[0].load() + g_race_won[1].load();
         (void)kos_sem_post(&g_race_leave);

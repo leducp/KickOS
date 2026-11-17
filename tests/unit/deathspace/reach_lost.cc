@@ -45,7 +45,7 @@ namespace kickos
             constexpr uint8_t PRIO_LOW = 4;
             constexpr uint8_t PRIO_MID = 5;
             constexpr uint8_t PRIO_HIGH = 6;
-            constexpr uint32_t TIMEOUT_US = 1000;
+            constexpr uint64_t DEADLINE_NS = 1000000;
             constexpr size_t PAGE = 4096;
             constexpr uint16_t HOLDER = 2;
 
@@ -125,7 +125,7 @@ namespace kickos
             park_word_waiter(g_late, m);
             {
                 IrqLock lock;
-                ktime_deadline_arm(g_late, TIMEOUT_US, lock);
+                ktime_limit_arm(g_late, WaitLimit(DEADLINE_NS), lock);
             }
             run_as(caller);
             run_at_next_switch(late_waiter_times_out);

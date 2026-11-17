@@ -819,14 +819,14 @@ void report(char const* s);
 // whichever member traps.
 [[noreturn]] void trap();
 
-constexpr uint32_t KOS_DRV_HANDOVER_PROBE_US = 1000000;
+constexpr std::chrono::seconds KOS_DRV_HANDOVER_PROBE{1};
 
 // What the init keeps of a console's endpoint once its handover ends: SIGNAL, TRANSFER, HANDOUT.
 constexpr uint32_t KOS_DRV_HANDOVER_KEPT = KOS_CAP_SIGNAL | KOS_CAP_TRANSFER | KOS_CAP_HANDOUT;
 
-// The readiness wait's whole budget, about a second.
-constexpr uint32_t KOS_DRV_READY_WAIT_NS = 1000000u; // 1 ms
-constexpr uint32_t KOS_DRV_READY_WAIT_MAX = 1000u;
+// The readiness wait's whole budget, and how far apart a probe the endpoint refused is retried.
+constexpr std::chrono::seconds KOS_DRV_READY_WAIT{1};
+constexpr std::chrono::milliseconds KOS_DRV_READY_RETRY{1};
 
 // The latch at `off` inside `blk`, which MUST come from a class-substrate constant and never
 // from a descriptor literal.
@@ -857,13 +857,12 @@ inline int service_publish(Latch* latch)
     return ready_set(latch, KOS_DRV_READY_SERVICE);
 }
 
-// The waiter's side: an acquire load, and while it reads below `state` a park on the word for
-// what is left of the budget, read again after every return. True once it reads `state` or
-// above, false past the budget.
+// The waiter's side: an acquire load, and while it reads below `state` a park on the word until
+// the budget's deadline, read again after every return. True once it reads `state` or above,
+// false past the budget.
 inline bool ready_wait_for(Latch* latch, uint32_t state)
 {
-    uint64_t const budget_ns = uint64_t{KOS_DRV_READY_WAIT_MAX} * KOS_DRV_READY_WAIT_NS;
-    uint64_t const deadline = kos_clock_now() + budget_ns;
+    kos_monotonic_t const until = kos::after(KOS_DRV_READY_WAIT);
     while (true)
     {
         uint32_t const seen = latch->load();
@@ -871,13 +870,11 @@ inline bool ready_wait_for(Latch* latch, uint32_t state)
         {
             return true;
         }
-        uint64_t const now = kos_clock_now();
-        if (now >= deadline)
+        if (kos_monotonic_now().ns >= until.ns)
         {
             return false;
         }
-        uint64_t const left_us = (deadline - now + 999u) / 1000u;
-        (void)kos_word_wait(reinterpret_cast<uint32_t*>(latch), seen, static_cast<uint32_t>(left_us));
+        (void)kos_word_wait(reinterpret_cast<uint32_t*>(latch), seen, until);
     }
 }
 

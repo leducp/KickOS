@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The bench's one clock: kos_clock_now, or CCOUNT on lx6. Where user code reads it with no
+// The bench's one clock: kos_monotonic_now, or CCOUNT on lx6. Where user code reads it with no
 // kernel entry a row states each sample's p50/p99; elsewhere their mean.
 
 #ifndef KICKOS_USER_APPS_COMMON_USERBENCH_CLOCK_H
@@ -42,7 +42,7 @@ namespace bench
 
     inline uint64_t stamp()
     {
-        return kos_clock_now();
+        return kos_monotonic_now().ns;
     }
 
     inline uint32_t span_ns(uint64_t from, uint64_t to)

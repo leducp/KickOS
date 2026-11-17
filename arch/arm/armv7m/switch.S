@@ -358,7 +358,7 @@ PendSV_Handler:
 /* in PRIVILEGED THREAD mode and dispatches from there, so a blocking switch  */
 /* is a real synchronous one (arch.h arch_syscall contract). The hardware     */
 /* frame holds the args (r0=nr r1=a0 r2=a1 r3=a2 r12=a3) and, in LR, the      */
-/* return address of arch_syscall's caller.                                   */
+/* address the trampoline returns to; a4 is the live r4.                      */
 /* ------------------------------------------------------------------------- */
     .thumb_func
     .global SVC_Handler
@@ -505,11 +505,12 @@ SVC_Handler:
    taken from a register: the refusals above branch in with r2 spent.
 
    THE CONTINUATION HEADER, read back by the trampoline after the call:
-       [T-16]  a3, the AAPCS fifth argument, which syscall_dispatch reads at [sp]
-       [T-12]  the caller-return this exits to
-       [T-8]   the PSP the thread resumes on
-       [T-4]   the word that keeps sp 8-byte aligned for the call; with a stack limit, the
-               caller's PSPLIM, put back on the way out
+       [T-24]  a3, the AAPCS fifth argument, which syscall_dispatch reads at [sp], from r12
+       [T-20]  a4, the sixth, at [sp+4], from the r4 the stub loaded
+       [T-16]  the caller-return this exits to
+       [T-12]  the PSP the thread resumes on
+       [T-8]   with a stack limit, the caller's PSPLIM, put back on the way out
+       [T-4]   the word that keeps sp 8-byte aligned for the call
    The resume PSP lives HERE and not in a register or a second context field: a blocking
    dispatch has PendSV freeze its continuation BELOW this header, so the header survives the
    block for free, and ctx.sp names whichever stack the thread was preempted on.
@@ -534,19 +535,20 @@ SVC_Handler:
     tst     r12, #0x200             /* and the realign word the entry spent */
     it      ne
     addne   r1, r1, #4
-    str     r1, [r3, #-8]
+    str     r1, [r3, #-12]
     ldr     r12, [r0, #20]
-    str     r12, [r3, #-12]
-    ldr     r12, [r0, #16]
     str     r12, [r3, #-16]
+    ldr     r12, [r0, #16]
+    str     r12, [r3, #-24]
+    str     r4, [r3, #-20]
 #if KICKOS_ARMV7M_SPLIM
     mrs     r12, psplim
-    str     r12, [r3, #-4]
+    str     r12, [r3, #-8]
     movw    r12, #(KICKOS_KERNEL_STACK_SIZE - KICKOS_ARMV7M_SPLIM_ROOM)
     sub     r12, r3, r12
     msr     psplim, r12             /* before the PSP, which lands above it */
 #endif
-    sub     r3, r3, #48             /* the header and a basic frame */
+    sub     r3, r3, #56             /* the header and a basic frame */
 #if defined(__ARM_FP)
     tst     lr, #0x10
     it      eq
@@ -631,11 +633,11 @@ svc_trampoline:
 #if defined(KICKOS_SPLIM_PLANT_KBLOCK)
     bl      kickos_splim_plant      /* test-only: overflow this kernel block, privileged */
 #endif
-    bl      syscall_dispatch        /* (r0..r3, [sp]=a3) -> result in r0:r1 */
-    ldr     lr, [sp, #4]            /* the caller-return */
-    ldr     r2, [sp, #8]            /* the resume PSP, read before sp leaves this block */
+    bl      syscall_dispatch        /* (r0..r3, [sp]=a3, [sp+4]=a4) -> result in r0:r1 */
+    ldr     lr, [sp, #8]            /* the caller-return */
+    ldr     r2, [sp, #12]           /* the resume PSP, read before sp leaves this block */
 #if KICKOS_ARMV7M_SPLIM
-    ldr     r3, [sp, #12]           /* the caller's limit */
+    ldr     r3, [sp, #16]           /* the caller's limit */
 #endif
     /* The caller's RESTING privilege, so a privileged thread issuing a syscall keeps its
        posture, read here because nothing after the stack move may need privilege: a
@@ -663,10 +665,11 @@ kickos_armv7m_svc_drop:
    (armv7m_trap_stack.h names them). syscall_dispatch runs on the calling thread's own PSP,
    which the SVC site refused unless KICKOS_ARMV7M_TRAP_NEED_SVC fits below it, and a
    blocking dispatch has PendSV freeze the continuation on that same thread stack. */
-    push    {r12, lr}               /* [sp]=a3 (5th arg), [sp,#4]=caller-return */
-    bl      syscall_dispatch        /* (r0..r3, [sp]=a3) -> result in r0:r1 */
-    ldr     lr, [sp, #4]            /* restore caller-return */
-    add     sp, sp, #8
+    strd    r12, r4, [sp, #-16]!    /* [sp]=a3, [sp,#4]=a4 */
+    str     lr, [sp, #8]            /* the caller-return; [sp,#12] keeps sp 8-byte aligned */
+    bl      syscall_dispatch        /* (r0..r3, [sp]=a3, [sp+4]=a4) -> result in r0:r1 */
+    ldr     lr, [sp, #8]            /* restore caller-return */
+    add     sp, sp, #16
     /* The caller's RESTING privilege, as in the transfer arm above: r2/r3 only, r0:r1
        carrying the result pair out. */
     ldr     r2, =g_arch_current

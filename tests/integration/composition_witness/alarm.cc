@@ -23,7 +23,7 @@ namespace
     constexpr uint32_t RTCICR = 0x1Cu / 4u;  // interrupt clear
     constexpr uint32_t WINDOW_BYTES = 0x20u;
     constexpr uint32_t AHEAD_S = 2u;
-    constexpr uint32_t WAIT_US = 10000000u;
+    constexpr int64_t WAIT_S = 10;
 }
 
 int main(int, char**)
@@ -64,7 +64,7 @@ int main(int, char**)
     rtc[RTCIMSC] = 1u;
 
     uint32_t bits = 0;
-    rc = kos_notify_wait(notify, 1u, WAIT_US, &bits);
+    rc = kos_notify_wait(1u, kos_after(kos_monotonic_now(), kos_s(WAIT_S)), &bits);
     uint32_t const pending = rtc[RTCMIS];
     uint32_t const now = rtc[RTCDR];
     rtc[RTCIMSC] = 0u;

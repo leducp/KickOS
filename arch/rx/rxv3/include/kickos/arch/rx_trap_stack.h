@@ -62,19 +62,20 @@
 #define KICKOS_RX_TRAP_BANK_ALIGN 8
 
 /* The continuation header the syscall trap's generic arm lays at the top T of the caller's
- * kernel block before it points the USP there: [T-16] a3, the fifth argument the psABI passes
- * on the stack, [T-12] userPC, [T-8] userPSW, [T-4] the USP the thread resumes on. A blocking
- * dispatch has the switcher freeze its continuation BELOW it, so it survives the block. */
-#define KICKOS_RX_TRAP_SYSK_HEADER 16
+ * kernel block before it points the USP there: [T-20] a3 and [T-16] a4, the fifth and sixth
+ * arguments the psABI passes on the stack, [T-12] userPC, [T-8] userPSW, [T-4] the USP the
+ * thread resumes on. A blocking dispatch has the switcher freeze its continuation BELOW it, so it
+ * survives the block. */
+#define KICKOS_RX_TRAP_SYSK_HEADER 20
 
 /* THE SYSK CLASS, structural half: what stands between the top of a kernel block (T =
  * ctx.kernel_sp) and the first byte syscall_dispatch may use, plus what a preemption puts
  * below the deepest byte it uses.
  *
- *   -16    the continuation header above. No pad term: RX stack alignment is 4 bytes and
+ *   -20    the continuation header above. No pad term: RX stack alignment is 4 bytes and
  *          every store here is a word store.
  *   -228   ONE WHOLE PENDSW ZONE, below the deepest byte of the dispatch. */
-#define KICKOS_RX_TRAP_NEST_SYSK 244
+#define KICKOS_RX_TRAP_NEST_SYSK 248
 
 /* Worst-case bytes the kernel's C dispatch descends BELOW each of those, per class, as the
  * longest weighted path over the merged call graph (MinSizeRel, -fcallgraph-info=su,da) from
@@ -165,10 +166,10 @@
     (KICKOS_RX_TRAP_NEST_SYSK + KICKOS_RX_TRAP_KERNEL_DEPTH_SYSK)
 
 /* Bytes the trap path reads ABOVE the USP the syscall guard validates, which the bound on that
- * USP has to reserve: the generic arm reads a3, the psABI fifth argument arch_syscall left at
- * [USP+4], so the read ends at USP+8. A bound that merely kept the USP AT OR BELOW stack_hi
- * would let that read run past the top of the stack. */
-#define KICKOS_RX_TRAP_HEAD_ABOVE_SYS 8
+ * USP has to reserve: the generic arm reads a3 and a4, the psABI fifth and sixth arguments
+ * arch_syscall left at [USP+4] and [USP+8], so the read ends at USP+12. A bound that merely kept
+ * the USP AT OR BELOW stack_hi would let that read run past the top of the stack. */
+#define KICKOS_RX_TRAP_HEAD_ABOVE_SYS 12
 
 /* Alignment the guards require of a live USP. Every store in both frame builds is a word store
  * (mov.l, push.l, pushm, and the DPFPU bank on top of them), and arch_context_init aligns the

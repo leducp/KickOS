@@ -39,3 +39,8 @@ kickos_add_unit_test(NAME wall_shared
 kickos_add_unit_test(NAME sleepq_cores SOURCES sleepq_cores.cc
   LIBRARIES kickos_kseam_time_smp
   TEST_PREFIX smp.)
+
+# A wait's limit over the real time.cc and realtime.cc: its decode, when it has passed, what it
+# arms, a realtime deadline across a set, and a sleep's yield.
+kickos_add_unit_test(NAME ktime_limit SOURCES ktime_limit.cc
+  LIBRARIES kickos_kseam_time)

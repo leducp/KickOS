@@ -180,7 +180,7 @@ int main(int, char**)
     uint32_t runs = 1;
 #if KICKOS_FS_MODE == 10
     runs = FS_SWTRAP_COUNT;
-    uint64_t const clock_before = kos_clock_now();
+    uint64_t const clock_before = kos_monotonic_now().ns;
     bool jumped = false;
 #endif
     int rc = 0;
@@ -209,11 +209,11 @@ int main(int, char**)
         int status = 0;
         do
         {
-            rc = kickos::apps::wait_dead(victim, &status, 1000u);
+            rc = kickos::apps::wait_dead(victim, &status, std::chrono::seconds{1});
         } while (rc == -KOS_ETIMEDOUT);
         // Drops main's hold on a group that is already dead, so the slot goes back here rather
         // than at main's own exit.
-        (void)kos_task_slay(victim, 0);
+        (void)kos_task_slay(victim, KOS_POLL);
         if (rc != 0)
         {
             break;
@@ -222,7 +222,7 @@ int main(int, char**)
         // Read after every trap, so a jump is on the wire before a later trap can end the run.
         // One INT #31 that reaches the clock's wrap handler adds 2^32 counts, minutes at any
         // CMTW1 rate, so a minute bounds the whole loop with room to spare.
-        uint64_t const elapsed = kos_clock_now() - clock_before;
+        uint64_t const elapsed = kos_monotonic_now().ns - clock_before;
         if (elapsed > 60000000000ull and not jumped)
         {
             jumped = true;
@@ -241,7 +241,7 @@ int main(int, char**)
         char line[96];
         ksnprintf(line, sizeof(line), "[fs] [clock] STEADY: %u traps took %llu ns\n",
                   static_cast<unsigned>(runs),
-                  static_cast<unsigned long long>(kos_clock_now() - clock_before));
+                  static_cast<unsigned long long>(kos_monotonic_now().ns - clock_before));
         kos::print(line);
     }
 #endif

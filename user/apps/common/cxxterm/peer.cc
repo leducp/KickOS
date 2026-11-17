@@ -22,7 +22,7 @@ namespace
 
     void thrower(void*)
     {
-        (void)kos_sem_wait(&g_sibling_up, KOS_TIMEOUT_NONE);
+        (void)kos_sem_wait(&g_sibling_up, KOS_NEVER);
         kos::print("cxxterm: worker throwing\n");
         raise_uncaught();
         kos::print("cxxterm: worker returned from an uncaught throw\n");
@@ -34,7 +34,7 @@ namespace
         (void)kos_sem_post(&g_sibling_up);
         while (true)
         {
-            kos::sleep_ns(1000000ull);
+            kos::sleep_for(std::chrono::milliseconds{1});
         }
     }
 }
@@ -51,6 +51,6 @@ int main(int, char**)
     }
     while (true)
     {
-        kos::sleep_ns(1000000000ull);
+        kos::sleep_for(std::chrono::seconds{1});
     }
 }

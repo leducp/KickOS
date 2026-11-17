@@ -28,13 +28,14 @@ int main(int, char**)
     {
         return 1;
     }
-    kos::sleep_ns(PARK_NS);
-    auto const a = kos::thread::create_caps(leaver, nullptr, "leaver", 10, nullptr, 0,
-                                            KOS_POLICY_FIFO, 0, 0, nullptr, nullptr, 0, 1u << 0);
+    kos::sleep_for(std::chrono::nanoseconds{PARK_NS});
+    auto const a =
+        kos::thread::create_caps(leaver, nullptr, "leaver", 10, nullptr, 0, KOS_POLICY_FIFO,
+                                 std::chrono::nanoseconds{0}, 0, nullptr, nullptr, 0, 1u << 0);
     if (not a.valid())
     {
         return 1;
     }
-    (void)kos_sem_wait(&g_sig, KOS_TIMEOUT_NONE);
+    (void)kos_sem_wait(&g_sig, KOS_NEVER);
     return 0;
 }

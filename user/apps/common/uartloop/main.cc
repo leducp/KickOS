@@ -88,7 +88,7 @@ namespace
                 g_sustained = static_cast<int>(sent);
                 return;
             }
-            kos_sleep_ns(1000000ull);
+            kos_sleep_for(kos_ms(1));
         }
         g_sustained = static_cast<int>(sent);
     }
@@ -116,7 +116,7 @@ namespace
             got += r;
             if (got < n)
             {
-                kos_sleep_ns(1000000ull);
+                kos_sleep_for(kos_ms(1));
             }
         }
         g_read = got;

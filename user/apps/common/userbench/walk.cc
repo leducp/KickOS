@@ -51,8 +51,9 @@ namespace
 
     kos::thread::Handle od_spawn(void (*entry)(void*), void* arg, char const* name)
     {
-        return kos::thread::create(entry, arg, name, OD_PRIO, KOS_POLICY_FIFO, 0, nullptr, 0,
-                                   nullptr, 0, nullptr, 0, 0, nullptr, g_od_core_mask);
+        return kos::thread::create(entry, arg, name, OD_PRIO, KOS_POLICY_FIFO,
+                                   std::chrono::nanoseconds{0}, nullptr, 0, nullptr, 0, nullptr, 0,
+                                   0, nullptr, g_od_core_mask);
     }
 
     // The yield runs every seated walker to its park.
@@ -70,13 +71,13 @@ namespace
     {
         for (uint32_t i = 0; i < g_od_hold_count; i++)
         {
-            if (kos_mutex_lock(&g_od_hold_first[i], 0) != 0)
+            if (kos_mutex_lock(&g_od_hold_first[i], KOS_POLL) != 0)
             {
                 g_od_odd = g_od_odd + 1u;
             }
         }
         g_od_parking = g_od_parking + 1u;
-        if (kos_sem_wait(&g_od_die, KOS_TIMEOUT_NONE) != 0)
+        if (kos_sem_wait(&g_od_die, KOS_NEVER) != 0)
         {
             g_od_odd = g_od_odd + 1u;
         }
@@ -86,7 +87,7 @@ namespace
     void od_take(kos_mutex_t* m, int want)
     {
         g_od_parking = g_od_parking + 1u;
-        int const rc = kos_mutex_lock(m, KOS_TIMEOUT_NONE);
+        int const rc = kos_mutex_lock(m, KOS_NEVER);
         if (rc != want)
         {
             g_od_odd = g_od_odd + 1u;
@@ -137,7 +138,7 @@ namespace
     {
         for (uint32_t i = 0; i < seated; i++)
         {
-            (void)g_od_waiter[i].join(KOS_TIMEOUT_NONE);
+            (void)g_od_waiter[i].join();
         }
     }
 
@@ -160,7 +161,7 @@ namespace
         }
         (void)kos_thread_set_priority(TIMED_PRIO);
         (void)kos_sem_post(&g_od_die);
-        (void)holder.join(KOS_TIMEOUT_NONE);
+        (void)holder.join();
         uint64_t const t1 = bench::stamp();
         *ns = bench::span_ns(g_od_exit_t0, t1);
         (void)kos_thread_set_priority(MAIN_PRIO);
@@ -175,7 +176,7 @@ namespace
     void ww_waiter(void*)
     {
         g_od_parking = g_od_parking + 1u;
-        if (kos_word_wait(&g_ww_word, KOS_WORD_WAITERS, KOS_TIMEOUT_NONE) != 0)
+        if (kos_word_wait(&g_ww_word, KOS_WORD_WAITERS, KOS_NEVER) != 0)
         {
             g_od_odd = g_od_odd + 1u;
         }
@@ -215,7 +216,7 @@ namespace
     void od_end(kos::thread::Handle const& holder, uint32_t seated)
     {
         (void)kos_sem_post(&g_od_die);
-        (void)holder.join(KOS_TIMEOUT_NONE);
+        (void)holder.join();
         od_join_waiters(seated);
     }
 

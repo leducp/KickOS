@@ -13,11 +13,11 @@
 
 namespace priority_witness
 {
-    constexpr uint64_t PULSE_NS = 200000000ull;
+    constexpr int64_t PULSE_MS = 200;
     // Past the pulse's first end, which falls within it.
-    constexpr uint64_t HIGH_SPIN_NS = 600000000ull;
+    constexpr int64_t HIGH_SPIN_MS = 600;
     // Past the restarted pulse's end.
-    constexpr uint64_t LOW_SPIN_NS = 2000000000ull;
+    constexpr int64_t LOW_SPIN_MS = 2000;
 
     // The pulse's deaths as the init last wrote them, or -1 where the record cannot be read.
     inline int pulse_deaths()

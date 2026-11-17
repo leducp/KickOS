@@ -42,7 +42,7 @@ static bool ampecho_hold(unsigned char const* view, unsigned char seq)
         {
             return true;
         }
-        kos_sleep_ns(AMP_HOLD_POLL_NS);
+        kos_sleep_for(kos_ns(AMP_HOLD_POLL_NS));
         waited += AMP_HOLD_POLL_NS;
     }
     return false;
@@ -80,13 +80,13 @@ int main(void)
         // write leaves exactly what is here.
         info.reply_cap = KOS_CAP_NONE;
         struct kos_reply_recv_opts opts;
-        kos_reply_recv_opts_init(&opts, ep, 0, KOS_TIMEOUT_NONE);
+        kos_reply_recv_opts_init(&opts, ep, 0, KOS_NEVER);
         got = kos_reply_recv(KOS_CAP_NONE, msg, kos_call_lens_pack(0, sizeof(msg)), &opts);
         info = opts.info;
         if (got < 0)
         {
             // A REPLY CAPABILITY CAN OUTLIVE A REFUSED ARRIVAL, and <kickos/sys.h> asks this
-            // loop to answer or close on EVERY path: a far caller under KOS_TIMEOUT_NONE has
+            // loop to answer or close on EVERY path: a far caller under KOS_NEVER has
             // no deadline to fall back on. Tested against KOS_CAP_NONE and never for a sign,
             // per struct kos_recv_info.
             if (info.reply_cap != KOS_CAP_NONE)
@@ -105,7 +105,9 @@ int main(void)
         }
         if (got >= 4 and msg[0] == AMP_WALL_MARK)
         {
-            msg[2] = (unsigned char)kos_clock_set_realtime(kos_clock_realtime() + AMP_WALL_DAY_NS);
+            kos_realtime_t later = kos_realtime_now();
+            later.ns += (int64_t)AMP_WALL_DAY_NS;
+            msg[2] = (unsigned char)kos_realtime_set(later);
             msg[3] = (unsigned char)ampecho_hold(view, msg[1]);
         }
         // The caller's own bytes, unchanged: the far-call arms check the payload.

@@ -897,7 +897,7 @@ silently absent.
 **AND A RESYNCHRONISATION ANSWERS THE CALLERS IT ABANDONS, which is the same question one step
 earlier.** The clause above abandons a sender's whole held run, and the record generation makes
 that memory-safe; what it does not do by itself is discharge what those records were FOR. Every
-live one names a far caller parked on an answer, and under KOS_TIMEOUT_NONE that caller has no
+live one names a far caller parked on an answer, and under KOS_NEVER that caller has no
 deadline, so a record dropped in silence is a thread parked for the life of the image. Each is
 published the wire's only refusal shape, an empty PORT_REPLY carrying its own tag, taken out of the
 record while it can still be named: nothing else on this node knows those routes once the records
@@ -965,7 +965,7 @@ same way.
 
 **AND THAT ANSWER IS PUBLISHED AT TWO SITES, ONE EITHER SIDE OF THE POP, AND NEVER PER ARM.** Every
 refusal before the pop reaches one bool whose single caller publishes the empty reply, and every
-refusal after it is an answer to the record, because a far caller under KOS_TIMEOUT_NONE has no
+refusal after it is an answer to the record, because a far caller under KOS_NEVER has no
 deadline: an answer written into each refusing arm is one more thread leaked for the life of the
 image every time an arm is added.
 

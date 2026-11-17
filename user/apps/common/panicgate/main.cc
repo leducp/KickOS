@@ -59,7 +59,7 @@ namespace
         }
         kos_task_params params = {};
         kos_task_t t = KOS_TASK_NONE;
-        int const rc = kos_task_create(prog, &params, 0, &t);
+        int const rc = kos_task_create(prog, &params, KOS_POLL, &t);
         (void)kos_handle_close(prog);
         if (rc != 0)
         {
@@ -75,7 +75,7 @@ namespace
             {
                 break;
             }
-            kos_sleep_ns(1000000u);
+            kos_sleep_for(kos_ms(1));
         }
         if (state < 0 or (state & KOS_TASK_DEAD) == 0)
         {
@@ -87,7 +87,7 @@ namespace
             kos::print("[panicgate] ERROR: the task ended with another status\n");
             return 1;
         }
-        (void)kos_task_slay(t, 0);
+        (void)kos_task_slay(t, KOS_POLL);
         kos::print("[panicgate] the task ended with KOS_EXIT_PANIC, the system runs on\n");
         return 0;
     }

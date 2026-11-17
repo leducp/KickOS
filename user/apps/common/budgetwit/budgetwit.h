@@ -10,6 +10,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <chrono>
+
 // The budgets of system.yaml.
 constexpr int HOG_THREADS = 4;
 constexpr int HOG_ENDPOINTS = 3;
@@ -36,7 +38,7 @@ constexpr int SPAWN_CAP = 64;
 constexpr int SWEEP_CAP = 8;
 constexpr uint8_t SWEEP_CHILD_PRIO = 3;
 constexpr uint8_t PEER_PRIO = 11;
-constexpr uint32_t CALL_US = 2000000u;
+constexpr std::chrono::seconds CALL_BOUND{2};
 constexpr int SIBLING_SPAWNS = SIBLING_THREADS - 1;
 // The restarts the arena-drain loop takes at most.
 constexpr int RELAUNCH_CAP = 1024;

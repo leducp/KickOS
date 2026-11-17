@@ -115,12 +115,22 @@ milestone does not close while any of them still composes a system.
       message-waiting source (an endpoint kind, or a notification bound to the thread), several
       timers in one loop, more sources than one notification word holds, and a libc `poll()` on
       top; a wake is reported once and the waiter reads the source's state.
+      **RULED (maintainer, 2026-11-13), on the M10.7 design:** a watch on a task that has ENDED
+      lends the waiter's priority to its members while the waiter is parked accepting the bit
+      (reverses "a watch never lends priority" below: the lending create is gone); `kos_task_slay`
+      and `kos_thread_cancel` commit and return with no time argument, waiting being a dedicated
+      call (join, the task's end event); `kos_notify_wait` drops its capability and waits on the
+      bound notification, its bits in the result; the init's claim-retry counters go. "Can start
+      again" is keyed by program and instance name, with a create's authority, so a starter with
+      no handle can wait; the caller pays for each such watch with an entry of its own capability
+      table (a watch capability holding the notification), so no new budget kind: closing it
+      disarms and the task's death sweeps it.
 
 - [ ] **M10.7: THE C++ API CARRIES TIME AS `std::chrono` DURATIONS (maintainer, 2026-11-09).** A C++
       header takes and returns a duration, so its names drop the `_us` suffix (the USB console's
       `max_irq_wait_us` first). Done across the whole C++ surface at once (`kickos/kos.h`, the
       driver headers, the system services), never one function, and "no limit" keeps one spelling
-      that converts to `KOS_TIMEOUT_NONE` at the C boundary. The C API gets the same safety from
+      that converts to `KOS_NEVER` at the C boundary. The C API gets the same safety from
       one-member structs whose name says the type (maintainer, 2026-11-09), to weigh before it lands:
       one duration type with unit constructors rather than a type per unit, an instant type apart
       from it so a deadline cannot be passed as a timeout, and each struct's passing in registers
@@ -143,6 +153,14 @@ milestone does not close while any of them still composes a system.
       Xtensa and RX unchecked), the rounding to the kernel tick as a promise or not, a negative
       duration as an immediate poll or `-KOS_EINVAL`, and the type names against the other public
       headers (no `_t`, which POSIX reserves).
+      **RULED (maintainer, 2026-11-13), on the M10.7 design:** the kernel takes a 64-bit
+      monotonic deadline on every wait, all ones for no limit, with no tag bits; the calls with
+      a realtime form, and sleep, take a separate kind word. The syscall trap grows from four
+      argument words to five on every arch (`kos_send` and `kos_call` need it on 32-bit
+      targets). The types keep the `_t` suffix, as every `kos_` type does, the prefix
+      making a clash with POSIX unlikely. The clocks are named alike: `kos_monotonic_now` and
+      `kos_realtime_now`, POSIX's "realtime" kept. The C++ side keeps `kos::now()`, a
+      `steady_clock` time point built straight from the monotonic clock.
 
 - [ ] **M10.8: THE EXIT RECORD.** Reconcile `roadmap.md`, `docs/reference/architecture.md`,
       `docs/reference/invariants.md` and `STATE.md` against what shipped, and record what the green
@@ -1773,7 +1791,7 @@ need not be.
 
 `t_sleep` (`user/apps/common/selftest/main.cc`) spawns the 40 ms sleeper FIRST and the 10 ms
 one second, so `log_eq("SL")` at `user/apps/common/selftest/main.cc:447` needs the interval
-between the two sleepers reaching `kos_sleep_ns` to stay under 30 ms. That interval is the
+between the two sleepers reaching `kos_sleep_for` to stay under 30 ms. That interval is the
 second spawn's own cost and not a scheduling artefact: root runs at `KICKOS_PRIO_MIN + 1` and
 both sleepers at 10, so each create preempts root at the create itself and the sleeper arms its
 deadline before root returns to spawn the next one. A spawn is not free on a slow or loaded

@@ -267,7 +267,7 @@ kickos_rv64_stvec:
     beq     t0, t1, .Lecall
     j       .Lfault
 
-/* The psABI put nr and a0..a3 in a0..a4 and the frame holds them. The result goes into the
+/* The psABI put nr and a0..a4 in a0..a5 and the frame holds them. The result goes into the
  * frame because .Lrestore reloads a0 from there. ecall has no compressed form, so sepc + 4.
  */
 .Lecall:
@@ -276,6 +276,7 @@ kickos_rv64_stvec:
     ld      a2, F_A2(sp)
     ld      a3, F_A3(sp)
     ld      a4, F_A4(sp)
+    ld      a5, F_A5(sp)
     call    syscall_dispatch
     sd      a0, F_A0(sp)
     ld      t0, F_SEPC(sp)

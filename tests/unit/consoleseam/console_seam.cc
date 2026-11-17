@@ -318,7 +318,7 @@ namespace kickos
     }
 
     // No ring to wait on: the write ends.
-    int console_room_wait(uint32_t, uint32_t) { return -KOS_ECANCELED; }
+    int console_room_wait(uint32_t, uint64_t) { return -KOS_ECANCELED; }
 
     int console_dark_wait(void)
     {

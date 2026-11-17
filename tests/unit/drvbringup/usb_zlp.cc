@@ -12,6 +12,7 @@
 #include <stdint.h>
 #include <string.h>
 
+#include <chrono>
 #include <string>
 #include <vector>
 
@@ -24,13 +25,13 @@ extern "C"
         return 0;
     }
 
-    void kos_sleep_ns(uint64_t)
+    void kos_sleep_for(kos_duration_t)
     {
     }
 
-    uint64_t g_now = 1000u;
+    int64_t g_now = 1000;
 
-    uint64_t kos_clock_now(void)
+    int64_t kickos_monotonic_now(void)
     {
         return g_now;
     }
@@ -309,11 +310,11 @@ TEST(UsbHold, output_waits_for_the_line_coding_sent_after_the_host_raises_dtr)
     r.line_state(KOS_CDC_CTRL_DTR | KOS_CDC_CTRL_RTS);
     r.pass();
     EXPECT_TRUE(r.dev.in_lens.empty()) << "the opener's termios is not set yet";
-    EXPECT_NE(r.cdc.max_irq_wait_us(), KOS_TIMEOUT_NONE) << "a hold must bound the IRQ thread's wait";
+    EXPECT_NE(r.cdc.irq_wait_until().ns, KOS_NEVER.ns) << "a hold must bound the IRQ thread's wait";
     r.line_coding();
     r.drain();
     EXPECT_EQ(r.dev.in_bytes, std::string(IDENTITY) + std::string(10u, 'x'));
-    EXPECT_EQ(r.cdc.max_irq_wait_us(), KOS_TIMEOUT_NONE);
+    EXPECT_EQ(r.cdc.irq_wait_until().ns, KOS_NEVER.ns);
 }
 
 TEST(UsbHold, an_opener_that_sets_no_line_coding_is_answered_once_the_hold_expires)
@@ -322,11 +323,11 @@ TEST(UsbHold, an_opener_that_sets_no_line_coding_is_answered_once_the_hold_expir
     ASSERT_EQ(r.cdc.bring_up(), 0);
     r.configure();
     r.line_state(KOS_CDC_CTRL_DTR);
-    g_now += usb::KOS_USB_HOLD_OPENED_NS - 1u;
+    g_now += std::chrono::nanoseconds(usb::KOS_USB_HOLD_OPENED).count() - 1;
     r.pass();
     EXPECT_TRUE(r.dev.in_lens.empty());
-    g_now += 1u;
-    EXPECT_EQ(r.cdc.max_irq_wait_us(), 0u);
+    g_now += 1;
+    EXPECT_LE(r.cdc.irq_wait_until().ns, g_now) << "the IRQ thread's deadline is not the hold's end";
     r.pass();
     r.drain();
     EXPECT_EQ(r.dev.in_bytes, IDENTITY);
@@ -337,10 +338,10 @@ TEST(UsbHold, a_host_that_never_raises_dtr_is_answered_once_the_hold_expires)
     Rig r;
     ASSERT_EQ(r.cdc.bring_up(), 0);
     r.configure();
-    g_now += usb::KOS_USB_HOLD_UNOPENED_NS - 1u;
+    g_now += std::chrono::nanoseconds(usb::KOS_USB_HOLD_UNOPENED).count() - 1;
     r.pass();
     EXPECT_TRUE(r.dev.in_lens.empty());
-    g_now += 1u;
+    g_now += 1;
     r.pass();
     r.drain();
     EXPECT_EQ(r.dev.in_bytes, IDENTITY);
@@ -370,9 +371,9 @@ TEST(UsbHold, a_hold_that_ends_while_the_bus_sleeps_lets_the_irq_thread_park)
     ASSERT_EQ(r.cdc.bring_up(), 0);
     r.configure();
     r.bus(usb::KOS_USB_EV_SUSPEND);
-    g_now += usb::KOS_USB_HOLD_UNOPENED_NS;
+    g_now += std::chrono::nanoseconds(usb::KOS_USB_HOLD_UNOPENED).count();
     r.pass();
-    EXPECT_EQ(r.cdc.max_irq_wait_us(), KOS_TIMEOUT_NONE) << "the IRQ thread polls a sleeping bus";
+    EXPECT_EQ(r.cdc.irq_wait_until().ns, KOS_NEVER.ns) << "the IRQ thread polls a sleeping bus";
 }
 
 TEST(UsbHold, a_hold_that_ends_with_no_configuration_lets_the_irq_thread_park)
@@ -385,9 +386,9 @@ TEST(UsbHold, a_hold_that_ends_with_no_configuration_lets_the_irq_thread_park)
     r.dev.setup.bRequest = KOS_USB_SET_CONFIGURATION;
     r.dev.setup.wValue = 0u;
     r.bus(usb::KOS_USB_EV_SETUP);
-    g_now += usb::KOS_USB_HOLD_UNOPENED_NS;
+    g_now += std::chrono::nanoseconds(usb::KOS_USB_HOLD_UNOPENED).count();
     r.pass();
-    EXPECT_EQ(r.cdc.max_irq_wait_us(), KOS_TIMEOUT_NONE) << "the IRQ thread polls an unconfigured bus";
+    EXPECT_EQ(r.cdc.irq_wait_until().ns, KOS_NEVER.ns) << "the IRQ thread polls an unconfigured bus";
 }
 
 TEST(UsbUnplug, an_unplug_holds_the_ring_and_the_replug_opens_with_the_rows)

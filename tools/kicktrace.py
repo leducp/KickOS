@@ -61,9 +61,9 @@ ARCH_NAME = {0: "sim", 1: "armv7m", 2: "armv6m", 3: "xtensa", 4: "rx", 5: "riscv
 # which it mirrors by hand. Keep each label the enumerator suffix lowercased;
 # tests/unit/telemetry/check_idmap.py gates the numbers and the labels.
 SYSCALL_NAME = {
-    1: "kconsole_write", 2: "yield", 3: "sleep_ns", 7: "thread_create", 8: "exit",
+    1: "kconsole_write", 2: "yield", 3: "sleep", 7: "thread_create", 8: "exit",
     9: "irq_raise", 10: "amp_count",
-    11: "notify_create", 12: "clock_now", 13: "ram_alloc", 14: "irq_claim",
+    11: "notify_create", 12: "monotonic_now", 13: "ram_alloc", 14: "irq_claim",
     15: "notify_wait", 16: "irq_ack", 17: "handle_close",
     19: "diag_led_set", 22: "cpu_clock_hz",
     24: "mutex_lock", 25: "mutex_unlock", 26: "endpoint_create",
@@ -86,7 +86,7 @@ SYSCALL_NAME = {
     79: "periph_disable", 80: "witness_uaccess", 81: "witness_rewinds",
     82: "word_wait", 83: "word_wake", 84: "endpoint_badge",
     85: "task_create", 86: "program_find",
-    87: "clock_realtime", 88: "clock_set_realtime",
+    87: "realtime_now", 88: "realtime_set",
 }
 
 TRACE_MAGIC = 0x4B545243
@@ -270,7 +270,7 @@ def stats(vals):
 
 def syscall_overheads(records, slices, ns, gaps, probe_ns=0.0):
     """True on-CPU cost of each syscall: the issuing thread's RUNNING time within
-    its SYSCALL_ENTER..EXIT window. A blocking syscall (sleep_ns, word_wait) yields
+    its SYSCALL_ENTER..EXIT window. A blocking syscall (sleep, word_wait) yields
     the CPU and resumes later, so its raw enter->exit SPAN includes that block and is
     not a cost; the window is intersected with the thread's run slices instead.
     Returns [(nr, overhead_ns)] (ENTER/EXIT matched per tid, FIFO; pairs straddling a

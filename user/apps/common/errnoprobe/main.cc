@@ -105,7 +105,7 @@ namespace
         unsigned trips = 0;
         while (true)
         {
-            kos::sleep_ns(20000000ull);
+            kos::sleep_for(std::chrono::milliseconds{20});
             trips++;
             unsigned ready = 0;
             for (int i = 0; i < WORKERS; i++)
@@ -146,7 +146,7 @@ namespace
             {
                 break;
             }
-            kos::sleep_ns(20000000ull);
+            kos::sleep_for(std::chrono::milliseconds{20});
         }
 
         for (int k = 0; k < WORKERS; k++)
@@ -317,7 +317,7 @@ namespace
         struct kos_recv_info info = {0, KOS_CAP_NONE};
         (void)g_fast_ready.post();
         struct kos_reply_recv_opts opts;
-        kos_reply_recv_opts_init(&opts, FAST_EP, 0, KOS_TIMEOUT_NONE);
+        kos_reply_recv_opts_init(&opts, FAST_EP, 0, KOS_NEVER);
         g_fast.recv_rc = kos_reply_recv(KOS_CAP_NONE, buf, kos_call_lens_pack(0, sizeof(buf)), &opts);
         info = opts.info;
         // The first thing this thread does after the fastpath put it back on the CPU.
@@ -336,7 +336,7 @@ namespace
         g_fast.client_addr = errno_addr();
         g_fast.client_provoked = provoke(0); // ERANGE
         unsigned char buf[KOS_CALL_REG_BYTES] = {1, 2, 3, 4};
-        g_fast.call_rc = kos_call(FAST_EP, buf, 4, 4, KOS_TIMEOUT_NONE);
+        g_fast.call_rc = kos_call(FAST_EP, buf, 4, 4, KOS_NEVER);
         g_fast.client_after = errno;
         g_fast.client_done = 1;
         (void)g_fast_done.post();
@@ -473,7 +473,7 @@ namespace
         while (g_pre.wakes < PREEMPT_WAKES)
         {
             // parks; the wake is a timer interrupt, not a peer's post
-            kos_sleep_ns(PREEMPT_SLEEP_NS);
+            kos_sleep_for(kos_ns(PREEMPT_SLEEP_NS));
             g_pre.wakes++;
             if (g_pre.spinning.load() != 0)
             {

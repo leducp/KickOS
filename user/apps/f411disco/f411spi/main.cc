@@ -147,7 +147,7 @@ int main(int, char**)
         }
         *dr = tx;
 
-        (void)kos_notify_wait(note, 1u, KOS_TIMEOUT_NONE, nullptr);
+        (void)kos_notify_wait(1u, KOS_NEVER, nullptr);
         // The only way to clear RXNE: without it the level storms once the next wait rearms the
         // edge-claimed line.
         uint32_t const rx = *dr & 0xFFu;

@@ -21,7 +21,7 @@ int main(int, char**)
     }
     kos::print("[conrestart] served by the first instance\n");
     uint32_t bits = 0;
-    if (kos_notify_wait(events, 1u, KOS_TIMEOUT_NONE, &bits) != 0 or (bits & 1u) == 0)
+    if (kos_notify_wait(1u, KOS_NEVER, &bits) != 0 or (bits & 1u) == 0)
     {
         kos::print("[conrestart] ERROR: the init never reported the first instance's death\n");
         exit(3);

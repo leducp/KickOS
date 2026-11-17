@@ -20,17 +20,18 @@ namespace selftest
     bool report_await(kos_cap_t ep, void* rep, size_t len)
     {
         struct kos_reply_recv_opts opts;
-        kos_reply_recv_opts_init(&opts, ep, KOS_RECV_NO_INFO, STALL_TOLERANT_US);
+        kos_reply_recv_opts_init(&opts, ep, KOS_RECV_NO_INFO, after_us(STALL_TOLERANT_US));
         return kos_reply_recv(KOS_CAP_NONE, rep, kos_call_lens_pack(0, len), &opts)
                == static_cast<int>(len);
     }
 
     int thread_end(kos::thread::Handle* h, uint32_t bound_us)
     {
-        int const rc = h->join(bound_us);
+        int const rc = h->join_for(std::chrono::microseconds{bound_us});
         if (rc != 0)
         {
-            int const slain = h->cancel(KOS_CANCEL_SLAY, ARM_SLAY_US);
+            int const slain =
+                h->cancel_for(KOS_CANCEL_SLAY, std::chrono::microseconds{ARM_SLAY_US});
             if (slain != 0 and slain != -KOS_EBADF)
             {
                 tap::fail("thread %u: join answered %d, slay %d", static_cast<unsigned>(h->id()),
@@ -44,7 +45,7 @@ namespace selftest
 
     int task_end(kos_task_t* t, uint32_t bound_us)
     {
-        int const rc = kos_task_slay(*t, bound_us);
+        int const rc = kos_task_slay(*t, after_us(bound_us));
         if (rc != 0)
         {
             tap::fail("task %u: slay answered %d", static_cast<unsigned>(*t), rc);
@@ -57,19 +58,19 @@ namespace selftest
     namespace
     {
         // A sleep and not a yield: a poller above the thread it waits on would hold its core.
-        constexpr uint64_t FLAG_STEP_NS = 500000ull;
+        constexpr int64_t FLAG_STEP_NS = 500000;
 
         bool flag_reaches(Atomic<uint32_t, Order::RELAXED> const& cell, uint32_t value,
                           bool equal)
         {
-            uint64_t const deadline = kos_clock_now() + uint64_t{STALL_TOLERANT_US} * 1000u;
+            kos_monotonic_t const deadline = after_us(STALL_TOLERANT_US);
             while ((cell.load() == value) != equal)
             {
-                if (kos_clock_now() > deadline)
+                if (kos_monotonic_now().ns > deadline.ns)
                 {
                     return false;
                 }
-                kos_sleep_ns(FLAG_STEP_NS);
+                kos_sleep_for(kos_ns(FLAG_STEP_NS));
             }
             return true;
         }
@@ -115,7 +116,7 @@ namespace selftest
 
     void pool_gated_worker(void*)
     {
-        kos_sem_wait(&g_probe_gate, KOS_TIMEOUT_NONE);
+        kos_sem_wait(&g_probe_gate, KOS_NEVER);
     }
 
     namespace
@@ -169,17 +170,6 @@ namespace selftest
             {
                 (void)probes[i].join();
             }
-        }
-
-        // Microseconds left to `deadline`, 0 once it has passed.
-        uint32_t left_us(uint64_t deadline)
-        {
-            uint64_t const now = kos_clock_now();
-            if (now >= deadline)
-            {
-                return 0;
-            }
-            return static_cast<uint32_t>((deadline - now) / 1000u);
         }
 
         enum class ObjectKind
@@ -323,15 +313,15 @@ namespace selftest
 
     int irq_claim_await(int line, kos_cap_t* out)
     {
-        uint64_t const deadline = kos_clock_now() + IRQ_EDGE_BUDGET_NS;
+        kos_monotonic_t const deadline = kos_after(kos_monotonic_now(), kos_ns(IRQ_EDGE_BUDGET_NS));
         int rc = kos_irq_claim(line, KOS_IRQ_EDGE, out);
         while (rc == -KOS_EAGAIN or rc == -KOS_ENOMEM)
         {
-            if (kos_clock_now() > deadline)
+            if (kos_monotonic_now().ns > deadline.ns)
             {
                 return rc;
             }
-            kos_sleep_ns(IRQ_EDGE_POLL_NS);
+            kos_sleep_for(kos_ns(IRQ_EDGE_POLL_NS));
             rc = kos_irq_claim(line, KOS_IRQ_EDGE, out);
         }
         return rc;
@@ -355,7 +345,7 @@ namespace selftest
 
     bool ArmHold::joined()
     {
-        uint64_t const deadline = kos_clock_now() + uint64_t{bound_us_} * 1000u;
+        kos_monotonic_t const deadline = after_us(bound_us_);
         bool all = true;
         for (int i = 0; i < n_; i++)
         {
@@ -364,7 +354,7 @@ namespace selftest
             {
                 continue;
             }
-            int const rc = h.thread->join(left_us(deadline));
+            int const rc = kos_thread_join(h.thread->id(), deadline);
             if (rc != 0 and rc != -KOS_EBADF)
             {
                 all = false;
@@ -394,7 +384,7 @@ namespace selftest
             {
                 continue;
             }
-            int const slain = kos_task_slay(*h.task, ARM_SLAY_US);
+            int const slain = kos_task_slay(*h.task, after_us(ARM_SLAY_US));
             if (slain == 0)
             {
                 *h.task = KOS_TASK_NONE;
@@ -405,7 +395,7 @@ namespace selftest
                           slain);
             }
         }
-        uint64_t const deadline = kos_clock_now() + uint64_t{bound_us_} * 1000u;
+        kos_monotonic_t const deadline = after_us(bound_us_);
         for (int i = 0; i < n_; i++)
         {
             Held const& h = held_[i];
@@ -413,12 +403,13 @@ namespace selftest
             {
                 continue;
             }
-            int const joined = h.thread->join(left_us(deadline));
+            int const joined = kos_thread_join(h.thread->id(), deadline);
             if (joined == 0 or joined == -KOS_EBADF)
             {
                 continue;
             }
-            int const slain = h.thread->cancel(KOS_CANCEL_SLAY, ARM_SLAY_US);
+            int const slain =
+                h.thread->cancel_for(KOS_CANCEL_SLAY, std::chrono::microseconds{ARM_SLAY_US});
             if (slain != 0)
             {
                 tap::fail("ArmHold: slay of thread %u answered %d",
@@ -493,7 +484,7 @@ namespace selftest
             int unjoined = 0;
             for (int i = 0; i < n; i++)
             {
-                if (seated[i].join(STALL_TOLERANT_US) != 0)
+                if (seated[i].join_for(std::chrono::microseconds{STALL_TOLERANT_US}) != 0)
                 {
                     unjoined++;
                 }
@@ -749,7 +740,7 @@ namespace selftest
     {
         int create_waiting(kos_program_t prog, kos_task_params const& p, kos_task_t* t)
         {
-            return kos_task_create(prog, &p, STALL_TOLERANT_US, t);
+            return kos_task_create(prog, &p, after_us(STALL_TOLERANT_US), t);
         }
     }
 
@@ -787,7 +778,7 @@ namespace selftest
 
     int peer_dead_status(kos_task_t t, uint32_t bound_us)
     {
-        uint64_t const deadline = kos_clock_now() + 1000ull * bound_us;
+        kos_monotonic_t const deadline = after_us(bound_us);
         while (true)
         {
             int status = 0;
@@ -796,11 +787,11 @@ namespace selftest
             {
                 return status;
             }
-            if (kos_clock_now() > deadline)
+            if (kos_monotonic_now().ns > deadline.ns)
             {
                 return PEER_UNDEAD;
             }
-            kos_sleep_ns(1000000ull);
+            kos_sleep_for(kos_ms(1));
         }
     }
 
@@ -844,7 +835,7 @@ namespace selftest
     {
         (void)kos_notify_bind(n);
         uint32_t bits = 0;
-        (void)kos_notify_wait(n, 0xFFFFFFFFu, KOS_TIMEOUT_NONE, &bits);
+        (void)kos_notify_wait(0xFFFFFFFFu, KOS_NEVER, &bits);
     }
 #endif
 

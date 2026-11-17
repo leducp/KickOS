@@ -778,9 +778,9 @@ int arch_bitband_present(void);
 // halves as defined in sys/abi.h. Preserve the ABI's 64-bit return registers:
 // arch_syscall reads the low half; arch_syscall64 reads both.
 uintptr_t arch_syscall(uintptr_t nr,
-                       uintptr_t a0, uintptr_t a1, uintptr_t a2, uintptr_t a3);
+                       uintptr_t a0, uintptr_t a1, uintptr_t a2, uintptr_t a3, uintptr_t a4);
 uint64_t arch_syscall64(uintptr_t nr,
-                        uintptr_t a0, uintptr_t a1, uintptr_t a2, uintptr_t a3);
+                        uintptr_t a0, uintptr_t a1, uintptr_t a2, uintptr_t a3, uintptr_t a4);
 
 // Register IPC trap, enabled by KICKOS_ARCH_HAS_IPC_FASTPATH.
 // io has KOS_CALL_REG_WORDS + 3 words:
@@ -921,7 +921,7 @@ void kickos_thread_return(void) __attribute__((noreturn));
 // Dispatch syscalls. Sign-extend negative errno results; zero-extend other
 // results. A 32-bit caller reads the low half.
 uint64_t syscall_dispatch(uintptr_t nr,
-                          uintptr_t a0, uintptr_t a1, uintptr_t a2, uintptr_t a3);
+                          uintptr_t a0, uintptr_t a1, uintptr_t a2, uintptr_t a3, uintptr_t a4);
 // A memory-protection violation was caught.
 void kickos_isr_fault(uintptr_t addr, int is_write);
 

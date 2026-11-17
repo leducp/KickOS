@@ -95,7 +95,8 @@ TEST_F(DeathLendIpc, a_call_donating_to_a_server_waiting_on_a_death_reaches_the_
         thread_abort_park(parked, -KOS_ETIMEDOUT, lock);
     });
     static char buf[4];
-    EXPECT_EQ(endpoint_call(cap, reinterpret_cast<uintptr_t>(buf), sizeof(buf), sizeof(buf), 1000u),
+    EXPECT_EQ(endpoint_call(cap, reinterpret_cast<uintptr_t>(buf), sizeof(buf), sizeof(buf),
+                            testfix::deadline_in(1000000u)),
               -KOS_ETIMEDOUT);
     EXPECT_EQ(g_while_called, PRIO_CLIENT)
         << "the call's donation stopped at the server waiting on the death";
@@ -138,7 +139,8 @@ TEST_F(DeathLendIpc, a_call_raises_a_lent_member_serving_it_and_the_lend_does_no
         thread_abort_park(parked, -KOS_ETIMEDOUT, lock);
     });
     static char buf[4];
-    EXPECT_EQ(endpoint_call(cap, reinterpret_cast<uintptr_t>(buf), sizeof(buf), sizeof(buf), 1000u),
+    EXPECT_EQ(endpoint_call(cap, reinterpret_cast<uintptr_t>(buf), sizeof(buf), sizeof(buf),
+                            testfix::deadline_in(1000000u)),
               -KOS_ETIMEDOUT);
     EXPECT_EQ(g_while_called, PRIO_CLIENT) << "the lend's recompute undid the call's donation";
     EXPECT_EQ(g_member->prio, PRIO_SERVER) << "the member keeps a donation the call took back";

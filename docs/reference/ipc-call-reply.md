@@ -126,7 +126,7 @@ Both buffer bound-checks run up front, in caller context, once. Two paths:
   conventional server now (D2) if this caller outranks it.
 - **No receiver**: answered at once with `-KOS_EAGAIN` or `-KOS_ECONNREFUSED`, parking nowhere.
 
-**The deadline.** `timeout_us` is RELATIVE microseconds, and `KOS_TIMEOUT_NONE` is no deadline.
+**The deadline.** `timeout_us` is RELATIVE microseconds, and `KOS_NEVER` is no deadline.
 
 - **The lengths share one argument slot.** The trap frame carries four argument slots, so a
   deadline needs one freed: the stub packs `send_len` and `recv_cap` into a single slot
@@ -201,7 +201,7 @@ the tree open-code that adjacency; the fused form pays one trap, one `IrqLock`, 
     struct kos_reply_recv_opts {
         kos_cap_t ep;              // IN:  endpoint to receive on (CAP_WAIT)
         uint32_t  flags;           // IN:  KOS_RECV_NO_INFO, or 0
-        uint32_t  timeout_us;      // IN:  relative us, or KOS_TIMEOUT_NONE
+        uint32_t  timeout_us;      // IN:  relative us, or KOS_NEVER
         uint32_t  notify;          // IN:  the notification bits this wait accepts
                                    // OUT: the bits it consumed
         struct kos_recv_info info; // OUT: the arrival, whole-struct
@@ -902,7 +902,7 @@ mask, so replies may complete OUT OF ORDER while the tail still advances in orde
 
 **EVERY REFUSAL PAST THE TAKE PUBLISHES AN EMPTY `PORT_REPLY` CARRYING THE TAG, and that is the
 wire's only refusal shape.** No refusal message and no errno crosses the window: a far caller
-under `KOS_TIMEOUT_NONE` has no deadline, so a refusal that answered nothing would leave that
+under `KOS_NEVER` has no deadline, so a refusal that answered nothing would leave that
 thread parked for the life of the image. Two sites answer, one on each side of the pop, and never
 one per arm: every refusal before it reaches the one bool whose single caller publishes the answer
 and releases the slot (`dispatch_call`, `kernel/amp/ampwindow.cc`), and every refusal after it is an
@@ -959,7 +959,7 @@ walks a shorter chain and never a torn one.
   not re-boosted (the chain walk runs only at `mutex_lock`). No current consumer takes a
   mutex mid-transaction. A ~10-line fix (re-run `mutex_lock`'s pass-2 chain walk after the
   D2 raise) is banked for when one does.
-- **An UNTIMED call still parks indefinitely.** A `kos_call` of `KOS_TIMEOUT_NONE` has no
+- **An UNTIMED call still parks indefinitely.** A `kos_call` of `KOS_NEVER` has no
   deadline; a finite timeout is the bounded form, and its deadline covers both phases (the wait on `send_waiters` and
   the wait for the reply). A timeout does not abort the transaction: a request a server has
   already taken stays taken, and that server still holds the reply cap.

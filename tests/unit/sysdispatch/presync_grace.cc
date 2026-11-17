@@ -114,7 +114,7 @@ namespace kickos
 
                 // A create of drv by `t` from its parameters on `page`, handing over `note`.
                 int32_t create_drv(Thread* t, size_t page, size_t out_page, uint32_t note,
-                                   uint32_t timeout_us, kos_task_t* out)
+                                   uint64_t deadline, kos_task_t* out)
                 {
                     kos_task_params* const p = task_params(page, 0, 0, 0);
                     *host<kos_cap_grant>(uva(page, CAPS_AT)) = {
@@ -125,7 +125,7 @@ namespace kickos
                     *o = KOS_TASK_NONE;
                     int32_t const rc = err(call_as(t, KOS_SYS_TASK_CREATE, program_for(t),
                                                    uva(page, TASK_PARAMS_AT), uva(out_page),
-                                                   timeout_us));
+                                                   kos_u64_lo(deadline), kos_u64_hi(deadline)));
                     *out = static_cast<kos_task_t>(*o);
                     return rc;
                 }
@@ -177,7 +177,7 @@ namespace kickos
                     wake_next_park(at_the_park);
                     kos_task_t t = KOS_TASK_NONE;
                     g_seen.first = c->create_drv(c->main_, MAIN_PARAMS, MAIN_OUT, c->main_note_,
-                                                 1000u, &t);
+                                                 deadline_in(1000000u), &t);
                     g_seen.ran = true;
                     g_core = 1;
                 }
@@ -209,7 +209,7 @@ namespace kickos
                 << "a second creator was refused as if drv were live";
             dispatch_as(1);
             kos_task_t t = KOS_TASK_NONE;
-            EXPECT_EQ(create_drv(main_, MAIN_PARAMS, MAIN_OUT, main_note_, 1000u, &t), 0)
+            EXPECT_EQ(create_drv(main_, MAIN_PARAMS, MAIN_OUT, main_note_, deadline_in(1000000u), &t), 0)
                 << "the grace period over, the create did not start drv";
             EXPECT_NE(t, KOS_TASK_NONE);
         }

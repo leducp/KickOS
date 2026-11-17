@@ -25,7 +25,7 @@
 #endif
 
 extern "C" uint64_t syscall_dispatch(uintptr_t nr, uintptr_t a0, uintptr_t a1, uintptr_t a2,
-                                     uintptr_t a3);
+                                     uintptr_t a3, uintptr_t a4);
 
 namespace kickos
 {
@@ -55,7 +55,7 @@ namespace kickos
                 constexpr size_t ASKED = 100;
                 static_assert(ASKED < REGION_MIN, "the extent passes the bytes asked for");
                 size_t const at = g_arena_used;
-                uintptr_t const block = syscall_dispatch(KOS_SYS_RAM_ALLOC, ASKED, 0, 0, 0);
+                uintptr_t const block = syscall_dispatch(KOS_SYS_RAM_ALLOC, ASKED, 0, 0, 0, 0);
                 ASSERT_EQ(block, reinterpret_cast<uintptr_t>(g_arena + at));
                 ASSERT_EQ(g_arena_used, at + REGION_MIN);
                 size_t dirty = 0;
@@ -74,7 +74,7 @@ namespace kickos
             {
                 size_t const at = g_arena_used;
                 cap_seat_authority(kernel().current(kickos_kernel_core()), 0);
-                EXPECT_EQ(syscall_dispatch(KOS_SYS_RAM_ALLOC, REGION_MIN, 0, 0, 0), 0u);
+                EXPECT_EQ(syscall_dispatch(KOS_SYS_RAM_ALLOC, REGION_MIN, 0, 0, 0, 0), 0u);
                 EXPECT_EQ(g_arena_used, at);
             }
         }

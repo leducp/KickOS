@@ -150,7 +150,7 @@ r2             0xf343              62275
 r3             0x1d                29
 ```
 
-`x/2wx $sp` shows `0xffffffff` first: the fifth argument, the timeout `KOS_TIMEOUT_NONE`, since
+`x/2wx $sp` shows `0xffffffff` first: the fifth argument, the timeout `KOS_NEVER`, since
 `kos_print` waits for its reader.
 
 **Why, and the contract:** [Book: the syscall path](../book/the-syscall-path-trap-dispatch-return.md)
@@ -638,7 +638,7 @@ Stop 11. There is no separate "continuation" object: the call stack is the conti
 
 [The next chapter](03-sleep.md) follows exactly that, with a sleep.
 
-**Try it:** `break kos_sleep_ns`, `continue`, then `break PendSV_Handler`, `continue`, `info
+**Try it:** `break kos_sleep_for`, `continue`, then `break PendSV_Handler`, `continue`, `info
 registers psp`. The `PSP` reads 0x20000bb8, an address inside `g_kstacks`, not a user stack: the
 thread being switched out was parked in the middle of its syscall.
 

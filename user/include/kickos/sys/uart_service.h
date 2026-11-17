@@ -204,10 +204,10 @@ void irq_loop(Uart& dev, Shared* sh)
         // The FIRST wait is also what arms the line: a claim leaves it masked so no window
         // exists in which it is armed and unowned. One wait covers the lines and the
         // doorbell.
-        waited = kos_notify_wait(KOS_UART_CAP_NOTIFY, KOS_UART_ACCEPT, KOS_TIMEOUT_NONE, nullptr);
+        waited = kos::notify_wait(KOS_UART_ACCEPT);
         if (waited != 0)
         {
-            break; // the cap went away: the line is gone, so this thread has no work
+            break; // bound to nothing, or cancelled: this thread has no work
         }
         kos_counter_increment(&sh->stats.irq_wakes, 1u);
         // "Found nothing" is judged from what THIS thread owns: tx_bytes moves under the

@@ -143,7 +143,7 @@ namespace kickos
 
             int32_t receive(uint32_t ep, kos_reply_recv_opts* opts)
             {
-                kos_reply_recv_opts_init(opts, ep, 0u, KOS_TIMEOUT_NONE);
+                kos_reply_recv_opts_init(opts, ep, 0u, KOS_NEVER);
                 opts->info.badge = 0xDEADDEADu;
                 return endpoint_reply_recv(KOS_CAP_NONE, reinterpret_cast<uintptr_t>(g_rbuf),
                                            kos_call_lens_pack(0, RECV_CAP),
@@ -250,7 +250,7 @@ namespace kickos
             opts.info.badge = 0xDEADDEADu;
             park_receiver(g_pair.r, g_pair.wait, &opts);
             ASSERT_EQ(endpoint_send(g_pair.badged, reinterpret_cast<uintptr_t>(g_sbuf), MSG_LEN,
-                                    KOS_TIMEOUT_NONE),
+                                    KOS_LIMIT_NONE),
                       static_cast<int32_t>(MSG_LEN));
             EXPECT_EQ(opts.info.badge, BADGE);
 
@@ -264,7 +264,7 @@ namespace kickos
             plain.info.badge = 0xDEADDEADu;
             park_receiver(g_pair.r, g_pair.wait, &plain);
             ASSERT_EQ(endpoint_send(g_pair.full, reinterpret_cast<uintptr_t>(g_sbuf), MSG_LEN,
-                                    KOS_TIMEOUT_NONE),
+                                    KOS_LIMIT_NONE),
                       static_cast<int32_t>(MSG_LEN));
             EXPECT_EQ(plain.info.badge, KOS_BADGE_NONE);
         }
@@ -275,7 +275,7 @@ namespace kickos
             g_rc_at_park = 0;
             wake_next_park(receive_at_park);
             int32_t const rc = endpoint_send(g_pair.badged, reinterpret_cast<uintptr_t>(g_sbuf),
-                                             MSG_LEN, KOS_TIMEOUT_NONE);
+                                             MSG_LEN, KOS_LIMIT_NONE);
             EXPECT_EQ(g_rc_at_park, static_cast<int32_t>(MSG_LEN)) << "the receive found no sender";
             EXPECT_EQ(g_opts_at_park.info.badge, BADGE)
                 << "the parked sender's badge did not reach the receiver";
@@ -291,7 +291,7 @@ namespace kickos
             park_receiver(g_pair.r, g_pair.wait, &g_parked_opts);
             wake_next_park(answer_parked_at_park);
             int32_t const rc = endpoint_call(g_pair.badged, reinterpret_cast<uintptr_t>(g_sbuf),
-                                             MSG_LEN, RECV_CAP, KOS_TIMEOUT_NONE);
+                                             MSG_LEN, RECV_CAP, KOS_LIMIT_NONE);
             EXPECT_EQ(g_parked_opts.info.badge, BADGE);
             EXPECT_EQ(rc, 1);
         }
@@ -302,7 +302,7 @@ namespace kickos
             g_rc_at_park = 0;
             wake_next_park(receive_and_answer_at_park);
             int32_t const rc = endpoint_call(g_pair.badged, reinterpret_cast<uintptr_t>(g_sbuf),
-                                             MSG_LEN, RECV_CAP, KOS_TIMEOUT_NONE);
+                                             MSG_LEN, RECV_CAP, KOS_LIMIT_NONE);
             EXPECT_EQ(g_rc_at_park, static_cast<int32_t>(MSG_LEN)) << "the receive found no call";
             EXPECT_NE(g_opts_at_park.info.reply_cap, KOS_CAP_NONE);
             EXPECT_EQ(g_opts_at_park.info.badge, BADGE)

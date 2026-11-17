@@ -12,7 +12,7 @@ using namespace k64dspi_witness;
 
 namespace
 {
-    constexpr uint32_t HOLDER_END_US = 30000000u;
+    constexpr std::chrono::seconds HOLDER_END{30};
 }
 
 int main(int, char**)
@@ -23,7 +23,7 @@ int main(int, char**)
         give_up("no /init/events to wait the holder's end on", -1);
     }
     uint32_t bits = 0;
-    int const waited = kos_notify_wait(events, 1u, HOLDER_END_US, &bits);
+    int const waited = kos::notify_wait_for(1u, HOLDER_END, &bits);
     if (waited == -KOS_ETIMEDOUT)
     {
         kos::print("[k64dspi] FAIL: the holder did not end within 30 s\n");
@@ -49,7 +49,7 @@ int main(int, char**)
     }
     kos::print("[k64dspi] the holder ended; a task holding no window reads MCR\n");
     int status = 0;
-    while (kickos::apps::wait_dead(t, &status, 1000u) == -KOS_ETIMEDOUT)
+    while (kickos::apps::wait_dead(t, &status, std::chrono::seconds{1}) == -KOS_ETIMEDOUT)
     {
     }
     if ((kos_task_state(t, &status) & KOS_TASK_ENDED) != 0 and status == KOS_EXIT_FAULT)

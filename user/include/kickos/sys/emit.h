@@ -104,17 +104,25 @@ inline void kconsole_write_all(char const* s, size_t n)
     }
 }
 
+// One send of the console's chunk. Out of the loop below: GCC keeps a 64-bit deadline live across
+// a loop in a VFP register on an FP core, which would make every printing thread FP-live.
+__attribute__((noinline)) inline int32_t stdout_send(char const* s, size_t n, bool nonblock)
+{
+    kos_monotonic_t until = KOS_NEVER;
+    if (nonblock)
+    {
+        until = KOS_POLL;
+    }
+    return kos_send(0, s, n, until);
+}
+
 // The bytes of s taken, all of them where error is 0. Short with -KOS_ETIMEDOUT where this task
 // is non-blocking and the console would make it wait, else with the error that refused the rest:
 // bytes a refused buffer or a cancelled writer loses are not counted.
 inline WriteResult stdout_write(char const* s, size_t total)
 {
     size_t sent = 0;
-    uint32_t timeout_us = KOS_TIMEOUT_NONE;
-    if (stdout_nonblock() != 0u)
-    {
-        timeout_us = 0u;
-    }
+    bool const nonblock = stdout_nonblock() != 0u;
     while (sent < total)
     {
         size_t chunk = total - sent;
@@ -122,7 +130,7 @@ inline WriteResult stdout_write(char const* s, size_t total)
         {
             chunk = KOS_EP_MSG_MAX;
         }
-        int32_t const r = kos_send(0, s + sent, chunk, timeout_us);
+        int32_t const r = stdout_send(s + sent, chunk, nonblock);
         // A count short of the chunk, zero included, leaves the rest to be offered again. That
         // is no spin: the rendezvous consumed the receive, so the next send parks until the
         // driver receives again, or for a non-blocking task answers at once.

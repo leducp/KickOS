@@ -55,7 +55,7 @@ int main(int, char**)
 {
     kos_print("[fault] executing an illegal instruction (expect a fault dump)\n");
 #if KICKOS_FAULT_DELAY_MS
-    kos_sleep_ns(static_cast<uint64_t>(KICKOS_FAULT_DELAY_MS) * 1000000ull);
+    kos_sleep_for(kos_ms(KICKOS_FAULT_DELAY_MS));
 #endif
 #if defined(__RX__)
     __asm volatile("brk"); // BRK traps through rvector[0]

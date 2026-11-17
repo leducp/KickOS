@@ -73,11 +73,11 @@ int main(int, char**)
         // Unbounded: a bound here would turn the hazard's own symptom, a core walking freed
         // tables, into a timeout report instead of a hang the gate names.
         int status = 0;
-        while (kickos::apps::wait_dead(group, &status, 1000u) == -KOS_ETIMEDOUT)
+        while (kickos::apps::wait_dead(group, &status, std::chrono::seconds{1}) == -KOS_ETIMEDOUT)
         {
         }
         // The group is dead, so this drops main's creator hold and releases the space.
-        (void)kos_task_slay(group, 0);
+        (void)kos_task_slay(group, KOS_POLL);
         if (during_rc != 0)
         {
             kos::print("[taskleave] ERROR: the live space count is unreadable\n");
@@ -93,7 +93,7 @@ int main(int, char**)
             }
             if (after != base)
             {
-                kos_sleep_ns(SETTLE_NS);
+                kos_sleep_for(kos_ns(SETTLE_NS));
             }
         }
         if (during == base + 1u and after == base)

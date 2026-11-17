@@ -21,9 +21,11 @@ namespace
     // The kernel time one sleep takes, read on either side of the sleep alone.
     uint64_t timed_sleep()
     {
-        uint64_t const from = kos::clock_now();
-        kos::sleep_ns(SLEEP_NS);
-        return kos::clock_now() - from;
+        auto const from = kos::now();
+        kos::sleep_for(std::chrono::nanoseconds{SLEEP_NS});
+        auto const to = kos::now();
+        return static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(to - from).count());
     }
 
     constexpr uint64_t DAY_NS = 86400000000000ull;
@@ -39,12 +41,12 @@ namespace
     AcrossSet steady_across_set()
     {
         AcrossSet r;
-        uint64_t const wall_from = kos::clock_realtime();
+        kos_realtime_t const wall_from = kos_realtime_now();
         auto const from = std::chrono::steady_clock::now();
-        r.set = kos::clock_set_realtime(wall_from + DAY_NS);
-        kos::sleep_ns(SET_SLEEP_NS);
+        r.set = kos::realtime_set(kos::to_chrono(wall_from) + std::chrono::nanoseconds{DAY_NS});
+        kos::sleep_for(std::chrono::nanoseconds{SET_SLEEP_NS});
         auto const to = std::chrono::steady_clock::now();
-        r.wall = kos::clock_realtime() - wall_from;
+        r.wall = static_cast<uint64_t>(kos_realtime_now().ns - wall_from.ns);
         r.steady = static_cast<uint64_t>(
             std::chrono::duration_cast<std::chrono::nanoseconds>(to - from).count());
         return r;

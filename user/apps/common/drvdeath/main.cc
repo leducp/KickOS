@@ -63,21 +63,21 @@ namespace
 
     int send_until_refused()
     {
-        int rc = kos_send(KOS_CAP_STDOUT, "x", 1, KOS_TIMEOUT_NONE);
+        int rc = kos_send(KOS_CAP_STDOUT, "x", 1, KOS_NEVER);
         for (int i = 0; i < REFUSED_TRIES and rc == -KOS_EAGAIN; i++)
         {
-            kos_sleep_ns(REFUSED_STEP_NS);
-            rc = kos_send(KOS_CAP_STDOUT, "x", 1, KOS_TIMEOUT_NONE);
+            kos_sleep_for(kos_ns(REFUSED_STEP_NS));
+            rc = kos_send(KOS_CAP_STDOUT, "x", 1, KOS_NEVER);
         }
         return rc;
     }
 
     // Blocks until the init reports the driver's death: bit 0, simcon being the one task main
     // watches.
-    bool wait_driver_death(kos_cap_t events)
+    bool wait_driver_death()
     {
         uint32_t bits = 0;
-        return kos_notify_wait(events, 1u, KOS_TIMEOUT_NONE, &bits) == 0 and (bits & 1u) != 0;
+        return kos_notify_wait(1u, KOS_NEVER, &bits) == 0 and (bits & 1u) != 0;
     }
 }
 
@@ -93,8 +93,8 @@ namespace
     constexpr uint8_t WRITER_PRIO = 9;
     // How long a parked writer is watched before it counts as parked, and how long its line may
     // take once the reclaim lands.
-    constexpr uint32_t WRITER_PARKED_US = 20000u;
-    constexpr uint32_t WRITER_DONE_US = 2000000u;
+    constexpr std::chrono::milliseconds WRITER_PARKED{20};
+    constexpr std::chrono::seconds WRITER_DONE{2};
 
     void blocked_writer(void*)
     {
@@ -130,7 +130,7 @@ namespace
 
     void nest_grandchild(void*)
     {
-        kos_sem_wait(&g_nest_park, KOS_TIMEOUT_NONE); // never posted: alive until its spawner cancels it
+        kos_sem_wait(&g_nest_park, KOS_NEVER); // never posted: alive until its spawner cancels it
         kos_exit(0);
     }
 
@@ -139,21 +139,21 @@ namespace
         g_grandchild = kos::thread::create(nest_grandchild, nullptr, "nestgc", 9).id();
         // Root is unkillable: it leaves spawner_tag at KILL_TAG_NONE and kill_tag_of never
         // answers NONE.
-        g_root_kill_rc = kos_thread_cancel(ROOT_THREAD, KOS_CANCEL_KILL, 0);
+        g_root_kill_rc = kos_thread_cancel(ROOT_THREAD, KOS_CANCEL_KILL, KOS_POLL);
         kos_sem_post(&g_nest_done);
         // Main's refuse-half probe needs the grandchild ALIVE, and a cancel reaches a
         // semaphore park, so the accept half below would otherwise race it dead. The gate
         // makes the order explicit instead of resting on cancellation being toothless.
-        kos_sem_wait(&g_nest_probe, KOS_TIMEOUT_NONE);
+        kos_sem_wait(&g_nest_probe, KOS_NEVER);
         // The accept half of the gate: a spawner may cancel its own child. Main's
         // -KOS_EPERM below is the refuse half.
         kos_thread_t const gc = g_grandchild;
         if (gc != KOS_THREAD_NONE)
         {
-            g_child_kill_rc = kos_thread_cancel(gc, KOS_CANCEL_KILL, 0);
+            g_child_kill_rc = kos_thread_cancel(gc, KOS_CANCEL_KILL, KOS_POLL);
         }
         kos_sem_post(&g_nest_done);
-        kos_sem_wait(&g_nest_park, KOS_TIMEOUT_NONE); // never posted: alive until main cancels it
+        kos_sem_wait(&g_nest_park, KOS_NEVER); // never posted: alive until main cancels it
         kos_exit(0);
     }
 
@@ -164,8 +164,8 @@ namespace
     {
         // Both carry the reserved all-ones index (0x7fffffff at an aged generation), so
         // neither is mintable and both must fail to resolve.
-        *bad_handle_rc = kos_thread_cancel(KOS_THREAD_NONE, KOS_CANCEL_KILL, 0);
-        *big_handle_rc = kos_thread_cancel(0x7fffffffu, KOS_CANCEL_KILL, 0);
+        *bad_handle_rc = kos_thread_cancel(KOS_THREAD_NONE, KOS_CANCEL_KILL, KOS_POLL);
+        *big_handle_rc = kos_thread_cancel(0x7fffffffu, KOS_CANCEL_KILL, KOS_POLL);
         // 0 is never a legal answer for these, so an unrun matrix fails.
         *stranger_rc = 0;
         *child_kill_rc = 1;
@@ -175,30 +175,30 @@ namespace
         {
             return;
         }
-        kos_sem_wait(&g_nest_done, KOS_TIMEOUT_NONE); // the grandchild exists
+        kos_sem_wait(&g_nest_done, KOS_NEVER); // the grandchild exists
         kos_thread_t const gc = g_grandchild;
         if (gc != KOS_THREAD_NONE)
         {
-            *stranger_rc = kos_thread_cancel(gc, KOS_CANCEL_KILL, 0);
+            *stranger_rc = kos_thread_cancel(gc, KOS_CANCEL_KILL, KOS_POLL);
         }
         kos_sem_post(&g_nest_probe); // probed: the child may now cancel it for real
-        kos_sem_wait(&g_nest_done, KOS_TIMEOUT_NONE); // the child has tried its own cancel
+        kos_sem_wait(&g_nest_done, KOS_NEVER); // the child has tried its own cancel
         // Cancellation, not destruction: the child wakes out of its park and exits itself. It
         // runs above main, so it has exited by the time this returns. Killing it TWICE must not
         // resolve: the slot is EXITED and the generation only bumps at reclaim, so the
         // resolver has to reject on state, not on generation.
-        *child_kill_rc = kos_thread_cancel(child.id(), KOS_CANCEL_KILL, 0);
-        *child_twice_rc = kos_thread_cancel(child.id(), KOS_CANCEL_KILL, 0);
-        // A kill of no timeout answers once raised and parks nothing: this target makes no
+        *child_kill_rc = kos_thread_cancel(child.id(), KOS_CANCEL_KILL, KOS_POLL);
+        *child_twice_rc = kos_thread_cancel(child.id(), KOS_CANCEL_KILL, KOS_POLL);
+        // A polling kill answers once raised and parks nothing: this target makes no
         // system call until released, so a cancel that waited would answer -KOS_ETIMEDOUT.
         kos::thread::Handle const spin =
             kos::thread::create(spinner, nullptr, "nestsp", KICKOS_PRIO_MIN);
         if (spin.valid())
         {
-            g_spin_rc[0] = spin.cancel(KOS_CANCEL_KILL, 0);
+            g_spin_rc[0] = spin.cancel_for(KOS_CANCEL_KILL, std::chrono::nanoseconds{0});
             g_spin_release = 1u;
-            g_spin_rc[1] = spin.join(WRITER_DONE_US);
-            g_spin_rc[2] = spin.cancel(KOS_CANCEL_KILL, 0);
+            g_spin_rc[1] = spin.join_for(WRITER_DONE);
+            g_spin_rc[2] = spin.cancel_for(KOS_CANCEL_KILL, std::chrono::nanoseconds{0});
         }
     }
 }
@@ -232,15 +232,15 @@ int main(int, char**)
 
 #if defined(KICKOS_SIMCON_WINDOW_THREAD) && KICKOS_SIMCON_WINDOW_THREAD
     // The receiver runs above main and has exited by now, and its task lives on: a send would
-    // park, so a send of no deadline and a non-blocking write take nothing, at once.
-    int32_t const nowait_rc = kos_send(KOS_CAP_STDOUT, "x", 1, 0);
+    // park, so a polling send and a non-blocking write take nothing, at once.
+    int32_t const nowait_rc = kos_send(KOS_CAP_STDOUT, "x", 1, KOS_POLL);
     kickos::stdout_nonblock() = 1u;
     kickos::WriteResult const tried = kickos::stdout_write("x", 1);
     kickos::stdout_nonblock() = 0u;
     // A blocking writer parks: it outranks main, so it is in its send when this returns.
     kos::thread::Handle const writer =
         kos::thread::create(blocked_writer, nullptr, "dwriter", WRITER_PRIO);
-    int const parked_rc = writer.join(WRITER_PARKED_US);
+    int const parked_rc = writer.join_for(WRITER_PARKED);
     // A fault ends its thread's task, so the faulter is a program of its own.
     int faulted_rc = -KOS_ENOENT;
     kos_program_t fault_prog = KOS_CAP_NONE;
@@ -252,7 +252,7 @@ int main(int, char**)
         if (faulted_rc == 0)
         {
             int status = 0;
-            faulted_rc = kickos::apps::wait_dead(fault_task, &status, WRITER_DONE_US / 1000u);
+            faulted_rc = kickos::apps::wait_dead(fault_task, &status, WRITER_DONE);
         }
         (void)kos_handle_close(fault_prog);
     }
@@ -265,7 +265,7 @@ int main(int, char**)
     kickos_simcon_window_release();
 #endif
 
-    if (not wait_driver_death(events))
+    if (not wait_driver_death())
     {
         kos_print("[drvdeath] ERROR: the init never reported the driver's death\n");
         exit(2);
@@ -296,7 +296,7 @@ int main(int, char**)
         kos_print("[drvdeath] ERROR: the faulter's thread was not reported gone\n");
         exit(13);
     }
-    if (writer.join(WRITER_DONE_US) != 0)
+    if (writer.join_for(WRITER_DONE) != 0)
     {
         kos_print("[drvdeath] ERROR: the parked writer never finished after the reclaim\n");
         exit(12);

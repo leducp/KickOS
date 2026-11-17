@@ -53,7 +53,7 @@ void ampping_gate_report(struct ampbook_row* book)
         {
             break;
         }
-        kos_sleep_ns(AMPPING_GATE_WAIT_NS);
+        kos_sleep_for(kos_ns(AMPPING_GATE_WAIT_NS));
     }
     uint32_t const alive = atomic_load_explicit(&lp->alive, memory_order_acquire);
     uint32_t const probing = atomic_load_explicit(&lp->gate_probing, memory_order_acquire);

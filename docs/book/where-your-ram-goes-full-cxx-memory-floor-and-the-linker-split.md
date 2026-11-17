@@ -328,7 +328,7 @@ singletons `kmain` needs are constructed first. Every *other* constructor (the a
 later from the image's startup, in the image's first thread, with the scheduler and clock
 fully live --
 because such a constructor may call a KickOS syscall, which needs a current thread to
-exist. The clock read `kos_clock_now` is one on a microcontroller, where the kernel reads
+exist. The clock read `kos_monotonic_now` is one on a microcontroller, where the kernel reads
 the timer for the program. On a core that lets a program read its counter, it makes no
 syscall. The full "why" is in the boot-order section of [Chapter 0.6](whats-under-include-libc-and-the-cxx-runtime.md); the
 linker's job is just to give the two groups separate homes with bracketing symbols the C

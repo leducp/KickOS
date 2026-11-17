@@ -20,7 +20,7 @@
 #include "kseam_test.h"
 
 extern "C" uint64_t syscall_dispatch(uintptr_t nr, uintptr_t a0, uintptr_t a1, uintptr_t a2,
-                                     uintptr_t a3);
+                                     uintptr_t a3, uintptr_t a4);
 
 namespace kickos
 {
@@ -45,7 +45,7 @@ namespace kickos
                 {
                     return static_cast<int64_t>(syscall_dispatch(
                         KOS_SYS_WITNESS_UACCESS, KOS_WITNESS_UWRITE_NOW,
-                        reinterpret_cast<uintptr_t>(word), 0, 0));
+                        reinterpret_cast<uintptr_t>(word), 0, 0, 0));
                 }
 
                 Thread* caller_ = nullptr;
@@ -70,7 +70,7 @@ namespace kickos
                 cap_seat_authority(caller_, CAP_AUTH_ALL);
                 EXPECT_EQ(static_cast<int64_t>(syscall_dispatch(KOS_SYS_WITNESS_UACCESS, 99,
                                                                 reinterpret_cast<uintptr_t>(&word),
-                                                                0, 0)),
+                                                                0, 0, 0)),
                           -KOS_EINVAL);
                 EXPECT_EQ(write_word(&word), 0);
                 EXPECT_EQ(word, 0xA5u) << "the host lets the plant land";

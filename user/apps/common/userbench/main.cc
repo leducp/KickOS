@@ -142,7 +142,7 @@ namespace
         while (true)
         {
             vec_dirty();
-            kos_sem_wait(&g_a, KOS_TIMEOUT_NONE);
+            kos_sem_wait(&g_a, KOS_NEVER);
             vec_dirty();
             kos_sem_post(&g_b);
         }
@@ -152,19 +152,19 @@ namespace
     void player_b(void*)
     {
         // The reporter opens every burst through resume, the first included.
-        kos_sem_wait(&g_resume, KOS_TIMEOUT_NONE);
+        kos_sem_wait(&g_resume, KOS_NEVER);
         while (true)
         {
             vec_dirty();
             kos_sem_post(&g_a);
             vec_dirty();
-            kos_sem_wait(&g_b, KOS_TIMEOUT_NONE);
+            kos_sem_wait(&g_b, KOS_NEVER);
             uint32_t const round = g_rounds + 1;
             g_rounds = round;
             if ((round % ROUNDS_PER_REPORT) == 0)
             {
                 kos_sem_post(&g_gate);
-                kos_sem_wait(&g_resume, KOS_TIMEOUT_NONE);
+                kos_sem_wait(&g_resume, KOS_NEVER);
             }
         }
     }
@@ -179,10 +179,10 @@ namespace
     Window window()
     {
         uint32_t const prev_rounds = g_rounds;
-        uint64_t const prev_ns = kos::clock_now();
+        uint64_t const prev_ns = kos_monotonic_now().ns;
         kos_sem_post(&g_resume);
-        kos_sem_wait(&g_gate, KOS_TIMEOUT_NONE);
-        uint64_t const now_ns = kos::clock_now();
+        kos_sem_wait(&g_gate, KOS_NEVER);
+        uint64_t const now_ns = kos_monotonic_now().ns;
         uint32_t const rounds = g_rounds;
         Window w = {static_cast<uint64_t>(rounds - prev_rounds) * 2ull, now_ns - prev_ns};
         return w;
@@ -282,7 +282,7 @@ namespace
         }
         while (true)
         {
-            if (kos_notify_wait(CH_E2E_NOTE, E2E_LINE_BIT, KOS_TIMEOUT_NONE, nullptr) != 0)
+            if (kos_notify_wait(E2E_LINE_BIT, KOS_NEVER, nullptr) != 0)
             {
                 break; // cancelled: nothing left to wake for
             }
@@ -294,10 +294,10 @@ namespace
 
     bool e2e_await(uint32_t before)
     {
-        uint64_t const t0 = kos_clock_now();
+        uint64_t const t0 = kos_monotonic_now().ns;
         while (g_e2e_done == before)
         {
-            if (kos_clock_now() - t0 > E2E_STALL_NS)
+            if (kos_monotonic_now().ns - t0 > E2E_STALL_NS)
             {
                 return false;
             }
@@ -347,7 +347,8 @@ namespace
             (void)kos_irq_ack(irq);
             kos_cap_grant caps[] = {{note, KOS_CAP_WAIT}};
             w = kos::thread::create_caps(e2e_waiter, nullptr, "e2ewait", E2E_WAITER_PRIO, caps, 1,
-                                         KOS_POLICY_FIFO, 0, 0, nullptr, nullptr, 0, E2E_CORES);
+                                         KOS_POLICY_FIFO, std::chrono::nanoseconds{0}, 0, nullptr,
+                                         nullptr, 0, E2E_CORES);
             if (not w.valid())
             {
                 rc = -KOS_ENOMEM;
@@ -356,7 +357,7 @@ namespace
         }
         if (rc == 0)
         {
-            kos_sem_wait(&g_e2e_ready, KOS_TIMEOUT_NONE);
+            kos_sem_wait(&g_e2e_ready, KOS_NEVER);
             rc = g_e2e_rc;
             if (rc != 0)
             {
@@ -397,8 +398,8 @@ namespace
         }
         if (w.valid())
         {
-            (void)w.cancel(KOS_CANCEL_KILL, 0);
-            (void)w.join(KOS_TIMEOUT_NONE);
+            (void)w.cancel_for(KOS_CANCEL_KILL, std::chrono::nanoseconds{0});
+            (void)w.join();
         }
         if (note != KOS_CAP_NONE)
         {
@@ -447,19 +448,19 @@ namespace
             unsigned char stop = 0;
             if (sv.valid())
             {
-                (void)kos_send(ep, &stop, 1, KOS_TIMEOUT_NONE);
-                (void)sv.join(KOS_TIMEOUT_NONE);
+                (void)kos_send(ep, &stop, 1, KOS_NEVER);
+                (void)sv.join();
             }
             kos_handle_close(ep);
             if (cl.valid())
             {
-                (void)cl.join(KOS_TIMEOUT_NONE);
+                (void)cl.join();
             }
             kos::print("  call/reply: SKIP (thread pool too small)\n");
             return;
         }
-        (void)cl.join(KOS_TIMEOUT_NONE); // caller finished + printed
-        (void)sv.join(KOS_TIMEOUT_NONE); // server ran all REPS and exited
+        (void)cl.join(); // caller finished + printed
+        (void)sv.join(); // server ran all REPS and exited
         kos_handle_close(ep);
     }
 
@@ -506,7 +507,7 @@ namespace
     void xt_wait(kos_task_t t)
     {
         int status = 0;
-        while (kickos::apps::wait_dead(t, &status, 1000u) == -KOS_ETIMEDOUT)
+        while (kickos::apps::wait_dead(t, &status, std::chrono::seconds{1}) == -KOS_ETIMEDOUT)
         {
         }
     }
@@ -555,7 +556,7 @@ namespace
             row("  xtask ping-pong: SKIP (task pool too small)\n");
             if (rb == 0)
             {
-                (void)kos_task_slay(peers.b, KOS_TIMEOUT_NONE);
+                (void)kos_task_slay(peers.b, KOS_NEVER);
             }
         }
         peers.close();
@@ -605,7 +606,7 @@ namespace
             unsigned char stop = 0;
             if (rs == 0)
             {
-                (void)kos_send(ep, &stop, 1, KOS_TIMEOUT_NONE);
+                (void)kos_send(ep, &stop, 1, KOS_NEVER);
                 xt_wait(peers.a);
             }
         }
@@ -639,17 +640,17 @@ namespace
     // on a translating board is a whole address space.
     void spawn_exit()
     {
-        uint64_t t0 = kos::clock_now();
+        uint64_t t0 = kos_monotonic_now().ns;
         uint32_t n = 0;
         for (; n < SPAWN_REPS; n++)
         {
             auto h = kos::thread::create_caps(spawn_child, nullptr, "sp_t", CR_PRIO, nullptr, 0);
-            if (not h.valid() or h.join(KOS_TIMEOUT_NONE) != 0)
+            if (not h.valid() or h.join() != 0)
             {
                 break;
             }
         }
-        spawn_line("thread", n, kos::clock_now() - t0);
+        spawn_line("thread", n, kos_monotonic_now().ns - t0);
 
         XtPeers peers;
         if (not peers.open())
@@ -660,7 +661,7 @@ namespace
         char const* const exit_argv[] = {"sp_k", "exit", nullptr};
         kos_task_params params = {};
         params.argv = exit_argv;
-        t0 = kos::clock_now();
+        t0 = kos_monotonic_now().ns;
         n = 0;
         for (; n < SPAWN_REPS; n++)
         {
@@ -681,7 +682,7 @@ namespace
                 break;
             }
         }
-        spawn_line("task", n, kos::clock_now() - t0);
+        spawn_line("task", n, kos_monotonic_now().ns - t0);
         peers.close();
     }
 }
@@ -702,12 +703,12 @@ namespace
     uint64_t flash_calls_ns(uint32_t mask)
     {
         g_flash_mask = mask;
-        uint64_t const t0 = kos::clock_now();
+        uint64_t const t0 = kos_monotonic_now().ns;
         for (uint32_t i = 0; i < FLASH_CALLS; i++)
         {
             g_flash_alias[i & g_flash_mask]();
         }
-        return kos::clock_now() - t0;
+        return kos_monotonic_now().ns - t0;
     }
 
     // Task text runs from flash through the cache: the cost of a call whose line misses.
@@ -739,7 +740,7 @@ namespace
     {
         for (uint32_t r = 0; r < XC_WARMUP + SAMPLES; r++)
         {
-            if (kos_sem_wait(&g_xc_there, KOS_TIMEOUT_NONE) != 0)
+            if (kos_sem_wait(&g_xc_there, KOS_NEVER) != 0)
             {
                 return;
             }
@@ -750,7 +751,7 @@ namespace
     bool xc_round()
     {
         kos_sem_post(&g_xc_there);
-        return kos_sem_wait(&g_xc_back, KOS_TIMEOUT_NONE) == 0;
+        return kos_sem_wait(&g_xc_back, KOS_NEVER) == 0;
     }
 
     // Half the round trip: per round on a fine clock, over the chained rounds elsewhere.
@@ -765,7 +766,8 @@ namespace
             (void)kos_sem_init(&g_xc_there, 0);
             (void)kos_sem_init(&g_xc_back, 0);
             auto p = kos::thread::create_caps(xc_partner, nullptr, "xc_peer", XC_PRIO, nullptr, 0,
-                                              KOS_POLICY_FIFO, 0, 0, nullptr, nullptr, 0, 1u << c);
+                                              KOS_POLICY_FIFO, std::chrono::nanoseconds{0}, 0,
+                                              nullptr, nullptr, 0, 1u << c);
             if (not p.valid())
             {
                 char s[96];
@@ -779,7 +781,7 @@ namespace
                 ok = xc_round();
             }
             Series rt = series(g_samples, samples_kept());
-            uint64_t const c0 = kos::clock_now();
+            uint64_t const c0 = kos_monotonic_now().ns;
             for (uint32_t r = 0; r < SAMPLES and ok; r++)
             {
                 if (FINE_CLOCK)
@@ -793,13 +795,13 @@ namespace
                     ok = xc_round();
                 }
             }
-            uint64_t const d_ns = kos::clock_now() - c0;
+            uint64_t const d_ns = kos_monotonic_now().ns - c0;
             if (not ok)
             {
                 char s[96];
                 ksnprintf(s, sizeof(s), "  %s: FAIL (a hand-over was refused)\n", rowname);
                 kos::print(s);
-                (void)p.cancel(KOS_CANCEL_KILL, 0);
+                (void)p.cancel_for(KOS_CANCEL_KILL, std::chrono::nanoseconds{0});
             }
             else if (FINE_CLOCK)
             {
@@ -813,7 +815,7 @@ namespace
                           static_cast<unsigned>(SAMPLES));
                 kos::print(s);
             }
-            (void)p.join(KOS_TIMEOUT_NONE);
+            (void)p.join();
         }
         (void)kos_thread_affinity(self, 0);
     }
@@ -825,7 +827,7 @@ namespace
     constexpr uint8_t W_PRIO = 3;
     constexpr uint8_t W_HOG_PRIO = 6;
     constexpr uint8_t W_MOVED_PRIO = 4;
-    constexpr uint32_t W_RR_QUANTUM_NS = 1000000;
+    constexpr std::chrono::milliseconds W_RR_QUANTUM{1};
     constexpr uint32_t W_PUSH_ROUNDS = 200;
     // How long the push probe waits on one handoff before it names the round and stops.
     constexpr uint64_t W_PUSH_GIVEUP_NS = 2000000000ull;
@@ -845,7 +847,7 @@ namespace
         uintptr_t const i = reinterpret_cast<uintptr_t>(arg);
         for (uint32_t r = 0; r < W_ROUNDS; r++)
         {
-            kos_sem_wait(&g_w_a[i], KOS_TIMEOUT_NONE);
+            kos_sem_wait(&g_w_a[i], KOS_NEVER);
             kos_sem_post(&g_w_b[i]);
         }
     }
@@ -856,7 +858,7 @@ namespace
         for (uint32_t r = 0; r < W_ROUNDS; r++)
         {
             kos_sem_post(&g_w_a[i]);
-            kos_sem_wait(&g_w_b[i], KOS_TIMEOUT_NONE);
+            kos_sem_wait(&g_w_b[i], KOS_NEVER);
         }
     }
 
@@ -872,10 +874,12 @@ namespace
         (void)kos_sem_init(&g_w_a[i], 0);
         (void)kos_sem_init(&g_w_b[i], 0);
         void* const arg = reinterpret_cast<void*>(static_cast<uintptr_t>(i));
-        out->a = kos::thread::create_caps(w_player_a, arg, "w_a", W_PRIO, nullptr, 0,
-                                          KOS_POLICY_FIFO, 0, 0, nullptr, nullptr, 0, mask);
-        out->b = kos::thread::create_caps(w_player_b, arg, "w_b", W_PRIO, nullptr, 0,
-                                          KOS_POLICY_FIFO, 0, 0, nullptr, nullptr, 0, mask);
+        out->a =
+            kos::thread::create_caps(w_player_a, arg, "w_a", W_PRIO, nullptr, 0, KOS_POLICY_FIFO,
+                                     std::chrono::nanoseconds{0}, 0, nullptr, nullptr, 0, mask);
+        out->b =
+            kos::thread::create_caps(w_player_b, arg, "w_b", W_PRIO, nullptr, 0, KOS_POLICY_FIFO,
+                                     std::chrono::nanoseconds{0}, 0, nullptr, nullptr, 0, mask);
         return out->a.valid() and out->b.valid();
     }
 
@@ -884,16 +888,16 @@ namespace
     {
         if (p.a.valid() != p.b.valid())
         {
-            (void)p.a.cancel(KOS_CANCEL_KILL, 0);
-            (void)p.b.cancel(KOS_CANCEL_KILL, 0);
+            (void)p.a.cancel_for(KOS_CANCEL_KILL, std::chrono::nanoseconds{0});
+            (void)p.b.cancel_for(KOS_CANCEL_KILL, std::chrono::nanoseconds{0});
         }
         if (p.a.valid())
         {
-            (void)p.a.join(KOS_TIMEOUT_NONE);
+            (void)p.a.join();
         }
         if (p.b.valid())
         {
-            (void)p.b.join(KOS_TIMEOUT_NONE);
+            (void)p.b.join();
         }
     }
 
@@ -919,7 +923,7 @@ namespace
         uint32_t const n = KICKOS_KERNEL_CORES;
         Pair pairs[W_PAIRS_MAX] = {};
         uint32_t spawned = 0;
-        uint64_t const t0 = kos::clock_now();
+        uint64_t const t0 = kos_monotonic_now().ns;
         for (uint32_t c = 0; c < n and c < W_PAIRS_MAX; c++)
         {
             if (not pair_spawn(c, 1u << c, &pairs[c]))
@@ -932,7 +936,7 @@ namespace
         {
             pair_join(pairs[c]);
         }
-        uint64_t const d = kos::clock_now() - t0;
+        uint64_t const d = kos_monotonic_now().ns - t0;
         w_line("w2", spawned * W_ROUNDS * 2u, d);
     }
 
@@ -960,22 +964,22 @@ namespace
         Pair p = {};
         kos::thread::Handle spin[3] = {};
         g_w_stop = 0;
-        uint64_t const t0 = kos::clock_now();
+        uint64_t const t0 = kos_monotonic_now().ns;
         (void)pair_spawn(0, 0, &p);
         for (uint32_t i = 0; i + 1 < n and i < 3; i++)
         {
             spin[i] = kos::thread::create_caps(w_spinner, nullptr, "w_rr", W_PRIO, nullptr, 0,
-                                               KOS_POLICY_RR, W_RR_QUANTUM_NS);
+                                               KOS_POLICY_RR, W_RR_QUANTUM);
         }
         pair_join(p);
-        uint64_t const d = kos::clock_now() - t0;
+        uint64_t const d = kos_monotonic_now().ns - t0;
         g_w_stop = 1;
         w_line("w3", W_ROUNDS * 2u, d);
         for (kos::thread::Handle const& h : spin)
         {
             if (h.valid())
             {
-                (void)h.join(KOS_TIMEOUT_NONE);
+                (void)h.join();
             }
         }
     }
@@ -1006,7 +1010,7 @@ namespace
                 continue;
             }
             spins = 0;
-            uint64_t const now = kos::clock_now();
+            uint64_t const now = kos_monotonic_now().ns;
             if (deadline == 0)
             {
                 deadline = now + W_PUSH_GIVEUP_NS;
@@ -1029,7 +1033,7 @@ namespace
 
     void p_hog0(void*)
     {
-        kos_sem_wait(&g_p_start, KOS_TIMEOUT_NONE);
+        kos_sem_wait(&g_p_start, KOS_NEVER);
         // A skipped probe releases START with the stop already set, and p_await's spin makes no
         // entry where a pending kill could land.
         uint32_t r = 1;
@@ -1057,11 +1061,11 @@ namespace
 
     void p_hog1(void*)
     {
-        kos_sem_wait(&g_p_start, KOS_TIMEOUT_NONE);
+        kos_sem_wait(&g_p_start, KOS_NEVER);
         uint32_t r = 0;
         while (true)
         {
-            kos_sem_wait(&g_p_h1, KOS_TIMEOUT_NONE);
+            kos_sem_wait(&g_p_h1, KOS_NEVER);
             if (g_w_stop != 0)
             {
                 return;
@@ -1077,11 +1081,11 @@ namespace
 
     void p_moved(void*)
     {
-        kos_sem_wait(&g_p_start, KOS_TIMEOUT_NONE);
+        kos_sem_wait(&g_p_start, KOS_NEVER);
         uint32_t r = 0;
         while (true)
         {
-            kos_sem_wait(&g_p_m, KOS_TIMEOUT_NONE);
+            kos_sem_wait(&g_p_m, KOS_NEVER);
             if (g_w_stop != 0)
             {
                 return;
@@ -1093,7 +1097,7 @@ namespace
 
     void p_spinner(void*)
     {
-        kos_sem_wait(&g_p_start, KOS_TIMEOUT_NONE);
+        kos_sem_wait(&g_p_start, KOS_NEVER);
         while (g_w_stop == 0)
         {
         }
@@ -1113,15 +1117,17 @@ namespace
         kos::thread::Handle hs[6] = {};
         uint32_t k = 0;
         hs[k++] = kos::thread::create_caps(p_hog0, nullptr, "p_hog0", W_HOG_PRIO, nullptr, 0,
-                                           KOS_POLICY_FIFO, 0, 0, nullptr, nullptr, 0, 1u << 0);
+                                           KOS_POLICY_FIFO, std::chrono::nanoseconds{0}, 0, nullptr,
+                                           nullptr, 0, 1u << 0);
         hs[k++] = kos::thread::create_caps(p_hog1, nullptr, "p_hog1", W_HOG_PRIO, nullptr, 0,
-                                           KOS_POLICY_FIFO, 0, 0, nullptr, nullptr, 0, 1u << 1);
+                                           KOS_POLICY_FIFO, std::chrono::nanoseconds{0}, 0, nullptr,
+                                           nullptr, 0, 1u << 1);
         hs[k++] = kos::thread::create(p_moved, nullptr, "p_moved", W_MOVED_PRIO);
         for (uint32_t c = 2; c < n and k < 6; c++)
         {
-            hs[k++] = kos::thread::create_caps(p_spinner, nullptr, "p_spin", W_HOG_PRIO, nullptr,
-                                               0, KOS_POLICY_FIFO, 0, 0, nullptr, nullptr, 0,
-                                               1u << c);
+            hs[k++] = kos::thread::create_caps(p_spinner, nullptr, "p_spin", W_HOG_PRIO, nullptr, 0,
+                                               KOS_POLICY_FIFO, std::chrono::nanoseconds{0}, 0,
+                                               nullptr, nullptr, 0, 1u << c);
         }
         bool all = true;
         for (uint32_t i = 0; i < k; i++)
@@ -1133,13 +1139,13 @@ namespace
         }
         if (all)
         {
-            uint64_t const t0 = kos::clock_now();
+            uint64_t const t0 = kos_monotonic_now().ns;
             for (uint32_t i = 0; i < k; i++)
             {
                 kos_sem_post(&g_p_start);
             }
-            (void)hs[0].join(KOS_TIMEOUT_NONE);
-            w_rounds_line("w4-push", g_p_rounds, kos::clock_now() - t0);
+            (void)hs[0].join();
+            w_rounds_line("w4-push", g_p_rounds, kos_monotonic_now().ns - t0);
         }
         else
         {
@@ -1153,14 +1159,14 @@ namespace
             // cancelled instead.
             for (uint32_t i = 0; i < k; i++)
             {
-                (void)hs[i].cancel(KOS_CANCEL_KILL, 0);
+                (void)hs[i].cancel_for(KOS_CANCEL_KILL, std::chrono::nanoseconds{0});
             }
         }
         for (uint32_t i = 0; i < k; i++)
         {
             if (hs[i].valid())
             {
-                (void)hs[i].join(KOS_TIMEOUT_NONE);
+                (void)hs[i].join();
             }
         }
     }
@@ -1171,13 +1177,14 @@ namespace
     {
         g_w_stop = 0;
         auto t = kos::thread::create_caps(w_spinner, nullptr, "r_spin", W_MOVED_PRIO, nullptr, 0,
-                                          KOS_POLICY_FIFO, 0, 0, nullptr, nullptr, 0, 1u << 1);
+                                          KOS_POLICY_FIFO, std::chrono::nanoseconds{0}, 0, nullptr,
+                                          nullptr, 0, 1u << 1);
         if (not t.valid())
         {
             kos::print("  reseat-probe: SKIP (thread pool too small)\n");
             return;
         }
-        uint64_t const t0 = kos::clock_now();
+        uint64_t const t0 = kos_monotonic_now().ns;
         for (uint32_t r = 0; r < W_RESEAT_ROUNDS; r++)
         {
             uint32_t mask = (1u << 1) | (1u << 0);
@@ -1188,9 +1195,9 @@ namespace
             (void)kos_thread_affinity(t.id(), mask);
             kos_yield();
         }
-        w_rounds_line("w4-reseat", W_RESEAT_ROUNDS, kos::clock_now() - t0);
+        w_rounds_line("w4-reseat", W_RESEAT_ROUNDS, kos_monotonic_now().ns - t0);
         g_w_stop = 1;
-        (void)t.join(KOS_TIMEOUT_NONE);
+        (void)t.join();
     }
 }
 #endif
@@ -1257,10 +1264,12 @@ int main(int, char**)
 
     // Players at prio 1 (KICKOS_PRIO_MIN), below main's prio 2, so the reporter preempts
     // them when player_b posts the gate.
-    auto ra = kos::thread::create_caps(player_a, nullptr, "bench_a", 1, nullptr, 0,
-                                       KOS_POLICY_FIFO, 0, 0, nullptr, nullptr, 0, PLAYER_CORES);
-    auto rb = kos::thread::create_caps(player_b, nullptr, "bench_b", 1, nullptr, 0,
-                                       KOS_POLICY_FIFO, 0, 0, nullptr, nullptr, 0, PLAYER_CORES);
+    auto ra =
+        kos::thread::create_caps(player_a, nullptr, "bench_a", 1, nullptr, 0, KOS_POLICY_FIFO,
+                                 std::chrono::nanoseconds{0}, 0, nullptr, nullptr, 0, PLAYER_CORES);
+    auto rb =
+        kos::thread::create_caps(player_b, nullptr, "bench_b", 1, nullptr, 0, KOS_POLICY_FIFO,
+                                 std::chrono::nanoseconds{0}, 0, nullptr, nullptr, 0, PLAYER_CORES);
     if (not ra.valid() or not rb.valid())
     {
         // Do not park here: on a board that returns to its bootloader a parked app costs a
@@ -1270,10 +1279,10 @@ int main(int, char**)
     }
 
     switch_vec(reporter_loop());
-    (void)ra.cancel(KOS_CANCEL_KILL, 0);
-    (void)rb.cancel(KOS_CANCEL_KILL, 0);
-    (void)ra.join(KOS_TIMEOUT_NONE);
-    (void)rb.join(KOS_TIMEOUT_NONE);
+    (void)ra.cancel_for(KOS_CANCEL_KILL, std::chrono::nanoseconds{0});
+    (void)rb.cancel_for(KOS_CANCEL_KILL, std::chrono::nanoseconds{0});
+    (void)ra.join();
+    (void)rb.join();
 
     e2e_local(tare);
 #if KICKOS_KERNEL_CORES > 1

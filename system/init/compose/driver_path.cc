@@ -45,16 +45,15 @@ namespace kickos::init::driver_path
         {
             TaskRecord& r = walk.record(task);
             (void)kos_cap_narrow(r.endpoint, kickos::driver::KOS_DRV_HANDOVER_KEPT);
-            uint32_t const ready_us = kickos::driver::KOS_DRV_READY_WAIT_MAX
-                                      * (kickos::driver::KOS_DRV_READY_WAIT_NS / 1000u);
             int const probe = kos_send(KOS_CAP_STDOUT, "", 0,
-                                       kickos::driver::KOS_DRV_HANDOVER_PROBE_US + ready_us);
+                                       kos::after(kickos::driver::KOS_DRV_HANDOVER_PROBE
+                                                  + kickos::driver::KOS_DRV_READY_WAIT));
             if (probe >= 0)
             {
                 return 0;
             }
             // Its end is what gives the kernel its console back, so the report reaches the wire.
-            if (kos_task_slay(*handle, kickos::driver::KOS_DRV_HANDOVER_PROBE_US) == 0)
+            if (kos_task_slay(*handle, kos::after(kickos::driver::KOS_DRV_HANDOVER_PROBE)) == 0)
             {
                 *handle = KOS_TASK_NONE;
             }
@@ -135,7 +134,7 @@ namespace kickos::init::driver_path
             p.caps = caps;
             p.cap_dest = dest;
             p.cap_count = n;
-            rc = kos_task_create(walk.program(), &p, START_WAIT_US, &handle);
+            rc = kos_task_create(walk.program(), &p, kos::after(START_WAIT), &handle);
         }
         drop(walk, passed, task);
         if (rc == 0)
@@ -200,6 +199,6 @@ namespace kickos::init::driver_path
         {
             return;
         }
-        (void)kos_console_flush(kickos::driver::KOS_DRV_HANDOVER_PROBE_US);
+        (void)kos_console_flush(kos::after(kickos::driver::KOS_DRV_HANDOVER_PROBE));
     }
 }

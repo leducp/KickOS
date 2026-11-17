@@ -44,8 +44,8 @@ thread  armv7m reclaimwit       rwsink root=kickos_driver_task stack=KICKOS_USER
                reason: the declared console driver, from its task's entry through its start and bring-up to its service body, on the stack the kernel gives a driver's entry
 thread  armv7m reclaimwit_drain rwsink root=kickos_driver_task stack=KICKOS_USER_STACK_SIZE above=kickos_task_entry,kickos_task_enter \
                reason: the declared console driver, from its task's entry through its start and bring-up to its service body, on the stack the kernel gives a driver's entry
-unsized armv7m arch_syscall 0 reason: syscall.S, a load, the svc and bx lr, which write no stack
-unsized armv7m arch_syscall64 0 reason: syscall.S, the same entry as arch_syscall
+unsized armv7m arch_syscall 8 reason: syscall.S, a push {r4, lr} the trampoline returns to the pop of
+unsized armv7m arch_syscall64 8 reason: syscall.S, the same entry as arch_syscall
 unsized armv7m kickos_user_cas 0 reason: user_cas.S, an exclusive load, a compare and a store exclusive, which push nothing
 unsized armv7m _free_r 64 calls=__retarget_lock_acquire_recursive,__retarget_lock_release_recursive,_sbrk,__wrap_sysconf \
                reason: measured on every armv7m multilib of the toolchain's libc.a. Nano's is push {r4, lr} then sp lowered by 8; full newlib's stmdb of six registers is 24, and its _malloc_trim_r pushes six more, calling sysconf and _sbrk_r, whose push of four calls _sbrk: 64. __malloc_lock and __malloc_unlock branch to the hooks with no frame
@@ -59,8 +59,8 @@ thread  armv6m reclaimwit       rwsink root=kickos_driver_task stack=KICKOS_USER
                reason: the declared console driver, from its task's entry through its start and bring-up to its service body, on the stack the kernel gives a driver's entry
 thread  armv6m reclaimwit_drain rwsink root=kickos_driver_task stack=KICKOS_USER_STACK_SIZE above=kickos_task_entry,kickos_task_enter \
                reason: the declared console driver, from its task's entry through its start and bring-up to its service body, on the stack the kernel gives a driver's entry
-unsized armv6m arch_syscall 4 reason: syscall.S, a push {r4} popped again ahead of the svc, then bx lr
-unsized armv6m arch_syscall64 4 reason: syscall.S, the same entry as arch_syscall
+unsized armv6m arch_syscall 8 reason: syscall.S, a push {r4, lr} the trampoline returns to the pop of
+unsized armv6m arch_syscall64 8 reason: syscall.S, the same entry as arch_syscall
 unsized armv6m kickos_user_cas 0 reason: user_cas.S, a load, a compare and a store, which push nothing
 unsized armv6m _free_r 64 calls=__retarget_lock_acquire_recursive,__retarget_lock_release_recursive,_sbrk,__wrap_sysconf,?__aeabi_uidiv \
                reason: measured on the toolchain's v6-m libc.a. Nano's is 16, then its __malloc_lock or __malloc_unlock, push {r4, lr} and a call into the hook: 24; full newlib's is 24, and its _malloc_trim_r pushes 24 more, calling sysconf, __aeabi_uidiv and _sbrk_r, whose push of four calls _sbrk: 64

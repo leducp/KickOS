@@ -400,7 +400,7 @@ namespace
         struct kos_driver_instance in = instance_of(k_uart);
         EXPECT_EQ(run(k_uart, &in), 1000);
         EXPECT_STREQ(kos_seam_trace(),
-                     "spawn50/p8 g3/1 g4/2 park1000000 body1 narrow1/1 narrow2/1 close3 close4 prio9 body0 exit0");
+                     "spawn50/p8 g3/1 g4/2 park1000000000 body1 narrow1/1 narrow2/1 close3 close4 prio9 body0 exit0");
     }
 
     TEST_F(DrvBringUp, a_waiter_whose_latch_is_never_published_ends_the_task_past_its_budget)
@@ -497,7 +497,7 @@ namespace
         kos_seam_reset();
         drv::Latch latch{0u};
         EXPECT_FALSE(drv::ready_wait(&latch));
-        EXPECT_STREQ(kos_seam_trace(), "park1000000");
+        EXPECT_STREQ(kos_seam_trace(), "park1000000000");
     }
 
     TEST(DrvReady, a_service_publish_stores_the_service_state_then_wakes_every_waiter)
@@ -514,7 +514,7 @@ namespace
         kos_seam_reset();
         drv::Latch latch{drv::KOS_DRV_READY_DEVICE};
         EXPECT_FALSE(drv::ready_wait_for(&latch, drv::KOS_DRV_READY_SERVICE));
-        EXPECT_STREQ(kos_seam_trace(), "park1000000");
+        EXPECT_STREQ(kos_seam_trace(), "park1000000000");
     }
 
     TEST(DrvReady, a_service_ready_latch_is_past_the_barrier_and_service_ready)

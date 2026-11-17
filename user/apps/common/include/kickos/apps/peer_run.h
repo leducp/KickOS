@@ -16,7 +16,7 @@ namespace kickos::apps
     // kos_task_create, waiting up to a second for the instance's last incarnation to die.
     inline int create_peer(kos_program_t prog, kos_task_params const& params, kos_task_t* out)
     {
-        return kos_task_create(prog, &params, 1000000u, out);
+        return kos_task_create(prog, &params, kos::after(std::chrono::seconds{1}), out);
     }
 
     // The value of a hex argument as `%p` prints it, with or without the 0x.
@@ -48,10 +48,12 @@ namespace kickos::apps
     }
 
     // Waits until `task` is dead and answers its status, or a negative kos_task_state error, or
-    // -KOS_ETIMEDOUT.
-    inline int wait_dead(kos_task_t task, int* status, uint64_t timeout_ms)
+    // -KOS_ETIMEDOUT once `bound` has passed.
+    template <class Rep, class Period>
+    inline int wait_dead(kos_task_t task, int* status, std::chrono::duration<Rep, Period> bound)
     {
-        for (uint64_t ms = 0; ms < timeout_ms; ms++)
+        kos_monotonic_t const until = kos::after(bound);
+        while (true)
         {
             int const state = kos_task_state(task, status);
             if (state < 0)
@@ -62,9 +64,12 @@ namespace kickos::apps
             {
                 return 0;
             }
-            kos::sleep_ns(1000000ull);
+            if (kos_monotonic_now().ns >= until.ns)
+            {
+                return -KOS_ETIMEDOUT;
+            }
+            kos::sleep_for(std::chrono::milliseconds{1});
         }
-        return -KOS_ETIMEDOUT;
     }
 }
 

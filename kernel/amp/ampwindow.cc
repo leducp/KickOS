@@ -220,7 +220,7 @@ namespace kickos
 
             // WHAT A NODE OWES A CALLER WHOSE ROUTE IT HAS STOPPED BELIEVING. Every live record
             // names a far caller parked on an answer this node is about to destroy, and under
-            // KOS_TIMEOUT_NONE that caller has no deadline; the answer owed is the wire's only
+            // no limit that caller has no deadline; the answer owed is the wire's only
             // refusal shape, an empty PORT_REPLY carrying its tag.
             //
             // The ring's indices are not read here: the tag comes out of the node-local record.
@@ -274,7 +274,7 @@ namespace kickos
             // taker still owns the slot and releases it itself.
             //
             // EVERY PATH THAT DID NOT BECOME A RECORD PUBLISHES AN ANSWER, AT THIS ONE SITE.
-            // The far caller parks until its deadline, and under KOS_TIMEOUT_NONE there is no
+            // The far caller parks until its deadline, and under no limit there is no
             // deadline, so an arm that returned false without publishing leaks that thread for
             // the life of the image. Past the receiver's pop the call IS a record, whose answer
             // is owed through inbound_reply wherever it is refused.

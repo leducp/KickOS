@@ -200,8 +200,8 @@ namespace kickos
     //
     // IPC endpoints (syscall_ipc.cc).
     // Call send/call/reply_recv without IrqLock. They lock internally and must
-    // release it before the resume barrier; an outer lock would livelock ARM.
-    // Untimed calls use KOS_TIMEOUT_NONE.
+    // release it before the resume barrier; an outer lock would livelock ARM. Each deadline is
+    // monotonic, KOS_LIMIT_NONE for none.
     int endpoint_create(uint32_t* out_cap);
     // KOS_SYS_ENDPOINT_BADGE: a SIGNAL copy of `src_cap`, TRANSFER kept where it held it,
     // carrying `badge`. The source must hold SIGNAL and HANDOUT, which no badged copy holds. Takes
@@ -218,10 +218,10 @@ namespace kickos
     // IrqLock.
     int amp_endpoint_mint(Thread* c, uint32_t node, uint32_t port, uint8_t rights, uint32_t* out_cap);
 #endif
-    int32_t endpoint_send(uint32_t cap, uintptr_t buf, size_t len, uint32_t timeout_us);
+    int32_t endpoint_send(uint32_t cap, uintptr_t buf, size_t len, uint64_t deadline);
     // The deadline bounds BOTH call phases: the send-side park and the reply-side park.
     int32_t endpoint_call(uint32_t cap, uintptr_t buf, size_t send_len, size_t recv_cap,
-                          uint32_t timeout_us);
+                          uint64_t deadline);
     int endpoint_reply(uint32_t reply_cap, uintptr_t buf, size_t len);
     // KOS_SYS_REPLY_RECV. `lens` is kos_call_lens_pack(reply_len, recv_cap) and `opts` names a
     // kos_reply_recv_opts the kernel reads and writes back; the dispatch answers a null one with
@@ -268,11 +268,11 @@ namespace kickos
     // Nothing is written on failure.
     int thread_create_call(kos_thread_params const* p, uintptr_t out);
     // Creates an instance of program `prog` from the caller's struct kos_task_params at `params`
-    // and starts its entry thread, a timeout other than 0 first waiting out the instance's last
-    // incarnation. The task's handle goes to `out` as thread_create_call's does. Takes its own
+    // and starts its entry thread, a monotonic deadline not passed first waiting out the
+    // instance's last incarnation. The task's handle goes to `out` as thread_create_call's does. Takes its own
     // IrqLock, which a console create drops to drain the console's kernel writers, and a wait
     // drops to park.
-    int task_create_call(uint32_t prog, uintptr_t params, uint32_t timeout_us, uintptr_t out);
+    int task_create_call(uint32_t prog, uintptr_t params, uint64_t deadline, uintptr_t out);
     // Mints a program capability for the program named at `name`. *out_prog is written on EVERY
     // path. Takes its own IrqLock.
     int program_find_call(uintptr_t name, uint32_t* out_prog);
@@ -285,7 +285,7 @@ namespace kickos
     // a call it would not refuse at once (aspace.h, presync_begin).
     void spawn_presync_plan();
     // A task create's, as the spawn's two above, `prog` the program it names.
-    void task_spawn_presync_enter(uintptr_t params, uint32_t timeout_us);
+    void task_spawn_presync_enter(uintptr_t params, uint64_t deadline);
     void task_spawn_presync_plan(uint32_t prog);
 #endif
 
@@ -293,19 +293,18 @@ namespace kickos
     // IrqLock: each takes its own for the gate and the park, then releases it before the
     // resume barrier and the wait_result read.
     //
-    // Waits for a thread the caller spawned to be gone, up to `timeout_us` relative
-    // microseconds (KOS_TIMEOUT_NONE: no bound). Returns 0 (including for a target that had
-    // already exited), -KOS_ETIMEDOUT, -KOS_ECANCELED, -KOS_EBADF, -KOS_EPERM or
-    // -KOS_EDEADLK.
-    int thread_join(kos_thread_t thread, uint32_t timeout_us);
+    // Waits for a thread the caller spawned to be gone, until the monotonic `deadline`. Returns 0 (including for
+    // a target that had already exited), -KOS_ETIMEDOUT, -KOS_ECANCELED, -KOS_EBADF, -KOS_EPERM
+    // or -KOS_EDEADLK.
+    int thread_join(kos_thread_t thread, uint64_t deadline);
 
     // Cancels a thread the caller spawned with `kind`, a kos_cancel: a kill breaks whatever park
     // it is in with -KOS_ECANCELED so it reaches its own death point, a slay also claims its next
-    // resume, so it executes no further unprivileged instruction. A timeout of 0 answers once
+    // resume, so it executes no further unprivileged instruction. A passed deadline answers once
     // the cancel is raised; any other blocks on the terms of thread_join, no caller-held IrqLock,
     // and answers 0 once the target is gone, -KOS_ETIMEDOUT with the cancel irrevocable and the
     // capability sweep unfinished.
-    int thread_cancel_call(kos_thread_t thread, uintptr_t kind, uint32_t timeout_us);
+    int thread_cancel_call(kos_thread_t thread, uintptr_t kind, uint64_t deadline);
 #if KICKOS_KERNEL_CORES > 1
     // Placement, and the task's core read: each answers a mask, which cannot reach bit 31, or
     // -KOS_E*. The thread call sets the mask it answers, or reads it for KOS_AFFINITY_QUERY,
@@ -317,9 +316,9 @@ namespace kickos
     // The caller's own base priority. Takes the whole argument word, so a value that would
     // truncate into range is refused rather than read.
     int thread_set_priority(uintptr_t priority);
-    // Cancels a task's whole group, gated on the creator being the caller. A timeout of 0 drops
+    // Cancels a task's whole group, gated on the creator being the caller. A passed deadline drops
     // the creator's hold and answers at once; any other blocks on the terms of thread_join.
-    int task_slay(kos_task_t task, uint32_t timeout_us);
+    int task_slay(kos_task_t task, uint64_t deadline);
 }
 
 #endif

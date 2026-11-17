@@ -55,11 +55,11 @@ extern "C"
         KOS_I2C_XFER_MAX = KOS_EP_MSG_MAX - (int)sizeof(struct kos_bus_req)
                            - KOS_I2C_SEG_MAX * (int)sizeof(struct kos_bus_seg),
 
-        // Ceiling on the transaction deadline below. A held SCL is the whole bus stopped for
-        // every device on it, so an arbitrarily long deadline is the denial of service the
-        // deadline exists to bound. The slowest rate any backend here programs moves
-        // KOS_I2C_XFER_MAX bytes in well under a millisecond of this.
-        KOS_I2C_TIMEOUT_MAX_US = 1000000
+        // How far out the transaction deadline below may lie, in milliseconds. A held SCL is
+        // the whole bus stopped for every device on it, so an arbitrarily long deadline is the
+        // denial of service the deadline exists to bound. The slowest rate any backend here
+        // programs moves KOS_I2C_XFER_MAX bytes in well under a millisecond of this.
+        KOS_I2C_DEADLINE_MAX_MS = 1000
     };
 
     // A consumer fills the field it holds; the linked implementation reads its own and
@@ -204,8 +204,9 @@ extern "C"
     // into the next segment with the bus never released. A list may therefore carry several
     // transactions, and the bus is held for as long as the whole list takes.
     //
-    // `timeout_us` IS A DEADLINE ON THE WHOLE LIST, IT IS MANDATORY, AND IT IS ENFORCED IN
-    // SOFTWARE. 0 is -KOS_EINVAL and so is anything above KOS_I2C_TIMEOUT_MAX_US: no
+    // `until` IS A DEADLINE ON THE WHOLE LIST, IT IS MANDATORY, AND IT IS ENFORCED IN
+    // SOFTWARE. A deadline more than KOS_I2C_DEADLINE_MAX_MS out, KOS_NEVER included, is -KOS_EINVAL,
+    // and one already passed is -KOS_ETIMEDOUT with the bus untouched: no
     // controller here has a usable hardware timeout, and held SCL is not a local stall but
     // the whole bus stopped for every device on it. On expiry the transaction is ABANDONED,
     // the bus is recovered as far as this controller can, and -KOS_ETIMEDOUT is returned.
@@ -245,7 +246,7 @@ extern "C"
     // implementation. A consumer moving more splits it into transactions the target accepts
     // as separate. A return below `len` is an error return, never a partial success.
     int32_t kos_i2c_transfer(struct kos_i2c_device* d, struct kos_bus_seg const* seg, uint8_t nseg,
-                             unsigned char* buf, uint32_t len, uint32_t timeout_us,
+                             unsigned char* buf, uint32_t len, kos_monotonic_t until,
                              uint32_t* xferred);
 
     // Quiesce the bus: the controller stopped, every interrupt source this backend armed
@@ -269,7 +270,7 @@ extern "C"
     // not there. An aborted transaction DISCARDS whatever an earlier read segment had already
     // stored: the transaction, not the segment, is the unit the client asked for.
     //
-    // BLOCKING, AND `timeout_us` DOES NOT CROSS THE WIRE. struct kos_bus_req has no field for
+    // BLOCKING, AND `until` DOES NOT CROSS THE WIRE. struct kos_bus_req has no field for
     // a deadline, so a proxy implementation of kos_i2c_transfer cannot forward its caller's:
     // the deadline a SERVICE enforces is the service's own policy, and the caller's argument
     // bounds only its local work. A caller parked in kos_call has no timeout of its own

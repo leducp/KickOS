@@ -1008,7 +1008,7 @@ namespace
     // A CALL THE ENDPOINT LAYER REFUSED IS ANSWERED, not merely dropped. The seam's
     // endpoint_far_call_deliver answers false for every call, which is what every refusal arm
     // past the receiver's pop looks like from here; the far caller is parked on this answer and
-    // under KOS_TIMEOUT_NONE nothing else can wake it.
+    // under KOS_LIMIT_NONE nothing else can wake it.
     TEST_F(AmpWindow, a_call_the_endpoint_layer_refuses_is_answered_with_an_empty_reply)
     {
         BoundPort bound(NODE_A, PORT_SERVED_A, 0u);
@@ -1232,7 +1232,7 @@ namespace
         EXPECT_EQ(nullptr, amp::inbound_at(token[1]));
 
         // AND EVERY CALLER THOSE RECORDS NAMED IS ANSWERED, one empty PORT_REPLY each carrying
-        // its tag: the far caller has no deadline under KOS_TIMEOUT_NONE, so a record dropped
+        // its tag: the far caller has no deadline under KOS_LIMIT_NONE, so a record dropped
         // in silence is a thread parked for the life of the image. The answers' own bytes are
         // lost, the service holding each capability being about to find its token dead, which
         // is what reply_unsent counts.

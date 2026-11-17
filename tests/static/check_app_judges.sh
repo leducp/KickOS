@@ -81,7 +81,7 @@ tests/integration/check_wallclock.sh|wallclock.capture||declared|swap|mark 0, sl
 tests/integration/check_wallclock.sh|wallclock.capture||sleep-short|swap|mark 2, the kernel clock advanced 5000039925 ns|mark 2, the kernel clock advanced 4999039925 ns
 tests/integration/check_wallclock.sh|wallclock.capture||kernel-long|swap|mark 2, the kernel clock advanced 5000039925 ns|mark 2, the kernel clock advanced 5060000000 ns|swap|19.218760|19.250668
 tests/integration/check_wallclock.sh|wallclock.capture||kernel-host|swap|mark 2, the kernel clock advanced 5000039925 ns|mark 2, the kernel clock advanced 5040000000 ns|swap|19.218760|19.200668
-tests/integration/check_wallclock.sh|wallclock.capture||interval|source:user/apps/common/wallclock/main.cc|uint64_t const from = kos::clock_now();|        kos::print(planted);
+tests/integration/check_wallclock.sh|wallclock.capture||interval|source:user/apps/common/wallclock/main.cc|auto const from = kos::now();|        kos::print(planted);
 tests/integration/check_wallclock.sh|wallclock.capture||host-time|swap|19.218760|34.218760
 tests/integration/check_wallclock.sh|wallclock.capture||host-time|swap|19.218760|16.718760
 tests/integration/check_wallclock.sh|wallclock.capture||host-time|swap|19.218760|19.281260

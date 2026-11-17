@@ -326,7 +326,7 @@ namespace kickos
     {
     }
 
-    uint32_t console_line_wait(Thread const*, Held)
+    uint64_t console_line_wait(Thread const*, Held)
     {
         return 0;
     }
@@ -453,18 +453,11 @@ namespace kickos
         t->timer_wall = false;
     }
 
-    // No clock runs here. Tests trigger expiry with thread_abort_park.
-    void ktime_deadline_arm(Thread* t, uint32_t timeout_us, Held)
-    {
-        if (timeout_us != KOS_TIMEOUT_NONE)
-        {
-            t->on_timer = true;
-        }
-    }
-
+    // The realtime clock reads the monotonic one here: no set ever offsets it. No clock runs
+    // either, so an unpassed deadline expires only through thread_abort_park.
     bool ktime_limit_passed(WaitLimit limit)
     {
-        return not limit.on_wall() and limit.lo == 0u;
+        return not limit.none() and limit.word <= testfix::g_now_ns;
     }
 
     void ktime_deadline_arm_at(Thread* t, uint64_t deadline_ns, bool wall, Held)
@@ -476,12 +469,11 @@ namespace kickos
 
     void ktime_limit_arm(Thread* t, WaitLimit limit, Held held)
     {
-        if (limit.on_wall())
+        if (limit.none())
         {
-            ktime_deadline_arm_at(t, 0u, true, held);
             return;
         }
-        ktime_deadline_arm(t, limit.lo, held);
+        ktime_deadline_arm_at(t, limit.word, limit.kind == KOS_LIMIT_REALTIME, held);
     }
 
     // No deadline is queued here to move.

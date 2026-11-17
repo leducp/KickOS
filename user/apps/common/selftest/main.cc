@@ -53,7 +53,7 @@ namespace
 
     void log_put(char c)
     {
-        kos_sem_wait(&g_lock, KOS_TIMEOUT_NONE);
+        kos_sem_wait(&g_lock, KOS_NEVER);
         if (g_logn < static_cast<int>(sizeof(g_log)) - 1)
         {
             g_log[g_logn++] = c;
@@ -110,7 +110,7 @@ namespace
     // A due instant is computed, not observed: a window reported held by less than the
     // read-to-syscall gap is not proof that it held.
     //
-    // Stamps are the low 32 bits of kos_clock_now(): every span here is tens of milliseconds
+    // Stamps are the low 32 bits of kos_monotonic_now(): every span here is tens of milliseconds
     // inside a 4.29 s wrap, so the unsigned differences are unambiguous. Zero is "not
     // stamped", which costs one clock value in 2^32.
     struct Window
@@ -121,13 +121,13 @@ namespace
 
     uint32_t stamp_now()
     {
-        return static_cast<uint32_t>(kos_clock_now());
+        return static_cast<uint32_t>(kos_monotonic_now().ns);
     }
 
     // For a thread about to sleep: when it will be due, as it can state it.
     uint32_t stamp_due(uint64_t sleep_ns)
     {
-        return static_cast<uint32_t>(kos_clock_now() + sleep_ns);
+        return static_cast<uint32_t>(static_cast<uint64_t>(kos_monotonic_now().ns) + sleep_ns);
     }
 
     // Earlier, over stamps whose true separation is far below the wrap.
@@ -220,24 +220,15 @@ namespace
     // A red arm can leave units its workers posted after main stopped waiting for them.
     void done_drain()
     {
-        while (kos_sem_wait(&g_done, 0) == 0)
+        while (kos_sem_wait(&g_done, KOS_POLL) == 0)
         {
         }
     }
 
     // A thread that waits several times shares one deadline across its waits.
-    uint64_t deadline_in(uint32_t us)
+    kos_monotonic_t deadline_in(uint32_t us)
     {
-        return kos_clock_now() + uint64_t{us} * 1000u;
-    }
-    uint32_t left_us_until(uint64_t deadline)
-    {
-        uint64_t const now = kos_clock_now();
-        if (now >= deadline)
-        {
-            return 0;
-        }
-        return static_cast<uint32_t>((deadline - now) / 1000u);
+        return after_us(us);
     }
     // A creator's whole run ends before the TX_WAIT_US waits of the workers it spawns give up; the
     // arm's hold waits longer than it.
@@ -255,7 +246,7 @@ namespace
     }
     void stage_wait()
     {
-        kos_sem_wait(&g_gate, KOS_TIMEOUT_NONE);
+        kos_sem_wait(&g_gate, KOS_NEVER);
         kos_sem_post(&g_gate);
     }
 
@@ -298,7 +289,7 @@ namespace
         if (took == -KOS_EBUSY)
         {
 #if KICKOS_CONSOLE_CHIP
-            return kos_send(KOS_CAP_STDOUT, "", 0, KOS_TIMEOUT_NONE) >= 0;
+            return kos_send(KOS_CAP_STDOUT, "", 0, KOS_NEVER) >= 0;
 #else
             return false;
 #endif
@@ -332,12 +323,12 @@ namespace
 
         // Index 0 is the stdout slot, in either posture. A zero-length send puts no byte on
         // the wire in both.
-        int32_t const stdout_seated = kos_send(KOS_CAP_STDOUT, "", 0, STALL_TOLERANT_US);
+        int32_t const stdout_seated = kos_send(KOS_CAP_STDOUT, "", 0, after_us(STALL_TOLERANT_US));
         if (stdout_seated == -KOS_EBADF)
         {
             // Before a publish nothing is seated there, so a send fails cleanly rather than
             // resolving a stale object.
-            TAP_CHECK(kos_send(KOS_CAP_STDOUT, "x", 1, STALL_TOLERANT_US) == -KOS_EBADF);
+            TAP_CHECK(kos_send(KOS_CAP_STDOUT, "x", 1, after_us(STALL_TOLERANT_US)) == -KOS_EBADF);
         }
         else
         {
@@ -375,7 +366,7 @@ namespace
     void preempt_high(void*)
     {
         log_put('h');
-        kos_sem_wait(&g_go, KOS_TIMEOUT_NONE);
+        kos_sem_wait(&g_go, KOS_NEVER);
         log_put('H');
     }
     void preempt_low(void*)
@@ -431,7 +422,7 @@ namespace
         // a plausible rate.
         TAP_CHECK(before == 0u or before >= 1000000u);
         TAP_ASK(.workers = 1);
-        uint64_t const t0 = kos_clock_now();
+        kos_monotonic_t const t0 = kos_monotonic_now();
         g_clkset_low = 1;
         g_clkset_mid = 1;
         g_clkset_max = 1;
@@ -446,7 +437,7 @@ namespace
         TAP_CHECK(g_clkset_mid == 0u);
         TAP_CHECK(g_clkset_max == 0u);
         TAP_CHECK(kos_cpu_clock_hz() == before);
-        TAP_CHECK(kos_clock_now() >= t0);
+        TAP_CHECK(kos_monotonic_now().ns >= t0.ns);
     }
 
     // Every bit of a notification.
@@ -484,7 +475,7 @@ namespace
     {
         auto note = kos::Notification::adopt(child_cap(1));
         note.bind();
-        note.wait(NOTE_ALL);
+        kos::notify_wait(NOTE_ALL);
         log_put('W');
     }
     int g_irq_raised = -99;
@@ -548,11 +539,11 @@ namespace
         stage_wait();
         volatile uint32_t me = RR_BURNER_SENTINEL;
         uint64_t const before = g_rr_spins;
-        uint64_t const start = kos_clock_now();
+        uint64_t const start = kos_monotonic_now().ns;
         // Until the spinner has advanced, not for a fixed span: a loaded host can hold the
         // spinner's core longer than any span. RR_GIVE_UP_NS only turns a spinner that never
         // runs, the defect, into a failure instead of a hang.
-        while (g_rr_spins == before and kos_clock_now() - start < RR_GIVE_UP_NS)
+        while (g_rr_spins == before and kos_monotonic_now().ns - start < RR_GIVE_UP_NS)
         {
             if (me != RR_BURNER_SENTINEL)
             {
@@ -582,11 +573,11 @@ namespace
     // The monotonic clock's step, never assumed fine.
     uint64_t clock_granule_ns()
     {
-        uint64_t e0 = kos_clock_now();
+        uint64_t e0 = kos_monotonic_now().ns;
         uint64_t e1 = e0;
-        while (e1 == e0) { e1 = kos_clock_now(); }
+        while (e1 == e0) { e1 = kos_monotonic_now().ns; }
         uint64_t e2 = e1;
-        while (e2 == e1) { e2 = kos_clock_now(); }
+        while (e2 == e1) { e2 = kos_monotonic_now().ns; }
         return e2 - e1;
     }
     void t_rr()
@@ -611,12 +602,12 @@ namespace
         TAP_CHECK(kos_sem_init(&g_gate, 0) == 0);
         // Must stay UNPRIVILEGED: that is what exercises the region reload per slice.
         a = kos::thread::create_caps(rr_burner, nullptr, "rrA", 10,
-                                     nullptr, 0, KOS_POLICY_RR, static_cast<uint32_t>(quantum));
+                                     nullptr, 0, KOS_POLICY_RR, std::chrono::nanoseconds{quantum});
         b = kos::thread::create_caps(rr_spinner, nullptr, "rrB", 10,
-                                     nullptr, 0, KOS_POLICY_RR, static_cast<uint32_t>(quantum));
+                                     nullptr, 0, KOS_POLICY_RR, std::chrono::nanoseconds{quantum});
         TAP_CHECK(a.valid() and b.valid());
-        TAP_CHECK(kos_sem_wait(&g_done, STALL_TOLERANT_US) == 0);
-        TAP_CHECK(kos_sem_wait(&g_done, STALL_TOLERANT_US) == 0);
+        TAP_CHECK(kos_sem_wait(&g_done, after_us(STALL_TOLERANT_US)) == 0);
+        TAP_CHECK(kos_sem_wait(&g_done, after_us(STALL_TOLERANT_US)) == 0);
         stage_release();
         TAP_CHECK(hold.joined());
         tap::diag("rr quantum %u ns, the other RR thread advanced %u during the burn",
@@ -646,7 +637,7 @@ namespace
         uintptr_t const me = reinterpret_cast<uintptr_t>(arg);
         kos_sem_post(&g_done);
         stage_wait();
-        uint64_t const start = kos_clock_now();
+        uint64_t const start = kos_monotonic_now().ns;
         uint32_t adds = 0;
         uint32_t misses = 0;
         uint32_t v = 0;
@@ -666,7 +657,7 @@ namespace
             }
             i = i + 1u;
             // The clock rarely: a read is a kernel entry, and the switches must land in the CAS.
-            if ((i & 1023u) == 0u and kos_clock_now() - start >= g_ucas_run_ns)
+            if ((i & 1023u) == 0u and kos_monotonic_now().ns - start >= g_ucas_run_ns)
             {
                 break;
             }
@@ -698,15 +689,15 @@ namespace
         TAP_CHECK(kos_sem_init(&g_gate, 0) == 0);
         a = kos::thread::create_caps(ucas_adder, reinterpret_cast<void*>(uintptr_t{0}), "ucasA",
                                      10, nullptr, 0, KOS_POLICY_RR,
-                                     static_cast<uint32_t>(quantum), 0, nullptr, nullptr, 0,
+                                     std::chrono::nanoseconds{quantum}, 0, nullptr, nullptr, 0,
                                      TAP_PIN_CORE);
         b = kos::thread::create_caps(ucas_adder, reinterpret_cast<void*>(uintptr_t{1}), "ucasB",
                                      10, nullptr, 0, KOS_POLICY_RR,
-                                     static_cast<uint32_t>(quantum), 0, nullptr, nullptr, 0,
+                                     std::chrono::nanoseconds{quantum}, 0, nullptr, nullptr, 0,
                                      TAP_PIN_CORE);
         TAP_CHECK(a.valid() and b.valid());
-        TAP_CHECK(kos_sem_wait(&g_done, STALL_TOLERANT_US) == 0);
-        TAP_CHECK(kos_sem_wait(&g_done, STALL_TOLERANT_US) == 0);
+        TAP_CHECK(kos_sem_wait(&g_done, after_us(STALL_TOLERANT_US)) == 0);
+        TAP_CHECK(kos_sem_wait(&g_done, after_us(STALL_TOLERANT_US)) == 0);
         stage_release();
         TAP_CHECK(hold.joined());
         uint32_t const adds = g_ucas_adds[0] + g_ucas_adds[1];
@@ -736,7 +727,7 @@ namespace
     {
         kos_sem_post(&g_done);
         stage_wait();
-        uint64_t const start = kos_clock_now();
+        uint64_t const start = kos_monotonic_now().ns;
         uint32_t const before = g_sc1_peer_loops.load();
         uint32_t i = 0;
         while (true)
@@ -755,7 +746,7 @@ namespace
                 }
             }
             i = i + 1u;
-            if ((i & 1023u) == 0u and kos_clock_now() - start >= g_ucas_run_ns)
+            if ((i & 1023u) == 0u and kos_monotonic_now().ns - start >= g_ucas_run_ns)
             {
                 break;
             }
@@ -786,14 +777,14 @@ namespace
         TAP_HOLD(hold.thread(&a) and hold.thread(&b));
         TAP_CHECK(kos_sem_init(&g_gate, 0) == 0);
         a = kos::thread::create_caps(sc1_compare, nullptr, "sc1W", 10, nullptr, 0,
-                                     KOS_POLICY_RR, static_cast<uint32_t>(quantum), 0, nullptr,
+                                     KOS_POLICY_RR, std::chrono::nanoseconds{quantum}, 0, nullptr,
                                      nullptr, 0, TAP_PIN_CORE);
         b = kos::thread::create_caps(sc1_compare, &g_sc1_z, "sc1Z", 10, nullptr, 0,
-                                     KOS_POLICY_RR, static_cast<uint32_t>(quantum), 0, nullptr,
+                                     KOS_POLICY_RR, std::chrono::nanoseconds{quantum}, 0, nullptr,
                                      nullptr, 0, TAP_PIN_CORE);
         TAP_CHECK(a.valid() and b.valid());
-        TAP_CHECK(kos_sem_wait(&g_done, STALL_TOLERANT_US) == 0);
-        TAP_CHECK(kos_sem_wait(&g_done, STALL_TOLERANT_US) == 0);
+        TAP_CHECK(kos_sem_wait(&g_done, after_us(STALL_TOLERANT_US)) == 0);
+        TAP_CHECK(kos_sem_wait(&g_done, after_us(STALL_TOLERANT_US)) == 0);
         stage_release();
         TAP_CHECK(hold.joined());
         tap::diag("scompare1: quantum %u ns, the peer looped %u during the compares, w %u, "
@@ -810,7 +801,7 @@ namespace
     // main spawns the 40 ms sleeper FIRST, so the two deadlines land in the intended order
     // only while the second spawn costs less than the 30 ms the requests differ by, and
     // nothing bounds a spawn. Each sleeper publishes the clock read taken just before its
-    // kos_sleep_ns, and the arm judges the deadline order it can OBSERVE. The kernel exposes
+    // kos_sleep_for, and the arm judges the deadline order it can OBSERVE. The kernel exposes
     // no armed deadline, so the read-to-syscall gap stays as a residue.
     Atomic<uint32_t, Order::RELAXED> g_sleep_due_s{0};
     Atomic<uint32_t, Order::RELAXED> g_sleep_due_l{0};
@@ -832,7 +823,7 @@ namespace
         {
             g_sleep_due_l = due;
         }
-        kos_sleep_ns(ns);
+        kos_sleep_for(kos_ns(ns));
         log_put(c);
     }
     void t_sleep()
@@ -875,7 +866,7 @@ namespace
     kos_sem_t g_multi = KOS_SEM_INIT(0);
     void multi_worker(void* arg)
     {
-        kos_sem_wait(&g_multi, KOS_TIMEOUT_NONE);
+        kos_sem_wait(&g_multi, KOS_NEVER);
         log_put(arg_char(arg));
     }
     void t_multi()
@@ -933,7 +924,7 @@ namespace
         kos_sem_post(irqdrv_sem(mmio, IRQDRV_READY)); // bound to the object + about to park
         for (int i = 0; i < 3; i++)
         {
-            note.wait(NOTE_ALL);
+            kos::notify_wait(NOTE_ALL);
             dev[1 + i] = dev[0];
             irq.ack();
             kos_sem_post(irqdrv_sem(mmio, IRQDRV_DONE));
@@ -978,17 +969,17 @@ namespace
 #else
         uint32_t const drv_core = 0;
 #endif
-        drv = kos::thread::create(irq_driver, g_mmio, "irqdrv", 15, KOS_POLICY_FIFO, 0, nullptr, 0,
-                                  &mmio_window, 1, caps, 2, 0, nullptr, drv_core);
+        drv = kos::thread::create(irq_driver, g_mmio, "irqdrv", 15, KOS_POLICY_FIFO, 0ns, nullptr,
+                                  0, &mmio_window, 1, caps, 2, 0, nullptr, drv_core);
         TAP_CHECK(drv.valid());
         // The driver is the notification's sole holder, so its exit frees it.
         TAP_CHECK(hold.close(&note) == 0);
-        TAP_CHECK(kos_sem_wait(ready, STALL_TOLERANT_US) == 0);
+        TAP_CHECK(kos_sem_wait(ready, after_us(STALL_TOLERANT_US)) == 0);
         for (int i = 1; i <= 3; i++)
         {
             *static_cast<volatile int*>(g_mmio) = 0x100 + i;
             TAP_CHECK(kos_irq_raise(irq) == 0);
-            TAP_CHECK(kos_sem_wait(done, STALL_TOLERANT_US) == 0);
+            TAP_CHECK(kos_sem_wait(done, after_us(STALL_TOLERANT_US)) == 0);
         }
         TAP_CHECK(hold.joined());
         volatile int const* const dev = static_cast<volatile int*>(g_mmio);
@@ -1009,10 +1000,10 @@ namespace
         kos_sem_post(&g_irq_ready);
         for (int i = 0; i < 3; i++)
         {
-            note.wait(NOTE_ALL);
+            kos::notify_wait(NOTE_ALL);
             g_mask_serviced++;
             kos_sem_post(&g_done);  // phase A: serviced, line still MASKED, not yet acked
-            kos_sem_wait(&g_irq_ready, KOS_TIMEOUT_NONE); // main holds the masked window open
+            kos_sem_wait(&g_irq_ready, KOS_NEVER); // main holds the masked window open
             irq.ack();
             kos_sem_post(&g_done);  // phase B: the line is ARMED again
         }
@@ -1035,24 +1026,24 @@ namespace
         TAP_CHECK(drv.valid());
         TAP_CHECK(hold.close(&note) == 0);
         // Driver is bound to the object, about to wait
-        TAP_CHECK(kos_sem_wait(&g_irq_ready, STALL_TOLERANT_US) == 0);
+        TAP_CHECK(kos_sem_wait(&g_irq_ready, after_us(STALL_TOLERANT_US)) == 0);
 
         TAP_CHECK(kos_irq_raise(irq) == 0);
         // Phase A: serviced once, stopped before its ack, so masked from here
-        TAP_CHECK(kos_sem_wait(&g_done, STALL_TOLERANT_US) == 0);
+        TAP_CHECK(kos_sem_wait(&g_done, after_us(STALL_TOLERANT_US)) == 0);
         TAP_CHECK(kos_irq_raise(irq) == 0);
         TAP_CHECK(kos_irq_raise(irq) == 0);
         kos_sem_post(&g_irq_ready); // release the window; the driver acks
         // The latch half: a raise taken while the line was masked was kept and redelivered
         // at the ack. main raised nothing after the gate opened, so the second service can
         // only be a redelivery. Two posts: the ack's phase B, then that service's phase A.
-        TAP_CHECK(kos_sem_wait(&g_done, STALL_TOLERANT_US) == 0);
-        TAP_CHECK(kos_sem_wait(&g_done, STALL_TOLERANT_US) == 0);
+        TAP_CHECK(kos_sem_wait(&g_done, after_us(STALL_TOLERANT_US)) == 0);
+        TAP_CHECK(kos_sem_wait(&g_done, after_us(STALL_TOLERANT_US)) == 0);
         bool const latched = (g_mask_serviced == 2);
 
         kos_sem_post(&g_irq_ready);
         // Phase B: acked and ARMED, so a raise below cannot beat the ack
-        TAP_CHECK(kos_sem_wait(&g_done, STALL_TOLERANT_US) == 0);
+        TAP_CHECK(kos_sem_wait(&g_done, after_us(STALL_TOLERANT_US)) == 0);
         bool one_deep = true;
 #if KICKOS_KERNEL_CORES > 1
         // The one-deep half is not witnessed above one kernel core. Queueing rather than
@@ -1067,12 +1058,13 @@ namespace
 #endif
         // Liveness: a fresh raise reaches the re-armed line, and the driver's loop ends.
         TAP_CHECK(kos_irq_raise(irq) == 0);
-        TAP_CHECK(kos_sem_wait(&g_done, STALL_TOLERANT_US) == 0); // phase A of the third service
+        // phase A of the third service
+        TAP_CHECK(kos_sem_wait(&g_done, after_us(STALL_TOLERANT_US)) == 0);
         bool const live = (g_mask_serviced == 3);
         kos_sem_post(&g_irq_ready);
         // Its last post, phase B, is banked by the time the join returns.
         TAP_CHECK(hold.joined());
-        TAP_CHECK(kos_sem_wait(&g_done, STALL_TOLERANT_US) == 0);
+        TAP_CHECK(kos_sem_wait(&g_done, after_us(STALL_TOLERANT_US)) == 0);
 
         TAP_CHECK(latched);
         TAP_CHECK(one_deep);
@@ -1114,10 +1106,10 @@ namespace
         kos_sem_post(&g_irq_ready);
         for (int i = 0; i < 2; i++)
         {
-            note.wait(NOTE_ALL);
+            kos::notify_wait(NOTE_ALL);
             g_disc_serviced++;
             kos_sem_post(&g_done);  // phase A: serviced, MASKED, nothing retired yet
-            kos_sem_wait(&g_irq_ready, KOS_TIMEOUT_NONE); // main holds the masked window open
+            kos_sem_wait(&g_irq_ready, KOS_NEVER); // main holds the masked window open
             irq.discard();          // retire anything coalesced onto the masked line
             irq.ack();
             kos_sem_post(&g_done);  // phase B: the line is ARMED again
@@ -1143,18 +1135,18 @@ namespace
         drv = irq_spawn(discard_driver, nullptr, "discirq", IRQ_DRV_PRIO, caps, 2);
         TAP_CHECK(drv.valid());
         TAP_CHECK(hold.close(&note) == 0);
-        TAP_CHECK(kos_sem_wait(&g_irq_ready, STALL_TOLERANT_US) == 0);
+        TAP_CHECK(kos_sem_wait(&g_irq_ready, after_us(STALL_TOLERANT_US)) == 0);
 
         TAP_CHECK(kos_irq_raise(irq) == 0);
         // Phase A: serviced once, stopped before its discard, so masked from here
-        TAP_CHECK(kos_sem_wait(&g_done, STALL_TOLERANT_US) == 0);
+        TAP_CHECK(kos_sem_wait(&g_done, after_us(STALL_TOLERANT_US)) == 0);
         TAP_CHECK(kos_irq_raise(irq) == 0);
         TAP_CHECK(kos_irq_raise(irq) == 0);
         kos_sem_post(&g_irq_ready); // release the window; the driver discards, then acks
         // Phase B is load-bearing here, not bookkeeping: a raise from main that beat the
         // discard would be retired by it, and the driver would then wait on a line nothing
         // will raise again.
-        TAP_CHECK(kos_sem_wait(&g_done, STALL_TOLERANT_US) == 0);
+        TAP_CHECK(kos_sem_wait(&g_done, after_us(STALL_TOLERANT_US)) == 0);
         bool retired = true;
 #if KICKOS_KERNEL_CORES > 1
         // The retirement half is not witnessed above one kernel core. That the discard
@@ -1169,12 +1161,13 @@ namespace
         // Liveness, and this half holds on every core count: the discard must retire the
         // latch without wedging the line.
         TAP_CHECK(kos_irq_raise(irq) == 0);
-        TAP_CHECK(kos_sem_wait(&g_done, STALL_TOLERANT_US) == 0); // phase A of the second service
+        // phase A of the second service
+        TAP_CHECK(kos_sem_wait(&g_done, after_us(STALL_TOLERANT_US)) == 0);
         bool const live = (g_disc_serviced == 2);
         kos_sem_post(&g_irq_ready);
         // Its last post, phase B, is banked by the time the join returns.
         TAP_CHECK(hold.joined());
-        TAP_CHECK(kos_sem_wait(&g_done, STALL_TOLERANT_US) == 0);
+        TAP_CHECK(kos_sem_wait(&g_done, after_us(STALL_TOLERANT_US)) == 0);
 
         TAP_CHECK(retired);
         TAP_CHECK(live);
@@ -1195,7 +1188,7 @@ namespace
         kos_sem_post(&g_irq_ready);
         for (int i = 0; i < 3; i++)
         {
-            note.wait(NOTE_ALL); // no ack: the next wait re-arms the chained line
+            kos::notify_wait(NOTE_ALL); // no ack: the next wait re-arms the chained line
             g_autorearm_seen++;
             kos_sem_post(&g_done);
         }
@@ -1216,17 +1209,17 @@ namespace
         kos_cap_grant caps[] = {{note, CH_FULL}};
         uint16_t const dest[] = {CH_NOTE};
         drv = irq_spawn(autorearm_driver, nullptr, "autoirq", 15, caps, 1,
-                        KOS_POLICY_FIFO, 0, /*authority=*/0, dest);
+                        KOS_POLICY_FIFO, 0ns, /*authority=*/0, dest);
         TAP_CHECK(drv.valid());
         TAP_CHECK(hold.close(&note) == 0);
         // main keeps the line until the arm is over: it raises it, and the driver holds no
         // capability naming it, so closing it would drop the last reference, unchain the
         // signaller and take the line away mid-arm.
-        TAP_CHECK(kos_sem_wait(&g_irq_ready, STALL_TOLERANT_US) == 0);
+        TAP_CHECK(kos_sem_wait(&g_irq_ready, after_us(STALL_TOLERANT_US)) == 0);
         for (int i = 0; i < 3; i++)
         {
             TAP_CHECK(kos_irq_raise(irq) == 0);
-            TAP_CHECK(kos_sem_wait(&g_done, STALL_TOLERANT_US) == 0);
+            TAP_CHECK(kos_sem_wait(&g_done, after_us(STALL_TOLERANT_US)) == 0);
         }
         TAP_CHECK(hold.joined());
         TAP_CHECK(g_autorearm_seen == 3);
@@ -1246,14 +1239,14 @@ namespace
         auto note = kos::Notification::adopt(CH_NOTE);
         note.bind();
         kos_sem_post(&g_irq_ready);
-        note.wait(NOTE_ALL);
+        kos::notify_wait(NOTE_ALL);
         irq.ack();
         kos_sem_post(&g_done); // acked; main raises the one mid-compute event
-        kos_sem_wait(&g_irq_ready, KOS_TIMEOUT_NONE); // main holds the compute until it has raised
-        note.wait(NOTE_ALL);
+        kos_sem_wait(&g_irq_ready, KOS_NEVER); // main holds the compute until it has raised
+        kos::notify_wait(NOTE_ALL);
         g_phantom_seen++;
         kos_sem_post(&g_done);
-        note.wait(NOTE_ALL);   // MUST block: only one event was raised, no phantom
+        kos::notify_wait(NOTE_ALL);   // MUST block: only one event was raised, no phantom
         g_phantom_seen++;      // reached only on a phantom wake (the bug)
         kos_sem_post(&g_done);
     }
@@ -1274,14 +1267,14 @@ namespace
         drv = irq_spawn(phantom_driver, nullptr, "phantirq", IRQ_DRV_PRIO, caps, 2);
         TAP_CHECK(drv.valid());
         TAP_CHECK(hold.close(&note) == 0);
-        TAP_CHECK(kos_sem_wait(&g_irq_ready, STALL_TOLERANT_US) == 0);
+        TAP_CHECK(kos_sem_wait(&g_irq_ready, after_us(STALL_TOLERANT_US)) == 0);
 
         TAP_CHECK(kos_irq_raise(irq) == 0);
-        TAP_CHECK(kos_sem_wait(&g_done, STALL_TOLERANT_US) == 0);
+        TAP_CHECK(kos_sem_wait(&g_done, after_us(STALL_TOLERANT_US)) == 0);
 
         TAP_CHECK(kos_irq_raise(irq) == 0); // the one mid-compute event, on the armed line
         kos_sem_post(&g_irq_ready);
-        TAP_CHECK(kos_sem_wait(&g_done, STALL_TOLERANT_US) == 0);
+        TAP_CHECK(kos_sem_wait(&g_done, after_us(STALL_TOLERANT_US)) == 0);
         TAP_CHECK(g_phantom_seen == 1);
 
         TAP_CHECK(others_parked());
@@ -1289,7 +1282,7 @@ namespace
 
         // Wait is live (blocked, not lost) and the line re-armed itself.
         TAP_CHECK(kos_irq_raise(irq) == 0);
-        TAP_CHECK(kos_sem_wait(&g_done, STALL_TOLERANT_US) == 0);
+        TAP_CHECK(kos_sem_wait(&g_done, after_us(STALL_TOLERANT_US)) == 0);
         TAP_CHECK(g_phantom_seen == 2);
         TAP_CHECK(hold.joined());
     }
@@ -1310,24 +1303,25 @@ namespace
         TAP_HOLD(hold.thread(&p));
         TAP_CHECK(kos_sem_init(s, 0) == 0);
         TAP_CHECK(kos_sem_init(s, static_cast<uint32_t>(KOS_SEM_COUNT_MAX) + 1u) == -KOS_EINVAL);
-        TAP_CHECK(kos_sem_wait(s, 0) == -KOS_ETIMEDOUT);
-        uint64_t const t0 = kos_clock_now();
-        int const rc = kos_sem_wait(s, SEM_TIMEOUT_US);
-        uint64_t const waited_us = (kos_clock_now() - t0) / 1000u;
+        TAP_CHECK(kos_sem_wait(s, KOS_POLL) == -KOS_ETIMEDOUT);
+        kos_monotonic_t const t0 = kos_monotonic_now();
+        int const rc = kos_sem_wait(s, after_us(SEM_TIMEOUT_US));
+        uint64_t const waited_us = kos_between(t0, kos_monotonic_now()).ns / 1000u;
         TAP_CHECK(rc == -KOS_ETIMEDOUT);
         TAP_CHECK(waited_us >= SEM_TIMEOUT_US);
         TAP_CHECK(waited_us < STALL_TOLERANT_US);
-        // The expired waiter left its bit set; the post clears it and banks its unit, once.
-        TAP_CHECK(s->word == KOS_WORD_WAITERS);
+        // A wait whose deadline passed before it parked leaves no waiters bit; one that parked and
+        // expired leaves it set. Either way the post banks one unit.
+        TAP_CHECK(s->word == KOS_WORD_WAITERS or s->word == 0u);
         TAP_CHECK(kos_sem_post(s) == 0);
         TAP_CHECK(s->word == 1u);
-        TAP_CHECK(kos_sem_wait(s, 0) == 0);
-        TAP_CHECK(kos_sem_wait(s, 0) == -KOS_ETIMEDOUT);
+        TAP_CHECK(kos_sem_wait(s, KOS_POLL) == 0);
+        TAP_CHECK(kos_sem_wait(s, KOS_POLL) == -KOS_ETIMEDOUT);
         p = irq_spawn(sem_timed_poster, nullptr, "stpost", TAP_PRIO_AFTER, nullptr, 0);
         TAP_CHECK(p.valid());
-        TAP_CHECK(kos_sem_wait(s, STALL_TOLERANT_US) == 0);
+        TAP_CHECK(kos_sem_wait(s, after_us(STALL_TOLERANT_US)) == 0);
         TAP_CHECK(hold.joined());
-        TAP_CHECK(kos_sem_wait(s, 0) == -KOS_ETIMEDOUT);
+        TAP_CHECK(kos_sem_wait(s, KOS_POLL) == -KOS_ETIMEDOUT);
         // The count is bounded: a post at the ceiling with no waiter is refused, not banked.
         TAP_CHECK(kos_sem_init(s, static_cast<uint32_t>(KOS_SEM_COUNT_MAX)) == 0);
         TAP_CHECK(kos_sem_post(s) == -KOS_EOVERFLOW);
@@ -1355,7 +1349,7 @@ namespace
     {
         for (int i = 0; i < MTX_ITERS; i++)
         {
-            kos_mutex_lock(mtx_arg(arg), KOS_TIMEOUT_NONE);
+            kos_mutex_lock(mtx_arg(arg), KOS_NEVER);
             int tmp = g_mtx_shared;
             kos_yield();
             g_mtx_shared = tmp + 1;
@@ -1386,22 +1380,22 @@ namespace
     uint64_t mtx_time_unit()
     {
         // A unit below a few granules is unmeasurable, so the granule is a lower bound.
-        uint64_t g0 = kos_clock_now();
+        uint64_t g0 = kos_monotonic_now().ns;
         uint64_t g1 = g0;
-        while (g1 == g0) { g1 = kos_clock_now(); }
+        while (g1 == g0) { g1 = kos_monotonic_now().ns; }
         uint64_t g2 = g1;
-        while (g2 == g1) { g2 = kos_clock_now(); }
+        while (g2 == g1) { g2 = kos_monotonic_now().ns; }
         uint64_t granule = g2 - g1;
 
         // Per-sleep OVERHEAD above a small real sleep: the jitter a 1-unit gap must out-scale.
         constexpr uint32_t N = 8;
         constexpr uint64_t probe = 200000ull; // 200 us
-        uint64_t t0 = kos_clock_now();
+        kos_monotonic_t const t0 = kos_monotonic_now();
         for (uint32_t i = 0; i < N; i++)
         {
-            kos_sleep_ns(probe);
+            kos_sleep_for(kos_ns(probe));
         }
-        uint64_t rt = (kos_clock_now() - t0) / N;
+        uint64_t rt = kos_between(t0, kos_monotonic_now()).ns / N;
         uint64_t overhead = 0;
         if (rt > probe)
         {
@@ -1426,8 +1420,8 @@ namespace
     }
     void mtx_spin(uint64_t ns)
     {
-        uint64_t start = kos_clock_now();
-        while (kos_clock_now() - start < ns)
+        uint64_t start = kos_monotonic_now().ns;
+        while (kos_monotonic_now().ns - start < ns)
         {
         }
     }
@@ -1441,7 +1435,7 @@ namespace
     void pi_low(void* arg)
     {
         stage_wait();
-        kos_mutex_lock(mtx_arg(arg), KOS_TIMEOUT_NONE);
+        kos_mutex_lock(mtx_arg(arg), KOS_NEVER);
         log_put('l');
         kos_sem_post(&g_pi_go);
         log_put('u');
@@ -1451,17 +1445,17 @@ namespace
     void pi_high(void* arg)
     {
         stage_wait();
-        kos_sem_wait(&g_pi_go, KOS_TIMEOUT_NONE);
+        kos_sem_wait(&g_pi_go, KOS_NEVER);
         log_put('h');
         kos_sem_post(&g_pi_go);
-        kos_mutex_lock(mtx_arg(arg), KOS_TIMEOUT_NONE); // low holds it -> block, boost low to 20
+        kos_mutex_lock(mtx_arg(arg), KOS_NEVER); // low holds it -> block, boost low to 20
         log_put('H');
         kos_mutex_unlock(mtx_arg(arg));
     }
     void pi_med(void*)
     {
         stage_wait();
-        kos_sem_wait(&g_pi_go, KOS_TIMEOUT_NONE);
+        kos_sem_wait(&g_pi_go, KOS_NEVER);
         log_put('m');
     }
     void t_mutex_pi()
@@ -1508,12 +1502,12 @@ namespace
     void ch_c(void*)
     {
         stage_wait();
-        kos_mutex_lock(&g_ch_m2, KOS_TIMEOUT_NONE);
+        kos_mutex_lock(&g_ch_m2, KOS_NEVER);
         log_put('c');
         kos_sem_post(&g_ch_up);   // M2 is held: B may take M1
         // B hands `up` back before blocking on M2, and B's block is what boosts us onto the
         // CPU, so getting past this wait means B is ALREADY a waiter on M2.
-        kos_sem_wait(&g_ch_up, KOS_TIMEOUT_NONE);
+        kos_sem_wait(&g_ch_up, KOS_NEVER);
         kos_sem_post(&g_ch_on);          // only now may A block on M1
         mtx_spin(g_mtx_unit * 8); // A blocks on M1 inside this
         log_put('e');
@@ -1522,26 +1516,26 @@ namespace
     }
     void ch_b(void*)
     {
-        kos_sem_wait(&g_ch_up, KOS_TIMEOUT_NONE);
-        kos_mutex_lock(&g_ch_m1, KOS_TIMEOUT_NONE); // before A tries it
+        kos_sem_wait(&g_ch_up, KOS_NEVER);
+        kos_mutex_lock(&g_ch_m1, KOS_NEVER); // before A tries it
         log_put('b');
         kos_sem_post(&g_ch_up);
         // M2: C holds it -> block, boost C to 10, which resumes C's wait
-        kos_mutex_lock(&g_ch_m2, KOS_TIMEOUT_NONE);
+        kos_mutex_lock(&g_ch_m2, KOS_NEVER);
         kos_mutex_unlock(&g_ch_m2);
         kos_mutex_unlock(&g_ch_m1);
     }
     void ch_a(void*)
     {
-        kos_sem_wait(&g_ch_on, KOS_TIMEOUT_NONE);
+        kos_sem_wait(&g_ch_on, KOS_NEVER);
         kos_sem_post(&g_ch_on);
         // M1: B holds it AND waits on M2 -> boost B to 20, then C to 20
-        kos_mutex_lock(&g_ch_m1, KOS_TIMEOUT_NONE);
+        kos_mutex_lock(&g_ch_m1, KOS_NEVER);
         kos_mutex_unlock(&g_ch_m1);
     }
     void ch_d(void*)
     {
-        kos_sem_wait(&g_ch_on, KOS_TIMEOUT_NONE);
+        kos_sem_wait(&g_ch_on, KOS_NEVER);
         log_put('d');
     }
     void t_mutex_chain()
@@ -1583,14 +1577,14 @@ namespace
     kos_sem_t g_od_holds = KOS_SEM_INIT(0);
     void od_owner(void* arg)
     {
-        kos_mutex_lock(mtx_arg(arg), KOS_TIMEOUT_NONE);
+        kos_mutex_lock(mtx_arg(arg), KOS_NEVER);
         kos_sem_post(&g_od_holds);
         kos_exit(0);     // exits still owning: the death hands the word over
     }
     void od_waiter(void* arg)
     {
-        kos_sem_wait(&g_od_holds, KOS_TIMEOUT_NONE);
-        g_od_result = kos_mutex_lock(mtx_arg(arg), KOS_TIMEOUT_NONE);
+        kos_sem_wait(&g_od_holds, KOS_NEVER);
+        g_od_result = kos_mutex_lock(mtx_arg(arg), KOS_NEVER);
         // -KOS_EOWNERDEAD is a HELD acquire: unlock it too, or the robust mutex is stranded.
         // A plain `>= 0` test would skip this, since owner-died is a NEGATIVE code.
         if (g_od_result == 0 or g_od_result == -KOS_EOWNERDEAD)
@@ -1628,11 +1622,11 @@ namespace
     kos_sem_t g_cyc_go_b = KOS_SEM_INIT(0);
     void cyc_a(void*)
     {
-        kos_mutex_lock(&g_cyc_m1, KOS_TIMEOUT_NONE);
+        kos_mutex_lock(&g_cyc_m1, KOS_NEVER);
         kos_sem_post(&g_cyc_have1);
-        kos_sem_wait(&g_cyc_go_a, KOS_TIMEOUT_NONE);
+        kos_sem_wait(&g_cyc_go_a, KOS_NEVER);
         // M2: B holds -> block; later handed off (r==0)
-        int r = kos_mutex_lock(&g_cyc_m2, KOS_TIMEOUT_NONE);
+        int r = kos_mutex_lock(&g_cyc_m2, KOS_NEVER);
         if (r == 0)
         {
             kos_mutex_unlock(&g_cyc_m2);
@@ -1641,11 +1635,11 @@ namespace
     }
     void cyc_b(void*)
     {
-        kos_mutex_lock(&g_cyc_m2, KOS_TIMEOUT_NONE);
+        kos_mutex_lock(&g_cyc_m2, KOS_NEVER);
         kos_sem_post(&g_cyc_have2);
-        kos_sem_wait(&g_cyc_go_b, KOS_TIMEOUT_NONE);
+        kos_sem_wait(&g_cyc_go_b, KOS_NEVER);
         // M1: closes the cycle -> refused
-        g_cyc_rb = kos_mutex_lock(&g_cyc_m1, KOS_TIMEOUT_NONE);
+        g_cyc_rb = kos_mutex_lock(&g_cyc_m1, KOS_NEVER);
         if (g_cyc_rb == 0)
         {
             kos_mutex_unlock(&g_cyc_m1);
@@ -1666,13 +1660,14 @@ namespace
         TAP_HOLD(hold.owned(self) and hold.thread(&a) and hold.thread(&b));
         // Self-deadlock: a recursive lock is refused (-KOS_EDEADLK), not parked, and leaves
         // the mutex holdable/releasable normally.
-        TAP_CHECK(kos_mutex_lock(self, 0) == 0);
-        TAP_CHECK(kos_mutex_lock(self, KOS_TIMEOUT_NONE) == -KOS_EDEADLK);
-        TAP_CHECK(kos_mutex_lock(self, 0) == -KOS_EDEADLK);
+        TAP_CHECK(kos_mutex_lock(self, KOS_POLL) == 0);
+        TAP_CHECK(kos_mutex_lock(self, KOS_NEVER) == -KOS_EDEADLK);
+        TAP_CHECK(kos_mutex_lock(self, KOS_POLL) == -KOS_EDEADLK);
         TAP_CHECK(kos_mutex_unlock(self) == 0);
         // The same through the kernel's contended entry, which the word reached by a raw call.
-        TAP_CHECK(kos_mutex_lock(self, 0) == 0);
-        TAP_CHECK(kickos_mutex_lock_entry(self, KOS_TIMEOUT_NONE) == -KOS_EDEADLK);
+        TAP_CHECK(kos_mutex_lock(self, KOS_POLL) == 0);
+        TAP_CHECK(kickos_mutex_lock_entry(self, KOS_LIMIT_NONE,
+                                          KOS_LIMIT_MONOTONIC) == -KOS_EDEADLK);
         TAP_CHECK(kos_mutex_unlock(self) == 0);
         TAP_CHECK(g_dl_wrapped.try_lock());
         TAP_CHECK(not g_dl_wrapped.try_lock() and g_dl_wrapped.unlock() == 0);
@@ -1686,10 +1681,10 @@ namespace
         a = kos::thread::create_caps(cyc_a, nullptr, "cycA", 10, nullptr, 0);
         b = kos::thread::create_caps(cyc_b, nullptr, "cycB", 10, nullptr, 0);
         TAP_CHECK(a.valid() and b.valid());
-        TAP_CHECK(kos_sem_wait(&g_cyc_have1, STALL_TOLERANT_US) == 0); // A owns M1
-        TAP_CHECK(kos_mutex_lock(m1, 0) == -KOS_ETIMEDOUT);
-        TAP_CHECK(kos_mutex_lock(m1, MUTEX_EXPIRY_US) == -KOS_ETIMEDOUT);
-        TAP_CHECK(kos_sem_wait(&g_cyc_have2, STALL_TOLERANT_US) == 0); // B owns M2
+        TAP_CHECK(kos_sem_wait(&g_cyc_have1, after_us(STALL_TOLERANT_US)) == 0); // A owns M1
+        TAP_CHECK(kos_mutex_lock(m1, KOS_POLL) == -KOS_ETIMEDOUT);
+        TAP_CHECK(kos_mutex_lock(m1, after_us(MUTEX_EXPIRY_US)) == -KOS_ETIMEDOUT);
+        TAP_CHECK(kos_sem_wait(&g_cyc_have2, after_us(STALL_TOLERANT_US)) == 0); // B owns M2
         kos_sem_post(&g_cyc_go_a);   // A tries M2 -> blocks (B owns it)
         kos_sem_post(&g_cyc_go_b);   // B tries M1 -> would cycle -> -KOS_EDEADLK, not parked
         TAP_CHECK(hold.joined());
@@ -1704,11 +1699,11 @@ namespace
     kos_sem_t g_ah_gate = KOS_SEM_INIT(0);
     void ah_parked(void*)
     {
-        kos_sem_wait(&g_ah_gate, KOS_TIMEOUT_NONE);
+        kos_sem_wait(&g_ah_gate, KOS_NEVER);
     }
     void ah_locker(void* arg)
     {
-        g_ah_locked = kos_mutex_lock(mtx_arg(arg), KOS_TIMEOUT_NONE);
+        g_ah_locked = kos_mutex_lock(mtx_arg(arg), KOS_NEVER);
         if (g_ah_locked == 0)
         {
             kos_mutex_unlock(mtx_arg(arg));
@@ -1749,7 +1744,7 @@ namespace
             TAP_CHECK(kos_frame_map(frame, space, &va, 0) == 0);
 #endif
             TAP_CHECK(kos_endpoint_create(&ep) == 0 and kos_sem_init(&g_ah_gate, 0) == 0);
-            TAP_CHECK(kos_mutex_lock(m, KOS_TIMEOUT_NONE) == 0);
+            TAP_CHECK(kos_mutex_lock(m, KOS_NEVER) == 0);
             TAP_CHECK(kos_notify_create(&note) == 0 and kos_notify_bind(note) == 0);
             TAP_CHECK(PeerRun("hold").start(&task) == 0);
             held_task = task;
@@ -1759,7 +1754,7 @@ namespace
                 parked = kos::thread::create_caps(ah_parked, nullptr, "ahP", 10, nullptr, 0);
                 TAP_CHECK(parked.valid());
             }
-            TAP_CHECK(parked.join(0) != -KOS_ETIMEDOUT);
+            TAP_CHECK(parked.join_for(std::chrono::microseconds{0}) != -KOS_ETIMEDOUT);
             locker = kos::thread::create_caps(ah_locker, m, "ahK", 10, nullptr, 0);
             TAP_CHECK(locker.valid());
             // Below main, so it has run only if the hold joined it.
@@ -1769,7 +1764,7 @@ namespace
         TAP_CHECK(ep == KOS_CAP_NONE and note == KOS_CAP_NONE);
         TAP_CHECK(task == KOS_TASK_NONE and kos_task_state(held_task, nullptr) == -KOS_EBADF);
         TAP_CHECK(g_ah_locked == 0);
-        TAP_CHECK(last.join(0) == 0);
+        TAP_CHECK(last.join_for(std::chrono::microseconds{0}) == 0);
 #if KICKOS_HAVE_ASPACE
         uint32_t frames1 = 0;
         uint32_t ranges1 = 0;
@@ -1798,8 +1793,8 @@ namespace
     void mh_b(void*)
     {
         stage_wait();
-        kos_mutex_lock(&g_mh_m1, KOS_TIMEOUT_NONE);
-        kos_mutex_lock(&g_mh_m2, KOS_TIMEOUT_NONE);
+        kos_mutex_lock(&g_mh_m1, KOS_NEVER);
+        kos_mutex_lock(&g_mh_m2, KOS_NEVER);
         log_put('b');
         kos_sem_post(&g_mh_go);
         kos_mutex_unlock(&g_mh_m2); // H on M1 must keep B boosted
@@ -1809,17 +1804,17 @@ namespace
     void mh_h(void*)
     {
         stage_wait();
-        kos_sem_wait(&g_mh_go, KOS_TIMEOUT_NONE);
+        kos_sem_wait(&g_mh_go, KOS_NEVER);
         log_put('h');
         kos_sem_post(&g_mh_go);
-        kos_mutex_lock(&g_mh_m1, KOS_TIMEOUT_NONE); // B holds -> block, boost B to 20
+        kos_mutex_lock(&g_mh_m1, KOS_NEVER); // B holds -> block, boost B to 20
         log_put('H');
         kos_mutex_unlock(&g_mh_m1);
     }
     void mh_d(void*)
     {
         stage_wait();
-        kos_sem_wait(&g_mh_go, KOS_TIMEOUT_NONE);
+        kos_sem_wait(&g_mh_go, KOS_NEVER);
         log_put('d');
     }
     void t_mutex_multi_held()
@@ -1861,7 +1856,7 @@ namespace
     {
         g_nonowner_rc = kos_mutex_unlock(mtx_arg(arg));
         g_nonowner_entry_rc = static_cast<int>(arch_syscall(
-            KOS_SYS_MUTEX_UNLOCK, reinterpret_cast<uintptr_t>(&mtx_arg(arg)->word), 0, 0, 0));
+            KOS_SYS_MUTEX_UNLOCK, reinterpret_cast<uintptr_t>(&mtx_arg(arg)->word), 0, 0, 0, 0));
     }
     void t_mutex_unlock_errors()
     {
@@ -1871,7 +1866,7 @@ namespace
         ArmHold hold;
         TAP_HOLD(hold.owned(m) and hold.thread(&w));
         TAP_CHECK(kos_mutex_unlock(m) == -KOS_EPERM); // unlocked: the caller holds nothing
-        TAP_CHECK(kos_mutex_lock(m, KOS_TIMEOUT_NONE) == 0);
+        TAP_CHECK(kos_mutex_lock(m, KOS_NEVER) == 0);
         g_nonowner_rc = -99;
         g_nonowner_entry_rc = -99;
         w = kos::thread::create_caps(nonowner_unlock, m, "nonown", 10, nullptr, 0);
@@ -1882,7 +1877,7 @@ namespace
         TAP_CHECK(kos_mutex_unlock(m) == 0);
         // A misaligned word is refused by the kernel before it reads anything.
         uintptr_t const misaligned = reinterpret_cast<uintptr_t>(&m->word) + 2u;
-        TAP_CHECK(static_cast<int>(arch_syscall(KOS_SYS_MUTEX_LOCK, misaligned, 0, 0, 0))
+        TAP_CHECK(static_cast<int>(arch_syscall(KOS_SYS_MUTEX_LOCK, misaligned, 0, 0, 0, 0))
                   == -KOS_EINVAL);
     }
 
@@ -1890,7 +1885,7 @@ namespace
     kos_mutex_t g_ods_m = KOS_MUTEX_INIT;
     void od_solo_owner(void* arg)
     {
-        kos_mutex_lock(mtx_arg(arg), KOS_TIMEOUT_NONE);
+        kos_mutex_lock(mtx_arg(arg), KOS_NEVER);
         kos_exit(0); // exits owning, no waiter: its id stays in the word for the next take
     }
     void t_mutex_owner_died_nowaiter()
@@ -1906,9 +1901,9 @@ namespace
         TAP_CHECK(hold.joined()); // the owner acquired, then exited owning
         // A lock left on the dead owner would block forever; this one acquires, told of the
         // death, and the one after it is told nothing.
-        TAP_CHECK(kos_mutex_lock(m, KOS_TIMEOUT_NONE) == -KOS_EOWNERDEAD);
+        TAP_CHECK(kos_mutex_lock(m, KOS_NEVER) == -KOS_EOWNERDEAD);
         TAP_CHECK(kos_mutex_unlock(m) == 0);
-        TAP_CHECK(kos_mutex_lock(m, KOS_TIMEOUT_NONE) == 0);
+        TAP_CHECK(kos_mutex_lock(m, KOS_NEVER) == 0);
         TAP_CHECK(kos_mutex_unlock(m) == 0);
     }
 
@@ -1934,7 +1929,7 @@ namespace
     void sp_peer(void*)
     {
         stage_wait();
-        kos_sem_wait(&g_sp_go, KOS_TIMEOUT_NONE);
+        kos_sem_wait(&g_sp_go, KOS_NEVER);
         log_put('p');
     }
     void t_prio_self_raise_lower()
@@ -1977,7 +1972,7 @@ namespace
     void pb_low(void* arg)
     {
         stage_wait();
-        kos_mutex_lock(mtx_arg(arg), KOS_TIMEOUT_NONE);
+        kos_mutex_lock(mtx_arg(arg), KOS_NEVER);
         log_put('l');
         kos_sem_post(&g_pb_go);
         g_pb_set = kos_thread_set_priority(PB_BASE);
@@ -1988,19 +1983,19 @@ namespace
     void pb_high(void* arg)
     {
         stage_wait();
-        kos_sem_wait(&g_pb_go, KOS_TIMEOUT_NONE);
+        kos_sem_wait(&g_pb_go, KOS_NEVER);
         log_put('h');
         // M takes the first unit and K, still short of its own wait, the banked second.
         kos_sem_post(&g_pb_go);
         kos_sem_post(&g_pb_go);
-        kos_mutex_lock(mtx_arg(arg), KOS_TIMEOUT_NONE); // L holds it -> block, boost L to 20
+        kos_mutex_lock(mtx_arg(arg), KOS_NEVER); // L holds it -> block, boost L to 20
         log_put('H');
         kos_mutex_unlock(mtx_arg(arg));
     }
     void pb_waiter(void* arg)
     {
         stage_wait();
-        kos_sem_wait(&g_pb_go, KOS_TIMEOUT_NONE);
+        kos_sem_wait(&g_pb_go, KOS_NEVER);
         log_put(arg_char(arg));
     }
     void t_prio_self_boosted()
@@ -2061,32 +2056,59 @@ namespace
         // leak its reference, so the list is refused whole.
         uint16_t const collide[] = {KOS_SPAWN_DELEGATED_CAP0, KOS_SPAWN_DELEGATED_CAP0};
         TAP_CHECK(kos::thread::create_caps(capdest_never_runs, nullptr, "cd1", 10, caps, 2,
-                                           KOS_POLICY_FIFO, 0, 0, collide)
+                                           KOS_POLICY_FIFO, 0ns, 0, collide)
                       .error() == -KOS_EINVAL);
 
         // A destination past the child's table. No table reaches KCAP_RESERVED_INDEX, so index
         // 65535 is out of range on every board.
         uint16_t const far_off[] = {KOS_SPAWN_DELEGATED_CAP0, 65535};
         TAP_CHECK(kos::thread::create_caps(capdest_never_runs, nullptr, "cd2", 10, caps, 2,
-                                           KOS_POLICY_FIFO, 0, 0, far_off)
+                                           KOS_POLICY_FIFO, 0ns, 0, far_off)
                       .error() == -KOS_EINVAL);
 
         // A collision with a DEFAULTED entry counts too: entry 0 defaults to child_cap(0) and
         // entry 1 names it explicitly.
         uint16_t const vs_default[] = {0, KOS_SPAWN_DELEGATED_CAP0};
         TAP_CHECK(kos::thread::create_caps(capdest_never_runs, nullptr, "cd3", 10, caps, 2,
-                                           KOS_POLICY_FIFO, 0, 0, vs_default)
+                                           KOS_POLICY_FIFO, 0ns, 0, vs_default)
                       .error() == -KOS_EINVAL);
 
         // The POSITIVE half: the notification at child_cap(2) with nothing at child_cap(0) or
         // child_cap(1).
         uint16_t const at3[] = {CAPDEST_AT};
         w = kos::thread::create_caps(capdest_probe, nullptr, "cdp", 15, caps, 1, KOS_POLICY_FIFO,
-                                     0, 0, at3);
+                                     0ns, 0, at3);
         TAP_CHECK(w.valid());
         TAP_CHECK(hold.joined());
         uint32_t bits = 0;
-        TAP_CHECK(kos_notify_wait(note, NOTE_ALL, 0, &bits) == 0 and bits == 1u);
+        TAP_CHECK(kos_notify_wait(NOTE_ALL, KOS_POLL, &bits) == 0 and bits == 1u);
+    }
+
+    // --- kos_notify_wait answers on the caller's binding ---------------------------------
+    // A refusal reports no bit and takes none: the raise is still pending after both.
+    void t_notify_wait_binding()
+    {
+        TAP_ASK(.notifies = 1);
+        kos_cap_t note = KOS_CAP_NONE;
+        ArmHold hold;
+        TAP_HOLD(hold.bound(&note));
+        uint32_t bits = NOTE_ALL;
+        TAP_CHECK(kos_notify_wait(NOTE_ALL, KOS_POLL, &bits) == -KOS_EPERM and bits == 0u);
+        TAP_CHECK(kos_notify_create(&note) == 0);
+        TAP_CHECK(kos_notify(note) == 0);
+        // Holding the raised object is not being bound to it.
+        bits = NOTE_ALL;
+        TAP_CHECK(kos_notify_wait(NOTE_ALL, KOS_POLL, &bits) == -KOS_EPERM and bits == 0u);
+        TAP_CHECK(kos_notify_bind(note) == 0);
+        bits = NOTE_ALL;
+        TAP_CHECK(kos_notify_wait(0u, KOS_POLL, &bits) == -KOS_EINVAL and bits == 0u);
+        TAP_CHECK(kos_notify_wait(NOTE_ALL, KOS_POLL, &bits) == 0 and bits == 1u);
+        bits = NOTE_ALL;
+        TAP_CHECK(kos_notify_wait(NOTE_ALL, KOS_POLL, &bits) == -KOS_ETIMEDOUT and bits == 0u);
+        TAP_CHECK(kos_notify(note) == 0);
+        TAP_CHECK(kos_notify_wait(NOTE_ALL, KOS_POLL, nullptr) == 0);
+        TAP_CHECK(kos_notify_wait(NOTE_ALL, KOS_POLL, &bits) == -KOS_ETIMEDOUT);
+        TAP_CHECK(kos_notify_unbind(note) == 0);
     }
 
     // --- One driver per line: a second claim on a bound line is refused --------
@@ -2124,15 +2146,17 @@ namespace
         uint32_t acked = 0;
         TAP_CHECK(kos_irq_ack(line) == 0);
         TAP_CHECK(kos_irq_raise(line) == 0);
-        TAP_CHECK(kos_notify_wait(note, NOTE_ALL, STALL_TOLERANT_US, &first) == 0 and first == 1u);
+        TAP_CHECK(kos_notify_wait(NOTE_ALL, after_us(STALL_TOLERANT_US), &first) == 0
+                  and first == 1u);
         TAP_CHECK(kos_irq_raise(line) == 0);
         TAP_CHECK(kos_notify(other) == 0);
-        TAP_CHECK(kos_notify_wait(note, NOTE_ALL, STALL_TOLERANT_US, &before) == 0
+        TAP_CHECK(kos_notify_wait(NOTE_ALL, after_us(STALL_TOLERANT_US), &before) == 0
                   and before == 2u);
-        TAP_CHECK(kos_notify_wait(note, NOTE_ALL, STALL_TOLERANT_US, &after) == 0 and after == 1u);
+        TAP_CHECK(kos_notify_wait(NOTE_ALL, after_us(STALL_TOLERANT_US), &after) == 0
+                  and after == 1u);
         TAP_CHECK(kos_irq_raise(line) == 0);
         TAP_CHECK(kos_irq_ack(line) == 0);
-        TAP_CHECK(kos_notify_wait(note, NOTE_ALL, STALL_TOLERANT_US, &acked) == 0
+        TAP_CHECK(kos_notify_wait(NOTE_ALL, after_us(STALL_TOLERANT_US), &acked) == 0
                   and acked == 1u);
         TAP_CHECK(kos_notify_unbind(note) == 0);
     }
@@ -2197,7 +2221,7 @@ namespace
         kos_cap_grant caps[] = {{first, KOS_CAP_WAIT}};
         uint16_t const dest[] = {RECLAIM_AT};
         w = irq_spawn(reclaim_worker, nullptr, "reclaim", 15, caps, 1,
-                      KOS_POLICY_FIFO, 0, /*authority=*/0, dest);
+                      KOS_POLICY_FIFO, 0ns, /*authority=*/0, dest);
         TAP_CHECK(w.valid());
         // main drops its copy BEFORE the worker dies, so the worker's exit is what takes the
         // refcount to zero. Closing after would not prove that DEATH releases the line. The
@@ -2231,7 +2255,7 @@ namespace
         g_ho_bound = static_cast<uint32_t>(kos_notify_bind(child_cap(0)) == 0);
         kos_sem_post(&g_irq_ready); // bound; main may raise
         // exit with the raise unconsumed and the binding still held
-        kos_sem_wait(&g_ho_release, KOS_TIMEOUT_NONE);
+        kos_sem_wait(&g_ho_release, KOS_NEVER);
     }
     void ho_successor(void*)
     {
@@ -2239,9 +2263,9 @@ namespace
         uint32_t bits = 0;
         // main raises nothing between binds, so this must be the pending raise the leaver
         // left behind.
-        g_ho_first = kos_notify_wait(child_cap(0), NOTE_ALL, STALL_TOLERANT_US, &bits);
+        g_ho_first = kos_notify_wait(NOTE_ALL, after_us(STALL_TOLERANT_US), &bits);
         kos_sem_post(&g_irq_ready); // main may raise the second event
-        g_ho_second = kos_notify_wait(child_cap(0), NOTE_ALL, STALL_TOLERANT_US, &bits);
+        g_ho_second = kos_notify_wait(NOTE_ALL, after_us(STALL_TOLERANT_US), &bits);
     }
     void t_irq_server_handover()
     {
@@ -2265,14 +2289,15 @@ namespace
         kos_cap_grant caps[] = {{note, CH_FULL}};
         first = irq_spawn(ho_leaver, nullptr, "hoL", 15, caps, 1);
         TAP_CHECK(first.valid());
-        TAP_CHECK(kos_sem_wait(&g_irq_ready, STALL_TOLERANT_US) == 0); // first server is bound
+        // first server is bound
+        TAP_CHECK(kos_sem_wait(&g_irq_ready, after_us(STALL_TOLERANT_US)) == 0);
         TAP_CHECK(kos_irq_raise(line) == 0);
         kos_sem_post(&g_ho_release); // exit with the event pending
         TAP_CHECK(thread_end(&first) == 0);
         second = irq_spawn(ho_successor, nullptr, "hoS", 15, caps, 1);
         TAP_CHECK(second.valid());
         // Successor finished its first wait
-        TAP_CHECK(kos_sem_wait(&g_irq_ready, STALL_TOLERANT_US) == 0);
+        TAP_CHECK(kos_sem_wait(&g_irq_ready, after_us(STALL_TOLERANT_US)) == 0);
         TAP_CHECK(kos_irq_raise(line) == 0);
         TAP_CHECK(hold.joined());
         tap::diag("handover: bound %u, inherited %d, next raise %d",
@@ -2300,7 +2325,7 @@ namespace
         auto note = kos::Notification::adopt(CH_NOTE);
         note.bind();
         kos_sem_post(&g_irq_ready);
-        note.wait(NOTE_ALL);    // first arm discards the latch, then MUST block
+        kos::notify_wait(NOTE_ALL);    // first arm discards the latch, then MUST block
         g_stale_seen++;         // only after main raises a REAL event
     }
     void t_irq_stale_register()
@@ -2324,7 +2349,7 @@ namespace
         TAP_CHECK(drv.valid());
         TAP_CHECK(hold.close(&note) == 0);
         // Driver is bound, about to take its first wait
-        TAP_CHECK(kos_sem_wait(&g_irq_ready, STALL_TOLERANT_US) == 0);
+        TAP_CHECK(kos_sem_wait(&g_irq_ready, after_us(STALL_TOLERANT_US)) == 0);
         bool no_phantom = true;
 #if KICKOS_KERNEL_CORES > 1
         // The no-phantom half is not witnessed above one kernel core. A wake that must not
@@ -2340,11 +2365,11 @@ namespace
         // wait, and that wait is what arms the line: a raise landing before it is cleared by
         // the arm itself, which is the behaviour under test. So raise until one is delivered,
         // bounded.
-        uint64_t const deadline = kos_clock_now() + IRQ_EDGE_BUDGET_NS;
+        kos_monotonic_t const deadline = kos_after(kos_monotonic_now(), kos_ns(IRQ_EDGE_BUDGET_NS));
         TAP_CHECK(kos_irq_raise(irq) == 0);
-        while (g_stale_seen == 0 and kos_clock_now() <= deadline)
+        while (g_stale_seen == 0 and kos_monotonic_now().ns <= deadline.ns)
         {
-            kos_sleep_ns(IRQ_EDGE_POLL_NS);
+            kos_sleep_for(kos_ns(IRQ_EDGE_POLL_NS));
             TAP_CHECK(kos_irq_raise(irq) == 0);
         }
         bool const live = (g_stale_seen == 1);
@@ -2360,7 +2385,7 @@ namespace
     kos_cap_t g_cstk_ep = KOS_CAP_NONE;
     void caller_stack_worker(void*) // caps: g_cstk_ep(SIGNAL)@0
     {
-        (void)kos_send(child_cap(0), "", 0, KOS_TIMEOUT_NONE);
+        (void)kos_send(child_cap(0), "", 0, KOS_NEVER);
     }
 
     // 0 where the spawn's child reported on g_cstk_ep and exited, else the spawn's refusal or
@@ -2374,7 +2399,7 @@ namespace
         }
         char b = 0;
         struct kos_reply_recv_opts o;
-        kos_reply_recv_opts_init(&o, g_cstk_ep, KOS_RECV_NO_INFO, STALL_TOLERANT_US);
+        kos_reply_recv_opts_init(&o, g_cstk_ep, KOS_RECV_NO_INFO, after_us(STALL_TOLERANT_US));
         int32_t const rc = kos_reply_recv(KOS_CAP_NONE, &b, kos_call_lens_pack(0, 0), &o);
         int const jrc = thread_end(&t);
         if (rc < 0)
@@ -2406,7 +2431,7 @@ namespace
         char* end = nullptr;
         (void)strtol("10", &end, 99);
         kos_sem_post(&g_done);
-        kos_sem_wait(&g_cstk_release, KOS_TIMEOUT_NONE);
+        kos_sem_wait(&g_cstk_release, KOS_NEVER);
         g_cstk_odd_errno = errno;
     }
 #endif
@@ -2456,7 +2481,7 @@ namespace
     void caller_stack_grant_worker(void*) // caps: g_cstk_ep(SIGNAL)@0
     {
         g_cstk_grant_rc = kos_mem_self_grant(g_cstk_grant_base, g_cstk_grant_size, 0);
-        (void)kos_send(child_cap(0), "", 0, KOS_TIMEOUT_NONE);
+        (void)kos_send(child_cap(0), "", 0, KOS_NEVER);
     }
 
     // A child whose stack shares its block with another region of its own: refused where the
@@ -2509,7 +2534,7 @@ namespace
         {
             kos_window const w = {reinterpret_cast<uintptr_t>(stk), size, KOS_WINDOW_MEMORY, 0};
             tw = kos::thread::create(caller_stack_worker, nullptr, "cstkW", 10, KOS_POLICY_FIFO,
-                                     0, stk, size, &w, 1, caps, 1);
+                                     0ns, stk, size, &w, 1, caps, 1);
             wrc = cstk_ran(tw);
         }
         // A self-grant over the running thread's own stack and past it: an overlap only where a
@@ -2521,7 +2546,7 @@ namespace
         if (drc == want and wrc == want)
         {
             tg = kos::thread::create(caller_stack_grant_worker, nullptr, "cstkG", 10,
-                                     KOS_POLICY_FIFO, 0, stk, size, nullptr, 0, caps, 1,
+                                     KOS_POLICY_FIFO, 0ns, stk, size, nullptr, 0, caps, 1,
                                      KOS_AUTH_MEMORY);
             grc = cstk_ran(tg);
         }
@@ -2609,7 +2634,7 @@ namespace
         {
             verdict = PF_PRIV_THREAD;
         }
-        (void)kos_send(child_cap(0), &verdict, sizeof(verdict), KOS_TIMEOUT_NONE);
+        (void)kos_send(child_cap(0), &verdict, sizeof(verdict), KOS_NEVER);
         kos_exit(0);
     }
     // Entered through a rewritten resume. In handler mode it marks r4 and returns to thread mode
@@ -2710,7 +2735,7 @@ namespace
             }
             if (box == nullptr)
             {
-                kos::sleep_ns(1000000ull);
+                kos::sleep_for(std::chrono::milliseconds{1});
             }
         }
         if (box == nullptr)
@@ -2756,7 +2781,7 @@ namespace
         victim.p.instance = "peer0";
         TAP_CHECK(victim.caps(caps, 1).stack(cstk_stack(raw), CSTK_STK).start(&task) == 0);
         helper = kos::thread::create(pf_scribbler, nullptr, "pfS", TAP_PRIO_PARKS,
-                                     KOS_POLICY_FIFO, 0, nullptr, 0, nullptr, 0, nullptr, 0,
+                                     KOS_POLICY_FIFO, 0ns, nullptr, 0, nullptr, 0, nullptr, 0,
                                      KOS_AUTH_MEMORY);
         TAP_CHECK(helper.valid());
         TAP_CHECK(hold.joined());
@@ -2807,7 +2832,7 @@ namespace
         TAP_ASK(.workers = 1, .endpoints = 1);
         // Reject a non-null, tiny + misaligned caller stack: -KOS_EINVAL, not run or corrupt.
         TAP_CHECK(kos::thread::create(caller_stack_worker, nullptr, "badstk", 10, KOS_POLICY_FIFO,
-                                      0, reinterpret_cast<void*>(0x1), 8).error()
+                                      0ns, reinterpret_cast<void*>(0x1), 8).error()
                   == -KOS_EINVAL);
         // Accept a properly-sized, aligned caller-owned stack.
         constexpr uint32_t STK = CSTK_STK;
@@ -2824,7 +2849,7 @@ namespace
         // One KICKOS_STACK_ALIGN unit below the least floor a spawn charges, with an aligned
         // base, so only the size check can reject it.
         TAP_CHECK(kos::thread::create(caller_stack_worker, nullptr, "undf", 10, KOS_POLICY_FIFO,
-                                      0, stk, KICKOS_MIN_STACK_SIZE + CSTK_CARVE_LEAST - 16u,
+                                      0ns, stk, KICKOS_MIN_STACK_SIZE + CSTK_CARVE_LEAST - 16u,
                                       nullptr, 0, nullptr, 0).error()
                   == -KOS_EINVAL);
         kos::thread::Handle t;
@@ -2833,7 +2858,7 @@ namespace
         TAP_HOLD(hold.cap(&g_cstk_ep) and hold.thread(&t) and hold.thread(&to));
         TAP_CHECK(kos_endpoint_create(&g_cstk_ep) == 0);
         kos_cap_grant caps[] = {{g_cstk_ep, KOS_CAP_SIGNAL}};
-        t = kos::thread::create(caller_stack_worker, nullptr, "cstk", 10, KOS_POLICY_FIFO, 0, stk,
+        t = kos::thread::create(caller_stack_worker, nullptr, "cstk", 10, KOS_POLICY_FIFO, 0ns, stk,
                                 STK, nullptr, 0, caps, 1);
         int const ran = cstk_ran(t);
         TAP_CHECK(hold.close(&g_cstk_ep) == 0);
@@ -2845,9 +2870,9 @@ namespace
         TAP_CHECK(kos_sem_init(&g_cstk_release, 0) == 0);
         g_cstk_odd_errno = 0;
         to = kos::thread::create(caller_stack_errno_worker, nullptr, "cstkO", 10, KOS_POLICY_FIFO,
-                                 0, cstk_odd(raw), CSTK_ODD, nullptr, 0, nullptr, 0);
+                                 0ns, cstk_odd(raw), CSTK_ODD, nullptr, 0, nullptr, 0);
         TAP_CHECK(to.valid());
-        TAP_CHECK(kos_sem_wait(&g_done, STALL_TOLERANT_US) == 0);
+        TAP_CHECK(kos_sem_wait(&g_done, after_us(STALL_TOLERANT_US)) == 0);
         char* end = nullptr;
         (void)strtol("99999999999999999999999999", &end, 10);
         int const mine = errno;
@@ -2859,7 +2884,7 @@ namespace
 #else
         TAP_CHECK(kos_endpoint_create(&g_cstk_ep) == 0);
         kos_cap_grant ocaps[] = {{g_cstk_ep, KOS_CAP_SIGNAL}};
-        to = kos::thread::create(caller_stack_worker, nullptr, "cstkO", 10, KOS_POLICY_FIFO, 0,
+        to = kos::thread::create(caller_stack_worker, nullptr, "cstkO", 10, KOS_POLICY_FIFO, 0ns,
                                  cstk_odd(raw), CSTK_ODD, nullptr, 0, ocaps, 1);
         int const oran = cstk_ran(to);
         TAP_CHECK(hold.close(&g_cstk_ep) == 0);
@@ -2890,7 +2915,7 @@ namespace
         (void)strtol("10", &end, 99);
         stdout = stderr;
         kos_sem_post(&g_done);
-        kos_sem_wait(&g_reent_release, KOS_TIMEOUT_NONE);
+        kos_sem_wait(&g_reent_release, KOS_NEVER);
         g_reent_rep.err = errno;
         g_reent_rep.stdout_kept = stdout == stderr;
     }
@@ -2913,10 +2938,10 @@ namespace
         TAP_CHECK(main_stdout != stderr);
         // What a worker on main's state would start with.
         errno = EDOM;
-        t = kos::thread::create(reent_stack_worker, nullptr, "rstk", 10, KOS_POLICY_FIFO, 0, stk,
+        t = kos::thread::create(reent_stack_worker, nullptr, "rstk", 10, KOS_POLICY_FIFO, 0ns, stk,
                                 CSTK_STK, nullptr, 0, nullptr, 0);
         TAP_CHECK(t.valid());
-        TAP_CHECK(kos_sem_wait(&g_done, STALL_TOLERANT_US) == 0);
+        TAP_CHECK(kos_sem_wait(&g_done, after_us(STALL_TOLERANT_US)) == 0);
         bool const main_kept = stdout == main_stdout;
         char* end = nullptr;
         (void)strtol("99999999999999999999999999", &end, 10);
@@ -2949,7 +2974,7 @@ namespace
     void t_caller_stack_arena()
     {
         TAP_CHECK(kos::thread::create(caller_stack_worker, nullptr, "cstkO", 10, KOS_POLICY_FIFO,
-                                      0, g_cstk_outside,
+                                      0ns, g_cstk_outside,
                                       static_cast<uint32_t>(sizeof(g_cstk_outside))).error()
                   == -KOS_EPERM);
     }
@@ -2973,7 +2998,7 @@ namespace
     void dom_reader(void*)
     {
         (void)kos_mem_self_grant(const_cast<int*>(g_dshared), 256, 0);
-        kos_sem_wait(&g_dwrote, KOS_TIMEOUT_NONE); // after the writer stored the sentinel
+        kos_sem_wait(&g_dwrote, KOS_NEVER); // after the writer stored the sentinel
         g_dreadback = *g_dshared;
     }
     void t_domain_share()
@@ -2991,9 +3016,9 @@ namespace
         *g_dshared = 0;
         g_dreadback = -1;
         w = kos::thread::create_caps(dom_writer, nullptr, "domW", 10, nullptr, 0, KOS_POLICY_FIFO,
-                                     0, KOS_AUTH_MEMORY);
+                                     0ns, KOS_AUTH_MEMORY);
         r = kos::thread::create_caps(dom_reader, nullptr, "domR", 10, nullptr, 0, KOS_POLICY_FIFO,
-                                     0, KOS_AUTH_MEMORY);
+                                     0ns, KOS_AUTH_MEMORY);
         TAP_CHECK(w.valid() and r.valid());
         TAP_CHECK(hold.joined());
         TAP_CHECK(g_dreadback == DOM_SENTINEL);
@@ -3038,16 +3063,16 @@ namespace
             p.block = arg;
             p.size = XG_STK;
             kos_task_t t = KOS_TASK_NONE;
-            rep[XG_MEMBASE] = kos_task_create(prog, &p, 0, &t);
+            rep[XG_MEMBASE] = kos_task_create(prog, &p, KOS_POLL, &t);
             if (rep[XG_MEMBASE] == 0)
             {
-                (void)kos_task_slay(t, STALL_TOLERANT_US);
+                (void)kos_task_slay(t, after_us(STALL_TOLERANT_US));
             }
             (void)kos_handle_close(prog);
         }
-        rep[XG_STACK] = kos::thread::create(xg_noop, nullptr, "xgstk", 10, KOS_POLICY_FIFO, 0,
+        rep[XG_STACK] = kos::thread::create(xg_noop, nullptr, "xgstk", 10, KOS_POLICY_FIFO, 0ns,
                                             arg, XG_STK).error();
-        (void)kos_send(child_cap(0), rep, sizeof(rep), KOS_TIMEOUT_NONE);
+        (void)kos_send(child_cap(0), rep, sizeof(rep), KOS_NEVER);
     }
 #endif
     void t_cross_task_block()
@@ -3068,7 +3093,7 @@ namespace
         TAP_CHECK(PeerRun("xg", at.s).caps(caps, 1).start(&t) == 0);
         int32_t rep[XG_WORDS] = {1, 1, 1, 1};
         struct kos_reply_recv_opts o;
-        kos_reply_recv_opts_init(&o, ep, KOS_RECV_NO_INFO, STALL_TOLERANT_US);
+        kos_reply_recv_opts_init(&o, ep, KOS_RECV_NO_INFO, after_us(STALL_TOLERANT_US));
         TAP_CHECK(kos_reply_recv(KOS_CAP_NONE, rep, kos_call_lens_pack(0, sizeof(rep)), &o)
                   == static_cast<int32_t>(sizeof(rep)));
         TAP_CHECK(peer_dead_status(t) == 0);
@@ -3131,7 +3156,7 @@ namespace
             }
             seen.read = *static_cast<volatile unsigned char*>(at);
         }
-        (void)kos_send(child_cap(0), &seen, sizeof(seen), KOS_TIMEOUT_NONE);
+        (void)kos_send(child_cap(0), &seen, sizeof(seen), KOS_NEVER);
         if (seen.read >= 0 and g_wro_put >= 0)
         {
             *static_cast<volatile unsigned char*>(at) = static_cast<unsigned char>(g_wro_put.load());
@@ -3143,7 +3168,7 @@ namespace
     kos_sem_t g_wro_hold = KOS_SEM_INIT(0);
     void wro_hold_child(void*)
     {
-        kos_sem_wait(&g_wro_hold, KOS_TIMEOUT_NONE);
+        kos_sem_wait(&g_wro_hold, KOS_NEVER);
         kos_exit(0);
     }
 #if KICKOS_SELFTEST_PEER
@@ -3166,7 +3191,7 @@ namespace
     int wro_sys_child(char const* block)
     {
         return kos_call(child_cap(0), reinterpret_cast<void*>(peer_word(block)), 0,
-                        sizeof(uint32_t), 1000);
+                        sizeof(uint32_t), after_us(1000));
     }
 #endif
 #endif
@@ -3180,13 +3205,13 @@ namespace
         *seen = {-1, -1};
         kos_window const w = {reinterpret_cast<uintptr_t>(blk), size, KOS_WINDOW_MEMORY, flags};
         kos_cap_grant const caps[] = {{ep, KOS_CAP_SIGNAL}};
-        *c = kos::thread::create(wro_child, blk, "wro", 10, KOS_POLICY_FIFO, 0, nullptr, 0, &w, 1,
+        *c = kos::thread::create(wro_child, blk, "wro", 10, KOS_POLICY_FIFO, 0ns, nullptr, 0, &w, 1,
                                  caps, 1);
         int rc = c->error();
         if (rc == 0)
         {
             struct kos_reply_recv_opts o;
-            kos_reply_recv_opts_init(&o, ep, KOS_RECV_NO_INFO, STALL_TOLERANT_US);
+            kos_reply_recv_opts_init(&o, ep, KOS_RECV_NO_INFO, after_us(STALL_TOLERANT_US));
             (void)kos_reply_recv(KOS_CAP_NONE, seen, kos_call_lens_pack(0, sizeof(*seen)), &o);
             rc = thread_end(c);
         }
@@ -3237,7 +3262,7 @@ namespace
         kos_window const twice[] = {
             {reinterpret_cast<uintptr_t>(blk), size, KOS_WINDOW_MEMORY, 0},
             {reinterpret_cast<uintptr_t>(blk), size, KOS_WINDOW_MEMORY, KOS_WINDOW_RO}};
-        TAP_CHECK(kos::thread::create(wro_hold_child, nullptr, "wrod", 10, KOS_POLICY_FIFO, 0,
+        TAP_CHECK(kos::thread::create(wro_hold_child, nullptr, "wrod", 10, KOS_POLICY_FIFO, 0ns,
                                       nullptr, 0, twice, 2).error()
                   == -KOS_EINVAL);
         // Held as the task's block and through no window, the block is no window:
@@ -3272,7 +3297,7 @@ namespace
         TAP_CHECK(kos_sem_init(&g_wro_hold, 0) == 0);
         kos_window const nc = {reinterpret_cast<uintptr_t>(other), size, KOS_WINDOW_MEMORY,
                                KOS_WINDOW_UNCACHED};
-        holder = kos::thread::create(wro_hold_child, nullptr, "wroh", 10, KOS_POLICY_FIFO, 0,
+        holder = kos::thread::create(wro_hold_child, nullptr, "wroh", 10, KOS_POLICY_FIFO, 0ns,
                                      nullptr, 0, &nc, 1);
         if (holder.error() == -KOS_ENOTSUP)
         {
@@ -3282,7 +3307,7 @@ namespace
         TAP_CHECK(holder.valid());
         kos_window const cached = {reinterpret_cast<uintptr_t>(other), size, KOS_WINDOW_MEMORY,
                                    0};
-        TAP_CHECK(kos::thread::create(wro_hold_child, nullptr, "wroc", 10, KOS_POLICY_FIFO, 0,
+        TAP_CHECK(kos::thread::create(wro_hold_child, nullptr, "wroc", 10, KOS_POLICY_FIFO, 0ns,
                                       nullptr, 0, &cached, 1).error()
                   == -KOS_EBUSY);
         TAP_CHECK(kos_mem_self_grant(other, g, 0) == -KOS_EBUSY);
@@ -3315,7 +3340,7 @@ namespace
     {
         // Unprivileged caller: the privilege gate must refuse the MMIO grant.
         g_mmio_unpriv_rc = kos::thread::create(mmio_noop, nullptr, "mmiochild", 10,
-                                               KOS_POLICY_FIFO, 0, nullptr, 0,
+                                               KOS_POLICY_FIFO, 0ns, nullptr, 0,
                                                DeviceWindow(0x1000u, 4096).list(), 1)
                                .error();
     }
@@ -3324,23 +3349,23 @@ namespace
         TAP_ASK(.workers = 1);
         // Non-encodable window (size 1, unaligned base): rejected -KOS_EINVAL, not rounded.
         // Geometry is checked ahead of the privilege gate, so the code holds in any posture.
-        TAP_CHECK(kos::thread::create(mmio_noop, nullptr, "mmiobad", 10, KOS_POLICY_FIFO, 0,
+        TAP_CHECK(kos::thread::create(mmio_noop, nullptr, "mmiobad", 10, KOS_POLICY_FIFO, 0ns,
                                       nullptr, 0, DeviceWindow(0x1001u, 1).list(), 1).error() == -KOS_EINVAL);
         // A non-null base with size 0 is rejected at the boundary (before domain_for).
-        TAP_CHECK(kos::thread::create(mmio_noop, nullptr, "mmio0", 10, KOS_POLICY_FIFO, 0,
+        TAP_CHECK(kos::thread::create(mmio_noop, nullptr, "mmio0", 10, KOS_POLICY_FIFO, 0ns,
                                       nullptr, 0, DeviceWindow(0x2000u, 0).list(), 1).error() == -KOS_EINVAL);
         // A window whose base+size wraps the address space is rejected -KOS_EINVAL (32-bit
         // MCU; on the 64-bit sim the fail-closed encoder rejects it first, either way EINVAL).
-        TAP_CHECK(kos::thread::create(mmio_noop, nullptr, "mmioW2", 10, KOS_POLICY_FIFO, 0,
+        TAP_CHECK(kos::thread::create(mmio_noop, nullptr, "mmioW2", 10, KOS_POLICY_FIFO, 0ns,
                                       nullptr, 0, DeviceWindow(0xFFFFFFF0u, 0x20).list(), 1).error() == -KOS_EINVAL);
         // The list's own refusals, ahead of any entry's geometry: a count past the bound, a
         // count with no list, the ports kind no board grants yet, an unknown kind, and a flag
         // on a device window.
         kos_window const over[1] = {};
-        TAP_CHECK(kos::thread::create(mmio_noop, nullptr, "winover", 10, KOS_POLICY_FIFO, 0,
+        TAP_CHECK(kos::thread::create(mmio_noop, nullptr, "winover", 10, KOS_POLICY_FIFO, 0ns,
                                       nullptr, 0, over, UINT16_MAX).error()
                   == -KOS_ENOMEM);
-        TAP_CHECK(kos::thread::create(mmio_noop, nullptr, "winnull", 10, KOS_POLICY_FIFO, 0,
+        TAP_CHECK(kos::thread::create(mmio_noop, nullptr, "winnull", 10, KOS_POLICY_FIFO, 0ns,
                                       nullptr, 0, nullptr, 1).error()
                   == -KOS_EINVAL);
         kos_window const odd[] = {{0x1000u, 8u, KOS_WINDOW_PORTS, 0},
@@ -3356,14 +3381,14 @@ namespace
 #endif
         for (int i = 0; i < 3; i++)
         {
-            TAP_CHECK(kos::thread::create(mmio_noop, nullptr, "winodd", 10, KOS_POLICY_FIFO, 0,
+            TAP_CHECK(kos::thread::create(mmio_noop, nullptr, "winodd", 10, KOS_POLICY_FIFO, 0ns,
                                           nullptr, 0, &odd[i], 1).error()
                       == odd_rc[i]);
         }
 #if KICKOS_HAVE_ASPACE
         // A memory window must name one of the spawner's own reservations, whole.
         kos_window const mem = {0x1000u, 0x1000u, KOS_WINDOW_MEMORY, 0};
-        TAP_CHECK(kos::thread::create(mmio_noop, nullptr, "winmem", 10, KOS_POLICY_FIFO, 0,
+        TAP_CHECK(kos::thread::create(mmio_noop, nullptr, "winmem", 10, KOS_POLICY_FIFO, 0ns,
                                       nullptr, 0, &mem, 1).error()
                   == -KOS_EPERM);
 #endif
@@ -3437,7 +3462,7 @@ namespace
         // Unprivileged caller; stack_base far above any SRAM arena and naturally aligned
         // (clears the size/align/natural checks) so ONLY the arena bound can reject it.
         g_stkarena_rc = kos::thread::create(stkarena_noop, nullptr, "stkbad", 10, KOS_POLICY_FIFO,
-                                            0, reinterpret_cast<void*>(0xE0000000u), 2048)
+                                            0ns, reinterpret_cast<void*>(0xE0000000u), 2048)
                             .error();
     }
     void t_stackbase_arena()
@@ -3480,7 +3505,7 @@ namespace
         {
             rsize = 2u * rsize;
         }
-        auto const rc = kos::thread::create(grant_noop, nullptr, "rsvd", 10, KOS_POLICY_FIFO, 0,
+        auto const rc = kos::thread::create(grant_noop, nullptr, "rsvd", 10, KOS_POLICY_FIFO, 0ns,
                                             nullptr, 0, DeviceWindow(rbase, rsize).list(), 1);
         TAP_CHECK(rbase % rsize == 0 and rsize <= KICKOS_SELFTEST_RESERVED_SIZE);
         TAP_CHECK(rc.error() == -KOS_EPERM);
@@ -3495,8 +3520,8 @@ namespace
         uintptr_t const code_map[] = {KICKOS_SELFTEST_CODE_MAP_BLOCKS};
         for (uintptr_t const block : code_map)
         {
-            stray = kos::thread::create(grant_noop, nullptr, "rsvd", 10, KOS_POLICY_FIFO, 0, nullptr, 0,
-                                        DeviceWindow(block, 0x1000).list(), 1);
+            stray = kos::thread::create(grant_noop, nullptr, "rsvd", 10, KOS_POLICY_FIFO, 0ns,
+                                        nullptr, 0, DeviceWindow(block, 0x1000).list(), 1);
             if (stray.error() != -KOS_EPERM)
             {
                 tap::fail("window 0x%lx answered %d", static_cast<unsigned long>(block), stray.error());
@@ -3515,7 +3540,7 @@ namespace
     // there reports PARTIAL while on any other enforcing board it must FAIL.
     void devexcl_hold(void*)
     {
-        kos_sem_wait(&g_devhold, KOS_TIMEOUT_NONE); // hold the window until main releases it
+        kos_sem_wait(&g_devhold, KOS_NEVER); // hold the window until main releases it
     }
     void t_dev_window_exclusive()
     {
@@ -3556,7 +3581,7 @@ namespace
             // Both windows at once, by a child that exits at once: admitted only where each is
             // admissible and nothing holds either.
             kos_window const pair[] = {DeviceWindow(b, WIN).w, DeviceWindow(b + WIN, WIN).w};
-            stray = kos::thread::create(grant_noop, nullptr, "devfree", 10, KOS_POLICY_FIFO, 0,
+            stray = kos::thread::create(grant_noop, nullptr, "devfree", 10, KOS_POLICY_FIFO, 0ns,
                                         nullptr, 0, pair, 2);
             last = stray.error();
             if (last == -KOS_EBUSY or last == -KOS_ENOMEM)
@@ -3574,7 +3599,7 @@ namespace
             any_admissible = true;
             TAP_CHECK(thread_end(&stray) == 0);
             // An exited thread holds no window, so a refusal here is a window never given back.
-            holder = kos::thread::create(devexcl_hold, nullptr, "devheld", 10, KOS_POLICY_FIFO, 0,
+            holder = kos::thread::create(devexcl_hold, nullptr, "devheld", 10, KOS_POLICY_FIFO, 0ns,
                                          nullptr, 0, DeviceWindow(b, WIN).list(), 1);
             if (not holder.valid())
             {
@@ -3591,7 +3616,7 @@ namespace
             // The sim admits exactly one DEV window shape (64 KiB), never a WIN-sized one.
             // Assert that premise instead of skipping: the sim gate reads a skip as an arm
             // that stopped running (FAIL_REGULAR_EXPRESSION "# skipped: [1-9]").
-            stray = kos::thread::create(devexcl_hold, nullptr, "devnone", 10, KOS_POLICY_FIFO, 0,
+            stray = kos::thread::create(devexcl_hold, nullptr, "devnone", 10, KOS_POLICY_FIFO, 0ns,
                                         nullptr, 0, DeviceWindow(0x40000000u, WIN).list(), 1);
             TAP_CHECK(not stray.valid());
             tap::partial("board mints no DEV window; exclusivity runs on enforcing boards "
@@ -3620,23 +3645,23 @@ namespace
         //    check within the list can refuse it.
         kos_window const twice[] = {DeviceWindow(win + WIN, WIN).w,
                                     DeviceWindow(win + WIN, WIN).w};
-        stray = kos::thread::create(devexcl_hold, nullptr, "devtwice", 10, KOS_POLICY_FIFO, 0,
+        stray = kos::thread::create(devexcl_hold, nullptr, "devtwice", 10, KOS_POLICY_FIFO, 0ns,
                                     nullptr, 0, twice, 2);
         TAP_CHECK(stray.error() == -KOS_EBUSY);
         // 1. Exact duplicate of the live holder's window: refused, and specifically
         //    EBUSY, not EPERM (the window is admissible) and not ENOMEM (the pool has
         //    room; the refusal lands before a slot is claimed).
-        stray = kos::thread::create(devexcl_hold, nullptr, "devdup", 10, KOS_POLICY_FIFO, 0,
+        stray = kos::thread::create(devexcl_hold, nullptr, "devdup", 10, KOS_POLICY_FIFO, 0ns,
                                     nullptr, 0, DeviceWindow(win, WIN).list(), 1);
         TAP_CHECK(stray.error() == -KOS_EBUSY);
         // 2. Partial overlap: the upper half of the held window. Its own base/size are
         //    independently admissible, so only the overlap scan can refuse it.
-        stray = kos::thread::create(devexcl_hold, nullptr, "devpart", 10, KOS_POLICY_FIFO, 0,
+        stray = kos::thread::create(devexcl_hold, nullptr, "devpart", 10, KOS_POLICY_FIFO, 0ns,
                                     nullptr, 0, DeviceWindow(win + WIN / 2u, WIN / 2u).list(), 1);
         TAP_CHECK(stray.error() == -KOS_EBUSY);
         // 3. Adjacent but disjoint (base == held last + 1): admitted. This is the mk64f PIT
         //    CH2 shape: a grant flush against a block, which must not be read as overlapping.
-        adj = kos::thread::create(devexcl_hold, nullptr, "devadj", 10, KOS_POLICY_FIFO, 0,
+        adj = kos::thread::create(devexcl_hold, nullptr, "devadj", 10, KOS_POLICY_FIFO, 0ns,
                                   nullptr, 0, DeviceWindow(win + WIN, WIN).list(), 1);
         TAP_CHECK(adj.valid());
         // The post is what frees the windows, and the joins say they are free.
@@ -3647,10 +3672,10 @@ namespace
         // and not the address, and it succeeds as one list with its neighbour, whose second
         // entry is then held as the first is.
         kos_window const both[] = {DeviceWindow(win, WIN).w, DeviceWindow(win + WIN, WIN).w};
-        holder = kos::thread::create(devexcl_hold, nullptr, "devagain", 10, KOS_POLICY_FIFO, 0,
+        holder = kos::thread::create(devexcl_hold, nullptr, "devagain", 10, KOS_POLICY_FIFO, 0ns,
                                      nullptr, 0, both, 2);
         TAP_CHECK(holder.valid());
-        stray = kos::thread::create(devexcl_hold, nullptr, "devsecond", 10, KOS_POLICY_FIFO, 0,
+        stray = kos::thread::create(devexcl_hold, nullptr, "devsecond", 10, KOS_POLICY_FIFO, 0ns,
                                     nullptr, 0, DeviceWindow(win + WIN, WIN).list(), 1);
         TAP_CHECK(stray.error() == -KOS_EBUSY);
         kos_sem_post(&g_devhold);
@@ -3671,7 +3696,7 @@ namespace
     int g_apw_master_rc = -99;
     void apw_master_worker(void*)
     {
-        g_apw_master_rc = kos::thread::create(grant_noop, nullptr, "apwm", 10, KOS_POLICY_FIFO, 0,
+        g_apw_master_rc = kos::thread::create(grant_noop, nullptr, "apwm", 10, KOS_POLICY_FIFO, 0ns,
                                               nullptr, 0,
                                               DeviceWindow(KICKOS_SELFTEST_REGION_BUS_MASTER, APW).list(),
                                               1)
@@ -3687,7 +3712,7 @@ namespace
         TAP_HOLD(hold.thread(&stray) and hold.thread(&w));
         uintptr_t const kram =
             reinterpret_cast<uintptr_t>(_sdata) & ~static_cast<uintptr_t>(APW - 1u);
-        stray = kos::thread::create(grant_noop, nullptr, "apwram", 10, KOS_POLICY_FIFO, 0,
+        stray = kos::thread::create(grant_noop, nullptr, "apwram", 10, KOS_POLICY_FIFO, 0ns,
                                     nullptr, 0, DeviceWindow(kram, APW).list(), 1);
         TAP_CHECK(stray.error() == -KOS_EINVAL);
         if (stray.valid())
@@ -3697,11 +3722,11 @@ namespace
 #if defined(KICKOS_SELFTEST_REGION_BUS_MASTER)
         g_apw_master_rc = -99;
         w = kos::thread::create_caps(apw_master_worker, nullptr, "apwW", 10, nullptr, 0,
-                                     KOS_POLICY_FIFO, 0, KOS_AUTH_MEMORY);
+                                     KOS_POLICY_FIFO, 0ns, KOS_AUTH_MEMORY);
         TAP_CHECK(w.valid());
         TAP_CHECK(thread_end(&w) == 0);
         TAP_CHECK(g_apw_master_rc == -KOS_EPERM);
-        stray = kos::thread::create(grant_noop, nullptr, "apwbm", 10, KOS_POLICY_FIFO, 0, nullptr,
+        stray = kos::thread::create(grant_noop, nullptr, "apwbm", 10, KOS_POLICY_FIFO, 0ns, nullptr,
                                     0,
                                     DeviceWindow(KICKOS_SELFTEST_REGION_BUS_MASTER, APW).list(), 1);
         TAP_CHECK(stray.valid() or stray.error() == -KOS_EBUSY);
@@ -3727,7 +3752,7 @@ namespace
         uintptr_t const b = reinterpret_cast<uintptr_t>(arg);
         g_outbuf.get = kos_window_get(0, reinterpret_cast<kos_window*>(b));
         g_outbuf.call = kos_call_generic(KOS_CAP_NONE, reinterpret_cast<void*>(b), 0,
-                                         sizeof(kos_window), 0);
+                                         sizeof(kos_window), KOS_POLL);
     }
     void t_dev_window_out_buffer()
     {
@@ -3739,7 +3764,8 @@ namespace
         {
             g_outbuf = {-99, -99};
             h = kos::thread::create(outbuf_holder, reinterpret_cast<void*>(b), "obuf", 10,
-                                    KOS_POLICY_FIFO, 0, nullptr, 0, DeviceWindow(b, APW).list(), 1);
+                                    KOS_POLICY_FIFO, 0ns, nullptr, 0, DeviceWindow(b,
+                                                                                   APW).list(), 1);
             if (h.valid() or h.error() == -KOS_ENOMEM)
             {
                 break;
@@ -3814,7 +3840,7 @@ namespace
     void cd_kid_await()
     {
         uint32_t bits = 0;
-        (void)kos_notify_wait(g_cd_kidnote, NOTE_ALL, KOS_TIMEOUT_NONE, &bits);
+        (void)kos_notify_wait(NOTE_ALL, KOS_NEVER, &bits);
     }
     void cd_worker(void*) // UNPRIVILEGED
     {
@@ -3975,7 +4001,7 @@ namespace
         // The control for the refusal above: an ordinary line is claimed, raised and delivered.
         TAP_CHECK(kos_irq_raise(line) == 0);
         uint32_t bits = 0;
-        TAP_CHECK(kos_notify_wait(note, NOTE_ALL, STALL_TOLERANT_US, &bits) == 0 and bits != 0);
+        TAP_CHECK(kos_notify_wait(NOTE_ALL, after_us(STALL_TOLERANT_US), &bits) == 0 and bits != 0);
         TAP_CHECK(kos_irq_ack(line) == 0);
         TAP_CHECK(kos_notify_unbind(note) == 0);
         TAP_CHECK(hold.close(&note) == 0);
@@ -3999,7 +4025,7 @@ namespace
             wrong |= 1 << 0;
         }
         auto const at = kos::thread::create(pc_idle_worker, nullptr, "pcat", PEER_CEILING);
-        if (not at.valid() or at.join(STALL_TOLERANT_US) != 0)
+        if (not at.valid() or at.join_for(std::chrono::microseconds{STALL_TOLERANT_US}) != 0)
         {
             wrong |= 1 << 1;
         }
@@ -4028,7 +4054,7 @@ namespace
     int32_t g_sb_sent = 1; // 1 is no answer a send can give
     void sb_sender(void*)  // caps: E(SIGNAL)@0
     {
-        g_sb_sent = kos_send(child_cap(0), g_sb_buf, SB_LEN, KOS_TIMEOUT_NONE);
+        g_sb_sent = kos_send(child_cap(0), g_sb_buf, SB_LEN, KOS_NEVER);
     }
     void t_ipc_one_buffer_both_ends()
     {
@@ -4049,7 +4075,7 @@ namespace
         w = kos::thread::create_caps(sb_sender, nullptr, "sbuf", 10, caps, 1);
         TAP_CHECK(w.valid());
         struct kos_reply_recv_opts o;
-        kos_reply_recv_opts_init(&o, ep, KOS_RECV_NO_INFO, STALL_TOLERANT_US);
+        kos_reply_recv_opts_init(&o, ep, KOS_RECV_NO_INFO, after_us(STALL_TOLERANT_US));
         int32_t const got =
             kos_reply_recv(KOS_CAP_NONE, g_sb_buf, kos_call_lens_pack(0, SB_LEN), &o);
         TAP_CHECK(hold.joined());
@@ -4135,7 +4161,7 @@ namespace
         // would make this arm about the writable check instead of the rendezvous.
         char buf[64];
         struct kos_reply_recv_opts o;
-        kos_reply_recv_opts_init(&o, child_cap(0), 0, KOS_TIMEOUT_NONE);
+        kos_reply_recv_opts_init(&o, child_cap(0), 0, KOS_NEVER);
         o.info.badge = 0xdeadu; // sentinel: both outputs must be overwritten
         o.info.reply_cap = 0x55;
         int32_t n = kos_reply_recv(KOS_CAP_NONE, buf,
@@ -4156,7 +4182,7 @@ namespace
     }
     void ep_send_worker(void*) // caps: E@0 (unpriv)
     {
-        g_ep_sn = kos_send(child_cap(0), EP_MSG, strlen(EP_MSG), KOS_TIMEOUT_NONE);
+        g_ep_sn = kos_send(child_cap(0), EP_MSG, strlen(EP_MSG), KOS_NEVER);
     }
 
     void t_endpoint_rendezvous()
@@ -4174,7 +4200,7 @@ namespace
         w = irq_spawn(ep_recv_worker, nullptr, "eprx", TAP_PRIO_PARKS, caps, 1);
         TAP_CHECK(w.valid());
         kos_yield();
-        int32_t sc = kos_send(g_ep, EP_MSG, mlen, STALL_TOLERANT_US);
+        int32_t sc = kos_send(g_ep, EP_MSG, mlen, after_us(STALL_TOLERANT_US));
         TAP_CHECK(sc == static_cast<int32_t>(mlen));
         TAP_CHECK(thread_end(&w) == 0);
         int32_t const ep_rn_a = g_ep_rn;
@@ -4191,7 +4217,7 @@ namespace
         kos_yield();
         char rbuf[64];
         struct kos_reply_recv_opts o;
-        kos_reply_recv_opts_init(&o, g_ep, 0, STALL_TOLERANT_US);
+        kos_reply_recv_opts_init(&o, g_ep, 0, after_us(STALL_TOLERANT_US));
         o.info.badge = 0xdeadu; // sentinel for write-back
         o.info.reply_cap = 0x55;
         int32_t rc = kos_reply_recv(KOS_CAP_NONE, rbuf, kos_call_lens_pack(0, sizeof(rbuf)), &o);
@@ -4207,7 +4233,7 @@ namespace
         w = irq_spawn(ep_recv_worker, nullptr, "epz", TAP_PRIO_PARKS, caps, 1);
         TAP_CHECK(w.valid());
         kos_yield();
-        TAP_CHECK(kos_send(g_ep, EP_MSG, 0, STALL_TOLERANT_US) == 0);
+        TAP_CHECK(kos_send(g_ep, EP_MSG, 0, after_us(STALL_TOLERANT_US)) == 0);
         TAP_CHECK(thread_end(&w) == 0);
         int32_t const ep_rn_c = g_ep_rn;
         TAP_CHECK(ep_rn_c == 0);
@@ -4217,7 +4243,7 @@ namespace
         w = irq_spawn(ep_recv_worker, nullptr, "eptr", TAP_PRIO_PARKS, caps, 1);
         TAP_CHECK(w.valid());
         kos_yield();
-        TAP_CHECK(kos_send(g_ep, EP_MSG, mlen, STALL_TOLERANT_US) == 4);
+        TAP_CHECK(kos_send(g_ep, EP_MSG, mlen, after_us(STALL_TOLERANT_US)) == 4);
         TAP_CHECK(thread_end(&w) == 0);
         int32_t const ep_rn_d = g_ep_rn;
         TAP_CHECK(ep_rn_d == 4 and memcmp(g_ep_rbuf, EP_MSG, 4) == 0);
@@ -4236,12 +4262,12 @@ namespace
         TAP_CHECK(kos_endpoint_create(&g_ep) == 0);
         // Oversize send is rejected up front with -KOS_EINVAL, WITHOUT parking (main is
         // the sole WAIT holder, so a park would hang the suite).
-        TAP_CHECK(kos_send(g_ep, big, KOS_EP_MSG_MAX + 1, KOS_TIMEOUT_NONE) == -KOS_EINVAL);
+        TAP_CHECK(kos_send(g_ep, big, KOS_EP_MSG_MAX + 1, KOS_NEVER) == -KOS_EINVAL);
         // Bad caps reject at the resolve boundary on both paths with -KOS_EBADF.
         char one[1] = {0};
-        TAP_CHECK(kos_send(0x7fffffff, one, 1, KOS_TIMEOUT_NONE) == -KOS_EBADF);
+        TAP_CHECK(kos_send(0x7fffffff, one, 1, KOS_NEVER) == -KOS_EBADF);
         struct kos_reply_recv_opts bad_ep;
-        kos_reply_recv_opts_init(&bad_ep, 0x7fffffff, KOS_RECV_NO_INFO, KOS_TIMEOUT_NONE);
+        kos_reply_recv_opts_init(&bad_ep, 0x7fffffff, KOS_RECV_NO_INFO, KOS_NEVER);
         TAP_CHECK(kos_reply_recv(KOS_CAP_NONE, g_ep_rbuf, kos_call_lens_pack(0, 1), &bad_ep)
                   == -KOS_EBADF);
         TAP_CHECK(hold.close(&g_ep) == 0);
@@ -4253,9 +4279,9 @@ namespace
     void ep_rights_worker(void*) // caps: E(WAIT)@0, E(SIGNAL)@1
     {
         char b[8] = {0};
-        g_ep_wait_send_rc = static_cast<int>(kos_send(child_cap(0), b, 1, KOS_TIMEOUT_NONE));
+        g_ep_wait_send_rc = static_cast<int>(kos_send(child_cap(0), b, 1, KOS_NEVER));
         struct kos_reply_recv_opts o;
-        kos_reply_recv_opts_init(&o, child_cap(1), KOS_RECV_NO_INFO, KOS_TIMEOUT_NONE);
+        kos_reply_recv_opts_init(&o, child_cap(1), KOS_RECV_NO_INFO, KOS_NEVER);
         g_ep_signal_recv_rc = static_cast<int>(
             kos_reply_recv(KOS_CAP_NONE, b, kos_call_lens_pack(0, sizeof(b)), &o));
     }
@@ -4271,7 +4297,7 @@ namespace
         // child_cap(2).
         kos_cap_grant caps[] = {{g_ep, EP_WAIT_ONLY}, {g_ep, EP_SIGNAL_ONLY}};
         w = kos::thread::create_caps(ep_rights_worker, nullptr, "eprt", 12, caps, 2,
-                                     KOS_POLICY_FIFO, 0);
+                                     KOS_POLICY_FIFO, 0ns);
         TAP_CHECK(w.valid());
         TAP_CHECK(hold.joined());
         int const ep_wait_send_rc = g_ep_wait_send_rc;
@@ -4295,10 +4321,10 @@ namespace
     kos_sem_t g_ho_gate = KOS_SEM_INIT(0);
     void ho_receiver(void*) // caps: E(WAIT)@0
     {
-        kos_sem_wait(&g_ho_gate, KOS_TIMEOUT_NONE);
+        kos_sem_wait(&g_ho_gate, KOS_NEVER);
         char buf[sizeof(EP_MSG)];
         struct kos_reply_recv_opts o;
-        kos_reply_recv_opts_init(&o, child_cap(0), KOS_RECV_NO_INFO, KOS_TIMEOUT_NONE);
+        kos_reply_recv_opts_init(&o, child_cap(0), KOS_RECV_NO_INFO, KOS_NEVER);
         g_ho_rn = kos_reply_recv(KOS_CAP_NONE, buf, kos_call_lens_pack(0, sizeof(buf)), &o);
     }
     int32_t ho_seat(kos::thread::Handle* out)
@@ -4318,26 +4344,26 @@ namespace
         TAP_CHECK(kos_sem_init(&g_ho_gate, 0) == 0);
         int32_t const mlen = static_cast<int32_t>(strlen(EP_MSG));
         TAP_CHECK(kos_cap_narrow(g_ep, EP_HANDOUT_ONLY) == 0);
-        TAP_CHECK(kos_send(g_ep, EP_MSG, strlen(EP_MSG), STALL_TOLERANT_US)
+        TAP_CHECK(kos_send(g_ep, EP_MSG, strlen(EP_MSG), after_us(STALL_TOLERANT_US))
                   == -KOS_EAGAIN);
         char buf[sizeof(EP_MSG)];
         struct kos_reply_recv_opts o;
-        kos_reply_recv_opts_init(&o, g_ep, KOS_RECV_NO_INFO, STALL_TOLERANT_US);
+        kos_reply_recv_opts_init(&o, g_ep, KOS_RECV_NO_INFO, after_us(STALL_TOLERANT_US));
         TAP_CHECK(kos_reply_recv(KOS_CAP_NONE, buf, kos_call_lens_pack(0, sizeof(buf)), &o)
                   == -KOS_EACCES);
         g_ho_rn = -99;
         TAP_CHECK(ho_seat(&w) == 0);
         kos_yield();
-        TAP_CHECK(kos_send(g_ep, EP_MSG, strlen(EP_MSG), HO_SEATED_TIMEOUT_US)
+        TAP_CHECK(kos_send(g_ep, EP_MSG, strlen(EP_MSG), after_us(HO_SEATED_TIMEOUT_US))
                   == -KOS_EAGAIN);
         kos_sem_post(&g_ho_gate);
-        TAP_CHECK(kos_send(g_ep, EP_MSG, strlen(EP_MSG), STALL_TOLERANT_US) == mlen);
+        TAP_CHECK(kos_send(g_ep, EP_MSG, strlen(EP_MSG), after_us(STALL_TOLERANT_US)) == mlen);
         TAP_CHECK(thread_end(&w) == 0);
         TAP_CHECK(g_ho_rn.load() == mlen);
-        TAP_CHECK(kos_send(g_ep, EP_MSG, strlen(EP_MSG), STALL_TOLERANT_US)
+        TAP_CHECK(kos_send(g_ep, EP_MSG, strlen(EP_MSG), after_us(STALL_TOLERANT_US))
                   == -KOS_EAGAIN);
         TAP_CHECK(kos_cap_narrow(g_ep, KOS_CAP_SIGNAL | KOS_CAP_TRANSFER) == 0);
-        TAP_CHECK(kos_send(g_ep, EP_MSG, strlen(EP_MSG), STALL_TOLERANT_US)
+        TAP_CHECK(kos_send(g_ep, EP_MSG, strlen(EP_MSG), after_us(STALL_TOLERANT_US))
                   == -KOS_ECONNREFUSED);
         TAP_CHECK(ho_seat(&b) == -KOS_EACCES);
         TAP_CHECK(hold.close(&g_ep) == 0);
@@ -4352,7 +4378,7 @@ namespace
     void hp_sender(void*) // caps: E(SIGNAL)@0
     {
         // parks: a receiver exists, none waits
-        g_hp_rc = kos_send(child_cap(0), EP_MSG, strlen(EP_MSG), KOS_TIMEOUT_NONE);
+        g_hp_rc = kos_send(child_cap(0), EP_MSG, strlen(EP_MSG), KOS_NEVER);
     }
     void t_endpoint_handout_parked()
     {
@@ -4435,7 +4461,8 @@ namespace
             }
             g_za_posted = g_za_posted.load() + 1;
             struct kos_reply_recv_opts o;
-            kos_reply_recv_opts_init(&o, child_cap(0), KOS_RECV_NO_INFO, STALL_TOLERANT_US);
+            kos_reply_recv_opts_init(&o, child_cap(0), KOS_RECV_NO_INFO,
+                                     after_us(STALL_TOLERANT_US));
             rc = kos_reply_recv(KOS_CAP_NONE, g_za_buf + got, kos_call_lens_pack(0, cap), &o);
             if (rc < 0)
             {
@@ -4455,7 +4482,7 @@ namespace
         g_za_raised = kos_thread_set_priority(ZA_WRITER_PRIO);
         while (sent < n)
         {
-            int32_t const rc = kos_send(child_cap(0), ZA_MSG + sent, n - sent, KOS_TIMEOUT_NONE);
+            int32_t const rc = kos_send(child_cap(0), ZA_MSG + sent, n - sent, KOS_NEVER);
             sends++;
             if (rc < 0)
             {
@@ -4492,10 +4519,10 @@ namespace
         kos_cap_grant const rcaps[] = {{g_ep, KOS_CAP_WAIT}};
         kos_cap_grant const wcaps[] = {{g_ep, EP_SIGNAL_ONLY}};
         r = kos::thread::create_caps(za_receiver, nullptr, "zaR", ZA_RECEIVER_PRIO, rcaps, 1,
-                                     KOS_POLICY_FIFO, 0, 0, nullptr, nullptr, 0, core);
+                                     KOS_POLICY_FIFO, 0ns, 0, nullptr, nullptr, 0, core);
         TAP_CHECK(r.valid());
         w = kos::thread::create_caps(za_writer, nullptr, "zaW", ZA_WRITER_START_PRIO, wcaps, 1,
-                                     KOS_POLICY_FIFO, 0, 0, nullptr, nullptr, 0, core);
+                                     KOS_POLICY_FIFO, 0ns, 0, nullptr, nullptr, 0, core);
         TAP_CHECK(w.valid());
         TAP_CHECK(hold.joined());
         TAP_CHECK(hold.close(&g_ep) == 0);
@@ -4527,10 +4554,10 @@ namespace
     // Whether g_ep_timed_returned was set within STALL_TOLERANT_US.
     bool ep_timed_awaited()
     {
-        uint64_t const give_up = kos_clock_now() + STALL_TOLERANT_US * 1000ull;
-        while (g_ep_timed_returned.load() == 0 and kos_clock_now() < give_up)
+        kos_monotonic_t const give_up = after_us(STALL_TOLERANT_US);
+        while (g_ep_timed_returned.load() == 0 and kos_monotonic_now().ns < give_up.ns)
         {
-            kos_sleep_ns(1000000ull);
+            kos_sleep_for(kos_ms(1));
         }
         return g_ep_timed_returned.load() != 0;
     }
@@ -4543,13 +4570,13 @@ namespace
     void ep_timed_worker(void*) // caps: E(SIGNAL)@0
     {
         EpTimedSend r;
-        uint64_t const t0 = kos_clock_now();
+        kos_monotonic_t const t0 = kos_monotonic_now();
         r.rc = static_cast<int32_t>(
-            kos_send(child_cap(0), EP_MSG, strlen(EP_MSG), EP_SEND_TIMEOUT_US));
-        r.waited_us = static_cast<uint32_t>((kos_clock_now() - t0) / 1000ull);
+            kos_send(child_cap(0), EP_MSG, strlen(EP_MSG), after_us(EP_SEND_TIMEOUT_US)));
+        r.waited_us = static_cast<uint32_t>(kos_between(t0, kos_monotonic_now()).ns / 1000ull);
         g_ep_timed_returned = 1;
         // untimed: parks until main's recv, long after
-        (void)kos_send(child_cap(0), &r, sizeof(r), KOS_TIMEOUT_NONE);
+        (void)kos_send(child_cap(0), &r, sizeof(r), KOS_NEVER);
     }
     void t_endpoint_send_timeout()
     {
@@ -4561,13 +4588,13 @@ namespace
         TAP_CHECK(kos_endpoint_create(&g_ep) == 0);
         kos_cap_grant caps[] = {{g_ep, EP_SIGNAL_ONLY}};
         w = kos::thread::create_caps(ep_timed_worker, nullptr, "eptm", 12, caps, 1,
-                                     KOS_POLICY_FIFO, 0);
+                                     KOS_POLICY_FIFO, 0ns);
         TAP_CHECK(w.valid());
         TAP_CHECK(ep_timed_awaited());
         EpTimedSend r;
         memset(&r, 0, sizeof(r));
         struct kos_reply_recv_opts o;
-        kos_reply_recv_opts_init(&o, g_ep, KOS_RECV_NO_INFO, STALL_TOLERANT_US);
+        kos_reply_recv_opts_init(&o, g_ep, KOS_RECV_NO_INFO, after_us(STALL_TOLERANT_US));
         int32_t const n =
             kos_reply_recv(KOS_CAP_NONE, &r, kos_call_lens_pack(0, sizeof(r)), &o);
         TAP_CHECK(n == static_cast<int32_t>(sizeof(r))); // the untimed report parked and landed
@@ -4576,6 +4603,67 @@ namespace
         // kernel fired immediately.
         TAP_CHECK(r.waited_us >= EP_SEND_TIMEOUT_US);
         TAP_CHECK(hold.joined());
+        TAP_CHECK(hold.close(&g_ep) == 0);
+    }
+
+    // --- A deadline's high word crosses the trap -----------------------------------------
+    // The deadline's low 32 bits are 0 and its high 32 bits are not, seconds ahead: a trap that
+    // drops its fifth argument word reads 0, a passed deadline, and the send or call answers
+    // -KOS_ETIMEDOUT at once instead of parking. The peer runs below main on main's core, so it
+    // reaches its receive only once main has parked. The call is kos_call_generic and the
+    // payload above KOS_CALL_REG_BYTES: the register form carries no deadline.
+    constexpr size_t DHW_LEN = KOS_CALL_REG_BYTES + 4;
+    char const DHW_REPLY[] = "hi";
+    Atomic<int32_t, Order::RELAXED> g_dhw_got{0};
+    Atomic<int32_t, Order::RELAXED> g_dhw_replied{0};
+    kos_monotonic_t dhw_far()
+    {
+        uint64_t const high = static_cast<uint64_t>(kos_monotonic_now().ns) >> 32;
+        return kos_monotonic_t{static_cast<int64_t>((high + 2u) << 32)};
+    }
+    void dhw_peer(void*) // caps: E(FULL)@0
+    {
+        kos_sleep_for(kos_ms(1));
+        char buf[DHW_LEN];
+        struct kos_reply_recv_opts o;
+        kos_reply_recv_opts_init(&o, child_cap(0), 0, after_us(STALL_TOLERANT_US));
+        int32_t const n =
+            kos_reply_recv(KOS_CAP_NONE, buf, kos_call_lens_pack(0, sizeof(buf)), &o);
+        g_dhw_got = n;
+        if (n >= 0 and o.info.reply_cap != KOS_CAP_NONE)
+        {
+            g_dhw_replied = kos_reply(o.info.reply_cap, DHW_REPLY, sizeof(DHW_REPLY));
+        }
+    }
+    void t_send_call_deadline_high_word()
+    {
+        TAP_ASK(.workers = 1, .endpoints = 1);
+        kos::thread::Handle w;
+        ArmHold hold;
+        TAP_HOLD(hold.cap(&g_ep) and hold.thread(&w));
+        TAP_CHECK(kos_endpoint_create(&g_ep) == 0);
+        kos_cap_grant caps[] = {{g_ep, CH_FULL}};
+        char msg[DHW_LEN];
+        memset(msg, 'w', sizeof(msg));
+        int32_t const len = static_cast<int32_t>(sizeof(msg));
+
+        g_dhw_got = -99;
+        g_dhw_replied = -99;
+        w = irq_spawn(dhw_peer, nullptr, "dhws", TAP_PRIO_AFTER, caps, 1);
+        TAP_CHECK(w.valid());
+        TAP_CHECK(kos_send(g_ep, msg, sizeof(msg), dhw_far()) == len);
+        TAP_CHECK(thread_end(&w) == 0);
+        TAP_CHECK(g_dhw_got.load() == len);
+
+        g_dhw_got = -99;
+        g_dhw_replied = -99;
+        w = irq_spawn(dhw_peer, nullptr, "dhwc", TAP_PRIO_AFTER, caps, 1);
+        TAP_CHECK(w.valid());
+        int32_t const got = kos_call_generic(g_ep, msg, sizeof(msg), sizeof(msg), dhw_far());
+        TAP_CHECK(got == static_cast<int32_t>(sizeof(DHW_REPLY))
+                  and memcmp(msg, DHW_REPLY, sizeof(DHW_REPLY)) == 0);
+        TAP_CHECK(thread_end(&w) == 0);
+        TAP_CHECK(g_dhw_got.load() == len and g_dhw_replied.load() == 0);
         TAP_CHECK(hold.close(&g_ep) == 0);
     }
 
@@ -4599,15 +4687,15 @@ namespace
     {
         char warm[1] = {0};
         // main's warm-up recv takes this and seats ep->server
-        kos_send(child_cap(0), warm, sizeof(warm), KOS_TIMEOUT_NONE);
+        kos_send(child_cap(0), warm, sizeof(warm), KOS_NEVER);
         char buf[8] = {0};
         EpTimedSend r;
-        uint64_t const t0 = kos_clock_now();
-        r.rc = kos_call(child_cap(0), buf, 4, sizeof(buf), EP_CALL_TIMEOUT_US);
-        r.waited_us = static_cast<uint32_t>((kos_clock_now() - t0) / 1000ull);
+        kos_monotonic_t const t0 = kos_monotonic_now();
+        r.rc = kos_call(child_cap(0), buf, 4, sizeof(buf), after_us(EP_CALL_TIMEOUT_US));
+        r.waited_us = static_cast<uint32_t>(kos_between(t0, kos_monotonic_now()).ns / 1000ull);
         g_ep_timed_returned = 1;
         // untimed: parks until main's recv, long after
-        (void)kos_send(child_cap(0), &r, sizeof(r), KOS_TIMEOUT_NONE);
+        (void)kos_send(child_cap(0), &r, sizeof(r), KOS_NEVER);
     }
     void t_call_timeout_pending()
     {
@@ -4619,11 +4707,11 @@ namespace
         TAP_CHECK(kos_endpoint_create(&g_ep) == 0);
         kos_cap_grant caps[] = {{g_ep, EP_SIGNAL_ONLY}};
         w = kos::thread::create_caps(ep_call_pending_worker, nullptr, "cltp", 12, caps, 1,
-                                     KOS_POLICY_FIFO, 0);
+                                     KOS_POLICY_FIFO, 0ns);
         TAP_CHECK(w.valid());
         char warm[1] = {0};
         struct kos_reply_recv_opts warm_o;
-        kos_reply_recv_opts_init(&warm_o, g_ep, KOS_RECV_NO_INFO, STALL_TOLERANT_US);
+        kos_reply_recv_opts_init(&warm_o, g_ep, KOS_RECV_NO_INFO, after_us(STALL_TOLERANT_US));
         TAP_CHECK(kos_reply_recv(KOS_CAP_NONE, warm, kos_call_lens_pack(0, sizeof(warm)),
                                  &warm_o)
                   == 1);
@@ -4631,7 +4719,7 @@ namespace
         EpTimedSend r;
         memset(&r, 0, sizeof(r));
         struct kos_reply_recv_opts o;
-        kos_reply_recv_opts_init(&o, g_ep, KOS_RECV_NO_INFO, STALL_TOLERANT_US);
+        kos_reply_recv_opts_init(&o, g_ep, KOS_RECV_NO_INFO, after_us(STALL_TOLERANT_US));
         int32_t const n =
             kos_reply_recv(KOS_CAP_NONE, &r, kos_call_lens_pack(0, sizeof(r)), &o);
         TAP_CHECK(n == static_cast<int32_t>(sizeof(r))); // the untimed report parked and landed
@@ -4658,11 +4746,11 @@ namespace
         EpTimedSend r;
         kos_sem_post(&g_cltr_go);
         g_cltr_calling = 1;
-        uint64_t const t0 = kos_clock_now();
-        r.rc = kos_call(child_cap(0), buf, 4, sizeof(buf), EP_CALL_REPLY_TIMEOUT_US);
-        r.waited_us = static_cast<uint32_t>((kos_clock_now() - t0) / 1000ull);
+        kos_monotonic_t const t0 = kos_monotonic_now();
+        r.rc = kos_call(child_cap(0), buf, 4, sizeof(buf), after_us(EP_CALL_REPLY_TIMEOUT_US));
+        r.waited_us = static_cast<uint32_t>(kos_between(t0, kos_monotonic_now()).ns / 1000ull);
         g_ep_timed_returned = 1;
-        (void)kos_send(child_cap(0), &r, sizeof(r), KOS_TIMEOUT_NONE);
+        (void)kos_send(child_cap(0), &r, sizeof(r), KOS_NEVER);
     }
     void t_call_timeout_reply()
     {
@@ -4677,15 +4765,16 @@ namespace
         TAP_CHECK(kos_sem_init(&g_cltr_go, 0) == 0);
         kos_cap_grant caps[] = {{g_ep, EP_SIGNAL_ONLY}};
         w = kos::thread::create_caps(ep_call_reply_worker, nullptr, "cltr", TAP_PRIO_PARKS, caps,
-                                     1, KOS_POLICY_FIFO, 0, 0, nullptr, nullptr, 0, TAP_PIN_CORE);
+                                     1, KOS_POLICY_FIFO, 0ns, 0, nullptr, nullptr, 0, TAP_PIN_CORE);
         TAP_CHECK(w.valid());
-        TAP_CHECK(kos_sem_wait(&g_cltr_go, STALL_TOLERANT_US) == 0);
+        TAP_CHECK(kos_sem_wait(&g_cltr_go, after_us(STALL_TOLERANT_US)) == 0);
         int const caller_first = g_cltr_calling.load();
         char req[8];
         // The caller is already queued. Check that writing receive metadata
-        // preserves the input timeout.
+        // preserves the input deadline.
         struct kos_reply_recv_opts opts;
-        kos_reply_recv_opts_init(&opts, g_ep, 0, EP_RECV_GENEROUS_US);
+        kos_monotonic_t const recv_until = after_us(EP_RECV_GENEROUS_US);
+        kos_reply_recv_opts_init(&opts, g_ep, 0, recv_until);
         int32_t const got = kos_reply_recv(KOS_CAP_NONE, req,
                                            kos_call_lens_pack(0, sizeof(req)),
                                            &opts); // slow-path pop + migration
@@ -4704,12 +4793,12 @@ namespace
         }
         TAP_CHECK(got == 4);
         TAP_CHECK(reply_cap != KOS_CAP_NONE); // we hold the reply cap, and never use it
-        TAP_CHECK(opts.timeout_us == EP_RECV_GENEROUS_US);
+        TAP_CHECK(opts.until.ns == recv_until.ns);
         TAP_CHECK(ep_timed_awaited());
         EpTimedSend r;
         memset(&r, 0, sizeof(r));
         struct kos_reply_recv_opts ro;
-        kos_reply_recv_opts_init(&ro, g_ep, KOS_RECV_NO_INFO, STALL_TOLERANT_US);
+        kos_reply_recv_opts_init(&ro, g_ep, KOS_RECV_NO_INFO, after_us(STALL_TOLERANT_US));
         int32_t const n =
             kos_reply_recv(KOS_CAP_NONE, &r, kos_call_lens_pack(0, sizeof(r)), &ro);
         TAP_CHECK(n == static_cast<int32_t>(sizeof(r)));
@@ -4734,11 +4823,11 @@ namespace
         char buf[8] = {0};
         EpTimedSend r;
         g_rpst_caller_saw = g_rpst_main_receiving.load();
-        uint64_t const t0 = kos_clock_now();
-        r.rc = kos_call(child_cap(0), buf, 4, sizeof(buf), EP_CALL_TIMEOUT_US);
-        r.waited_us = static_cast<uint32_t>((kos_clock_now() - t0) / 1000ull);
+        kos_monotonic_t const t0 = kos_monotonic_now();
+        r.rc = kos_call(child_cap(0), buf, 4, sizeof(buf), after_us(EP_CALL_TIMEOUT_US));
+        r.waited_us = static_cast<uint32_t>(kos_between(t0, kos_monotonic_now()).ns / 1000ull);
         g_ep_timed_returned = 1;
-        (void)kos_send(child_cap(0), &r, sizeof(r), KOS_TIMEOUT_NONE);
+        (void)kos_send(child_cap(0), &r, sizeof(r), KOS_NEVER);
     }
     void t_reply_stale_caller()
     {
@@ -4753,11 +4842,11 @@ namespace
         TAP_CHECK(kos_endpoint_create(&g_ep) == 0);
         kos_cap_grant caps[] = {{g_ep, EP_SIGNAL_ONLY}};
         w = kos::thread::create_caps(ep_reply_stale_worker, nullptr, "rpst", TAP_PRIO_AFTER, caps,
-                                     1, KOS_POLICY_FIFO, 0, 0, nullptr, nullptr, 0, TAP_PIN_CORE);
+                                     1, KOS_POLICY_FIFO, 0ns, 0, nullptr, nullptr, 0, TAP_PIN_CORE);
         TAP_CHECK(w.valid());
         char req[8];
         struct kos_reply_recv_opts opts;
-        kos_reply_recv_opts_init(&opts, g_ep, 0, STALL_TOLERANT_US);
+        kos_reply_recv_opts_init(&opts, g_ep, 0, after_us(STALL_TOLERANT_US));
         g_rpst_main_receiving = 1;
         int32_t const got =
             kos_reply_recv(KOS_CAP_NONE, req, kos_call_lens_pack(0, sizeof(req)), &opts);
@@ -4776,7 +4865,7 @@ namespace
         EpTimedSend r;
         memset(&r, 0, sizeof(r));
         struct kos_reply_recv_opts opts2;
-        kos_reply_recv_opts_init(&opts2, g_ep, KOS_RECV_NO_INFO, STALL_TOLERANT_US);
+        kos_reply_recv_opts_init(&opts2, g_ep, KOS_RECV_NO_INFO, after_us(STALL_TOLERANT_US));
         int32_t const n = kos_reply_recv(KOS_CAP_NONE, &r, kos_call_lens_pack(0, sizeof(r)), &opts2);
         TAP_CHECK(n == static_cast<int32_t>(sizeof(r)));
         TAP_CHECK(r.rc == -KOS_ETIMEDOUT); // expired on the reply park, not on send_waiters
@@ -4806,7 +4895,8 @@ namespace
     {
         char buf[8] = {0};
         g_sr_caller_saw = g_sr_main_receiving.load();
-        if (kos_call(child_cap(0), buf, 4, sizeof(buf), EP_CALL_TIMEOUT_US) == -KOS_ETIMEDOUT)
+        if (kos_call(child_cap(0), buf, 4, sizeof(buf),
+                     after_us(EP_CALL_TIMEOUT_US)) == -KOS_ETIMEDOUT)
         {
             log_put('T');
         }
@@ -4816,7 +4906,7 @@ namespace
         for (int k = 0; k < SR_ALIAS_CALL; k++)
         {
             memcpy(buf, "req2", 4);
-            int32_t const rc = kos_call(child_cap(0), buf, 4, sizeof(buf), KOS_TIMEOUT_NONE);
+            int32_t const rc = kos_call(child_cap(0), buf, 4, sizeof(buf), KOS_NEVER);
             if (rc != 4 or memcmp(buf, SR_GOOD, 4) != 0)
             {
                 ok = false; // one log entry for the whole loop: 255 of these say nothing
@@ -4832,25 +4922,25 @@ namespace
     void sr_second_server(void*) // caps: E1(FULL)@0, E2(FULL)@1
     {
         char buf[8];
-        kos_sem_wait(&g_sr_go, KOS_TIMEOUT_NONE);
+        kos_sem_wait(&g_sr_go, KOS_NEVER);
         for (int k = 0; k < SR_ALIAS_CALL - 1; k++)
         {
             struct kos_recv_info info = {0, KOS_CAP_NONE};
             struct kos_reply_recv_opts opts;
-            kos_reply_recv_opts_init(&opts, child_cap(0), 0, KOS_TIMEOUT_NONE);
+            kos_reply_recv_opts_init(&opts, child_cap(0), 0, KOS_NEVER);
             kos_reply_recv(KOS_CAP_NONE, buf, kos_call_lens_pack(0, sizeof(buf)), &opts);
             info = opts.info;
             kos_reply(info.reply_cap, SR_GOOD, 4);
         }
         struct kos_recv_info last = {0, KOS_CAP_NONE};
         struct kos_reply_recv_opts opts;
-        kos_reply_recv_opts_init(&opts, child_cap(0), 0, KOS_TIMEOUT_NONE);
+        kos_reply_recv_opts_init(&opts, child_cap(0), 0, KOS_NEVER);
         kos_reply_recv(KOS_CAP_NONE, buf, kos_call_lens_pack(0, sizeof(buf)), &opts); // the aliasing call, held unanswered
         last = opts.info;
         // rendezvous: completes only in main's recv
-        kos_send(child_cap(1), "rdy", 3, KOS_TIMEOUT_NONE);
+        kos_send(child_cap(1), "rdy", 3, KOS_NEVER);
         struct kos_reply_recv_opts opts2;
-        kos_reply_recv_opts_init(&opts2, child_cap(1), KOS_RECV_NO_INFO, KOS_TIMEOUT_NONE);
+        kos_reply_recv_opts_init(&opts2, child_cap(1), KOS_RECV_NO_INFO, KOS_NEVER);
         kos_reply_recv(KOS_CAP_NONE, buf, kos_call_lens_pack(0, sizeof(buf)), &opts2);
         kos_reply(last.reply_cap, SR_GOOD, 4);
     }
@@ -4878,7 +4968,7 @@ namespace
         TAP_CHECK(cl.valid() and s2.valid());
         char req[8];
         struct kos_reply_recv_opts opts;
-        kos_reply_recv_opts_init(&opts, g_ep, 0, STALL_TOLERANT_US);
+        kos_reply_recv_opts_init(&opts, g_ep, 0, after_us(STALL_TOLERANT_US));
         g_sr_main_receiving = 1;
         int32_t const got = kos_reply_recv(KOS_CAP_NONE, req, kos_call_lens_pack(0, sizeof(req)), &opts); // first call
         abandoned = opts.info.reply_cap;
@@ -4888,7 +4978,7 @@ namespace
         // expires under us and this cap is abandoned for the rest of the arm.
         char tok[8];
         struct kos_reply_recv_opts opts2;
-        kos_reply_recv_opts_init(&opts2, ep2, KOS_RECV_NO_INFO, STALL_TOLERANT_US);
+        kos_reply_recv_opts_init(&opts2, ep2, KOS_RECV_NO_INFO, after_us(STALL_TOLERANT_US));
         int32_t const rdy = kos_reply_recv(KOS_CAP_NONE, tok, kos_call_lens_pack(0, sizeof(tok)), &opts2);
         TAP_CHECK(rdy == 3 and memcmp(tok, "rdy", 3) == 0); // the aliasing call is parked
         // Every resolve test but the reply-waiter unlink now passes on this cap.
@@ -4897,7 +4987,7 @@ namespace
         TAP_CHECK(kos_reply(abandoned, SR_BAD, 4) == -KOS_EBADF);
         TAP_CHECK(hold.close(&abandoned) == -KOS_EBADF);
         // release the second server's reply
-        TAP_CHECK(kos_send(ep2, "go", 2, STALL_TOLERANT_US) == 2);
+        TAP_CHECK(kos_send(ep2, "go", 2, after_us(STALL_TOLERANT_US)) == 2);
         TAP_CHECK(hold.joined());
         TAP_CHECK(hold.close(&ep2) == 0);
         TAP_CHECK(hold.close(&g_ep) == 0);
@@ -4917,15 +5007,15 @@ namespace
         char buf[KOS_EP_MSG_MAX];
         memset(buf, 0, sizeof(buf));
         struct kos_reply_recv_opts opts;
-        kos_reply_recv_opts_init(&opts, g_ep, 0, EP_CALL_TIMEOUT_US);
+        kos_monotonic_t const recv_until = after_us(EP_CALL_TIMEOUT_US);
+        kos_reply_recv_opts_init(&opts, g_ep, 0, recv_until);
         opts.notify = 0u; // no accepted IRQs; output must stay zero
-        uint64_t const t0 = kos_clock_now();
         uintptr_t const over = kos_call_lens_pack(2 * KOS_EP_MSG_MAX, 2 * KOS_EP_MSG_MAX);
         int32_t const n = kos_reply_recv(KOS_CAP_NONE, buf, over, &opts);
-        uint32_t const waited_us = static_cast<uint32_t>((kos_clock_now() - t0) / 1000ull);
+        kos_monotonic_t const ended = kos_monotonic_now();
         TAP_CHECK(n == -KOS_ETIMEDOUT); // expired, and no bytes arrived
-        TAP_CHECK(waited_us >= EP_CALL_TIMEOUT_US);
-        TAP_CHECK(opts.timeout_us == EP_CALL_TIMEOUT_US); // an input, never written back
+        TAP_CHECK(ended.ns >= recv_until.ns);
+        TAP_CHECK(opts.until.ns == recv_until.ns); // an input, never written back
         // With no accepted IRQs, notify must remain zero.
         TAP_CHECK(opts.notify == 0u);
         TAP_CHECK(hold.close(&g_ep) == 0);
@@ -4955,7 +5045,7 @@ namespace
         // struct callers declare, so a word nobody set must not read as a posture nobody
         // asked for. Refused before the park, so nothing here can block.
         struct kos_reply_recv_opts bad;
-        kos_reply_recv_opts_init(&bad, g_ep, KOS_RECV_NO_INFO | 0x2u, EP_CALL_TIMEOUT_US);
+        kos_reply_recv_opts_init(&bad, g_ep, KOS_RECV_NO_INFO | 0x2u, after_us(EP_CALL_TIMEOUT_US));
         TAP_CHECK(kos_reply_recv(KOS_CAP_NONE, buf, lens, &bad) == -KOS_EINVAL);
         bad.flags = 0xFFFFFFFFu;
         TAP_CHECK(kos_reply_recv(KOS_CAP_NONE, buf, lens, &bad) == -KOS_EINVAL);
@@ -4963,9 +5053,9 @@ namespace
         // masking. A masked 512 would arrive as 0 and become a silent zero-length call; the
         // saturated value is still above KOS_EP_MSG_MAX, so the oversize refusal survives it.
         TAP_CHECK(kos_call(g_ep, buf, KOS_EP_MSG_MAX + 1, sizeof(buf),
-                                 EP_CALL_TIMEOUT_US)
+                                 after_us(EP_CALL_TIMEOUT_US))
                   == -KOS_EINVAL);
-        TAP_CHECK(kos_call(g_ep, buf, 512, sizeof(buf), EP_CALL_TIMEOUT_US)
+        TAP_CHECK(kos_call(g_ep, buf, 512, sizeof(buf), after_us(EP_CALL_TIMEOUT_US))
                   == -KOS_EINVAL);
         TAP_CHECK(hold.close(&g_ep) == 0);
     }
@@ -4999,15 +5089,16 @@ namespace
     {
         char buf[16];
         struct kos_reply_recv_opts opts;
-        kos_reply_recv_opts_init(&opts, child_cap(0), KOS_RECV_NO_INFO, KOS_TIMEOUT_NONE);
+        kos_reply_recv_opts_init(&opts, child_cap(0), KOS_RECV_NO_INFO, KOS_NEVER);
         kos_reply_recv(KOS_CAP_NONE, buf, kos_call_lens_pack(0, sizeof(buf)), &opts); // takes main's plain send; ep->server = us
         log_put('a');
         window_open(g_ctr_spin1);
         mtx_spin(g_call_unit * 6);  // the caller wakes and D2-boosts us inside this
         window_close(g_ctr_spin1);
         log_put('u');
-        uint64_t const spin2_from = kos_clock_now();
-        while (g_ctr_spoiler_ran.load() == 0u and kos_clock_now() - spin2_from < CTR_GIVE_UP_NS)
+        uint64_t const spin2_from = kos_monotonic_now().ns;
+        while (g_ctr_spoiler_ran.load() == 0u
+               and kos_monotonic_now().ns - spin2_from < CTR_GIVE_UP_NS)
         {
         }
         log_put('z');
@@ -5015,10 +5106,11 @@ namespace
     void ctr_caller(void*) // caps: E(SIGNAL)@0
     {
         char buf[8] = {0};
-        kos_sleep_ns(g_call_unit * 2); // wake mid-spin: the server is not in recv, so we park
-        uint32_t const deadline_us = static_cast<uint32_t>((g_call_unit * 8ull) / 1000ull);
+        // wake mid-spin: the server is not in recv, so we park
+        kos_sleep_for(kos_ns(g_call_unit * 2));
+        kos_monotonic_t const deadline = kos_after(kos_monotonic_now(), kos_ns(g_call_unit * 8ull));
         g_ctr_call_at = stamp_now();
-        int32_t const rc = kos_call(child_cap(0), buf, 4, sizeof(buf), deadline_us);
+        int32_t const rc = kos_call(child_cap(0), buf, 4, sizeof(buf), deadline);
         char c = 'X';
         if (rc == -KOS_ETIMEDOUT)
         {
@@ -5029,7 +5121,8 @@ namespace
     void ctr_spoiler(void*) // medium prio
     {
         g_ctr_spoiler_due = stamp_due(g_call_unit * 4);
-        kos_sleep_ns(g_call_unit * 4); // ready while the server is boosted, so it must wait
+        // ready while the server is boosted, so it must wait
+        kos_sleep_for(kos_ns(g_call_unit * 4));
         log_put('m');
         g_ctr_spoiler_ran = 1;
     }
@@ -5056,7 +5149,7 @@ namespace
         sp = kos::thread::create_caps(ctr_spoiler, nullptr, "ctrM", 12, nullptr, 0);
         TAP_CHECK(sv.valid() and cl.valid() and sp.valid());
         char warm[4] = {0};
-        TAP_CHECK(kos_send(g_ep, warm, 4, STALL_TOLERANT_US) == 4);
+        TAP_CHECK(kos_send(g_ep, warm, 4, after_us(STALL_TOLERANT_US)) == 4);
         TAP_CHECK(hold.joined());
         TAP_CHECK(count('a') == 1 and count('u') == 1);
         uint32_t const ctr_call_at = g_ctr_call_at;
@@ -5098,7 +5191,7 @@ namespace
     {
         char buf[16];
         struct kos_reply_recv_opts opts;
-        kos_reply_recv_opts_init(&opts, child_cap(0), KOS_RECV_NO_INFO, KOS_TIMEOUT_NONE);
+        kos_reply_recv_opts_init(&opts, child_cap(0), KOS_RECV_NO_INFO, KOS_NEVER);
         // Receive the filler's first send and register this server.
         kos_reply_recv(KOS_CAP_NONE, buf, kos_call_lens_pack(0, sizeof(buf)), &opts);
         log_put('a');
@@ -5108,7 +5201,7 @@ namespace
         mtx_spin(g_call_unit * 4);              // the caller D2-boosted us inside this
         log_put('u');
         struct kos_reply_recv_opts opts2;
-        kos_reply_recv_opts_init(&opts2, child_cap(0), KOS_RECV_NO_INFO, KOS_TIMEOUT_NONE);
+        kos_reply_recv_opts_init(&opts2, child_cap(0), KOS_RECV_NO_INFO, KOS_NEVER);
         // Reject the queued call, remove its donation, then park.
         kos_reply_recv(KOS_CAP_NONE, buf, kos_call_lens_pack(0, sizeof(buf)), &opts2);
         log_put('z');                          // reached at base prio: spoiler ran first IFF we reverted
@@ -5116,9 +5209,9 @@ namespace
     void ci_caller(void*) // caps: E(SIGNAL)@0
     {
         char buf[8] = {0};
-        kos_sem_wait(&g_gate, KOS_TIMEOUT_NONE); // the server is seated
+        kos_sem_wait(&g_gate, KOS_NEVER); // the server is seated
         kos_sem_post(&g_gate);
-        g_ci_rc = kos_call(child_cap(0), buf, 4, sizeof(buf), KOS_TIMEOUT_NONE);
+        g_ci_rc = kos_call(child_cap(0), buf, 4, sizeof(buf), KOS_NEVER);
         log_put('c');
         // The reject and the park are one masked window, so the bounce returning here is
         // the proof recv#2 is already on recv_waiters.
@@ -5126,15 +5219,15 @@ namespace
     }
     void ci_spoiler(void*) // medium prio
     {
-        kos_sem_wait(&g_gate, KOS_TIMEOUT_NONE);
+        kos_sem_wait(&g_gate, KOS_NEVER);
         log_put('m');
     }
     void ci_filler(void*) // caps: E(SIGNAL)@0
     {
         char b[4] = {0};
-        kos_send(child_cap(0), b, 4, KOS_TIMEOUT_NONE);   // the only sender recv#1 can see
-        kos_sem_wait(&g_ci_bounced, KOS_TIMEOUT_NONE);
-        kos_send(child_cap(0), b, 4, KOS_TIMEOUT_NONE);   // wakes the parked recv#2
+        kos_send(child_cap(0), b, 4, KOS_NEVER);   // the only sender recv#1 can see
+        kos_sem_wait(&g_ci_bounced, KOS_NEVER);
+        kos_send(child_cap(0), b, 4, KOS_NEVER);   // wakes the parked recv#2
     }
     void t_call_infoless_revert()
     {
@@ -5185,7 +5278,7 @@ namespace
         char buf[16];
         struct kos_recv_info info = {0, KOS_CAP_NONE};
         struct kos_reply_recv_opts opts;
-        kos_reply_recv_opts_init(&opts, child_cap(0), 0, KOS_TIMEOUT_NONE);
+        kos_reply_recv_opts_init(&opts, child_cap(0), 0, KOS_NEVER);
         // Accept the call, inherit its priority, and obtain a reply cap.
         kos_reply_recv(KOS_CAP_NONE, buf, kos_call_lens_pack(0, sizeof(buf)), &opts);
         info = opts.info;
@@ -5195,7 +5288,7 @@ namespace
     void cc_caller(void*) // caps: E(SIGNAL)@0
     {
         char buf[8] = {0};
-        g_cc_rc = kos_call(child_cap(0), buf, 4, sizeof(buf), KOS_TIMEOUT_NONE);
+        g_cc_rc = kos_call(child_cap(0), buf, 4, sizeof(buf), KOS_NEVER);
         log_put('c');
     }
     void t_call_close_reply()
@@ -5231,7 +5324,7 @@ namespace
         char buf[16];
         struct kos_recv_info info = {0, KOS_CAP_NONE};
         struct kos_reply_recv_opts opts;
-        kos_reply_recv_opts_init(&opts, child_cap(0), 0, KOS_TIMEOUT_NONE);
+        kos_reply_recv_opts_init(&opts, child_cap(0), 0, KOS_NEVER);
         int32_t n = kos_reply_recv(KOS_CAP_NONE, buf, kos_call_lens_pack(0, sizeof(buf)), &opts);
         info = opts.info;
         g_echo_reqn = n;
@@ -5259,7 +5352,7 @@ namespace
         struct kos_reply_recv_opts opts;
         memset(&opts, 0, sizeof(opts));
         opts.ep = child_cap(0);
-        opts.timeout_us = KOS_TIMEOUT_NONE;
+        opts.until = KOS_NEVER;
         kos_cap_t reply_cap = KOS_CAP_NONE;
         int served = 0;
         while (served < 2)
@@ -5293,7 +5386,7 @@ namespace
         for (int i = 0; i < 2; i++)
         {
             memcpy(buf, "ping", 4);
-            int32_t const rc = kos_call(child_cap(0), buf, 4, sizeof(buf), KOS_TIMEOUT_NONE);
+            int32_t const rc = kos_call(child_cap(0), buf, 4, sizeof(buf), KOS_NEVER);
             if (rc == 5 and memcmp(buf, "pong!", 5) == 0)
             {
                 ok++;
@@ -5311,7 +5404,7 @@ namespace
     {
         char buf[16];
         struct kos_reply_recv_opts opts;
-        kos_reply_recv_opts_init(&opts, child_cap(0), 0, KOS_TIMEOUT_NONE);
+        kos_reply_recv_opts_init(&opts, child_cap(0), 0, KOS_NEVER);
         int32_t const got =
             kos_reply_recv(KOS_CAP_NONE, buf, kos_call_lens_pack(0, sizeof(buf)), &opts);
         if (got < 0 or opts.info.reply_cap == KOS_CAP_NONE)
@@ -5321,7 +5414,7 @@ namespace
         }
         kos_cap_t const reply = opts.info.reply_cap;
         // An invalid endpoint fails the receive after the reply has woken its caller.
-        kos_reply_recv_opts_init(&opts, 0x7fffu, 0, KOS_TIMEOUT_NONE);
+        kos_reply_recv_opts_init(&opts, 0x7fffu, 0, KOS_NEVER);
         memcpy(buf, "pong!", 5);
         g_frb_rc = kos_reply_recv(reply, buf, kos_call_lens_pack(5, sizeof(buf)), &opts);
         g_frb_server_saw = g_frb_caller_ran.load();
@@ -5330,7 +5423,7 @@ namespace
     {
         char buf[16];
         memcpy(buf, "ping", 4);
-        (void)kos_call(child_cap(0), buf, 4, sizeof(buf), KOS_TIMEOUT_NONE);
+        (void)kos_call(child_cap(0), buf, 4, sizeof(buf), KOS_NEVER);
         g_frb_caller_ran = 1;
     }
     void t_reply_recv_bad_ep_wakes_caller()
@@ -5382,7 +5475,7 @@ namespace
         struct kos_reply_recv_opts opts;
         memset(&opts, 0, sizeof(opts));
         opts.ep = child_cap(0);
-        opts.timeout_us = STALL_TOLERANT_US;
+        opts.until = after_us(STALL_TOLERANT_US);
         kos_cap_t reply_cap = KOS_CAP_NONE;
         size_t reply_len = 0;
         int served = 0;
@@ -5423,9 +5516,9 @@ namespace
     void f4_client(void*) // caps: E(SIGNAL)@0
     {
         memcpy(g_f4_aliased, "ping", F4_REQ_LEN);
-        g_f4_bad = kos_call(child_cap(0), g_f4_aliased, F4_REQ_LEN, F4_CAP, F4_CALL_US);
+        g_f4_bad = kos_call(child_cap(0), g_f4_aliased, F4_REQ_LEN, F4_CAP, after_us(F4_CALL_US));
         memcpy(g_f4_clean, "ping", F4_REQ_LEN);
-        g_f4_good = kos_call(child_cap(0), g_f4_clean, F4_REQ_LEN, F4_CAP, F4_CALL_US);
+        g_f4_good = kos_call(child_cap(0), g_f4_clean, F4_REQ_LEN, F4_CAP, after_us(F4_CALL_US));
     }
     void t_service_survives_client_fault()
     {
@@ -5504,7 +5597,7 @@ namespace
         {
             // Wait on a semaphore while main raises both IRQs. Semaphore waits
             // leave notification bits pending.
-            kos_sem_wait(&g_frn_go, KOS_TIMEOUT_NONE);
+            kos_sem_wait(&g_frn_go, KOS_NEVER);
             // Round 2 accepts only one line.
             uint32_t accept = m1 | m2;
             if (round == 2)
@@ -5512,7 +5605,7 @@ namespace
                 accept = m1;
             }
             opts.notify = accept; // IN: the lines this wait accepts
-            opts.timeout_us = FRN_WAIT_US;
+            opts.until = after_us(FRN_WAIT_US);
             int32_t const n =
                 kos_reply_recv(KOS_CAP_NONE, buf, kos_call_lens_pack(0, sizeof(buf)), &opts);
             if (round == 0)
@@ -5531,7 +5624,7 @@ namespace
                 g_frn_r3 = n;
                 // The unaccepted line must remain pending for the next wait.
                 opts.notify = m2;
-                opts.timeout_us = FRN_WAIT_US;
+                opts.until = after_us(FRN_WAIT_US);
                 g_frn_r4 = kos_reply_recv(KOS_CAP_NONE, buf,
                                           kos_call_lens_pack(0, sizeof(buf)), &opts);
                 g_frn_bits4 = opts.notify;
@@ -5552,7 +5645,7 @@ namespace
             return;
         }
         uint32_t bits = 0;
-        g_irqto_rc = note.wait(NOTE_ALL, 20000u, &bits); // 20 ms
+        g_irqto_rc = kos::notify_wait_for(NOTE_ALL, std::chrono::milliseconds{20}, &bits);
     }
     void t_irq_wait_timeout()
     {
@@ -5591,7 +5684,7 @@ namespace
         memset(&opts, 0, sizeof(opts));
         opts.ep = child_cap(0);
         opts.notify = mask; // no event pending; this receive must park
-        opts.timeout_us = FRN_WAIT_US;
+        opts.until = after_us(FRN_WAIT_US);
         g_frp_rc =
             kos_reply_recv(KOS_CAP_NONE, buf, kos_call_lens_pack(0, sizeof(buf)), &opts);
         g_frp_bits = opts.notify;
@@ -5743,7 +5836,7 @@ namespace
         unsigned char buf[64];
         struct kos_recv_info info = {0, KOS_CAP_NONE};
         struct kos_reply_recv_opts opts;
-        kos_reply_recv_opts_init(&opts, child_cap(0), 0, KOS_TIMEOUT_NONE);
+        kos_reply_recv_opts_init(&opts, child_cap(0), 0, KOS_NEVER);
         int32_t const n = kos_reply_recv(KOS_CAP_NONE, buf, kos_call_lens_pack(0, sizeof(buf)), &opts);
         info = opts.info;
         g_fp_reqn = n;
@@ -5763,7 +5856,7 @@ namespace
         {
             buf[i] = static_cast<unsigned char>(i + 1); // no zero byte: a cleared buffer shows
         }
-        g_fp_rc = kos_call(child_cap(0), buf, g_fp_send_len, g_fp_recv_cap, KOS_TIMEOUT_NONE);
+        g_fp_rc = kos_call(child_cap(0), buf, g_fp_send_len, g_fp_recv_cap, KOS_NEVER);
         int32_t const rc = g_fp_rc;
         if (rc > 0)
         {
@@ -5885,9 +5978,9 @@ namespace
         TAP_CHECK(wit.valid());
         TAP_CHECK(thread_end(&wit) == 0);
         memcpy(buf, "ping", 4);
-        int32_t rc = kos_call(g_ep, buf, 4, sizeof(buf), STALL_TOLERANT_US);
+        int32_t rc = kos_call(g_ep, buf, 4, sizeof(buf), after_us(STALL_TOLERANT_US));
         TAP_CHECK(hold.joined());
-        TAP_CHECK(kos_sem_wait(&g_done, STALL_TOLERANT_US) == 0); // echo_server's
+        TAP_CHECK(kos_sem_wait(&g_done, after_us(STALL_TOLERANT_US)) == 0); // echo_server's
         TAP_CHECK(hold.close(&g_ep) == 0);
         int32_t const echo_reqn_a = g_echo_reqn;
         TAP_CHECK(echo_reqn_a == 4 and memcmp(g_echo_reqbuf, "ping", 4) == 0);
@@ -5900,9 +5993,9 @@ namespace
         sv = irq_spawn(echo_server, nullptr, "rtS2", KICKOS_PRIO_MIN, scaps, 1);
         TAP_CHECK(sv.valid());
         memcpy(buf, "ping", 4);
-        rc = kos_call(g_ep, buf, 4, sizeof(buf), STALL_TOLERANT_US);
+        rc = kos_call(g_ep, buf, 4, sizeof(buf), after_us(STALL_TOLERANT_US));
         TAP_CHECK(hold.joined());
-        TAP_CHECK(kos_sem_wait(&g_done, STALL_TOLERANT_US) == 0); // echo_server's
+        TAP_CHECK(kos_sem_wait(&g_done, after_us(STALL_TOLERANT_US)) == 0); // echo_server's
         TAP_CHECK(hold.close(&g_ep) == 0);
         int32_t const echo_reqn_b = g_echo_reqn;
         TAP_CHECK(echo_reqn_b == 4 and memcmp(g_echo_reqbuf, "ping", 4) == 0);
@@ -5939,7 +6032,7 @@ namespace
         char buf[3]; // smaller than the 8-byte request
         struct kos_recv_info info = {0, KOS_CAP_NONE};
         struct kos_reply_recv_opts opts;
-        kos_reply_recv_opts_init(&opts, child_cap(0), 0, KOS_TIMEOUT_NONE);
+        kos_reply_recv_opts_init(&opts, child_cap(0), 0, KOS_NEVER);
         int32_t n = kos_reply_recv(KOS_CAP_NONE, buf, kos_call_lens_pack(0, sizeof(buf)), &opts);
         info = opts.info;
         g_trunc_reqn = n;
@@ -5961,7 +6054,7 @@ namespace
         char buf[8];
         memcpy(buf, "ABCDEFGH", 8);
         // recv_cap = 3 -> the reply clamps into it
-        g_trunc_rc = kos_call(child_cap(0), buf, 8, 3, KOS_TIMEOUT_NONE);
+        g_trunc_rc = kos_call(child_cap(0), buf, 8, 3, KOS_NEVER);
         if (g_trunc_rc > 0)
         {
             size_t k = static_cast<size_t>(g_trunc_rc);
@@ -5997,7 +6090,7 @@ namespace
     {
         char buf[8] = {0};
         // parks SEND_WAIT; woken refused
-        g_pp_callrc = kos_call(child_cap(0), buf, 4, sizeof(buf), KOS_TIMEOUT_NONE);
+        g_pp_callrc = kos_call(child_cap(0), buf, 4, sizeof(buf), KOS_NEVER);
     }
     void t_call_prepop_death()
     {
@@ -6027,11 +6120,11 @@ namespace
     kos_sem_t g_don_go = KOS_SEM_INIT(0);
     void don_server(void* arg) // caps: E(WAIT)@0
     {
-        kos_mutex_lock(mtx_arg(arg), KOS_TIMEOUT_NONE);
+        kos_mutex_lock(mtx_arg(arg), KOS_NEVER);
         char buf[16];
         struct kos_recv_info info = {0, KOS_CAP_NONE};
         struct kos_reply_recv_opts opts;
-        kos_reply_recv_opts_init(&opts, child_cap(0), 0, KOS_TIMEOUT_NONE);
+        kos_reply_recv_opts_init(&opts, child_cap(0), 0, KOS_NEVER);
         kos_reply_recv(KOS_CAP_NONE, buf, kos_call_lens_pack(0, sizeof(buf)), &opts); // parks first (no senders); D1-boosted at the call
         info = opts.info;
         log_put('a');
@@ -6049,10 +6142,10 @@ namespace
     void don_caller(void*) // caps: E(SIGNAL)@0
     {
         char buf[8];
-        kos_sem_wait(&g_don_go, KOS_TIMEOUT_NONE);
+        kos_sem_wait(&g_don_go, KOS_NEVER);
         log_put('k');
         memcpy(buf, "req", 3);
-        g_don_rc = kos_call(child_cap(0), buf, 3, sizeof(buf), KOS_TIMEOUT_NONE);
+        g_don_rc = kos_call(child_cap(0), buf, 3, sizeof(buf), KOS_NEVER);
         if (g_don_rc > 0)
         {
             size_t k = static_cast<size_t>(g_don_rc);
@@ -6063,7 +6156,7 @@ namespace
     }
     void don_spoiler(void*) // medium prio
     {
-        kos_sem_wait(&g_don_go, KOS_TIMEOUT_NONE);
+        kos_sem_wait(&g_don_go, KOS_NEVER);
         log_put('m');
     }
     // Spawns the donation trio and starts the caller once every party has parked. `mutex` is
@@ -6122,11 +6215,11 @@ namespace
     {
         char buf[16];
         struct kos_recv_info info = {0, KOS_CAP_NONE};
-        kos_mutex_lock(mtx_arg(arg), KOS_TIMEOUT_NONE);
+        kos_mutex_lock(mtx_arg(arg), KOS_NEVER);
         log_put('s');
         kos_sem_post(&g_don_go);
         struct kos_reply_recv_opts opts;
-        kos_reply_recv_opts_init(&opts, child_cap(0), 0, KOS_TIMEOUT_NONE);
+        kos_reply_recv_opts_init(&opts, child_cap(0), 0, KOS_NEVER);
         kos_reply_recv(KOS_CAP_NONE, buf, kos_call_lens_pack(0, sizeof(buf)), &opts);
         info = opts.info;
         log_put('a');
@@ -6179,9 +6272,9 @@ namespace
     {
         char buf[16];
         struct kos_recv_info i1 = {0, KOS_CAP_NONE};
-        kos_mutex_lock(mtx_arg(arg), KOS_TIMEOUT_NONE);
+        kos_mutex_lock(mtx_arg(arg), KOS_NEVER);
         struct kos_reply_recv_opts opts;
-        kos_reply_recv_opts_init(&opts, child_cap(0), 0, KOS_TIMEOUT_NONE);
+        kos_reply_recv_opts_init(&opts, child_cap(0), 0, KOS_NEVER);
         kos_reply_recv(KOS_CAP_NONE, buf, kos_call_lens_pack(0, sizeof(buf)), &opts); // call #1, fastpath
         i1 = opts.info;
         if (i1.reply_cap != KOS_CAP_NONE)
@@ -6198,7 +6291,7 @@ namespace
         log_put('r');
         struct kos_recv_info i2 = {0, KOS_CAP_NONE};
         struct kos_reply_recv_opts opts2;
-        kos_reply_recv_opts_init(&opts2, child_cap(0), 0, KOS_TIMEOUT_NONE);
+        kos_reply_recv_opts_init(&opts2, child_cap(0), 0, KOS_NEVER);
         kos_reply_recv(KOS_CAP_NONE, buf, kos_call_lens_pack(0, sizeof(buf)), &opts2);
         i2 = opts2.info;
         if (i2.reply_cap != KOS_CAP_NONE)
@@ -6211,13 +6304,13 @@ namespace
     void dp_caller(void*) // caps: E(SIGNAL)@0
     {
         char buf[8];
-        kos_sem_wait(&g_don_go, KOS_TIMEOUT_NONE);
+        kos_sem_wait(&g_don_go, KOS_NEVER);
         memcpy(buf, "a", 1);
-        int32_t const r1 = kos_call(child_cap(0), buf, 1, sizeof(buf), KOS_TIMEOUT_NONE);
+        int32_t const r1 = kos_call(child_cap(0), buf, 1, sizeof(buf), KOS_NEVER);
         memcpy(buf, "b", 1);
         g_dp_call2 = 1;
         // server is awake -> slowpath
-        int32_t const r2 = kos_call(child_cap(0), buf, 1, sizeof(buf), KOS_TIMEOUT_NONE);
+        int32_t const r2 = kos_call(child_cap(0), buf, 1, sizeof(buf), KOS_NEVER);
         g_don_rc = r1 + r2;
         log_put('c');
     }
@@ -6271,11 +6364,11 @@ namespace
                 continue;
             }
             struct kos_reply_recv_opts opts;
-            kos_reply_recv_opts_init(&opts, child_cap(0), KOS_RECV_NO_INFO, KOS_TIMEOUT_NONE);
+            kos_reply_recv_opts_init(&opts, child_cap(0), KOS_RECV_NO_INFO, KOS_NEVER);
             g_ep_badrecv_rc[i] = kos_reply_recv(KOS_CAP_NONE, bad, kos_call_lens_pack(0, 8), &opts); // write oracle -> -KOS_EFAULT
             // cross-domain read -> -KOS_EFAULT
             g_ep_badsend_rc[i] =
-                kos_send(child_cap(0), static_cast<char const*>(bad), 8, KOS_TIMEOUT_NONE);
+                kos_send(child_cap(0), static_cast<char const*>(bad), 8, KOS_NEVER);
             // The opts struct is IN-OUT, and both subjects are word-aligned, so this clears
             // the alignment gate above and lands on the readable+writable check. The message
             // buffer is a valid stack local: the refusal is about opts alone.
@@ -6301,7 +6394,7 @@ namespace
         }
         kos_cap_grant caps[] = {{g_ep, CH_FULL}};
         w = kos::thread::create_caps(ep_bound_worker, nullptr, "epbn", 12, caps, 1,
-                                     KOS_POLICY_FIFO, 0);
+                                     KOS_POLICY_FIFO, 0ns);
         TAP_CHECK(w.valid());
         TAP_CHECK(hold.joined());
         TAP_CHECK(hold.close(&g_ep) == 0);
@@ -6330,7 +6423,8 @@ namespace
     {
         char* b = static_cast<char*>(arg);
         struct kos_reply_recv_opts opts;
-        kos_reply_recv_opts_init(&opts, child_cap(0), KOS_RECV_NO_INFO, STALL_TOLERANT_US);
+        kos_reply_recv_opts_init(&opts, child_cap(0), KOS_RECV_NO_INFO,
+                                 after_us(STALL_TOLERANT_US));
         int32_t const n = kos_reply_recv(KOS_CAP_NONE, b, kos_call_lens_pack(0, 8), &opts);
         int32_t verdict = n;
         for (int i = 0; i < 8; i++)
@@ -6340,7 +6434,7 @@ namespace
                 verdict = -1;
             }
         }
-        (void)kos_send(child_cap(0), &verdict, sizeof(verdict), STALL_TOLERANT_US);
+        (void)kos_send(child_cap(0), &verdict, sizeof(verdict), after_us(STALL_TOLERANT_US));
     }
 #endif
     constexpr RamAsk XD_RAM = {256};
@@ -6361,10 +6455,10 @@ namespace
         {
             out[i] = static_cast<char>('a' + i);
         }
-        int32_t const sent = kos_send(g_ep, out, 8, STALL_TOLERANT_US);
+        int32_t const sent = kos_send(g_ep, out, 8, after_us(STALL_TOLERANT_US));
         int32_t verdict = -99;
         struct kos_reply_recv_opts opts;
-        kos_reply_recv_opts_init(&opts, g_ep, KOS_RECV_NO_INFO, STALL_TOLERANT_US);
+        kos_reply_recv_opts_init(&opts, g_ep, KOS_RECV_NO_INFO, after_us(STALL_TOLERANT_US));
         int32_t const got = kos_reply_recv(KOS_CAP_NONE, &verdict, kos_call_lens_pack(0, sizeof(verdict)), &opts);
         TAP_CHECK(peer_dead_status(w) == 0);
         int const closed = hold.close(&g_ep); // both delegated caps torn down -> freed
@@ -6555,17 +6649,17 @@ namespace
         char b[8];
         if (arg != nullptr)
         {
-            kos_sem_wait(&g_rb_go, KOS_TIMEOUT_NONE);
+            kos_sem_wait(&g_rb_go, KOS_NEVER);
         }
         struct kos_recv_info first = {0, KOS_CAP_NONE};
         struct kos_reply_recv_opts opts;
-        kos_reply_recv_opts_init(&opts, child_cap(0), 0, STALL_TOLERANT_US);
+        kos_reply_recv_opts_init(&opts, child_cap(0), 0, after_us(STALL_TOLERANT_US));
         kos_reply_recv(KOS_CAP_NONE, b, kos_call_lens_pack(0, sizeof(b)), &opts);
         first = opts.info;
         log_put('1');
         struct kos_recv_info wake = {0, KOS_CAP_NONE};
         struct kos_reply_recv_opts opts2;
-        kos_reply_recv_opts_init(&opts2, child_cap(0), 0, STALL_TOLERANT_US);
+        kos_reply_recv_opts_init(&opts2, child_cap(0), 0, after_us(STALL_TOLERANT_US));
         kos_reply_recv(KOS_CAP_NONE, b, kos_call_lens_pack(0, sizeof(b)), &opts2);
         wake = opts2.info;
         kos_reply(first.reply_cap, "r", 1); // A's reply capability stops existing here
@@ -6585,7 +6679,7 @@ namespace
         {
             struct kos_recv_info info = {0, KOS_CAP_NONE};
             struct kos_reply_recv_opts opts3;
-            kos_reply_recv_opts_init(&opts3, child_cap(0), 0, STALL_TOLERANT_US);
+            kos_reply_recv_opts_init(&opts3, child_cap(0), 0, after_us(STALL_TOLERANT_US));
             int32_t const n = kos_reply_recv(KOS_CAP_NONE, b, kos_call_lens_pack(0, sizeof(b)), &opts3);
             info = opts3.info;
             if (n < 0)
@@ -6603,8 +6697,8 @@ namespace
     void rb_caller_a(void*) // caps: E(SIGNAL)@0
     {
         char b[8] = {0};
-        kos_sem_wait(&g_rb_go, KOS_TIMEOUT_NONE);
-        if (kos_call(child_cap(0), b, 4, sizeof(b), STALL_TOLERANT_US) == 1)
+        kos_sem_wait(&g_rb_go, KOS_NEVER);
+        if (kos_call(child_cap(0), b, 4, sizeof(b), after_us(STALL_TOLERANT_US)) == 1)
         {
             log_put('A');
         }
@@ -6612,13 +6706,13 @@ namespace
     void rb_caller_b(void*) // caps: E(SIGNAL)@0
     {
         char b[8] = {0};
-        kos_sem_wait(&g_rb_go, KOS_TIMEOUT_NONE);
-        if (kos_call(child_cap(0), b, 4, sizeof(b), STALL_TOLERANT_US) == -KOS_EMFILE)
+        kos_sem_wait(&g_rb_go, KOS_NEVER);
+        if (kos_call(child_cap(0), b, 4, sizeof(b), after_us(STALL_TOLERANT_US)) == -KOS_EMFILE)
         {
             log_put('E'); // refused against the SERVER's reply bound, not against our table
         }
-        kos_sem_wait(&g_rb_go, KOS_TIMEOUT_NONE); // main's go once A has been replied to
-        if (kos_call(child_cap(0), b, 4, sizeof(b), STALL_TOLERANT_US) == 1)
+        kos_sem_wait(&g_rb_go, KOS_NEVER); // main's go once A has been replied to
+        if (kos_call(child_cap(0), b, 4, sizeof(b), after_us(STALL_TOLERANT_US)) == 1)
         {
             log_put('K'); // and admitted once A's reply capability was consumed
         }
@@ -6671,9 +6765,9 @@ namespace
         }
         char plain[4] = {0};
         // Unparks the second recv, so the server replies to A.
-        TAP_CHECK(kos_send(g_ep, plain, 4, STALL_TOLERANT_US) == 4);
+        TAP_CHECK(kos_send(g_ep, plain, 4, after_us(STALL_TOLERANT_US)) == 4);
         TAP_CHECK(kos_sem_post(&g_rb_go) == 0); // B retries
-        TAP_CHECK(kos_send(g_ep, plain, 4, STALL_TOLERANT_US) == 4); // ends the run
+        TAP_CHECK(kos_send(g_ep, plain, 4, after_us(STALL_TOLERANT_US)) == 4); // ends the run
         TAP_CHECK(hold.joined());
         TAP_CHECK(hold.close(&g_ep) == 0);
         TAP_CHECK(count('1') == 1);           // the server took A's call first
@@ -6708,7 +6802,7 @@ namespace
         {
             struct kos_recv_info info = {0, KOS_CAP_NONE};
             struct kos_reply_recv_opts opts;
-            kos_reply_recv_opts_init(&opts, child_cap(0), 0, STALL_TOLERANT_US);
+            kos_reply_recv_opts_init(&opts, child_cap(0), 0, after_us(STALL_TOLERANT_US));
             int32_t const n =
                 kos_reply_recv(KOS_CAP_NONE, b, kos_call_lens_pack(0, sizeof(b)), &opts);
             info = opts.info;
@@ -6729,8 +6823,8 @@ namespace
     void rp_caller(void*) // caps: E(SIGNAL)@0
     {
         char b[8] = {0};
-        kos_sem_wait(&g_rb_go, KOS_TIMEOUT_NONE);
-        int32_t const rc = kos_call(child_cap(0), b, 4, sizeof(b), STALL_TOLERANT_US);
+        kos_sem_wait(&g_rb_go, KOS_NEVER);
+        int32_t const rc = kos_call(child_cap(0), b, 4, sizeof(b), after_us(STALL_TOLERANT_US));
         if (rc == -KOS_EPIPE)
         {
             log_put('P');
@@ -6777,7 +6871,7 @@ namespace
         TAP_CHECK(rp_spawn(rp_server, &g_ep, sv, ca));
         TAP_CHECK(kos_sem_post(&g_rb_go) == 0); // B's call, after the close
         char plain[4] = {0};
-        TAP_CHECK(kos_send(g_ep, plain, 4, STALL_TOLERANT_US) == 4);
+        TAP_CHECK(kos_send(g_ep, plain, 4, after_us(STALL_TOLERANT_US)) == 4);
         TAP_CHECK(hold.joined());
         TAP_CHECK(hold.close(&g_ep) == 0);
         TAP_CHECK(count('c') == 1 and count('P') == 1); // A's cap closed, A woken -KOS_EPIPE
@@ -6791,7 +6885,7 @@ namespace
     {
         char b[8];
         struct kos_reply_recv_opts opts;
-        kos_reply_recv_opts_init(&opts, child_cap(0), 0, STALL_TOLERANT_US);
+        kos_reply_recv_opts_init(&opts, child_cap(0), 0, after_us(STALL_TOLERANT_US));
         kos_reply_recv(KOS_CAP_NONE, b, kos_call_lens_pack(0, sizeof(b)), &opts);
         log_put('d');
     }
@@ -6814,7 +6908,7 @@ namespace
         // Both are gone, so these two reclaim their slots.
         TAP_CHECK(rp_spawn(rp_server, nullptr, sv, cl));
         char plain[4] = {0};
-        TAP_CHECK(kos_send(g_ep, plain, 4, STALL_TOLERANT_US) == 4);
+        TAP_CHECK(kos_send(g_ep, plain, 4, after_us(STALL_TOLERANT_US)) == 4);
         TAP_CHECK(hold.joined());
         TAP_CHECK(hold.close(&g_ep) == 0);
         TAP_CHECK(count('K') == 1 and count('B') == 1); // the next occupant admitted its first
@@ -6860,7 +6954,7 @@ namespace
             ArmHold hold;
             TAP_HOLD(hold.thread(&w));
             w = kos::thread::create_caps(outcome_worker, &ask, "rbden", 10, nullptr, 0,
-                                         KOS_POLICY_FIFO, 0, ask.authority);
+                                         KOS_POLICY_FIFO, 0ns, ask.authority);
             TAP_CHECK(w.valid());
             TAP_CHECK(hold.joined());
             int32_t unknown_rc = -KOS_EPERM;
@@ -6994,15 +7088,15 @@ namespace
         TAP_HOLD(hold.cap(&note) and hold.thread(&w));
         TAP_CHECK(kos_notify_create(&note) == 0);
         w = kos::thread::create_caps(auth_noop, nullptr, "authA", 10, nullptr, 0, KOS_POLICY_FIFO,
-                                     0, SELFTEST_AUTHORITY);
+                                     0ns, SELFTEST_AUTHORITY);
         TAP_CHECK(w.valid());
         TAP_CHECK(hold.joined());
         w = kos::thread::create_caps(auth_noop, nullptr, "authP", 10, nullptr, 0, KOS_POLICY_FIFO,
-                                     0, KOS_AUTH_PSTATE);
+                                     0ns, KOS_AUTH_PSTATE);
         TAP_CHECK(w.error() == -KOS_EPERM);
         kos_cap_grant caps[] = {{note, CH_FULL}};
         w = kos::thread::create_caps(auth_worker, nullptr, "authW", 10, caps, 1, KOS_POLICY_FIFO,
-                                     0, /*authority=*/KOS_AUTH_PINMUX);
+                                     0ns, /*authority=*/KOS_AUTH_PINMUX);
         TAP_CHECK(w.valid());
         TAP_CHECK(hold.joined());
         int32_t const auth_pinmux = g_auth_pinmux;
@@ -7056,7 +7150,7 @@ namespace
             out.create = PeerRun("nop").start(&t, prog);
             if (out.create == 0)
             {
-                (void)kos_task_slay(t, STALL_TOLERANT_US);
+                (void)kos_task_slay(t, after_us(STALL_TOLERANT_US));
             }
             (void)kos_handle_close(prog);
         }
@@ -7064,7 +7158,7 @@ namespace
         out.plain = h.error();
         if (out.plain == 0)
         {
-            (void)h.join(STALL_TOLERANT_US);
+            (void)h.join_for(std::chrono::microseconds{STALL_TOLERANT_US});
         }
     }
     void t_task_authority()
@@ -7082,7 +7176,7 @@ namespace
                 auth |= KOS_AUTH_TASKS;
             }
             w = kos::thread::create_caps(task_auth_worker, reinterpret_cast<void*>(run), "taW",
-                                         10, nullptr, 0, KOS_POLICY_FIFO, 0, auth);
+                                         10, nullptr, 0, KOS_POLICY_FIFO, 0ns, auth);
             TAP_CHECK(w.valid());
             TAP_CHECK(hold.joined());
         }
@@ -7135,7 +7229,7 @@ namespace
         ArmHold hold;
         TAP_HOLD(hold.thread(&w));
         w = kos::thread::create_caps(periph_enable_worker, nullptr, "peW", 10, nullptr, 0,
-                                     KOS_POLICY_FIFO, 0, /*authority=*/KOS_AUTH_MEMORY);
+                                     KOS_POLICY_FIFO, 0ns, /*authority=*/KOS_AUTH_MEMORY);
         TAP_CHECK(w.valid());
         TAP_CHECK(hold.joined());
         int32_t const pe_unheld = g_pe_unheld;
@@ -7225,7 +7319,7 @@ namespace
         ArmHold hold;
         TAP_HOLD(hold.thread(&w) and hold.thread(&holder));
         w = kos::thread::create_caps(periph_reg_write_worker, nullptr, "prwW", 10, nullptr, 0,
-                                     KOS_POLICY_FIFO, 0, /*authority=*/KOS_AUTH_MEMORY);
+                                     KOS_POLICY_FIFO, 0ns, /*authority=*/KOS_AUTH_MEMORY);
         TAP_CHECK(w.valid());
         TAP_CHECK(hold.joined());
         w = kos::thread::Handle();
@@ -7240,7 +7334,7 @@ namespace
         for (uintptr_t b = ST_DEV_BASE; b < ST_DEV_BASE + ST_DEV_SPAN; b += 0x1000u)
         {
             holder = kos::thread::create(periph_reg_write_held_worker, reinterpret_cast<void*>(b),
-                                         "prwH", 10, KOS_POLICY_FIFO, 0, nullptr, 0,
+                                         "prwH", 10, KOS_POLICY_FIFO, 0ns, nullptr, 0,
                                          DeviceWindow(b, PRW_WIN).list(), 1, nullptr, 0,
                                          KOS_AUTH_MEMORY);
             if (holder.valid() or holder.error() == -KOS_ENOMEM)
@@ -7363,7 +7457,7 @@ namespace
         for (uintptr_t b : PVS_BASES)
         {
             w = kos::thread::create(pvs_worker, reinterpret_cast<void*>(b), "pvsW", 10,
-                                    KOS_POLICY_FIFO, 0, nullptr, 0,
+                                    KOS_POLICY_FIFO, 0ns, nullptr, 0,
                                     DeviceWindow(b, PVS_WIN).list(), 1, nullptr, 0,
                                     KOS_AUTH_MEMORY);
             if (w.valid())
@@ -7430,7 +7524,7 @@ namespace
             seen |= WL_ADDR_OK;
         }
         g_wl = static_cast<unsigned char>(seen);
-        kos_sem_wait(&g_devhold, KOS_TIMEOUT_NONE);
+        kos_sem_wait(&g_devhold, KOS_NEVER);
     }
     // The respawn from a death wake: the server holding the window takes the call and exits
     // holding it, and its teardown wakes the caller. The window must already be free for the
@@ -7442,7 +7536,7 @@ namespace
     {
         char b[4];
         struct kos_reply_recv_opts o;
-        kos_reply_recv_opts_init(&o, child_cap(0), 0, KOS_TIMEOUT_NONE);
+        kos_reply_recv_opts_init(&o, child_cap(0), 0, KOS_NEVER);
         (void)kos_reply_recv(KOS_CAP_NONE, b, kos_call_lens_pack(0, sizeof(b)), &o);
         kos_exit(0); // holding the call, whose caller the teardown answers -KOS_EPIPE
     }
@@ -7450,13 +7544,13 @@ namespace
     {
         uintptr_t const pv = reinterpret_cast<uintptr_t>(arg);
         char b[4] = {};
-        g_wl_call = kos_call(child_cap(0), b, sizeof(b), sizeof(b), STALL_TOLERANT_US);
-        auto const again = kos::thread::create(wl_noop, nullptr, "wlN", 10, KOS_POLICY_FIFO, 0,
+        g_wl_call = kos_call(child_cap(0), b, sizeof(b), sizeof(b), after_us(STALL_TOLERANT_US));
+        auto const again = kos::thread::create(wl_noop, nullptr, "wlN", 10, KOS_POLICY_FIFO, 0ns,
                                                nullptr, 0, DeviceWindow(pv, PVS_WIN).list(), 1);
         g_wl_respawn = again.error();
         if (again.valid())
         {
-            (void)again.join(STALL_TOLERANT_US);
+            (void)again.join_for(std::chrono::microseconds{STALL_TOLERANT_US});
         }
     }
     void t_window_list()
@@ -7477,7 +7571,7 @@ namespace
         for (uintptr_t b : PVS_BASES)
         {
             kos_window const dup[] = {DeviceWindow(b, PVS_WIN).w, DeviceWindow(b, PVS_WIN).w};
-            twice = kos::thread::create(wl_holder, nullptr, "wltwice", 10, KOS_POLICY_FIFO, 0,
+            twice = kos::thread::create(wl_holder, nullptr, "wltwice", 10, KOS_POLICY_FIFO, 0ns,
                                         nullptr, 0, dup, 2, nullptr, 0, KOS_AUTH_MEMORY);
             if (twice.error() != -KOS_EINVAL)
             {
@@ -7489,10 +7583,10 @@ namespace
         kos_window const both[] = {DeviceWindow(pv, PVS_WIN).w,
                                    DeviceWindow(pv + PVS_WIN, PVS_WIN).w};
         h = kos::thread::create(wl_holder, reinterpret_cast<void*>(pv), "wlboth", 10,
-                                KOS_POLICY_FIFO, 0, nullptr, 0, both, 2, nullptr, 0,
+                                KOS_POLICY_FIFO, 0ns, nullptr, 0, both, 2, nullptr, 0,
                                 KOS_AUTH_MEMORY);
         TAP_CHECK(h.valid());
-        second = kos::thread::create(wl_holder, nullptr, "wlsecond", 10, KOS_POLICY_FIFO, 0,
+        second = kos::thread::create(wl_holder, nullptr, "wlsecond", 10, KOS_POLICY_FIFO, 0ns,
                                      nullptr, 0, DeviceWindow(pv + PVS_WIN, PVS_WIN).list(), 1,
                                      nullptr, 0, KOS_AUTH_MEMORY);
         TAP_CHECK(second.error() == -KOS_EBUSY);
@@ -7509,10 +7603,10 @@ namespace
         g_wl_respawn = -99;
         kos_cap_grant scaps[] = {{ep, EP_WAIT_ONLY}};
         kos_cap_grant ccaps[] = {{ep, EP_SIGNAL_ONLY}};
-        sv = kos::thread::create(wl_server, nullptr, "wlS", 10, KOS_POLICY_FIFO, 0, nullptr, 0,
+        sv = kos::thread::create(wl_server, nullptr, "wlS", 10, KOS_POLICY_FIFO, 0ns, nullptr, 0,
                                  DeviceWindow(pv, PVS_WIN).list(), 1, scaps, 1, KOS_AUTH_MEMORY);
         cl = kos::thread::create(wl_caller, reinterpret_cast<void*>(pv), "wlC", 12,
-                                 KOS_POLICY_FIFO, 0, nullptr, 0, nullptr, 0, ccaps, 1,
+                                 KOS_POLICY_FIFO, 0ns, nullptr, 0, nullptr, 0, ccaps, 1,
                                  KOS_AUTH_MEMORY);
         TAP_CHECK(sv.valid() and cl.valid());
         TAP_CHECK(hold.joined());
@@ -7542,7 +7636,7 @@ namespace
     void join_sibling(void*)
     {
         char c = 'x';
-        int const rc = kos_thread_join(g_main, JOIN_SIBLING_US);
+        int const rc = kos_thread_join(g_main, after_us(JOIN_SIBLING_US));
         if (rc == -KOS_ETIMEDOUT)
         {
             c = 'T';
@@ -7558,7 +7652,7 @@ namespace
     // A thread of another task, which main's task did not create either, names main.
     int join_foreign_task(char const* who)
     {
-        if (kos_thread_join(static_cast<kos_thread_t>(peer_word(who)), JOIN_GENEROUS_US)
+        if (kos_thread_join(static_cast<kos_thread_t>(peer_word(who)), after_us(JOIN_GENEROUS_US))
             == -KOS_EPERM)
         {
             return 0;
@@ -7580,7 +7674,7 @@ namespace
         w = irq_spawn(join_target, nullptr, "join", TAP_PRIO_AFTER, nullptr, 0);
         TAP_CHECK(w.valid());
         // The parked path: the target has not run when the join is entered.
-        int const parked_rc = w.join(STALL_TOLERANT_US);
+        int const parked_rc = w.join_for(std::chrono::microseconds{STALL_TOLERANT_US});
         int const ran = g_join_ran;
         TAP_CHECK(parked_rc == 0);
         TAP_CHECK(ran == 1);
@@ -7589,14 +7683,14 @@ namespace
         // is what makes the case total instead of a hang: a kernel that read that state as
         // "still running" answers -KOS_ETIMEDOUT here, and one that read it as a stale
         // handle answers -KOS_EBADF.
-        int const exited_rc = kos_thread_join(w.id(), JOIN_GENEROUS_US);
+        int const exited_rc = kos_thread_join(w.id(), after_us(JOIN_GENEROUS_US));
         TAP_CHECK(exited_rc == 0);
         w = kos::thread::Handle();
         // Refusals that need no target thread: a handle the pool never seats, one whose
         // index is past every slot, and main naming itself.
-        TAP_CHECK(kos_thread_join(KOS_THREAD_NONE, JOIN_GENEROUS_US) == -KOS_EBADF);
-        TAP_CHECK(kos_thread_join(0x7fffffffu, JOIN_GENEROUS_US) == -KOS_EBADF);
-        TAP_CHECK(kos_thread_join(g_main, JOIN_GENEROUS_US) == -KOS_EDEADLK);
+        TAP_CHECK(kos_thread_join(KOS_THREAD_NONE, after_us(JOIN_GENEROUS_US)) == -KOS_EBADF);
+        TAP_CHECK(kos_thread_join(0x7fffffffu, after_us(JOIN_GENEROUS_US)) == -KOS_EBADF);
+        TAP_CHECK(kos_thread_join(g_main, after_us(JOIN_GENEROUS_US)) == -KOS_EDEADLK);
         s = kos::thread::create_caps(join_sibling, nullptr, "jsib", 10, nullptr, 0);
         TAP_CHECK(s.valid());
         TAP_CHECK(hold.joined());
@@ -7632,7 +7726,7 @@ namespace
     kos_sem_t g_join_gate = KOS_SEM_INIT(0);
     void join_holder(void*)
     {
-        kos_sem_wait(&g_join_gate, KOS_TIMEOUT_NONE);
+        kos_sem_wait(&g_join_gate, KOS_NEVER);
     }
 
     void t_join_stale_gen()
@@ -7672,7 +7766,7 @@ namespace
         if (reseated >= 0)
         {
             reseated_id = probes[reseated].id();
-            stale_rc = kos_thread_join(stale, JOIN_GENEROUS_US);
+            stale_rc = kos_thread_join(stale, after_us(JOIN_GENEROUS_US));
         }
         for (int i = 0; i < made; i++)
         {
@@ -7698,7 +7792,7 @@ namespace
 
     void join_slow(void*)
     {
-        kos_sem_wait(&g_join_gate, KOS_TIMEOUT_NONE);
+        kos_sem_wait(&g_join_gate, KOS_NEVER);
     }
 
     void t_join_timeout()
@@ -7710,9 +7804,10 @@ namespace
         TAP_CHECK(kos_sem_init(&g_join_gate, 0) == 0);
         w = irq_spawn(join_slow, nullptr, "jslo", TAP_PRIO_AFTER, nullptr, 0);
         TAP_CHECK(w.valid());
-        uint64_t const t0 = kos_clock_now();
-        int const rc = w.join(JOIN_TIMEOUT_US);
-        uint32_t const waited_us = static_cast<uint32_t>((kos_clock_now() - t0) / 1000ull);
+        kos_monotonic_t const t0 = kos_monotonic_now();
+        int const rc = w.join_for(std::chrono::microseconds{JOIN_TIMEOUT_US});
+        uint32_t const waited_us =
+            static_cast<uint32_t>(kos_between(t0, kos_monotonic_now()).ns / 1000ull);
         TAP_CHECK(rc == -KOS_ETIMEDOUT); // the target is still running, and nothing waits on it
         // Both clock reads bracket the syscall, so this cannot pass on a deadline the
         // kernel fired immediately.
@@ -7741,28 +7836,28 @@ namespace
         char const* hold_argv[] = {"peer", "hold", nullptr};
         kos_task_params p{};
         p.argv = hold_argv;
-        TAP_CHECK(kos_task_create(g_peer_prog, &p, 0, nullptr) == -KOS_EINVAL);
+        TAP_CHECK(kos_task_create(g_peer_prog, &p, KOS_POLL, nullptr) == -KOS_EINVAL);
         TAP_CHECK(PeerRun("hold").start(&task) == 0);
         TAP_CHECK(task != KOS_TASK_NONE); // the bias is what makes this assertion possible
         // The two words nothing can mint: the sentinel, and a generation the slot never held.
-        TAP_CHECK(kos_task_slay(KOS_TASK_NONE, 0) == -KOS_EBADF);
-        TAP_CHECK(kos_task_slay(task ^ 0xFFFF0000u, 0) == -KOS_EBADF);
+        TAP_CHECK(kos_task_slay(KOS_TASK_NONE, KOS_POLL) == -KOS_EBADF);
+        TAP_CHECK(kos_task_slay(task ^ 0xFFFF0000u, KOS_POLL) == -KOS_EBADF);
         // An out-of-range index, whatever generation rides it.
-        TAP_CHECK(kos_task_slay(0x0000FFFFu, 0) == -KOS_EBADF);
+        TAP_CHECK(kos_task_slay(0x0000FFFFu, KOS_POLL) == -KOS_EBADF);
         // The idle and root tasks are unnameable: idle's task is created first and root's second, so
         // slots 0 and 1 hold them and the biased codec names those two handles 1 and 2 at
         // generation 0. Neither slot is ever freed. Idle's carries the KERNEL domain, the
         // whole arena at R|W, so a handle that resolved would hand an unprivileged thread
         // the arena.
-        TAP_CHECK(kos_task_slay(1u, 0) == -KOS_EBADF);
-        TAP_CHECK(kos_task_slay(2u, 0) == -KOS_EBADF);
-        TAP_CHECK(kos_task_slay(task, ARM_SLAY_US) == 0);
+        TAP_CHECK(kos_task_slay(1u, KOS_POLL) == -KOS_EBADF);
+        TAP_CHECK(kos_task_slay(2u, KOS_POLL) == -KOS_EBADF);
+        TAP_CHECK(kos_task_slay(task, after_us(ARM_SLAY_US)) == 0);
         kos_task_t const killed = task;
         task = KOS_TASK_NONE;
         // The slay DROPPED the hold, so the handle now names nothing, to a read as to a second
         // slay, which is not idempotent and must not be.
         TAP_CHECK(kos_task_state(killed, nullptr) == -KOS_EBADF);
-        TAP_CHECK(kos_task_slay(killed, 0) == -KOS_EBADF);
+        TAP_CHECK(kos_task_slay(killed, KOS_POLL) == -KOS_EBADF);
     }
 
     // The creator gate, and it takes a second thread to witness at all: only the thread that
@@ -7773,7 +7868,7 @@ namespace
     {
         kos_task_t const t = static_cast<kos_task_t>(reinterpret_cast<uintptr_t>(arg));
         unsigned char answer[2] = {0u, 0u};
-        if (kos_task_slay(t, 0) == -KOS_EPERM)
+        if (kos_task_slay(t, KOS_POLL) == -KOS_EPERM)
         {
             answer[0] = 1u;
         }
@@ -7784,7 +7879,7 @@ namespace
             answer[1] = 1u;
         }
         (void)kos_send(KOS_SPAWN_DELEGATED_CAP0, answer, sizeof(answer),
-                             STALL_TOLERANT_US);
+                             after_us(STALL_TOLERANT_US));
         kos_exit(0);
     }
 
@@ -7801,12 +7896,12 @@ namespace
         kos_cap_grant const caps[1] = {{ep, CH_FULL}};
         stranger = kos::thread::create(task_stranger,
                                        reinterpret_cast<void*>(static_cast<uintptr_t>(task)),
-                                       "tstr", 10, KOS_POLICY_FIFO, 0, nullptr, 0, nullptr, 0,
+                                       "tstr", 10, KOS_POLICY_FIFO, 0ns, nullptr, 0, nullptr, 0,
                                        caps, 1);
         TAP_CHECK(stranger.valid());
         unsigned char answer[2] = {0u, 0u};
         struct kos_reply_recv_opts opts;
-        kos_reply_recv_opts_init(&opts, ep, 0, STALL_TOLERANT_US);
+        kos_reply_recv_opts_init(&opts, ep, 0, after_us(STALL_TOLERANT_US));
         TAP_CHECK(kos_reply_recv(KOS_CAP_NONE, answer, kos_call_lens_pack(0, sizeof(answer)),
                                  &opts)
                   == 2);
@@ -7814,7 +7909,7 @@ namespace
         TAP_CHECK(answer[1] == 1u); // nor watch it
         TAP_CHECK(hold.joined());
         // Still ours, so still killable: the refusals above cost the task nothing.
-        TAP_CHECK(kos_task_slay(task, ARM_SLAY_US) == 0);
+        TAP_CHECK(kos_task_slay(task, after_us(ARM_SLAY_US)) == 0);
         task = KOS_TASK_NONE;
         TAP_CHECK(hold.close(&ep) == 0);
     }
@@ -7836,7 +7931,7 @@ namespace
     {
         char b[4];
         struct kos_reply_recv_opts o;
-        kos_reply_recv_opts_init(&o, ep, KOS_RECV_NO_INFO, STALL_TOLERANT_US);
+        kos_reply_recv_opts_init(&o, ep, KOS_RECV_NO_INFO, after_us(STALL_TOLERANT_US));
         (void)kos_reply_recv(KOS_CAP_NONE, b, kos_call_lens_pack(0, sizeof(b)), &o);
     }
     int tw_member() // caps: served E(WAIT)@0, other E(WAIT)@1
@@ -7858,7 +7953,7 @@ namespace
     };
     TwRun g_tw;
     void tw_play(kos_program_t prog, kos_cap_t n, kos_cap_t ep, kos_cap_t other, TwRun* r,
-                 uint64_t until)
+                 kos_monotonic_t until)
     {
         uint32_t const mask = 1u << TW_BIT;
         uint32_t bits = 0;
@@ -7877,25 +7972,25 @@ namespace
         }
         r->closed = kos_handle_close(badged);
         r->before = kos_task_state(t, nullptr);
-        (void)kos_send(other, "x", 1, left_us_until(until));
-        r->quiet = kos_notify_wait(n, mask, 0u, &bits);
+        (void)kos_send(other, "x", 1, until);
+        r->quiet = kos_notify_wait(mask, KOS_POLL, &bits);
         r->quiet_state = kos_task_state(t, nullptr);
-        (void)kos_send(other, "x", 1, left_us_until(until));
-        r->ready = kos_notify_wait(n, mask, left_us_until(until), &r->ready_bits);
+        (void)kos_send(other, "x", 1, until);
+        r->ready = kos_notify_wait(mask, until, &r->ready_bits);
         r->ready_state = kos_task_state(t, nullptr);
-        (void)kos_send(ep, "x", 1, left_us_until(until));
-        (void)kos_send(ep, "x", 1, left_us_until(until));
-        r->again = kos_notify_wait(n, mask, 0u, &bits);
-        (void)kos_send(other, "x", 1, left_us_until(until));
-        r->ended = kos_notify_wait(n, mask, left_us_until(until), &r->ended_bits);
+        (void)kos_send(ep, "x", 1, until);
+        (void)kos_send(ep, "x", 1, until);
+        r->again = kos_notify_wait(mask, KOS_POLL, &bits);
+        (void)kos_send(other, "x", 1, until);
+        r->ended = kos_notify_wait(mask, until, &r->ended_bits);
         r->ended_state = kos_task_state(t, nullptr);
         r->dead = 0;
         if (r->ended_state >= 0 and (r->ended_state & KOS_TASK_DEAD) == 0)
         {
-            r->dead = kos_notify_wait(n, mask, left_us_until(until), &bits);
+            r->dead = kos_notify_wait(mask, until, &bits);
         }
         r->dead_state = kos_task_state(t, nullptr);
-        r->killed = kos_task_slay(t, 0);
+        r->killed = kos_task_slay(t, KOS_POLL);
         r->stale = kos_task_state(t, nullptr);
     }
     void tw_creator(void*)
@@ -7925,7 +8020,7 @@ namespace
         kos::thread::Handle w;
         ArmHold hold(CREATOR_HOLD_US);
         TAP_HOLD(hold.thread(&w));
-        w = kos::thread::create(tw_creator, nullptr, "twC", TW_CREATOR_PRIO, KOS_POLICY_FIFO, 0,
+        w = kos::thread::create(tw_creator, nullptr, "twC", TW_CREATOR_PRIO, KOS_POLICY_FIFO, 0ns,
                                 nullptr, 0, nullptr, 0, nullptr, 0, PEER_CREATOR, nullptr,
                                 TAP_PIN_CORE);
         TAP_CHECK(w.valid());
@@ -7956,15 +8051,15 @@ namespace
     constexpr uint64_t TX_POLL_NS = 1000000ull;
     // The instant a TX_WAIT_US wait begun now gives up at, which every polling loop below
     // shares instead of counting passes.
-    uint64_t tx_give_up()
+    kos_monotonic_t tx_give_up()
     {
-        return kos_clock_now() + TX_WAIT_US * 1000ull;
+        return after_us(TX_WAIT_US);
     }
     constexpr int TX_ENTRY_EXIT = -3;
     constexpr int TX_SIBLING_EXIT = 7;
     Atomic<int32_t, Order::RELAXED> g_tx_stranger{-99};
     // Bounded: true once kos_task_state(t) carries every bit of `bits`.
-    bool tx_await_until(kos_task_t t, int bits, uint64_t give_up)
+    bool tx_await_until(kos_task_t t, int bits, kos_monotonic_t give_up)
     {
         while (true)
         {
@@ -7973,11 +8068,11 @@ namespace
             {
                 return true;
             }
-            if (kos_clock_now() >= give_up)
+            if (kos_monotonic_now().ns >= give_up.ns)
             {
                 return false;
             }
-            kos_sleep_ns(TX_POLL_NS);
+            kos_sleep_for(kos_ns(TX_POLL_NS));
         }
     }
     bool tx_await(kos_task_t t, int bits)
@@ -8013,18 +8108,18 @@ namespace
 #if KICKOS_SELFTEST_PEER
     void tx_report_spun(kos_cap_t ep)
     {
-        kos_sleep_ns(TX_SPIN_NS);
+        kos_sleep_for(kos_ns(TX_SPIN_NS));
         char spun = 'n';
         if (g_tx_turns != 0u)
         {
             spun = 's';
         }
-        (void)kos_send(ep, &spun, 1, TX_WAIT_US);
+        (void)kos_send(ep, &spun, 1, after_us(TX_WAIT_US));
     }
     int tx_entry_returns() // caps: E(SIGNAL)@0
     {
         peer_seat(10, TAP_PIN_CORE);
-        (void)kos::thread::create(tx_spins, nullptr, "txs", KICKOS_PRIO_MIN, KOS_POLICY_FIFO, 0,
+        (void)kos::thread::create(tx_spins, nullptr, "txs", KICKOS_PRIO_MIN, KOS_POLICY_FIFO, 0ns,
                                   nullptr, 0, nullptr, 0, nullptr, 0, 0, nullptr, TAP_PIN_CORE);
         tx_report_spun(child_cap(0));
         return 0;
@@ -8034,9 +8129,9 @@ namespace
         auto const quits = kos::thread::create(tx_quits, nullptr, "txq", 9);
         if (quits.valid())
         {
-            (void)quits.join(TX_WAIT_US);
+            (void)quits.join_for(std::chrono::microseconds{TX_WAIT_US});
         }
-        (void)kos_send(child_cap(0), "r", 1, TX_WAIT_US);
+        (void)kos_send(child_cap(0), "r", 1, after_us(TX_WAIT_US));
         peer_park(child_cap(1));
         kos_exit(TX_ENTRY_EXIT);
     }
@@ -8046,7 +8141,7 @@ namespace
     {
         char r = 0;
         struct kos_reply_recv_opts o;
-        kos_reply_recv_opts_init(&o, ep, KOS_RECV_NO_INFO, TX_WAIT_US);
+        kos_reply_recv_opts_init(&o, ep, KOS_RECV_NO_INFO, after_us(TX_WAIT_US));
         return kos_reply_recv(KOS_CAP_NONE, &r, kos_call_lens_pack(0, 1), &o);
     }
     void t_task_exit_entry_return()
@@ -8084,7 +8179,7 @@ namespace
         char spun = 0;
         bool const heard = report_await(ready, &spun, 1);
         uint32_t bits = 0;
-        int const ended = kos_notify_wait(n, mask, TX_WAIT_US, &bits);
+        int const ended = kos_notify_wait(mask, after_us(TX_WAIT_US), &bits);
         int const state = kos_task_state(t, nullptr);
         bool const dead = tx_await(t, KOS_TASK_DEAD);
         int const later = kos_task_state(t, &status);
@@ -8126,7 +8221,7 @@ namespace
         TAP_CHECK(kos_notify(go) == 0);
         bool const dead = tx_await(t, KOS_TASK_DEAD);
         int const final_state = kos_task_state(t, &status);
-        int const killed = kos_task_slay(t, 0);
+        int const killed = kos_task_slay(t, KOS_POLL);
         if (killed == 0)
         {
             t = KOS_TASK_NONE;
@@ -8147,12 +8242,12 @@ namespace
     constexpr uint8_t PD_WORKER_PRIO = 9;
     void pd_parks(void*)
     {
-        kos_sem_wait(&g_tx_never, KOS_TIMEOUT_NONE);
+        kos_sem_wait(&g_tx_never, KOS_NEVER);
     }
     int pd_slow_end()
     {
         (void)kos::thread::create(pd_parks, nullptr, "pdw", KICKOS_PRIO_MIN,
-                                  KOS_POLICY_FIFO, 0, nullptr, 0, nullptr, 0, nullptr, 0, 0,
+                                  KOS_POLICY_FIFO, 0ns, nullptr, 0, nullptr, 0, nullptr, 0, 0,
                                   nullptr, TAP_PIN_CORE);
         return 0;
     }
@@ -8167,7 +8262,7 @@ namespace
         {
             return h.error();
         }
-        (void)h.join(KOS_TIMEOUT_NONE);
+        (void)h.join();
         return 0;
     }
 #endif
@@ -8191,7 +8286,7 @@ namespace
         }
         (void)kos_handle_close(badged);
         uint32_t bits = 0;
-        int const ended = kos_notify_wait(n, mask, TX_WAIT_US, &bits);
+        int const ended = kos_notify_wait(mask, after_us(TX_WAIT_US), &bits);
         int const state = kos_task_state(t, nullptr);
         PeerRun spawn("pdspawn");
         int const refused = spawn.try_start("peer0", &next);
@@ -8240,8 +8335,8 @@ namespace
     Atomic<int32_t, Order::RELAXED> g_dl_spun_out{0};
     void dl_spinner(void*)
     {
-        uint64_t const until = deadline_in(2u * DL_WAIT_US);
-        while (g_dl_done.load() == 0 and kos_clock_now() < until)
+        kos_monotonic_t const until = deadline_in(2u * DL_WAIT_US);
+        while (g_dl_done.load() == 0 and kos_monotonic_now().ns < until.ns)
         {
         }
         if (g_dl_done.load() == 0)
@@ -8265,7 +8360,7 @@ namespace
             pre = kos_notify_bind(n);
         }
         auto const spinner = kos::thread::create(dl_spinner, nullptr, "dls", DL_SPIN_PRIO,
-                                                 KOS_POLICY_FIFO, 0, nullptr, 0, nullptr, 0,
+                                                 KOS_POLICY_FIFO, 0ns, nullptr, 0, nullptr, 0,
                                                  nullptr, 0, 0, nullptr, TAP_PIN_CORE);
         if (pre == 0)
         {
@@ -8288,7 +8383,7 @@ namespace
         if (pre == 0)
         {
             uint32_t bits = 0;
-            pre = kos_notify_wait(n, 1u << TW_BIT, TX_WAIT_US, &bits);
+            pre = kos_notify_wait(1u << TW_BIT, after_us(TX_WAIT_US), &bits);
         }
         g_dl.pre = pre;
         if (pre == 0)
@@ -8298,21 +8393,21 @@ namespace
             kos_task_params p{};
             p.argv = argv;
             p.instance = "peer0";
-            g_dl.started = kos_task_create(prog, &p, DL_WAIT_US, &next);
+            g_dl.started = kos_task_create(prog, &p, after_us(DL_WAIT_US), &next);
             g_dl.stale = kos_task_state(t, nullptr);
         }
         g_dl_done.store(1);
         if (spinner.valid())
         {
-            (void)kos_thread_join(spinner.id(), STALL_TOLERANT_US);
+            (void)kos_thread_join(spinner.id(), after_us(STALL_TOLERANT_US));
         }
         if (g_dl.started == 0)
         {
-            (void)kos_task_slay(next, STALL_TOLERANT_US);
+            (void)kos_task_slay(next, after_us(STALL_TOLERANT_US));
         }
         if (g_dl.stale != -KOS_EBADF)
         {
-            (void)kos_task_slay(t, STALL_TOLERANT_US);
+            (void)kos_task_slay(t, after_us(STALL_TOLERANT_US));
         }
         (void)kos_handle_close(n);
         (void)kos_handle_close(prog);
@@ -8326,7 +8421,7 @@ namespace
         kos::thread::Handle w;
         ArmHold hold(CREATOR_HOLD_US);
         TAP_HOLD(hold.thread(&w));
-        w = kos::thread::create(dl_creator, nullptr, "dlc", DL_CREATOR_PRIO, KOS_POLICY_FIFO, 0,
+        w = kos::thread::create(dl_creator, nullptr, "dlc", DL_CREATOR_PRIO, KOS_POLICY_FIFO, 0ns,
                                 nullptr, 0, nullptr, 0, nullptr, 0, PEER_CREATOR, nullptr,
                                 TAP_PIN_CORE);
         TAP_CHECK(w.valid());
@@ -8382,7 +8477,7 @@ namespace
 #endif
     void td_creator(void*)
     {
-        uint64_t const until = deadline_in(CREATOR_US);
+        kos_monotonic_t const until = deadline_in(CREATOR_US);
         kos_task_t t = KOS_TASK_NONE;
         kos_cap_t ep = KOS_CAP_NONE;
         kos_program_t prog = KOS_CAP_NONE;
@@ -8397,13 +8492,13 @@ namespace
             if (g_td.setup == 0)
             {
                 char b[4] = {};
-                g_td.called = kos_call(ep, b, sizeof(b), sizeof(b), left_us_until(until));
+                g_td.called = kos_call(ep, b, sizeof(b), sizeof(b), until);
                 g_td.mid = kos_task_state(t, nullptr);
                 g_td.dead = tx_await_until(t, KOS_TASK_DEAD, until);
                 g_td.final_state = kos_task_state(t, nullptr);
             }
         }
-        (void)kos_task_slay(t, 0);
+        (void)kos_task_slay(t, KOS_POLL);
         (void)kos_handle_close(ep);
         (void)kos_handle_close(prog);
     }
@@ -8415,7 +8510,7 @@ namespace
         kos::thread::Handle w;
         ArmHold hold(CREATOR_HOLD_US);
         TAP_HOLD(hold.thread(&w));
-        w = kos::thread::create(td_creator, nullptr, "tdc", 12, KOS_POLICY_FIFO, 0, nullptr, 0,
+        w = kos::thread::create(td_creator, nullptr, "tdc", 12, KOS_POLICY_FIFO, 0ns, nullptr, 0,
                                 nullptr, 0, nullptr, 0, PEER_CREATOR, nullptr, 1u);
         TAP_CHECK(w.valid());
         TAP_CHECK(hold.joined());
@@ -8452,7 +8547,8 @@ namespace
         kos_cap_grant const scaps[] = {{child_cap(1), KOS_CAP_WAIT}, {child_cap(2), KOS_CAP_WAIT}};
         uint16_t const sdest[] = {0, static_cast<uint16_t>(table_width() - 1)};
         auto const sibling = kos::thread::create(te_sibling, nullptr, "tes", 11, KOS_POLICY_FIFO,
-                                                 0, nullptr, 0, nullptr, 0, scaps, 2, 0, sdest, 1u);
+                                                 0ns, nullptr, 0, nullptr, 0, scaps, 2, 0, sdest,
+                                                 1u);
         (void)kos_handle_close(child_cap(1));
         (void)kos_handle_close(child_cap(2));
         if (not sibling.valid())
@@ -8460,7 +8556,7 @@ namespace
             return 2;
         }
         char b[4] = {};
-        if (kos_call(child_cap(0), b, sizeof(b), sizeof(b), TX_WAIT_US) >= 0)
+        if (kos_call(child_cap(0), b, sizeof(b), sizeof(b), after_us(TX_WAIT_US)) >= 0)
         {
             return 1;
         }
@@ -8470,13 +8566,13 @@ namespace
     void te_watcher(void*) // caps: probe E(SIGNAL)@0
     {
         char b[4] = {};
-        g_te.probe_call = kos_call(child_cap(0), b, sizeof(b), sizeof(b), TX_WAIT_US);
+        g_te.probe_call = kos_call(child_cap(0), b, sizeof(b), sizeof(b), after_us(TX_WAIT_US));
         g_te_seq = g_te_seq + 1;
         g_te.watcher_seq = g_te_seq;
     }
     void te_creator(void*)
     {
-        uint64_t const until = deadline_in(CREATOR_US);
+        kos_monotonic_t const until = deadline_in(CREATOR_US);
         kos_task_t t = KOS_TASK_NONE;
         kos_program_t prog = KOS_CAP_NONE;
         kos_cap_t ep = KOS_CAP_NONE;
@@ -8520,7 +8616,7 @@ namespace
         {
             kos_cap_grant const wcaps[] = {{probe, KOS_CAP_SIGNAL}};
             auto const watcher = kos::thread::create(te_watcher, nullptr, "tew", 13,
-                                                     KOS_POLICY_FIFO, 0, nullptr, 0, nullptr, 0,
+                                                     KOS_POLICY_FIFO, 0ns, nullptr, 0, nullptr, 0,
                                                      wcaps, 1, 0, nullptr, 1u);
             g_te.watcher_rc = watcher.error();
             g_te.setup = watcher.error();
@@ -8529,11 +8625,11 @@ namespace
                 g_te.setup = kos_cap_narrow(ep, KOS_CAP_SIGNAL)
                              | kos_cap_narrow(probe, KOS_CAP_SIGNAL);
             }
-            uint64_t const give_up = until;
-            while (g_te.setup == 0 and kos_clock_now() < give_up)
+            kos_monotonic_t const give_up = until;
+            while (g_te.setup == 0 and kos_monotonic_now().ns < give_up.ns)
             {
                 uint32_t bits = 0;
-                (void)kos_notify_wait(n, 1u << TW_BIT, left_us_until(until), &bits);
+                (void)kos_notify_wait(1u << TW_BIT, until, &bits);
                 int const state = kos_task_state(t, nullptr);
                 if (state >= 0 and (state & KOS_TASK_DEAD) != 0)
                 {
@@ -8545,13 +8641,13 @@ namespace
             g_te.status_rc = kos_task_state(t, &g_te.status);
             if (watcher.valid())
             {
-                (void)watcher.join(left_us_until(until));
+                (void)kos_thread_join(watcher.id(), until);
             }
             (void)kos_notify_unbind(n);
         }
         (void)kos_handle_close(badged);
         (void)kos_handle_close(n);
-        (void)kos_task_slay(t, 0);
+        (void)kos_task_slay(t, KOS_POLL);
         (void)kos_handle_close(probe);
         (void)kos_handle_close(ep);
         (void)kos_handle_close(prog);
@@ -8591,7 +8687,7 @@ namespace
         {
             return 1;
         }
-        (void)m.join(KOS_TIMEOUT_NONE);
+        (void)m.join();
         return 1;
     }
 #endif
@@ -8605,7 +8701,7 @@ namespace
         bool const dead = tx_await(t, KOS_TASK_DEAD);
         int status = -99;
         int const got = kos_task_state(t, &status);
-        int const killed = kos_task_slay(t, 0);
+        int const killed = kos_task_slay(t, KOS_POLL);
         if (killed == 0)
         {
             t = KOS_TASK_NONE;
@@ -8641,13 +8737,13 @@ namespace
     // Waits for the spinner's first turn, or past the bound, and tells main on the endpoint.
     void tx_spun_send()
     {
-        uint64_t const give_up = tx_give_up();
-        while (g_txs.spinning == 0 and kos_clock_now() < give_up)
+        kos_monotonic_t const give_up = tx_give_up();
+        while (g_txs.spinning == 0 and kos_monotonic_now().ns < give_up.ns)
         {
-            kos_sleep_ns(TX_POLL_NS);
+            kos_sleep_for(kos_ns(TX_POLL_NS));
         }
         char const spun = static_cast<char>('0' + g_txs.spinning);
-        (void)kos_send(child_cap(0), &spun, 1, TX_WAIT_US);
+        (void)kos_send(child_cap(0), &spun, 1, after_us(TX_WAIT_US));
     }
     // A sibling's fault, with the entry parked and a second sibling spinning with no system
     // call: the task ends with the fault's status and both are stopped at once, the entry never
@@ -8664,14 +8760,14 @@ namespace
         g_txs.absent = reinterpret_cast<void*>(peer_word(absent));
         kos_cap_grant const caps[] = {{child_cap(0), KOS_CAP_SIGNAL}};
         (void)kos::thread::create(tx_spins_marked, nullptr, "txs", KICKOS_PRIO_MIN,
-                                  KOS_POLICY_FIFO, 0, nullptr, 0, nullptr, 0, nullptr, 0, 0,
+                                  KOS_POLICY_FIFO, 0ns, nullptr, 0, nullptr, 0, nullptr, 0, 0,
                                   nullptr, TX_ONE_CORE);
-        (void)kos::thread::create(tx_touches_once_spinning, nullptr, "txf", 9, KOS_POLICY_FIFO, 0,
+        (void)kos::thread::create(tx_touches_once_spinning, nullptr, "txf", 9, KOS_POLICY_FIFO, 0ns,
                                   nullptr, 0, nullptr, 0, caps, 1, 0, nullptr, TX_ONE_CORE);
         // nothing posts it, and the sibling's fault slays this thread in it
-        kos_sem_wait(&g_tx_never, KOS_TIMEOUT_NONE);
+        kos_sem_wait(&g_tx_never, KOS_NEVER);
         char const woke = 'w';
-        (void)kos_send(child_cap(0), &woke, 1, TX_WAIT_US);
+        (void)kos_send(child_cap(0), &woke, 1, after_us(TX_WAIT_US));
         return TX_ENTRY_EXIT;
     }
     // Tells main the spinner had spun, so the entry is parked.
@@ -8685,14 +8781,14 @@ namespace
         peer_seat(10, TX_ONE_CORE);
         g_txs.absent = reinterpret_cast<void*>(peer_word(absent));
         kos_thread_t const self = kos_thread_self();
-        (void)kos_send(child_cap(0), &self, sizeof(self), TX_WAIT_US);
+        (void)kos_send(child_cap(0), &self, sizeof(self), after_us(TX_WAIT_US));
         kos_cap_grant const caps[] = {{child_cap(0), KOS_CAP_SIGNAL}};
         (void)kos::thread::create(tx_spins_marked, nullptr, "txs", KICKOS_PRIO_MIN,
-                                  KOS_POLICY_FIFO, 0, nullptr, 0, nullptr, 0, nullptr, 0, 0,
+                                  KOS_POLICY_FIFO, 0ns, nullptr, 0, nullptr, 0, nullptr, 0, 0,
                                   nullptr, TX_ONE_CORE);
-        (void)kos::thread::create(tx_parked_send, nullptr, "txp", 9, KOS_POLICY_FIFO, 0, nullptr,
+        (void)kos::thread::create(tx_parked_send, nullptr, "txp", 9, KOS_POLICY_FIFO, 0ns, nullptr,
                                   0, nullptr, 0, caps, 1, 0, nullptr, TX_ONE_CORE);
-        kos_sem_wait(&g_tx_never, KOS_TIMEOUT_NONE); // nothing posts it: the kill ends this wait
+        kos_sem_wait(&g_tx_never, KOS_NEVER); // nothing posts it: the kill ends this wait
         *static_cast<volatile uint32_t*>(g_txs.absent) = 1u;
         return TX_ENTRY_EXIT; // unreachable: the store faults
     }
@@ -8714,7 +8810,7 @@ namespace
         bool const dead = tx_await(t, KOS_TASK_DEAD);
         int status = -99;
         int const got = kos_task_state(t, &status);
-        int const killed = kos_task_slay(t, 0);
+        int const killed = kos_task_slay(t, KOS_POLL);
         if (killed == 0)
         {
             t = KOS_TASK_NONE;
@@ -8722,7 +8818,7 @@ namespace
         // An absence after the death, not an order: the entry never woke to report.
         char woke = 0;
         struct kos_reply_recv_opts lo;
-        kos_reply_recv_opts_init(&lo, ep, KOS_RECV_NO_INFO, 20000);
+        kos_reply_recv_opts_init(&lo, ep, KOS_RECV_NO_INFO, after_us(20000));
         bool const late = kos_reply_recv(KOS_CAP_NONE, &woke, kos_call_lens_pack(0, 1), &lo) >= 0;
         TAP_CHECK(heard and spun == '1');
         TAP_CHECK(dead);
@@ -8753,7 +8849,7 @@ namespace
         TAP_CHECK(report_await(ep, &entry, sizeof(entry)));
         char spun = 0;
         bool const parked = report_await(ep, &spun, 1) and spun == '1';
-        int const killed = kos_thread_cancel(entry, KOS_CANCEL_KILL, 0);
+        int const killed = kos_thread_cancel(entry, KOS_CANCEL_KILL, KOS_POLL);
         bool const dead = tx_await(t, KOS_TASK_DEAD);
         int const state = kos_task_state(t, nullptr);
         int status = -99;
@@ -8771,7 +8867,7 @@ namespace
 #if KICKOS_SELFTEST_PEER
     void tx_waits_on_go(void*)
     {
-        kos_sem_wait(&g_tx_never, KOS_TIMEOUT_NONE);
+        kos_sem_wait(&g_tx_never, KOS_NEVER);
         kos_exit(TX_SIBLING_EXIT);
     }
     // Reports its own thread, then parks.
@@ -8779,8 +8875,8 @@ namespace
     {
         (void)kos::thread::create(tx_waits_on_go, nullptr, "txw", 9);
         kos_thread_t const self = kos_thread_self();
-        (void)kos_send(child_cap(0), &self, sizeof(self), TX_WAIT_US);
-        kos_sem_wait(&g_tx_never, KOS_TIMEOUT_NONE); // nothing posts it: the cancel ends this wait
+        (void)kos_send(child_cap(0), &self, sizeof(self), after_us(TX_WAIT_US));
+        kos_sem_wait(&g_tx_never, KOS_NEVER); // nothing posts it: the cancel ends this wait
         return TX_ENTRY_EXIT;
     }
 #endif
@@ -8809,16 +8905,16 @@ namespace
             {
                 kos_thread_t entry = KOS_THREAD_NONE;
                 struct kos_reply_recv_opts o;
-                kos_reply_recv_opts_init(&o, ready, KOS_RECV_NO_INFO, TX_WAIT_US);
+                kos_reply_recv_opts_init(&o, ready, KOS_RECV_NO_INFO, after_us(TX_WAIT_US));
                 r.said = kos_reply_recv(KOS_CAP_NONE, &entry, kos_call_lens_pack(0, sizeof(entry)),
                                         &o);
                 if (slay)
                 {
-                    r.cancelled = kos_thread_cancel(entry, KOS_CANCEL_SLAY, TX_WAIT_US);
+                    r.cancelled = kos_thread_cancel(entry, KOS_CANCEL_SLAY, after_us(TX_WAIT_US));
                 }
                 else
                 {
-                    r.cancelled = kos_thread_cancel(entry, KOS_CANCEL_KILL, 0);
+                    r.cancelled = kos_thread_cancel(entry, KOS_CANCEL_KILL, KOS_POLL);
                 }
                 // The entry is gone once its task has ended.
                 r.joined = -KOS_ETIMEDOUT;
@@ -8833,7 +8929,7 @@ namespace
         }
         if (t != KOS_TASK_NONE)
         {
-            r.released = kos_task_slay(t, 0);
+            r.released = kos_task_slay(t, KOS_POLL);
         }
         if (ready != KOS_CAP_NONE)
         {
@@ -8928,7 +9024,7 @@ namespace
     {
         WgHold* const h = static_cast<WgHold*>(arg);
         h->rc = kos_window_get(0, &h->got);
-        kos_sem_wait(&g_wg_gate, KOS_TIMEOUT_NONE);
+        kos_sem_wait(&g_wg_gate, KOS_NEVER);
     }
     // Spawns a child holding `list`: its handle once it has been joined, else invalid.
     kos::thread::Handle wg_spawn(void (*entry)(void*), kos_window const* list, int n)
@@ -8943,12 +9039,12 @@ namespace
         g_wg.read = -1;
         g_wg.regrant = -99;
         g_wg.retyped = -99;
-        auto const h = kos::thread::create(entry, nullptr, "wgc", 10, KOS_POLICY_FIFO, 0, nullptr,
+        auto const h = kos::thread::create(entry, nullptr, "wgc", 10, KOS_POLICY_FIFO, 0ns, nullptr,
                                            0, list, static_cast<uint16_t>(n), nullptr, 0,
                                            KOS_AUTH_MEMORY);
-        if (h.valid() and h.join(STALL_TOLERANT_US) != 0)
+        if (h.valid() and h.join_for(std::chrono::microseconds{STALL_TOLERANT_US}) != 0)
         {
-            (void)h.cancel(KOS_CANCEL_SLAY, ARM_SLAY_US);
+            (void)h.cancel_for(KOS_CANCEL_SLAY, std::chrono::microseconds{ARM_SLAY_US});
             return kos::thread::Handle(KOS_THREAD_NONE, -KOS_ETIMEDOUT);
         }
         return h;
@@ -8993,7 +9089,7 @@ namespace
         for (int i = 0; i < 2; i++)
         {
             g_wg_hold[i] = {-99, {}};
-            h[i] = kos::thread::create(wg_holder, &g_wg_hold[i], "wgh", 10, KOS_POLICY_FIFO, 0,
+            h[i] = kos::thread::create(wg_holder, &g_wg_hold[i], "wgh", 10, KOS_POLICY_FIFO, 0ns,
                                        nullptr, 0, &lists[i], 1);
         }
         for (int i = 0; i < 2; i++)
@@ -9122,7 +9218,8 @@ namespace
         for (int i = 0; i < 2; i++)
         {
             struct kos_reply_recv_opts o;
-            kos_reply_recv_opts_init(&o, child_cap(0), KOS_RECV_NO_INFO, STALL_TOLERANT_US);
+            kos_reply_recv_opts_init(&o, child_cap(0), KOS_RECV_NO_INFO,
+                                     after_us(STALL_TOLERANT_US));
             int32_t const n =
                 kos_reply_recv(KOS_CAP_NONE, g_ug_blk[i], kos_call_lens_pack(0, UG_LEN), &o);
             int32_t rc = n;
@@ -9157,11 +9254,11 @@ namespace
         if (kos_mem_self_grant(g_ug_stk, UG_STACK, KOS_MEM_NOCACHE) == 0)
         {
             auto const child = kos::thread::create(ug_noop, nullptr, "ugs", 10, KOS_POLICY_FIFO,
-                                                   0, g_ug_stk, UG_STACK);
+                                                   0ns, g_ug_stk, UG_STACK);
             g_ug_stk_rc = child.error();
             if (child.valid())
             {
-                (void)child.join(STALL_TOLERANT_US);
+                (void)child.join_for(std::chrono::microseconds{STALL_TOLERANT_US});
             }
         }
     }
@@ -9190,7 +9287,7 @@ namespace
         {
             kos_window const w = {reinterpret_cast<uintptr_t>(win), UG_BLK, KOS_WINDOW_MEMORY,
                                   KOS_WINDOW_UNCACHED};
-            holder = kos::thread::create(ug_noop, nullptr, "ugw", 10, KOS_POLICY_FIFO, 0, nullptr,
+            holder = kos::thread::create(ug_noop, nullptr, "ugw", 10, KOS_POLICY_FIFO, 0ns, nullptr,
                                          0, &w, 1, nullptr, 0);
             int const held = holder.error();
             bool const gone = hold.joined();
@@ -9213,14 +9310,14 @@ namespace
         }
         kos_cap_grant const caps[] = {{ep, KOS_CAP_WAIT}};
         receiver = kos::thread::create_caps(ug_receiver, nullptr, "ugr", TAP_PRIO_PARKS, caps, 1,
-                                            KOS_POLICY_FIFO, 0, KOS_AUTH_MEMORY, nullptr, nullptr,
+                                            KOS_POLICY_FIFO, 0ns, KOS_AUTH_MEMORY, nullptr, nullptr,
                                             0, TAP_PIN_CORE);
         TAP_CHECK(receiver.valid());
         kos_yield();
         int32_t sent[2] = {-1, -1};
         for (int i = 0; i < 2; i++)
         {
-            sent[i] = kos_send(ep, msg, UG_LEN, STALL_TOLERANT_US);
+            sent[i] = kos_send(ep, msg, UG_LEN, after_us(STALL_TOLERANT_US));
         }
         TAP_CHECK(hold.joined());
         receiver = kos::thread::Handle();
@@ -9242,12 +9339,12 @@ namespace
         }
         g_ug_stk = st_ram<UG_RAM, 4>();
         worker = kos::thread::create(ug_stack_worker, nullptr, "ugk", TAP_PRIO_PARKS,
-                                     KOS_POLICY_FIFO, 0, nullptr, 0, nullptr, 0, nullptr, 0,
+                                     KOS_POLICY_FIFO, 0ns, nullptr, 0, nullptr, 0, nullptr, 0,
                                      KOS_AUTH_MEMORY);
         TAP_CHECK(worker.valid());
         TAP_CHECK(hold.joined());
         worker = kos::thread::Handle();
-        child = kos::thread::create(ug_noop, nullptr, "ugs", 10, KOS_POLICY_FIFO, 0, g_ug_stk,
+        child = kos::thread::create(ug_noop, nullptr, "ugs", 10, KOS_POLICY_FIFO, 0ns, g_ug_stk,
                                     UG_STACK);
         int32_t const again = child.error();
         bool const rejoined = child.valid() and hold.joined();
@@ -9260,7 +9357,7 @@ namespace
         // entry's over its task's non-cacheable block.
         kos_window const uw = {reinterpret_cast<uintptr_t>(g_ug_stk), UG_STACK, KOS_WINDOW_MEMORY,
                                KOS_WINDOW_UNCACHED};
-        child = kos::thread::create(ug_noop, nullptr, "ugv", 10, KOS_POLICY_FIFO, 0, g_ug_stk,
+        child = kos::thread::create(ug_noop, nullptr, "ugv", 10, KOS_POLICY_FIFO, 0ns, g_ug_stk,
                                     UG_STACK, &uw, 1);
         int32_t const over_window = child.error();
         tap::diag("inside its own uncached window: %ld", static_cast<long>(over_window));
@@ -9282,10 +9379,10 @@ namespace
     int task_member() // caps: E(SIGNAL)@0
     {
         peer_seat(TAP_PRIO_PARKS, TAP_PIN_CORE);
-        (void)kos::thread::create(tx_spins, nullptr, "tspn", KICKOS_PRIO_MIN, KOS_POLICY_FIFO, 0,
+        (void)kos::thread::create(tx_spins, nullptr, "tspn", KICKOS_PRIO_MIN, KOS_POLICY_FIFO, 0ns,
                                   nullptr, 0, nullptr, 0, nullptr, 0, 0, nullptr, TAP_PIN_CORE);
         tx_report_spun(child_cap(0));
-        kos_sem_wait(&g_tx_never, KOS_TIMEOUT_NONE);
+        kos_sem_wait(&g_tx_never, KOS_NEVER);
         return 1;
     }
 #endif
@@ -9303,7 +9400,7 @@ namespace
         char spun = 0;
         TAP_CHECK(report_await(ready, &spun, 1));
         // 0, not ETIMEDOUT: each member has to be GONE, not just marked.
-        int const killed = kos_task_slay(task, TX_WAIT_US);
+        int const killed = kos_task_slay(task, after_us(TX_WAIT_US));
         if (killed == 0)
         {
             task = KOS_TASK_NONE;
@@ -9343,7 +9440,8 @@ namespace
             wrong |= 1 << 3;
         }
         // A word whose low byte is in range.
-        if (static_cast<int32_t>(arch_syscall(KOS_SYS_THREAD_SET_PRIORITY, 0x100u | SC_START, 0, 0, 0))
+        if (static_cast<int32_t>(
+                arch_syscall(KOS_SYS_THREAD_SET_PRIORITY, 0x100u | SC_START, 0, 0, 0, 0))
             != -KOS_EINVAL)
         {
             wrong |= 1 << 4;
@@ -9399,7 +9497,7 @@ namespace
             done = xsem_child(0);
         }
         kos_sem_post(done);
-        kos_sem_wait(&g_slay_park, KOS_TIMEOUT_NONE);
+        kos_sem_wait(&g_slay_park, KOS_NEVER);
         g_slay_window = g_slay_window + 1;
         kos_exit(0); // never returns: the kernel ends the thread at this syscall's entry
     }
@@ -9413,7 +9511,7 @@ namespace
         {
             return false;
         }
-        return kos_sem_wait(&g_done, STALL_TOLERANT_US) == 0;
+        return kos_sem_wait(&g_done, after_us(STALL_TOLERANT_US)) == 0;
     }
 
     // How many times leg 1 may restage. The worker posts before it parks, and above one
@@ -9437,7 +9535,7 @@ namespace
         {
             TAP_CHECK(stage_a_parked_slay_worker(&killed));
             g_slay_window = 0;
-            TAP_CHECK(killed.cancel(KOS_CANCEL_KILL, 0) == 0);
+            TAP_CHECK(killed.cancel_for(KOS_CANCEL_KILL, std::chrono::microseconds{0}) == 0);
             TAP_CHECK(thread_end(&killed) == 0);
             slay_window = g_slay_window;
         }
@@ -9457,19 +9555,21 @@ namespace
         // resume; one reaching a victim still short of that park is found at the victim's own
         // syscall entry. Neither lets it run a further user instruction, and above one kernel
         // core both are reachable.
-        TAP_CHECK(slain.cancel(KOS_CANCEL_SLAY, STALL_TOLERANT_US) == 0);
+        TAP_CHECK(slain.cancel_for(KOS_CANCEL_SLAY,
+                                   std::chrono::microseconds{STALL_TOLERANT_US}) == 0);
         int const slay_window_after = g_slay_window;
         TAP_CHECK(slay_window_after == 1); // unchanged: it executed no further user instruction
         // Gone means gone, and the join is the independent witness of it.
-        TAP_CHECK(kos_thread_join(slain.id(), JOIN_GENEROUS_US) == 0);
+        TAP_CHECK(kos_thread_join(slain.id(), after_us(JOIN_GENEROUS_US)) == 0);
         slain = kos::thread::Handle();
 
         // LEG 3, a kill that waits. The worker outranks main, so it may take its window and
         // exit inside the cancel itself: main is parked on it before the kill is raised, and
         // the worker's exit sweep is what answers 0.
         TAP_CHECK(stage_a_parked_slay_worker(&waited));
-        TAP_CHECK(waited.cancel(KOS_CANCEL_KILL, STALL_TOLERANT_US) == 0);
-        TAP_CHECK(kos_thread_join(waited.id(), JOIN_GENEROUS_US) == 0);
+        TAP_CHECK(waited.cancel_for(KOS_CANCEL_KILL,
+                                    std::chrono::microseconds{STALL_TOLERANT_US}) == 0);
+        TAP_CHECK(kos_thread_join(waited.id(), after_us(JOIN_GENEROUS_US)) == 0);
         waited = kos::thread::Handle();
     }
 
@@ -9488,12 +9588,12 @@ namespace
         g_slay_window = 0;
         victim = irq_spawn(slay_raise_worker, nullptr, "slrz", TAP_PRIO_AFTER, nullptr, 0);
         TAP_CHECK(victim.valid());
-        TAP_CHECK(kos_thread_cancel(victim.id(), static_cast<enum kos_cancel>(2), 0)
+        TAP_CHECK(kos_thread_cancel(victim.id(), static_cast<enum kos_cancel>(2), KOS_POLL)
                   == -KOS_EINVAL);
-        TAP_CHECK(kos_thread_cancel(victim.id(), KOS_CANCEL_SLAY, 0) == 0);
+        TAP_CHECK(kos_thread_cancel(victim.id(), KOS_CANCEL_SLAY, KOS_POLL) == 0);
         // A join of timeout 0 parks; a second cancel does not, and finds the victim not yet gone.
-        TAP_CHECK(kos_thread_cancel(victim.id(), KOS_CANCEL_KILL, 0) == 0);
-        TAP_CHECK(victim.join(JOIN_GENEROUS_US) == 0);
+        TAP_CHECK(kos_thread_cancel(victim.id(), KOS_CANCEL_KILL, KOS_POLL) == 0);
+        TAP_CHECK(victim.join_for(std::chrono::microseconds{JOIN_GENEROUS_US}) == 0);
         TAP_CHECK(g_slay_window == 0);
         victim = kos::thread::Handle();
     }
@@ -9513,7 +9613,7 @@ namespace
     void self_after_kill_worker(void*)
     {
         kos_sem_post(&g_done);
-        g_self_wait = kos_sem_wait(&g_slay_park, KOS_TIMEOUT_NONE);
+        g_self_wait = kos_sem_wait(&g_slay_park, KOS_NEVER);
         g_self_seen = kos_thread_self();
         g_self_read = 1;
         kos_exit(0); // the death point
@@ -9543,8 +9643,8 @@ namespace
                                               nullptr, 0);
             TAP_CHECK(killed.valid());
             got = killed.id();
-            TAP_CHECK(kos_sem_wait(&g_done, STALL_TOLERANT_US) == 0);
-            TAP_CHECK(killed.cancel(KOS_CANCEL_KILL, 0) == 0);
+            TAP_CHECK(kos_sem_wait(&g_done, after_us(STALL_TOLERANT_US)) == 0);
+            TAP_CHECK(killed.cancel_for(KOS_CANCEL_KILL, std::chrono::microseconds{0}) == 0);
             TAP_CHECK(thread_end(&killed) == 0);
         }
         if (g_self_wait != -KOS_ECANCELED)
@@ -9568,9 +9668,9 @@ namespace
         uint32_t held = 0;
         for (uint32_t i = 0; i < CLOCK_BRACKETS; i++)
         {
-            uint64_t const u0 = kos_clock_now();
-            uint64_t const k = arch_syscall64(KOS_SYS_CLOCK_NOW, 0, 0, 0, 0);
-            uint64_t const u1 = kos_clock_now();
+            uint64_t const u0 = kos_monotonic_now().ns;
+            uint64_t const k = arch_syscall64(KOS_SYS_MONOTONIC_NOW, 0, 0, 0, 0, 0);
+            uint64_t const u1 = kos_monotonic_now().ns;
             if (u0 <= k and k <= u1)
             {
                 held++;
@@ -9600,7 +9700,7 @@ namespace
             }
             g_clock_held = 0;
             w = kos::thread::create_caps(clock_bracket, nullptr, "clkbr", 10, nullptr, 0,
-                                         KOS_POLICY_FIFO, 0, 0, nullptr, nullptr, 0, mask);
+                                         KOS_POLICY_FIFO, 0ns, 0, nullptr, nullptr, 0, mask);
             TAP_CHECK(w.valid());
             TAP_CHECK(thread_end(&w) == 0);
             uint32_t const held = g_clock_held;
@@ -9622,8 +9722,8 @@ namespace
     void clock_after_kill_worker(void*)
     {
         kos_sem_post(&g_done);
-        g_clock_wait = kos_sem_wait(&g_slay_park, KOS_TIMEOUT_NONE);
-        (void)kos_clock_now();
+        g_clock_wait = kos_sem_wait(&g_slay_park, KOS_NEVER);
+        (void)kos_monotonic_now().ns;
         g_clock_read = 1;
         kos_exit(0); // the death point
     }
@@ -9645,8 +9745,8 @@ namespace
             killed = kos::thread::create_caps(clock_after_kill_worker, nullptr, "clkk", 10,
                                               nullptr, 0);
             TAP_CHECK(killed.valid());
-            TAP_CHECK(kos_sem_wait(&g_done, STALL_TOLERANT_US) == 0);
-            TAP_CHECK(killed.cancel(KOS_CANCEL_KILL, 0) == 0);
+            TAP_CHECK(kos_sem_wait(&g_done, after_us(STALL_TOLERANT_US)) == 0);
+            TAP_CHECK(killed.cancel_for(KOS_CANCEL_KILL, std::chrono::microseconds{0}) == 0);
             TAP_CHECK(thread_end(&killed) == 0);
         }
         if (g_clock_wait != -KOS_ECANCELED)
@@ -9663,7 +9763,7 @@ namespace
         // main is the init's child and not this thread's, so this is the parenthood arm and
         // not the self arm.
         char c = 'x';
-        if (kos_thread_cancel(g_main, KOS_CANCEL_SLAY, JOIN_GENEROUS_US) == -KOS_EPERM)
+        if (kos_thread_cancel(g_main, KOS_CANCEL_SLAY, after_us(JOIN_GENEROUS_US)) == -KOS_EPERM)
         {
             c = 'P';
         }
@@ -9678,19 +9778,22 @@ namespace
         kos::thread::Handle s;
         ArmHold hold;
         TAP_HOLD(hold.thread(&probe) and hold.thread(&s));
-        TAP_CHECK(kos_thread_cancel(KOS_THREAD_NONE, KOS_CANCEL_SLAY, JOIN_GENEROUS_US)
+        TAP_CHECK(kos_thread_cancel(KOS_THREAD_NONE, KOS_CANCEL_SLAY, after_us(JOIN_GENEROUS_US))
                   == -KOS_EBADF);
-        TAP_CHECK(kos_thread_cancel(0x7fffffffu, KOS_CANCEL_SLAY, JOIN_GENEROUS_US) == -KOS_EBADF);
+        TAP_CHECK(kos_thread_cancel(0x7fffffffu, KOS_CANCEL_SLAY,
+                                    after_us(JOIN_GENEROUS_US)) == -KOS_EBADF);
         // Not -KOS_EDEADLK as join answers: ending yourself is kos_exit, and this call has
         // to be able to return to its caller.
-        TAP_CHECK(kos_thread_cancel(g_main, KOS_CANCEL_SLAY, JOIN_GENEROUS_US) == -KOS_EINVAL);
+        TAP_CHECK(kos_thread_cancel(g_main, KOS_CANCEL_SLAY,
+                                    after_us(JOIN_GENEROUS_US)) == -KOS_EINVAL);
         // An EXITED-but-unreclaimed slot, which join deliberately ACCEPTS and every cancel
         // deliberately refuses: there is nothing left in it to condemn.
         probe = kos::thread::create(join_probe, nullptr, "slgn", 10);
         TAP_CHECK(probe.valid());
         kos_thread_t const exited = probe.id();
         TAP_CHECK(thread_end(&probe) == 0);
-        TAP_CHECK(kos_thread_cancel(exited, KOS_CANCEL_SLAY, JOIN_GENEROUS_US) == -KOS_EBADF);
+        TAP_CHECK(kos_thread_cancel(exited, KOS_CANCEL_SLAY,
+                                    after_us(JOIN_GENEROUS_US)) == -KOS_EBADF);
         s = kos::thread::create_caps(slay_gate_probe, nullptr, "slst", 10, nullptr, 0);
         TAP_CHECK(s.valid());
         TAP_CHECK(hold.joined());
@@ -9703,7 +9806,7 @@ namespace
     int slay_task()
     {
         (void)kos_notify(child_cap(0));
-        kos_sem_wait(&g_slay_park, KOS_TIMEOUT_NONE);
+        kos_sem_wait(&g_slay_park, KOS_NEVER);
         return 1;
     }
 #endif
@@ -9718,20 +9821,20 @@ namespace
         kos_cap_grant const caps[] = {{announced, KOS_CAP_SIGNAL}};
         TAP_CHECK(PeerRun("tsly").caps(caps, 1).start(&task) == 0);
         uint32_t bits = 0;
-        TAP_CHECK(kos_notify_wait(announced, ~0u, STALL_TOLERANT_US, &bits) == 0);
+        TAP_CHECK(kos_notify_wait(~0u, after_us(STALL_TOLERANT_US), &bits) == 0);
         kos_task_t const slain = task;
         // Every member is gone once the slay answers 0.
         TAP_CHECK(task_end(&task) == 0);
         // The hold went with the wait, so the handle names nothing: a second call cannot
         // resolve it, which is the same shape a slay of timeout 0 leaves behind.
-        TAP_CHECK(kos_task_slay(slain, JOIN_GENEROUS_US) == -KOS_EBADF);
+        TAP_CHECK(kos_task_slay(slain, after_us(JOIN_GENEROUS_US)) == -KOS_EBADF);
     }
 
     void task_slay_stranger(void* arg)
     {
         kos_task_t const task = static_cast<kos_task_t>(reinterpret_cast<uintptr_t>(arg));
         char c = 'x';
-        if (kos_task_slay(task, JOIN_GENEROUS_US) == -KOS_EPERM)
+        if (kos_task_slay(task, after_us(JOIN_GENEROUS_US)) == -KOS_EPERM)
         {
             c = 'P';
         }
@@ -9746,7 +9849,7 @@ namespace
         kos::thread::Handle s;
         ArmHold hold;
         TAP_HOLD(hold.task(&task) and hold.thread(&s));
-        TAP_CHECK(kos_task_slay(KOS_TASK_NONE, JOIN_GENEROUS_US) == -KOS_EBADF);
+        TAP_CHECK(kos_task_slay(KOS_TASK_NONE, after_us(JOIN_GENEROUS_US)) == -KOS_EBADF);
         TAP_CHECK(PeerRun("hold").start(&task) == 0);
         s = kos::thread::create_caps(task_slay_stranger,
                                      reinterpret_cast<void*>(static_cast<uintptr_t>(task)), "tsst",
@@ -9756,7 +9859,7 @@ namespace
         TAP_CHECK(log_eq("P")); // creatorship, exactly as a slay of timeout 0 takes it
         kos_task_t const slain = task;
         TAP_CHECK(task_end(&task) == 0);
-        TAP_CHECK(kos_task_slay(slain, JOIN_GENEROUS_US) == -KOS_EBADF);
+        TAP_CHECK(kos_task_slay(slain, after_us(JOIN_GENEROUS_US)) == -KOS_EBADF);
     }
 
     // --- A slay returns once EVERY member's teardown is done ---------------------------------
@@ -9786,7 +9889,8 @@ namespace
         kos_cap_grant const scaps[] = {{child_cap(0), KOS_CAP_WAIT}, {child_cap(1), KOS_CAP_WAIT}};
         uint16_t const sdest[] = {0, static_cast<uint16_t>(table_width() - 1)};
         auto const sibling = kos::thread::create(ts_sibling, nullptr, "tss", 11, KOS_POLICY_FIFO,
-                                                 0, nullptr, 0, nullptr, 0, scaps, 2, 0, sdest, 1u);
+                                                 0ns, nullptr, 0, nullptr, 0, scaps, 2, 0, sdest,
+                                                 1u);
         (void)kos_handle_close(child_cap(0));
         (void)kos_handle_close(child_cap(1));
         if (not sibling.valid())
@@ -9799,13 +9903,13 @@ namespace
     void ts_watcher(void*) // caps: probe E(SIGNAL)@0
     {
         char b[4] = {};
-        (void)kos_call(child_cap(0), b, sizeof(b), sizeof(b), TX_WAIT_US);
+        (void)kos_call(child_cap(0), b, sizeof(b), sizeof(b), after_us(TX_WAIT_US));
         g_ts_seq = g_ts_seq + 1;
         g_ts.watcher_seq = g_ts_seq;
     }
     void ts_creator(void*)
     {
-        uint64_t const until = deadline_in(CREATOR_US);
+        kos_monotonic_t const until = deadline_in(CREATOR_US);
         kos_task_t t = KOS_TASK_NONE;
         kos_program_t prog = KOS_CAP_NONE;
         kos_cap_t ep = KOS_CAP_NONE;
@@ -9832,7 +9936,7 @@ namespace
         {
             kos_cap_grant const wcaps[] = {{probe, KOS_CAP_SIGNAL}};
             auto const watcher = kos::thread::create(ts_watcher, nullptr, "tsw", 15,
-                                                     KOS_POLICY_FIFO, 0, nullptr, 0, nullptr, 0,
+                                                     KOS_POLICY_FIFO, 0ns, nullptr, 0, nullptr, 0,
                                                      wcaps, 1, 0, nullptr, 1u);
             g_ts.watcher_rc = watcher.error();
             g_ts.setup = watcher.error();
@@ -9844,8 +9948,8 @@ namespace
             if (g_ts.setup == 0)
             {
                 char b[4] = {};
-                g_ts.called = kos_call(ep, b, sizeof(b), sizeof(b), left_us_until(until));
-                g_ts.slain = kos_task_slay(t, left_us_until(until));
+                g_ts.called = kos_call(ep, b, sizeof(b), sizeof(b), until);
+                g_ts.slain = kos_task_slay(t, until);
                 g_ts_seq = g_ts_seq + 1;
                 g_ts.slay_seq = g_ts_seq;
                 kos_task_t again = KOS_TASK_NONE;
@@ -9853,16 +9957,16 @@ namespace
                 restart.p.instance = "peer0";
                 g_ts.restarted = restart.start(&again, prog);
                 g_ts.same_slot = ((again ^ t) & 0xFFFFu) == 0u;
-                (void)kos_task_slay(again, STALL_TOLERANT_US);
+                (void)kos_task_slay(again, after_us(STALL_TOLERANT_US));
             }
             if (watcher.valid())
             {
-                (void)watcher.join(left_us_until(until));
+                (void)kos_thread_join(watcher.id(), until);
             }
         }
         if (g_ts.slain != 0)
         {
-            (void)kos_task_slay(t, 0);
+            (void)kos_task_slay(t, KOS_POLL);
         }
         (void)kos_handle_close(probe);
         (void)kos_handle_close(ep);
@@ -9877,7 +9981,7 @@ namespace
         kos::thread::Handle w;
         ArmHold hold(CREATOR_HOLD_US);
         TAP_HOLD(hold.thread(&w));
-        w = kos::thread::create(ts_creator, nullptr, "tsc", 14, KOS_POLICY_FIFO, 0, nullptr, 0,
+        w = kos::thread::create(ts_creator, nullptr, "tsc", 14, KOS_POLICY_FIFO, 0ns, nullptr, 0,
                                 nullptr, 0, nullptr, 0, PEER_CREATOR, nullptr, 1u);
         TAP_CHECK(w.valid());
         TAP_CHECK(hold.joined());
@@ -9918,14 +10022,14 @@ namespace
             tslw_spin();
         }
         (void)kos_sem_post(&g_tslw_parked);
-        (void)kos_sem_wait(&g_tslw_park, KOS_TIMEOUT_NONE);
+        (void)kos_sem_wait(&g_tslw_park, KOS_NEVER);
     }
     int tslw_entry() // caps: N(SIGNAL | TRANSFER)@0
     {
         peer_seat(TSLW_PRIO, TAP_PIN_CORE);
         kos_cap_grant const wcaps[] = {{child_cap(0), KOS_CAP_SIGNAL}};
         auto const worker = kos::thread::create(tslw_worker, nullptr, "tslw", TSLW_PRIO,
-                                                KOS_POLICY_FIFO, 0, nullptr, 0, nullptr, 0, wcaps,
+                                                KOS_POLICY_FIFO, 0ns, nullptr, 0, nullptr, 0, wcaps,
                                                 1, 0, nullptr, TAP_PIN_CORE);
         if (not worker.valid())
         {
@@ -9935,11 +10039,11 @@ namespace
         if ((worker.id() & SLOT_MASK) > (kos_thread_self() & SLOT_MASK))
         {
             g_tslw_worker_spins = 1;
-            (void)kos_sem_wait(&g_tslw_park, KOS_TIMEOUT_NONE);
+            (void)kos_sem_wait(&g_tslw_park, KOS_NEVER);
             return 1;
         }
         // The worker posts this just before its own park, so this wait ends once it has parked.
-        (void)kos_sem_wait(&g_tslw_parked, KOS_TIMEOUT_NONE);
+        (void)kos_sem_wait(&g_tslw_parked, KOS_NEVER);
         tslw_spin();
     }
 #endif
@@ -9958,7 +10062,7 @@ namespace
         int announce = -1;
         if (started == 0)
         {
-            announce = kos_notify_wait(announced, ~0u, STALL_TOLERANT_US, &bits);
+            announce = kos_notify_wait(~0u, after_us(STALL_TOLERANT_US), &bits);
         }
         int slain = -1;
         if (announce == 0)
@@ -9987,10 +10091,10 @@ namespace
 
     void slay_hog(void*) // caps: none
     {
-        uint64_t const start = kos_clock_now();
-        uint64_t const until = start + SLAY_HOG_NS;
-        g_hog_start_ns = static_cast<uint32_t>(start);
-        while (kos_clock_now() < until)
+        kos_monotonic_t const start = kos_monotonic_now();
+        kos_monotonic_t const until = kos_after(start, kos_ns(SLAY_HOG_NS));
+        g_hog_start_ns = static_cast<uint32_t>(start.ns);
+        while (kos_monotonic_now().ns < until.ns)
         {
         }
     }
@@ -10007,7 +10111,7 @@ namespace
             return true;
         }
         uint32_t const window = static_cast<uint32_t>(SLAY_HOG_NS);
-        uint32_t const elapsed = static_cast<uint32_t>(kos_clock_now()) - start;
+        uint32_t const elapsed = static_cast<uint32_t>(kos_monotonic_now().ns) - start;
         if (elapsed >= window)
         {
             return false;
@@ -10042,7 +10146,7 @@ namespace
         {
             // Condemned, not gone: the redirect is armed and irrevocable, and the sweep has not
             // run because the victim has not been given the CPU to run it on.
-            slain = victim.cancel(KOS_CANCEL_SLAY, SLAY_TIMEOUT_US);
+            slain = victim.cancel_for(KOS_CANCEL_SLAY, std::chrono::microseconds{SLAY_TIMEOUT_US});
             slay_window = g_slay_window;
         }
         TAP_CHECK(main_back());
@@ -10056,7 +10160,7 @@ namespace
         TAP_CHECK(slay_window == 0); // and it never got its window either
         // Irrevocable is the claim, so the same handle must reach GONE with no second
         // request: the timeout gave up on the wait, never on the death.
-        TAP_CHECK(kos_thread_join(victim.id(), STALL_TOLERANT_US) == 0);
+        TAP_CHECK(kos_thread_join(victim.id(), after_us(STALL_TOLERANT_US)) == 0);
         int const slay_window_after_join = g_slay_window;
         TAP_CHECK(slay_window_after_join == 0);
         TAP_CHECK(hold.joined());
@@ -10169,7 +10273,7 @@ namespace
             rep.readback = *static_cast<volatile int*>(p) - i;
             rep.ok = rep.ok + 1;
         }
-        (void)kos_send(child_cap(0), &rep, sizeof(rep), KOS_TIMEOUT_NONE);
+        (void)kos_send(child_cap(0), &rep, sizeof(rep), KOS_NEVER);
     }
 #endif
     void t_selfgrant()
@@ -10191,7 +10295,7 @@ namespace
         TAP_CHECK(PeerRun("sgw").caps(caps, 1).start(&t) == 0);
 #else
         w = kos::thread::create_caps(selfgrant_worker, nullptr, "sgW", 10, caps, 1,
-                                     KOS_POLICY_FIFO, 0, /*authority=*/KOS_AUTH_MEMORY);
+                                     KOS_POLICY_FIFO, 0ns, /*authority=*/KOS_AUTH_MEMORY);
         TAP_CHECK(w.valid());
 #endif
         SgReport rep = {-1, -1, -1, -1};
@@ -10292,7 +10396,7 @@ namespace
             kos::thread::Handle w;
             ArmHold hold;
             TAP_HOLD(hold.thread(&w));
-            w = kos::thread::create(rm_granule_worker, nullptr, "rmG", 10, KOS_POLICY_FIFO, 0,
+            w = kos::thread::create(rm_granule_worker, nullptr, "rmG", 10, KOS_POLICY_FIFO, 0ns,
                                     nullptr, 0, nullptr, 0, nullptr, 0,
                                     /*authority=*/KOS_AUTH_MEMORY);
             TAP_CHECK(w.valid());
@@ -10306,7 +10410,7 @@ namespace
         kos::thread::Handle w;
         ArmHold hold;
         TAP_HOLD(hold.thread(&w));
-        w = kos::thread::create(rm_worker, nullptr, "rmW", 10, KOS_POLICY_FIFO, 0, nullptr, 0,
+        w = kos::thread::create(rm_worker, nullptr, "rmW", 10, KOS_POLICY_FIFO, 0ns, nullptr, 0,
                                 nullptr, 0, nullptr, 0, /*authority=*/KOS_AUTH_MEMORY);
         TAP_CHECK(w.valid());
         TAP_CHECK(hold.joined());
@@ -10351,7 +10455,7 @@ namespace
         kos::thread::Handle w;
         ArmHold hold;
         TAP_HOLD(hold.thread(&w));
-        w = kos::thread::create(sgnp_worker, nullptr, "sgNP", 10, KOS_POLICY_FIFO, 0, nullptr, 0,
+        w = kos::thread::create(sgnp_worker, nullptr, "sgNP", 10, KOS_POLICY_FIFO, 0ns, nullptr, 0,
                                 nullptr, 0, nullptr, 0, /*authority=*/KOS_AUTH_MEMORY);
         TAP_CHECK(w.valid());
         TAP_CHECK(hold.joined());
@@ -10689,7 +10793,7 @@ namespace
             (void)kos_notify_bind(KOS_SPAWN_DELEGATED_CAP0 + 1);
             (void)kos_notify(KOS_SPAWN_DELEGATED_CAP0);
             uint32_t bits = 0;
-            (void)kos_notify_wait(KOS_SPAWN_DELEGATED_CAP0 + 1, 0xFFFFFFFFu, KOS_TIMEOUT_NONE, &bits);
+            (void)kos_notify_wait(0xFFFFFFFFu, KOS_NEVER, &bits);
             if (not pa_nonblocking())
             {
                 return PEER_NB_LOST;
@@ -10700,7 +10804,7 @@ namespace
         {
             while (true)
             {
-                kos_sleep_ns(1000000000ull);
+                kos_sleep_for(kos_s(1));
             }
         }
         if (argc == 3 and peer_is(argv[1], "mine"))
@@ -10709,7 +10813,7 @@ namespace
             (void)kos_notify_bind(KOS_SPAWN_DELEGATED_CAP0 + 1);
             (void)kos_notify(KOS_SPAWN_DELEGATED_CAP0);
             uint32_t bits = 0;
-            (void)kos_notify_wait(KOS_SPAWN_DELEGATED_CAP0 + 1, 0xFFFFFFFFu, KOS_TIMEOUT_NONE, &bits);
+            (void)kos_notify_wait(0xFFFFFFFFu, KOS_NEVER, &bits);
             if (g_pa_data != static_cast<uint32_t>(peer_word(argv[2])))
             {
                 return PEER_DATA;
@@ -10723,7 +10827,8 @@ namespace
         }
         if (argc == 3 and peer_is(argv[1], "sys"))
         {
-            int const rc = kos_word_wait(reinterpret_cast<uint32_t*>(peer_word(argv[2])), 0u, 0u);
+            int const rc = kos_word_wait(reinterpret_cast<uint32_t*>(peer_word(argv[2])), 0u,
+                                         KOS_POLL);
             if (rc != -KOS_EFAULT)
             {
                 return PEER_SYS;
@@ -10744,7 +10849,7 @@ namespace
             (void)kos_notify_bind(KOS_SPAWN_DELEGATED_CAP0 + 1);
             (void)kos_notify(KOS_SPAWN_DELEGATED_CAP0);
             uint32_t bits = 0;
-            (void)kos_notify_wait(KOS_SPAWN_DELEGATED_CAP0 + 1, 0xFFFFFFFFu, KOS_TIMEOUT_NONE, &bits);
+            (void)kos_notify_wait(0xFFFFFFFFu, KOS_NEVER, &bits);
             return PEER_OK;
         }
         return peer_roles_arms(argc, argv);
@@ -10772,7 +10877,7 @@ namespace
             kos_task_params p{};
             p.instance = "peer0";
             kos_task_t t = KOS_TASK_NONE;
-            rc = kos_task_create(prog, &p, 0, &t);
+            rc = kos_task_create(prog, &p, KOS_POLL, &t);
             (void)kos_handle_close(prog);
         }
         g_pa_helper.store(rc);
@@ -10795,20 +10900,20 @@ namespace
         // A declared authority bit the creator lacks.
         g_pa_helper.store(1);
         kos::thread::Handle h = kos::thread::create(pa_helper, nullptr, "pahelp", 3,
-                                                    KOS_POLICY_FIFO, 0, nullptr, 0, nullptr, 0,
+                                                    KOS_POLICY_FIFO, 0ns, nullptr, 0, nullptr, 0,
                                                     nullptr, 0, KOS_AUTH_TASKS);
         TAP_CHECK(h.valid());
-        TAP_CHECK(kos_thread_join(h.id(), STALL_TOLERANT_US) == 0);
+        TAP_CHECK(kos_thread_join(h.id(), after_us(STALL_TOLERANT_US)) == 0);
         TAP_CHECK(g_pa_helper.load() == -KOS_EPERM);
 
         kos_task_params p{};
         kos_task_t t = KOS_TASK_NONE;
         p.instance = "nosuch";
-        TAP_CHECK(kos_task_create(prog, &p, 0, &t) == -KOS_ENOENT);
+        TAP_CHECK(kos_task_create(prog, &p, KOS_POLL, &t) == -KOS_ENOENT);
         // main is the init's to start, and an instance of main's own program, not stpeer's.
         p.instance = "main";
-        TAP_CHECK(kos_task_create(own, &p, 0, &t) == -KOS_EPERM);
-        TAP_CHECK(kos_task_create(prog, &p, 0, &t) == -KOS_ENOENT);
+        TAP_CHECK(kos_task_create(own, &p, KOS_POLL, &t) == -KOS_EPERM);
+        TAP_CHECK(kos_task_create(prog, &p, KOS_POLL, &t) == -KOS_ENOENT);
 
         // The instance field: peer0 starts, its argv and its capability arrive.
         char const* argv[] = {"peer0", "argv", "hello", nullptr};
@@ -10817,24 +10922,24 @@ namespace
         p.argv = argv;
         p.caps = caps;
         p.cap_count = 2;
-        TAP_CHECK(kos_task_create(prog, &p, 0, &t) == 0);
+        TAP_CHECK(kos_task_create(prog, &p, KOS_POLL, &t) == 0);
         uint32_t bits = 0;
-        TAP_CHECK(kos_notify_wait(n, 0xFFFFFFFFu, STALL_TOLERANT_US, &bits) == 0);
+        TAP_CHECK(kos_notify_wait(0xFFFFFFFFu, after_us(STALL_TOLERANT_US), &bits) == 0);
 
         // Live: by name it is busy, and once every other instance is live too none is left to
         // this creator.
         kos_task_t again = KOS_TASK_NONE;
-        TAP_CHECK(kos_task_create(prog, &p, 0, &again) == -KOS_EBUSY);
+        TAP_CHECK(kos_task_create(prog, &p, KOS_POLL, &again) == -KOS_EBUSY);
         kos_task_t rest[SELFTEST_PEERS] = {};
         char const* hold[] = {"peer", "hold", nullptr};
         kos_task_params q{};
         q.argv = hold;
         for (int i = 1; i < KICKOS_SELFTEST_PEERS; i++)
         {
-            TAP_CHECK(kos_task_create(prog, &q, 0, &rest[i]) == 0);
+            TAP_CHECK(kos_task_create(prog, &q, KOS_POLL, &rest[i]) == 0);
         }
         p.instance = nullptr;
-        TAP_CHECK(kos_task_create(prog, &p, 0, &again) == -KOS_ENOMEM);
+        TAP_CHECK(kos_task_create(prog, &p, KOS_POLL, &again) == -KOS_ENOMEM);
         TAP_CHECK(again == KOS_TASK_NONE);
         for (int i = 1; i < KICKOS_SELFTEST_PEERS; i++)
         {
@@ -10843,7 +10948,7 @@ namespace
 
         TAP_CHECK(kos_notify(release) == 0);
         TAP_CHECK(peer_dead_status(t) == 0);
-        TAP_CHECK(kos_task_slay(t, 0) == 0);
+        TAP_CHECK(kos_task_slay(t, KOS_POLL) == 0);
         TAP_CHECK(kos_handle_close(release) == 0);
         TAP_CHECK(kos_notify_unbind(n) == 0);
         TAP_CHECK(kos_handle_close(n) == 0);
@@ -10914,7 +11019,7 @@ namespace
         kos_task_t last = KOS_TASK_NONE;
         TAP_CHECK(pa_start("nop", nullptr, &last) == 0);
         TAP_CHECK(peer_dead_status(last) == PEER_OK);
-        TAP_CHECK(kos_task_slay(last, 0) == 0);
+        TAP_CHECK(kos_task_slay(last, KOS_POLL) == 0);
     }
 
     // peer0's entry outranks main, so it has run to its end before the create returns.
@@ -10958,7 +11063,7 @@ namespace
             p.cap_count = 2;
             TAP_CHECK(peer_start(p, &t[i]) == 0);
             uint32_t bits = 0;
-            TAP_CHECK(kos_notify_wait(n, 1u << i, STALL_TOLERANT_US, &bits) == 0);
+            TAP_CHECK(kos_notify_wait(1u << i, after_us(STALL_TOLERANT_US), &bits) == 0);
         }
         int status[2] = {PEER_UNDEAD, PEER_UNDEAD};
         for (int i = 0; i < 2; i++)
@@ -10994,13 +11099,13 @@ namespace
         kos_task_t t = KOS_TASK_NONE;
         TAP_CHECK(peer_start(p, &t) == 0);
         uint32_t bits = 0;
-        TAP_CHECK(kos_notify_wait(n, 0xFFFFFFFFu, STALL_TOLERANT_US, &bits) == 0);
+        TAP_CHECK(kos_notify_wait(0xFFFFFFFFu, after_us(STALL_TOLERANT_US), &bits) == 0);
         pa_nonblock_set(false);
         TAP_CHECK(not pa_nonblocking());
         TAP_CHECK(kos_notify(release) == 0);
         TAP_CHECK(peer_dead_status(t) == PEER_OK);
         TAP_CHECK(not pa_nonblocking());
-        TAP_CHECK(kos_task_slay(t, 0) == 0);
+        TAP_CHECK(kos_task_slay(t, KOS_POLL) == 0);
         TAP_CHECK(kos_handle_close(release) == 0);
         TAP_CHECK(kos_notify_unbind(n) == 0);
         TAP_CHECK(kos_handle_close(n) == 0);
@@ -11039,7 +11144,7 @@ namespace
         TAP_CHECK(refused == 0);
         TAP_CHECK(held == 0);
         TAP_CHECK(failed == 0);
-        TAP_CHECK(prev == KOS_TASK_NONE or kos_task_slay(prev, 0) == 0);
+        TAP_CHECK(prev == KOS_TASK_NONE or kos_task_slay(prev, KOS_POLL) == 0);
     }
 }
 
@@ -11085,6 +11190,7 @@ int main(int, char**)
     TAP_ADD("preempt_on_ready", t_preempt);
     TAP_ADD("periph_clock_hz", t_periph_clock_hz);
     TAP_ADD("cap_dest", t_cap_dest);
+    TAP_ADD("notify_wait_binding", t_notify_wait_binding);
     TAP_ADD("cpu_clock_set", t_cpu_clock_set);
     TAP_ADD("rr_interleave", t_rr);
     TAP_ADD("task_watch_reports", t_task_watch_reports);
@@ -11137,6 +11243,7 @@ int main(int, char**)
     TAP_ADD_PINNED("endpoint_handout_parked", t_endpoint_handout_parked);
     TAP_ADD("endpoint_zero_accept", t_endpoint_zero_accept);
     TAP_ADD("endpoint_send_timeout", t_endpoint_send_timeout);
+    TAP_ADD_PINNED("send_call_deadline_high_word", t_send_call_deadline_high_word);
     TAP_ADD("recv_timeout", t_recv_timeout);
     TAP_ADD("timed_arg_refusals", t_timed_arg_refusals);
     TAP_ADD("call_timeout_pending", t_call_timeout_pending);

@@ -67,7 +67,7 @@ extern "C"
         return 0;
     }
 
-    int32_t kos_call(kos_cap_t, void* buf, size_t send_len, size_t, uint32_t)
+    int32_t kos_call(kos_cap_t, void* buf, size_t send_len, size_t, kos_monotonic_t)
     {
         return static_cast<int32_t>(
             spi::serve_one(&g_bus, *g_slots, g_badge, static_cast<unsigned char*>(buf), send_len));
@@ -99,7 +99,7 @@ namespace
         framing += sizeof(seg);
         memset(buf + framing, 0, len);
 
-        int32_t const rc = kos_call(2, buf, framing + len, sizeof(buf), KOS_TIMEOUT_NONE);
+        int32_t const rc = kos_call(2, buf, framing + len, sizeof(buf), KOS_NEVER);
         struct kos_bus_rsp rsp;
         memcpy(&rsp, buf, sizeof(rsp));
         if (rsp.status < 0)
@@ -122,7 +122,7 @@ namespace
         cfg.cs_policy = KOS_BUS_CS_NONE;
         memcpy(buf + framing, &cfg, sizeof(cfg));
 
-        (void)kos_call(2, buf, framing + sizeof(cfg), sizeof(buf), KOS_TIMEOUT_NONE);
+        (void)kos_call(2, buf, framing + sizeof(cfg), sizeof(buf), KOS_NEVER);
         struct kos_bus_rsp rsp;
         memcpy(&rsp, buf, sizeof(rsp));
         return rsp.status;

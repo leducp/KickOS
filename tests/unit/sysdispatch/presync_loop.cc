@@ -778,9 +778,10 @@ namespace kickos
                 wake_next_park(first_park);
                 uint32_t* const out = host<uint32_t>(uva(MAIN_OUT));
                 *out = KOS_TASK_NONE;
+                uint64_t const deadline = deadline_in(1000000u);
                 int32_t const rc = err(call_as(g_main, KOS_SYS_TASK_CREATE, program_for(g_main),
                                                uva(MAIN_PARAMS, TASK_PARAMS_AT), uva(MAIN_OUT),
-                                               1000u));
+                                               kos_u64_lo(deadline), kos_u64_hi(deadline)));
                 on_window(nullptr);
                 EXPECT_EQ(rc, -KOS_ETIMEDOUT);
                 ASSERT_TRUE(g_rounds.redied) << "fixture: the create never went round";
@@ -810,9 +811,10 @@ namespace kickos
                 wake_next_park(dies_at_the_park);
                 uint32_t* const out = host<uint32_t>(uva(MAIN_OUT));
                 *out = KOS_TASK_NONE;
+                uint64_t const deadline = deadline_in(1000000u);
                 int32_t const rc = err(call_as(g_main, KOS_SYS_TASK_CREATE, program_for(g_main),
                                                uva(MAIN_PARAMS, TASK_PARAMS_AT), uva(MAIN_OUT),
-                                               1000u));
+                                               kos_u64_lo(deadline), kos_u64_hi(deadline)));
                 on_window(nullptr);
                 ASSERT_TRUE(g_rounds.redied) << "fixture: peer0 never died in the window";
                 ASSERT_NE(g_rounds.first, 0u) << "fixture: the create never waited";

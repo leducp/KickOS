@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// KOS_SYS_CLOCK_SET_REALTIME and KOS_SYS_CLOCK_REALTIME over the REAL kernel/syscall/syscall.cc
+// KOS_SYS_REALTIME_SET and KOS_SYS_REALTIME_NOW over the REAL kernel/syscall/syscall.cc
 // and kernel/time/realtime.cc at the region posture: AUTH_REALTIME alone admits a set, a refusal
 // leaves the wall clock as it was, and the wall clock moves with the monotonic clock from the set.
 
@@ -18,7 +18,7 @@
 #include "stub_seam.h"
 
 extern "C" uint64_t syscall_dispatch(uintptr_t nr, uintptr_t a0, uintptr_t a1, uintptr_t a2,
-                                     uintptr_t a3);
+                                     uintptr_t a3, uintptr_t a4);
 
 namespace kickos
 {
@@ -48,14 +48,14 @@ namespace kickos
                 int32_t set(uint32_t authority, uint64_t unix_ns)
                 {
                     cap_seat_authority(caller_, authority);
-                    return static_cast<int32_t>(syscall_dispatch(KOS_SYS_CLOCK_SET_REALTIME,
+                    return static_cast<int32_t>(syscall_dispatch(KOS_SYS_REALTIME_SET,
                                                                  kos_u64_lo(unix_ns),
-                                                                 kos_u64_hi(unix_ns), 0, 0));
+                                                                 kos_u64_hi(unix_ns), 0, 0, 0));
                 }
 
                 uint64_t wall()
                 {
-                    return syscall_dispatch(KOS_SYS_CLOCK_REALTIME, 0, 0, 0, 0);
+                    return syscall_dispatch(KOS_SYS_REALTIME_NOW, 0, 0, 0, 0, 0);
                 }
 
                 Thread* caller_ = nullptr;
@@ -80,7 +80,7 @@ namespace kickos
                 ASSERT_EQ(set(AUTH_REALTIME, UNIX_NS), 0);
                 g_clock_now = 1000u + 5000u;
                 EXPECT_EQ(wall(), UNIX_NS + 5000u);
-                EXPECT_EQ(syscall_dispatch(KOS_SYS_CLOCK_NOW, 0, 0, 0, 0), 6000u)
+                EXPECT_EQ(syscall_dispatch(KOS_SYS_MONOTONIC_NOW, 0, 0, 0, 0, 0), 6000u)
                     << "the monotonic clock never moves with a set";
             }
 

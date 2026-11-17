@@ -3,7 +3,7 @@
 //
 // A wait toward a realtime deadline over the real sync.cc, park.cc, time.cc and realtime.cc: a set
 // of the wall clock while it is parked moves its deadline by the set's change, and leaves a
-// relative wait's alone; and the delta list stays sorted with several of each queued.
+// monotonic wait's alone; and the delta list stays sorted with several of each queued.
 
 #include <kickos/cap.h>
 #include <kickos/instance.h>
@@ -76,12 +76,12 @@ namespace kickos
 
             int wait_wall(uint64_t unix_ns)
             {
-                return word_wait(word_va(), g_word, WaitLimit::realtime(unix_ns));
+                return word_wait(word_va(), g_word, unix_ns, KOS_LIMIT_REALTIME);
             }
 
-            int wait_relative(uint32_t timeout_us)
+            int wait_monotonic(uint64_t span_ns)
             {
-                return word_wait(word_va(), g_word, timeout_us);
+                return word_wait(word_va(), g_word, deadline_in(span_ns));
             }
 
             // What each parked waiter saw of itself while the arm's waker ran.
@@ -148,14 +148,14 @@ namespace kickos
                 << "the wait ended at the deadline the set moved an hour out";
         }
 
-        TEST_F(WordWall, a_relative_wait_keeps_its_deadline_across_both_sets)
+        TEST_F(WordWall, a_monotonic_wait_keeps_its_deadline_across_both_sets)
         {
             seat_waiter_over_holder();
             wake_next_park(forward_then_back_then_its_own_deadline);
 
-            EXPECT_EQ(wait_relative(1000u), -KOS_ETIMEDOUT);
-            EXPECT_EQ(g_deadline_after, g_deadline_before) << "a set moved a relative deadline";
-            EXPECT_TRUE(g_parked_past_deadline) << "a forward set ended a relative wait";
+            EXPECT_EQ(wait_monotonic(MS_NS), -KOS_ETIMEDOUT);
+            EXPECT_EQ(g_deadline_after, g_deadline_before) << "a set moved a monotonic deadline";
+            EXPECT_TRUE(g_parked_past_deadline) << "a forward set ended a monotonic wait";
         }
 
         TEST_F(WordWall, a_passed_realtime_deadline_answers_at_once_with_nothing_parked)
@@ -170,17 +170,9 @@ namespace kickos
             EXPECT_EQ(kernel().sleepq(kickos_kernel_core()), nullptr) << "a passed deadline armed one";
         }
 
-        TEST_F(WordWall, a_limit_the_abi_does_not_define_is_refused)
-        {
-            seat_waiter_over_holder();
-            EXPECT_EQ(word_wait(word_va(), g_word, WaitLimit(1000u, 1u)), -KOS_EINVAL);
-            EXPECT_EQ(mutex_lock(word_va(), WaitLimit(1000u, 0x40000000u)), -KOS_EINVAL);
-            EXPECT_EQ(kernel().sleepq(kickos_kernel_core()), nullptr);
-        }
-
-        // Marked deadlines among relative ones: each set moves the marked ones alone, by its
+        // Marked deadlines among monotonic ones: each set moves the marked ones alone, by its
         // change, and the list stays sorted, equals in the order they were queued.
-        TEST_F(WordWall, several_realtime_waiters_are_rekeyed_in_order_among_relative_ones)
+        TEST_F(WordWall, several_realtime_waiters_are_rekeyed_in_order_among_monotonic_ones)
         {
             seat_waiter_over_holder();
             uint64_t const now = g_now_ns;
@@ -207,7 +199,7 @@ namespace kickos
                 }
                 else
                 {
-                    ktime_deadline_arm(q[i].t, static_cast<uint32_t>(q[i].in_ns / 1000u), lock);
+                    ktime_limit_arm(q[i].t, WaitLimit(now + q[i].in_ns), lock);
                 }
             }
             auto order = []() {
@@ -238,7 +230,7 @@ namespace kickos
             EXPECT_EQ(order(), (std::vector<Thread*>{q[0].t, q[2].t, q[1].t, q[4].t, q[5].t,
                                                      q[3].t}));
             EXPECT_EQ(q[0].t->deadline_ns, now + KICKOS_TIMER_MIN_DELTA_NS);
-            EXPECT_EQ(q[1].t->deadline_ns, now + 15u * MS_NS) << "a relative deadline moved";
+            EXPECT_EQ(q[1].t->deadline_ns, now + 15u * MS_NS) << "a monotonic deadline moved";
             EXPECT_EQ(q[2].t->deadline_ns, now + 8u * MS_NS);
             EXPECT_EQ(q[4].t->deadline_ns, now + 18u * MS_NS);
 
@@ -248,7 +240,7 @@ namespace kickos
             EXPECT_EQ(order(), (std::vector<Thread*>{q[1].t, q[3].t, q[0].t, q[2].t, q[4].t,
                                                      q[5].t}));
             EXPECT_EQ(q[2].t->deadline_ns, now + 8u * MS_NS + HOUR_NS);
-            EXPECT_EQ(q[3].t->deadline_ns, now + 25u * MS_NS) << "a relative deadline moved";
+            EXPECT_EQ(q[3].t->deadline_ns, now + 25u * MS_NS) << "a monotonic deadline moved";
 
             advance(HOUR_NS + 30u * MS_NS);
             EXPECT_EQ(kernel().sleepq(kickos_kernel_core()), nullptr) << "a deadline outlived every set";

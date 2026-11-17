@@ -34,7 +34,7 @@ namespace
 
     // Long enough for a doorbell round trip on an emulated four-core machine, short enough
     // that the unfixed kernel's answer arrives as a FAIL line rather than the gate's timeout.
-    constexpr uint32_t SLAY_TIMEOUT_US = 2u * 1000u * 1000u;
+    constexpr std::chrono::seconds SLAY_BOUND{2};
 
     // Long enough for the victim to be seated and RUNNING on its own core before the slay: it
     // is spawned READY, and a claim on a READY thread is the case this arm is not about.
@@ -58,16 +58,16 @@ namespace
 
     void slayer(void*)
     {
-        auto const v = kos::thread::create(victim, nullptr, "victim", PRIO_VICTIM,
-                                           KOS_POLICY_FIFO, 0, nullptr, 0, nullptr, 0, nullptr, 0,
-                                           0, nullptr, 1u << CORE_VICTIM);
+        auto const v = kos::thread::create(victim, nullptr, "victim", PRIO_VICTIM, KOS_POLICY_FIFO,
+                                           std::chrono::nanoseconds{0}, nullptr, 0, nullptr, 0,
+                                           nullptr, 0, 0, nullptr, 1u << CORE_VICTIM);
         if (not v.valid())
         {
             kos::print("[slaypeer] ERROR: victim spawn refused\n");
             kos_exit(1);
         }
-        kos_sleep_ns(SETTLE_NS);
-        g_slay_rc = kos_thread_cancel(v.id(), KOS_CANCEL_SLAY, SLAY_TIMEOUT_US);
+        kos_sleep_for(kos_ns(SETTLE_NS));
+        g_slay_rc = kos_thread_cancel(v.id(), KOS_CANCEL_SLAY, kos::after(SLAY_BOUND));
         kos_exit(0);
     }
 }
@@ -75,9 +75,9 @@ namespace
 int main(int, char**)
 {
     // The SLAYER is what spawns the victim: a cancel admits the spawner alone.
-    auto const s = kos::thread::create(slayer, nullptr, "slayer", PRIO_SLAYER, KOS_POLICY_FIFO, 0,
-                                       nullptr, 0, nullptr, 0, nullptr, 0, 0, nullptr,
-                                       1u << CORE_SLAYER);
+    auto const s = kos::thread::create(slayer, nullptr, "slayer", PRIO_SLAYER, KOS_POLICY_FIFO,
+                                       std::chrono::nanoseconds{0}, nullptr, 0, nullptr, 0, nullptr,
+                                       0, 0, nullptr, 1u << CORE_SLAYER);
     if (not s.valid())
     {
         kos::print("[slaypeer] ERROR: slayer spawn refused\n");
@@ -85,7 +85,7 @@ int main(int, char**)
     }
     // Unbounded, the slay carrying the only bound this run needs: a second one here would
     // report the gate's patience instead of the kernel's answer.
-    if (s.join(KOS_TIMEOUT_NONE) != 0)
+    if (s.join() != 0)
     {
         kos::print("[slaypeer] ERROR: the slayer never came back\n");
         return 1;

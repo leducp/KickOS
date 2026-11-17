@@ -110,9 +110,9 @@ namespace
     }
 
     // Nothing may touch memory between the sp move and the trap. a0 is the syscall number and
-    // a1..a4 the arguments (sys/abi.h); the unused ones are ZEROED, as the arch_syscall stub
+    // a1..a5 the arguments (sys/abi.h); the unused ones are ZEROED, as the arch_syscall stub
     // does, in case a dispatch arm ever reads an argument it does not read today.
-    uint32_t call_from(uintptr_t sp_target, uint32_t nr, uint32_t x1, uint32_t x2)
+    uint32_t call_from(uintptr_t sp_target, uint32_t nr, uint32_t x1, uint32_t x2, uint32_t x3)
     {
         uint32_t saved = 0;
         uint32_t rc = 0;
@@ -121,13 +121,15 @@ namespace
                        "mv   a0, %[nr]   \n\t"
                        "mv   a1, %[x1]   \n\t"
                        "mv   a2, %[x2]   \n\t"
-                       "mv   a3, zero    \n\t"
+                       "mv   a3, %[x3]   \n\t"
                        "mv   a4, zero    \n\t"
+                       "mv   a5, zero    \n\t"
                        "ecall            \n\t"
                        "mv   sp, %[sv]   \n\t"
                        "mv   %[rc], a0   \n\t"
                        : [sv] "=&r"(saved), [rc] "=r"(rc)
-                       : [low] "r"(sp_target), [nr] "r"(nr), [x1] "r"(x1), [x2] "r"(x2)
+                       : [low] "r"(sp_target), [nr] "r"(nr), [x1] "r"(x1), [x2] "r"(x2),
+                         [x3] "r"(x3)
                        : "a0", "a1", "a2", "a3", "a4", "a5", "a6", "a7",
                          "t0", "t1", "t2", "t3", "t4", "t5", "t6", "memory");
         return rc;
@@ -135,8 +137,8 @@ namespace
 
     uint32_t sleep_from(uintptr_t sp_target, uint64_t ns)
     {
-        return call_from(sp_target, KOS_SYS_SLEEP_NS, static_cast<uint32_t>(ns),
-                         static_cast<uint32_t>(ns >> 32));
+        return call_from(sp_target, KOS_SYS_SLEEP, static_cast<uint32_t>(ns),
+                         static_cast<uint32_t>(ns >> 32), KOS_LIMIT_RELATIVE);
     }
 
     // File-scope and not a local: the kernel reads this struct out of the caller's memory, and
@@ -175,13 +177,13 @@ namespace
         }
         for (uint32_t i = 0; i < TN_RAISES; i++)
         {
-            if (call_from(low, KOS_SYS_IRQ_RAISE, static_cast<uint32_t>(TN_CAP), 0) != 0u)
+            if (call_from(low, KOS_SYS_IRQ_RAISE, static_cast<uint32_t>(TN_CAP), 0, 0) != 0u)
             {
                 kos::print("[trapnest] ERROR: the raise was refused\n");
                 return;
             }
             // Consume and rearm after each raise; the ISR leaves the line masked.
-            (void)kos_notify_wait(TN_NOTE, 1u, KOS_TIMEOUT_NONE, nullptr);
+            (void)kos_notify_wait(1u, KOS_NEVER, nullptr);
             kos_irq_ack(TN_CAP);
         }
         // The DEEPEST syscall an unprivileged thread can reach, and the chain rv_trap_stack.h
@@ -191,7 +193,7 @@ namespace
         {
             (void)call_from(low, KOS_SYS_THREAD_CREATE,
                             static_cast<uint32_t>(reinterpret_cast<uintptr_t>(&g_tn_params)),
-                            static_cast<uint32_t>(reinterpret_cast<uintptr_t>(&g_tn_out)));
+                            static_cast<uint32_t>(reinterpret_cast<uintptr_t>(&g_tn_out)), 0);
         }
         band_read(band, TN_WORKER);
         kos::print("[trapnest] worker done\n");
@@ -257,16 +259,16 @@ int main(int, char**)
         kos::print("[trapnest] ERROR: ticker spawn refused\n");
         return 1;
     }
-    kos::thread::Handle const w = kos::thread::create_caps(worker, nullptr, "tnwork", 10, wcaps,
-                                                           nwcaps, KOS_POLICY_FIFO, 0, 0, nullptr,
-                                                           reinterpret_cast<void*>(lo),
-                                                           TN_STACK_SIZE);
+    kos::thread::Handle const w =
+        kos::thread::create_caps(worker, nullptr, "tnwork", 10, wcaps, nwcaps, KOS_POLICY_FIFO,
+                                 std::chrono::nanoseconds{0}, 0, nullptr,
+                                 reinterpret_cast<void*>(lo), TN_STACK_SIZE);
     if (not w.valid())
     {
         kos::print("[trapnest] ERROR: worker spawn refused\n");
         return 1;
     }
-    if (w.join(KOS_TIMEOUT_NONE) != 0)
+    if (w.join() != 0)
     {
         kos::print("[trapnest] ERROR: join did not report the worker gone\n");
         return 1;
@@ -279,7 +281,7 @@ int main(int, char**)
     }
     band_read(band, TN_MAIN);
     g_tn_stop = 1u;
-    if (tk.join(KOS_TIMEOUT_NONE) != 0)
+    if (tk.join() != 0)
     {
         kos::print("[trapnest] ERROR: join did not report the ticker gone\n");
         return 1;

@@ -25,7 +25,7 @@
 #include "stub_seam.h"
 
 extern "C" uint64_t syscall_dispatch(uintptr_t nr, uintptr_t a0, uintptr_t a1, uintptr_t a2,
-                                     uintptr_t a3);
+                                     uintptr_t a3, uintptr_t a4);
 
 namespace kickos
 {
@@ -67,21 +67,21 @@ namespace kickos
                 {
                     cap_seat_authority(caller_, authority);
                     return static_cast<int32_t>(
-                        syscall_dispatch(KOS_SYS_TERMINAL_OUTCOME, outcome, 0, 0, 0));
+                        syscall_dispatch(KOS_SYS_TERMINAL_OUTCOME, outcome, 0, 0, 0, 0));
                 }
 
                 int32_t shutdown(uint32_t authority, uint32_t outcome)
                 {
                     cap_seat_authority(caller_, authority);
                     return static_cast<int32_t>(
-                        syscall_dispatch(KOS_SYS_SHUTDOWN, STATUS, outcome, 0, 0));
+                        syscall_dispatch(KOS_SYS_SHUTDOWN, STATUS, outcome, 0, 0, 0));
                 }
 
                 void panic(Thread* t, uint32_t authority)
                 {
                     kernel().current(kickos_kernel_core()) = t;
                     cap_seat_authority(t, authority);
-                    (void)syscall_dispatch(KOS_SYS_PANIC, 0, 0, 0, 0);
+                    (void)syscall_dispatch(KOS_SYS_PANIC, 0, 0, 0, 0, 0);
                 }
 
                 // A refusal reaches neither the console drain nor the chip.
@@ -142,7 +142,7 @@ namespace kickos
                 EXPECT_EXIT(
                     {
                         dup2(STDERR_FILENO, STDOUT_FILENO);
-                        (void)syscall_dispatch(KOS_SYS_EXIT, 3, KOS_EXIT_TASK, 0, 0);
+                        (void)syscall_dispatch(KOS_SYS_EXIT, 3, KOS_EXIT_TASK, 0, 0, 0);
                     },
                     ::testing::ExitedWithCode(1), "kickos_terminate\\(3\\) ended the arm");
             }
@@ -151,7 +151,7 @@ namespace kickos
             {
                 seat_roots_worker(caller_, CAP_AUTH_ALL & ~AUTH_SYSTEM);
                 KICKOS_EXPECT_PANIC(
-                    (void)syscall_dispatch(KOS_SYS_EXIT, 3, KOS_EXIT_TASK, 0, 0),
+                    (void)syscall_dispatch(KOS_SYS_EXIT, 3, KOS_EXIT_TASK, 0, 0, 0),
                     diag::kRootExitRefused);
             }
 

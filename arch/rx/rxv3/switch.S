@@ -114,7 +114,8 @@
     .equ F_CTX_RESUME_PC, KICKOS_RX_CTX_OFF_RESUME_PC
     .equ F_CTX_RESUME_PSW, KICKOS_RX_CTX_OFF_RESUME_PSW
 /* The continuation header the generic arm lays at the top T of the caller's kernel block:
-     [T-16] a3, the psABI fifth argument syscall_dispatch reads at [SP+4]
+     [T-20] a3, the psABI fifth argument syscall_dispatch reads at [SP+4]
+     [T-16] a4, the sixth, at [SP+8]
      [T-12] the userPC and [T-8] the userPSW the trampoline returns with
      [T-4]  the USP the thread resumes on
    A blocking dispatch freezes its continuation BELOW it, so it survives the block. */
@@ -445,7 +446,7 @@ _arch_start:
     .global _kickos_rx_syscall_trap
 _kickos_rx_syscall_trap:
     /* Validate the live USP before any path uses it (rx_trap_stack.h): the generic arm reads
-       a3 above it, the fastpath arm writes the whole context save below it. R14/R15 are
+       a3 and a4 above it, the fastpath arm writes the whole context save below it. R14/R15 are
        caller-saved at the syscall boundary, so they are free scratch. */
     mvfc    usp, r15
     mov.l   r15, r14
@@ -454,11 +455,11 @@ _kickos_rx_syscall_trap:
     mov.l   #_g_arch_current, r14
     mov.l   [r14], r14
     mov.l   F_CTX_STACK_HI[r14], r14
-    /* The a3 slot the generic arm reads sits ABOVE this USP (rx_trap_stack.h), so the bound is
-       stack_hi less that slot: with the plain bound a USP AT the top passes and the read runs
-       past it. stack_hi is a RAM address, so the subtraction cannot wrap. */
+    /* The a3 and a4 slots the generic arm reads sit ABOVE this USP (rx_trap_stack.h), so the
+       bound is stack_hi less those slots: with the plain bound a USP AT the top passes and the
+       read runs past it. stack_hi is a RAM address, so the subtraction cannot wrap. */
     sub     #KICKOS_RX_TRAP_HEAD_ABOVE_SYS, r14
-    cmp     r14, r15                /* USP - (stack_hi - the a3 slot) */
+    cmp     r14, r15                /* USP - (stack_hi - the argument slots) */
     bgtu    .Lsys_bad_usp
     mov.l   #_g_arch_current, r14
     mov.l   [r14], r14
@@ -607,10 +608,11 @@ _kickos_rx_syscall_trap:
     beq     .Lsys_nokstack
     sub     #SYSK_HEADER, r14
     mvfc    usp, r15
-    mov.l   r15, 12[r14]       /* the resume USP */
-    mov.l   4[r15], [r14]      /* a3, inside the slot the guard kept below stack_hi */
-    mov.l   [r0], 4[r14]       /* userPC */
-    mov.l   4[r0], 8[r14]      /* userPSW */
+    mov.l   r15, 16[r14]       /* the resume USP */
+    mov.l   4[r15], [r14]      /* a3 and a4, inside the slots the guard kept below stack_hi */
+    mov.l   8[r15], 4[r14]
+    mov.l   [r0], 8[r14]       /* userPC */
+    mov.l   4[r0], 12[r14]     /* userPSW */
     mvtc    r14, usp
     mov.l   #_svc_trampoline, r15
     mov.l   r15, [r0]          /* stacked PC := svc_trampoline */
@@ -663,11 +665,11 @@ _kickos_rx_syscall_trap:
 /* clearing PSW.I before PSW.U so no interrupt is accepted while R0 is the ISP.           */
     .global _svc_trampoline
 _svc_trampoline:
-    bsr.a   _syscall_dispatch  /* (R1-R4, [SP+4]=a3) -> result in R1:R2 */
+    bsr.a   _syscall_dispatch  /* (R1-R4, [SP+4]=a3, [SP+8]=a4) -> result in R1:R2 */
     clrpsw  i
-    mov.l   4[r0], r14         /* userPC */
-    mov.l   8[r0], r15         /* userPSW */
-    mov.l   12[r0], r5         /* the resume USP */
+    mov.l   8[r0], r14         /* userPC */
+    mov.l   12[r0], r15        /* userPSW */
+    mov.l   16[r0], r5         /* the resume USP */
     clrpsw  u                  /* R0 = ISP */
     push.l  r15
     push.l  r14

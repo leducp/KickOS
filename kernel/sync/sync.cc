@@ -700,8 +700,7 @@ namespace kickos
                         return Attempt::ANSWERED;
                     }
                 }
-                // Before any deadline: ktime_limit_arm treats only KOS_TIMEOUT_NONE as none,
-                // and would park a try until the next expiry.
+                // Before any deadline: ktime_limit_arm would park a try until the floor.
                 if (ktime_limit_passed(limit))
                 {
                     *rc = -KOS_ETIMEDOUT;
@@ -1021,12 +1020,9 @@ namespace kickos
         }
     }
 
-    int mutex_lock(uintptr_t va, WaitLimit limit)
+    int mutex_lock(uintptr_t va, uint64_t limit_word, uint32_t kind)
     {
-        if (not limit.valid())
-        {
-            return -KOS_EINVAL;
-        }
+        WaitLimit const limit(limit_word, kind);
         Thread* const c = sched::current();
         uint32_t epoch = 0;
         while (true)
@@ -1070,12 +1066,9 @@ namespace kickos
         }
     }
 
-    int word_wait(uintptr_t va, uint32_t expected, WaitLimit limit)
+    int word_wait(uintptr_t va, uint32_t expected, uint64_t limit_word, uint32_t kind)
     {
-        if (not limit.valid())
-        {
-            return -KOS_EINVAL;
-        }
+        WaitLimit const limit(limit_word, kind);
         Thread* const c = sched::current();
         uint32_t epoch = 0;
         {
@@ -1103,7 +1096,7 @@ namespace kickos
                     return -KOS_EAGAIN;
                 }
             }
-            // Before any deadline: ktime_limit_arm treats only KOS_TIMEOUT_NONE as none.
+            // Before any deadline: ktime_limit_arm would park a try until the floor.
             if (ktime_limit_passed(limit))
             {
                 return -KOS_ETIMEDOUT;

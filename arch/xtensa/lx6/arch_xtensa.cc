@@ -1080,15 +1080,15 @@ void arch_idle_wait(void)
 // Thread::call_frame_parked needs a saved register frame to seat a reply in, while this path
 // answers in the caller's own registers.
 uint64_t arch_syscall64(uintptr_t nr,
-                        uintptr_t a0, uintptr_t a1, uintptr_t a2, uintptr_t a3)
+                        uintptr_t a0, uintptr_t a1, uintptr_t a2, uintptr_t a3, uintptr_t a4)
 {
-    return syscall_dispatch(nr, a0, a1, a2, a3);
+    return syscall_dispatch(nr, a0, a1, a2, a3, a4);
 }
 
 uintptr_t arch_syscall(uintptr_t nr,
-                       uintptr_t a0, uintptr_t a1, uintptr_t a2, uintptr_t a3)
+                       uintptr_t a0, uintptr_t a1, uintptr_t a2, uintptr_t a3, uintptr_t a4)
 {
-    return static_cast<uintptr_t>(syscall_dispatch(nr, a0, a1, a2, a3));
+    return static_cast<uintptr_t>(syscall_dispatch(nr, a0, a1, a2, a3, a4));
 }
 
 // --- One-time core bring-up ------------------------------------------------

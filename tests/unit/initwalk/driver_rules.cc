@@ -16,6 +16,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <chrono>
 #include <string>
 #include <vector>
 
@@ -74,9 +75,15 @@ namespace
     }
 
     // The handover's probe bound: the readiness wait its receiver may sit in, then the probe's own.
-    constexpr uint64_t HANDOVER_PROBE_US = kickos::driver::KOS_DRV_HANDOVER_PROBE_US
-                                           + uint64_t{kickos::driver::KOS_DRV_READY_WAIT_MAX}
-                                                 * (kickos::driver::KOS_DRV_READY_WAIT_NS / 1000u);
+    constexpr uint64_t HANDOVER_PROBE_NS = static_cast<uint64_t>(
+        std::chrono::nanoseconds(kickos::driver::KOS_DRV_HANDOVER_PROBE + kickos::driver::KOS_DRV_READY_WAIT)
+            .count());
+
+    // How far past the clock at call `c` its argument `i`, a deadline, lies.
+    uint64_t span_of(fake::Call const& c, size_t i)
+    {
+        return c.args.at(i) - c.at;
+    }
 
     // The creates of task `name`, in order.
     std::vector<fake::Call> creates_of(char const* name)
@@ -118,7 +125,7 @@ namespace
         for (size_t i = at - 2u; i < all.size(); i++)
         {
             fake::Call const& c = all[i];
-            if (c.fn == "kos_clock_now" or c.fn == "kos_thread_self")
+            if (c.fn == "kos_thread_self")
             {
                 continue;
             }
@@ -209,7 +216,7 @@ namespace
         EXPECT_EQ(ep->rights, KEPT);
         fake::Call const probe = probes().at(0);
         EXPECT_EQ(probe.args[0], static_cast<uint64_t>(KOS_CAP_STDOUT));
-        EXPECT_EQ(probe.args[2], HANDOVER_PROBE_US);
+        EXPECT_EQ(span_of(probe, 2), HANDOVER_PROBE_NS);
     }
 
     TEST_F(Driver, a_driver_runs_on_its_declared_core)
@@ -263,7 +270,8 @@ namespace
         ASSERT_EQ(outcome.kind, Outcome::Kind::IDLE) << outcome.message;
         std::vector<fake::Call> const creates = creates_of("spi0");
         ASSERT_EQ(creates.size(), 1u);
-        EXPECT_EQ(creates[0].args.at(6), uint64_t{kickos::init::START_WAIT_US})
+        EXPECT_EQ(span_of(creates[0], 6),
+                  static_cast<uint64_t>(std::chrono::nanoseconds(kickos::init::START_WAIT).count()))
             << "the start does not ask the kernel to wait out a line still retiring";
         EXPECT_EQ(status("spi0").deaths, 0u);
     }
@@ -415,12 +423,14 @@ namespace
         EXPECT_EQ(outcome.status, 3);
         std::vector<fake::Call> const sends = probes();
         ASSERT_EQ(sends.size(), 1u) << "the handover's probe";
-        EXPECT_EQ(sends[0].args[2], HANDOVER_PROBE_US);
+        EXPECT_EQ(span_of(sends[0], 2), HANDOVER_PROBE_NS);
         std::vector<fake::Call> const drains = fake::calls_of("kos_call");
         ASSERT_EQ(drains.size(), 1u);
         EXPECT_EQ(drains[0].args[0], KOS_CAP_STDOUT);
-        EXPECT_EQ(drains[0].args[2], kickos::driver::KOS_DRV_HANDOVER_PROBE_US);
-        EXPECT_LE(fake::now() - ended, kickos::driver::KOS_DRV_HANDOVER_PROBE_US * 1000u);
+        uint64_t const probe_ns = static_cast<uint64_t>(
+            std::chrono::nanoseconds(kickos::driver::KOS_DRV_HANDOVER_PROBE).count());
+        EXPECT_EQ(span_of(drains[0], 2), probe_ns);
+        EXPECT_LE(fake::now() - ended, probe_ns);
     }
 
     INSTANTIATE_TEST_SUITE_P(Console, Drain, ::testing::Values(Ending{true}, Ending{false}),

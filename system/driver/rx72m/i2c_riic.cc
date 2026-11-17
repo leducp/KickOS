@@ -36,7 +36,7 @@
 #include <kickos/driver/i2c.h>
 
 #include <kickos/io/mmio.h> // r8
-#include <kickos/sys.h>     // kos_periph_enable, kos_periph_clock_hz, kos_clock_now
+#include <kickos/sys.h>     // kos_periph_enable, kos_periph_clock_hz, kos_monotonic_now
 #include <kickos/sys/errno.h>
 
 #include <regs/riic.h>
@@ -60,7 +60,7 @@ namespace
     constexpr uint8_t FUNCTION_ENABLE =
         rr::ICFER_SCLE | rr::ICFER_NFE | rr::ICFER_NACKE | rr::ICFER_MALE;
 
-    // Register reads between two kos_clock_now calls. The clock is a syscall and a flag can
+    // Register reads between two kos_monotonic_now calls. The clock is a syscall and a flag can
     // turn over in a few bus cycles, so checking the deadline on every pass would cost more
     // than the wait.
     constexpr uint32_t CLOCK_POLL_BATCH = 64u;
@@ -143,7 +143,7 @@ namespace
             if (batch >= CLOCK_POLL_BATCH)
             {
                 batch = 0u;
-                if (kos_clock_now() >= deadline)
+                if ((uint64_t)kos_monotonic_now().ns >= deadline)
                 {
                     return -KOS_ETIMEDOUT;
                 }
@@ -383,7 +383,7 @@ namespace
             if (batch >= CLOCK_POLL_BATCH)
             {
                 batch = 0u;
-                if (kos_clock_now() >= deadline)
+                if ((uint64_t)kos_monotonic_now().ns >= deadline)
                 {
                     return -KOS_EBUSY;
                 }
@@ -781,7 +781,7 @@ int32_t kos_i2c_device_open(struct kos_i2c_device* d, struct kos_i2c_bus* b,
 }
 
 int32_t kos_i2c_transfer(struct kos_i2c_device* d, struct kos_bus_seg const* seg, uint8_t nseg,
-                         unsigned char* buf, uint32_t len, uint32_t timeout_us,
+                         unsigned char* buf, uint32_t len, kos_monotonic_t until,
                          uint32_t* xferred)
 {
     if (xferred == nullptr)
@@ -795,7 +795,8 @@ int32_t kos_i2c_transfer(struct kos_i2c_device* d, struct kos_bus_seg const* seg
     {
         return rc;
     }
-    if (timeout_us == 0u or timeout_us > (uint32_t)KOS_I2C_TIMEOUT_MAX_US)
+    int64_t const now = kos_monotonic_now().ns;
+    if (until.ns > now + (int64_t)KOS_I2C_DEADLINE_MAX_MS * 1000000)
     {
         return -KOS_EINVAL;
     }
@@ -809,8 +810,12 @@ int32_t kos_i2c_transfer(struct kos_i2c_device* d, struct kos_bus_seg const* seg
         return -KOS_EINVAL;
     }
 
+    if (until.ns <= now)
+    {
+        return -KOS_ETIMEDOUT;
+    }
     uintptr_t const win = b->base;
-    uint64_t const deadline = kos_clock_now() + (uint64_t)timeout_us * 1000ull;
+    uint64_t const deadline = (uint64_t)until.ns;
 
     rc = apply_rate(win, d->prog[PROG_RATE]);
     if (rc != 0)

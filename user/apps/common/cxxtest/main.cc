@@ -244,7 +244,7 @@ namespace
             return rc;
         }
         int status = -1;
-        int const wait = kickos::apps::wait_dead(t, &status, 5000u);
+        int const wait = kickos::apps::wait_dead(t, &status, std::chrono::seconds{5});
         if (wait != 0)
         {
             return wait;

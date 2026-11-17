@@ -135,7 +135,7 @@ extern "C" int __kickos_gthr_once(__gthread_once_t* once, void (*func)(void))
                 continue;
             }
         }
-        (void)kos_word_wait(word, want, KOS_TIMEOUT_NONE);
+        (void)kos_word_wait(word, want, KOS_NEVER);
         v = __atomic_load_n(word, __ATOMIC_ACQUIRE);
     }
 }

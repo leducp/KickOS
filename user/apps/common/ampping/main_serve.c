@@ -40,7 +40,7 @@ int main(void)
     {
         unsigned char msg[16];
         struct kos_reply_recv_opts opts = {0};
-        opts.timeout_us = AMPPING_RECV_US;
+        opts.until = kos_after(kos_monotonic_now(), kos_us(AMPPING_RECV_US));
         // KOS_CAP_NONE is all-ones and zero is KOS_CAP_STDOUT: a path where the kernel never
         // writes the info leaves exactly what is here.
         opts.info.reply_cap = KOS_CAP_NONE;
@@ -54,7 +54,7 @@ int main(void)
             {
                 (void)kos_reply(opts.info.reply_cap, msg, 0);
             }
-            kos_sleep_ns(AMPPING_IDLE_NS);
+            kos_sleep_for(kos_ns(AMPPING_IDLE_NS));
             continue;
         }
         if (opts.info.reply_cap == KOS_CAP_NONE)

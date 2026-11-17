@@ -33,7 +33,7 @@ struct kos_seam_control
     // priority does.
     bool run_on_spawn;
     // A park on a word: the producer publishes it and wakes the parked thread, or nothing comes and
-    // the park lasts its whole timeout.
+    // the park lasts until its deadline.
     bool publish_on_park;
 };
 

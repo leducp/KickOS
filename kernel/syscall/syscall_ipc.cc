@@ -358,12 +358,12 @@ namespace kickos
     }
 #endif
 
-    // Return bytes sent or -KOS_E*. timeout_us bounds only the parked wait, and 0 never parks:
-    // it answers -KOS_ETIMEDOUT instead, as does the published console to a non-blocking
-    // task's send of no timeout.
+    // Return bytes sent or -KOS_E*. The deadline bounds only the parked wait, and a passed one
+    // never parks: it answers -KOS_ETIMEDOUT instead, as does the published console to a
+    // non-blocking task's send of no limit.
     // Endpoint death, timeout and cancellation send no data.
     // Far endpoints never park; a full peer ring returns -KOS_EAGAIN.
-    int32_t endpoint_send(uint32_t cap, uintptr_t buf, size_t len, uint32_t timeout_us)
+    int32_t endpoint_send(uint32_t cap, uintptr_t buf, size_t len, uint64_t deadline)
     {
         if (len > KOS_EP_MSG_MAX)
         {
@@ -420,7 +420,7 @@ namespace kickos
                 sched::wake(w, lock);
                 return static_cast<int>(n); // did not block: no resume barrier
             }
-            if (timeout_us == 0)
+            if (ktime_limit_passed(WaitLimit(deadline)))
             {
                 return -KOS_ETIMEDOUT;
             }
@@ -428,7 +428,7 @@ namespace kickos
             c->ipc.len = len;
             c->ipc.badge = badge;
             c->call_state = CALL_NONE;
-            ktime_deadline_arm(c, timeout_us, lock);
+            ktime_limit_arm(c, WaitLimit(deadline), lock);
             epoch = wq_block(ask)(e->send_waiters, WAIT_EP_SEND, e, nullptr, lock);
         }
         wq_confirm_resume(c, epoch);
@@ -520,7 +520,7 @@ namespace kickos
     // Returns bytes received or -KOS_E*. On park, sets parked and epoch; the caller
     // must run wq_confirm_resume before reading wait_result.
     int32_t endpoint_recv_locked(ParkToken const& ask, Thread* c, uint32_t cap, uintptr_t buf,
-                                 size_t cap_len, uintptr_t badge_out, uint32_t timeout_us,
+                                 size_t cap_len, uintptr_t badge_out, WaitLimit limit,
                                  DeferredWake* dw, bool* parked, uint32_t* epoch)
     {
         *parked = false;
@@ -622,10 +622,14 @@ namespace kickos
             }
             return static_cast<int>(n);
         }
+        if (ktime_limit_passed(limit))
+        {
+            return -KOS_ETIMEDOUT;
+        }
         c->ipc.buf = buf;
         c->ipc.len = cap_len;
         c->ipc.badge_out = badge_out;
-        ktime_deadline_arm(c, timeout_us, dw->held());
+        ktime_limit_arm(c, limit, dw->held());
         // Transfer the pending wake to the park's reschedule, including peer notification.
         *epoch = wq_block(ask)(e->recv_waiters, WAIT_EP_RECV, e, dw->take(), dw->held());
         *parked = true;
@@ -636,11 +640,13 @@ namespace kickos
     // or -KOS_E*: EINVAL for length, EFAULT for buffers, EBADF/EACCES for capability
     // access, EPIPE for endpoint/server death, EMFILE for server reply-cap capacity,
     // ENOTSUP for a receiver without metadata, ETIMEDOUT, or ECANCELED.
-    // One deadline covers both send and reply waits. Far calls wait only for a
+    // One deadline covers both send and reply waits, and a passed one takes nothing: it answers
+    // ETIMEDOUT before a receiver is taken, the reply being a park. Far calls wait only for a
     // reply and return EAGAIN without side effects if the peer ring is full.
     int32_t endpoint_call(uint32_t cap, uintptr_t buf, size_t send_len, size_t recv_cap,
-                          uint32_t timeout_us)
+                          uint64_t deadline)
     {
+        WaitLimit const limit(deadline);
         if (send_len > KOS_EP_MSG_MAX)
         {
             return -KOS_EINVAL;
@@ -677,6 +683,10 @@ namespace kickos
             {
                 return endpoint_unserved(e, 0);
             }
+            if (ktime_limit_passed(limit))
+            {
+                return -KOS_ETIMEDOUT;
+            }
             Thread* w = wq_peek_highest(e->recv_waiters);
 #if KICKOS_AMP_NODE
             if (far)
@@ -696,7 +706,7 @@ namespace kickos
                 reply_wait_seat(c, buf, recv_cap);
                 // Cross-node calls do not donate priority to the peer scheduler.
                 epoch = park_queueless(ask)(c, WAIT_EP_FAR_REPLY, e, lock);
-                ktime_deadline_arm(c, timeout_us, lock);
+                ktime_limit_arm(c, limit, lock);
                 // No wake schedules this park; request a switch explicitly.
                 sched::reschedule(nullptr, lock);
             }
@@ -757,7 +767,7 @@ namespace kickos
                 epoch = park_queueless(ask)(c, WAIT_EP_REPLY, w, lock);
                 reply_donor_park(w, c); // Off the ready queue; link can be reused.
                 // Arm the reply deadline before the switch.
-                ktime_deadline_arm(c, timeout_us, lock);
+                ktime_limit_arm(c, limit, lock);
                 Thread* woken = nullptr;
                 if (sched::wake_no_resched(w, lock))
                 {
@@ -786,7 +796,7 @@ namespace kickos
                 }
                 // From here, so CALL_SLOW_PARK and CALL_SLOW_DONATE do not overlap.
                 // Keep this deadline when the caller moves from send_waiters to reply_waiters.
-                ktime_deadline_arm(c, timeout_us, lock);
+                ktime_limit_arm(c, limit, lock);
                 sched::reschedule(nullptr, lock);
             }
         }
@@ -942,7 +952,7 @@ namespace kickos
             }
         }
         int leave_rc = 0;
-        if ((in.flags & ~KOS_RECV_NO_INFO) != 0)
+        if ((in.flags & ~KOS_RECV_NO_INFO) != 0 or in.rsv0 != 0u)
         {
             return -KOS_EINVAL;
         }
@@ -1006,7 +1016,8 @@ namespace kickos
                     else
                     {
                         rc = endpoint_recv_locked(ask, c, in.ep, buf, recv_cap, badge_out,
-                                                  in.timeout_us, &dw, &parked, &epoch);
+                                                  WaitLimit(kos_limit_word(in.until.ns)), &dw,
+                                                  &parked, &epoch);
                     }
                     if (not parked and admit != 0u)
                     {

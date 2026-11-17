@@ -45,7 +45,7 @@ namespace kickos
             constexpr int SLOT_CHAIN = SLOT_DONOR + 1;
             constexpr int CHAIN = KICKOS_SEAM_THREAD_SLOTS - SLOT_CHAIN;
             static_assert(CHAIN >= 3, "a chain needs a few thread slots past the fixture's own");
-            constexpr uint32_t TIMEOUT_US = 1000;
+            constexpr uint64_t WAIT_NS = 1000000;
 
             Thread* g_holder = nullptr;
             Thread* g_tail = nullptr;
@@ -65,7 +65,7 @@ namespace kickos
 
             void deadline_fires()
             {
-                g_now_ns += static_cast<uint64_t>(TIMEOUT_US) * 1000u + KICKOS_TIMER_MIN_DELTA_NS;
+                g_now_ns += WAIT_NS + KICKOS_TIMER_MIN_DELTA_NS;
                 ktime_on_timer();
             }
 
@@ -262,10 +262,10 @@ namespace kickos
             donor_waits_on(m, PRIO_PARTIAL);
 
             g_word = 0;
-            EXPECT_EQ(mutex_lock(va(&g_word), TIMEOUT_US), -KOS_EINVAL) << "a cleared word";
+            EXPECT_EQ(mutex_lock(va(&g_word), deadline_in(WAIT_NS)), -KOS_EINVAL) << "a cleared word";
             EXPECT_EQ(g_word, 0u) << "a refused lock wrote the word";
             g_word = waiter->lock_id;
-            EXPECT_EQ(mutex_lock(va(&g_word), TIMEOUT_US), -KOS_EINVAL)
+            EXPECT_EQ(mutex_lock(va(&g_word), deadline_in(WAIT_NS)), -KOS_EINVAL)
                 << "a word naming the caller";
             EXPECT_EQ(g_word, waiter->lock_id);
             EXPECT_EQ(m->owner, g_holder);
@@ -298,7 +298,7 @@ namespace kickos
             uint32_t const held = mine_word;
 
             EXPECT_EQ(mutex_lock(va(&mine_word), 0), -KOS_EDEADLK);
-            EXPECT_EQ(mutex_lock(va(&mine_word), TIMEOUT_US), -KOS_EDEADLK);
+            EXPECT_EQ(mutex_lock(va(&mine_word), deadline_in(WAIT_NS)), -KOS_EDEADLK);
             EXPECT_EQ(mine_word, held);
             EXPECT_EQ(mine->waiters.head, mine->waiters.tail) << "the holder queued on itself";
             EXPECT_EQ(g_switches, 0u);
@@ -309,7 +309,7 @@ namespace kickos
             Thread* const waiter = seat_waiter_over_holder();
             wake_next_park(expire);
 
-            EXPECT_EQ(mutex_lock(va(&g_word), TIMEOUT_US), -KOS_ETIMEDOUT);
+            EXPECT_EQ(mutex_lock(va(&g_word), deadline_in(WAIT_NS)), -KOS_ETIMEDOUT);
             EXPECT_EQ(g_holder_prio_parked, PRIO_WAITER) << "the waiting form lent nothing";
             EXPECT_NE(g_sleepq_while_parked, nullptr) << "the wait armed no deadline";
             EXPECT_EQ(g_word & ~KOS_WORD_WAITERS, g_holder->lock_id);
@@ -326,7 +326,7 @@ namespace kickos
             holder_waits_on_the_tail();
             wake_next_park(expire);
 
-            EXPECT_EQ(mutex_lock(va(&g_word), TIMEOUT_US), -KOS_ETIMEDOUT);
+            EXPECT_EQ(mutex_lock(va(&g_word), deadline_in(WAIT_NS)), -KOS_ETIMEDOUT);
             EXPECT_EQ(g_tail_prio_parked, PRIO_WAITER) << "the boost did not cross both links";
             EXPECT_EQ(g_holder->prio, PRIO_HOLDER);
             EXPECT_EQ(g_tail->prio, PRIO_HOLDER)
@@ -339,7 +339,7 @@ namespace kickos
             holder_waits_on_the_tail();
             wake_next_park(cancel);
 
-            EXPECT_EQ(mutex_lock(va(&g_word), TIMEOUT_US), -KOS_ECANCELED);
+            EXPECT_EQ(mutex_lock(va(&g_word), deadline_in(WAIT_NS)), -KOS_ECANCELED);
             EXPECT_NE(waiter->cancel_kind, CANCEL_NONE);
             EXPECT_EQ(g_tail_prio_parked, PRIO_WAITER);
             EXPECT_EQ(g_holder->prio, PRIO_HOLDER);
@@ -356,7 +356,7 @@ namespace kickos
             donor_waits_on(own_mutex(g_holder, &g_word), PRIO_PARTIAL);
             wake_next_park(expire);
 
-            EXPECT_EQ(mutex_lock(va(&g_word), TIMEOUT_US), -KOS_ETIMEDOUT);
+            EXPECT_EQ(mutex_lock(va(&g_word), deadline_in(WAIT_NS)), -KOS_ETIMEDOUT);
             EXPECT_EQ(g_holder->prio, PRIO_PARTIAL);
             EXPECT_EQ(g_tail->prio, PRIO_PARTIAL)
                 << "the walk stopped at an owner that is still boosted";
@@ -372,7 +372,7 @@ namespace kickos
             donor_waits_on(g_tail_mutex, PRIO_WAITER);
             wake_next_park(expire);
 
-            EXPECT_EQ(mutex_lock(va(&g_word), TIMEOUT_US), -KOS_ETIMEDOUT);
+            EXPECT_EQ(mutex_lock(va(&g_word), deadline_in(WAIT_NS)), -KOS_ETIMEDOUT);
             EXPECT_EQ(g_holder->prio, PRIO_HOLDER);
             EXPECT_EQ(g_tail->prio, PRIO_WAITER) << "the other donor's boost on the tail was lost";
             EXPECT_EQ(g_far->prio, PRIO_WAITER) << "the owner past the tail was lowered";
@@ -383,7 +383,7 @@ namespace kickos
             Thread* const waiter = seat_waiter_over_holder();
             wake_next_park(expire_then_unlock);
 
-            EXPECT_EQ(mutex_lock(va(&g_word), TIMEOUT_US), -KOS_ETIMEDOUT);
+            EXPECT_EQ(mutex_lock(va(&g_word), deadline_in(WAIT_NS)), -KOS_ETIMEDOUT);
             EXPECT_EQ(g_word, 0u) << "the unlock handed the mutex to the expired waiter";
             EXPECT_EQ(waiter->held_list, nullptr);
             EXPECT_EQ(g_holder->prio, PRIO_HOLDER);
@@ -395,7 +395,7 @@ namespace kickos
             Thread* const waiter = seat_waiter_over_holder();
             wake_next_park(unlock_then_expire);
 
-            EXPECT_EQ(mutex_lock(va(&g_word), TIMEOUT_US), 0);
+            EXPECT_EQ(mutex_lock(va(&g_word), deadline_in(WAIT_NS)), 0);
             EXPECT_EQ(g_word, waiter->lock_id) << "the hand-over wrote another owner";
             EXPECT_EQ(kernel().word_active, nullptr) << "the emptied record was kept";
             EXPECT_EQ(g_holder->prio, PRIO_HOLDER);
@@ -407,7 +407,7 @@ namespace kickos
             Thread* const waiter = seat_waiter_over_holder();
             wake_next_park(owner_dies_then_expire);
 
-            EXPECT_EQ(mutex_lock(va(&g_word), TIMEOUT_US), -KOS_EOWNERDEAD);
+            EXPECT_EQ(mutex_lock(va(&g_word), deadline_in(WAIT_NS)), -KOS_EOWNERDEAD);
             EXPECT_EQ(g_word, waiter->lock_id) << "the death wrote another owner";
             EXPECT_EQ(g_holder->held_list, nullptr);
             EXPECT_EQ(kernel().sleepq(kickos_kernel_core()), nullptr);
@@ -418,7 +418,7 @@ namespace kickos
             Thread* const waiter = seat_waiter_over_holder();
             wake_next_park(unlock);
 
-            EXPECT_EQ(mutex_lock(va(&g_word), KOS_TIMEOUT_NONE), 0);
+            EXPECT_EQ(mutex_lock(va(&g_word), KOS_LIMIT_NONE), 0);
             EXPECT_EQ(g_holder_prio_parked, PRIO_WAITER);
             EXPECT_EQ(g_sleepq_while_parked, nullptr) << "an untimed wait queued a deadline";
             EXPECT_EQ(g_word, waiter->lock_id);
@@ -432,7 +432,7 @@ namespace kickos
             uint32_t second = g_holder->lock_id;
             g_holder->dying = true;
 
-            EXPECT_EQ(mutex_lock(va(&g_word), TIMEOUT_US), -KOS_EOWNERDEAD);
+            EXPECT_EQ(mutex_lock(va(&g_word), deadline_in(WAIT_NS)), -KOS_EOWNERDEAD);
             EXPECT_EQ(g_word, waiter->lock_id) << "the owner-died answer is an acquire";
             EXPECT_EQ(mutex_unlock(va(&g_word)), 0);
             EXPECT_EQ(mutex_lock(va(&g_word), 0), 0) << "the death was reported twice";
@@ -454,7 +454,7 @@ namespace kickos
             ASSERT_TRUE(built->state == ThreadState::INACTIVE);
             uint32_t word = built->lock_id;
 
-            EXPECT_EQ(mutex_lock(va(&word), TIMEOUT_US), -KOS_EOWNERDEAD);
+            EXPECT_EQ(mutex_lock(va(&word), deadline_in(WAIT_NS)), -KOS_EOWNERDEAD);
             EXPECT_EQ(word, waiter->lock_id);
             EXPECT_EQ(built->prio, 0u) << "a thread being built was lent a priority";
             EXPECT_EQ(kernel().word_active, nullptr);
@@ -554,7 +554,7 @@ namespace kickos
             g_older_seen_key = 0;
             wake_next_park(free_the_older_then_expire);
 
-            EXPECT_EQ(mutex_lock(va(&g_word), TIMEOUT_US), -KOS_ETIMEDOUT);
+            EXPECT_EQ(mutex_lock(va(&g_word), deadline_in(WAIT_NS)), -KOS_ETIMEDOUT);
             ASSERT_EQ(g_older_seen_n, 1) << "the lock's record left the list with the older one";
             EXPECT_NE(g_older_seen[0], older);
             EXPECT_EQ(g_older_seen_key, static_cast<arch_phys_addr_t>(va(&g_word)));
@@ -569,7 +569,7 @@ namespace kickos
             WordRecord* const mine = own_mutex(waiter, &mine_word);
             park_mutex_waiter(g_holder, mine);
 
-            EXPECT_EQ(mutex_lock(va(&g_word), TIMEOUT_US), -KOS_EDEADLK);
+            EXPECT_EQ(mutex_lock(va(&g_word), deadline_in(WAIT_NS)), -KOS_EDEADLK);
             EXPECT_EQ(g_holder->prio, PRIO_HOLDER);
             EXPECT_EQ(g_switches, 0u);
             EXPECT_EQ(kernel().sleepq(kickos_kernel_core()), nullptr);
@@ -611,7 +611,7 @@ namespace kickos
             g_chain_tail_prio_parked = 0;
             wake_next_park(note_the_chain_tail_then_expire);
 
-            EXPECT_EQ(mutex_lock(va(&words[0]), TIMEOUT_US), -KOS_ETIMEDOUT);
+            EXPECT_EQ(mutex_lock(va(&words[0]), deadline_in(WAIT_NS)), -KOS_ETIMEDOUT);
             EXPECT_EQ(g_chain_tail_prio_parked, PRIO_WAITER)
                 << "the boost stopped short of the chain's end";
             for (int i = 0; i < CHAIN; i++)
@@ -638,7 +638,7 @@ namespace kickos
             park_mutex_waiter(links[CHAIN - 1], mine);
             wake_next_park(expire);
 
-            EXPECT_EQ(mutex_lock(va(&words[0]), TIMEOUT_US), -KOS_EDEADLK);
+            EXPECT_EQ(mutex_lock(va(&words[0]), deadline_in(WAIT_NS)), -KOS_EDEADLK);
             EXPECT_EQ(g_switches, 0u) << "the waiter parked on a cycle through itself";
             EXPECT_EQ(links[0]->prio, PRIO_FAR) << "a refused lock lent its priority";
             for (int i = 0; i < CHAIN; i++)

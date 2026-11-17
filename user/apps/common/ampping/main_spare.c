@@ -12,6 +12,6 @@ int main(void)
 {
     while (true)
     {
-        kos_sleep_ns(1000000000ull);
+        kos_sleep_for(kos_s(1));
     }
 }

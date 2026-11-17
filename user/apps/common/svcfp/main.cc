@@ -22,7 +22,7 @@
 
 extern "C" int32_t arch_syscall_reg(uint32_t* io);
 extern "C" uintptr_t arch_syscall(uintptr_t nr, uintptr_t a0, uintptr_t a1, uintptr_t a2,
-                                  uintptr_t a3);
+                                  uintptr_t a3, uintptr_t a4);
 
 namespace
 {
@@ -102,7 +102,7 @@ namespace
         r->io[0] = KOS_SYS_CALL_REG;
         r->io[1] = KOS_CAP_NONE;
         r->mark = FPSCR_MARK;
-        r->nr = KOS_SYS_CLOCK_NOW;
+        r->nr = KOS_SYS_MONOTONIC_NOW;
     }
 
     // False after printing what did not come back.

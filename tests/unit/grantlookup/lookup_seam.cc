@@ -18,7 +18,7 @@ namespace seam
     std::vector<kos_window> windows;
     kos_window stale = {};
     std::vector<uint32_t> asked;
-    std::vector<uint64_t> sleeps;
+    std::vector<int64_t> sleeps;
     std::function<void()> on_sleep;
     kos_self_t const* entered = nullptr;
     kos_table_task entered_record = {};
@@ -231,9 +231,9 @@ int kos_window_get(uint32_t index, struct kos_window* out)
     return 0;
 }
 
-void kos_sleep_ns(uint64_t ns)
+void kos_sleep_for(kos_duration_t d)
 {
-    seam::sleeps.push_back(ns);
+    seam::sleeps.push_back(d.ns);
     if (seam::on_sleep)
     {
         seam::on_sleep();

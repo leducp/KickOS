@@ -16,8 +16,8 @@
 
 namespace driver_witness
 {
-    constexpr uint32_t CALL_TIMEOUT_US = 100000u;
-    constexpr uint64_t RETRY_NS = 10000000ull; // 10 ms
+    constexpr int64_t CALL_WAIT_MS = 100;
+    constexpr int64_t RETRY_NS = 10000000; // 10 ms
 
     inline void call_until_refused(char const* path, char const* who)
     {
@@ -25,7 +25,8 @@ namespace driver_witness
         while (true)
         {
             uint32_t served = 0;
-            int32_t const n = kos_call(ep, &served, 0u, sizeof(served), CALL_TIMEOUT_US);
+            int32_t const n = kos_call(ep, &served, 0u, sizeof(served),
+                                       kos_after(kos_monotonic_now(), kos_ms(CALL_WAIT_MS)));
             if (n == -KOS_ECONNREFUSED)
             {
                 printf("%s: refused\n", who);
@@ -36,7 +37,7 @@ namespace driver_witness
                 printf("%s: served %lu by %s\n", who, static_cast<unsigned long>(served), path);
                 continue;
             }
-            kos_sleep_ns(RETRY_NS);
+            kos_sleep_for(kos_ns(RETRY_NS));
         }
     }
 }

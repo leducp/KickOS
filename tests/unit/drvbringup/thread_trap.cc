@@ -61,7 +61,7 @@ extern "C"
     }
 
     // The notification gone: the IRQ thread's loop breaks.
-    int kos_notify_wait(kos_cap_t, uint32_t, uint32_t, uint32_t*)
+    int kos_notify_wait(uint32_t, kos_monotonic_t, uint32_t*)
     {
         return g_wait_rc;
     }

@@ -160,7 +160,7 @@ the code passed to `exit` or `kos_exit`, any `int` and negatives included, `KOS_
 a fault, `KOS_EXIT_CANCELLED` when the entry was cancelled. An `ends` task marked
 dependency-down, or whose start fails, never runs its entry, and the system ends with
 `KOS_EXIT_CANCELLED`. Where a console driver holds stdout the init drains it with `kos_console_flush`, one
-`KOS_UART_DRAIN` call on `KOS_CAP_STDOUT` bounded by `KOS_DRV_HANDOVER_PROBE_US` (1 s). The driver
+`KOS_UART_DRAIN` call on `KOS_CAP_STDOUT` bounded by `KOS_DRV_HANDOVER_PROBE` (1 s). The driver
 replies once its TX ring and the device's transmit path have drained, as far as the device can
 tell, or once its own bound has expired, and the reply carries which. Drained is the last stop bit
 leaving the pin on every UART, and on USB the host's acknowledgement of the last packet, a
@@ -216,7 +216,7 @@ reports, one line each, a failed start with its step and answer, a death it rele
 that leaves members, each once the slay or the kill has run,
 since a console driver's failed start may still hold stdout. It prints the lines a pass makes once
 the pass's deaths are handled and the restarts they allow are started, so a stalled console delays
-no recovery. Each line is one send on stdout bounded by `KOS_DRV_HANDOVER_PROBE_US`, what it leaves
+no recovery. Each line is one send on stdout bounded by `KOS_DRV_HANDOVER_PROBE`, what it leaves
 going to the kernel console, so a console driver stalled or holding members past its slay never
 parks the init. Three results are not refusals:
 

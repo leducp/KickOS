@@ -18,15 +18,15 @@ namespace
         int rc = 0;
         if (waited == -KOS_ECANCELED)
         {
-            rc = kickos_mutex_lock_entry(m, KOS_TIMEOUT_NONE);
+            rc = kickos_mutex_lock_entry(m, KOS_LIMIT_NONE, KOS_LIMIT_MONOTONIC);
         }
         else
         {
-            rc = kos_mutex_lock(m, KOS_TIMEOUT_NONE);
+            rc = kos_mutex_lock(m, KOS_NEVER);
         }
         while (rc == -KOS_ECANCELED)
         {
-            rc = kickos_mutex_lock_entry(m, KOS_TIMEOUT_NONE);
+            rc = kickos_mutex_lock_entry(m, KOS_LIMIT_NONE, KOS_LIMIT_MONOTONIC);
         }
         if (rc != 0)
         {
@@ -61,8 +61,9 @@ namespace
         return 0;
     }
 
-    // The wait toward `limit`: relative microseconds, or a wall-clock deadline where `wall`.
-    int wait(kos_cond_t* c, kos_mutex_t* m, bool wall, uint64_t limit)
+    // The wait toward the deadline `ns` on the realtime clock where `realtime`, else the
+    // monotonic one.
+    int wait(kos_cond_t* c, kos_mutex_t* m, bool realtime, int64_t ns)
     {
         // Read under the mutex: a signal sent after the release moves the sequence off it.
         uint32_t const seq = __atomic_load_n(&c->word, __ATOMIC_RELAXED) & SEQUENCE;
@@ -76,13 +77,15 @@ namespace
         int waited = 0;
         if (seen == seq or seen == want)
         {
-            if (wall)
+            if (realtime)
             {
-                waited = kos_word_wait_realtime(&c->word, want, limit);
+                kos_realtime_t const until = {ns};
+                waited = kos_word_wait_realtime(&c->word, want, until);
             }
             else
             {
-                waited = kos_word_wait(&c->word, want, static_cast<uint32_t>(limit));
+                kos_monotonic_t const until = {ns};
+                waited = kos_word_wait(&c->word, want, until);
             }
         }
         if (waited == 1 or waited == -KOS_EAGAIN)
@@ -96,14 +99,14 @@ namespace
 extern "C"
 {
 
-int kos_cond_wait(kos_cond_t* c, kos_mutex_t* m, uint32_t timeout_us)
+int kos_cond_wait(kos_cond_t* c, kos_mutex_t* m, kos_monotonic_t until)
 {
-    return wait(c, m, false, timeout_us);
+    return wait(c, m, false, until.ns);
 }
 
-int kos_cond_wait_realtime(kos_cond_t* c, kos_mutex_t* m, uint64_t unix_ns)
+int kos_cond_wait_realtime(kos_cond_t* c, kos_mutex_t* m, kos_realtime_t until)
 {
-    return wait(c, m, true, unix_ns);
+    return wait(c, m, true, until.ns);
 }
 
 int kos_cond_signal(kos_cond_t* c)

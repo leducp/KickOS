@@ -144,7 +144,7 @@ namespace fake
             {
                 throw Panic{"fake: runaway"};
             }
-            g_calls.push_back(Call{fn, args, 0, ""});
+            g_calls.push_back(Call{fn, args, 0, "", g_now});
             if (on_call)
             {
                 on_call(g_calls.back());
@@ -670,6 +670,21 @@ namespace fake
         return g_now;
     }
 
+    // Whether the clock has read `until`.
+    bool passed(kos_monotonic_t until)
+    {
+        return until.ns <= static_cast<int64_t>(g_now);
+    }
+
+    // The clock moved on to `until`, where it is ahead.
+    void wait_out(kos_monotonic_t until)
+    {
+        if (not passed(until))
+        {
+            g_now = static_cast<uint64_t>(until.ns);
+        }
+    }
+
     void ready(char const* name)
     {
         Task& task = current(name);
@@ -801,7 +816,7 @@ namespace fake
         std::vector<Call> out;
         for (Call const& c : calls_of("kos_task_slay"))
         {
-            if (c.args[1] != 0u)
+            if (c.args[1] != static_cast<uint64_t>(KOS_POLL.ns))
             {
                 out.push_back(c);
             }
@@ -814,7 +829,7 @@ namespace fake
         std::vector<Call> out;
         for (Call const& c : calls_of("kos_task_slay"))
         {
-            if (c.args[1] == 0u)
+            if (c.args[1] == static_cast<uint64_t>(KOS_POLL.ns))
             {
                 out.push_back(c);
             }
@@ -1129,10 +1144,14 @@ int kos_notify(kos_cap_t notify_cap)
     return finish(call, 0);
 }
 
-int kos_notify_wait(kos_cap_t notify_cap, uint32_t mask, uint32_t timeout_us, uint32_t* out_bits)
+// Waits on the one notification the init has bound (kernel/notify/notify.cc, notify_wait).
+int kos_notify_wait(uint32_t mask, kos_monotonic_t until, uint32_t* out_bits)
 {
-    size_t const call = record("kos_notify_wait", {notify_cap, mask, timeout_us});
-    *out_bits = 0u;
+    size_t const call = record("kos_notify_wait", {mask, static_cast<uint64_t>(until.ns)});
+    if (out_bits != nullptr)
+    {
+        *out_bits = 0u;
+    }
     int const rc = scripted(call);
     if (rc != 1)
     {
@@ -1142,20 +1161,18 @@ int kos_notify_wait(kos_cap_t notify_cap, uint32_t mask, uint32_t timeout_us, ui
     {
         return finish(call, -KOS_EINVAL);
     }
-    Cap const* const c = find_cap(notify_cap);
-    if (c == nullptr or g_objects[c->object].kind != Kind::NOTIFY)
+    size_t object = g_objects.size();
+    for (size_t i = 0; i < g_objects.size(); i++)
     {
-        return finish(call, -KOS_EBADF);
+        if (g_objects[i].kind == Kind::NOTIFY and g_objects[i].bound)
+        {
+            object = i;
+        }
     }
-    if ((c->rights & KOS_CAP_WAIT) == 0u)
-    {
-        return finish(call, -KOS_EACCES);
-    }
-    if (not g_objects[c->object].bound)
+    if (object == g_objects.size())
     {
         return finish(call, -KOS_EPERM);
     }
-    size_t const object = c->object;
     while (true)
     {
         if (g_step < g_steps.size())
@@ -1167,12 +1184,15 @@ int kos_notify_wait(kos_cap_t notify_cap, uint32_t mask, uint32_t timeout_us, ui
         if (raised != 0u)
         {
             g_objects[object].pending = g_objects[object].pending & ~raised;
-            *out_bits = raised;
+            if (out_bits != nullptr)
+            {
+                *out_bits = raised;
+            }
             return finish(call, 0);
         }
-        if (timeout_us != KOS_TIMEOUT_NONE)
+        if (until.ns != KOS_NEVER.ns)
         {
-            advance(static_cast<uint64_t>(timeout_us) * 1000u);
+            wait_out(until);
             return finish(call, -KOS_ETIMEDOUT);
         }
         if (g_step >= g_steps.size())
@@ -1311,12 +1331,12 @@ int kos_program_find(char const* name, kos_program_t* out_prog)
 
 // kernel/syscall/syscall_thread.cc, task_create_call: the named declaration, an empty task from it,
 // and its entry thread spawned into it at the declared priority with the declared authority.
-int kos_task_create(kos_program_t prog, struct kos_task_params const* params, uint32_t timeout_us,
+int kos_task_create(kos_program_t prog, struct kos_task_params const* params, kos_monotonic_t until,
                     kos_task_t* out_task)
 {
     size_t const call = record("kos_task_create", {reinterpret_cast<uintptr_t>(params->block), params->size, prog,
                                                    params->cap_count, params->window_count, params->flags,
-                                                   timeout_us});
+                                                   static_cast<uint64_t>(until.ns)});
     if (params->instance != nullptr)
     {
         g_calls[call].text = params->instance;
@@ -1729,16 +1749,19 @@ int kos_irq_claim(int line, unsigned int flags, kos_cap_t* out_cap)
     return finish(call, 0);
 }
 
-void kos_sleep_ns(uint64_t ns)
+void kos_sleep_for(kos_duration_t d)
 {
-    size_t const call = record("kos_sleep_ns", {ns});
-    advance(ns);
+    size_t const call = record("kos_sleep_for", {static_cast<uint64_t>(d.ns)});
+    if (d.ns > 0)
+    {
+        advance(static_cast<uint64_t>(d.ns));
+    }
     finish(call, 0);
 }
 
-uint64_t kos_clock_now(void)
+int64_t kickos_monotonic_now(void)
 {
-    return now();
+    return static_cast<int64_t>(now());
 }
 
 int kos_thread_create(struct kos_thread_params const* params, kos_thread_t* out_thread)
@@ -1964,9 +1987,9 @@ static int spawn_thread(struct kos_thread_params const* params, kos_task_t into,
     return finish(call, 0);
 }
 
-int kos_task_slay(kos_task_t task, uint32_t timeout_us)
+int kos_task_slay(kos_task_t task, kos_monotonic_t until)
 {
-    size_t const call = record("kos_task_slay", {task, timeout_us});
+    size_t const call = record("kos_task_slay", {task, static_cast<uint64_t>(until.ns)});
     int const rc = scripted(call);
     if (rc != 1)
     {
@@ -1978,18 +2001,23 @@ int kos_task_slay(kos_task_t task, uint32_t timeout_us)
     {
         return finish(call, err);
     }
-    // Every member stops. A timeout of 0 drops the creator's hold at once: the slot stays taken,
-    // its handle unreused, until every member is swept. Any other returns once each is swept, or
-    // at its timeout with the sweeps left to finish.
-    if (timeout_us == 0u)
+    // Every member stops. KOS_POLL drops the creator's hold at once: the slot stays taken, its
+    // handle unreused, until every member is swept. Any other deadline returns once each is
+    // swept, or at its deadline, a passed one at once, with the sweeps left to finish.
+    bool const poll = until.ns == KOS_POLL.ns;
+    if (poll)
     {
         t->held = false;
     }
     condemn(*t);
     end_members(*t);
-    if (timeout_us != 0u and sweeping(*t))
+    if (not poll and sweeping(*t))
     {
-        advance(static_cast<uint64_t>(timeout_us) * 1000u);
+        if (until.ns == KOS_NEVER.ns)
+        {
+            throw Panic{"fake: a slay waits forever on sweeps nothing finishes"};
+        }
+        wait_out(until);
         return finish(call, -KOS_ETIMEDOUT);
     }
     t->held = false;
@@ -2035,9 +2063,9 @@ int kos_shutdown(int status, enum kos_shutdown_outcome outcome)
     throw Shutdown{status};
 }
 
-int32_t kos_send(kos_cap_t ep, void const* buf, size_t len, uint32_t timeout_us)
+int32_t kos_send(kos_cap_t ep, void const* buf, size_t len, kos_monotonic_t until)
 {
-    size_t const call = record("kos_send", {ep, len, timeout_us});
+    size_t const call = record("kos_send", {ep, len, static_cast<uint64_t>(until.ns)});
     int const rc = scripted(call);
     if (rc != 1)
     {
@@ -2058,21 +2086,21 @@ int32_t kos_send(kos_cap_t ep, void const* buf, size_t len, uint32_t timeout_us)
     if (receiving(object))
     {
         // A receiver seated and not vacated parks a send until its deadline, never for a
-        // deadline of 0 (kernel/syscall/syscall_ipc.cc).
-        if (timeout_us == KOS_TIMEOUT_NONE)
+        // passed one (kernel/syscall/syscall_ipc.cc).
+        if (until.ns == KOS_NEVER.ns)
         {
             throw Panic{"fake: a send parked on a console nothing receives"};
         }
-        advance(static_cast<uint64_t>(timeout_us) * 1000u);
+        wait_out(until);
         return finish(call, -KOS_ETIMEDOUT);
     }
     return finish(call, unserved(object));
 }
 
 // Only the published console's KOS_UART_DRAIN, answered as a console driver answers it.
-int32_t kos_call(kos_cap_t ep, void* buf, size_t send_len, size_t recv_cap, uint32_t timeout_us)
+int32_t kos_call(kos_cap_t ep, void* buf, size_t send_len, size_t recv_cap, kos_monotonic_t until)
 {
-    size_t const call = record("kos_call", {ep, send_len, timeout_us});
+    size_t const call = record("kos_call", {ep, send_len, static_cast<uint64_t>(until.ns)});
     int const rc = scripted(call);
     if (rc != 1)
     {
@@ -2094,6 +2122,11 @@ int32_t kos_call(kos_cap_t ep, void* buf, size_t send_len, size_t recv_cap, uint
     }
     size_t const object = static_cast<size_t>(g_stdout);
     settle();
+    // A passed deadline answers before any receiver is taken (kernel/syscall/syscall_ipc.cc).
+    if (passed(until))
+    {
+        return finish(call, -KOS_ETIMEDOUT);
+    }
     if (waits(object))
     {
         struct kos_uart_rsp rsp = {};
@@ -2103,11 +2136,11 @@ int32_t kos_call(kos_cap_t ep, void* buf, size_t send_len, size_t recv_cap, uint
     }
     if (receiving(object))
     {
-        if (timeout_us == KOS_TIMEOUT_NONE)
+        if (until.ns == KOS_NEVER.ns)
         {
             throw Panic{"fake: a call parked on a console nothing receives"};
         }
-        advance(static_cast<uint64_t>(timeout_us) * 1000u);
+        wait_out(until);
         return finish(call, -KOS_ETIMEDOUT);
     }
     return finish(call, unserved(object));

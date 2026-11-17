@@ -415,6 +415,7 @@ trap_entry:
     lw      a2, F_A2(sp)
     lw      a3, F_A3(sp)
     lw      a4, F_A4(sp)
+    lw      a5, F_A5(sp)
     la      t0, svc_trampoline
     csrw    mepc, t0
     csrr    t0, mstatus
@@ -423,7 +424,7 @@ trap_entry:
     li      t1, 0x80               /* MPIE = 1: MIE on in the trampoline */
     or      t0, t0, t1
     csrw    mstatus, t0
-    mret                            /* -> svc_trampoline; sp=frame, a0-a4=args */
+    mret                            /* -> svc_trampoline; sp=frame, a0-a5=args */
 
 /* Runs M-mode with sp = the saved frame: the calling thread's KERNEL stack for a U-mode
    caller, the sp the trap interrupted for an M-mode one. A blocking syscall_dispatch blocks
@@ -432,7 +433,7 @@ trap_entry:
    afterwards. */
     .global svc_trampoline
 svc_trampoline:
-    call    syscall_dispatch        /* (a0..a4) -> result in a0:a1 */
+    call    syscall_dispatch        /* (a0..a5) -> result in a0:a1 */
     /* BOTH halves: the restore epilogue reloads a0-a4 from the frame, so a result half left
        only in a register is discarded by mret. */
     sw      a0, F_A0(sp)            /* frame.a0 = result low */

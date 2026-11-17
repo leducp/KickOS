@@ -21,7 +21,7 @@ extern "C" void exit(int code) noexcept
 {
     // The host's atexit handlers are the host process's, so only the streams are flushed.
     fflush(nullptr);
-    arch_syscall(KOS_SYS_EXIT, static_cast<uintptr_t>(code), KOS_EXIT_TASK, 0, 0);
+    arch_syscall(KOS_SYS_EXIT, static_cast<uintptr_t>(code), KOS_EXIT_TASK, 0, 0, 0);
     while (true)
     {
     }

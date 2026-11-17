@@ -265,7 +265,7 @@ part, KickOS keeps one kernel lock but gives each core its own ready queue, whic
 
 ## How the pieces fit: one sleep
 
-A thread on the f411 calls `kos_sleep_ns(400000000)`. The pieces above meet like this:
+A thread on the f411 calls `kos_sleep_for(400000000)`. The pieces above meet like this:
 
 1. The trap enters the kernel, which takes an `IrqLock`.
 2. The kernel reads `arch_clock_now` (TIM2), adds 400 ms, and stores that absolute

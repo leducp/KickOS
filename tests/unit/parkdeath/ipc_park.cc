@@ -27,7 +27,7 @@ namespace kickos
             void send_a_message()
             {
                 (void)endpoint_send(KOS_CAP_NONE, reinterpret_cast<uintptr_t>(g_msg),
-                                    sizeof(g_msg), KOS_TIMEOUT_NONE);
+                                    sizeof(g_msg), KOS_LIMIT_NONE);
             }
         }
 

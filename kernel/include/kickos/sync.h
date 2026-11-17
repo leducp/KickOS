@@ -149,14 +149,13 @@ namespace kickos
     // with no TX interrupt the writer drains the ring itself until the line fits, and on one whose
     // TX interrupt drains it the writer parks until that drain frees the room
     // (console_tx_room_freed), a publish or a reclaim. 0 to offer the line again, -KOS_ECANCELED where the caller is
-    // cancelled, before or during it, and -KOS_ETIMEDOUT once `stall_us` passed with no byte
-    // leaving the ring; KOS_TIMEOUT_NONE waits with no bound. Caller holds no lock.
-    int console_room_wait(uint32_t needed, uint32_t stall_us);
+    // cancelled, before or during it, and -KOS_ETIMEDOUT once `stall_ns` passed with no byte
+    // leaving the ring; KOS_LIMIT_NONE waits with no bound. Caller holds no lock.
+    int console_room_wait(uint32_t needed, uint64_t stall_ns);
     // What holds `t` off a console written outside the ring, marking it waiting where something
-    // does: 0 for nothing, KOS_TIMEOUT_NONE while another context is inside its write, else the
-    // microseconds left on the grant of another thread's open line on an own-image AMP node.
-    // Caller holds IrqLock.
-    uint32_t console_line_wait(Thread const* t, Held held);
+    // does: 0 for nothing, KOS_LIMIT_NONE while another context is inside its write, else the
+    // nanoseconds to wait before offering again. Caller holds IrqLock.
+    uint64_t console_line_wait(Thread const* t, Held held);
 
 #if KICKOS_AMP_CONSOLE_CLAIM
     // Park the calling writer while a node's claim on a shared UART refuses its line, until that
@@ -183,16 +182,15 @@ namespace kickos
     // called under one: a retry drops it, and mutex_lock runs the resume barrier and the
     // wait_result read outside it (see wq_confirm_resume).
     //
-    // KOS_TIMEOUT_NONE waits forever, and 0 or a passed realtime deadline is a try. Returns 0
+    // No limit waits forever, and a passed deadline is a try. Returns 0
     // when locked; -KOS_EOWNERDEAD when locked from a dead holder, where the lock is held and
     // this is not a failed acquire; -KOS_ETIMEDOUT when held elsewhere past the deadline, or at
     // once for a try, which lends no priority; -KOS_ECANCELED when cancelled waiting;
     // -KOS_EDEADLK for a word the caller holds or a wait that would close a cycle, refused
     // without parking or a boost; -KOS_EINVAL or -KOS_EFAULT for a word the caller may not name
-    // (word_ref); -KOS_EINVAL for a limit the ABI does not define, or a word that disagrees with
-    // the record of its waiters, or whose record is a plain word's; -KOS_EFAULT for a wait whose
-    // word left the caller's reach.
-    int mutex_lock(uintptr_t va, WaitLimit limit);
+    // (word_ref); -KOS_EINVAL for a word that disagrees with the record of its waiters, or whose
+    // record is a plain word's; -KOS_EFAULT for a wait whose word left the caller's reach.
+    int mutex_lock(uintptr_t va, uint64_t limit, uint32_t kind = KOS_LIMIT_MONOTONIC);
     // Hands the word to the highest waiter, then recomputes the ex-holder's effective priority
     // over what it still holds. Returns 0, -KOS_EPERM if the caller is not the holder,
     // -KOS_EINVAL for a plain word's record, or word_ref's refusal.
@@ -217,7 +215,8 @@ namespace kickos
     // word_wait parks the caller on the word's plain record while the word holds `expected`,
     // asking for a pending cancel first. 1 woken with a unit, 0 woken without one, or the ABI's
     // refusals.
-    int word_wait(uintptr_t va, uint32_t expected, WaitLimit limit);
+    int word_wait(uintptr_t va, uint32_t expected, uint64_t limit,
+                  uint32_t kind = KOS_LIMIT_MONOTONIC);
     // Wakes min(n, parked) waiters, the highest first and FIFO among equals, handing a unit to the
     // first min(units, woken); the units left are added to the count only where no waiter
     // remains. Answers how many it woke, or the ABI's refusals with nothing done.

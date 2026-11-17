@@ -170,7 +170,7 @@ extern "C"
         return 0;
     }
 
-    int kos_notify_wait(kos_cap_t, uint32_t, uint32_t, uint32_t*)
+    int kos_notify_wait(uint32_t, kos_monotonic_t, uint32_t*)
     {
         g_waits.store(g_waits.load() + 1u);
         std::unique_lock<std::mutex> lk(g_lock);
@@ -184,12 +184,12 @@ extern "C"
         return 0;
     }
 
-    void kos_sleep_ns(uint64_t ns)
+    void kos_sleep_for(kos_duration_t d)
     {
         g_sleeps.store(g_sleeps.load() + 1u);
         if (g_real_sleep)
         {
-            std::this_thread::sleep_for(std::chrono::nanoseconds(ns));
+            std::this_thread::sleep_for(std::chrono::nanoseconds(d.ns));
         }
     }
 

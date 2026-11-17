@@ -183,7 +183,7 @@ namespace
     int32_t serve(Fused* f)
     {
         kos_reply_recv_opts opts{};
-        kos_reply_recv_opts_init(&opts, f->ep_cap, 0, KOS_TIMEOUT_NONE);
+        kos_reply_recv_opts_init(&opts, f->ep_cap, 0, KOS_NEVER);
         return endpoint_reply_recv(f->reply_cap, reinterpret_cast<uintptr_t>(f->server_buf),
                                    kos_call_lens_pack(0, sizeof(f->server_buf)),
                                    reinterpret_cast<uintptr_t>(&opts));
@@ -237,7 +237,7 @@ TEST_F(FusedWake, a_reply_refusal_reports_no_notification_consumed)
     ASSERT_NO_FATAL_FAILURE(seat_server_with_a_line(&l));
 
     kos_reply_recv_opts opts{};
-    kos_reply_recv_opts_init(&opts, KOS_CAP_NONE, 0, KOS_TIMEOUT_NONE);
+    kos_reply_recv_opts_init(&opts, KOS_CAP_NONE, 0, KOS_NEVER);
     opts.notify = l.bit;
     // Use an invalid reply capability to fail before opening any IRQ line.
     EXPECT_EQ(endpoint_reply_recv(0x7fffffffu, 0, 0, reinterpret_cast<uintptr_t>(&opts)),
@@ -258,7 +258,7 @@ TEST_F(FusedWake, an_undefined_flag_bit_reports_no_notification_consumed)
     ASSERT_NO_FATAL_FAILURE(seat_server_with_a_line(&l));
 
     kos_reply_recv_opts opts{};
-    kos_reply_recv_opts_init(&opts, KOS_CAP_NONE, FLAGS_WITH_AN_UNDEFINED_BIT, KOS_TIMEOUT_NONE);
+    kos_reply_recv_opts_init(&opts, KOS_CAP_NONE, FLAGS_WITH_AN_UNDEFINED_BIT, KOS_NEVER);
     opts.notify = l.bit;
     EXPECT_EQ(endpoint_reply_recv(KOS_CAP_NONE, 0, 0, reinterpret_cast<uintptr_t>(&opts)),
               -KOS_EINVAL);
@@ -273,7 +273,7 @@ TEST_F(FusedWake, an_unusable_payload_buffer_reports_no_notification_consumed)
 
     uint8_t payload[4] = {};
     kos_reply_recv_opts opts{};
-    kos_reply_recv_opts_init(&opts, KOS_CAP_NONE, 0, KOS_TIMEOUT_NONE);
+    kos_reply_recv_opts_init(&opts, KOS_CAP_NONE, 0, KOS_NEVER);
     opts.notify = l.bit;
     g_ipc_seam_refuse_rw = reinterpret_cast<uintptr_t>(payload);
     int32_t const rc = endpoint_reply_recv(KOS_CAP_NONE, reinterpret_cast<uintptr_t>(payload),
@@ -291,7 +291,7 @@ TEST_F(FusedWake, a_refused_write_back_of_the_consumed_mask_answers_efault)
     ASSERT_NO_FATAL_FAILURE(seat_server_with_a_line(&l));
 
     kos_reply_recv_opts opts{};
-    kos_reply_recv_opts_init(&opts, KOS_CAP_NONE, FLAGS_WITH_AN_UNDEFINED_BIT, KOS_TIMEOUT_NONE);
+    kos_reply_recv_opts_init(&opts, KOS_CAP_NONE, FLAGS_WITH_AN_UNDEFINED_BIT, KOS_NEVER);
     opts.notify = l.bit;
     g_ipc_seam_refuse_write = reinterpret_cast<uintptr_t>(&opts.notify);
     int32_t const rc = endpoint_reply_recv(KOS_CAP_NONE, 0, 0,
@@ -309,7 +309,7 @@ TEST_F(FusedWake, a_consumed_notification_is_still_reported)
     ASSERT_EQ(notify_pending_of(l.server) & l.bit, l.bit);
 
     kos_reply_recv_opts opts{};
-    kos_reply_recv_opts_init(&opts, KOS_CAP_NONE, 0, KOS_TIMEOUT_NONE);
+    kos_reply_recv_opts_init(&opts, KOS_CAP_NONE, 0, KOS_NEVER);
     opts.notify = l.bit;
     EXPECT_EQ(endpoint_reply_recv(KOS_CAP_NONE, 0, 0, reinterpret_cast<uintptr_t>(&opts)),
               -KOS_ENOTIFY);
@@ -326,7 +326,7 @@ TEST_F(FusedWake, a_fused_wait_over_a_line_refuses_a_server_not_pinned_to_its_cl
 
     l.server->affinity = ON_ME | ON_PEER;
     kos_reply_recv_opts opts{};
-    kos_reply_recv_opts_init(&opts, KOS_CAP_NONE, 0, KOS_TIMEOUT_NONE);
+    kos_reply_recv_opts_init(&opts, KOS_CAP_NONE, 0, KOS_NEVER);
     opts.notify = l.bit;
     EXPECT_EQ(endpoint_reply_recv(KOS_CAP_NONE, 0, 0, reinterpret_cast<uintptr_t>(&opts)),
               -KOS_EPERM);
@@ -367,10 +367,7 @@ TEST_F(FusedWake, a_signal_raised_at_the_park_wakes_the_waiter_with_its_bit)
     g_signalled_note = l.note;
     wake_next_park(signal_the_parked_server);
 
-    uint32_t bits = 0;
-    uintptr_t const at = reinterpret_cast<uintptr_t>(&bits);
-    ASSERT_EQ(notify_wait(l.server, l.note, l.bit, KOS_TIMEOUT_NONE, at), 0);
-    EXPECT_EQ(bits, l.bit);
+    ASSERT_EQ(notify_wait(l.server, l.bit, KOS_LIMIT_NONE), notify_wait_bits(l.bit));
 }
 
 // A mask word the kernel cannot write takes none of the pending bits.
@@ -381,7 +378,7 @@ TEST_F(FusedWake, a_refused_write_back_leaves_the_consumed_notification_pending)
     ASSERT_EQ(notify_signal(l.server, l.note), 0);
 
     kos_reply_recv_opts opts{};
-    kos_reply_recv_opts_init(&opts, KOS_CAP_NONE, 0, KOS_TIMEOUT_NONE);
+    kos_reply_recv_opts_init(&opts, KOS_CAP_NONE, 0, KOS_NEVER);
     opts.notify = l.bit;
     g_ipc_seam_refuse_write = reinterpret_cast<uintptr_t>(&opts.notify);
     int32_t const rc = endpoint_reply_recv(KOS_CAP_NONE, 0, 0, reinterpret_cast<uintptr_t>(&opts));
@@ -403,7 +400,7 @@ TEST_F(FusedWake, an_unwritable_mask_word_refuses_the_call_before_anything_is_do
     ASSERT_NO_FATAL_FAILURE(stage(&f, PRIO_HIGH, ON_ME, PRIO_LOW, ON_ME));
 
     kos_reply_recv_opts opts{};
-    kos_reply_recv_opts_init(&opts, f.ep_cap, 0, KOS_TIMEOUT_NONE);
+    kos_reply_recv_opts_init(&opts, f.ep_cap, 0, KOS_NEVER);
     opts.notify = 1u;
     g_ipc_seam_refuse_write = reinterpret_cast<uintptr_t>(&opts.notify);
     int32_t const rc = endpoint_reply_recv(f.reply_cap, reinterpret_cast<uintptr_t>(f.server_buf),
@@ -426,7 +423,7 @@ TEST_F(FusedWake, a_refused_write_back_still_answers_the_received_message)
     ASSERT_NO_FATAL_FAILURE(bind_a_line(&l));
 
     kos_reply_recv_opts opts{};
-    kos_reply_recv_opts_init(&opts, f.ep_cap, 0, KOS_TIMEOUT_NONE);
+    kos_reply_recv_opts_init(&opts, f.ep_cap, 0, KOS_NEVER);
     opts.notify = l.bit;
     g_ipc_seam_refuse_write_from_copy = reinterpret_cast<uintptr_t>(&opts.notify);
     int32_t const rc = endpoint_reply_recv(f.reply_cap, reinterpret_cast<uintptr_t>(f.server_buf),
@@ -460,7 +457,7 @@ TEST_F(FusedWake, a_parked_receive_whose_write_back_is_refused_leaves_the_bit_pe
 
     uint8_t buf[4] = {};
     kos_reply_recv_opts opts{};
-    kos_reply_recv_opts_init(&opts, ep_cap, 0, KOS_TIMEOUT_NONE);
+    kos_reply_recv_opts_init(&opts, ep_cap, 0, KOS_NEVER);
     opts.notify = l.bit;
     g_word_refused_at_park = reinterpret_cast<uintptr_t>(&opts.notify);
     int32_t const rc = endpoint_reply_recv(KOS_CAP_NONE, reinterpret_cast<uintptr_t>(buf),

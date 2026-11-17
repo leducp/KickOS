@@ -7,7 +7,7 @@
 #include "message.h"
 
 #include <kickos/amp.h>
-#include <kickos/sys/driver_service.h> // KOS_DRV_HANDOVER_PROBE_US
+#include <kickos/sys/driver_service.h> // KOS_DRV_HANDOVER_PROBE
 #include <kickos/sys/emit.h> // kconsole_write_all
 #include <kickos/sys/errno.h>
 #include <kickos/sys/image.h>
@@ -44,7 +44,7 @@ namespace kickos::init
         {
             char const* const text = m.add("\n").text();
             int32_t const sent = kos_send(KOS_CAP_STDOUT, text, m.length(),
-                                                kickos::driver::KOS_DRV_HANDOVER_PROBE_US);
+                                          kos::after(kickos::driver::KOS_DRV_HANDOVER_PROBE));
             size_t done = 0;
             if (sent > 0)
             {
@@ -544,7 +544,7 @@ namespace kickos::init
             }
             // The line is retiring from its last holder.
             retries++;
-            kos_sleep_ns(CLAIM_RETRY_NS);
+            kos::sleep_for(CLAIM_RETRY);
         }
     }
 
@@ -652,7 +652,7 @@ namespace kickos::init
         // A program task runs the program its record names, found for this create alone.
         if (t.program == KOS_TABLE_NO_STRING)
         {
-            return kos_task_create(program_, &p, START_WAIT_US, &s.handle);
+            return kos_task_create(program_, &p, kos::after(START_WAIT), &s.handle);
         }
         kos_program_t program = KOS_CAP_NONE;
         int rc = kos_program_find(strings_ + t.program, &program);
@@ -660,7 +660,7 @@ namespace kickos::init
         {
             return rc;
         }
-        rc = kos_task_create(program, &p, START_WAIT_US, &s.handle);
+        rc = kos_task_create(program, &p, kos::after(START_WAIT), &s.handle);
         (void)kos_handle_close(program);
         return rc;
     }
@@ -691,7 +691,7 @@ namespace kickos::init
         // Slain before it is reported: a console driver's failed start may still hold stdout.
         if (handle != KOS_TASK_NONE)
         {
-            int const slay = kos_task_slay(handle, SLAY_TIMEOUT_US);
+            int const slay = kos_task_slay(handle, kos::after(SLAY_WAIT));
             if (slay == -KOS_ETIMEDOUT)
             {
                 // The init keeps its hold: the death arrives through the wait.
@@ -713,8 +713,7 @@ namespace kickos::init
     void Walk::wake()
     {
         uint32_t bits = 0u;
-        check(kos_notify_wait(notify_, 0xFFFFFFFFu, KOS_TIMEOUT_NONE, &bits), "kos_notify_wait",
-              KOS_TABLE_NONE);
+        check(kos_notify_wait(0xFFFFFFFFu, KOS_NEVER, &bits), "kos_notify_wait", KOS_TABLE_NONE);
 
         // The state says what happened and the bit only where to look: one wake may carry an
         // end, a death and a readiness, and tasks share a bit.
@@ -747,7 +746,7 @@ namespace kickos::init
             }
             if ((state & KOS_TASK_DEAD) != 0)
             {
-                check(kos_task_slay(r.handle, 0), "kos_task_slay", i);
+                check(kos_task_slay(r.handle, KOS_POLL), "kos_task_slay", i);
                 report(Report::Kind::RELEASED, i, nullptr, 0);
                 death(i);
                 continue;

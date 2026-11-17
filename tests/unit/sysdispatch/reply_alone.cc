@@ -15,7 +15,7 @@
 #include "stub_seam.h"
 
 extern "C" uint64_t syscall_dispatch(uintptr_t nr, uintptr_t a0, uintptr_t a1, uintptr_t a2,
-                                     uintptr_t a3);
+                                     uintptr_t a3, uintptr_t a4);
 
 namespace kickos
 {
@@ -39,7 +39,7 @@ namespace kickos
                 int reply_recv(uint32_t cap, uintptr_t buf, uintptr_t lens, uintptr_t opts)
                 {
                     return static_cast<int>(
-                        syscall_dispatch(KOS_SYS_REPLY_RECV, cap, buf, lens, opts));
+                        syscall_dispatch(KOS_SYS_REPLY_RECV, cap, buf, lens, opts, 0));
                 }
             };
 
@@ -60,7 +60,7 @@ namespace kickos
             {
                 unsigned char buf[8] = {};
                 struct kos_reply_recv_opts opts;
-                kos_reply_recv_opts_init(&opts, KOS_CAP_NONE, 0u, KOS_TIMEOUT_NONE);
+                kos_reply_recv_opts_init(&opts, KOS_CAP_NONE, 0u, KOS_NEVER);
                 EXPECT_EQ(reply_recv(5u, reinterpret_cast<uintptr_t>(buf),
                                      kos_call_lens_pack(3u, sizeof(buf)),
                                      reinterpret_cast<uintptr_t>(&opts)),

@@ -24,7 +24,7 @@
 #endif
 
 extern "C" uint64_t syscall_dispatch(uintptr_t nr, uintptr_t a0, uintptr_t a1, uintptr_t a2,
-                                     uintptr_t a3);
+                                     uintptr_t a3, uintptr_t a4);
 
 namespace kickos
 {
@@ -49,7 +49,7 @@ namespace kickos
                 int disable(uintptr_t base)
                 {
                     return static_cast<int>(
-                        syscall_dispatch(KOS_SYS_PERIPH_DISABLE, base, 0, 0, 0));
+                        syscall_dispatch(KOS_SYS_PERIPH_DISABLE, base, 0, 0, 0, 0));
                 }
 
                 Thread* caller_ = nullptr;

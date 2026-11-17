@@ -60,14 +60,15 @@ namespace
     // False only for a try that found the mutex held; any other refusal traps, a dead owner's
     // included. A wait cancelled by a kill asks again at the kernel's entry, which ends the
     // thread there, where a trap would end its task.
-    bool libc_lock_take(_LOCK_T lock, uint32_t timeout_us)
+    bool libc_lock_take(_LOCK_T lock, kos_monotonic_t until)
     {
-        int rc = kos_mutex_lock(word_of(lock), timeout_us);
+        int rc = kos_mutex_lock(word_of(lock), until);
         while (rc == -KOS_ECANCELED)
         {
-            rc = kickos_mutex_lock_entry(word_of(lock), timeout_us);
+            rc = kickos_mutex_lock_entry(word_of(lock), kos_limit_word(until.ns),
+                                         KOS_LIMIT_MONOTONIC);
         }
-        if (rc == -KOS_ETIMEDOUT and timeout_us == 0)
+        if (rc == -KOS_ETIMEDOUT and kos_limit_word(until.ns) == 0u)
         {
             return false;
         }
@@ -102,7 +103,7 @@ namespace
             lock->__depth++;
             return;
         }
-        (void)libc_lock_take(lock, KOS_TIMEOUT_NONE);
+        (void)libc_lock_take(lock, KOS_NEVER);
     }
 
     void libc_lock_release(_LOCK_T lock)
@@ -131,7 +132,7 @@ namespace
             lock->__depth++;
             return 1;
         }
-        if (not libc_lock_take(lock, 0))
+        if (not libc_lock_take(lock, KOS_POLL))
         {
             return 0;
         }

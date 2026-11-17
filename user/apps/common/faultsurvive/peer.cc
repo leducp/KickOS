@@ -185,7 +185,7 @@ namespace
     {
         uint32_t reply[FS_HEAD_REPLY / 4u] = {};
         kos_reply_recv_opts opts;
-        kos_reply_recv_opts_init(&opts, FS_FORGE_EP, 0, KOS_TIMEOUT_NONE);
+        kos_reply_recv_opts_init(&opts, FS_FORGE_EP, 0, KOS_NEVER);
         int const rc = kos_reply_recv(KOS_CAP_NONE, reply, kos_call_lens_pack(0, sizeof(reply)),
                                       &opts);
         if (rc < 0 or opts.info.reply_cap == KOS_CAP_NONE)
@@ -216,7 +216,8 @@ namespace
                        "mov.l   #1f, r5\n\t"
                        "mov.l   r5, [%[pc]]\n\t"
                        "mov.l   %[usp], r0\n\t"
-                       "mov.l   #-1, 4[r0]\n\t" // a3, KOS_TIMEOUT_NONE
+                       "mov.l   #-1, 4[r0]\n\t" // a3, a4: KOS_NEVER's limit word
+                       "mov.l   #-1, 8[r0]\n\t"
                        "mov.l   %[ep], r2\n\t"
                        "mov.l   r0, r3\n\t"
                        "sub     #8, r3\n\t"
@@ -327,8 +328,8 @@ namespace
         {
             return;
         }
-        (void)kos_thread_join(server, KOS_TIMEOUT_NONE);
-        (void)kos_thread_join(client, KOS_TIMEOUT_NONE);
+        (void)kos_thread_join(server, KOS_NEVER);
+        (void)kos_thread_join(client, KOS_NEVER);
 
         // Created below this thread's priority, so it has not run when the forge reads its stack.
         void* stack = shared_stack();
@@ -338,7 +339,7 @@ namespace
             return;
         }
         forged_count("first", forge(stack, FS_FORGE_STACK, 0));
-        (void)kos_thread_join(child, KOS_TIMEOUT_NONE);
+        (void)kos_thread_join(child, KOS_NEVER);
 
         // Spinning in user mode when this thread's wake preempts it, so its context is saved.
         stack = shared_stack();
@@ -346,10 +347,10 @@ namespace
         {
             return;
         }
-        kos_sleep_ns(2000000ull);
+        kos_sleep_for(kos_ms(2));
         forged_count("preempt", forge(stack, FS_FORGE_STACK, FS_PSW_FLAGS));
         g_preempt_stop = true;
-        (void)kos_thread_join(child, KOS_TIMEOUT_NONE);
+        (void)kos_thread_join(child, KOS_NEVER);
     }
 #endif
 
@@ -467,7 +468,7 @@ namespace
         {
             kos::print("[fs] [forge] no first frame on the child's user stack\n");
         }
-        (void)kos_thread_join(child, KOS_TIMEOUT_NONE);
+        (void)kos_thread_join(child, KOS_NEVER);
     }
 #endif
 
@@ -493,7 +494,7 @@ namespace
     }
 
     // Containment slays the spinner alone, so this thread outlives it and joins it. Each join
-    // timeout is a wake that preempts the spinner.
+    // deadline is a wake that preempts the spinner.
     bool wildspin()
     {
         kos_thread_params p = {};
@@ -512,7 +513,7 @@ namespace
         }
         for (uint64_t i = 0; i < FS_WILD_WAKES; i++)
         {
-            rc = kos_thread_join(spinner, 1000u);
+            rc = kos_thread_join(spinner, kos_after(kos_monotonic_now(), kos_ms(1)));
             if (rc == 0)
             {
                 kos::print("[fs] [wildspin] the spinner is gone, its task runs on\n");

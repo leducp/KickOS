@@ -226,7 +226,7 @@ inline int32_t serve_loop(struct kos_spi_bus* bus)
     SlotTable slots;
     unsigned char msg[KOS_EP_MSG_MAX];
     struct kos_reply_recv_opts opts;
-    kos_reply_recv_opts_init(&opts, KOS_SPI_CAP_EP, 0u, KOS_TIMEOUT_NONE);
+    kos_reply_recv_opts_init(&opts, KOS_SPI_CAP_EP, 0u, KOS_NEVER);
     // Send this reply when receiving the next request.
     kos_cap_t reply_cap = KOS_CAP_NONE;
     size_t reply_len = 0;

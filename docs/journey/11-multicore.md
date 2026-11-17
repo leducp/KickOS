@@ -221,7 +221,7 @@ that EL0 can read and cannot write, and the user stub (`user/src/syscall_stubs.c
 with `mrs tpidrro_el0`. The answer can be stale the moment it is read, because the thread may
 move to another core at the next instruction. The same function opens the clock to EL0 too: it
 writes CNTKCTL_EL1, so a thread reads the counter `CNTPCT_EL0` and its rate `CNTFRQ_EL0` itself,
-and `kos_clock_now` makes no system call on this machine either. Both settings are per core, so
+and `kos_monotonic_now` makes no system call on this machine either. Both settings are per core, so
 every core writes them as it comes up. A core that missed the clock setting would make a thread's
 first clock read there trap, and one that missed the index would answer the wrong core.
 

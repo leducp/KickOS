@@ -226,10 +226,18 @@ namespace kickos
         return 0;
     }
 
-    // No clock runs here; deadlines are recorded but do not expire.
-    void ktime_deadline_arm(Thread* t, uint32_t, Held)
+    // No clock runs here; deadlines are recorded but never expire.
+    bool ktime_limit_passed(WaitLimit)
     {
-        t->on_timer = true;
+        return false;
+    }
+
+    void ktime_limit_arm(Thread* t, WaitLimit limit, Held)
+    {
+        if (not limit.none())
+        {
+            t->on_timer = true;
+        }
     }
 
     // No comparator here: a switch an interrupt books has nothing to reprogram at its exit.

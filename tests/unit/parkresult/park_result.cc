@@ -88,7 +88,7 @@ namespace kickos
             (void)own_mutex(holder, &g_word);
             wake_next_park(end_the_park_writing_nothing);
 
-            int const rc = mutex_lock(word_va(), KOS_TIMEOUT_NONE);
+            int const rc = mutex_lock(word_va(), KOS_LIMIT_NONE);
 
             EXPECT_EQ(rc, static_cast<int>(WAIT_RESULT_POISON))
                 << "the return carries the fixture's poison, not a waker's answer";
@@ -122,7 +122,7 @@ namespace kickos
             seat_waiter_over_holder(&holder);
             (void)own_mutex(holder, &g_word);
 
-            KICKOS_EXPECT_FIXTURE_REFUSAL(mutex_lock(word_va(), KOS_TIMEOUT_NONE),
+            KICKOS_EXPECT_FIXTURE_REFUSAL(mutex_lock(word_va(), KOS_LIMIT_NONE),
                                           "no waker armed for the park");
         }
     }

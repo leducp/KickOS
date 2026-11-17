@@ -22,7 +22,7 @@ namespace
 {
     kickos::apps::ArmCount harness("budgetwit");
 
-    constexpr uint64_t DEAD_MS = 5000u;
+    constexpr std::chrono::seconds DEAD_BOUND{5};
 
     kos_program_t g_peer = KOS_CAP_NONE;
 
@@ -30,7 +30,7 @@ namespace
     bool server_call(kos_cap_t svc, Report* out, kos_cap_t* reply)
     {
         struct kos_reply_recv_opts opts;
-        kos_reply_recv_opts_init(&opts, svc, 0u, CALL_US);
+        kos_reply_recv_opts_init(&opts, svc, 0u, kos::after(CALL_BOUND));
         bool const heard = kos_reply_recv(KOS_CAP_NONE, out, kos_call_lens_pack(0, sizeof(*out)),
                                           &opts)
                            == static_cast<int32_t>(sizeof(*out));
@@ -42,7 +42,7 @@ namespace
     bool receive(kos_cap_t ep, R* out)
     {
         struct kos_reply_recv_opts opts;
-        kos_reply_recv_opts_init(&opts, ep, KOS_RECV_NO_INFO, CALL_US);
+        kos_reply_recv_opts_init(&opts, ep, KOS_RECV_NO_INFO, kos::after(CALL_BOUND));
         return kos_reply_recv(KOS_CAP_NONE, out, kos_call_lens_pack(0, sizeof(R)), &opts)
                == static_cast<int32_t>(sizeof(R));
     }
@@ -77,7 +77,7 @@ namespace
         }
         bool const heard = receive(ep, out);
         int status = -1;
-        return heard and kickos::apps::wait_dead(t, &status, DEAD_MS) == 0;
+        return heard and kickos::apps::wait_dead(t, &status, DEAD_BOUND) == 0;
     }
 
     // Starts `relaunch` until a start's block is refused: the start that was, or -1.
@@ -95,7 +95,7 @@ namespace
             kos_task_t t = KOS_TASK_NONE;
             int status = -1;
             if (kickos::apps::create_peer(g_peer, p, &t) != 0
-                or kickos::apps::wait_dead(t, &status, DEAD_MS) != 0)
+                or kickos::apps::wait_dead(t, &status, DEAD_BOUND) != 0)
             {
                 return -2;
             }
@@ -178,7 +178,7 @@ int main(int, char**)
     harness.check(took and taker.rc == 0 and taker.count == SIBLING_SPAWNS,
                   "another task still obtains its whole THREADS budget");
     int status = -1;
-    (void)kickos::apps::wait_dead(sweeper, &status, DEAD_MS);
+    (void)kickos::apps::wait_dead(sweeper, &status, DEAD_BOUND);
 
     // --- CAP_SLOTS: tables per declaration, twice, the second a restart --------------------
     WidthsReport tw[2] = {};
@@ -270,6 +270,6 @@ int main(int, char**)
                  "does not translate");
 #endif
 
-    (void)kos_task_slay(hog, CALL_US);
+    (void)kos_task_slay(hog, kos::after(CALL_BOUND));
     return harness.verdict();
 }

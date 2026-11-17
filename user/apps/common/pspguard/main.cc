@@ -281,7 +281,7 @@ namespace
     {
         while (true)
         {
-            kos::sleep_ns(2u * 1000u * 1000u);
+            kos::sleep_for(std::chrono::milliseconds{2});
             g_ticks = g_ticks + 1;
         }
     }
@@ -409,7 +409,7 @@ namespace
 #if defined(__ARM_ARCH) && (__ARM_ARCH >= 7)
         __asm volatile("mov    %[sv], sp        \n\t"
                        "mov    sp, %[low]       \n\t"
-                       "movs   r0, #12          \n\t" // KOS_SYS_CLOCK_NOW
+                       "movs   r0, #12          \n\t" // KOS_SYS_MONOTONIC_NOW
                        "adr    r1, 3f           \n\t"
                        "orr    r1, r1, #1       \n\t" // svc_trampoline exits with bx
                        "mov    lr, r1           \n\t"
@@ -426,7 +426,7 @@ namespace
         __asm volatile(".syntax unified          \n\t"
                        "mov    %[sv], sp        \n\t"
                        "mov    sp, %[low]       \n\t"
-                       "movs   r0, #12          \n\t" // KOS_SYS_CLOCK_NOW
+                       "movs   r0, #12          \n\t" // KOS_SYS_MONOTONIC_NOW
                        "adr    r1, 3f           \n\t"
                        "adds   r1, #1           \n\t" // svc_trampoline exits with bx
                        "mov    lr, r1           \n\t"
@@ -573,7 +573,7 @@ namespace
             return;
         }
         uint32_t bits = 0;
-        (void)kos_notify_wait(note, 1u, KOS_TIMEOUT_NONE, &bits);
+        (void)kos_notify_wait(1u, KOS_NEVER, &bits);
         g_woke = 1u;
     }
 }
@@ -641,8 +641,9 @@ int main(int, char**)
     char msg[96];
     ksnprintf(msg, sizeof(msg), "[pspguard] [race] waker parked on line %d\n", RACE_LINE);
     kos::print(msg);
-    kos::thread::Handle const w = kos::thread::create(wild, &g_arm, "wild", 10, KOS_POLICY_FIFO, 0,
-                                                      st, STACK_BYTES, pad_list, pad_count);
+    kos::thread::Handle const w =
+        kos::thread::create(wild, &g_arm, "wild", 10, KOS_POLICY_FIFO, std::chrono::nanoseconds{0},
+                            st, STACK_BYTES, pad_list, pad_count);
     if (not w.valid())
     {
         kos::print("[pspguard] ERROR: wild spawn refused\n");
@@ -794,10 +795,10 @@ int main(int, char**)
         return 1;
     }
     int wild_status = 0;
-    while (kickos::apps::wait_dead(victim, &wild_status, 1000u) == -KOS_ETIMEDOUT)
+    while (kickos::apps::wait_dead(victim, &wild_status, std::chrono::seconds{1}) == -KOS_ETIMEDOUT)
     {
     }
-    (void)kos_task_slay(victim, 0);
+    (void)kos_task_slay(victim, KOS_POLL);
     (void)kos_handle_close(prog);
 #if KICKOS_PSPGUARD_MODE == 6
     Arm volatile const* const back = static_cast<Arm volatile const*>(mem);
@@ -815,8 +816,8 @@ int main(int, char**)
         pad_count = 1;
     }
     kos::thread::Handle const w =
-        kos::thread::create(wild, &g_arm, "wild", 10, KOS_POLICY_FIFO, 0, st, STACK_BYTES, &pad,
-                            pad_count);
+        kos::thread::create(wild, &g_arm, "wild", 10, KOS_POLICY_FIFO, std::chrono::nanoseconds{0},
+                            st, STACK_BYTES, &pad, pad_count);
     if (not w.valid())
     {
         kos::print("[pspguard] ERROR: wild spawn refused\n");
@@ -840,8 +841,8 @@ int main(int, char**)
     stack_window.size = STACK_BYTES;
     stack_window.kind = KOS_WINDOW_MEMORY;
     kos::thread::Handle const fc =
-        kos::thread::create(fpcheck, &g_arm, "fpcheck", 10, KOS_POLICY_FIFO, 0, nullptr, 0,
-                            &stack_window, 1);
+        kos::thread::create(fpcheck, &g_arm, "fpcheck", 10, KOS_POLICY_FIFO,
+                            std::chrono::nanoseconds{0}, nullptr, 0, &stack_window, 1);
     if (not fc.valid())
     {
         kos::print("[pspguard] ERROR: fpcheck spawn refused\n");

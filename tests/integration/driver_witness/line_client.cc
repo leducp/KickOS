@@ -8,7 +8,7 @@
 namespace
 {
     // testline's own wait for its line; the client outlasts it by a margin.
-    constexpr uint64_t LINE_WAIT_NS = 20000000000ull;
+    constexpr int64_t LINE_WAIT_NS = 20000000000;
     constexpr uint32_t LINE_CALLS = static_cast<uint32_t>(LINE_WAIT_NS / driver_witness::RETRY_NS) + 500u;
 }
 
@@ -20,13 +20,14 @@ int main(int, char**)
     int32_t const answered = static_cast<int32_t>(sizeof(raised));
     for (uint32_t calls = 0; calls < LINE_CALLS; calls++)
     {
-        if (kos_call(ep, &raised, 0u, sizeof(raised), CALL_TIMEOUT_US) == answered
+        if (kos_call(ep, &raised, 0u, sizeof(raised), kos_after(kos_monotonic_now(), kos_ms(CALL_WAIT_MS)))
+                == answered
             and raised != 0u)
         {
             printf("line: testline reports line 0 raised\n");
             return 0;
         }
-        kos_sleep_ns(RETRY_NS);
+        kos_sleep_for(kos_ns(RETRY_NS));
     }
     printf("line: FAIL: testline never reported line 0 raised\n");
 }

@@ -45,7 +45,7 @@ int main(int argc, char** argv)
     // main sleeps, so the spinner below it runs.
     while (__atomic_load_n(&g_spinning, __ATOMIC_RELAXED) == 0u and waited < 1000)
     {
-        kos_sleep_ns(1000000ull);
+        kos_sleep_for(kos_ms(1));
         waited++;
     }
     if (__atomic_load_n(&g_spinning, __ATOMIC_RELAXED) == 0u)

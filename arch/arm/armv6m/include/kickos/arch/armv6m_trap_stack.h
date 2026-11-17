@@ -75,9 +75,9 @@
    ctx.kernel_sp) and the first byte syscall_dispatch may use, plus what a preemption puts
    below the deepest byte it uses.
 
-     -16   the continuation header the SVC handler lays at T: a3 (the fifth argument, passed
-           on the stack by AAPCS), the caller-return, the PSP the thread resumes on, and the
-           word that keeps SP 8-aligned for the call. The trampoline's 32-byte entry frame
+     -16   the continuation header the SVC handler lays at T: a3 and a4 (the fifth and sixth
+           arguments, passed on the stack by AAPCS), the caller-return and the PSP the thread
+           resumes on, which keeps SP 8-aligned for the call. The trampoline's 32-byte entry frame
            below it is popped before the dispatch descends, so it and the preemption below are
            alternatives.
      -4    the STKALIGN pad a preempting exception spends. It does NOT cancel here: above it

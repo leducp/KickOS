@@ -101,7 +101,7 @@ int main(int, char**)
 
     for (int tick = 1; tick <= TICKS; tick++)
     {
-        (void)kos_notify_wait(note, 1u, KOS_TIMEOUT_NONE, nullptr);
+        (void)kos_notify_wait(1u, KOS_NEVER, nullptr);
         // TCF is a level: cleared before the next wait rearms the edge-claimed line, with the
         // other CSR bits written as they stand.
         r32(win + CSR_OFFSET) = CSR_TCF | CSR_TIE | CSR_TEN;

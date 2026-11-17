@@ -39,7 +39,7 @@ namespace kickos
             constexpr int SLOT_PEER = 4;
             constexpr uint32_t OWNER = 0;
             constexpr uint32_t PEER = 1;
-            constexpr uint32_t TIMEOUT_US = 1000;
+            constexpr uint64_t WAIT_NS = 1000000;
             constexpr uint64_t MS_NS = 1000000u;
             constexpr uint64_t HOUR_NS = 3600000000000ull;
             constexpr uint64_t BASE_NS = 1700000000000000000ull;
@@ -99,7 +99,7 @@ namespace kickos
             int timed_wait(WaitLimit limit)
             {
                 g_word = g_word | KOS_WORD_WAITERS;
-                return word_wait(word_va(), g_word, limit);
+                return word_wait(word_va(), g_word, limit.word, limit.kind);
             }
 
             void fire(uint32_t core)
@@ -175,7 +175,7 @@ namespace kickos
                 g_second->wait_obj = nullptr;
                 g_second->wait_result = WAIT_RESULT_POISON;
                 IrqLock lock;
-                ktime_deadline_arm(g_second, 2u * TIMEOUT_US, lock);
+                ktime_limit_arm(g_second, WaitLimit(deadline_in(2u * WAIT_NS)), lock);
                 g_second_deadline = g_second->deadline_ns;
             }
 
@@ -263,7 +263,7 @@ namespace kickos
             seat_waiter_with_peer();
             wake_next_park(peer_rearms_then_fires_first);
 
-            EXPECT_EQ(timed_wait(TIMEOUT_US), -KOS_ETIMEDOUT);
+            EXPECT_EQ(timed_wait(WaitLimit(deadline_in(WAIT_NS))), -KOS_ETIMEDOUT);
 
             EXPECT_TRUE(g_on_owner_queue) << "the deadline is not on the queue of its park core";
             EXPECT_TRUE(g_peer_queue_empty) << "the peer's queue holds the owner's deadline";
@@ -278,7 +278,7 @@ namespace kickos
             seat_waiter_with_peer();
             wake_next_park(narrow_to_peer_then_expire);
 
-            EXPECT_EQ(timed_wait(TIMEOUT_US), -KOS_ETIMEDOUT);
+            EXPECT_EQ(timed_wait(WaitLimit(deadline_in(WAIT_NS))), -KOS_ETIMEDOUT);
 
             EXPECT_EQ(g_state_after, ThreadState::HANDED);
             EXPECT_EQ(g_queue_core_after, PEER);
@@ -295,7 +295,7 @@ namespace kickos
             g_remove = r.remove;
             wake_next_park(remove_from_peer_then_fire);
 
-            EXPECT_EQ(timed_wait(TIMEOUT_US), r.rc);
+            EXPECT_EQ(timed_wait(WaitLimit(deadline_in(WAIT_NS))), r.rc);
 
             EXPECT_TRUE(g_removed_from_queue) << "the deadline outlived its removal";
             EXPECT_TRUE(g_second_next) << "the owner's queue does not hold its next deadline alone";
@@ -324,7 +324,7 @@ namespace kickos
             set_wall(BASE_NS);
             wake_next_park(peer_pulls_the_wall_deadline_in);
 
-            EXPECT_EQ(timed_wait(WaitLimit::realtime(BASE_NS + HOUR_NS)), -KOS_ETIMEDOUT);
+            EXPECT_EQ(timed_wait(WaitLimit(BASE_NS + HOUR_NS, KOS_LIMIT_REALTIME)), -KOS_ETIMEDOUT);
 
             EXPECT_LT(g_deadline_after, g_deadline) << "fixture: the set moved nothing earlier";
             EXPECT_EQ(g_owner_armed, g_deadline);
@@ -357,7 +357,8 @@ namespace kickos
                 {
                     AsCore const peer(PEER);
                     IrqLock lock;
-                    ktime_deadline_arm(kernel().current(core_at(OWNER)), TIMEOUT_US, lock);
+                    ktime_limit_arm(kernel().current(core_at(OWNER)), WaitLimit(deadline_in(WAIT_NS)),
+                                    lock);
                 },
                 "debug assert: queue_core_of\\(t\\) == kickos_kernel_core\\(\\)");
         }

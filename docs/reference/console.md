@@ -300,7 +300,7 @@ is no syscall and the kernel keeps no flag. A thread spawned naming no task and 
 own joins its spawner's task, so threads never placed in tasks share their spawner's flag.
 `kickos::stdout_write` reads the flag and asks the kernel not to wait:
 
-- Its send on the published console takes the timeout 0 in place of `KOS_TIMEOUT_NONE`, so a
+- Its send on the published console takes the timeout 0 in place of `KOS_NEVER`, so a
   console whose task lives with no receiver taking a message now is answered `-KOS_ETIMEDOUT` at
   once. A call, `kos_console_flush`'s included, and a send on any other endpoint are not touched.
 - Its kernel console write passes `KOS_KCONSOLE_NOWAIT`, and one that would wait or have to try

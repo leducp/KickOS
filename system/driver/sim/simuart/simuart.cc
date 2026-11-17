@@ -95,7 +95,7 @@ namespace
 
 #if defined(KICKOS_SIMUART_READY_LATE) && KICKOS_SIMUART_READY_LATE
     // Well past the receiver's first wait on the latch.
-    constexpr uint64_t READY_LATE_NS = 50000000ull;
+    constexpr std::chrono::milliseconds READY_LATE{50};
 #endif
 
     void uart_irq_thread(void* arg)
@@ -109,12 +109,12 @@ namespace
             kos::print("[simuart] wedge: ready never set\n");
             while (true)
             {
-                kos_sleep_ns(1000000000ull);
+                kos::sleep_for(std::chrono::seconds{1});
             }
         }
 #endif
 #if defined(KICKOS_SIMUART_READY_LATE) && KICKOS_SIMUART_READY_LATE
-        kos_sleep_ns(READY_LATE_NS);
+        kos::sleep_for(READY_LATE);
         if (drv::ready_publish(&sh->ready) == 1)
         {
             kos::print("[simuart] ready woke its parked receiver\n");

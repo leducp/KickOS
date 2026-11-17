@@ -73,15 +73,12 @@ namespace
     // Covers the timer's granularity and the line's latency on top of the word itself.
     constexpr uint64_t WORD_SLACK_US = 10000u;
 
-    static_assert(WORD_CLOCKS_MAX * 1000000u + WORD_SLACK_US < KOS_TIMEOUT_NONE,
-                  "the bound at 1 Hz must stay a finite wait");
-
     // How long a word at `hz` may take to raise its receive event before the line counts as
     // stalled. `hz` is the device's achieved rate, rounded down, so the bound never undershoots.
-    uint32_t word_bound_us(uint32_t hz)
+    kos_duration_t word_bound(uint32_t hz)
     {
         uint64_t const frame_us = (WORD_CLOCKS_MAX * 1000000u + hz - 1u) / hz;
-        return static_cast<uint32_t>(frame_us + WORD_SLACK_US);
+        return kos_us(static_cast<int64_t>(frame_us + WORD_SLACK_US));
     }
 
     // Stops the shift clock and every receive source, drops a word not yet shifted, releases
@@ -357,10 +354,9 @@ int32_t kos_spi_transfer(struct kos_spi_device* d, struct kos_bus_seg const* seg
 
     uintptr_t const win = b->base;
     kos_cap_t const irq = b->irq;
-    kos_cap_t const note = b->notify;
     uint32_t const note_bit = 1u << b->notify_bit;
     bool const cs_hw = (d->cs_policy == KOS_BUS_CS_HW);
-    uint32_t const bound_us = word_bound_us(d->hz);
+    kos_duration_t const bound = word_bound(d->hz);
 
     // A stalled transfer left the channel stopped.
     if (r32(win + ru::off::CCR) != CCR_WORD)
@@ -401,13 +397,13 @@ int32_t kos_spi_transfer(struct kos_spi_device* d, struct kos_bus_seg const* seg
 
         // The wait rearms the line itself, so the ack below is the EARLY rearm and not the only
         // one. A failed wait whose word did land, its event racing the expiry, is still progress.
-        int const waited = kos_notify_wait(note, note_bit, bound_us, nullptr);
+        int const waited = kos_notify_wait(note_bit, kos_after(kos_monotonic_now(), bound), nullptr);
         if (waited != 0 and (r32(win + ru::off::PSR) & (ru::PSR_RIF | ru::PSR_AIF)) == 0u)
         {
             int32_t const stopped = stop_channel(win);
             // A word landing between the expiry and the stop banked a bit the next transfer
             // would take for its own first word.
-            (void)kos_notify_wait(note, note_bit, 0u, nullptr);
+            (void)kos_notify_wait(note_bit, KOS_POLL, nullptr);
             if (stopped != 0)
             {
                 return stopped;

@@ -14,7 +14,7 @@
 namespace
 {
     constexpr uint32_t STATUS_RETRIES = 100u;
-    constexpr uint64_t STATUS_RETRY_NS = 1000000ull;
+    constexpr int64_t STATUS_RETRY_MS = 1;
 
     // The caller's declaration index plus one, set by the task's start in its own image.
     uintptr_t s_decl = 0u;
@@ -209,7 +209,7 @@ int kos_task_status(uint32_t i, struct kos_task_status* out)
         {
             return -KOS_EAGAIN;
         }
-        kos_sleep_ns(STATUS_RETRY_NS);
+        kos_sleep_for(kos_ms(STATUS_RETRY_MS));
         retries++;
     }
     out->name = &t.strings[t.task[task].name];
