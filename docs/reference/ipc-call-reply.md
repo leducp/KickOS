@@ -307,7 +307,7 @@ no line attached is a complete notification.
   to mint from its own badged copy reaches every bit and the confinement is vacuous. The badge
   is `CapEntry::badge`, stored as `bit + 1`, the field an endpoint capability keeps its own
   badge in (*The sender's badge* below).
-- **A line is one signaller among others.** `kos_irq_bind_notify(irq_cap, notify_cap)` attaches
+- **A line is one signaller among others.** `kos_watch(KOS_WATCH_IRQ, irq_cap, notify_cap)` attaches
   the line, copying that capability's badge INTO the binding, because ISR context may resolve
   no capability, walk no pool and allocate nothing. It is ONE-WAY: nothing detaches a live
   binding, which is what makes the binding's raw pointer to the object sound. A holder of a

@@ -625,7 +625,7 @@ int main(int, char**)
         return 1;
     }
     kos::Notification badged = kos::Notification::badge(note.handle(), 0);
-    if (not badged.valid() or line.bind_notify(badged.handle()) != 0)
+    if (not badged.valid() or line.watch(badged.handle()) != 0)
     {
         kos::print("[pspguard] ERROR: the line cannot signal the notification\n");
         return 1;

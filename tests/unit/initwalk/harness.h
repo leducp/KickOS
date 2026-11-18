@@ -11,6 +11,8 @@
 
 #include <kickos/sys/init_status.h>
 
+#include <gtest/gtest.h>
+
 #include <stdint.h>
 
 #include <functional>
@@ -66,6 +68,46 @@ namespace harness
     // What the init keeps of task `task` in the last run, checked against the copy each watcher of
     // it reads from its own status block.
     kickos::init::StatusFields status(uint16_t task);
+
+    // A test over one system, the scripted kernel reset for it by use().
+    class Fixture : public ::testing::Test
+    {
+    protected:
+        void use(char const* name)
+        {
+            system_ = &systems::find(name);
+            fake::reset(config(*system_));
+        }
+
+        void use(Patched const& patched)
+        {
+            system_ = &patched.system();
+            fake::reset(config(*system_));
+        }
+
+        void use(char const* name, fake::Config const& config)
+        {
+            system_ = &systems::find(name);
+            fake::reset(config);
+        }
+
+        Outcome run()
+        {
+            return harness::run(*system_);
+        }
+
+        uint16_t index(char const* task)
+        {
+            return index_of(*system_, task);
+        }
+
+        kickos::init::StatusFields status(char const* task)
+        {
+            return harness::status(index(task));
+        }
+
+        systems::System const* system_ = nullptr;
+    };
 }
 
 // The scripted kernel's steps the tests share, each run before one kos_notify_wait reads its bits.

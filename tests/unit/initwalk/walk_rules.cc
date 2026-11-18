@@ -70,44 +70,7 @@ namespace
         return fake::spawned(name).at(0)->caps.at(slot).object;
     }
 
-    class Walk : public ::testing::Test
-    {
-    protected:
-        void use(char const* name)
-        {
-            system_ = &systems::find(name);
-            fake::reset(harness::config(*system_));
-        }
-
-        void use(harness::Patched const& patched)
-        {
-            system_ = &patched.system();
-            fake::reset(harness::config(*system_));
-        }
-
-        void use(char const* name, fake::Config const& config)
-        {
-            system_ = &systems::find(name);
-            fake::reset(config);
-        }
-
-        Outcome run()
-        {
-            return harness::run(*system_);
-        }
-
-        uint16_t index(char const* task)
-        {
-            return harness::index_of(*system_, task);
-        }
-
-        StatusFields status(char const* task)
-        {
-            return harness::status(index(task));
-        }
-
-        systems::System const* system_ = nullptr;
-    };
+    using Walk = harness::Fixture;
 
     void expect_idle(Outcome const& outcome)
     {
@@ -576,7 +539,7 @@ namespace
         expect_idle(run());
 
         std::vector<std::string> const relevant = {
-            "kos_task_create", "kos_task_watch", "kos_thread_affinity", "kos_irq_claim", "kos_handle_close",
+            "kos_task_create", "kos_watch", "kos_thread_affinity", "kos_irq_claim", "kos_handle_close",
             "kos_task_slay"};
         std::vector<std::string> const seen = fake::sequence(relevant);
         // The sensor is the first task the walk starts.
@@ -698,7 +661,7 @@ namespace
             Refusal{"kos_notify_create", -KOS_EAGAIN, 1, "init: kos_notify_create for `health` answered -11"},
             Refusal{"kos_notify_badge", -KOS_EMFILE, 0, "init: kos_notify_badge for `sensor` answered -24"},
             Refusal{"kos_program_find", -KOS_EMFILE, 0, "init: kos_program_find answered -24"},
-            Refusal{"kos_task_watch", -KOS_EACCES, 0, "init: kos_task_watch for `sensor` answered -13"},
+            Refusal{"kos_watch", -KOS_EACCES, 0, "init: kos_watch for `sensor` answered -13"},
             Refusal{"kos_handle_close", -KOS_EBADF, 1, "init: kos_handle_close of the badged copy for `sensor`"},
             Refusal{"kos_notify_wait", -KOS_EINVAL, 0, "init: kos_notify_wait answered -22"},
             Refusal{"kos_task_state", -KOS_EBADF, 0, "init: kos_task_state for `sensor` answered -9"},
@@ -943,11 +906,11 @@ namespace
         use("alarm");
         expect_idle(run());
         std::vector<std::string> const seen = fake::sequence(
-            {"kos_task_watch", "kos_thread_self", "kos_thread_affinity", "kos_irq_claim", "kos_task_create",
+            {"kos_watch", "kos_thread_self", "kos_thread_affinity", "kos_irq_claim", "kos_task_create",
              "kos_handle_close"});
         std::vector<std::string> const expected = {
             "kos_thread_self", "kos_thread_affinity", "kos_irq_claim", "kos_task_create", "kos_handle_close",
-            "kos_task_watch", "kos_handle_close", "kos_thread_self", "kos_thread_affinity", "kos_handle_close"};
+            "kos_watch", "kos_handle_close", "kos_thread_self", "kos_thread_affinity", "kos_handle_close"};
         ASSERT_GE(seen.size(), expected.size());
         EXPECT_EQ(std::vector<std::string>(seen.begin(), seen.begin() + static_cast<ptrdiff_t>(expected.size())),
                   expected);

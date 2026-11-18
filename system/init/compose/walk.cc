@@ -371,6 +371,16 @@ namespace kickos::init
         }
     }
 
+    int Walk::watch(uint16_t i, kos_task_t handle, kos_cap_t copy)
+    {
+        uint32_t events = KOS_TASK_ENDED | KOS_TASK_DEAD;
+        if (record(i).endpoint != KOS_CAP_NONE)
+        {
+            events = events | KOS_TASK_READY;
+        }
+        return kos_watch(KOS_WATCH_TASK, events, handle, copy, 0);
+    }
+
     bool Walk::serving(uint16_t i)
     {
         TaskRecord& r = record(i);
@@ -380,7 +390,7 @@ namespace kickos::init
     bool Walk::startable(uint16_t i)
     {
         TaskRecord& r = record(i);
-        if (r.phase != Phase::WAITING and r.phase != Phase::PENDING)
+        if (r.phase != Phase::WAITING)
         {
             return false;
         }
@@ -458,7 +468,7 @@ namespace kickos::init
             {
                 // The task runs already: a watch armed after its end or its readiness reports it,
                 // and a refused one would leave its death unreported.
-                check(kos_task_watch(handle, copy, KOS_CAP_NONE), "kos_task_watch", i);
+                check(watch(i, handle, copy), "kos_watch", i);
             }
             release(s);
             step = s.step;
@@ -779,7 +789,7 @@ namespace kickos::init
         if (r.restarts_left != 0u)
         {
             r.restarts_left--;
-            r.phase = Phase::PENDING;
+            r.phase = Phase::WAITING;
         }
         else
         {
@@ -908,7 +918,7 @@ namespace kickos::init
         for (uint16_t i = 0; i < header_->task_count; i++)
         {
             TaskRecord& r = record(i);
-            if (r.phase != Phase::WAITING and r.phase != Phase::PENDING)
+            if (r.phase != Phase::WAITING)
             {
                 continue;
             }

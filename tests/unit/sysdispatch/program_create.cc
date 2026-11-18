@@ -1,8 +1,5 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
-//
-// kos_program_find and kos_task_create over image 0's declarations: the instance a create starts,
-// what it refuses before anything is spent, and the entry thread it starts with its argv.
 
 #include <kickos/cap.h>
 #include <kickos/instance.h>

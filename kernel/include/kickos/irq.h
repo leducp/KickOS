@@ -4,7 +4,7 @@
 // IRQ delivery has two interfaces:
 // - Kernel handlers run directly in ISR context through irq_attach.
 // - Userspace drivers hold CAP_IRQ capabilities and attach the line to a notification
-//   (kickos/notify.h) through kos_irq_bind_notify. The ISR masks the line and raises the
+//   (kickos/notify.h) through a KOS_WATCH_IRQ watch. The ISR masks the line and raises the
 //   binding's badge bit in that object. The driver services the device, then rearms through
 //   the next notify_wait or through irq_ack.
 // Claiming a line requires AUTH_IRQ; using it requires capability rights.
@@ -171,16 +171,19 @@ namespace kickos
     int irq_declared_claim(Thread* holder, int line, unsigned int flags, uint32_t core,
                            uint16_t slot, Notification* n, int notify_obj, uint8_t bit);
 
-    // Attach this line to the notification `notify_cap` names, as one signaller among
-    // others: the ISR raises that capability's badge bit there. Requires CAP_WAIT on the
-    // line and CAP_SIGNAL on the notification, and copies the badge into the binding, since
-    // ISR context may resolve no capability. Takes a reference on the object.
-    // One-way and once only: 0, -KOS_EBUSY (this line already signals something),
-    // -KOS_EBADF, -KOS_EACCES (a missing right), -KOS_EPERM (the notification already carries
-    // a line claimed on another core), -KOS_EAGAIN (a holding task's notification budget) or
-    // -KOS_EOVERFLOW (the object's reference count is at its ceiling). A released line leaves
-    // the chain, so a re-claim is a new binding and binds afresh.
-    int irq_bind_notify(Thread* c, uint32_t irq_cap, uint32_t notify_cap);
+    // The IRQ watch's halves (kernel/notify/watch.cc). Caller holds IrqLock.
+    // The binding `irq_cap` names, with CAP_WAIT; else null with *err KOS_EBADF or KOS_EACCES.
+    IrqBinding* irq_watch_source(Thread* c, uint32_t irq_cap, int* err);
+    // Whether the line already signals something: the attachment lasts until the binding is
+    // released, keeping the ISR's pointer valid.
+    bool irq_watch_bound(IrqBinding const* b);
+    // Attach `b` to `n`, object `notify_obj`, as one signaller among others raising `bit`: the
+    // badge is copied, since ISR context may resolve no capability, and a reference is taken
+    // on the object. 0, -KOS_EPERM (the notification already carries a line claimed on another
+    // core), -KOS_EAGAIN (a holding task's notification budget) or -KOS_EOVERFLOW (the object's
+    // reference count is at its ceiling). A released line leaves the chain, so a re-claim is a
+    // new binding and binds afresh.
+    int irq_watch_arm(IrqBinding* b, Notification* n, int notify_obj, uint8_t bit);
 
     // Rearm every chained signaller of `n` whose badge is in `mask` and which owes one, and
     // flag the signallers of `taken` to be rearmed next time round.

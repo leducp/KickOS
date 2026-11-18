@@ -104,8 +104,8 @@ namespace fake
         bool granted;
         int64_t watch_object; // -1 for no watch
         int watch_badge;
+        uint32_t watch_events; // the KOS_TASK_* events the watch asks for
         int64_t ready_object; // -1 for none
-        bool ready_seated;    // its ready endpoint came with its kos_task_create
         uint16_t decl;        // its declaration plus one, 0 for an undeclared task
         uint32_t state;
         int status;

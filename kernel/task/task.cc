@@ -36,8 +36,6 @@ namespace kickos
         // Its death waiters' lend is owed a recompute before the lock is released
         // (death_leave_batch_end).
         constexpr uint8_t TASK_MARK_LEND_OWED = 1u << 5;
-        // Its ready endpoint was seated at create, so a watch keeps it and its readiness.
-        constexpr uint8_t TASK_MARK_READY_SEATED = 1u << 6;
         // A declaration's record: an incarnation of it has been started. Kept across its
         // successors.
         constexpr uint8_t TASK_MARK_STARTED = 1u << 7;
@@ -166,13 +164,32 @@ namespace kickos
             return t;
         }
 
-        // Disarm the watch. Caller holds IrqLock.
+        // Task::watch_bit: the bit index below, the events asked above it, each KOS_TASK_* bit
+        // shifted.
+        constexpr uint8_t WATCH_INDEX_MASK = 0x1Fu;
+        constexpr unsigned WATCH_EVENT_SHIFT = 4;
+        static_assert(((KOS_TASK_READY | KOS_TASK_DEAD | KOS_TASK_ENDED) << WATCH_EVENT_SHIFT)
+                              <= UINT8_MAX
+                          and (KOS_TASK_READY << WATCH_EVENT_SHIFT) > WATCH_INDEX_MASK,
+                      "Task::watch_bit holds a bit index and the three TASK events");
+
+        // The slot goes back: no watch, no ready endpoint. Caller holds IrqLock.
         void watch_clear(Task* t)
         {
             t->watch_notify = 0;
             t->watch_ep = 0;
             t->watch_bit = 0;
             t->marks = static_cast<uint8_t>(t->marks & ~TASK_MARK_READY);
+        }
+
+        uint32_t watch_mask(Task const* t)
+        {
+            return 1u << (t->watch_bit & WATCH_INDEX_MASK);
+        }
+
+        bool watch_asks(Task const* t, uint8_t marks)
+        {
+            return ((static_cast<uint32_t>(t->watch_bit) >> WATCH_EVENT_SHIFT) & marks) != 0;
         }
 
         // The watch's notification, which task_watch_notify_gone keeps from naming a slot
@@ -186,12 +203,17 @@ namespace kickos
             return kernel().notifies.resolve(notify_bound_handle(t->watch_notify));
         }
 
-        void watch_raise(Task const* t)
+        // Raise the watch where it asks for any of `marks`, the events just reported.
+        void watch_raise(Task const* t, uint8_t marks)
         {
+            if (not watch_asks(t, marks))
+            {
+                return;
+            }
             Notification* const n = watch_target(t);
             if (n != nullptr)
             {
-                (void)notify_raise(n, 1u << t->watch_bit);
+                (void)notify_raise(n, watch_mask(t));
             }
         }
 
@@ -222,7 +244,7 @@ namespace kickos
                 t->exit_status = code;
             }
             console_leave(t, held);
-            watch_raise(t);
+            watch_raise(t, TASK_MARK_ENDED);
         }
 
         // The slot and its domain go back, and the generation bump is what stops a handle
@@ -372,70 +394,41 @@ namespace kickos
         return t->creator_tag == static_cast<TaskThreads>(tag);
     }
 
-    int task_watch_call(kos_task_t task, uint32_t notify_cap, uint32_t ready_ep)
+    Task* task_watch_source(Thread* c, kos_task_t task, int* err)
     {
-        IrqLock lock;
-        Thread* const c = sched::current();
         Task* const t = task_resolve(task);
         if (t == nullptr)
         {
-            return -KOS_EBADF;
+            *err = KOS_EBADF;
+            return nullptr;
         }
         if (not task_created_by(t, kernel().threads.kill_tag_of(c)))
         {
-            return -KOS_EPERM;
+            *err = KOS_EPERM;
+            return nullptr;
         }
-        bool const seated = (t->marks & TASK_MARK_READY_SEATED) != 0;
-        if (notify_cap == KOS_CAP_NONE)
-        {
-            if (seated)
-            {
-                t->watch_notify = 0;
-                t->watch_bit = 0;
-                return 0;
-            }
-            watch_clear(t);
-            return 0;
-        }
-        if (seated and ready_ep != KOS_CAP_NONE)
-        {
-            return -KOS_EINVAL;
-        }
-        // Everything is resolved before the old watch goes, so a refused re-arm keeps it.
-        int err = 0;
-        if (cap_resolve_e(c, notify_cap, CapType::CAP_NOTIFY, CAP_SIGNAL, &err) == nullptr)
-        {
-            return -err;
-        }
-        CapEntry const* const ne = cap_lookup(c, notify_cap);
-        int32_t ep_stored = t->watch_ep;
-        if (ready_ep != KOS_CAP_NONE)
-        {
-            if (cap_resolve_e(c, ready_ep, CapType::CAP_ENDPOINT, 0, &err) == nullptr)
-            {
-                return -err;
-            }
-            ep_stored = notify_bound_store(cap_lookup(c, ready_ep)->obj);
-        }
+        return t;
+    }
+
+    bool task_watch_ready_named(Task const* t)
+    {
+        return t->watch_ep != 0;
+    }
+
+    void task_watch_disarm(Task* t)
+    {
+        t->watch_notify = 0;
+        t->watch_bit = 0;
+    }
+
+    void task_watch_arm(Task* t, int notify_obj, uint32_t bit, uint32_t events)
+    {
         // No reference: whoever can receive the report holds a capability or a binding, and
         // either keeps the object alive; a report nobody can receive has nowhere to go.
-        if (not seated)
-        {
-            watch_clear(t);
-            if (ready_ep == KOS_CAP_NONE)
-            {
-                ep_stored = 0;
-            }
-        }
-        t->watch_notify = notify_bound_store(ne->obj);
-        t->watch_bit = static_cast<uint8_t>(notify_cap_bit(*ne));
-        t->watch_ep = ep_stored;
-        // What happened before the watch is reported as it arms.
-        if ((t->marks & (TASK_MARK_ENDED | TASK_MARK_READY)) != 0)
-        {
-            watch_raise(t);
-        }
-        return 0;
+        t->watch_notify = notify_bound_store(notify_obj);
+        t->watch_bit = static_cast<uint8_t>((bit & WATCH_INDEX_MASK) | (events << WATCH_EVENT_SHIFT));
+        watch_raise(t, static_cast<uint8_t>(t->marks & (TASK_MARK_READY | TASK_MARK_DEAD
+                                                        | TASK_MARK_ENDED)));
     }
 
     int task_state_call(kos_task_t task, int32_t* status)
@@ -582,9 +575,10 @@ namespace kickos
         }
         domain_retire_space(t->domain);
 #endif
+        uint8_t const fresh = static_cast<uint8_t>(TASK_MARK_DEAD | (~t->marks & TASK_MARK_ENDED));
         t->marks = static_cast<uint8_t>((t->marks & ~TASK_MARK_READY) | TASK_MARK_DEAD
                                         | TASK_MARK_ENDED);
-        watch_raise(t);
+        watch_raise(t, fresh);
     }
 
     size_t task_image(Task const* t)
@@ -693,7 +687,6 @@ namespace kickos
     void task_ready_seat(Task* t, int ep_obj)
     {
         t->watch_ep = notify_bound_store(ep_obj);
-        t->marks = static_cast<uint8_t>(t->marks | TASK_MARK_READY_SEATED);
     }
 
     Thread* task_note_receive(Task* t, int ep_obj)
@@ -708,11 +701,11 @@ namespace kickos
         }
         t->marks = static_cast<uint8_t>(t->marks | TASK_MARK_READY);
         Notification* const n = watch_target(t);
-        if (n == nullptr)
+        if (n == nullptr or not watch_asks(t, TASK_MARK_READY))
         {
             return nullptr;
         }
-        return notify_raise_deferred(n, 1u << t->watch_bit);
+        return notify_raise_deferred(n, watch_mask(t));
     }
 
     void task_orphan_created_by(uint16_t tag, Held held)

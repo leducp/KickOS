@@ -8,6 +8,7 @@
 
 #include "harness.h"
 
+#include <kickos/sys/abi.h>
 #include <kickos/sys/errno.h>
 
 #include <gtest/gtest.h>
@@ -203,7 +204,15 @@ namespace
         }
         if (c.scenario == Scenario::DRIVER_RESTART)
         {
-            EXPECT_EQ(fake::calls_of("kos_task_watch").size(), header->task_count + 1u) << "started again";
+            size_t task_watches = 0;
+            for (fake::Call const& call : fake::calls_of("kos_watch"))
+            {
+                if (call.args[0] == KOS_WATCH_TASK)
+                {
+                    task_watches++;
+                }
+            }
+            EXPECT_EQ(task_watches, header->task_count + 1u) << "started again";
         }
         if (driver)
         {

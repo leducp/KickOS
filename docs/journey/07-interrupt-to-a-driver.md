@@ -274,7 +274,7 @@ $8 = {notify = 0x20007178 <kickos::detail::g_instance+10680>, line = 7, next_sig
 ```
 
 **Why, and the contract:** [Reference: Invariants](../reference/invariants.md),
-`notification-is-the-delivery-object`; the `kos_notify_*` and `kos_irq_bind_notify` comments in
+`notification-is-the-delivery-object`; the `kos_notify_*` and `kos_watch` comments in
 `user/include/kickos/sys.h`.
 
 ### Stop 5: arming the line

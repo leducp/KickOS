@@ -846,7 +846,7 @@ namespace selftest
                                 {gate, KOS_CAP_WAIT | KOS_CAP_TRANSFER},
                                 {run, KOS_CAP_TRANSFER}};
         TAP_CHECK(PeerRun("sdc").caps(caps, 3).start(&t) == 0);
-        TAP_CHECK(kos_task_watch(t, note, KOS_CAP_NONE) == 0);
+        TAP_CHECK(kos_watch(KOS_WATCH_TASK, KOS_TASK_ENDED | KOS_TASK_DEAD, t, note, 0) == 0);
         // From here no return until the grandchild is released.
         int32_t alive = 1;
         int32_t dead = 1;

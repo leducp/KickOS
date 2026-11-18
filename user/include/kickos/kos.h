@@ -349,7 +349,7 @@ namespace kos
     // IRQ line capability (tier-1 userspace driver). Two ways in:
     //   root:   auto irq = kos::Irq::claim(line);        // needs KOS_AUTH_IRQ
     //   driver: auto irq = kos::Irq::adopt(cap_index);   // a cap delegated at spawn
-    // then irq.bind_notify(n); n.bind(); kos::notify_wait(mask, ...); ...; irq.ack();
+    // then irq.watch(n); n.bind(); kos::notify_wait(mask, ...); ...; irq.ack();
     // OWNING and move-only: the destructor closes the cap, which drops the binding's
     // last reference and hands the line back if this was the only holder.
     class Irq
@@ -390,9 +390,9 @@ namespace kos
         }
         // Attach this line to a notification, as one signaller among others. The ISR raises
         // that capability's badge bit there.
-        int bind_notify(kos_cap_t notify_cap)
+        int watch(kos_cap_t notify_cap)
         {
-            return kos_irq_bind_notify(h_, notify_cap);
+            return kos_watch(KOS_WATCH_IRQ, KOS_IRQ_FIRED, h_, notify_cap, 0);
         }
         int ack()
         {

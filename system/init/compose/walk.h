@@ -40,9 +40,8 @@ namespace kickos::init
 
     enum class Phase : uint8_t
     {
-        WAITING, // never started
+        WAITING, // never started, or dead with a restart to come
         RUNNING, // `handle` names its instance
-        PENDING, // dead, with a restart to come
         GONE,    // dead for good
         DOWN     // dependency-down: a server it uses is gone, so it never starts
     };
@@ -102,6 +101,9 @@ namespace kickos::init
         [[noreturn]] void refused(char const* step, uint16_t task, char const* answer) const;
         // Refuses with `rc` unless it is 0.
         void check(int rc, char const* step, uint16_t task) const;
+        // Watches task `i`'s instance `handle` into `copy`: its end, its death and, for a task
+        // serving an endpoint, its readiness. kos_watch's answer.
+        int watch(uint16_t i, kos_task_t handle, kos_cap_t copy);
         // Reserves `size` bytes with kos_ram_alloc, refusing a null answer.
         void* reserve(uint32_t size, char const* step, uint16_t task) const;
 

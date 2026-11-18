@@ -145,8 +145,8 @@ served again answers "refused".** `Endpoint::recv_holders` counts WAIT-bearing c
 **A creator learns, on a notification it names, when a task it created has died and when it has
 become ready.** The creator names the endpoint whose first receive marks readiness.
 
-- **`kos_task_watch(task, notify_cap, ready_ep)`** arms both reports on a task the
-  caller created (`-KOS_EPERM` otherwise, through `task_created_by`). A capability handle means
+- **The task watch (formerly `kos_task_watch(task, notify_cap, ready_ep)`)** arms both reports
+  on a task the caller created (`-KOS_EPERM` otherwise, through `task_created_by`). A capability handle means
   something only in its holder's table, so the task records the OBJECTS: the notification by
   generational object handle, with the capability's badge as the bits to raise, and the
   endpoint whose first receive means ready, or none for a task that serves nothing.
@@ -371,7 +371,7 @@ KICKOS_MAX_THREAD_WINDOWS                /* 5: a thread's window bound, from the
 | | 6 | the window-by-place syscall |
 | | 7 | the port-write syscall |
 | `system/include/kickos/sys/errno.h` | 3 | the refused errno, 111; `KOS_EPIPE` and `KOS_EAGAIN` reworded |
-| `user/include/kickos/sys.h` | 3 to 7 | the wrappers `kos_task_watch`, `kos_task_state`, `kos_window_get`, `kos_port_reg_write`; the `kos_ram_alloc` comment |
+| `user/include/kickos/sys.h` | 3 to 7 | the wrappers `kos_task_state` (formerly beside `kos_task_watch`), `kos_window_get`, `kos_port_reg_write`; the `kos_ram_alloc` comment |
 | `user/include/kickos/kos.h` | 2, 5 | `kos::create`'s authority and window arguments |
 | `system/include/kickos/sys/init.h` | 2 | the app authority accessor and the app authority macro 32 bits |
 | `user/include/kickos/sys/driver_service.h`, `emit.h`, `driver/spi.h`, `driver/i2c.h` | 3 | the no-receiver answers |

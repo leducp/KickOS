@@ -80,13 +80,12 @@ SYSCALL_NAME = {
     61: "frame_unmap",
     63: "thread_affinity", 65: "core_current",
     67: "task_cores", 68: "reply_recv",
-    69: "notify_badge", 70: "irq_bind_notify",
-    72: "task_watch", 74: "window_get", 75: "port_reg_write",
+    69: "notify_badge", 74: "window_get", 75: "port_reg_write",
     76: "task_state", 77: "thread_set_priority",
     79: "periph_disable", 80: "witness_uaccess", 81: "witness_rewinds",
     82: "word_wait", 83: "word_wake", 84: "endpoint_badge",
     85: "task_create", 86: "program_find",
-    87: "realtime_now", 88: "realtime_set",
+    87: "realtime_now", 88: "realtime_set", 89: "watch",
 }
 
 TRACE_MAGIC = 0x4B545243

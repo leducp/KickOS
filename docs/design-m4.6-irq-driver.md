@@ -19,5 +19,5 @@ as logical sources by the chip backend.
 
 The buffered UART is userspace policy over that mechanism: an SPSC byte ring, a receive worker
 and a service worker. Current notification delivery uses `Notification` objects and
-`kos_notify_bind`, `kos_notify_wait`, `kos_notify` and `kos_irq_bind_notify`; the original
+`kos_notify_bind`, `kos_notify_wait`, `kos_notify` and `kos_watch`; the original
 `kos_irq_*` delivery calls in the archived design were replaced by M8.13.

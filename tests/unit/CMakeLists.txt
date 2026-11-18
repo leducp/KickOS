@@ -26,7 +26,7 @@ if(KICKOS_BUILD_UNIT_TESTS)
         "${_k}/sched/sched.cc" "${_k}/sched/policy_fifo_rr.cc" "${_k}/sync/sync.cc"
         "${_k}/sync/klock.cc" "${_k}/thread/park.cc" "${_k}/syscall/cap.cc"
         "${_k}/task/task.cc" "${_k}/irq/irq.cc" "${_k}/irq/irq_route.cc"
-        "${_k}/notify/notify.cc" "${_k}/init/instance.cc" "${_k}/init/fault.cc"
+        "${_k}/notify/notify.cc" "${_k}/notify/watch.cc" "${_k}/init/instance.cc" "${_k}/init/fault.cc"
         "${_k}/klib/slotpool.cc"
         "${PROJECT_SOURCE_DIR}/arch/common/arch_irq_line_core_default.cc"
       INCLUDES "${_fx}" ${KS_INCLUDES}

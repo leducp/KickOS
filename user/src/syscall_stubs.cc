@@ -264,11 +264,17 @@ int kos_program_find(char const* name, kos_program_t* out_prog)
                                          reinterpret_cast<uintptr_t>(out_prog), 0, 0, 0));
 }
 
-int kos_task_watch(kos_task_t task, kos_cap_t notify_cap, kos_cap_t ready_ep)
+int kos_watch(enum kos_watch_kind kind, uint32_t events, uintptr_t source, kos_cap_t notify_cap,
+              uintptr_t arg)
 {
-    return static_cast<int>(arch_syscall(KOS_SYS_TASK_WATCH, static_cast<uintptr_t>(task),
-                                         static_cast<uintptr_t>(notify_cap),
-                                         static_cast<uintptr_t>(ready_ep), 0, 0));
+    uint32_t const spec = (static_cast<uint32_t>(kind) << KOS_WATCH_KIND_SHIFT) | events;
+    if ((spec >> KOS_WATCH_KIND_SHIFT) != static_cast<uint32_t>(kind)
+        or (events & ~KOS_WATCH_EVENTS_MASK) != 0u)
+    {
+        return -KOS_EINVAL;
+    }
+    return static_cast<int>(arch_syscall(KOS_SYS_WATCH, static_cast<uintptr_t>(spec), source,
+                                         static_cast<uintptr_t>(notify_cap), arg, 0));
 }
 
 int kos_task_state(kos_task_t task, int* status)
@@ -446,13 +452,6 @@ int kos_notify_wait(uint32_t mask, kos_monotonic_t until, uint32_t* out_bits)
         *out_bits = bits;
     }
     return rc;
-}
-
-int kos_irq_bind_notify(kos_cap_t irq_cap, kos_cap_t notify_cap)
-{
-    return static_cast<int>(
-        arch_syscall(KOS_SYS_IRQ_BIND_NOTIFY, static_cast<uintptr_t>(irq_cap),
-                     static_cast<uintptr_t>(notify_cap), 0, 0, 0));
 }
 
 int kos_irq_ack(kos_cap_t irq_cap)

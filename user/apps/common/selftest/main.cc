@@ -452,9 +452,8 @@ namespace
 #else
     constexpr int IRQ_CTX_LINE = KICKOS_IRQ_FREE_BASE + 10;
 #endif
-    // Attach `line` to a fresh notification and answer that notification's capability. The
-    // capability is UNBADGED, which is the bit-0 one: irq_bind_notify copies the badge into
-    // the binding, so this line raises bit 0. KOS_CAP_NONE on any refusal, with nothing left
+    // Attach `line` to a fresh notification and answer that notification's capability, the
+    // unbadged bit-0 one: the line raises bit 0. KOS_CAP_NONE on any refusal, with nothing left
     // open.
     kos_cap_t notify_for_line(kos_cap_t line)
     {
@@ -463,7 +462,7 @@ namespace
         {
             return KOS_CAP_NONE;
         }
-        if (kos_irq_bind_notify(line, note) != 0)
+        if (kos_watch(KOS_WATCH_IRQ, KOS_IRQ_FIRED, line, note, 0) != 0)
         {
             kos_handle_close(note);
             return KOS_CAP_NONE;
@@ -5747,8 +5746,8 @@ namespace
         TAP_CHECK(kos_notify_create(&note) == 0);
         TAP_CHECK(kos_notify_badge(note, 0u, &b1) == 0);
         TAP_CHECK(kos_notify_badge(note, 1u, &b2) == 0);
-        TAP_CHECK(kos_irq_bind_notify(l1, b1) == 0);
-        TAP_CHECK(kos_irq_bind_notify(l2, b2) == 0);
+        TAP_CHECK(kos_watch(KOS_WATCH_IRQ, KOS_IRQ_FIRED, l1, b1, 0) == 0);
+        TAP_CHECK(kos_watch(KOS_WATCH_IRQ, KOS_IRQ_FIRED, l2, b2, 0) == 0);
         // The attachment holds its own reference.
         TAP_CHECK(hold.close(&b1) == 0);
         TAP_CHECK(hold.close(&b2) == 0);
@@ -7873,7 +7872,7 @@ namespace
             answer[0] = 1u;
         }
         // Nor watch it or read its state: both reports are the creator's.
-        if (kos_task_watch(t, KOS_CAP_NONE, KOS_CAP_NONE) == -KOS_EPERM
+        if (kos_watch(KOS_WATCH_TASK, 0, t, KOS_CAP_NONE, 0) == -KOS_EPERM
             and kos_task_state(t, nullptr) == -KOS_EPERM)
         {
             answer[1] = 1u;
@@ -7924,6 +7923,11 @@ namespace
     // the endpoint until the creator's next send there. The state follows each step, and a
     // released task answers -KOS_EBADF.
     constexpr uint32_t TW_BIT = 5;
+    // A watch of the end and the death of `t`, a task of a program that names no ready endpoint.
+    int tw_watch_ends(kos_task_t t, kos_cap_t note)
+    {
+        return kos_watch(KOS_WATCH_TASK, KOS_TASK_ENDED | KOS_TASK_DEAD, t, note, 0);
+    }
     constexpr uint8_t TW_CREATOR_PRIO = 14;
     constexpr uint8_t TW_MEMBER_PRIO = 11;
 #if KICKOS_SELFTEST_PEER
@@ -7968,7 +7972,8 @@ namespace
         r->armed = kos_notify_badge(n, TW_BIT, &badged);
         if (r->armed == 0)
         {
-            r->armed = kos_task_watch(t, badged, KOS_CAP_NONE);
+            r->armed = kos_watch(KOS_WATCH_TASK, KOS_TASK_READY | KOS_TASK_ENDED | KOS_TASK_DEAD, t,
+                                 badged, 0);
         }
         r->closed = kos_handle_close(badged);
         r->before = kos_task_state(t, nullptr);
@@ -8164,7 +8169,7 @@ namespace
         int armed = kos_notify_badge(n, TW_BIT, &badged);
         if (armed == 0)
         {
-            armed = kos_task_watch(t, badged, KOS_CAP_NONE);
+            armed = tw_watch_ends(t, badged);
         }
         (void)kos_handle_close(badged);
         g_tx_stranger = -99;
@@ -8282,7 +8287,7 @@ namespace
         int armed = kos_notify_badge(n, TW_BIT, &badged);
         if (armed == 0)
         {
-            armed = kos_task_watch(t, badged, KOS_CAP_NONE);
+            armed = tw_watch_ends(t, badged);
         }
         (void)kos_handle_close(badged);
         uint32_t bits = 0;
@@ -8376,7 +8381,7 @@ namespace
             pre = kos_notify_badge(n, TW_BIT, &badged);
             if (pre == 0)
             {
-                pre = kos_task_watch(t, badged, KOS_CAP_NONE);
+                pre = tw_watch_ends(t, badged);
             }
             (void)kos_handle_close(badged);
         }
@@ -8609,7 +8614,7 @@ namespace
         }
         if (pre == 0)
         {
-            pre = kos_task_watch(t, badged, KOS_CAP_NONE);
+            pre = tw_watch_ends(t, badged);
         }
         g_te.pre = pre;
         if (pre == 0)

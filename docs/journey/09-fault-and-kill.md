@@ -656,7 +656,7 @@ $6 = 12 '\f'
 `task_state_call`; `system/init/compose/walk.cc`, `Walk::wake`, `Walk::death`, `Walk::end`
 
 `faulter`'s task had no watch: `main` waited by joining. The init, though, watches every task
-it starts ([Spawn and capabilities, Stop 4](08-spawn-and-caps.md)): `kos_task_watch` stores a
+it starts ([Spawn and capabilities, Stop 4](08-spawn-and-caps.md)): `kos_watch` stores a
 notification and a bit in the task, and `watch_raise` sets that bit whenever the task ends,
 dies, or becomes ready. The init sleeps in `kos_notify_wait`, and the bit wakes it.
 
