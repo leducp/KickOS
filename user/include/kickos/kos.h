@@ -392,7 +392,7 @@ namespace kos
         // that capability's badge bit there.
         int watch(kos_cap_t notify_cap)
         {
-            return kos_watch(KOS_WATCH_IRQ, KOS_IRQ_FIRED, h_, notify_cap, 0);
+            return kos_watch(KOS_WATCH_IRQ, KOS_IRQ_FIRED, h_, notify_cap, 0, nullptr);
         }
         int ack()
         {

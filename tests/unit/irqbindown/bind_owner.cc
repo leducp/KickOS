@@ -103,7 +103,7 @@ namespace
         EXPECT_EQ(notify_bind(b.server, b.note), 0);
         EXPECT_EQ(bound_thread(b.obj), b.server);
         EXPECT_EQ(irq_claim(b.server, LINE, 0, &b.claim), 0);
-        EXPECT_EQ(watch_call(b.server, watch_spec(KOS_WATCH_IRQ, KOS_IRQ_FIRED), b.claim, b.note, 0), 0);
+        EXPECT_EQ(watch_call(b.server, watch_spec(KOS_WATCH_IRQ, KOS_IRQ_FIRED), b.claim, b.note, 0, nullptr), 0);
         return b;
     }
 }
@@ -159,7 +159,7 @@ TEST_F(IrqBindOwn, a_bound_thread_s_death_clears_the_binding_and_leaves_the_pend
     {
         IrqLock lock;
         b.server->dying = true;
-        notify_unbind_self(b.server);
+        notify_unbind_self(b.server, lock);
     }
     cap_teardown(b.server);
 
@@ -201,7 +201,7 @@ TEST_F(IrqBindOwn, teardown_releases_the_object_through_the_last_holder_it_close
     {
         IrqLock lock;
         b.server->dying = true;
-        notify_unbind_self(b.server);
+        notify_unbind_self(b.server, lock);
     }
     cap_teardown(b.server);
 

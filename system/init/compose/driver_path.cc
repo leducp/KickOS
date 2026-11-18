@@ -5,6 +5,7 @@
 
 #include <kickos/sys/driver_service.h>
 #include <kickos/sys/emit.h> // kconsole_offer
+#include <kickos/sys/errno.h>
 #include <kickos/sys/image.h>
 
 #include <string.h>
@@ -134,7 +135,15 @@ namespace kickos::init::driver_path
             p.caps = caps;
             p.cap_dest = dest;
             p.cap_count = n;
-            rc = kos_task_create(walk.program(), &p, kos::after(START_WAIT), &handle);
+            rc = kos_task_create(walk.program(), &p, &handle);
+            if (rc == -KOS_EAGAIN)
+            {
+                rc = walk.park(task, walk.program(), badged);
+                if (rc == 0)
+                {
+                    rc = kos_task_create(walk.program(), &p, &handle);
+                }
+            }
         }
         drop(walk, passed, task);
         if (rc == 0)
@@ -146,7 +155,7 @@ namespace kickos::init::driver_path
                 rc = handover(walk, task, &handle);
             }
         }
-        else if (narrows_at_handover(walk, task))
+        else if (rc != PARKED and narrows_at_handover(walk, task))
         {
             (void)kos_cap_narrow(r.endpoint, kickos::driver::KOS_DRV_HANDOVER_KEPT);
         }

@@ -1390,7 +1390,7 @@ namespace selftest
         {
             return rc;
         }
-        rc = kos_watch(KOS_WATCH_IRQ, KOS_IRQ_FIRED, *irq, *note, 0);
+        rc = kos_watch(KOS_WATCH_IRQ, KOS_IRQ_FIRED, *irq, *note, 0, nullptr);
         if (rc != 0)
         {
             return rc;
@@ -1621,6 +1621,257 @@ namespace selftest
         TAP_CHECK(g_xs_first[XS_BACK].load() == -KOS_ETIMEDOUT);
         TAP_CHECK(g_xs_second[XS_BACK].load() == 0);
         TAP_CHECK(g_xs_core[XS_BACK].load() == XIRQ_CLAIM_CORE);
+    }
+
+    // --- An IRQ holder's restart while another core takes interrupts ----------------------
+    // peer0 claims a line on one core and ends while the other core takes a stream of
+    // interrupts of a line a raiser claimed there, so the retirement of peer0's binding waits
+    // out that core's dispatch. An instance watch armed on the live holder raises its bit once
+    // nothing of it is in the way, and the create after that bit is never refused as retiring.
+    constexpr int IR_HELD_LINE = XIRQ_STALE_LINE;
+    constexpr int IR_BUSY_LINE = XIRQ_LINE;
+    constexpr int IR_ROUNDS = 8;
+    constexpr uint8_t IR_CREATOR_PRIO = 14;
+    constexpr uint8_t IR_HOLDER_PRIO = 11;
+    // Below the peer's declared priority, so a peer entry seated on the busy core still runs.
+    constexpr uint8_t IR_BUSY_PRIO = 9;
+    // The holder's report, raised through an unbadged grant of the creator's notification.
+    constexpr uint32_t IR_CLAIMED = 1u << 0;
+    constexpr uint32_t IR_JOIN_US = 5u * STALL_TOLERANT_US;
+#if KICKOS_SELFTEST_PEER
+    // Claims and attaches IR_HELD_LINE on XIRQ_CLAIM_CORE, reports, and parks until main's
+    // release: 0 with the line held to its end, else 1.
+    int ir_holder() // caps: report N(SIGNAL)@0, release N(WAIT)@1
+    {
+        peer_seat(IR_HOLDER_PRIO, 1u << XIRQ_CLAIM_CORE);
+        kos_cap_t irq = KOS_CAP_NONE;
+        kos_cap_t note = KOS_CAP_NONE;
+        int rc = irq_claim_await(IR_HELD_LINE, &irq);
+        if (rc == 0)
+        {
+            rc = kos_notify_create(&note);
+        }
+        if (rc == 0
+            and kos_watch(KOS_WATCH_IRQ, KOS_IRQ_FIRED, irq, note, 0, nullptr) != 0)
+        {
+            rc = 1;
+        }
+        (void)kos_notify(child_cap(0));
+        peer_park(child_cap(1));
+        if (rc != 0)
+        {
+            return 1;
+        }
+        return 0;
+    }
+#endif
+    struct IrRound
+    {
+        int claimed; // the wait for the holder's report
+        int watch;   // the instance watch armed on the live holder
+        kos_cap_t watch_cap;
+        int fired; // the wait for its bit
+        uint32_t bits;
+        int status;    // the holder's end status, read once it is dead
+        int again;     // the create after the bit
+    };
+    IrRound g_ir[IR_ROUNDS];
+    int g_ir_pre = XIRQ_UNSET;
+    kos_sem_t g_ir_up;
+    Atomic<int32_t, Order::RELAXED> g_ir_busy_rc{XIRQ_UNSET};
+    Atomic<uint32_t, Order::RELAXED> g_ir_raised{0};
+    Atomic<uint32_t, Order::RELAXED> g_ir_stop{0};
+    // Set where the raiser was still raising when the creator stopped it.
+    Atomic<uint32_t, Order::RELAXED> g_ir_outlived{0};
+
+    // Claims IR_BUSY_LINE on its own core and raises it there, rearmed before each raise, until
+    // told to stop.
+    void ir_busy(void*)
+    {
+        kos_cap_t irq = KOS_CAP_NONE;
+        kos_cap_t note = KOS_CAP_NONE;
+        int rc = irq_claim_await(IR_BUSY_LINE, &irq);
+        if (rc == 0)
+        {
+            rc = kos_notify_create(&note);
+        }
+        if (rc == 0
+            and kos_watch(KOS_WATCH_IRQ, KOS_IRQ_FIRED, irq, note, 0, nullptr) != 0)
+        {
+            rc = -KOS_EINVAL;
+        }
+        g_ir_busy_rc = rc;
+        kos_sem_post(&g_ir_up);
+        kos_monotonic_t const until = after_us(IR_JOIN_US);
+        uint32_t raised = 0;
+        while (rc == 0 and g_ir_stop.load() == 0 and kos_monotonic_now().ns < until.ns)
+        {
+            rc = kos_irq_ack(irq);
+            if (rc == 0)
+            {
+                rc = kos_irq_raise(irq);
+            }
+            if (rc == 0)
+            {
+                raised++;
+            }
+        }
+        if (g_ir_stop.load() != 0)
+        {
+            g_ir_outlived = 1;
+        }
+        g_ir_busy_rc = rc;
+        g_ir_raised = raised;
+        (void)kos_handle_close(irq);
+        (void)kos_handle_close(note);
+    }
+
+    // The holder in *t ends under an instance watch armed while it lives, and the create after
+    // the watch's bit starts `next` on peer0 into *t. 0 to go on, else the refusal that ended
+    // the round.
+    int ir_round(kos_program_t prog, kos_cap_t n, kos_cap_t release, PeerRun& next,
+                 kos_task_t* t, IrRound* out)
+    {
+        uint32_t bits = 0;
+        out->claimed = kos_notify_wait(IR_CLAIMED, after_us(STALL_TOLERANT_US), &bits);
+        if (out->claimed != 0)
+        {
+            return out->claimed;
+        }
+        kos_cap_t badged = KOS_CAP_NONE;
+        int const minted = kos_notify_badge(n, PEER_START_BIT, &badged);
+        out->watch = minted;
+        if (minted == 0)
+        {
+            out->watch = kos_watch(KOS_WATCH_INSTANCE, KOS_INSTANCE_STARTABLE, prog, badged,
+                                   reinterpret_cast<uintptr_t>("peer0"), &out->watch_cap);
+        }
+        (void)kos_handle_close(badged);
+        (void)kos_notify(release);
+        if (out->watch != 0)
+        {
+            return out->watch;
+        }
+        out->fired = kos_notify_wait(1u << PEER_START_BIT, after_us(STALL_TOLERANT_US),
+                                     &out->bits);
+        (void)kos_handle_close(out->watch_cap);
+        if (out->fired != 0)
+        {
+            return out->fired;
+        }
+        (void)kos_task_state(*t, &out->status);
+        out->again = next.try_start("peer0", t, prog);
+        return out->again;
+    }
+
+    void ir_creator(void*)
+    {
+        kos_program_t prog = KOS_CAP_NONE;
+        kos_cap_t n = KOS_CAP_NONE;
+        kos_cap_t release = KOS_CAP_NONE;
+        kos_task_t t = KOS_TASK_NONE;
+        kos::thread::Handle busy;
+        int pre = kos_program_find("stpeer", &prog);
+        if (pre == 0)
+        {
+            pre = kos_notify_create(&n);
+        }
+        if (pre == 0)
+        {
+            pre = kos_notify_create(&release);
+        }
+        if (pre == 0)
+        {
+            pre = kos_notify_bind(n);
+        }
+        if (pre == 0)
+        {
+            busy = kos::thread::create_caps(ir_busy, nullptr, "irB", IR_BUSY_PRIO, nullptr, 0,
+                                            KOS_POLICY_FIFO, 0ns, KOS_AUTH_IRQ, nullptr, nullptr,
+                                            0, 1u << XIRQ_OTHER_CORE);
+            pre = busy.error();
+        }
+        if (pre == 0)
+        {
+            pre = kos_sem_wait(&g_ir_up, after_us(STALL_TOLERANT_US));
+        }
+        if (pre == 0)
+        {
+            pre = g_ir_busy_rc.load();
+        }
+        kos_cap_grant const caps[] = {{n, KOS_CAP_SIGNAL}, {release, KOS_CAP_WAIT}};
+        PeerRun holder("irhold");
+        holder.caps(caps, 2).bound(n);
+        holder.p.instance = "peer0";
+        if (pre == 0)
+        {
+            pre = holder.start(&t, prog);
+        }
+        g_ir_pre = pre;
+        PeerRun last("nop");
+        for (int r = 0; pre == 0 and r < IR_ROUNDS; r++)
+        {
+            PeerRun* next = &holder;
+            if (r + 1 == IR_ROUNDS)
+            {
+                next = &last;
+            }
+            pre = ir_round(prog, n, release, *next, &t, &g_ir[r]);
+        }
+        g_ir_stop.store(1);
+        if (busy.valid())
+        {
+            (void)kos_thread_join(busy.id(), after_us(STALL_TOLERANT_US));
+        }
+        if (t != KOS_TASK_NONE)
+        {
+            (void)kos_task_slay(t, after_us(STALL_TOLERANT_US));
+        }
+        (void)kos_notify_unbind(n);
+        (void)kos_handle_close(n);
+        (void)kos_handle_close(release);
+        (void)kos_handle_close(prog);
+    }
+
+    void t_irq_holder_restart()
+    {
+        TAP_ASK(.workers = 2, .tasks = 1, .notifies = 3, .caps = 2, .irqs = 1);
+        for (int r = 0; r < IR_ROUNDS; r++)
+        {
+            g_ir[r] = {XIRQ_UNSET, XIRQ_UNSET, KOS_CAP_NONE, XIRQ_UNSET, 0u, XIRQ_UNSET,
+                       XIRQ_UNSET};
+        }
+        g_ir_pre = XIRQ_UNSET;
+        g_ir_busy_rc = XIRQ_UNSET;
+        g_ir_raised = 0;
+        g_ir_stop = 0;
+        g_ir_outlived = 0;
+        TAP_CHECK(kos_sem_init(&g_ir_up, 0) == 0);
+        kos::thread::Handle w;
+        ArmHold hold(IR_JOIN_US);
+        TAP_HOLD(hold.thread(&w));
+        w = kos::thread::create(ir_creator, nullptr, "irC", IR_CREATOR_PRIO, KOS_POLICY_FIFO, 0ns,
+                                nullptr, 0, nullptr, 0, nullptr, 0, PEER_CREATOR, nullptr,
+                                1u << XIRQ_CLAIM_CORE);
+        TAP_CHECK(w.valid());
+        TAP_CHECK(hold.joined());
+        tap::diag("%u raises taken on core %u across %d holder restarts on core %u",
+                  static_cast<unsigned>(g_ir_raised.load()),
+                  static_cast<unsigned>(XIRQ_OTHER_CORE), IR_ROUNDS,
+                  static_cast<unsigned>(XIRQ_CLAIM_CORE));
+        TAP_CHECK(g_ir_pre == 0);
+        for (int r = 0; r < IR_ROUNDS; r++)
+        {
+            IrRound const& round = g_ir[r];
+            TAP_CHECK(round.claimed == 0);
+            TAP_CHECK(round.watch == 0);
+            TAP_CHECK(round.fired == 0 and round.bits == (1u << PEER_START_BIT));
+            TAP_CHECK(round.status == 0);
+            TAP_CHECK(round.again != -KOS_EAGAIN);
+            TAP_CHECK(round.again == 0);
+        }
+        TAP_CHECK(g_ir_busy_rc.load() == 0 and g_ir_raised.load() > 0);
+        TAP_CHECK(g_ir_outlived.load() == 1u);
     }
 
     // --- libc reentrant state across cores: two threads of one task at the same instant ----
@@ -1903,6 +2154,10 @@ namespace selftest
         if (argc == 2 and peer_is(argv[1], "gn"))
         {
             return gn_worker();
+        }
+        if (argc == 2 and peer_is(argv[1], "irhold"))
+        {
+            return ir_holder();
         }
         return PEER_WHAT;
     }

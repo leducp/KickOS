@@ -8,6 +8,7 @@
 #include "selftest.h"
 #include <unistd.h>
 
+#include <kickos/apps/peer_run.h>
 #include <kickos/config/priorities.h> // KICKOS_PRIO_MIN
 
 namespace selftest
@@ -738,17 +739,36 @@ namespace selftest
 
     namespace
     {
-        int create_waiting(kos_program_t prog, kos_task_params const& p, kos_task_t* t)
+        int create_waiting(kos_program_t prog, kos_task_params const& p, kos_task_t* t,
+                           kos_cap_t note)
         {
-            return kos_task_create(prog, &p, after_us(STALL_TOLERANT_US), t);
+            kos_monotonic_t const until = after_us(STALL_TOLERANT_US);
+            if (note == KOS_CAP_NONE)
+            {
+                return kickos::apps::create_when_startable(prog, p, until, t);
+            }
+            int const rc = kos_task_create(prog, &p, t);
+            if (rc != -KOS_EAGAIN)
+            {
+                return rc;
+            }
+            kos_cap_t badged = KOS_CAP_NONE;
+            if (kos_notify_badge(note, PEER_START_BIT, &badged) != 0)
+            {
+                return rc;
+            }
+            int const started
+                = kickos::apps::create_when_startable(prog, p, until, badged, PEER_START_BIT, t);
+            (void)kos_handle_close(badged);
+            return started;
         }
     }
 
-    int peer_start(kos_task_params const& p, kos_task_t* t, kos_program_t prog)
+    int peer_start(kos_task_params const& p, kos_task_t* t, kos_program_t prog, kos_cap_t note)
     {
         if (p.instance != nullptr)
         {
-            return create_waiting(prog, p, t);
+            return create_waiting(prog, p, t, note);
         }
         // Named, so a peer whose last incarnation is still dying is waited out and never passed:
         // the arm's i-th task at once is on peer<i>, the budget its ask sized.
@@ -759,10 +779,10 @@ namespace selftest
         for (int at = 0; at < SELFTEST_PEERS; at++)
         {
             name[4] = static_cast<char>('0' + at);
-            int const rc = create_waiting(prog, named, t);
+            int const rc = create_waiting(prog, named, t, note);
             if (rc == -KOS_ENOENT and at == 0)
             {
-                return create_waiting(prog, p, t);
+                return create_waiting(prog, p, t, note);
             }
             if (rc == -KOS_ENOENT)
             {

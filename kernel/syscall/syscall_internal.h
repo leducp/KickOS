@@ -268,11 +268,10 @@ namespace kickos
     // Nothing is written on failure.
     int thread_create_call(kos_thread_params const* p, uintptr_t out);
     // Creates an instance of program `prog` from the caller's struct kos_task_params at `params`
-    // and starts its entry thread, a monotonic deadline not passed first waiting out the
-    // instance's last incarnation. The task's handle goes to `out` as thread_create_call's does. Takes its own
-    // IrqLock, which a console create drops to drain the console's kernel writers, and a wait
-    // drops to park.
-    int task_create_call(uint32_t prog, uintptr_t params, uint64_t deadline, uintptr_t out);
+    // and starts its entry thread; never waits. The task's handle goes to `out` as
+    // thread_create_call's does. Takes its own IrqLock, which a console create drops to drain the
+    // console's kernel writers.
+    int task_create_call(uint32_t prog, uintptr_t params, uintptr_t out);
     // Mints a program capability for the program named at `name`. *out_prog is written on EVERY
     // path. Takes its own IrqLock.
     int program_find_call(uintptr_t name, uint32_t* out_prog);
@@ -285,7 +284,7 @@ namespace kickos
     // a call it would not refuse at once (aspace.h, presync_begin).
     void spawn_presync_plan();
     // A task create's, as the spawn's two above, `prog` the program it names.
-    void task_spawn_presync_enter(uintptr_t params, uint64_t deadline);
+    void task_spawn_presync_enter(uintptr_t params);
     void task_spawn_presync_plan(uint32_t prog);
 #endif
 

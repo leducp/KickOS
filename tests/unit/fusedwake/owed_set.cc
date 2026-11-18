@@ -164,7 +164,7 @@ namespace
         l->bit = 1u << 0; // the IRQ watch copies the capability's badge; unbadged is bit 0
         ASSERT_EQ(irq_claim(l->server, 5, 0, &l->irq), 0);
         ASSERT_EQ(notify_create(l->server, &l->note), 0);
-        ASSERT_EQ(watch_call(l->server, watch_spec(KOS_WATCH_IRQ, KOS_IRQ_FIRED), l->irq, l->note, 0), 0);
+        ASSERT_EQ(watch_call(l->server, watch_spec(KOS_WATCH_IRQ, KOS_IRQ_FIRED), l->irq, l->note, 0, nullptr), 0);
         ASSERT_EQ(notify_bind(l->server, l->note), 0);
         ASSERT_EQ(notify_pending_of(l->server), 0u);
     }

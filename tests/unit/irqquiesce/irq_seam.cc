@@ -23,8 +23,10 @@
 #include <kickos/irq.h>
 #include <kickos/irqlock.h>
 #include <kickos/kernel.h>
+#include <kickos/start_watch.h>
 #include <kickos/sync.h>
 #include <kickos/task.h>
+#include <kickos/watch.h>
 #include <kickos/thread.h>
 
 #include <kickos/sys/errno.h>
@@ -372,12 +374,28 @@ namespace kickos
         return false;
     }
 
-    void task_watch_disarm(Task*)
+    void task_watch_disarm(Task*, Held)
     {
     }
 
-    void task_watch_arm(Task*, int, uint32_t, uint32_t)
+    void task_watch_arm(Task*, int, uint32_t, uint32_t, Held)
     {
+    }
+
+    // The INSTANCE half: no program is nameable here.
+    int instance_watch_source(Thread*, uint32_t, uintptr_t, size_t*)
+    {
+        return -KOS_EBADF;
+    }
+
+    bool task_decl_clear(size_t, Thread const*)
+    {
+        return true;
+    }
+
+    int start_watch_arm(Thread*, size_t, int, uint32_t, uint32_t*, Held)
+    {
+        return -KOS_EMFILE;
     }
 
     void* cap_resolve_e(Thread*, uint32_t, CapType want, uint8_t need, int* err)

@@ -536,8 +536,7 @@ enum kos_syscall_nr
                                 //   EOVERFLOW (the
                                 //   endpoint's reference count). MINTS a copy carrying `badge`,
                                 //   with the source's SIGNAL and TRANSFER and nothing else
-    KOS_SYS_TASK_CREATE = 85,   // (kos_program_t, struct kos_task_params*, kos_task_t* out,
-                                //   deadline lo, deadline hi) -> 0,
+    KOS_SYS_TASK_CREATE = 85,   // (kos_program_t, struct kos_task_params*, kos_task_t* out) -> 0,
                                 //   or -KOS_E*: EFAULT (the params, a string, the vector or the
                                 //   out-pointer), EBADF (no program handle), ENOENT (no declared
                                 //   instance of that name), EPERM (no KOS_AUTH_TASKS, an `init`
@@ -554,16 +553,15 @@ enum kos_syscall_nr
                                 //   KICKOS_MAX_ARGC strings, a ready endpoint or a lines'
                                 //   notification missing from the caps, windows passed to a
                                 //   packaged driver's declaration, or the rest as a spawn),
-                                //   EAGAIN (with a passed deadline: the last incarnation ended and
-                                //   not yet dead, a declared line still retiring from its last
-                                //   holder, an IRQ binding the last incarnation released still
-                                //   retiring; or as KOS_SYS_THREAD_CREATE), ETIMEDOUT and
-                                //   ECANCELED (a deadline not passed parks the caller until
-                                //   those pass; KOS_LIMIT_NONE: no bound), EACCES, EOVERFLOW,
-                                //   ENOTSUP and EMFILE as KOS_SYS_THREAD_CREATE. A packaged driver's
-                                //   declaration publishes its console through the creator's
-                                //   capability at `ready`, which keeps WAIT, then claims its
-                                //   lines for the entry thread, bound to the notification at
+                                //   EAGAIN (the last incarnation ended and not yet dead, a
+                                //   declared line still retiring from its last holder, an IRQ
+                                //   binding the last incarnation released still retiring; or as
+                                //   KOS_SYS_THREAD_CREATE), EACCES, EOVERFLOW, ENOTSUP and EMFILE
+                                //   as KOS_SYS_THREAD_CREATE. Never waits: a KOS_WATCH_INSTANCE
+                                //   watch reports when the instance can start again. A packaged
+                                //   driver's declaration publishes its console through the
+                                //   creator's capability at `ready`, which keeps WAIT, then claims
+                                //   its lines for the entry thread, bound to the notification at
                                 //   `notify`, and seats its device windows on it. Starts the
                                 //   instance's entry thread. With no instance named and none
                                 //   startable, the refusal <kickos/sys.h> states.
@@ -577,24 +575,38 @@ enum kos_syscall_nr
                                 //   KOS_SYS_REALTIME_SET stored, none before it
     KOS_SYS_REALTIME_SET = 88,  // (ns_lo, ns_hi) -> 0, or -KOS_EPERM (no KOS_AUTH_REALTIME).
                                 //   The realtime clock reads ns from now on
-    KOS_SYS_WATCH = 89          // (spec, source, notify_cap, arg) -> >= 0,
-                                //   or -KOS_E*, the first that applies in this order: EINVAL (kind
-                                //   0 or unknown, an event bit the kind does not define, a flag
-                                //   bit, arg not 0, a TASK disarm naming a notification), EBADF
-                                //   (a stale task, a capability naming nothing of the kind),
-                                //   EPERM (TASK: not the creator), EINVAL (TASK: READY of a task
-                                //   whose declaration names no ready endpoint), EACCES (IRQ: the
-                                //   line's capability lacks WAIT), ENOTSUP (IRQ: a disarm), EBUSY
-                                //   (IRQ: the line already signals something), EBADF and EACCES
-                                //   (the notification: no such capability, or it lacks SIGNAL),
-                                //   EPERM (IRQ: the notification carries a line claimed on
-                                //   another core), EAGAIN (IRQ: a holding task's notification
-                                //   budget), EOVERFLOW (IRQ: the object's reference count).
-                                //   Raises notify_cap's badge bit on each event asked. TASK
-                                //   (kos_task_t): replaces the task's one watch, raises at once
-                                //   for an event already reported, events 0 with KOS_CAP_NONE
-                                //   disarms. IRQ (line capability): ONE-WAY and once per line,
-                                //   holding a reference on the notification
+    KOS_SYS_WATCH = 89          // (spec, source, notify_cap, arg,
+                                //   kos_cap_t* out) -> 0, or -KOS_E*, the first that applies in
+                                //   this order: EINVAL and EFAULT (INSTANCE: the out-pointer null
+                                //   or misaligned, or unwritable), EINVAL (kind 0 or unknown, an
+                                //   event bit the kind does not define, a flag bit, arg not 0 for
+                                //   TASK or IRQ, arg 0 or events 0 for INSTANCE, a TASK disarm
+                                //   naming a notification), EBADF (a stale task, a capability
+                                //   naming nothing of the kind), EPERM (TASK: not the creator;
+                                //   INSTANCE: no KOS_AUTH_TASKS), EFAULT and EINVAL (INSTANCE: the
+                                //   name unreadable, or past KICKOS_ARGV_MAX), ENOENT (INSTANCE:
+                                //   no such instance in that program), EPERM (INSTANCE: a create
+                                //   of it would be refused the caller's admission, or a
+                                //   declaration that starts once has started), EINVAL (TASK:
+                                //   READY of a task whose declaration names no ready endpoint),
+                                //   EACCES (IRQ: the line's capability lacks WAIT), ENOTSUP (IRQ:
+                                //   a disarm), EBUSY (IRQ: the line already signals something),
+                                //   EALREADY (INSTANCE: nothing is in the way of a create, and
+                                //   nothing is armed), EBADF and EACCES (the notification: no such
+                                //   capability, or it lacks SIGNAL), EPERM (IRQ: the notification
+                                //   carries a line claimed on another core), EAGAIN (IRQ: a
+                                //   holding task's notification budget), EOVERFLOW (the
+                                //   notification's reference count), EMFILE (INSTANCE: the
+                                //   caller's capability table). Raises notify_cap's badge bit on
+                                //   each event asked. TASK (kos_task_t): replaces the task's one
+                                //   watch, raises at once for an event already reported, events 0
+                                //   with KOS_CAP_NONE disarms. IRQ (line capability): ONE-WAY and
+                                //   once per line, holding a reference on the notification. TASK
+                                //   and IRQ never read `out`. INSTANCE (program capability, arg
+                                //   the instance's name): raised ONCE, when no past incarnation is
+                                //   in the way of a create any more; MINTS the watch capability at
+                                //   `out`, holding a reference on the notification, whose close
+                                //   disarms it
 };
 // The raw console write's number, refused in an app as kos_kconsole_write is (<kickos/sys.h>).
 #if defined(KICKOS_APP_IMAGE)
@@ -642,10 +654,13 @@ enum kos_task_state
 // the kind's events in 15-0.
 enum kos_watch_kind
 {
-    KOS_WATCH_TASK = 1, // source: a kos_task_t you created; events: KOS_TASK_READY, DEAD, ENDED
-    KOS_WATCH_IRQ = 2   // source: a line capability with KOS_CAP_WAIT; events: KOS_IRQ_FIRED
+    KOS_WATCH_TASK = 1,    // source: a kos_task_t you created; events: KOS_TASK_READY, DEAD, ENDED
+    KOS_WATCH_IRQ = 2,     // source: a line capability with KOS_CAP_WAIT; events: KOS_IRQ_FIRED
+    KOS_WATCH_INSTANCE = 3 // source: a kos_program_t; arg: the instance's name; events:
+                           // KOS_INSTANCE_STARTABLE
 };
 #define KOS_IRQ_FIRED 1u
+#define KOS_INSTANCE_STARTABLE 1u
 #define KOS_WATCH_KIND_SHIFT 24
 #define KOS_WATCH_FLAGS_SHIFT 16
 #define KOS_WATCH_EVENTS_MASK 0xFFFFu

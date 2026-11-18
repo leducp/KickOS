@@ -48,6 +48,7 @@ set(KICKOS_KERNEL_SOURCES
   irq/irq.cc
   notify/notify.cc
   notify/watch.cc
+  task/start_watch.cc
   irq/irq_route.cc
   klib/slotpool.cc)
 

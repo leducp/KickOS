@@ -11,6 +11,8 @@
 #include <kickos/irqlock.h>
 #include <kickos/kernel.h>
 #include <kickos/sched.h>
+#include <kickos/start_watch.h>
+#include <kickos/sync.h>
 #include <kickos/task.h>
 #include <kickos/time.h>
 
@@ -85,11 +87,12 @@ namespace kickos
         {
             return -KOS_ENOMEM;
         }
-        // A freed slot keeps its last occupant's fields, so all four are seated here.
+        // A freed slot keeps its last occupant's fields, so each is seated here.
         n->pending = 0;
         n->bound = nullptr;
         n->accept = 0;
         n->signallers = NOTIFY_SIGNALLER_NONE;
+        n->lend_mark = 0;
         k.notifies.refs()[i] = 1; // the creator's cap is the first reference
         int const obj = k.notifies.handle_for(i);
         uint32_t cap = KCAP_INVALID;
@@ -289,7 +292,7 @@ namespace kickos
         return 0;
     }
 
-    void notify_unbind_self(Thread* c)
+    void notify_unbind_self(Thread* c, Held)
     {
         if (c == nullptr or c->notify_bound == KOS_NOTIFY_UNBOUND)
         {
@@ -337,6 +340,66 @@ namespace kickos
         return n->pending;
     }
 
+    void notify_lend_mark(Notification* n)
+    {
+        if (n != nullptr)
+        {
+            n->lend_mark = 1;
+        }
+    }
+
+    uint8_t notify_lender_prio(Notification const* n, uint32_t mask)
+    {
+        Thread const* const w = n->bound;
+        if (w == nullptr or (n->accept & mask) == 0 or w->state != ThreadState::BLOCKED)
+        {
+            return 0;
+        }
+        if (w->wait_notify() != n and w->wait_kind != WAIT_EP_RECV)
+        {
+            return 0;
+        }
+        return w->prio;
+    }
+
+    namespace
+    {
+        // notify_lend_owe over `n`, the object handle `obj` names, which carries the mark.
+        inline __attribute__((always_inline)) bool lend_owe(Notification* n, int obj)
+        {
+            bool owed = task_watch_owe_into(obj);
+            if (start_watch_owe_into(obj))
+            {
+                owed = true;
+            }
+            if (not owed)
+            {
+                n->lend_mark = 0;
+            }
+            return owed;
+        }
+
+        // A wait parked on `n` or left its park: one byte test where no ended task is watched into
+        // it.
+        inline void lend_window(Notification* n, int32_t bound, Held held)
+        {
+            if (n->lend_mark != 0 and lend_owe(n, notify_bound_handle(bound)))
+            {
+                watch_lend_settle(held);
+            }
+        }
+    }
+
+    bool notify_lend_owe(Thread* w)
+    {
+        Notification* const n = bound_object_of(w);
+        if (n == nullptr or n->lend_mark == 0)
+        {
+            return false;
+        }
+        return lend_owe(n, notify_bound_handle(w->notify_bound));
+    }
+
 #if KICKOS_KERNEL_CORES > 1
     int notify_wait_admit(Thread* c)
     {
@@ -363,7 +426,23 @@ namespace kickos
         return mask;
     }
 
-    int notify_wait_leave(Thread* c, uint32_t opened, uintptr_t out)
+    void notify_lend_window(Thread* c, Held held)
+    {
+        Notification* const n = bound_object_of(c);
+        if (n != nullptr and n->accept != 0)
+        {
+            lend_window(n, c->notify_bound, held);
+        }
+    }
+
+    bool notify_lend_woken(Thread* t)
+    {
+        Notification* const n = bound_object_of(t);
+        return n != nullptr and n->accept != 0 and n->lend_mark != 0
+               and lend_owe(n, notify_bound_handle(t->notify_bound));
+    }
+
+    int notify_wait_leave(Thread* c, uint32_t opened, uintptr_t out, Held)
     {
         Notification* const n = bound_object_of(c);
         if (n == nullptr)
@@ -421,6 +500,7 @@ namespace kickos
             c->wait_result = 0; // normal delivery leaves this result unchanged
             epoch = park_queueless(ask)(c, WAIT_NOTIFY, n, lock);
             ktime_limit_arm(c, limit, lock);
+            lend_window(n, c->notify_bound, lock);
             sched::reschedule(nullptr, lock);
         }
         // Mandatory, and outside the lock: where the switch is only pended when the block

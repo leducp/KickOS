@@ -5,6 +5,7 @@
 // a walk that breaks one fails here as it would on a board.
 
 #include "fake_kernel.h"
+#include "harness.h"
 
 #include <kickos/sys/errno.h>
 #include <kickos/sys/uart.h> // kos_uart_req
@@ -273,6 +274,50 @@ namespace
         ASSERT_EQ(kos_notify_bind(note), 0);
         EXPECT_EQ(kos_notify_wait(0u, KOS_POLL, &bits), -KOS_EINVAL) << "an empty mask";
         EXPECT_EQ(kos_notify_wait(1u, KOS_POLL, &bits), -KOS_ETIMEDOUT) << "nothing pending";
+    }
+
+    TEST_F(Fake, an_instance_watch_arms_only_with_a_past_incarnation_in_the_way_and_raises_once)
+    {
+        with(harness::config(systems::find("golden_arm64")));
+        kos_cap_t note = KOS_CAP_NONE;
+        ASSERT_EQ(kos_notify_create(&note), 0);
+        ASSERT_EQ(kos_notify_bind(note), 0);
+        kos_cap_t copy = KOS_CAP_NONE;
+        ASSERT_EQ(kos_notify_badge(note, 5u, &copy), 0);
+        kos_program_t prog = KOS_CAP_NONE;
+        ASSERT_EQ(kos_program_find("p", &prog), 0);
+        size_t const object = static_cast<size_t>(fake::object_of(note));
+        uint32_t const refs = fake::objects()[object].refs;
+        enum kos_watch_kind const kind = KOS_WATCH_INSTANCE;
+        uint32_t const events = KOS_INSTANCE_STARTABLE;
+        uintptr_t const sensor = reinterpret_cast<uintptr_t>("sensor");
+        kos_cap_t watch = KOS_CAP_NONE;
+        EXPECT_EQ(kos_watch(kind, events, prog, copy, sensor, nullptr), -KOS_EINVAL) << "no out-pointer";
+        EXPECT_EQ(kos_watch(kind, events, prog, copy, 0u, &watch), -KOS_EINVAL) << "no name";
+        EXPECT_EQ(kos_watch(kind, events, note, copy, sensor, &watch), -KOS_EBADF) << "not a program";
+        EXPECT_EQ(kos_watch(kind, events, prog, copy, reinterpret_cast<uintptr_t>("nobody"), &watch), -KOS_ENOENT);
+        EXPECT_EQ(kos_watch(kind, events, prog, copy, sensor, &watch), -KOS_EALREADY) << "nothing in the way";
+        EXPECT_EQ(watch, KOS_CAP_NONE);
+
+        fake::retire("sensor");
+        kos_task_params p = {};
+        p.instance = "sensor";
+        kos_task_t t = KOS_TASK_NONE;
+        EXPECT_EQ(kos_task_create(prog, &p, &t), -KOS_EAGAIN);
+        ASSERT_EQ(kos_watch(kind, events, prog, copy, sensor, &watch), 0);
+        ASSERT_NE(watch, KOS_CAP_NONE);
+        EXPECT_EQ(fake::objects()[object].refs, refs + 1u);
+        EXPECT_EQ(kos_handle_close(copy), 0) << "the watch holds a reference of its own";
+        uint32_t bits = 0;
+        EXPECT_EQ(kos_notify_wait(1u << 5, KOS_POLL, &bits), -KOS_ETIMEDOUT);
+        fake::retired("sensor");
+        EXPECT_EQ(kos_notify_wait(1u << 5, KOS_POLL, &bits), 0);
+        EXPECT_EQ(bits, 1u << 5);
+        fake::retire("sensor");
+        fake::retired("sensor");
+        EXPECT_EQ(kos_notify_wait(1u << 5, KOS_POLL, &bits), -KOS_ETIMEDOUT) << "raised once";
+        EXPECT_EQ(kos_handle_close(watch), 0);
+        EXPECT_EQ(fake::objects()[object].refs, refs - 1u) << "the copy and the watch gone";
     }
 
     TEST_F(Fake, a_priority_below_the_range_and_an_authority_bit_past_the_defined_ones_are_invalid)

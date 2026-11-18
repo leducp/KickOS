@@ -146,6 +146,32 @@ namespace harness
         return block[task].task;
     }
 
+    std::vector<fake::Call> instance_watches()
+    {
+        std::vector<fake::Call> out;
+        for (fake::Call const& c : fake::calls_of("kos_watch"))
+        {
+            if (c.args[0] == KOS_WATCH_INSTANCE)
+            {
+                out.push_back(c);
+            }
+        }
+        return out;
+    }
+
+    size_t watches_held()
+    {
+        size_t held = 0;
+        for (fake::Cap const& c : fake::table())
+        {
+            if (fake::objects()[c.object].kind == fake::Kind::WATCH)
+            {
+                held++;
+            }
+        }
+        return held;
+    }
+
     kickos::init::StatusFields status(uint16_t task)
     {
         kickos::init::StatusFields const kept = kickos::init::status_of(record(task));
@@ -169,6 +195,19 @@ namespace harness
             }
         }
         return kept;
+    }
+
+    std::vector<fake::Call> creates_of(char const* name)
+    {
+        std::vector<fake::Call> out;
+        for (fake::Call const& c : fake::calls_of("kos_task_create"))
+        {
+            if (c.text == name)
+            {
+                out.push_back(c);
+            }
+        }
+        return out;
     }
 }
 

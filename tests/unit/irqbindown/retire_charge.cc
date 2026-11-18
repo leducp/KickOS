@@ -120,7 +120,7 @@ namespace
         }
         ASSERT_EQ(notify_create(g_holder, &g_note), 0);
         ASSERT_EQ(irq_claim(g_holder, LINE_A, 0, &g_line), 0);
-        ASSERT_EQ(watch_call(g_holder, watch_spec(KOS_WATCH_IRQ, KOS_IRQ_FIRED), g_line, g_note, 0), 0);
+        ASSERT_EQ(watch_call(g_holder, watch_spec(KOS_WATCH_IRQ, KOS_IRQ_FIRED), g_line, g_note, 0, nullptr), 0);
         ASSERT_TRUE(irq_attach(LINE_CARRIER, carrier, nullptr));
         g_ran = false;
     }

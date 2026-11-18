@@ -10,6 +10,8 @@
 #include <kickos/kernel.h>
 #include <kickos/irqlock.h>
 #include <kickos/klock.h>
+#include <kickos/notify.h>
+#include <kickos/start_watch.h>
 #include <kickos/task.h>
 #include <kickos/time.h>
 #include <kickos/vrange.h>
@@ -279,10 +281,29 @@ namespace kickos
             }
             return p;
         }
+
+        // `p`, or the highest waiter parked on a bit a watch on the death of `t`'s task raises,
+        // that task having ended. One flag test for a thread of a task that has not; the last
+        // member's sweep, whose thread names no task any more, finds it by its run.
+        uint8_t watch_lend(Thread const* t, uint8_t p)
+        {
+            Task const* r = t->task;
+            if (r == nullptr and t->dying)
+            {
+                r = task_run_owner(t);
+            }
+            if (not task_ended(r))
+            {
+                return p;
+            }
+            p = task_watch_lend(r, p);
+            return start_watch_lend(r, p);
+        }
     }
 
     // The single effective-priority funnel. Runs under IrqLock on every mutex unlock,
-    // reply and close, so NO term added here may walk the capability table.
+    // reply and close, so NO term added here may walk the capability table: the watch term walks
+    // only the armed INSTANCE watches, and only for a thread of an ended task.
     uint8_t thread_effective_prio(Thread* t)
     {
         uint8_t p = t->base_prio;
@@ -325,7 +346,7 @@ namespace kickos
         ListNode const* first = nullptr;
         p = waiters_lend(t, p, kernel().death_waiters, &first);
         p = waiters_lend(t, p, kernel().death_dirty, &first);
-        return p;
+        return watch_lend(t, p);
     }
 
     namespace
@@ -352,6 +373,23 @@ namespace kickos
             k.death_dirty.push(&w->link);
         }
 
+        // A parked thread's priority moved: a death waiter's task, and the tasks a waiter on a
+        // watch lends to, are owed a recompute pi_drain_deaths takes. Whether it was a death
+        // waiter.
+        bool lender_moved(Thread* o)
+        {
+            if (o->wait_task_target() != nullptr)
+            {
+                death_dirty_mark(o);
+                return true;
+            }
+            if (o->state == ThreadState::BLOCKED)
+            {
+                (void)notify_lend_owe(o);
+            }
+            return false;
+        }
+
         // Stops at the first thread already at or above `p`, what it waits on having it too, and
         // at a death waiter, whose task pi_drain_deaths visits. The depth bound only stops the
         // walk on a foreign cycle.
@@ -364,9 +402,8 @@ namespace kickos
                     return;
                 }
                 sched::set_prio(o, p, held);
-                if (o->wait_task_target() != nullptr)
+                if (lender_moved(o))
                 {
-                    death_dirty_mark(o);
                     return;
                 }
                 o = pi_next(o);
@@ -385,9 +422,8 @@ namespace kickos
                     return;
                 }
                 sched::set_prio(o, p, held);
-                if (o->wait_task_target() != nullptr)
+                if (lender_moved(o))
                 {
-                    death_dirty_mark(o);
                     return;
                 }
                 o = pi_next(o);
@@ -407,19 +443,20 @@ namespace kickos
 #endif
 
         // Each death waiter whose priority moved has its task's threads recomputed, which can
-        // move another. From a consistent state one priority change moves each thread at most
-        // once, a lowered value never rising again within the drain nor a raised one falling,
-        // so a waiter is dirtied at most once: pops <= W <= N, the thread slots, each recomputing
-        // the M threads of a task and their mutex chains, up to N + 1 each. A waited task is
-        // ended or stopped before it is lent to, its threads waiting on nothing, so in a state
-        // the ABI reaches a drain pops at most the waiter its walk stopped at. KICKOS_PI_DRAIN_POPS
-        // (N + 1) is not reached from a consistent state; past it the lends are left as they
-        // stand, silent in a release build as the mutex chain's bound is. A test posture lowers
-        // it to reach that arm.
+        // move another, and so has each task a watch waiter's move marked. From a consistent
+        // state one priority change moves each thread at most once, a lowered value never rising
+        // again within the drain nor a raised one falling, so a waiter is dirtied at most once:
+        // pops <= W <= N, the thread slots, each recomputing the M threads of a task and their
+        // mutex chains, up to N + 1 each, a pass over the marked tasks counting as one. A waited
+        // task is ended or stopped before it is lent to, its threads waiting on nothing, so in a
+        // state the ABI reaches a drain pops at most the waiter its walk stopped at.
+        // KICKOS_PI_DRAIN_POPS (N + 1) is not reached from a consistent state; past it the lends
+        // are left as they stand, silent in a release build as the mutex chain's bound is. A test
+        // posture lowers it to reach that arm.
         void pi_drain_deaths(Held held)
         {
             Kernel& k = kernel();
-            for (int pops = 0; not k.death_dirty.empty(); pops++)
+            for (int pops = 0; not k.death_dirty.empty() or k.watch_lend_owed; pops++)
             {
                 if (pops >= KICKOS_PI_DRAIN_POPS)
                 {
@@ -428,11 +465,28 @@ namespace kickos
                     {
                         k.death_waiters.push(k.death_dirty.pop());
                     }
+                    k.watch_lend_owed = false;
+                    for (Task& t : k.tasks())
+                    {
+                        (void)task_watch_lend_owed_take(&t);
+                    }
                     return;
                 }
-                ListNode* const w = k.death_dirty.pop();
-                k.death_waiters.push(w);
-                pi_settle_runs(thread_of(w)->wait_task_target(), held);
+                if (not k.death_dirty.empty())
+                {
+                    ListNode* const w = k.death_dirty.pop();
+                    k.death_waiters.push(w);
+                    pi_settle_runs(thread_of(w)->wait_task_target(), held);
+                    continue;
+                }
+                k.watch_lend_owed = false;
+                for (Task& t : k.tasks())
+                {
+                    if (task_watch_lend_owed_take(&t))
+                    {
+                        pi_settle_runs(&t, held);
+                    }
+                }
             }
         }
     }
@@ -459,6 +513,11 @@ namespace kickos
     void death_wait_lend(Task const* t, Held held)
     {
         pi_settle_runs(t, held);
+        pi_drain_deaths(held);
+    }
+
+    void watch_lend_settle(Held held)
+    {
         pi_drain_deaths(held);
     }
 

@@ -4,6 +4,7 @@
 # Built only where the board compiles TLS: elsewhere the thread_local is a link error naming
 # __aeabi_read_tp, which is the intended diagnostic but not a fleet build failure.
 add_executable(tlsprobe main.cc)
+target_include_directories(tlsprobe PRIVATE "${PROJECT_SOURCE_DIR}/user/apps/common/include")
 # Without exceptions: a thread_local destructor that prints would otherwise link the exception
 # runtime.
 set_source_files_properties(main.cc PROPERTIES COMPILE_OPTIONS -fno-exceptions)
@@ -15,6 +16,7 @@ kickos_emit_image(tlsprobe)
 # A single-node build only: an AMP node's slice seats fewer threads than its six tasks.
 if(DEFINED KICKOS_CHIP_ESPTOOL_IMAGE AND NOT KICKOS_AMP_NODE)
   add_executable(tlsprobe_wide main.cc)
+  target_include_directories(tlsprobe_wide PRIVATE "${PROJECT_SOURCE_DIR}/user/apps/common/include")
   kickos_app_system(tlsprobe_wide COMPOSITION system_wide.yaml SYSTEM tlsprobe_wide_system)
   kickos_emit_image(tlsprobe_wide)
 endif()

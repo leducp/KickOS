@@ -222,7 +222,18 @@ namespace
 
         fake::Peaks const& peak = fake::peaks();
         systems::Figures const& counted = system.figures;
-        EXPECT_EQ(peak.cap_slots, counted.cap_slots);
+        // Admission also counts, all at once, the INSTANCE watch each task the init starts may
+        // wait its start on; no start here waits.
+        uint32_t parkable = 0;
+        kos_table_task const* const tasks = reinterpret_cast<kos_table_task const*>(header + 1);
+        for (uint16_t i = 0; i < header->task_count; i++)
+        {
+            if ((tasks[i].flags & (KOS_TABLE_TASK_ON_REQUEST | KOS_TABLE_TASK_HOSTED)) == 0u)
+            {
+                parkable++;
+            }
+        }
+        EXPECT_EQ(peak.cap_slots + parkable, counted.cap_slots);
         EXPECT_EQ(peak.endpoints, counted.endpoints);
         EXPECT_EQ(peak.notifications, counted.notifications);
         EXPECT_EQ(peak.threads + counted.driver_threads, counted.threads);

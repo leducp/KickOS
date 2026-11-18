@@ -297,10 +297,9 @@ namespace kickos
         // death_dirty while its task's threads owe a recompute of what it lends them.
         HeadList death_waiters;
         HeadList death_dirty;
-#if KICKOS_KERNEL_CORES > 1
-        // Every thread parked until a released IRQ binding's grace period ends (WAIT_RETIRE).
-        HeadList retire_waiters;
-#endif
+        // The armed INSTANCE watches, linked through their capability entries
+        // (kernel/task/start_watch.cc): 0 for none.
+        uint32_t start_watches = 0;
         // Endpoint (IPC rendezvous) pool and its object-side refcount, owned by the cap layer:
         // how many caps name slot i. alloc sets 1, delegate bumps, close decrements, and 0
         // frees the slot; obj_ref_inc refuses with -KOS_EOVERFLOW at the uint8_t ceiling rather
@@ -371,6 +370,9 @@ namespace kickos
         HeadList task_free;
         uint16_t hold_epoch = 0;
         uint8_t task_fresh = 0;
+        // A task is owed a recompute of what the watches on its death lend its threads
+        // (task_watch_lend_owe), in the padding after task_fresh.
+        bool watch_lend_owed = false;
 #if KICKOS_HAVE_ASPACE
         // Frame-run pool and its object-side refcount, same shape as the pools above.
         SlotPool<FrameRun, PoolStore<FrameRun, &KernelPools::frame_runs, BudgetKind::FRAME_RUNS>> frame_runs;

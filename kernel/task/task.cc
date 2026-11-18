@@ -17,6 +17,8 @@
 #include <kickos/notify.h>
 #include <kickos/ramown.h>
 #include <kickos/sched.h>
+#include <kickos/start_watch.h>
+#include <kickos/sync.h>
 #include <kickos/thread.h>
 
 #include <kickos/sys/abi.h>
@@ -36,6 +38,9 @@ namespace kickos
         // Its death waiters' lend is owed a recompute before the lock is released
         // (death_leave_batch_end).
         constexpr uint8_t TASK_MARK_LEND_OWED = 1u << 5;
+        // Its threads are owed a recompute of what the watches on its death lend them
+        // (pi_drain_deaths).
+        constexpr uint8_t TASK_MARK_WATCH_OWED = 1u << 6;
         // A declaration's record: an incarnation of it has been started. Kept across its
         // successors.
         constexpr uint8_t TASK_MARK_STARTED = 1u << 7;
@@ -217,6 +222,39 @@ namespace kickos
             }
         }
 
+        // Whether `t`'s watch raises at its death, it having ended and not died yet: a waiter on
+        // that bit lends to its threads.
+        bool watch_lends(Task const* t)
+        {
+            return task_ended(t) and (t->marks & TASK_MARK_DEAD) == 0
+                   and watch_asks(t, TASK_MARK_DEAD) and t->watch_notify != 0;
+        }
+
+        // `t` ended: each watch on its death marks its notification, so a wait parking or woken
+        // there recomputes `t`'s threads, and a waiter already parked lends now.
+        void lend_on_end(Task* t, Held held)
+        {
+            bool lends = false;
+            if (watch_lends(t))
+            {
+                Notification* const n = watch_target(t);
+                if (n != nullptr)
+                {
+                    notify_lend_mark(n);
+                    lends = true;
+                }
+            }
+            int const decl = task_decl_of(t);
+            if (decl >= 0 and start_watch_mark_decl(static_cast<size_t>(decl)))
+            {
+                lends = true;
+            }
+            if (lends)
+            {
+                death_wait_lend(t, held);
+            }
+        }
+
         // The task no longer serves the console: it ended, or its slot went back without it ever
         // ending.
         void console_leave(Task* t, Held held)
@@ -244,6 +282,8 @@ namespace kickos
                 t->exit_status = code;
             }
             console_leave(t, held);
+            // Ahead of the raise, whose wake can switch this thread out.
+            lend_on_end(t, held);
             watch_raise(t, TASK_MARK_ENDED);
         }
 
@@ -252,7 +292,13 @@ namespace kickos
         void free_task(Task* t, Held held)
         {
             console_leave(t, held);
+            // A member still sweeping keeps no lend from a watch the slot no longer holds.
+            bool const lent = watch_lends(t);
             watch_clear(t);
+            if (lent)
+            {
+                death_wait_lend(t, held);
+            }
 #if KICKOS_HAVE_ASPACE
             if ((t->marks & TASK_MARK_ENDED) == 0)
             {
@@ -415,20 +461,70 @@ namespace kickos
         return t->watch_ep != 0;
     }
 
-    void task_watch_disarm(Task* t)
+    void task_watch_disarm(Task* t, Held held)
     {
+        bool const lent = watch_lends(t);
         t->watch_notify = 0;
         t->watch_bit = 0;
+        if (lent)
+        {
+            death_wait_lend(t, held);
+        }
     }
 
-    void task_watch_arm(Task* t, int notify_obj, uint32_t bit, uint32_t events)
+    void task_watch_arm(Task* t, int notify_obj, uint32_t bit, uint32_t events, Held held)
     {
+        bool lent = watch_lends(t);
         // No reference: whoever can receive the report holds a capability or a binding, and
         // either keeps the object alive; a report nobody can receive has nowhere to go.
         t->watch_notify = notify_bound_store(notify_obj);
         t->watch_bit = static_cast<uint8_t>((bit & WATCH_INDEX_MASK) | (events << WATCH_EVENT_SHIFT));
+        Notification* const n = watch_target(t);
+        if (n != nullptr and watch_lends(t))
+        {
+            notify_lend_mark(n);
+            lent = true;
+        }
+        if (lent)
+        {
+            death_wait_lend(t, held);
+        }
         watch_raise(t, static_cast<uint8_t>(t->marks & (TASK_MARK_READY | TASK_MARK_DEAD
                                                         | TASK_MARK_ENDED)));
+    }
+
+    uint8_t task_watch_lend(Task const* t, uint8_t p)
+    {
+        if (not watch_lends(t))
+        {
+            return p;
+        }
+        Notification const* const n = watch_target(t);
+        if (n == nullptr)
+        {
+            return p;
+        }
+        uint8_t const w = notify_lender_prio(n, watch_mask(t));
+        if (w > p)
+        {
+            return w;
+        }
+        return p;
+    }
+
+    bool task_watch_owe_into(int notify_obj)
+    {
+        int32_t const stored = notify_bound_store(notify_obj);
+        bool any = false;
+        for (Task& t : kernel().tasks())
+        {
+            if (t.watch_notify == stored and watch_lends(&t))
+            {
+                task_watch_lend_owe(&t);
+                any = true;
+            }
+        }
+        return any;
     }
 
     int task_state_call(kos_task_t task, int32_t* status)
@@ -539,6 +635,41 @@ namespace kickos
         return true;
     }
 
+    void task_watch_lend_owe(Task* t)
+    {
+        if (t == nullptr)
+        {
+            return;
+        }
+        t->marks = static_cast<uint8_t>(t->marks | TASK_MARK_WATCH_OWED);
+        kernel().watch_lend_owed = true;
+    }
+
+    bool task_watch_lend_owed_take(Task* t)
+    {
+        if (t == nullptr or (t->marks & TASK_MARK_WATCH_OWED) == 0)
+        {
+            return false;
+        }
+        t->marks = static_cast<uint8_t>(t->marks & ~TASK_MARK_WATCH_OWED);
+        return true;
+    }
+
+    Task* task_run_owner(Thread const* th)
+    {
+        ListNode const* const first = task_run_first(th);
+        TaskLinks const* const l = task_links();
+        Kernel& k = kernel();
+        for (int i = 0; i < k.tasks().size(); i++)
+        {
+            if (l[i].cap_runs.head == first)
+            {
+                return &k.tasks()[i];
+            }
+        }
+        return nullptr;
+    }
+
     bool task_sweep_done(Task* t)
     {
         if (t == nullptr or t->sweeping == 0)
@@ -564,21 +695,23 @@ namespace kickos
     void task_report_death(Task* t, uint16_t gen)
     {
         // A slot freed during the teardown and seated again is another instance's.
-        if (t == nullptr or t->gen != gen or t->refcount != 0)
+        if (t != nullptr and t->gen == gen and t->refcount == 0)
         {
-            return;
-        }
 #if KICKOS_HAVE_ASPACE
-        if ((t->marks & TASK_MARK_ENDED) == 0)
-        {
-            domain_retire_handles(t->domain);
-        }
-        domain_retire_space(t->domain);
+            if ((t->marks & TASK_MARK_ENDED) == 0)
+            {
+                domain_retire_handles(t->domain);
+            }
+            domain_retire_space(t->domain);
 #endif
-        uint8_t const fresh = static_cast<uint8_t>(TASK_MARK_DEAD | (~t->marks & TASK_MARK_ENDED));
-        t->marks = static_cast<uint8_t>((t->marks & ~TASK_MARK_READY) | TASK_MARK_DEAD
-                                        | TASK_MARK_ENDED);
-        watch_raise(t, fresh);
+            uint8_t const fresh =
+                static_cast<uint8_t>(TASK_MARK_DEAD | (~t->marks & TASK_MARK_ENDED));
+            t->marks = static_cast<uint8_t>((t->marks & ~TASK_MARK_READY) | TASK_MARK_DEAD
+                                            | TASK_MARK_ENDED);
+            watch_raise(t, fresh);
+        }
+        // Also for a slot freed during the teardown: its sweep was the last thing in the way.
+        start_watch_poke();
     }
 
     size_t task_image(Task const* t)
@@ -590,31 +723,15 @@ namespace kickos
         return 0;
     }
 
-    Task* task_decl_dying(size_t decl)
-    {
-        Task& t = decl_slot(decl);
-        if ((t.refcount != 0 or t.sweeping != 0) and task_ended(&t))
-        {
-            return &t;
-        }
-        return nullptr;
-    }
-
-#if KICKOS_KERNEL_CORES > 1
-    bool task_decl_retiring(size_t decl)
-    {
-        return retiring(decl_slot(decl));
-    }
-#endif
-
-    int task_decl_state(size_t decl)
+    int task_decl_in_the_way(size_t decl, Thread const* asker)
     {
         Task const& t = decl_slot(decl);
-        if (task_decl_dying(decl) != nullptr)
+        bool const occupied = t.refcount != 0 or t.sweeping != 0;
+        if (occupied and task_ended(&t))
         {
             return -KOS_EAGAIN;
         }
-        if (t.refcount != 0 or t.sweeping != 0)
+        if (occupied)
         {
             return -KOS_EBUSY;
         }
@@ -623,28 +740,71 @@ namespace kickos
         {
             return -KOS_EBUSY;
         }
-#if KICKOS_KERNEL_CORES > 1
         if (retiring(t))
         {
-            irq_retire_drain();
-            if (retiring(t))
-            {
-                return -KOS_EAGAIN;
-            }
+            return -KOS_EAGAIN;
         }
-#endif
 #if KICKOS_PRESYNC
         // Another create is copying the data of its next space outside the lock.
-        if (presync_image_staged_elsewhere(&t))
+        if (presync_image_staged_elsewhere(&t, asker))
         {
             return -KOS_EBUSY;
         }
+#else
+        (void)asker;
 #endif
-        // A declaration with neither restart nor on_request starts once: where .data loads where
-        // it runs, its image keeps no copy of it.
+        return 0;
+    }
+
+    bool task_decl_lines_retiring(size_t decl)
+    {
+#if KICKOS_KERNEL_CORES > 1
+        kos_task_decl const* const d = image_decl(decl);
+        if (d == nullptr)
+        {
+            return false;
+        }
+        kos_decl_grant const* const g = image_decl_grants(d);
+        for (uint16_t k = 0; k < d->grant_count; k++)
+        {
+            if (g[k].kind == KOS_DECL_LINE and irq_line_retiring(g[k].line))
+            {
+                return true;
+            }
+        }
+#else
+        (void)decl;
+#endif
+        return false;
+    }
+
+    bool task_decl_clear(size_t decl, Thread const* asker)
+    {
+        return task_decl_in_the_way(decl, asker) == 0 and not task_decl_lines_retiring(decl);
+    }
+
+    bool task_decl_spent(size_t decl)
+    {
+        // Where .data loads where it runs, its image keeps no copy of it.
         kos_task_decl const* const own = image_decl(decl);
-        if ((t.marks & TASK_MARK_STARTED) != 0 and own != nullptr
-            and (own->flags & (KOS_DECL_RESTARTS | KOS_DECL_ON_REQUEST)) == 0)
+        return (decl_slot(decl).marks & TASK_MARK_STARTED) != 0 and own != nullptr
+               and (own->flags & (KOS_DECL_RESTARTS | KOS_DECL_ON_REQUEST)) == 0;
+    }
+
+    int task_decl_state(size_t decl)
+    {
+#if KICKOS_KERNEL_CORES > 1
+        if (retiring(decl_slot(decl)))
+        {
+            irq_retire_drain();
+        }
+#endif
+        int const rc = task_decl_in_the_way(decl, sched::current());
+        if (rc != 0)
+        {
+            return rc;
+        }
+        if (task_decl_spent(decl))
         {
             return -KOS_EPERM;
         }
@@ -1028,6 +1188,8 @@ namespace kickos
         return &task_links()[i].image_stager;
     }
 
+#endif
+
     Task* task_decl_record(size_t decl)
     {
         if (decl >= image_decl_count())
@@ -1036,7 +1198,6 @@ namespace kickos
         }
         return &decl_slot(decl);
     }
-#endif
 
 #if KICKOS_KERNEL_CORES > 1
     HeadList* task_irq_retiring(Task const* t)

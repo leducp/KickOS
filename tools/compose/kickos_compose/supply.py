@@ -126,6 +126,8 @@ class Held:
         # Capabilities past one per object: a notification's or an endpoint's badged copies.
         self.copies = 0
         self.programs = 0
+        # INSTANCE watches, each a capability of the arming table.
+        self.watches = 0
 
     def add(self, other):
         self.endpoints = self.endpoints + other.endpoints
@@ -133,9 +135,11 @@ class Held:
         self.lines = self.lines + other.lines
         self.copies = self.copies + other.copies
         self.programs = self.programs + other.programs
+        self.watches = self.watches + other.watches
 
     def caps(self):
-        return self.endpoints + self.notifications + self.lines + self.copies + self.programs
+        return (self.endpoints + self.notifications + self.lines + self.copies + self.programs
+                + self.watches)
 
 
 def own_tasks(tasks):
@@ -174,12 +178,14 @@ def held_by(task):
 
 def kept_by_init(tasks, manifest):
     """What the init holds for life: its notification, the program its tasks are instances of, each AMP
-    port, every endpoint it creates for a served /svc path, a console driver's included, and each
-    watcher's notification."""
+    port, every endpoint it creates for a served /svc path, a console driver's included, each
+    watcher's notification, and the INSTANCE watch each task it starts may wait on its last
+    incarnation's death through, all of them at once."""
     kept = Held()
     kept.notifications = 1
     kept.programs = 1
     kept.endpoints = manifest.amp_ports
+    kept.watches = len([task for task in own_tasks(tasks) if not task.on_request])
     for task in tasks:
         if task.catalogue is not None:
             kept.endpoints = kept.endpoints + task.catalogue.endpoints

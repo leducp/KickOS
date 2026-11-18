@@ -8,6 +8,7 @@
 // creates its peer twice, the program tlsprobe_peer in an image of its own whose thread-local
 // storage is another span of the link's one thread-local segment (peer.cc).
 
+#include <kickos/apps/peer_run.h>
 #include <kickos/kos.h>
 #include <kickos/libc/fmt.h>
 #include <kickos/sys/atomic.h>
@@ -301,7 +302,8 @@ namespace
         kos_task_params p{};
         p.instance = "peer";
         kos_task_t t = KOS_TASK_NONE;
-        int const rc = kos_task_create(prog, &p, kos::after(std::chrono::milliseconds{100}), &t);
+        int const rc = kickos::apps::create_when_startable(
+            prog, p, kos::after(std::chrono::milliseconds{100}), &t);
         if (rc != 0)
         {
             return -1000 + rc;

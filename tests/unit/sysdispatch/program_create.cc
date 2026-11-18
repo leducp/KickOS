@@ -5,11 +5,13 @@
 #include <kickos/instance.h>
 #include <kickos/irqlock.h>
 #include <kickos/kernel.h>
+#include <kickos/notify.h>
 #include <kickos/sched.h>
 #include <kickos/sync.h>
 #include <kickos/task.h>
 #include <kickos/thread.h>
 #include <kickos/time.h>
+#include <kickos/watch.h>
 
 #include <kickos/sys/image.h>
 
@@ -28,6 +30,11 @@ extern "C" uint64_t syscall_dispatch(uintptr_t nr, uintptr_t a0, uintptr_t a1, u
 
 namespace
 {
+    uint32_t watch_spec(uint32_t kind, uint32_t events)
+    {
+        return (kind << KOS_WATCH_KIND_SHIFT) | events;
+    }
+
     template <typename T, typename = void>
     struct HasTask : std::false_type
     {
@@ -214,24 +221,112 @@ namespace
         kernel().current(kickos_kernel_core()) = g_dying.creator;
     }
 
-    void the_deadline_passes(kickos::Thread* parked)
+    // As the_member_dies_if_it_runs, for a waiter the death's raise wakes: a raise leaves the
+    // result its wait seated, which the fixture's park poisoned.
+    void the_member_dies_watched(kickos::Thread* parked)
     {
         using namespace kickos;
-        seen(parked);
+        the_member_dies_if_it_runs(parked);
+        if (parked->wait_kind == WAIT_NONE and parked->wait_result == testfix::WAIT_RESULT_POISON)
+        {
+            parked->wait_result = 0;
+        }
+    }
+
+    // A watch closed while its waiter is parked, and the member's priority after it.
+    uint32_t g_watch_cap = 0;
+    uint8_t g_closed_prio = 0;
+    kickos::Thread* g_mutex_waiter = nullptr;
+
+    void the_watch_closes_lent(kickos::Thread* parked)
+    {
+        using namespace kickos;
+        lent(parked);
         {
             IrqLock lock;
+            (void)handle_close(g_dying.creator, g_watch_cap, lock);
+            g_closed_prio = g_dying.member->prio;
             thread_abort_park(parked, -KOS_ETIMEDOUT, lock);
         }
         kernel().current(kickos_kernel_core()) = g_dying.creator;
     }
 
-    void the_creator_is_killed(kickos::Thread* parked)
+    // The thread whose mutex wait raised the parked waiter gives up.
+    void the_waiter_falls_lent(kickos::Thread* parked)
     {
         using namespace kickos;
-        seen(parked);
+        lent(parked);
         {
             IrqLock lock;
-            thread_cancel_kind(parked, CANCEL_KILL, lock);
+            thread_abort_park(g_mutex_waiter, -KOS_ETIMEDOUT, lock);
+            g_closed_prio = g_dying.member->prio;
+            thread_abort_park(parked, -KOS_ETIMEDOUT, lock);
+        }
+        kernel().current(kickos_kernel_core()) = g_dying.creator;
+    }
+
+    // The member's priority read at the waiter's wake, before the waiter runs again.
+    uint8_t g_woken_prio = 0;
+    constexpr uint32_t OTHER_BIT = 10;
+
+    kickos::Notification* bound_of(kickos::Thread* t)
+    {
+        return kickos::kernel().notifies.resolve(kickos::notify_bound_handle(t->notify_bound));
+    }
+
+    // A bit the watch does not raise wakes the waiter: a raise leaves the result its wait seated,
+    // which the fixture's park poisoned.
+    void another_source_raises_lent(kickos::Thread* parked)
+    {
+        using namespace kickos;
+        lent(parked);
+        {
+            IrqLock lock;
+            (void)notify_raise(bound_of(parked), 1u << OTHER_BIT);
+            g_woken_prio = g_dying.member->prio;
+        }
+        if (parked->wait_result == testfix::WAIT_RESULT_POISON)
+        {
+            parked->wait_result = 0;
+        }
+        kernel().current(kickos_kernel_core()) = g_dying.creator;
+    }
+
+    void the_deadline_passes_read(kickos::Thread* parked)
+    {
+        using namespace kickos;
+        lent(parked);
+        {
+            IrqLock lock;
+            thread_abort_park(parked, -KOS_ETIMEDOUT, lock);
+            g_woken_prio = g_dying.member->prio;
+        }
+        kernel().current(kickos_kernel_core()) = g_dying.creator;
+    }
+
+    void the_waiter_is_slain_read(kickos::Thread* parked)
+    {
+        using namespace kickos;
+        lent(parked);
+        {
+            IrqLock lock;
+            thread_cancel_kind(parked, CANCEL_SLAY, lock);
+            g_woken_prio = g_dying.member->prio;
+        }
+        kernel().current(kickos_kernel_core()) = g_dying.creator;
+    }
+
+    // The thread parked on a mutex the waiter holds raises the waiter, then gives up.
+    void the_waiter_rises_lent(kickos::Thread* parked)
+    {
+        using namespace kickos;
+        lent(parked);
+        {
+            IrqLock lock;
+            pi_raise(parked, g_mutex_waiter->prio, lock);
+            g_closed_prio = g_dying.member->prio;
+            thread_abort_park(g_mutex_waiter, -KOS_ETIMEDOUT, lock);
+            thread_abort_park(parked, -KOS_ETIMEDOUT, lock);
         }
         kernel().current(kickos_kernel_core()) = g_dying.creator;
     }
@@ -295,7 +390,7 @@ namespace kickos
                               0);
                 }
 
-                int create(char const* instance, kos_task_t* out, uint64_t deadline = 0)
+                int create(char const* instance, kos_task_t* out)
                 {
                     g_block.p.instance = nullptr;
                     if (instance != nullptr)
@@ -304,10 +399,70 @@ namespace kickos
                     }
                     g_block.out = KOS_TASK_NONE;
                     int const rc = task_create_call(prog_, reinterpret_cast<uintptr_t>(&g_block.p),
-                                                    deadline,
                                                     reinterpret_cast<uintptr_t>(&g_block.out));
                     *out = g_block.out;
                     return rc;
+                }
+
+                // `c`'s INSTANCE watch on `instance` raising notification capability `note`'s bit:
+                // its handle, or the refusal.
+                int64_t watch(Thread* c, char const* instance, uint32_t note, uint32_t prog)
+                {
+                    uintptr_t name = 0;
+                    if (instance != nullptr)
+                    {
+                        name = reinterpret_cast<uintptr_t>(text(instance, 40));
+                    }
+                    uint32_t h = KCAP_INVALID;
+                    int const rc = watch_call(c, watch_spec(KOS_WATCH_INSTANCE, KOS_INSTANCE_STARTABLE),
+                                              prog, note, name, &h);
+                    if (rc != 0)
+                    {
+                        return rc;
+                    }
+                    return h;
+                }
+
+                int64_t watch(char const* instance, uint32_t note)
+                {
+                    return watch(sched::current(), instance, note, prog_);
+                }
+
+                // A notification of `c`'s, bound to it where `bind` holds, badged copy at `bit`.
+                uint32_t note_for(Thread* c, uint32_t bit, bool bind, uint32_t* base = nullptr)
+                {
+                    uint32_t n = KCAP_INVALID;
+                    uint32_t copy = KCAP_INVALID;
+                    EXPECT_EQ(notify_create(c, &n), 0);
+                    if (bind)
+                    {
+                        EXPECT_EQ(notify_bind(c, n), 0);
+                    }
+                    EXPECT_EQ(notify_badge(c, n, bit, &copy), 0);
+                    if (base != nullptr)
+                    {
+                        *base = n;
+                    }
+                    return copy;
+                }
+
+                // The pending bits of the notification capability `cap` of `c` names.
+                static uint32_t pending(Thread* c, uint32_t cap)
+                {
+                    IrqLock lock;
+                    int err = 0;
+                    Notification const* const n = static_cast<Notification*>(
+                        cap_resolve_e(c, cap, CapType::CAP_NOTIFY, 0, &err));
+                    if (n == nullptr)
+                    {
+                        return 0xDEADu;
+                    }
+                    return n->pending;
+                }
+
+                static bool none_armed()
+                {
+                    return kernel().start_watches == 0 or kernel().start_watches == 0xFFFFFFFFu;
                 }
 
                 // The entry thread of task `h`.
@@ -656,10 +811,26 @@ namespace kickos
             EXPECT_EQ(create("peer0", &again), 0);
         }
 
-        TEST_F(ProgramCreate, a_start_with_a_timeout_waits_out_the_dying_instance_then_starts_it)
+        TEST_F(ProgramCreate, a_create_of_an_instance_still_dying_answers_retry_and_parks_nothing)
         {
             creator(AUTH_TASKS);
             Thread* const c = sched::current();
+            kos_task_t h = KOS_TASK_NONE;
+            ASSERT_EQ(create("peer0", &h), 0);
+            ASSERT_EQ(task_slay(h, 0), 0);
+            kos_task_t again = KOS_TASK_NONE;
+            EXPECT_EQ(create("peer0", &again), -KOS_EAGAIN);
+            EXPECT_EQ(again, KOS_TASK_NONE);
+            EXPECT_EQ(c->wait_kind, WAIT_NONE) << "the create parked";
+            EXPECT_TRUE(kernel().death_waiters.empty());
+        }
+
+        TEST_F(ProgramCreate, an_instance_watch_raises_at_the_death_not_at_the_end_nor_mid_sweep)
+        {
+            creator(AUTH_TASKS);
+            Thread* const c = sched::current();
+            uint32_t base = KCAP_INVALID;
+            uint32_t const note = note_for(c, 3u, false, &base);
             kos_task_t h = KOS_TASK_NONE;
             ASSERT_EQ(create("peer0", &h), 0);
             Thread* const e = entry_of(h);
@@ -670,82 +841,240 @@ namespace kickos
                 record = task_resolve(h);
             }
             ASSERT_EQ(task_slay(h, 0), 0);
-            kos_task_t again = KOS_TASK_NONE;
-            ASSERT_EQ(create("peer0", &again), -KOS_EAGAIN) << "fixture: peer0 is not dying";
-            uint32_t const holds = kernel().task_holds;
-            g_dying = Dying{record, e, c, WAIT_NONE, nullptr, 1u, false};
-            wake_next_park(the_member_dies);
-            EXPECT_EQ(create("peer0", &again, KOS_LIMIT_NONE), 0);
-            EXPECT_EQ(g_dying.kind, WAIT_TASK_EMPTY) << "the wait is not the death's own park";
-            EXPECT_EQ(g_dying.obj, record) << "the wait parks on another task than the dying one";
-            EXPECT_EQ(g_dying.deadline_ns, 0u) << "a wait with no bound armed a deadline";
-            EXPECT_TRUE(g_dying.woken) << "the last sweep's wake does not find the waiter";
-            ASSERT_NE(again, KOS_TASK_NONE);
-            EXPECT_EQ(handle_index(again), handle_index(h)) << "the start took another record";
-            EXPECT_STREQ(entry_of(again)->name, "peer0");
-            EXPECT_EQ(kernel().task_holds, holds + 1u);
-        }
-
-        TEST_F(ProgramCreate, a_start_with_no_instance_named_waits_out_the_one_still_dying)
-        {
-            creator(AUTH_TASKS | AUTH_IRQ);
-            Thread* const c = sched::current();
-            kos_task_t first = KOS_TASK_NONE;
-            kos_task_t second = KOS_TASK_NONE;
-            ASSERT_EQ(create(nullptr, &first), 0);
-            ASSERT_EQ(create(nullptr, &second), 0);
-            Thread* const e = entry_of(first);
-            ASSERT_NE(e, nullptr);
-            Task* record = nullptr;
+            int64_t const w = watch("peer0", note);
+            ASSERT_GE(w, 0);
+            EXPECT_EQ(pending(c, base), 0u) << "raised at the end";
+            uint16_t gen = 0;
             {
                 IrqLock lock;
-                record = task_resolve(first);
+                gen = task_gen(record);
+                (void)task_release(record, lock);
+                task_member_leave(e, kernel().threads.index_of(e));
             }
-            ASSERT_EQ(task_slay(first, 0), 0);
-            g_dying = Dying{record, e, c, WAIT_NONE, nullptr, 0u, false};
-            wake_next_park(the_deadline_passes);
-            kos_task_t h = KOS_TASK_NONE;
-            EXPECT_EQ(create(nullptr, &h, deadline_in(1000000u)), -KOS_ETIMEDOUT) << "the create did not wait";
-            EXPECT_EQ(g_dying.kind, WAIT_TASK_EMPTY);
-            EXPECT_EQ(g_dying.obj, record) << "the wait is not on the instance still dying";
+            EXPECT_EQ(pending(c, base), 0u) << "raised while the last member still sweeps";
+            {
+                IrqLock lock;
+                ASSERT_TRUE(task_sweep_done(record));
+                task_report_death(record, gen);
+            }
+            EXPECT_EQ(pending(c, base), 1u << 3) << "not raised at the death";
+            EXPECT_TRUE(none_armed()) << "a raised watch stays armed";
+            kos_task_t next = KOS_TASK_NONE;
+            EXPECT_EQ(create("peer0", &next), 0);
+            IrqLock lock;
+            EXPECT_EQ(handle_close(c, static_cast<uint32_t>(w), lock), 0) << "the spent watch";
         }
 
-        TEST_F(ProgramCreate, a_wait_on_a_start_ends_at_its_timeout_with_nothing_started)
+        TEST_F(ProgramCreate, an_instance_watch_on_a_live_instance_waits_it_out_and_raises_once)
+        {
+            creator(AUTH_TASKS);
+            Thread* const c = sched::current();
+            uint32_t base = KCAP_INVALID;
+            uint32_t const note = note_for(c, 5u, false, &base);
+            kos_task_t h = KOS_TASK_NONE;
+            ASSERT_EQ(create("peer0", &h), 0);
+            int64_t const w = watch("peer0", note);
+            ASSERT_GE(w, 0) << "a live instance is in the way";
+            EXPECT_EQ(pending(c, base), 0u);
+            end(h);
+            EXPECT_EQ(pending(c, base), 1u << 5);
+            {
+                IrqLock lock;
+                int err = 0;
+                static_cast<Notification*>(cap_resolve_e(c, base, CapType::CAP_NOTIFY, 0, &err))
+                    ->pending = 0;
+            }
+            ASSERT_EQ(create("peer0", &h), 0);
+            end(h);
+            EXPECT_EQ(pending(c, base), 0u) << "the watch raised twice";
+            IrqLock lock;
+            EXPECT_EQ(handle_close(c, static_cast<uint32_t>(w), lock), 0);
+        }
+
+        TEST_F(ProgramCreate, an_arm_with_nothing_in_the_way_answers_already_and_stores_nothing)
+        {
+            creator(AUTH_TASKS);
+            Thread* const c = sched::current();
+            uint32_t const note = note_for(c, 1u, false);
+            uint16_t const head = c->cap_free_head;
+            EXPECT_EQ(watch("peer0", note), -KOS_EALREADY) << "never started";
+            kos_task_t h = KOS_TASK_NONE;
+            ASSERT_EQ(create("peer0", &h), 0);
+            end(h);
+            EXPECT_EQ(watch("peer0", note), -KOS_EALREADY) << "dead and swept";
+            EXPECT_EQ(c->cap_free_head, head) << "an arm answering already took a slot";
+            EXPECT_TRUE(none_armed());
+        }
+
+        TEST_F(ProgramCreate, closing_an_instance_watch_disarms_it_and_gives_its_reference_back)
+        {
+            creator(AUTH_TASKS);
+            Thread* const c = sched::current();
+            uint32_t base = KCAP_INVALID;
+            uint32_t const note = note_for(c, 2u, false, &base);
+            int obj = 0;
+            {
+                IrqLock lock;
+                obj = cap_lookup(c, base)->obj;
+            }
+            int const slot = kernel().notifies.live_index(obj);
+            kos_task_t h = KOS_TASK_NONE;
+            ASSERT_EQ(create("peer0", &h), 0);
+            uint8_t const refs = kernel().notifies.refs()[slot];
+            int64_t const w = watch("peer0", note);
+            ASSERT_GE(w, 0);
+            EXPECT_EQ(kernel().notifies.refs()[slot], refs + 1u) << "the watch holds no reference";
+            {
+                IrqLock lock;
+                ASSERT_EQ(handle_close(c, static_cast<uint32_t>(w), lock), 0);
+            }
+            EXPECT_EQ(kernel().notifies.refs()[slot], refs);
+            EXPECT_TRUE(none_armed());
+            end(h);
+            EXPECT_EQ(pending(c, base), 0u) << "a closed watch raised";
+        }
+
+        TEST_F(ProgramCreate, the_watcher_s_death_sweeps_its_instance_watch_with_its_reference)
         {
             creator(AUTH_TASKS);
             Thread* const c = sched::current();
             kos_task_t h = KOS_TASK_NONE;
             ASSERT_EQ(create("peer0", &h), 0);
-            ASSERT_EQ(task_slay(h, 0), 0);
-            uint32_t const holds = kernel().task_holds;
-            g_dying = Dying{nullptr, nullptr, c, WAIT_NONE, nullptr, 0u, false};
-            wake_next_park(the_deadline_passes);
-            uint64_t const before = ktime_now();
-            kos_task_t again = KOS_TASK_NONE;
-            EXPECT_EQ(create("peer0", &again, deadline_in(1000000u)), -KOS_ETIMEDOUT);
-            EXPECT_EQ(g_dying.kind, WAIT_TASK_EMPTY);
-            EXPECT_GE(g_dying.deadline_ns, before + 1000000u) << "the deadline is not the timeout's";
-            EXPECT_EQ(again, KOS_TASK_NONE);
-            EXPECT_EQ(kernel().task_holds, holds) << "a create that timed out spent a task";
-            EXPECT_EQ(c->wait_kind, WAIT_NONE);
+            Thread* const w = seat_pool(5, PRIO_CREATOR);
+            join_task(w, task(1));
+            attach_caps(w, KICKOS_SEAM_CAP_WIDTH);
+            cap_seat_authority(w, AUTH_TASKS);
+            ASSERT_TRUE(w->mpu.add(reinterpret_cast<uintptr_t>(&g_block), sizeof(g_block),
+                                   ARCH_MPU_R | ARCH_MPU_W));
+            kernel().current(kickos_kernel_core()) = w;
+            uint32_t prog = KCAP_INVALID;
+            ASSERT_EQ(program_find_call(reinterpret_cast<uintptr_t>(text("app", 32)), &prog), 0);
+            uint32_t base = KCAP_INVALID;
+            uint32_t const note = note_for(w, 0u, false, &base);
+            int obj = 0;
+            {
+                IrqLock lock;
+                obj = cap_lookup(w, base)->obj;
+            }
+            ASSERT_GE(watch(w, "peer0", note, prog), 0);
+            run_exit(0);
+            kernel().current(kickos_kernel_core()) = c;
+            EXPECT_TRUE(none_armed()) << "the swept watch stays armed";
+            EXPECT_LT(kernel().notifies.live_index(obj), 0) << "the swept watch kept its reference";
         }
 
-        TEST_F(ProgramCreate, a_cancel_ends_a_wait_on_a_start_with_nothing_started)
+        TEST_F(ProgramCreate, a_full_table_refuses_an_instance_watch_and_spends_nothing)
         {
             creator(AUTH_TASKS);
             Thread* const c = sched::current();
+            uint32_t base = KCAP_INVALID;
+            uint32_t const note = note_for(c, 0u, false, &base);
             kos_task_t h = KOS_TASK_NONE;
             ASSERT_EQ(create("peer0", &h), 0);
-            ASSERT_EQ(task_slay(h, 0), 0);
-            uint32_t const holds = kernel().task_holds;
-            g_dying = Dying{nullptr, nullptr, c, WAIT_NONE, nullptr, 0u, false};
-            wake_next_park(the_creator_is_killed);
-            kos_task_t again = KOS_TASK_NONE;
-            EXPECT_EQ(create("peer0", &again, KOS_LIMIT_NONE), -KOS_ECANCELED);
-            EXPECT_EQ(g_dying.kind, WAIT_TASK_EMPTY);
-            EXPECT_EQ(again, KOS_TASK_NONE);
-            EXPECT_EQ(kernel().task_holds, holds) << "a cancelled create spent a task";
-            EXPECT_EQ(c->wait_kind, WAIT_NONE) << "the cancel left the wait edge";
+            while (true)
+            {
+                uint32_t copy = KCAP_INVALID;
+                if (notify_badge(c, base, 7u, &copy) != 0)
+                {
+                    break;
+                }
+            }
+            int obj = 0;
+            {
+                IrqLock lock;
+                obj = cap_lookup(c, base)->obj;
+            }
+            int const slot = kernel().notifies.live_index(obj);
+            uint8_t const refs = kernel().notifies.refs()[slot];
+            EXPECT_EQ(watch("peer0", note), -KOS_EMFILE);
+            EXPECT_EQ(kernel().notifies.refs()[slot], refs) << "a refused arm kept a reference";
+            EXPECT_TRUE(none_armed());
+        }
+
+        TEST_F(ProgramCreate, two_watchers_are_both_raised_and_the_second_create_finds_it_live)
+        {
+            creator(AUTH_TASKS);
+            Thread* const c = sched::current();
+            Thread* const c2 = seat_pool(5, PRIO_CREATOR);
+            join_task(c2, c->task);
+            attach_caps(c2, KICKOS_SEAM_CAP_WIDTH);
+            cap_seat_authority(c2, AUTH_TASKS);
+            ASSERT_TRUE(c2->mpu.add(reinterpret_cast<uintptr_t>(&g_block), sizeof(g_block),
+                                    ARCH_MPU_R | ARCH_MPU_W));
+            kernel().current(kickos_kernel_core()) = c2;
+            uint32_t prog2 = KCAP_INVALID;
+            ASSERT_EQ(program_find_call(reinterpret_cast<uintptr_t>(text("app", 32)), &prog2), 0);
+            kernel().current(kickos_kernel_core()) = c;
+            uint32_t base = KCAP_INVALID;
+            uint32_t base2 = KCAP_INVALID;
+            uint32_t const note = note_for(c, 1u, false, &base);
+            uint32_t const note2 = note_for(c2, 2u, false, &base2);
+            kos_task_t h = KOS_TASK_NONE;
+            ASSERT_EQ(create("peer0", &h), 0);
+            ASSERT_GE(watch("peer0", note), 0);
+            ASSERT_GE(watch(c2, "peer0", note2, prog2), 0);
+            end(h);
+            EXPECT_EQ(pending(c, base), 1u << 1);
+            EXPECT_EQ(pending(c2, base2), 1u << 2);
+            kos_task_t first = KOS_TASK_NONE;
+            EXPECT_EQ(create("peer0", &first), 0);
+            g_block.p.instance = text("peer0", 48);
+            g_block.out = KOS_TASK_NONE;
+            kernel().current(kickos_kernel_core()) = c2;
+            EXPECT_EQ(task_create_call(prog2, reinterpret_cast<uintptr_t>(&g_block.p),
+                                       reinterpret_cast<uintptr_t>(&g_block.out)),
+                      -KOS_EBUSY);
+            kernel().current(kickos_kernel_core()) = c;
+        }
+
+        TEST_F(ProgramCreate, an_instance_watch_is_refused_as_a_create_of_it_would_be)
+        {
+            creator(AUTH_TASKS);
+            Thread* const c = sched::current();
+            uint32_t base = KCAP_INVALID;
+            uint32_t const note = note_for(c, 4u, false, &base);
+            kos_task_t h = KOS_TASK_NONE;
+            ASSERT_EQ(create("peer0", &h), 0);
+            EXPECT_EQ(watch(nullptr, note), -KOS_EINVAL) << "no name";
+            uint32_t w = KCAP_INVALID;
+            EXPECT_EQ(watch_call(c, watch_spec(KOS_WATCH_INSTANCE, 0u), prog_, note,
+                                 reinterpret_cast<uintptr_t>(text("peer0", 40)), &w),
+                      -KOS_EINVAL)
+                << "no event: the close disarms";
+            EXPECT_EQ(watch(c, "peer0", note, note), -KOS_EBADF) << "no program";
+            EXPECT_EQ(watch_call(c, watch_spec(KOS_WATCH_INSTANCE, KOS_INSTANCE_STARTABLE), prog_,
+                                 note, 0x10u, &w),
+                      -KOS_EFAULT);
+            EXPECT_EQ(watch("peer", note), -KOS_ENOENT);
+            EXPECT_EQ(watch("main", note), -KOS_EPERM) << "an instance the init alone starts";
+            EXPECT_EQ(watch("peer1", note), -KOS_EPERM) << "a declared authority the caller lacks";
+            EXPECT_EQ(watch("peer0", KCAP_INVALID), -KOS_EBADF) << "no notification";
+            uint32_t waiter = KCAP_INVALID;
+            ASSERT_EQ(notify_badge(c, base, 6u, &waiter), 0);
+            {
+                IrqLock lock;
+                ASSERT_EQ(cap_narrow(c, waiter, CAP_WAIT, lock), 0);
+            }
+            EXPECT_EQ(watch("peer0", waiter), -KOS_EACCES) << "a notification capability without SIGNAL";
+            EXPECT_TRUE(none_armed());
+        }
+
+        TEST_F(ProgramCreate, an_instance_watch_asks_the_task_authority_of_its_caller)
+        {
+            creator(AUTH_IRQ);
+            uint32_t const note = note_for(sched::current(), 0u, false);
+            EXPECT_EQ(watch("peer0", note), -KOS_EPERM);
+        }
+
+        TEST_F(ProgramCreate, an_instance_watch_on_a_declaration_that_started_once_is_refused)
+        {
+            creator(AUTH_TASKS, 0, 0);
+            uint32_t const note = note_for(sched::current(), 0u, false);
+            kos_task_t h = KOS_TASK_NONE;
+            ASSERT_EQ(create("main", &h), 0);
+            EXPECT_EQ(watch("main", note), -KOS_EPERM) << "while it runs";
+            end(h);
+            EXPECT_EQ(watch("main", note), -KOS_EPERM) << "once dead";
         }
 
         // A creator above a medium thread that keeps the CPU waits on a member below both: the
@@ -758,10 +1087,11 @@ namespace kickos
             static constexpr int SLOT_SPIN = 6;
             static constexpr int SLOT_OWNER = 7;
 
-            // peer0 slain with its entry still to run its exit, and a spinner ready.
-            void dying_with_spinner()
+            // peer0 stopped with its entry still to run its exit, the creator keeping its hold,
+            // and a spinner ready; or, where `stop` does not hold, peer0 live.
+            void dying_with_spinner(bool stop = true, uint32_t authority = AUTH_TASKS)
             {
-                creator(AUTH_TASKS);
+                creator(authority);
                 c_ = sched::current();
                 ASSERT_EQ(create("peer0", &h_), 0);
                 e_ = entry_of(h_);
@@ -769,8 +1099,11 @@ namespace kickos
                 {
                     IrqLock lock;
                     record_ = task_resolve(h_);
+                    if (stop)
+                    {
+                        task_stop(record_, lock);
+                    }
                 }
-                ASSERT_EQ(task_slay(h_, 0), 0);
                 spin_ = seat_pool(SLOT_SPIN, PRIO_SPIN);
                 g_dying = Dying{record_, e_, c_, WAIT_NONE, nullptr, 0u, false};
                 g_lent = Lent{nullptr, 0u, 0u, 0u};
@@ -780,6 +1113,15 @@ namespace kickos
                 ASSERT_LT(PRIO_SPIN, PRIO_CREATOR);
             }
 
+            // The creator waits on an INSTANCE watch of peer0, which stops nothing: the members'
+            // own waits stand while it lends.
+            int64_t watch_wait()
+            {
+                uint32_t const note = note_for(c_, 9u, true);
+                EXPECT_GE(watch("peer0", note), 0);
+                return notify_wait(c_, 1u << 9, deadline_in(1000000u));
+            }
+
             Thread* c_ = nullptr;
             Thread* e_ = nullptr;
             Thread* spin_ = nullptr;
@@ -787,12 +1129,11 @@ namespace kickos
             kos_task_t h_ = KOS_TASK_NONE;
         };
 
-        TEST_F(DeathLend, a_wait_on_a_start_lends_its_priority_so_the_dying_member_outruns_a_spinner)
+        TEST_F(DeathLend, a_wait_on_a_death_lends_its_priority_so_the_dying_member_outruns_a_spinner)
         {
             dying_with_spinner();
             wake_next_park(the_member_dies_if_it_runs);
-            kos_task_t again = KOS_TASK_NONE;
-            EXPECT_EQ(create("peer0", &again, deadline_in(1000000u)), 0) << "the spinner starved the death";
+            EXPECT_EQ(task_slay(h_, deadline_in(1000000u)), 0) << "the spinner starved the death";
             EXPECT_EQ(g_lent.ran, e_) << "the switch away from the waiter chose another thread";
             EXPECT_EQ(g_lent.member_prio, PRIO_CREATOR);
             EXPECT_EQ(g_lent.member_recomputed, PRIO_CREATOR)
@@ -822,8 +1163,7 @@ namespace kickos
         {
             dying_with_spinner();
             wake_next_park(the_deadline_passes_lent);
-            kos_task_t again = KOS_TASK_NONE;
-            EXPECT_EQ(create("peer0", &again, deadline_in(1000000u)), -KOS_ETIMEDOUT);
+            EXPECT_EQ(task_slay(h_, deadline_in(1000000u)), -KOS_ETIMEDOUT);
             EXPECT_EQ(g_lent.member_prio, PRIO_CREATOR) << "fixture: nothing was lent";
             EXPECT_EQ(e_->prio, PRIO_PEER) << "the member keeps the priority of a waiter gone";
             EXPECT_TRUE(kernel().death_waiters.empty());
@@ -833,8 +1173,7 @@ namespace kickos
         {
             dying_with_spinner();
             wake_next_park(the_creator_is_killed_lent);
-            kos_task_t again = KOS_TASK_NONE;
-            EXPECT_EQ(create("peer0", &again, KOS_LIMIT_NONE), -KOS_ECANCELED);
+            EXPECT_EQ(task_slay(h_, KOS_LIMIT_NONE), -KOS_ECANCELED);
             EXPECT_EQ(g_lent.member_prio, PRIO_CREATOR) << "fixture: nothing was lent";
             EXPECT_EQ(e_->prio, PRIO_PEER) << "the member keeps the priority of a waiter gone";
             EXPECT_TRUE(kernel().death_waiters.empty());
@@ -855,8 +1194,7 @@ namespace kickos
             ASSERT_EQ(owner->prio, PRIO_PEER) << "fixture: the member lends the owner nothing";
             g_owner = owner;
             wake_next_park(the_deadline_passes_lent);
-            kos_task_t again = KOS_TASK_NONE;
-            EXPECT_EQ(create("peer0", &again, deadline_in(1000000u)), -KOS_ETIMEDOUT);
+            EXPECT_EQ(watch_wait(), -KOS_ETIMEDOUT);
             EXPECT_EQ(g_lent.member_prio, PRIO_CREATOR);
             EXPECT_EQ(g_lent.owner_prio, PRIO_CREATOR) << "the lend stops at the member's mutex";
             EXPECT_EQ(owner->prio, PRIO_PEER) << "the owner keeps a lend the waiter took back";
@@ -892,8 +1230,7 @@ namespace kickos
             ASSERT_LT(e3_before, PRIO_CREATOR) << "fixture: the far member is lent to already";
             g_owner = e3;
             wake_next_park(the_deadline_passes_lent);
-            kos_task_t again = KOS_TASK_NONE;
-            EXPECT_EQ(create("peer0", &again, deadline_in(1000000u)), -KOS_ETIMEDOUT);
+            EXPECT_EQ(watch_wait(), -KOS_ETIMEDOUT);
             EXPECT_EQ(g_lent.owner_prio, PRIO_CREATOR)
                 << "the lend stops before the second death edge";
             EXPECT_EQ(e3->prio, e3_before) << "the far member keeps a lend the waiter took back";
@@ -921,8 +1258,7 @@ namespace kickos
                 ASSERT_EQ(e_->prio, PRIO_SPIN) << "fixture: the second waiter lends nothing";
                 g_two = TwoWaiters{second, second_first, 0u, 0u};
                 wake_next_park(two_waiters_leave);
-                kos_task_t again = KOS_TASK_NONE;
-                EXPECT_EQ(create("peer0", &again, deadline_in(1000000u)), -KOS_ETIMEDOUT);
+                EXPECT_EQ(task_slay(h_, deadline_in(1000000u)), -KOS_ETIMEDOUT);
                 EXPECT_EQ(g_two.with_both, PRIO_CREATOR);
                 if (second_first)
                 {
@@ -1026,7 +1362,10 @@ namespace kickos
             Thread* const m2 = seat_pool(SLOT_OWNER + 4, 2);
             attach_caps(m2, KICKOS_SEAM_CAP_WIDTH);
             join_task(m2, record_);
-            ASSERT_EQ(task_slay(h_, 0), 0);
+            {
+                IrqLock lock;
+                task_stop(record_, lock);
+            }
             g_dying = Dying{record_, e_, c_, WAIT_NONE, nullptr, 0u, false};
             g_lent = Lent{nullptr, 0u, 0u, 0u};
             static uint32_t w1 = 0;
@@ -1060,8 +1399,7 @@ namespace kickos
             ASSERT_LT(m4_before, PRIO_CREATOR) << "fixture: t2's thread is lent to already";
             g_owner = m4;
             wake_next_park(the_deadline_passes_lent);
-            kos_task_t again = KOS_TASK_NONE;
-            EXPECT_EQ(create("peer0", &again, deadline_in(1000000u)), -KOS_ETIMEDOUT);
+            EXPECT_EQ(watch_wait(), -KOS_ETIMEDOUT);
             EXPECT_EQ(g_lent.owner_prio, PRIO_CREATOR) << "the lend did not reach t2 through t3";
             EXPECT_TRUE(kernel().death_dirty.empty());
             int waiters = 0;
@@ -1076,6 +1414,184 @@ namespace kickos
                 EXPECT_EQ(t->prio, thread_effective_prio(t)) << "thread " << t->id;
             }
             EXPECT_EQ(m4->prio, m4_before);
+        }
+
+        // The lend through an INSTANCE watch: the creator parked in its notification wait on the
+        // watch's bit, peer0 ended with its entry still to die below a spinner.
+        class WatchLend : public DeathLend
+        {
+          protected:
+            static constexpr uint32_t BIT = 9;
+
+            void watching()
+            {
+                dying_with_spinner();
+                note_ = note_for(c_, BIT, true, &base_);
+                ASSERT_GE(watch("peer0", note_), 0);
+            }
+
+            int64_t wait(uint32_t mask)
+            {
+                return notify_wait(c_, mask, deadline_in(1000000u));
+            }
+
+            uint32_t note_ = KCAP_INVALID;
+            uint32_t base_ = KCAP_INVALID;
+        };
+
+        TEST_F(WatchLend, a_wait_on_an_instance_watch_lends_its_priority_so_the_member_outruns_a_spinner)
+        {
+            watching();
+            wake_next_park(the_member_dies_watched);
+            EXPECT_EQ(wait(1u << BIT), notify_wait_bits(1u << BIT)) << "the spinner starved the death";
+            EXPECT_EQ(g_lent.ran, e_) << "the switch away from the waiter chose another thread";
+            EXPECT_EQ(g_lent.member_prio, PRIO_CREATOR);
+            EXPECT_EQ(g_lent.member_recomputed, PRIO_CREATOR)
+                << "a recompute of the member's priority drops the lend";
+            kos_task_t next = KOS_TASK_NONE;
+            EXPECT_EQ(create("peer0", &next), 0);
+        }
+
+        TEST_F(WatchLend, the_lend_ends_when_the_wait_leaves)
+        {
+            watching();
+            wake_next_park(the_deadline_passes_lent);
+            EXPECT_EQ(wait(1u << BIT), -KOS_ETIMEDOUT);
+            EXPECT_EQ(g_lent.member_prio, PRIO_CREATOR) << "fixture: nothing was lent";
+            EXPECT_EQ(e_->prio, PRIO_PEER) << "the member keeps the priority of a wait gone";
+        }
+
+        TEST_F(WatchLend, the_lend_ends_when_the_watch_is_closed)
+        {
+            watching();
+            uint32_t w = KCAP_INVALID;
+            {
+                IrqLock lock;
+                for (uint32_t i = KICKOS_CAP_FIRST_DYNAMIC; i < thread_cap_capacity(c_); i++)
+                {
+                    if (cap_slot(c_->caps, i)->type == static_cast<uint8_t>(CapType::CAP_WATCH))
+                    {
+                        w = (static_cast<uint32_t>(cap_slot(c_->caps, i)->gen) << KCAP_INDEX_BITS) | i;
+                    }
+                }
+            }
+            ASSERT_NE(w, KCAP_INVALID);
+            g_watch_cap = w;
+            wake_next_park(the_watch_closes_lent);
+            EXPECT_EQ(wait(1u << BIT), -KOS_ETIMEDOUT);
+            EXPECT_EQ(g_lent.member_prio, PRIO_CREATOR) << "fixture: nothing was lent";
+            EXPECT_EQ(g_closed_prio, PRIO_PEER) << "the member keeps the lend of a closed watch";
+        }
+
+        TEST_F(WatchLend, a_wait_whose_mask_excludes_the_watch_s_bit_lends_nothing)
+        {
+            watching();
+            wake_next_park(the_deadline_passes_lent);
+            EXPECT_EQ(wait(1u << (BIT + 1u)), -KOS_ETIMEDOUT);
+            EXPECT_EQ(g_lent.member_prio, PRIO_PEER) << "a bit the wait does not accept lent";
+            EXPECT_EQ(g_lent.ran, spin_);
+        }
+
+        TEST_F(WatchLend, the_lend_falls_with_the_waiter_s_priority)
+        {
+            watching();
+            static uint32_t word = 0;
+            Thread* const high = seat_pool(SLOT_OWNER, PRIO_CREATOR + 3u);
+            {
+                IrqLock lock;
+                park_mutex_waiter(high, own_mutex(c_, &word));
+                pi_settle(c_, lock);
+            }
+            ASSERT_EQ(c_->prio, PRIO_CREATOR + 3u) << "fixture: the waiter is not raised";
+            g_mutex_waiter = high;
+            wake_next_park(the_waiter_falls_lent);
+            EXPECT_EQ(wait(1u << BIT), -KOS_ETIMEDOUT);
+            EXPECT_EQ(g_lent.member_prio, PRIO_CREATOR + 3u) << "fixture: the raised waiter lent less";
+            EXPECT_EQ(g_closed_prio, PRIO_CREATOR) << "the member kept the waiter's former priority";
+        }
+
+        // Every wake of the waiter ends what it lends before it runs: left lent, the member would
+        // hold the woken waiter off at the waiter's own priority.
+        TEST_F(WatchLend, a_raise_from_another_source_ends_the_lend_before_the_waiter_runs)
+        {
+            watching();
+            g_woken_prio = 0;
+            wake_next_park(another_source_raises_lent);
+            EXPECT_EQ(wait((1u << BIT) | (1u << OTHER_BIT)), notify_wait_bits(1u << OTHER_BIT));
+            EXPECT_EQ(g_lent.member_prio, PRIO_CREATOR) << "fixture: nothing was lent";
+            EXPECT_EQ(g_woken_prio, PRIO_PEER) << "the member kept the lend of a woken waiter";
+        }
+
+        TEST_F(WatchLend, the_deadline_ends_the_lend_before_the_waiter_runs)
+        {
+            watching();
+            g_woken_prio = 0;
+            wake_next_park(the_deadline_passes_read);
+            EXPECT_EQ(wait(1u << BIT), -KOS_ETIMEDOUT);
+            EXPECT_EQ(g_lent.member_prio, PRIO_CREATOR) << "fixture: nothing was lent";
+            EXPECT_EQ(g_woken_prio, PRIO_PEER) << "the member kept the lend past the deadline";
+        }
+
+        // Slain parked, the waiter never leaves its wait nor runs past its death point.
+        TEST_F(WatchLend, a_slay_of_the_parked_waiter_ends_the_lend_at_once)
+        {
+            watching();
+            g_woken_prio = 0;
+            wake_next_park(the_waiter_is_slain_read);
+            EXPECT_EQ(wait(1u << BIT), -KOS_ECANCELED);
+            EXPECT_EQ(g_lent.member_prio, PRIO_CREATOR) << "fixture: nothing was lent";
+            EXPECT_EQ(g_woken_prio, PRIO_PEER) << "the member kept the lend of a slain waiter";
+        }
+
+        TEST_F(WatchLend, the_lend_rises_with_the_waiter_s_priority)
+        {
+            watching();
+            static uint32_t word = 0;
+            Thread* const high = seat_pool(SLOT_OWNER, PRIO_CREATOR + 3u);
+            {
+                IrqLock lock;
+                park_mutex_waiter(high, own_mutex(c_, &word));
+            }
+            ASSERT_EQ(c_->prio, PRIO_CREATOR) << "fixture: the waiter is raised before it parks";
+            g_mutex_waiter = high;
+            wake_next_park(the_waiter_rises_lent);
+            EXPECT_EQ(wait(1u << BIT), -KOS_ETIMEDOUT);
+            EXPECT_EQ(g_lent.member_prio, PRIO_CREATOR) << "fixture: nothing was lent";
+            EXPECT_EQ(g_closed_prio, PRIO_CREATOR + 3u) << "the member missed the waiter's raise";
+        }
+
+        TEST_F(WatchLend, a_task_watch_on_a_live_task_lends_nothing)
+        {
+            dying_with_spinner(false);
+            uint32_t const note = note_for(c_, BIT, true);
+            ASSERT_EQ(watch_call(c_, watch_spec(KOS_WATCH_TASK, KOS_TASK_DEAD), h_, note, 0, nullptr), 0);
+            wake_next_park(the_deadline_passes_lent);
+            EXPECT_EQ(wait(1u << BIT), -KOS_ETIMEDOUT);
+            EXPECT_EQ(g_lent.member_prio, PRIO_PEER) << "a live task was lent to";
+        }
+
+        // The init's wait: every bit, a TASK watch on each task, one of them ended. Only that one
+        // is lent to.
+        TEST_F(WatchLend, a_wait_on_every_bit_lends_only_to_the_ended_task)
+        {
+            dying_with_spinner(true, AUTH_TASKS | AUTH_IRQ);
+            kos_task_t live = KOS_TASK_NONE;
+            ASSERT_EQ(create("peer1", &live), 0);
+            Thread* const other = entry_of(live);
+            ASSERT_NE(other, nullptr);
+            uint32_t base = KCAP_INVALID;
+            uint32_t const ended = note_for(c_, 1u, true, &base);
+            uint32_t live_note = KCAP_INVALID;
+            ASSERT_EQ(notify_badge(c_, base, 2u, &live_note), 0);
+            uint32_t const spec = watch_spec(KOS_WATCH_TASK, KOS_TASK_DEAD | KOS_TASK_ENDED);
+            ASSERT_EQ(watch_call(c_, spec, h_, ended, 0, nullptr), 0);
+            ASSERT_EQ(watch_call(c_, spec, live, live_note, 0, nullptr), 0);
+            ASSERT_EQ(wait(0xFFFFFFFFu), notify_wait_bits(1u << 1)) << "fixture: the end reported";
+            g_owner = other;
+            wake_next_park(the_deadline_passes_lent);
+            EXPECT_EQ(wait(0xFFFFFFFFu), -KOS_ETIMEDOUT);
+            EXPECT_EQ(g_lent.member_prio, PRIO_CREATOR) << "the ended task was not lent to";
+            EXPECT_EQ(g_lent.owner_prio, PRIO_PEER) << "the live task was lent to";
         }
 
         // The transitional calls and fields are gone: the numbers answer as unknown calls, and the

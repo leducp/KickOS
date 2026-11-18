@@ -3,8 +3,9 @@
 //
 // A scripted kernel for the init's walk: every kos_* call the walk makes, recorded, over a model
 // of the init's capability table, the objects it names, the tasks and threads it creates and the
-// blocks it reserves. A test scripts what each wait reports, the calls refused, and whether a
-// member's teardown sweep finishes, then reads the calls, the model and its peaks.
+// blocks it reserves. A test scripts what each wait reports, the calls refused, whether a member's
+// teardown sweep finishes and what is in the way of a create, then reads the calls, the model and
+// its peaks.
 //
 // A task's member that ends stops running at once and keeps what it holds until its sweep
 // finishes. The task's DEAD bit is set, and its watch raised, once every member is swept; a slay
@@ -55,7 +56,8 @@ namespace fake
         NOTIFY,
         ENDPOINT,
         LINE,
-        PROGRAM
+        PROGRAM,
+        WATCH // an INSTANCE watch
     };
 
     struct Object
@@ -65,9 +67,14 @@ namespace fake
         uint32_t pending; // a notification's raised bits
         int line;
         bool bound;       // a notification the init has bound
-        int64_t binding;  // a line's: the notification it raises, which it holds a reference on
+        int64_t binding;  // a line's or a watch's: the notification it raises, holding a reference on it
         uint32_t holders; // an endpoint's WAIT holders when last counted
         bool vacated;     // an endpoint whose WAIT holders fell to none, until a receiver next waits
+        // An INSTANCE watch's: the declaration it watches, the bit it raises on `binding`, and
+        // whether it has yet to raise it.
+        int decl = -1;
+        int bit = -1;
+        bool armed = false;
     };
 
     struct Cap
@@ -224,6 +231,11 @@ namespace fake
     void ready_all();
     // Raises `bit` of the init's notification with no task behind it.
     void raise_bit(uint32_t bit);
+    // A past incarnation of declaration `name` in the way of a create: the create answers
+    // -KOS_EAGAIN, and so does a claim of a line its table entry lists, until retired(name).
+    void retire(char const* name);
+    // What was in the way of `name` goes: each INSTANCE watch armed on it raises its bit, once.
+    void retired(char const* name);
 
     // Run on every call once recorded, before its result is decided.
     extern std::function<void(Call const&)> on_call;

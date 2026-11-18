@@ -79,10 +79,9 @@ namespace kickos
         bool has_windows = false;
         kos_thread_params params = {};
         kos_window windows[KICKOS_MAX_THREAD_WINDOWS] = {};
-        // A task create's, read the same way, and the instant its wait ends.
+        // A task create's, read the same way.
         bool has_task_params = false;
         kos_task_params task_params = {};
-        uint64_t task_until = 0;
         // Set when the first span is noted, cleared by a completed call of another thread
         // that mapped a noted frame: only a live record excuses the locked pass.
         bool live = false;

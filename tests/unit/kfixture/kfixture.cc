@@ -27,6 +27,7 @@
 #include <kickos/sched.h>
 #include <kickos/sync.h>
 #include <kickos/time.h>
+#include <kickos/watch.h>
 
 #include <kickos/sys/abi.h>
 #include <kickos/sys/errno.h>
@@ -48,6 +49,13 @@ __asm__(".weak __kickos_image_frames_end\n"
 
 namespace kickos
 {
+    // The INSTANCE watch's source half lives beside the create in syscall_thread.cc, which only
+    // the dispatch gates compile: here no program instance is nameable.
+    __attribute__((weak)) int instance_watch_source(Thread*, uint32_t, uintptr_t, size_t*)
+    {
+        return -KOS_ENOENT;
+    }
+
     namespace testfix
     {
         bool g_in_isr = false;

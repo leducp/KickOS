@@ -108,7 +108,7 @@ namespace
         c.t = driver();
         EXPECT_EQ(notify_create(c.t, &c.note), 0);
         c.line = claim_on(c.t, LINE_ONE, CORE_A);
-        EXPECT_EQ(watch_call(c.t, watch_spec(KOS_WATCH_IRQ, KOS_IRQ_FIRED), c.line, c.note, 0), 0);
+        EXPECT_EQ(watch_call(c.t, watch_spec(KOS_WATCH_IRQ, KOS_IRQ_FIRED), c.line, c.note, 0, nullptr), 0);
         EXPECT_EQ(notify_bind(c.t, c.note), 0);
         return c;
     }
@@ -167,7 +167,7 @@ TEST_F(IrqLineCore, a_bind_refuses_a_line_claimed_on_another_core)
     Chained const c = chain_on_core_a();
     uint32_t const other = claim_on(c.t, LINE_TWO, CORE_B);
 
-    EXPECT_EQ(watch_call(c.t, watch_spec(KOS_WATCH_IRQ, KOS_IRQ_FIRED), other, c.note, 0), -KOS_EPERM);
+    EXPECT_EQ(watch_call(c.t, watch_spec(KOS_WATCH_IRQ, KOS_IRQ_FIRED), other, c.note, 0, nullptr), -KOS_EPERM);
     IrqBinding const* const b = binding_of(c.t, other);
     ASSERT_NE(b, nullptr);
     EXPECT_EQ(b->notify, nullptr) << "a refused bind left the line attached";
@@ -179,7 +179,7 @@ TEST_F(IrqLineCore, a_bind_admits_a_second_line_claimed_on_the_same_core)
     Chained const c = chain_on_core_a();
     uint32_t const same = claim_on(c.t, LINE_TWO, CORE_A);
 
-    EXPECT_EQ(watch_call(c.t, watch_spec(KOS_WATCH_IRQ, KOS_IRQ_FIRED), same, c.note, 0), 0);
+    EXPECT_EQ(watch_call(c.t, watch_spec(KOS_WATCH_IRQ, KOS_IRQ_FIRED), same, c.note, 0, nullptr), 0);
 }
 
 // A released line leaves the chain, so a re-claim on another core is a new binding that binds
@@ -192,10 +192,10 @@ TEST_F(IrqLineCore, a_line_released_and_reclaimed_on_another_core_binds_afresh)
         ASSERT_EQ(handle_close(c.t, c.line, lock), 0);
     }
     uint32_t const again = claim_on(c.t, LINE_ONE, CORE_B);
-    ASSERT_EQ(watch_call(c.t, watch_spec(KOS_WATCH_IRQ, KOS_IRQ_FIRED), again, c.note, 0), 0);
+    ASSERT_EQ(watch_call(c.t, watch_spec(KOS_WATCH_IRQ, KOS_IRQ_FIRED), again, c.note, 0, nullptr), 0);
 
     uint32_t const stale = claim_on(c.t, LINE_TWO, CORE_A);
-    EXPECT_EQ(watch_call(c.t, watch_spec(KOS_WATCH_IRQ, KOS_IRQ_FIRED), stale, c.note, 0), -KOS_EPERM)
+    EXPECT_EQ(watch_call(c.t, watch_spec(KOS_WATCH_IRQ, KOS_IRQ_FIRED), stale, c.note, 0, nullptr), -KOS_EPERM)
         << "the chain's core did not move with its only signaller";
 }
 
@@ -347,7 +347,7 @@ TEST_F(IrqLineCore, a_raise_the_old_core_held_does_not_reach_a_reclaim_on_anothe
         ASSERT_EQ(handle_close(c.t, c.line, lock), 0);
     }
     uint32_t const again = claim_on(c.t, LINE_ONE, CORE_B);
-    ASSERT_EQ(watch_call(c.t, watch_spec(KOS_WATCH_IRQ, KOS_IRQ_FIRED), again, c.note, 0), 0);
+    ASSERT_EQ(watch_call(c.t, watch_spec(KOS_WATCH_IRQ, KOS_IRQ_FIRED), again, c.note, 0, nullptr), 0);
     c.t->affinity = 1u << CORE_B;
     ASSERT_EQ(irq_ack(c.t, again), 0);
 

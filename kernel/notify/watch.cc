@@ -7,6 +7,7 @@
 #include <kickos/irq.h>
 #include <kickos/irqlock.h>
 #include <kickos/notify.h>
+#include <kickos/start_watch.h>
 #include <kickos/task.h>
 
 #include <kickos/sys/abi.h>
@@ -21,9 +22,11 @@ namespace kickos
             0u,
             KOS_TASK_READY | KOS_TASK_DEAD | KOS_TASK_ENDED,
             KOS_IRQ_FIRED,
+            KOS_INSTANCE_STARTABLE,
         };
         constexpr uint32_t WATCH_KIND_COUNT = sizeof(WATCH_EVENTS) / sizeof(WATCH_EVENTS[0]);
-        static_assert(KOS_WATCH_TASK == 1 and KOS_WATCH_IRQ == 2 and WATCH_KIND_COUNT == 3,
+        static_assert(KOS_WATCH_TASK == 1 and KOS_WATCH_IRQ == 2 and KOS_WATCH_INSTANCE == 3
+                          and WATCH_KIND_COUNT == 4,
                       "WATCH_EVENTS is indexed by enum kos_watch_kind");
         constexpr uint32_t WATCH_FLAGS_MASK = 0xFFu;
 
@@ -51,7 +54,7 @@ namespace kickos
             return 0;
         }
 
-        int watch_task(Thread* c, uint32_t events, uint32_t source, uint32_t notify_cap)
+        int watch_task(Thread* c, uint32_t events, uint32_t source, uint32_t notify_cap, Held held)
         {
             int err = 0;
             Task* const t = task_watch_source(c, static_cast<kos_task_t>(source), &err);
@@ -61,7 +64,7 @@ namespace kickos
             }
             if (events == 0)
             {
-                task_watch_disarm(t);
+                task_watch_disarm(t, held);
                 return 0;
             }
             if ((events & KOS_TASK_READY) != 0 and not task_watch_ready_named(t))
@@ -75,7 +78,7 @@ namespace kickos
             {
                 return rc;
             }
-            task_watch_arm(t, to.obj, to.bit, events);
+            task_watch_arm(t, to.obj, to.bit, events, held);
             return 0;
         }
 
@@ -103,9 +106,36 @@ namespace kickos
             }
             return irq_watch_arm(b, to.n, to.obj, to.bit);
         }
+
+        int watch_instance(Thread* c, uint32_t source, uint32_t notify_cap, uintptr_t arg,
+                           uint32_t* out_watch, Held held)
+        {
+            size_t decl = 0;
+            int const rc = instance_watch_source(c, source, arg, &decl);
+            if (rc != 0)
+            {
+                return rc;
+            }
+#if KICKOS_KERNEL_CORES > 1
+            // As the create's admission: a grace period that has elapsed is reclaimed first.
+            irq_retire_drain();
+#endif
+            if (task_decl_clear(decl, c))
+            {
+                return -KOS_EALREADY;
+            }
+            Target to{};
+            int const trc = target_of(c, notify_cap, &to);
+            if (trc != 0)
+            {
+                return trc;
+            }
+            return start_watch_arm(c, decl, to.obj, to.bit, out_watch, held);
+        }
     }
 
-    int watch_call(Thread* c, uint32_t spec, uintptr_t source, uint32_t notify_cap, uintptr_t arg)
+    int watch_call(Thread* c, uint32_t spec, uintptr_t source, uint32_t notify_cap, uintptr_t arg,
+                   uint32_t* out_watch)
     {
         uint32_t const kind = spec >> KOS_WATCH_KIND_SHIFT;
         uint32_t const flags = (spec >> KOS_WATCH_FLAGS_SHIFT) & WATCH_FLAGS_MASK;
@@ -119,11 +149,15 @@ namespace kickos
         {
             return -KOS_EINVAL;
         }
-        if (arg != 0)
+        if ((arg != 0) != (kind == KOS_WATCH_INSTANCE))
         {
             return -KOS_EINVAL;
         }
         if (events == 0 and kind == KOS_WATCH_TASK and notify_cap != KOS_CAP_NONE)
+        {
+            return -KOS_EINVAL;
+        }
+        if (events == 0 and kind == KOS_WATCH_INSTANCE)
         {
             return -KOS_EINVAL;
         }
@@ -137,11 +171,15 @@ namespace kickos
         {
             case KOS_WATCH_TASK:
             {
-                return watch_task(c, events, handle, notify_cap);
+                return watch_task(c, events, handle, notify_cap, lock);
             }
             case KOS_WATCH_IRQ:
             {
                 return watch_irq(c, events, handle, notify_cap);
+            }
+            case KOS_WATCH_INSTANCE:
+            {
+                return watch_instance(c, handle, notify_cap, arg, out_watch, lock);
             }
         }
         return -KOS_EINVAL;

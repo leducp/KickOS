@@ -19,6 +19,7 @@
 #include <kickos/klink.h>
 #include <kickos/kruntime.h>
 #include <kickos/sched.h>
+#include <kickos/start_watch.h>
 #include <kickos/task.h>
 #include <kickos/thread.h>
 
@@ -117,14 +118,17 @@ namespace kickos
             return static_cast<ThreadLink>(&r - &kernel().presync()[0] + 1);
         }
 
-        void presync_unstage(PresyncRecord& r)
+        // Whether this dropped a declaration's stager mark, which may have been the last thing in
+        // the way of a create of it.
+        bool presync_unstage(PresyncRecord& r)
         {
             if (r.staged != 0)
             {
                 frame_pool_free_run(r.staged, r.staged_pages, arch_aspace_granule());
             }
             ThreadLink* const stager = task_image_stager(image_stage_for(r));
-            if (stager != nullptr and *stager == presync_slot_link(r))
+            bool const marked = stager != nullptr and *stager == presync_slot_link(r);
+            if (marked)
             {
                 *stager = 0;
             }
@@ -133,6 +137,7 @@ namespace kickos
             r.stage = PresyncStage::NONE;
             r.staged_decl = 0;
             r.staged_full = false;
+            return marked;
         }
 
 #endif
@@ -653,7 +658,10 @@ namespace kickos
         }
         bool const entering = not r->active;
         presync_drop(*r);
-        presync_unstage(*r);
+        if (presync_unstage(*r))
+        {
+            start_watch_poke();
+        }
         r->noted.count = 0;
         r->edits.count = 0;
         r->refused = false;
@@ -722,10 +730,10 @@ namespace kickos
         *stager = presync_slot_link(*r);
     }
 
-    bool presync_image_staged_elsewhere(Task const* t)
+    bool presync_image_staged_elsewhere(Task const* t, Thread const* asker)
     {
         ThreadLink const* const stager = task_image_stager(t);
-        PresyncRecord const* const own = presync_record();
+        PresyncRecord const* const own = presync_of(asker);
         return stager != nullptr and *stager != 0
                and (own == nullptr or *stager != presync_slot_link(*own));
     }
@@ -837,26 +845,6 @@ namespace kickos
         r->edits.count = 0;
     }
 
-    void presync_park()
-    {
-        PresyncRecord* const r = presync_record();
-        if (r != nullptr and r->active)
-        {
-            presync_unstage(*r);
-        }
-    }
-
-    bool presync_round()
-    {
-        PresyncRecord* const r = presync_record();
-        if (r == nullptr or not r->active)
-        {
-            return false;
-        }
-        r->refused = true;
-        return true;
-    }
-
     bool presync_end()
     {
         PresyncRecord* const r = presync_record();
@@ -908,7 +896,10 @@ namespace kickos
         }
         IrqLock lock;
         r->staged = 0;
-        presync_unstage(*r);
+        if (presync_unstage(*r))
+        {
+            start_watch_poke();
+        }
     }
 
     uint32_t presync_task_staged(Task const* t, BudgetKind kind)
@@ -970,7 +961,10 @@ namespace kickos
             return;
         }
         presync_drop(*r);
-        presync_unstage(*r);
+        if (presync_unstage(*r))
+        {
+            start_watch_poke();
+        }
         r->noted.count = 0;
         r->edits.count = 0;
         r->refused = false;

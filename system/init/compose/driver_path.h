@@ -32,8 +32,9 @@ namespace kickos::init::driver_path
     // Creates packaged driver task `task` from its declaration, with its ring block, its endpoint
     // and the notification and doorbell this start makes at the places its table entry states,
     // its watch armed with `badged`, which the walk closes after; a console's handover is then
-    // narrowed and probed. Writes the task to *out, KOS_TASK_NONE for none, and answers 0, or
-    // nonzero for a failed start (1.6).
+    // narrowed and probed. Writes the task to *out, KOS_TASK_NONE for none, and answers 0, PARKED
+    // where a past incarnation is in the way and Walk::park armed its watch with `badged`, or
+    // another nonzero for a failed start (1.6).
     int start(Walk& walk, uint16_t task, kos_cap_t badged, kos_task_t* out);
 
     // Into the create of task `task`: the endpoint of each driver it runs, at the place its table

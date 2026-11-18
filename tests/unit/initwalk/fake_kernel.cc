@@ -47,6 +47,7 @@ namespace fake
         std::vector<Block> g_reservations;
         std::vector<Block> g_self_grants;
         uint32_t g_affinity = 0;
+        std::vector<uint16_t> g_retiring; // the declarations a past incarnation is in the way of
         std::string g_console;
         std::vector<kos_task_t> g_free_handles;
         int64_t g_stdout = -1;
@@ -188,7 +189,7 @@ namespace fake
             return g_objects.size() - 1u;
         }
 
-        // One reference to `object` goes; a line's last takes the binding's reference with it.
+        // One reference to `object` goes; a line's or a watch's last takes its binding's reference with it.
         void drop_ref(size_t object)
         {
             Object& o = g_objects[object];
@@ -343,6 +344,72 @@ namespace fake
             g_objects[object].refs++;
             g_table.push_back(Cap{g_next_cap, object, rights, badge});
             return g_next_cap;
+        }
+
+        // The emitted table's tasks, grants and strings.
+        kos_table_task const* table_tasks()
+        {
+            return reinterpret_cast<kos_table_task const*>(g_config.table + 1);
+        }
+
+        kos_table_grant const* table_grants()
+        {
+            return reinterpret_cast<kos_table_grant const*>(table_tasks() + g_config.table->task_count);
+        }
+
+        char const* table_strings()
+        {
+            auto const refs = reinterpret_cast<kos_table_ref const*>(table_grants() + g_config.table->grant_count);
+            auto const privs = reinterpret_cast<kos_table_priv const*>(refs + g_config.table->ref_count);
+            auto const regions = reinterpret_cast<kos_table_region const*>(privs + g_config.table->priv_count);
+            return reinterpret_cast<char const*>(regions + g_config.table->region_count);
+        }
+
+        // Declaration `name`'s index, or -1.
+        int declaration(char const* name)
+        {
+            if (g_config.table == nullptr)
+            {
+                return -1;
+            }
+            for (uint16_t i = 0; i < g_config.table->task_count; i++)
+            {
+                if (std::string{&table_strings()[table_tasks()[i].name]} == name)
+                {
+                    return i;
+                }
+            }
+            return -1;
+        }
+
+        bool retiring(int decl)
+        {
+            for (uint16_t d : g_retiring)
+            {
+                if (d == decl)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        // Whether `line` is one a declaration in the way lists.
+        bool line_retiring(int line)
+        {
+            for (uint16_t d : g_retiring)
+            {
+                kos_table_task const& t = table_tasks()[d];
+                for (uint16_t k = 0; k < t.grant_count; k++)
+                {
+                    kos_table_grant const& g = table_grants()[t.first_grant + k];
+                    if (g.kind == KOS_GRANT_LINE and g.line == line)
+                    {
+                        return true;
+                    }
+                }
+            }
+            return false;
         }
 
         Cap* find_cap(kos_cap_t cap)
@@ -627,6 +694,7 @@ namespace fake
         g_reservations.clear();
         g_self_grants.clear();
         g_affinity = 0u;
+        g_retiring.clear();
         g_console.clear();
         g_free_handles.clear();
         g_stdout = -1;
@@ -792,6 +860,40 @@ namespace fake
     void raise_bit(uint32_t bit)
     {
         g_objects[init_notification()].pending |= 1u << bit;
+    }
+
+    void retire(char const* name)
+    {
+        int const decl = declaration(name);
+        if (decl < 0)
+        {
+            throw Panic{std::string{"fake: no declaration "} + name};
+        }
+        if (not retiring(decl))
+        {
+            g_retiring.push_back(static_cast<uint16_t>(decl));
+        }
+    }
+
+    void retired(char const* name)
+    {
+        int const decl = declaration(name);
+        for (size_t i = 0; i < g_retiring.size(); i++)
+        {
+            if (g_retiring[i] == decl)
+            {
+                g_retiring.erase(g_retiring.begin() + static_cast<ptrdiff_t>(i));
+                break;
+            }
+        }
+        for (Object& o : g_objects)
+        {
+            if (o.kind == Kind::WATCH and o.decl == decl and o.refs != 0u and o.armed)
+            {
+                o.armed = false;
+                g_objects[static_cast<size_t>(o.binding)].pending |= 1u << o.bit;
+            }
+        }
     }
 
     std::vector<Call> const& calls()
@@ -1333,12 +1435,10 @@ int kos_program_find(char const* name, kos_program_t* out_prog)
 
 // kernel/syscall/syscall_thread.cc, task_create_call: the named declaration, an empty task from it,
 // and its entry thread spawned into it at the declared priority with the declared authority.
-int kos_task_create(kos_program_t prog, struct kos_task_params const* params, kos_monotonic_t until,
-                    kos_task_t* out_task)
+int kos_task_create(kos_program_t prog, struct kos_task_params const* params, kos_task_t* out_task)
 {
     size_t const call = record("kos_task_create", {reinterpret_cast<uintptr_t>(params->block), params->size, prog,
-                                                   params->cap_count, params->window_count, params->flags,
-                                                   static_cast<uint64_t>(until.ns)});
+                                                   params->cap_count, params->window_count, params->flags});
     if (params->instance != nullptr)
     {
         g_calls[call].text = params->instance;
@@ -1389,6 +1489,10 @@ int kos_task_create(kos_program_t prog, struct kos_task_params const* params, ko
         {
             return finish(call, -KOS_EBUSY);
         }
+    }
+    if (retiring(decl))
+    {
+        return finish(call, -KOS_EAGAIN);
     }
     // A delegated capability's position in the create's list is its grant's among the task's
     // grants that place one (tools/compose/kickos_compose/emit.py, render_decls).
@@ -1655,14 +1759,74 @@ static int watch_line(uint32_t events, uintptr_t source, kos_cap_t notify_cap)
     return 0;
 }
 
-int kos_watch(enum kos_watch_kind kind, uint32_t events, uintptr_t source, kos_cap_t notify_cap,
-              uintptr_t arg)
+// kernel/notify/watch.cc, the INSTANCE kind: armed only where a past incarnation is in the way.
+static int watch_instance(uint32_t events, uintptr_t source, kos_cap_t notify_cap, uintptr_t arg,
+                          kos_cap_t* out_watch)
 {
-    size_t const call = record("kos_watch", {kind, events, source, notify_cap, arg});
+    if (events == 0u or arg == 0u)
+    {
+        return -KOS_EINVAL;
+    }
+    Cap const* const program = find_cap(static_cast<kos_cap_t>(source));
+    if (program == nullptr or g_objects[program->object].kind != Kind::PROGRAM)
+    {
+        return -KOS_EBADF;
+    }
+    int const decl = declaration(reinterpret_cast<char const*>(arg));
+    if (decl < 0)
+    {
+        return -KOS_ENOENT;
+    }
+    if (not retiring(decl))
+    {
+        return -KOS_EALREADY;
+    }
+    Cap const* const note = find_cap(notify_cap);
+    if (note == nullptr or g_objects[note->object].kind != Kind::NOTIFY)
+    {
+        return -KOS_EBADF;
+    }
+    if ((note->rights & KOS_CAP_SIGNAL) == 0u)
+    {
+        return -KOS_EACCES;
+    }
+    if (table_full())
+    {
+        return -KOS_EMFILE;
+    }
+    size_t const notification = note->object;
+    int bit = 0;
+    if (note->badge >= 0)
+    {
+        bit = static_cast<int>(note->badge);
+    }
+    size_t const object = make(Kind::WATCH);
+    g_objects[object].decl = decl;
+    g_objects[object].bit = bit;
+    g_objects[object].armed = true;
+    g_objects[object].binding = static_cast<int64_t>(notification);
+    g_objects[notification].refs++;
+    *out_watch = install(object, 0u, -1);
+    return 0;
+}
+
+int kos_watch(enum kos_watch_kind kind, uint32_t events, uintptr_t source, kos_cap_t notify_cap,
+              uintptr_t arg, kos_cap_t* out_watch)
+{
+    // args[5] is the handle written at out_watch, KOS_CAP_NONE where none is.
+    size_t const call = record("kos_watch", {kind, events, source, notify_cap, arg, KOS_CAP_NONE});
+    if (out_watch != nullptr)
+    {
+        *out_watch = KOS_CAP_NONE;
+    }
     int const rc = scripted(call);
     if (rc != 1)
     {
         return finish(call, rc);
+    }
+    if (kind == KOS_WATCH_INSTANCE and out_watch == nullptr)
+    {
+        return finish(call, -KOS_EINVAL);
     }
     uint32_t defined = 0u;
     if (kind == KOS_WATCH_TASK)
@@ -1673,7 +1837,21 @@ int kos_watch(enum kos_watch_kind kind, uint32_t events, uintptr_t source, kos_c
     {
         defined = KOS_IRQ_FIRED;
     }
-    if (defined == 0u or (events & ~defined) != 0u or arg != 0u)
+    else if (kind == KOS_WATCH_INSTANCE)
+    {
+        defined = KOS_INSTANCE_STARTABLE;
+    }
+    if (defined == 0u or (events & ~defined) != 0u)
+    {
+        return finish(call, -KOS_EINVAL);
+    }
+    if (kind == KOS_WATCH_INSTANCE)
+    {
+        int const armed = watch_instance(events, source, notify_cap, arg, out_watch);
+        g_calls[call].args[5] = *out_watch;
+        return finish(call, armed);
+    }
+    if (arg != 0u)
     {
         return finish(call, -KOS_EINVAL);
     }
@@ -1780,6 +1958,10 @@ int kos_irq_claim(int line, unsigned int flags, kos_cap_t* out_cap)
         }
     }
     if (g_config.limits.task_lines != 0u and claimed >= g_config.limits.task_lines)
+    {
+        return finish(call, -KOS_EAGAIN);
+    }
+    if (line_retiring(line))
     {
         return finish(call, -KOS_EAGAIN);
     }

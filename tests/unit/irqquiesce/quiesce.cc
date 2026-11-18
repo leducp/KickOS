@@ -389,7 +389,7 @@ namespace
             // one object, reached through the real attach path.
             kickos::irqfix::the_notification()->pending = 0;
             ASSERT_EQ(kickos::watch_call(&g_claim_thread,
-                                         watch_spec(KOS_WATCH_IRQ, KOS_IRQ_FIRED), cap, 0u, 0),
+                                         watch_spec(KOS_WATCH_IRQ, KOS_IRQ_FIRED), cap, 0u, 0, nullptr),
                       0);
         }
 
@@ -913,7 +913,7 @@ namespace
                     // that bit does and the only half of the wait this arm is about.
                     bool ok = kickos::watch_call(&g_claim_thread,
                                                  watch_spec(KOS_WATCH_IRQ, KOS_IRQ_FIRED),
-                                                 again, 0u, 0)
+                                                 again, 0u, 0, nullptr)
                               == 0;
                     if (ok)
                     {

@@ -22,6 +22,7 @@
 
 namespace
 {
+    using harness::creates_of;
     using harness::Outcome;
 
     constexpr uint32_t KEPT = KOS_CAP_SIGNAL | KOS_CAP_TRANSFER | KOS_CAP_HANDOUT;
@@ -51,20 +52,6 @@ namespace
     uint64_t span_of(fake::Call const& c, size_t i)
     {
         return c.args.at(i) - c.at;
-    }
-
-    // The creates of task `name`, in order.
-    std::vector<fake::Call> creates_of(char const* name)
-    {
-        std::vector<fake::Call> out;
-        for (fake::Call const& c : fake::calls_of("kos_task_create"))
-        {
-            if (c.text == name)
-            {
-                out.push_back(c);
-            }
-        }
-        return out;
     }
 
     // The calls of the `n`-th start of `name`, from the two before its create, its notification's
@@ -230,18 +217,56 @@ namespace
             << "every notification a refused start made goes back";
     }
 
-    TEST_F(Driver, a_line_retiring_from_the_instance_before_is_waited_for_by_the_create)
+    TEST_F(Driver, a_create_answered_eagain_waits_on_the_instance_watch_then_starts_at_its_bit)
     {
         use("golden_xmc");
-        fake::script({step::ready_all()});
+        uint16_t const spi = harness::index_of(*system_, "spi0");
+        fake::retire("spi0");
+        fake::script({[this, spi]
+                      {
+                          EXPECT_EQ(harness::record(spi).phase, kickos::init::Phase::STARTWAIT);
+                          EXPECT_EQ(harness::watches_held(), 1u);
+                          EXPECT_TRUE(fake::spawned("spi0").empty());
+                          EXPECT_EQ(status("spi0").state, kickos::init::STATUS_ALIVE);
+                          EXPECT_EQ(status("sensor").state, kickos::init::STATUS_ALIVE);
+                          fake::retired("spi0");
+                      },
+                      step::ready_all(), step::ready_all()});
         Outcome const outcome = run();
         ASSERT_EQ(outcome.kind, Outcome::Kind::IDLE) << outcome.message;
         std::vector<fake::Call> const creates = creates_of("spi0");
-        ASSERT_EQ(creates.size(), 1u);
-        EXPECT_EQ(span_of(creates[0], 6),
-                  static_cast<uint64_t>(std::chrono::nanoseconds(kickos::init::START_WAIT).count()))
-            << "the start does not ask the kernel to wait out a line still retiring";
+        ASSERT_EQ(creates.size(), 2u) << "refused, then started at the bit";
+        std::vector<fake::Call> const watches = harness::instance_watches();
+        ASSERT_EQ(watches.size(), 1u);
+        EXPECT_EQ(watches[0].args[2], creates[0].args[2]) << "the program the create used";
+        EXPECT_EQ(fake::spawned("spi0").size(), 1u);
         EXPECT_EQ(status("spi0").deaths, 0u);
+        EXPECT_EQ(harness::watches_held(), 0u);
+        EXPECT_TRUE(fake::calls_of("kos_sleep_for").empty());
+        EXPECT_TRUE(fake::slays().empty());
+    }
+
+    TEST_F(Driver, a_second_eagain_after_nothing_in_the_way_is_a_failed_start)
+    {
+        use("golden_xmc");
+        fake::refuse_if("kos_task_create", -KOS_EAGAIN, 2,
+                        [](fake::Call const& c)
+                        {
+                            return c.text == "spi0";
+                        });
+        fake::script({step::ready_all(), step::ready_all()});
+        Outcome const outcome = run();
+        ASSERT_EQ(outcome.kind, Outcome::Kind::IDLE) << outcome.message;
+        std::vector<fake::Call> const watches = harness::instance_watches();
+        ASSERT_EQ(watches.size(), 1u);
+        EXPECT_EQ(watches[0].result, -KOS_EALREADY);
+        EXPECT_EQ(creates_of("spi0").size(), 3u) << "the create, its one retry, then the restart's";
+        EXPECT_EQ(status("spi0").deaths, 1u);
+        EXPECT_EQ(fake::spawned("spi0").size(), 1u);
+        EXPECT_NE(fake::console().find("init: `spi0` failed to start: the driver's start answered -11\n"),
+                  std::string::npos)
+            << fake::console();
+        EXPECT_TRUE(fake::calls_of("kos_sleep_for").empty());
     }
 
     TEST_F(Driver, a_driver_task_that_ends_is_restarted_through_its_declaration)
@@ -339,6 +364,44 @@ namespace
             << fake::console();
         EXPECT_EQ(status("console").deaths, 2u);
         EXPECT_EQ(status("console").state, 0u);
+    }
+
+    // The narrows of the init's capability on task `task`'s endpoint.
+    size_t endpoint_narrows(uint16_t task)
+    {
+        size_t n = 0;
+        for (fake::Call const& c : fake::calls_of("kos_cap_narrow"))
+        {
+            if (c.args[0] == harness::record(task).endpoint)
+            {
+                n++;
+            }
+        }
+        return n;
+    }
+
+    // A start that only waits on its instance's watch is no failed start: the init's endpoint
+    // keeps WAIT, and its one receiver holder with it, until the start that runs narrows it.
+    TEST_F(Driver, a_console_start_waiting_on_its_instance_watch_leaves_the_endpoint_whole)
+    {
+        use("golden_xmc");
+        uint16_t const console = harness::index_of(*system_, "console");
+        fake::retire("console");
+        fake::script({[console]
+                      {
+                          EXPECT_EQ(harness::record(console).phase, kickos::init::Phase::STARTWAIT);
+                          EXPECT_EQ(endpoint_narrows(console), 0u)
+                              << "a start that only waits narrowed the init's endpoint";
+                          fake::retired("console");
+                      },
+                      step::ready_all(), step::ready_all()});
+        Outcome const outcome = run();
+        ASSERT_EQ(outcome.kind, Outcome::Kind::IDLE) << outcome.message;
+        ASSERT_EQ(creates_of("console").size(), 2u) << "refused, then started at the bit";
+        EXPECT_EQ(endpoint_narrows(console), 1u) << "the start that ran narrows once";
+        fake::Cap const* const ep = console_endpoint();
+        ASSERT_NE(ep, nullptr);
+        EXPECT_EQ(ep->rights, KEPT);
     }
 
     TEST_F(Driver, a_handover_probe_that_is_not_taken_is_a_failed_start)

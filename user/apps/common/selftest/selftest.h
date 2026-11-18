@@ -195,13 +195,18 @@ namespace selftest
     static_assert(KICKOS_SELFTEST_PEERS >= 0 and KICKOS_SELFTEST_PEERS <= SELFTEST_PEERS);
     // The handle main holds on stpeer for the run, or KOS_CAP_NONE where no peer is declared.
     extern KICKOS_SELFTEST_LOCAL kos_program_t g_peer_prog;
+    // The bit a peer start's instance watch raises on the notification its creating thread is
+    // bound to: an arm passing that notification raises nothing else on it.
+    constexpr uint32_t PEER_START_BIT = 31;
     // Starts the lowest-numbered of peer0 to peer3 not live with `p` through `prog`, waiting out
     // one whose last incarnation is still dying instead of passing it, or p.instance, or for a
     // program declaring no peer0 its lowest-numbered instance not live; the create's answer,
     // -KOS_EBUSY where every peer is live, with *t. A handle is a thread's own: a thread other
-    // than main's finds its own.
+    // than main's finds its own. A calling thread bound to a notification passes it, unbadged, as
+    // `note`; one bound to none passes KOS_CAP_NONE, and a wait binds a notification of its own.
     KICKOS_SELFTEST_LOCAL int peer_start(kos_task_params const& p, kos_task_t* t,
-                                         kos_program_t prog = g_peer_prog);
+                                         kos_program_t prog = g_peer_prog,
+                                         kos_cap_t note = KOS_CAP_NONE);
     // The task's end status once it is dead, or PEER_UNDEAD past `bound_us`.
     constexpr int PEER_UNDEAD = -1000;
     KICKOS_SELFTEST_LOCAL int peer_dead_status(kos_task_t t, uint32_t bound_us = STALL_TOLERANT_US);
@@ -247,21 +252,28 @@ namespace selftest
             p.stack_size = size;
             return *this;
         }
+        // The notification the starting thread is bound to (peer_start).
+        PeerRun& bound(kos_cap_t n)
+        {
+            note = n;
+            return *this;
+        }
         int start(kos_task_t* t, kos_program_t prog = g_peer_prog)
         {
             p.argv = argv;
-            return peer_start(p, t, prog);
+            return peer_start(p, t, prog, note);
         }
-        // The create of `instance` alone, refused rather than waiting for its last incarnation.
+        // The create of `instance` alone.
         int try_start(char const* instance, kos_task_t* t, kos_program_t prog = g_peer_prog)
         {
             kos_task_params named = p;
             named.argv = argv;
             named.instance = instance;
-            return kos_task_create(prog, &named, KOS_POLL, t);
+            return kos_task_create(prog, &named, t);
         }
         char const* argv[6];
         kos_task_params p{};
+        kos_cap_t note = KOS_CAP_NONE;
     };
 #if KICKOS_SELFTEST_PEER
     // The entry of a peer as the arm's spawn of its worker ran it: at `prio`, on `core_mask`
@@ -924,6 +936,7 @@ namespace selftest
     KICKOS_SELFTEST_LOCAL void t_threads_reach_every_core();
     KICKOS_SELFTEST_LOCAL void t_irq_cross_core_wake();
     KICKOS_SELFTEST_LOCAL void t_irq_reclaim_stale_raise();
+    KICKOS_SELFTEST_LOCAL void t_irq_holder_restart();
     KICKOS_SELFTEST_LOCAL void t_reent_per_thread_cores();
 #if defined(__x86_64__)
     KICKOS_SELFTEST_LOCAL void t_fp_enabled_every_core();

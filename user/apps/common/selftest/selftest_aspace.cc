@@ -413,7 +413,7 @@ namespace selftest
             p.argv = nop;
             p.block = reinterpret_cast<void*>(guard);
             p.size = static_cast<uint32_t>(pages * g);
-            last = kos_task_create(prog, &p, KOS_POLL, &t);
+            last = kos_task_create(prog, &p, &t);
             if (last == 0)
             {
                 admitted++;
@@ -435,7 +435,7 @@ namespace selftest
             p.argv = nop;
             p.block = mine;
             p.size = SNP_BLK;
-            rep->w[4] = kos_task_create(prog, &p, KOS_POLL, &ok);
+            rep->w[4] = kos_task_create(prog, &p, &ok);
             rep->w[5] = kos_task_slay(ok, after_us(STALL_TOLERANT_US));
         }
         (void)kos_handle_close(prog);
@@ -798,7 +798,7 @@ namespace selftest
         p.caps = caps;
         p.cap_count = 5;
         kos_task_t t = KOS_TASK_NONE;
-        if (kos_task_create(prog, &p, KOS_POLL, &t) == 0)
+        if (kos_task_create(prog, &p, &t) == 0)
         {
             uint32_t bits = 0;
             (void)kos_notify_wait(~0u, KOS_NEVER, &bits);
@@ -845,8 +845,9 @@ namespace selftest
         kos_cap_grant caps[] = {{ep, KOS_CAP_SIGNAL | KOS_CAP_TRANSFER},
                                 {gate, KOS_CAP_WAIT | KOS_CAP_TRANSFER},
                                 {run, KOS_CAP_TRANSFER}};
-        TAP_CHECK(PeerRun("sdc").caps(caps, 3).start(&t) == 0);
-        TAP_CHECK(kos_watch(KOS_WATCH_TASK, KOS_TASK_ENDED | KOS_TASK_DEAD, t, note, 0) == 0);
+        TAP_CHECK(PeerRun("sdc").caps(caps, 3).bound(note).start(&t) == 0);
+        TAP_CHECK(kos_watch(KOS_WATCH_TASK, KOS_TASK_ENDED | KOS_TASK_DEAD, t, note, 0, nullptr)
+                  == 0);
         // From here no return until the grandchild is released.
         int32_t alive = 1;
         int32_t dead = 1;
@@ -1398,7 +1399,7 @@ namespace selftest
         p.caps = caps;
         p.cap_count = 1;
         kos_task_t tb = KOS_TASK_NONE;
-        int const created = kos_task_create(prog, &p, KOS_POLL, &tb);
+        int const created = kos_task_create(prog, &p, &tb);
         (void)kos_handle_close(prog);
         if (created != 0)
         {
@@ -1708,7 +1709,7 @@ namespace selftest
             kos_task_t t = KOS_TASK_NONE;
             rep[LR_SPACES0] = mem_count(KOS_MEM_SPACES_HELD);
             rep[LR_FRAMES0] = mem_count(KOS_MEM_FRAMES_FREE);
-            int rc = kos_task_create(prog, &p, KOS_POLL, &t);
+            int rc = kos_task_create(prog, &p, &t);
             rep[LR_RC] = static_cast<uint64_t>(static_cast<uint32_t>(-rc));
             if (rc == 0)
             {
@@ -1799,7 +1800,7 @@ namespace selftest
             p.cap_dest = &dest;
             p.cap_count = 1;
             kos_task_t t = KOS_TASK_NONE;
-            rc = kos_task_create(prog, &p, KOS_POLL, &t);
+            rc = kos_task_create(prog, &p, &t);
             if (rc == 0)
             {
                 (void)kos_task_slay(t, after_us(STALL_TOLERANT_US));
@@ -2091,11 +2092,13 @@ namespace selftest
         kos_cap_grant const ccaps[1] = {{ep, KOS_CAP_SIGNAL}};
         PeerHex const at_a = peer_hex(reinterpret_cast<uintptr_t>(ba));
         PeerHex const at_b = peer_hex(reinterpret_cast<uintptr_t>(bb));
-        TAP_CHECK(PeerRun(server, at_a.s).caps(scaps, 2).block(ba, PI_BLK).start(&ta) == 0);
+        TAP_CHECK(PeerRun(server, at_a.s).caps(scaps, 2).block(ba, PI_BLK).bound(seated).start(&ta)
+                  == 0);
         uint32_t bits = 0;
         TAP_CHECK(kos_notify_wait(~0u, after_us(STALL_TOLERANT_US), &bits) == 0);
         TAP_CHECK(await_pinned_park());
-        TAP_CHECK(PeerRun(client, at_b.s).caps(ccaps, 1).block(bb, PI_BLK).start(&tb) == 0);
+        TAP_CHECK(PeerRun(client, at_b.s).caps(ccaps, 1).block(bb, PI_BLK).bound(seated).start(&tb)
+                  == 0);
         TAP_CHECK(peer_dead_status(ta) == 0 and peer_dead_status(tb) == 0);
         TAP_CHECK(task_end(&ta) == 0 and task_end(&tb) == 0);
         run->oa = sa;

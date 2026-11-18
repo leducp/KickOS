@@ -209,6 +209,7 @@ namespace kickos::init
             r.ready = KOS_TASK_NONE;
             r.endpoint = KOS_CAP_NONE;
             r.notify = KOS_CAP_NONE;
+            r.startwait = KOS_CAP_NONE;
             r.block = nullptr;
             r.status = nullptr;
             r.deaths = 0u;
@@ -378,7 +379,34 @@ namespace kickos::init
         {
             events = events | KOS_TASK_READY;
         }
-        return kos_watch(KOS_WATCH_TASK, events, handle, copy, 0);
+        return kos_watch(KOS_WATCH_TASK, events, handle, copy, 0, nullptr);
+    }
+
+    int Walk::park(uint16_t i, kos_program_t program, kos_cap_t copy)
+    {
+        kos_cap_t watch = KOS_CAP_NONE;
+        int const rc = kos_watch(KOS_WATCH_INSTANCE, KOS_INSTANCE_STARTABLE, program, copy,
+                                 reinterpret_cast<uintptr_t>(name(i)), &watch);
+        if (rc == -KOS_EALREADY)
+        {
+            return 0;
+        }
+        if (rc != 0)
+        {
+            return rc;
+        }
+        record(i).startwait = watch;
+        return PARKED;
+    }
+
+    void Walk::unpark(uint16_t i)
+    {
+        TaskRecord& r = record(i);
+        if (r.startwait != KOS_CAP_NONE)
+        {
+            close(r.startwait, "kos_handle_close of the instance watch", i);
+            r.startwait = KOS_CAP_NONE;
+        }
     }
 
     bool Walk::serving(uint16_t i)
@@ -473,6 +501,11 @@ namespace kickos::init
             release(s);
             step = s.step;
         }
+        if (rc == PARKED)
+        {
+            r.phase = Phase::STARTWAIT;
+            return;
+        }
         if (rc != 0)
         {
             failed(i, handle, step, rc);
@@ -509,7 +542,7 @@ namespace kickos::init
                 s.pinned = true;
             }
             s.step = "kos_irq_claim";
-            int const rc = claim(g.line, &s.lines[s.line_count]);
+            int const rc = claim(s, g.line, &s.lines[s.line_count]);
             if (rc != 0)
             {
                 return rc;
@@ -541,21 +574,38 @@ namespace kickos::init
         return 0;
     }
 
-    int Walk::claim(uint16_t line, kos_cap_t* out)
+    int Walk::claim(Start& s, uint16_t line, kos_cap_t* out)
     {
-        uint32_t retries = 0;
-        while (true)
+        // The table carries no trigger, so a user task takes its lines edge-triggered.
+        int rc = kos_irq_claim(line, KOS_IRQ_EDGE, out);
+        if (rc != -KOS_EAGAIN)
         {
-            // The table carries no trigger, so a user task takes its lines edge-triggered.
-            int const rc = kos_irq_claim(line, KOS_IRQ_EDGE, out);
-            if (rc != -KOS_EAGAIN or retries == CLAIM_RETRIES)
+            return rc;
+        }
+        // A line the last incarnation held retires with its record, which the watch reports.
+        kos_table_task const& t = tasks_[s.task];
+        kos_program_t program = program_;
+        if (t.program != KOS_TABLE_NO_STRING)
+        {
+            s.step = "kos_program_find";
+            rc = kos_program_find(strings_ + t.program, &program);
+            if (rc != 0)
             {
                 return rc;
             }
-            // The line is retiring from its last holder.
-            retries++;
-            kos::sleep_for(CLAIM_RETRY);
         }
+        s.step = "kos_watch";
+        rc = park(s.task, program, s.copy);
+        if (t.program != KOS_TABLE_NO_STRING)
+        {
+            (void)kos_handle_close(program);
+        }
+        if (rc != 0)
+        {
+            return rc;
+        }
+        s.step = "kos_irq_claim";
+        return kos_irq_claim(line, KOS_IRQ_EDGE, out);
     }
 
     int Walk::create(Start& s)
@@ -660,18 +710,30 @@ namespace kickos::init
             p.stack_size = t.stack;
         }
         // A program task runs the program its record names, found for this create alone.
-        if (t.program == KOS_TABLE_NO_STRING)
+        kos_program_t program = program_;
+        if (t.program != KOS_TABLE_NO_STRING)
         {
-            return kos_task_create(program_, &p, kos::after(START_WAIT), &s.handle);
+            int const found = kos_program_find(strings_ + t.program, &program);
+            if (found != 0)
+            {
+                return found;
+            }
         }
-        kos_program_t program = KOS_CAP_NONE;
-        int rc = kos_program_find(strings_ + t.program, &program);
-        if (rc != 0)
+        int rc = kos_task_create(program, &p, &s.handle);
+        if (rc == -KOS_EAGAIN)
         {
-            return rc;
+            s.step = "kos_watch";
+            rc = park(s.task, program, s.copy);
+            if (rc == 0)
+            {
+                s.step = "kos_task_create";
+                rc = kos_task_create(program, &p, &s.handle);
+            }
         }
-        rc = kos_task_create(program, &p, kos::after(START_WAIT), &s.handle);
-        (void)kos_handle_close(program);
+        if (t.program != KOS_TABLE_NO_STRING)
+        {
+            (void)kos_handle_close(program);
+        }
         return rc;
     }
 
@@ -732,11 +794,18 @@ namespace kickos::init
         for (uint16_t i = 0; i < header_->task_count; i++)
         {
             TaskRecord& r = record(i);
-            if (r.handle == KOS_TASK_NONE)
+            if (((bits >> (i % 32u)) & 1u) == 0u)
             {
                 continue;
             }
-            if (((bits >> (i % 32u)) & 1u) == 0u)
+            // The bit may be another source's, and a start answered -KOS_EAGAIN again re-arms.
+            if (r.phase == Phase::STARTWAIT)
+            {
+                unpark(i);
+                r.phase = Phase::WAITING;
+                continue;
+            }
+            if (r.handle == KOS_TASK_NONE)
             {
                 continue;
             }
@@ -918,7 +987,7 @@ namespace kickos::init
         for (uint16_t i = 0; i < header_->task_count; i++)
         {
             TaskRecord& r = record(i);
-            if (r.phase != Phase::WAITING)
+            if (r.phase != Phase::WAITING and r.phase != Phase::STARTWAIT)
             {
                 continue;
             }
@@ -927,6 +996,7 @@ namespace kickos::init
             {
                 if (dead_for_good(record(refs_[t.first_use + k].task).phase))
                 {
+                    unpark(i);
                     r.phase = Phase::DOWN;
                     write_status(i);
                     tell(i);

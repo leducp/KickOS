@@ -87,9 +87,6 @@ namespace kickos
         WAIT_TASK_EMPTY,
         WAIT_CONSOLE,    // wait_obj: none; queue-less, a user kernel console write waiting to offer again
         WAIT_WORD,       // wait_obj: the word's PLAIN WordRecord; on its waiters
-        // wait_obj: none; on Kernel::retire_waiters, wait_queue null, until a released IRQ
-        // binding's grace period ends
-        WAIT_RETIRE,
     };
 
     // Has this thread been asked to die, and how. Zero == CANCEL_NONE, so the thread_create

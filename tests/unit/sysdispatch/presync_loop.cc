@@ -5,8 +5,11 @@
 // syscall_thread.cc on the translating posture: the round the dispatch sends a call through
 // again when its record drops, what another thread's call completed in an interrupt window
 // does to it, what a slain or a refused call leaves behind, and the syncs each mapping call
-// owes. The window is the seam's: a case acts there as the thread an interrupt would wake.
+// owes. The window is the seam's: a case acts there as the thread an interrupt would wake. A copy
+// staged for a declaration holds an INSTANCE watch on it until it leaves its stager.
 
+#include <kickos/notify.h>
+#include <kickos/start_watch.h>
 #include <kickos/sync.h>
 #include <kickos/sys/init.h>
 #include <kickos/ustack.h>
@@ -33,6 +36,11 @@ namespace kickos
     {
         namespace
         {
+            uint32_t watch_spec(uint32_t kind, uint32_t events)
+            {
+                return (kind << KOS_WATCH_KIND_SHIFT) | events;
+            }
+
             constexpr uint32_t PAGES = 20;
             constexpr uint32_t DROPS = 3;
             constexpr uintptr_t RUN_VA = static_cast<uintptr_t>(0x500000000000ull);
@@ -139,18 +147,6 @@ namespace kickos
                     longjmp(g_slain, 1);
                 }
             }
-
-            // A create waiting out peer0's death goes round once it is dead, and finds it dying
-            // again: its second park keeps the first's deadline.
-            struct Rounds
-            {
-                Task* record;
-                Thread* member;
-                uint64_t first;
-                uint64_t second;
-                bool redied;
-            };
-            Rounds g_rounds;
 
             class SysPresync : public SysFixture
             {
@@ -347,99 +343,8 @@ namespace kickos
                     return member;
                 }
 
-                static void second_park(Thread* parked)
-                {
-                    g_rounds.second = parked->deadline_ns;
-                    IrqLock lock;
-                    thread_abort_park(parked, -KOS_ETIMEDOUT, lock);
-                    running() = g_main;
-                }
-
-                static void dies_again_in_the_window(uint32_t)
-                {
-                    if (g_rounds.redied or running() != g_main)
-                    {
-                        return;
-                    }
-                    g_rounds.redied = true;
-                    Task* record = nullptr;
-                    (void)g_case->editor_starts_a_dying_peer(&record);
-                    wake_next_park(second_park);
-                }
-
-                static void first_park(Thread* parked)
-                {
-                    g_rounds.first = parked->deadline_ns;
-                    g_now_ns = g_now_ns + 400000u;
-                    {
-                        IrqLock lock;
-                        Task* const t = g_rounds.record;
-                        uint16_t const gen = task_gen(t);
-                        (void)task_release(t, lock);
-                        task_member_leave(g_rounds.member,
-                                          kernel().threads.index_of(g_rounds.member));
-                        if (task_sweep_done(t) and parked->wait_task_target() == t)
-                        {
-                            thread_abort_park(parked, 0, lock);
-                            task_report_death(t, gen);
-                        }
-                    }
-                    // Dead: the fixture's switch would otherwise seat it under main's resume.
-                    detach_ready(g_rounds.member);
-                    seat_blocked(g_rounds.member);
-                    on_window(dies_again_in_the_window);
-                    running() = g_main;
-                }
-
-                static void dies_once_in_the_window(uint32_t)
-                {
-                    if (g_rounds.redied or running() != g_main)
-                    {
-                        return;
-                    }
-                    g_rounds.redied = true;
-                    g_rounds.member = g_case->editor_starts_a_dying_peer(&g_rounds.record);
-                    // A stage the plan took for peer1, as a driver's create holds one into the
-                    // wait for its lines, which no single-core create reaches.
-                    IrqLock lock;
-                    presync_stage_image(1);
-                    g_staged_before_park = record_of(g_main).staged;
-                }
-
-                static void dies_at_the_park(Thread* parked)
-                {
-                    g_staged_at_park = record_of(parked).staged;
-                    g_stager_at_park = *task_image_stager(task_decl_record(1));
-                    dies_with_its_member(parked);
-                }
-
-                // The member's exit, its sweep and the death report, as first_park runs them.
-                static void dies_with_its_member(Thread* parked)
-                {
-                    g_rounds.first = parked->deadline_ns;
-                    {
-                        IrqLock lock;
-                        Task* const t = g_rounds.record;
-                        uint16_t const gen = task_gen(t);
-                        (void)task_release(t, lock);
-                        task_member_leave(g_rounds.member,
-                                          kernel().threads.index_of(g_rounds.member));
-                        if (task_sweep_done(t) and parked->wait_task_target() == t)
-                        {
-                            thread_abort_park(parked, 0, lock);
-                            task_report_death(t, gen);
-                        }
-                    }
-                    detach_ready(g_rounds.member);
-                    seat_blocked(g_rounds.member);
-                    running() = g_main;
-                }
-
                 static SysPresync* g_case;
                 static Seen g_seen;
-                static arch_phys_addr_t g_staged_before_park;
-                static arch_phys_addr_t g_staged_at_park;
-                static ThreadLink g_stager_at_park;
 
                 Edit edit_ = Edit::READ;
                 uintptr_t blk_ = 0;
@@ -449,9 +354,6 @@ namespace kickos
 
             SysPresync* SysPresync::g_case = nullptr;
             Seen SysPresync::g_seen = {};
-            arch_phys_addr_t SysPresync::g_staged_before_park = 0;
-            arch_phys_addr_t SysPresync::g_staged_at_park = 0;
-            ThreadLink SysPresync::g_stager_at_park = 0;
 
             TEST_F(SysPresync, a_frame_map_whose_record_drops_syncs_again_each_round)
             {
@@ -765,65 +667,23 @@ namespace kickos
                 EXPECT_EQ(t, KOS_TASK_NONE);
             }
 
-            TEST_F(SysPresync, a_waited_create_keeps_one_deadline_across_its_rounds)
+            // The create never waits: a dying instance answers the retry, and the stage the plan
+            // took for it is given back with its stager mark.
+            TEST_F(SysPresync, a_create_of_a_dying_instance_answers_retry_and_keeps_no_stage)
             {
-                g_rounds = Rounds{};
-                g_rounds.member = editor_starts_a_dying_peer(&g_rounds.record);
-                ASSERT_NE(g_rounds.member, nullptr) << "fixture: peer00 is not dying";
+                Task* record = nullptr;
+                ASSERT_NE(editor_starts_a_dying_peer(&record), nullptr) << "fixture: peer0 is not dying";
                 kos_task_params* const p = task_params(MAIN_PARAMS, 0, 0, 0);
                 uintptr_t const name = uva(MAIN_PARAMS, 3800);
                 memcpy(host<char>(name), "peer0", 6);
                 p->instance = reinterpret_cast<char const*>(name);
                 sys_seam_reset();
-                wake_next_park(first_park);
-                uint32_t* const out = host<uint32_t>(uva(MAIN_OUT));
-                *out = KOS_TASK_NONE;
-                uint64_t const deadline = deadline_in(1000000u);
-                int32_t const rc = err(call_as(g_main, KOS_SYS_TASK_CREATE, program_for(g_main),
-                                               uva(MAIN_PARAMS, TASK_PARAMS_AT), uva(MAIN_OUT),
-                                               kos_u64_lo(deadline), kos_u64_hi(deadline)));
-                on_window(nullptr);
-                EXPECT_EQ(rc, -KOS_ETIMEDOUT);
-                ASSERT_TRUE(g_rounds.redied) << "fixture: the create never went round";
-                ASSERT_NE(g_rounds.first, 0u);
-                EXPECT_EQ(g_rounds.second, g_rounds.first)
-                    << "the second round's wait took a deadline of its own";
-            }
-
-            // The plan finds the pool short of a stage, and peer0 dies in the plan's window: the
-            // wait's wake sends the call round rather than into a locked pass planned before it.
-            TEST_F(SysPresync, a_create_woken_from_its_wait_plans_its_stage_again)
-            {
-                uintptr_t const blk = reserve_only(PAGES * G);
-                ASSERT_NE(blk, 0u);
-                g_rounds = Rounds{};
-                g_staged_before_park = 0;
-                g_staged_at_park = 0;
-                g_stager_at_park = 0;
-                kos_task_params* const p = task_params(MAIN_PARAMS, blk, PAGES * G,
-                                                       KOS_MEM_NOCACHE);
-                uintptr_t const name = uva(MAIN_PARAMS, 3800);
-                memcpy(host<char>(name), "peer0", 6);
-                p->instance = reinterpret_cast<char const*>(name);
-                sys_seam_reset();
-                host_pool_fail_in(1);
-                on_window(dies_once_in_the_window);
-                wake_next_park(dies_at_the_park);
-                uint32_t* const out = host<uint32_t>(uva(MAIN_OUT));
-                *out = KOS_TASK_NONE;
-                uint64_t const deadline = deadline_in(1000000u);
-                int32_t const rc = err(call_as(g_main, KOS_SYS_TASK_CREATE, program_for(g_main),
-                                               uva(MAIN_PARAMS, TASK_PARAMS_AT), uva(MAIN_OUT),
-                                               kos_u64_lo(deadline), kos_u64_hi(deadline)));
-                on_window(nullptr);
-                ASSERT_TRUE(g_rounds.redied) << "fixture: peer0 never died in the window";
-                ASSERT_NE(g_rounds.first, 0u) << "fixture: the create never waited";
-                ASSERT_NE(g_staged_before_park, 0u) << "fixture: nothing was staged for peer1";
-                EXPECT_EQ(g_staged_at_park, 0u) << "the create parked holding its stage";
-                EXPECT_EQ(g_stager_at_park, 0u) << "the create parked holding peer1's stager mark";
-                EXPECT_EQ(rc, 0) << "the wait's wake ran the locked pass the pre-wait plan staged";
-                EXPECT_NE(*out, KOS_TASK_NONE);
-                EXPECT_EQ(record_of(g_main).staged, 0u);
+                kos_task_t t = KOS_TASK_NONE;
+                EXPECT_EQ(create_staged(g_main, MAIN_PARAMS, MAIN_OUT, &t), -KOS_EAGAIN);
+                EXPECT_EQ(t, KOS_TASK_NONE);
+                EXPECT_EQ(g_main->wait_kind, WAIT_NONE) << "the create parked";
+                EXPECT_EQ(record_of(g_main).staged, 0u) << "the refused create kept its stage";
+                EXPECT_EQ(*task_image_stager(record), 0u) << "the refused create kept the stager mark";
                 EXPECT_FALSE(record_of(g_main).active);
             }
 
@@ -1270,6 +1130,112 @@ namespace kickos
                           0u);
                 EXPECT_EQ(call_as(g_main, KOS_SYS_MEM_SELF_GRANT, held, TD * G, 0), 0u);
                 EXPECT_EQ(g_syncs, 4u * TD) << "a retype round trip";
+            }
+
+            // How the copy staged for peer1 leaves its stager.
+            enum class Unstage
+            {
+                BEGIN,   // a call entering with it still held
+                RELEASE, // the refused call's release
+                EXIT     // the stager's exit
+            };
+
+            constexpr uint32_t WATCH_BIT = 5;
+
+            class SysPresyncWatch : public SysPresync
+            {
+              protected:
+                // The editor's create holds a copy of peer1's data staged, and main arms an
+                // INSTANCE watch on peer1 raising WATCH_BIT of a notification of its own.
+                void watch_while_staged()
+                {
+                    running() = g_editor;
+                    {
+                        IrqLock lock;
+                        presync_stage_image(1);
+                    }
+                    running() = g_main;
+                    ASSERT_NE(*task_image_stager(task_decl_record(1)), 0u) << "fixture: nothing staged";
+                    ASSERT_EQ(notify_create(g_main, &note_), 0);
+                    uint32_t copy = KCAP_INVALID;
+                    ASSERT_EQ(notify_badge(g_main, note_, WATCH_BIT, &copy), 0);
+                    memcpy(host<char>(uva(EDIT_PARAMS, PROGRAM_AT)), "peer1", 6);
+                    *host<uint32_t>(uva(EDIT_PARAMS, PROGRAM_AT + 8)) = KCAP_INVALID;
+                    ASSERT_EQ(err(call_as(g_main, KOS_SYS_WATCH,
+                                          watch_spec(KOS_WATCH_INSTANCE, KOS_INSTANCE_STARTABLE),
+                                          program_for(g_main), copy, uva(EDIT_PARAMS, PROGRAM_AT),
+                                          uva(EDIT_PARAMS, PROGRAM_AT + 8))),
+                              0)
+                        << "a copy another create holds staged was not in the way";
+                    ASSERT_EQ(pending(), 0u);
+                }
+
+                uint32_t pending() const
+                {
+                    IrqLock lock;
+                    int e = 0;
+                    Notification const* const n = static_cast<Notification*>(
+                        cap_resolve_e(g_main, note_, CapType::CAP_NOTIFY, 0, &e));
+                    if (n == nullptr)
+                    {
+                        return 0xDEADu;
+                    }
+                    return n->pending;
+                }
+
+                // A look taken inside the stager's call, as a doorbell pass interrupting it takes
+                // one, then the copy leaving it by `how`.
+                void unstage(Unstage how)
+                {
+                    running() = g_editor;
+                    start_watch_poke();
+                    poked_inside_ = pending();
+                    if (how == Unstage::BEGIN)
+                    {
+                        IrqLock lock;
+                        (void)presync_begin();
+                    }
+                    else if (how == Unstage::RELEASE)
+                    {
+                        presync_release(false);
+                    }
+                    else
+                    {
+                        IrqLock lock;
+                        presync_exit();
+                    }
+                    running() = g_main;
+                }
+
+                uint32_t note_ = KCAP_INVALID;
+                uint32_t poked_inside_ = 0xDEADu;
+            };
+
+            TEST_F(SysPresyncWatch, a_call_entering_with_the_copy_staged_raises_the_watch_it_held)
+            {
+                watch_while_staged();
+                unstage(Unstage::BEGIN);
+                EXPECT_EQ(poked_inside_, 0u) << "a look inside the stager's call took its copy as no one's";
+                EXPECT_EQ(*task_image_stager(task_decl_record(1)), 0u);
+                EXPECT_EQ(pending(), 1u << WATCH_BIT) << "the copy left and the watch was not raised";
+            }
+
+            TEST_F(SysPresyncWatch, a_refused_call_releasing_the_copy_raises_the_watch_it_held)
+            {
+                watch_while_staged();
+                unstage(Unstage::RELEASE);
+                EXPECT_EQ(poked_inside_, 0u) << "a look inside the stager's call took its copy as no one's";
+                EXPECT_EQ(*task_image_stager(task_decl_record(1)), 0u);
+                EXPECT_EQ(pending(), 1u << WATCH_BIT) << "the copy left and the watch was not raised";
+            }
+
+            TEST_F(SysPresyncWatch, the_stager_s_exit_dropping_the_copy_raises_the_watch_it_held)
+            {
+                watch_while_staged();
+                unstage(Unstage::EXIT);
+                EXPECT_EQ(poked_inside_, 0u) << "a look inside the stager's call took its copy as no one's";
+                EXPECT_EQ(*task_image_stager(task_decl_record(1)), 0u);
+                EXPECT_EQ(pending(), 1u << WATCH_BIT) << "the copy left and the watch was not raised";
             }
         }
     }

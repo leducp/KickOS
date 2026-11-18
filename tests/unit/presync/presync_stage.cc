@@ -171,6 +171,12 @@ namespace kickos
     // Declaration 0, whose next space the image stage is for.
     Task g_decl_record;
     ThreadLink g_decl_stager = 0;
+    // The INSTANCE watches' looks a dropped stager mark asked for.
+    int g_pokes = 0;
+    void start_watch_poke()
+    {
+        g_pokes++;
+    }
     Task* task_decl_record(size_t decl)
     {
         if (decl != 0)
@@ -337,7 +343,9 @@ namespace
     {
         HostPoolMark const before = host_pool_mark();
         ASSERT_TRUE(spawn_round());
+        int const pokes = kickos::g_pokes;
         EXPECT_FALSE(end_round());
+        EXPECT_EQ(kickos::g_pokes, pokes) << "a stage the create consumed asked its watches for a look";
         EXPECT_EQ(host_pool_used(), g_base_frames + DATA_PAGES) << "the new space holds its copy";
         EXPECT_EQ(g_windows, static_cast<int>(DATA_PAGES));
         EXPECT_EQ(g_locked_copies, 0) << "a granule was copied under the lock";
@@ -353,7 +361,10 @@ namespace
         EXPECT_FALSE(spawn_round(false));
         EXPECT_FALSE(kickos::presync_record()->staged_full);
         EXPECT_EQ(host_pool_used(), g_base_frames + DATA_PAGES) << "still staged until the end";
+        int const pokes = kickos::g_pokes;
         EXPECT_TRUE(end_round()) << "the call goes round again";
+        EXPECT_EQ(kickos::g_decl_stager, 0u);
+        EXPECT_EQ(kickos::g_pokes, pokes + 1) << "the dropped stager mark asked the watches for no look";
         EXPECT_EQ(host_pool_used(), g_base_frames);
         EXPECT_EQ(g_windows, static_cast<int>(DATA_PAGES)) << "freed a granule a window";
     }

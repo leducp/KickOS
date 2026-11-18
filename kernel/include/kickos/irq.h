@@ -235,17 +235,15 @@ namespace kickos
 
 #if KICKOS_KERNEL_CORES > 1
     // Reclaim every released binding whose grace period has elapsed, its slot and its payer's
-    // charge with it. Caller holds IrqLock.
+    // charge with it. A batch left open asks each core still inside the dispatch it waits out
+    // for a pass, so it completes whether or not anything waits on it. Caller holds IrqLock.
     void irq_retire_drain();
     // Whether `line` was released and a dispatch on another core may still hold it. Caller
     // holds IrqLock.
     bool irq_line_retiring(int line);
-    // `c`, just parked on WAIT_RETIRE after an irq_retire_drain under the same lock, waits on
-    // Kernel::retire_waiters for a scheduling pass to serve it. Caller holds IrqLock.
-    void irq_retire_await(Thread* c, Held held);
-    // From a scheduling pass: true for every waiter to ask again, or false while this core is
-    // still inside the dispatch holding the grace period open, which then owes its exit a pass.
-    // Caller holds IrqLock.
+    // From a scheduling pass: drains an open batch, and answers whether a reclamation ran since
+    // the last pass asked, its INSTANCE watches then owed a look (start_watch_poke). Caller holds
+    // IrqLock.
     bool irq_retire_serve(Held held);
 #endif
 }
