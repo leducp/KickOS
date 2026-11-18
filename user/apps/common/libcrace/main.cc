@@ -99,7 +99,7 @@ namespace
         auto victim = spawn_in(reask_victim, nullptr, "mreask", VICTIM_PRIO, g_core_mask);
         bool parked = victim.valid() and kos_sem_wait(&g_gates->entering, KOS_NEVER) == 0;
         bool const killed =
-            victim.valid() and victim.cancel_for(KOS_CANCEL_KILL, std::chrono::nanoseconds{0}) == 0;
+            victim.valid() and victim.cancel(KOS_CANCEL_KILL) == 0;
         __malloc_unlock(_REENT);
         g_reask_ran = parked and killed and victim.join() == 0;
     }
@@ -150,7 +150,7 @@ namespace
         {
             auto victim = spawn_parked(entry, name, core_mask);
             ended = victim.valid()
-                    and victim.cancel_for(KOS_CANCEL_KILL, std::chrono::nanoseconds{0}) == 0
+                    and victim.cancel(KOS_CANCEL_KILL) == 0
                     and victim.join() == 0;
             end_hold(holder);
         }
@@ -213,7 +213,7 @@ namespace
         // once it has parked on the release gate.
         auto child = spawn_in(getenv_after_kill, nullptr, "menv", VICTIM_PRIO, core_mask);
         bool const ran = child.valid() and kos_sem_wait(&g_gates->entering, KOS_NEVER) == 0
-                         and child.cancel_for(KOS_CANCEL_KILL, std::chrono::nanoseconds{0}) == 0
+                         and child.cancel(KOS_CANCEL_KILL) == 0
                          and child.join() == 0;
         *read = __atomic_load_n(&g_env_after_kill, __ATOMIC_RELAXED) != 0;
         unpin_main(core_mask);
@@ -451,7 +451,7 @@ namespace
                        == -KOS_ETIMEDOUT)
                 {
                 }
-                (void)kos_task_slay(task_, KOS_POLL);
+                (void)kos_task_slay(task_);
                 running_ = false;
             }
             if (prog_ != KOS_CAP_NONE)

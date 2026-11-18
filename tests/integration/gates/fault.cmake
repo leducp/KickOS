@@ -11,12 +11,7 @@ endif()
 # 139 is KOS_EXIT_FAULT (user/include/kickos/sys/abi.h) and 132 kfault_terminate's, both restated
 # here on purpose: a gate computing the number from the same header the runtime reports would
 # assert nothing about it.
-# The RX image traps with BRK, which shares the catch-all vector with the NMI and so is never a
-# thread fault, isolating or not.
-if(KICKOS_ARCH STREQUAL "rxv3")
-  set(_fault_marker "RX EXCEPTION (trap)")
-  set(_fault_status 132)
-elseif(KICKOS_FAULT_ISOLATION)
+if(KICKOS_FAULT_ISOLATION)
   set(_fault_marker "THREAD FAULT")
   set(_fault_status 139)
 else()
@@ -29,6 +24,8 @@ else()
     set(_fault_marker "ARMV8A EXCEPTION")
   elseif(KICKOS_ARCH STREQUAL "armv7m")
     set(_fault_marker "USAGE FAULT")
+  elseif(KICKOS_ARCH STREQUAL "rxv3")
+    set(_fault_marker "RX EXCEPTION (software trap)")
   else()
     set(_fault_marker "HARD FAULT")
   endif()

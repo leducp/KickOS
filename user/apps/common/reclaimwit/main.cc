@@ -12,6 +12,8 @@
 #include <kickos/sys/errno.h>
 #include <kickos/libc/fmt.h>
 
+#include <kickos/apps/peer_run.h>
+
 #include <stdint.h>
 
 #ifndef KICKOS_RW_MODE
@@ -110,9 +112,9 @@ int main(int, char**)
         kos_send(KOS_CAP_STDOUT, served, sizeof(served) - 1u, KOS_NEVER);
 
     // Forcible, not cooperative: the driver never gets the window in which it would have
-    // quieted its device. 0 means the task is empty and swept, so the reclaim has already been
-    // attempted.
-    int const slay_rc = kos_task_slay(drv_task, kos::after(SLAY_BOUND));
+    // quieted its device. 0 means the task is dead, every member swept, so the reclaim has
+    // already been attempted.
+    int const slay_rc = kickos::apps::slay_until_dead(drv_task, kos::after(SLAY_BOUND));
 
     // The driver's task is dead and nothing holds WAIT or HANDOUT, so this refuses at once.
     char const dead = 'x';

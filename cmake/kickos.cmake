@@ -656,7 +656,7 @@ function(kickos_qemu_machine board out_env out_machine)
   kickos_qemu_cpu_line(_extra "${KICKOS_QEMU_CPU}" "${board}" ${KICKOS_QEMU_OPTIONS})
   if(KICKOS_AMP_NODE AND KICKOS_AMP_OWN_IMAGE)
     math(EXPR _part_mib
-         "(${KICKOS_AMP_NODES} * ${KICKOS_AMP_NODE_SHARE} + ${KICKOS_AMP_SHARED_SIZE} + 1048575) / 1048576")
+         "(${KICKOS_AMP_SLICES_SIZE} + ${KICKOS_AMP_SHARED_SIZE} + 1048575) / 1048576")
     list(APPEND _extra -smp ${_cpus} -m ${_part_mib}M)
   elseif(_cpus GREATER 1)
     list(APPEND _extra -smp ${_cpus})

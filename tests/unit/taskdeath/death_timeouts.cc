@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Every death waiter on one task timing out in a single timer interrupt: the task's threads end
-// with no lend of a waiter gone, and the current that lend kept running gives way to the highest
-// waiter it woke.
+// Every waiter on a watch of one ended task's death timing out in a single timer interrupt: the
+// task's threads end with no lend of a waiter gone, and the current that lend kept running gives
+// way to the highest waiter it woke.
 
 #include <kickos/instance.h>
 #include <kickos/irqlock.h>
@@ -53,15 +53,21 @@ namespace kickos
             uint8_t const prios[] = {9, 8, 7};
             Thread* w[3] = {};
             uint64_t const at = g_now_ns + WAIT_NS;
+            // A task takes one TASK watch, so the lower two wait on tasks with no thread: woken
+            // first, they find the member still lent above them.
+            Task* const watched[] = {t, task(3), task(4)};
+            for (int i = 0; i < 3; i++)
+            {
+                w[i] = seat_pool(3 + i, prios[i]);
+                park_watch_waiter(w[i], watched[i]);
+            }
             {
                 IrqLock lock;
-                for (int i = 0; i < 3; i++)
+                for (int i = 2; i >= 0; i--)
                 {
-                    w[i] = seat_pool(3 + i, prios[i]);
-                    park_death_waiter(w[i], t);
                     ktime_deadline_arm_at(w[i], at, false, lock);
                 }
-                death_wait_lend(t, lock);
+                watch_lend_task(t, lock);
             }
             ASSERT_EQ(m1->prio, 9) << "fixture: the waiters lend the members nothing";
             ASSERT_EQ(m2->prio, 9);
@@ -72,8 +78,7 @@ namespace kickos
                 EXPECT_EQ(each->wait_kind, WAIT_NONE);
                 EXPECT_EQ(each->wait_result, -KOS_ETIMEDOUT);
             }
-            EXPECT_TRUE(kernel().death_waiters.empty());
-            EXPECT_TRUE(kernel().death_dirty.empty());
+            EXPECT_FALSE(kernel().watch_lend_owed);
             EXPECT_EQ(m1->prio, MEMBER_PRIO) << "a member keeps the lend of a waiter gone";
             EXPECT_EQ(m2->prio, MEMBER_PRIO);
             EXPECT_EQ(sched::current(), w[0])

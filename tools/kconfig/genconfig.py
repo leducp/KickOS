@@ -164,24 +164,48 @@ def write_cmake_fragment(path, kconf, sources, base, derived=()):
         handle.write("\n".join(lines) + "\n")
 
 
-def amp_geometry(kconf):
-    """The refusal of an own-image partition's geometry, or None."""
-    for name in ("KICKOS_AMP_PARTITION_BASE", "KICKOS_AMP_NODE_SHARE", "KICKOS_AMP_SHARED_SIZE"):
+def amp_geometry(kconf, nodes):
+    """(sizes, refusal) of an own-image partition: each node's slice, in node order."""
+    for name in ("KICKOS_AMP_PARTITION_BASE", "KICKOS_AMP_SHARED_SIZE"):
         if sym_int(kconf, name) == 0:
-            return (name + " is unstated. Every node's image is linked at "
-                    "KICKOS_AMP_PARTITION_BASE plus its own index times KICKOS_AMP_NODE_SHARE, "
-                    "and the region every node writes sits above the last of them, "
-                    "KICKOS_AMP_SHARED_SIZE wide: with any of the three unstated the images link "
-                    "on top of each other.")
+            return None, (name + " is unstated. Every node's image is linked at "
+                          "KICKOS_AMP_PARTITION_BASE plus the slices of the nodes before it, "
+                          "and the region every node writes sits above the last of them, "
+                          "KICKOS_AMP_SHARED_SIZE wide: with either unstated the images link "
+                          "on top of each other.")
     no_base = sym_int(kconf, "KICKOS_AMP_TEXT_BASE") == 0
     no_share = sym_int(kconf, "KICKOS_AMP_TEXT_SHARE") == 0
     if no_base != no_share:
-        return ("KICKOS_AMP_TEXT_BASE and KICKOS_AMP_TEXT_SHARE describe one aperture, the "
-                "separate span a part executing in place keeps its text in, a node's text "
-                "linked at that base plus its own index times that stride. State both, or "
-                "neither where the part has one span and KICKOS_AMP_PARTITION_BASE describes "
-                "all of it.")
-    return None
+        return None, ("KICKOS_AMP_TEXT_BASE and KICKOS_AMP_TEXT_SHARE describe one aperture, the "
+                      "separate span a part executing in place keeps its text in, a node's text "
+                      "linked at that base plus its own index times that stride. State both, or "
+                      "neither where the part has one span and KICKOS_AMP_PARTITION_BASE "
+                      "describes all of it.")
+    share = sym_int(kconf, "KICKOS_AMP_NODE_SHARE")
+    stated = sym_str(kconf, "KICKOS_AMP_NODE_SLICES")
+    what = "KICKOS_AMP_NODE_SLICES='" + stated + "'"
+    if stated == "":
+        if share == 0:
+            return None, ("KICKOS_AMP_NODE_SHARE is unstated and KICKOS_AMP_NODE_SLICES is "
+                          "empty, so no node's slice has a size and every image links at "
+                          "KICKOS_AMP_PARTITION_BASE. State the share every node takes, or one "
+                          "size per node.")
+        return [share] * nodes, None
+    if share != 0:
+        return None, (what + " and KICKOS_AMP_NODE_SHARE=" + hex(share) + " both size the "
+                      "nodes' slices. State the list where the nodes differ, or the one share "
+                      "where they are equal, not both.")
+    entries = stated.split(",")
+    if len(entries) != nodes:
+        return None, (what + ": it sizes " + str(len(entries)) + " slice(s) for a partition of "
+                      + str(nodes) + " node(s). Give one size per node, in node order.")
+    sizes = []
+    for entry in entries:
+        if re.fullmatch(r"0[xX][0-9a-fA-F]+|[1-9][0-9]*", entry) is None or int(entry, 0) == 0:
+            return None, (what + ": entry '" + entry + "' is not a size in bytes above zero, "
+                          "and a node without one links on top of the next.")
+        sizes.append(int(entry, 0))
+    return sizes, None
 
 
 def amp_cores(kconf, nodes):
@@ -275,7 +299,7 @@ def amp_partition(kconf):
     facts = []
     self_node = 0
     if sym_int(kconf, "KICKOS_AMP_OWN_IMAGE") == 1:
-        refusal = amp_geometry(kconf)
+        sizes, refusal = amp_geometry(kconf, nodes)
         if refusal is not None:
             return None, refusal
         self_node = sym_int(kconf, "KICKOS_AMP_NODE_ID")
@@ -285,7 +309,11 @@ def amp_partition(kconf):
         cores, refusal = amp_cores(kconf, nodes)
         if refusal is not None:
             return None, refusal
-        facts.append(("KICKOS_AMP_SELF_CORE", int(cores[self_node])))
+        facts.extend([("KICKOS_AMP_SELF_CORE", int(cores[self_node])),
+                      ("KICKOS_AMP_SLICE_LIST", ",".join(str(size) for size in sizes)),
+                      ("KICKOS_AMP_IMAGE_OFFSET", sum(sizes[:self_node])),
+                      ("KICKOS_AMP_IMAGE_SIZE", sizes[self_node]),
+                      ("KICKOS_AMP_SLICES_SIZE", sum(sizes))])
     pairs, refusal = amp_ports(kconf, nodes, self_node)
     if refusal is not None:
         return None, refusal

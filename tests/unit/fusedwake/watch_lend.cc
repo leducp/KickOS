@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// A thread waiting on a task's death lends its priority to that task's threads over the real IPC
-// and scheduler at two cores: a call donating to such a waiter reaches them, and a member running
-// on the other core is re-placed there, both ways. A fused receive open on a bit a watch on an
-// ended task's death raises lends too, and the message that wakes it ends the lend.
+// A thread waiting on a watch of an ended task's death lends its priority to that task's threads
+// over the real IPC and scheduler at two cores: a call donating to such a waiter reaches them, and
+// a member running on the other core is re-placed there, both ways. A fused receive open on a bit
+// such a watch raises lends too, and the message that wakes it ends the lend.
 
 #include <kickos/cap.h>
 #include <kickos/endpoint.h>
@@ -30,7 +30,7 @@ using namespace kickos::testfix;
 
 namespace
 {
-    class DeathLendIpc : public KSeam
+    class WatchLendIpc : public KSeam
     {
     };
 
@@ -41,7 +41,7 @@ namespace
     Thread* g_member = nullptr;
     uint8_t g_while_called = 0;
 
-    // A member of task `t`, on the run list a death waiter lends to.
+    // A member of task `t`, on the run list a watch waiter lends to.
     Thread* member_of(Task* t, int slot, uint32_t affinity)
     {
         Thread* const m = seat_pool(slot, PRIO_MEMBER);
@@ -60,97 +60,74 @@ namespace
         sched::add_idle(t, core_at(1));
         return t;
     }
+
+    // A client calls the endpoint a thread waiting on a task's death serves, or that task's member
+    // where `server_is_member`, and gives up.
+    void call_the_dying_member(bool server_is_member, char const* lost)
+    {
+        Thread* const client = seat_pool(0, PRIO_CLIENT);
+        client->affinity = 1u;
+        attach_caps(client, KICKOS_SEAM_CAP_WIDTH);
+        {
+            IrqLock lock;
+            sched::reschedule(nullptr, lock);
+        }
+        ASSERT_EQ(sched::current(), client);
+        Task* const dying = task(1);
+        g_member = member_of(dying, 1, 1u);
+        Thread* const waiter = seat_pool(2, PRIO_SERVER);
+        waiter->affinity = 1u;
+        Endpoint* const ep = endpoint();
+        ep->recv_holders = 1;
+        ep->handout_holders = 1;
+        uint32_t cap = KCAP_INVALID;
+        {
+            IrqLock lock;
+            park_watch_waiter(waiter, dying);
+            pi_settle(g_member, lock);
+            if (server_is_member)
+            {
+                endpoint_server_set(ep, g_member);
+            }
+            else
+            {
+                endpoint_server_set(ep, waiter);
+            }
+            int const handle = kernel().endpoints.handle_for(kernel().endpoints.index_of(ep));
+            ASSERT_EQ(cap_install(client, handle, CapType::CAP_ENDPOINT, CAP_SIGNAL, &cap), 0);
+        }
+        ASSERT_EQ(g_member->prio, PRIO_SERVER) << "fixture: the waiting thread lends nothing";
+        g_while_called = 0;
+        wake_next_park([](Thread* parked) {
+            g_while_called = g_member->prio;
+            IrqLock lock;
+            thread_abort_park(parked, -KOS_ETIMEDOUT, lock);
+        });
+        static char buf[4];
+        EXPECT_EQ(endpoint_call(cap, reinterpret_cast<uintptr_t>(buf), sizeof(buf), sizeof(buf),
+                                testfix::deadline_in(1000000u)),
+                  -KOS_ETIMEDOUT);
+        EXPECT_EQ(g_while_called, PRIO_CLIENT) << lost;
+        EXPECT_EQ(g_member->prio, PRIO_SERVER) << "the member keeps a donation the call took back";
+    }
 }
 
 // A client calls a server that waits on a task's death: its donation reaches the task's member,
 // and goes when the call gives up.
-TEST_F(DeathLendIpc, a_call_donating_to_a_server_waiting_on_a_death_reaches_the_dying_member)
+TEST_F(WatchLendIpc, a_call_donating_to_a_server_waiting_on_a_death_reaches_the_dying_member)
 {
-    Thread* const client = seat_pool(0, PRIO_CLIENT);
-    client->affinity = 1u;
-    attach_caps(client, KICKOS_SEAM_CAP_WIDTH);
-    {
-        IrqLock lock;
-        sched::reschedule(nullptr, lock);
-    }
-    ASSERT_EQ(sched::current(), client);
-    Task* const dying = task(1);
-    g_member = member_of(dying, 1, 1u);
-    Thread* const server = seat_pool(2, PRIO_SERVER);
-    server->affinity = 1u;
-    Endpoint* const ep = endpoint();
-    ep->recv_holders = 1;
-    ep->handout_holders = 1;
-    uint32_t cap = KCAP_INVALID;
-    {
-        IrqLock lock;
-        park_death_waiter(server, dying);
-        pi_settle(g_member, lock);
-        endpoint_server_set(ep, server);
-        int const handle = kernel().endpoints.handle_for(kernel().endpoints.index_of(ep));
-        ASSERT_EQ(cap_install(client, handle, CapType::CAP_ENDPOINT, CAP_SIGNAL, &cap), 0);
-    }
-    ASSERT_EQ(g_member->prio, PRIO_SERVER) << "fixture: the waiting server lends nothing";
-    g_while_called = 0;
-    wake_next_park([](Thread* parked) {
-        g_while_called = g_member->prio;
-        IrqLock lock;
-        thread_abort_park(parked, -KOS_ETIMEDOUT, lock);
-    });
-    static char buf[4];
-    EXPECT_EQ(endpoint_call(cap, reinterpret_cast<uintptr_t>(buf), sizeof(buf), sizeof(buf),
-                            testfix::deadline_in(1000000u)),
-              -KOS_ETIMEDOUT);
-    EXPECT_EQ(g_while_called, PRIO_CLIENT)
-        << "the call's donation stopped at the server waiting on the death";
-    EXPECT_EQ(g_member->prio, PRIO_SERVER) << "the member keeps a donation the call took back";
+    call_the_dying_member(false, "the call's donation stopped at the server waiting on the death");
 }
 
 // The server a client calls is itself a lent member of a dying task: the call's donation stands
 // over the lend once the client is queued.
-TEST_F(DeathLendIpc, a_call_raises_a_lent_member_serving_it_and_the_lend_does_not_undo_it)
+TEST_F(WatchLendIpc, a_call_raises_a_lent_member_serving_it_and_the_lend_does_not_undo_it)
 {
-    Thread* const client = seat_pool(0, PRIO_CLIENT);
-    client->affinity = 1u;
-    attach_caps(client, KICKOS_SEAM_CAP_WIDTH);
-    {
-        IrqLock lock;
-        sched::reschedule(nullptr, lock);
-    }
-    ASSERT_EQ(sched::current(), client);
-    Task* const dying = task(1);
-    g_member = member_of(dying, 1, 1u);
-    Thread* const slayer = seat_pool(2, PRIO_SERVER);
-    slayer->affinity = 1u;
-    Endpoint* const ep = endpoint();
-    ep->recv_holders = 1;
-    ep->handout_holders = 1;
-    uint32_t cap = KCAP_INVALID;
-    {
-        IrqLock lock;
-        park_death_waiter(slayer, dying);
-        pi_settle(g_member, lock);
-        endpoint_server_set(ep, g_member);
-        int const handle = kernel().endpoints.handle_for(kernel().endpoints.index_of(ep));
-        ASSERT_EQ(cap_install(client, handle, CapType::CAP_ENDPOINT, CAP_SIGNAL, &cap), 0);
-    }
-    ASSERT_EQ(g_member->prio, PRIO_SERVER) << "fixture: the member is not lent to";
-    g_while_called = 0;
-    wake_next_park([](Thread* parked) {
-        g_while_called = g_member->prio;
-        IrqLock lock;
-        thread_abort_park(parked, -KOS_ETIMEDOUT, lock);
-    });
-    static char buf[4];
-    EXPECT_EQ(endpoint_call(cap, reinterpret_cast<uintptr_t>(buf), sizeof(buf), sizeof(buf),
-                            testfix::deadline_in(1000000u)),
-              -KOS_ETIMEDOUT);
-    EXPECT_EQ(g_while_called, PRIO_CLIENT) << "the lend's recompute undid the call's donation";
-    EXPECT_EQ(g_member->prio, PRIO_SERVER) << "the member keeps a donation the call took back";
+    call_the_dying_member(true, "the lend's recompute undid the call's donation");
 }
 
 // The member runs on the other core: the lend and its end both reach it there.
-TEST_F(DeathLendIpc, a_member_running_on_the_other_core_is_lent_to_and_let_go_there)
+TEST_F(WatchLendIpc, a_member_running_on_the_other_core_is_lent_to_and_let_go_there)
 {
     Thread* const waiter = seat_pool(0, PRIO_CLIENT);
     waiter->affinity = 1u;
@@ -164,11 +141,10 @@ TEST_F(DeathLendIpc, a_member_running_on_the_other_core_is_lent_to_and_let_go_th
     g_member = member_of(dying, 1, 1u << 1);
     testfix::seat_running_on(g_member, core_at(1));
     ASSERT_EQ(kernel().current(core_at(1)), g_member) << "fixture: the member is not on core one";
+    park_watch_waiter(waiter, dying);
     {
         IrqLock lock;
-        ParkToken const ask = park_cancel_pending(waiter);
-        (void)death_park(ask)(waiter, dying, lock);
-        death_wait_lend(dying, lock);
+        watch_lend_task(dying, lock);
     }
     EXPECT_EQ(g_member->prio, PRIO_CLIENT) << "the member on the other core was not lent to";
     EXPECT_NE(g_member->reseat_owed, 0u) << "core one was not asked to re-place it";
@@ -180,7 +156,6 @@ TEST_F(DeathLendIpc, a_member_running_on_the_other_core_is_lent_to_and_let_go_th
     }
     EXPECT_EQ(g_member->prio, PRIO_MEMBER) << "the member on the other core keeps the lend";
     EXPECT_NE(g_member->reseat_owed, 0u) << "core one was not asked to re-place it again";
-    EXPECT_TRUE(kernel().death_waiters.empty());
 }
 
 namespace
@@ -198,7 +173,7 @@ namespace
 // A server parked in its fused receive with its notification open on the bit a TASK watch on an
 // ended task's death raises lends to that task's member, and a message that wakes it ends the lend
 // before the server runs.
-TEST_F(DeathLendIpc, a_fused_receive_open_on_a_watched_death_lends_and_a_message_ends_it_at_once)
+TEST_F(WatchLendIpc, a_fused_receive_open_on_a_watched_death_lends_and_a_message_ends_it_at_once)
 {
     g_server = seat_pool(0, PRIO_CLIENT);
     g_server->affinity = 1u;

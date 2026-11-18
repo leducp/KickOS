@@ -25,6 +25,7 @@
 #include <kickos/instance.h>
 #include <kickos/irqlock.h>
 #include <kickos/kernel.h>
+#include <kickos/notify.h>
 #include <kickos/sched.h>
 #include <kickos/sync.h>
 #include <kickos/task.h>
@@ -524,31 +525,31 @@ namespace kickos
                 << "and the live member IS cancelled by the same scan";
         }
 
-        // --- the group-empty wake (WAIT_TASK_EMPTY) -----------------------------------
+        // --- the death's watch (KOS_TASK_DEAD) -------------------------------------
         // "The group is empty" is a different condition from any member's death, and it is
         // reported by the release that CAUSED it rather than re-derived afterwards: a
         // task's slot is freed inside that call, and a refcount already at zero
         // cannot say whose departure took it there.
-        TEST_F(TaskDeath, the_last_member_out_wakes_a_group_waiter)
+        TEST_F(TaskDeath, the_last_member_out_wakes_a_waiter_on_its_death)
         {
             Task* const group = task(0);
             Thread* const c = seat_pool(SLOT_DYING, PRIO_MID);
             Thread* const waiter = seat_pool(SLOT_OTHER, PRIO_LOW);
             join_task(c, group);
-            park_death_waiter(waiter, group);
+            park_watch_waiter(waiter, group);
             kernel().current(kickos_kernel_core()) = c;
 
             run_exit(0);
 
             EXPECT_EQ(waiter->wait_kind, WAIT_NONE) << "the wait edge is the waker's to clear";
-            EXPECT_EQ(waiter->wait_result, 0) << "0 is GONE: the group is empty";
+            EXPECT_EQ(notify_pending_of(waiter), 1u) << "the death raised nothing";
             EXPECT_NE(waiter->state, ThreadState::BLOCKED) << "and it is runnable again";
         }
 
-        // The other half: the wake is keyed on the EMPTYING, not on a death, so a member
-        // leaving a group that still holds peers wakes nobody. Keyed on the death,
-        // kos_task_slay would answer "empty" with members still alive.
-        TEST_F(TaskDeath, a_death_that_leaves_peers_wakes_no_group_waiter)
+        // The other half: the raise is keyed on the EMPTYING, not on a member's death, so a
+        // member leaving a group that still holds peers wakes nobody. Keyed on the member's
+        // death, the watch would report DEAD with members still alive.
+        TEST_F(TaskDeath, a_death_that_leaves_peers_wakes_no_waiter_on_the_group_s_death)
         {
             Task* const group = task(0);
             Thread* const c = seat_pool(SLOT_DYING, PRIO_MID);
@@ -556,31 +557,31 @@ namespace kickos
             Thread* const waiter = seat_pool(SLOT_OTHER, PRIO_LOW);
             join_task(c, group);
             join_task(peer, group);
-            park_death_waiter(waiter, group);
+            park_watch_waiter(waiter, group);
             kernel().current(kickos_kernel_core()) = c;
 
             run_exit(0);
 
-            EXPECT_EQ(waiter->wait_kind, WAIT_TASK_EMPTY) << "still parked on its group";
-            EXPECT_EQ(waiter->wait_result, WAIT_RESULT_POISON) << "and nobody wrote it a result";
+            EXPECT_EQ(waiter->wait_kind, WAIT_NOTIFY) << "still parked";
+            EXPECT_EQ(notify_pending_of(waiter), 0u) << "and nothing was raised";
         }
 
-        // The waiter names a DIFFERENT group, so an emptying it did not ask about must not
-        // reach it. Without the pointer compare the sweep would wake every group waiter.
-        TEST_F(TaskDeath, an_emptying_wakes_only_the_waiter_on_that_group)
+        // The waiter watches a DIFFERENT group, so an emptying it did not ask about must not
+        // reach it.
+        TEST_F(TaskDeath, an_emptying_wakes_only_the_waiter_on_that_group_s_death)
         {
             Task* const group = task(0);
             Task* const other = task(1);
             Thread* const c = seat_pool(SLOT_DYING, PRIO_MID);
             Thread* const waiter = seat_pool(SLOT_OTHER, PRIO_LOW);
             join_task(c, group);
-            park_death_waiter(waiter, other);
+            park_watch_waiter(waiter, other);
             kernel().current(kickos_kernel_core()) = c;
 
             run_exit(0);
 
-            EXPECT_EQ(waiter->wait_kind, WAIT_TASK_EMPTY) << "another group's emptying is not its";
-            EXPECT_EQ(waiter->wait_result, WAIT_RESULT_POISON) << "and wrote it no result";
+            EXPECT_EQ(waiter->wait_kind, WAIT_NOTIFY) << "another group's emptying is not its";
+            EXPECT_EQ(notify_pending_of(waiter), 0u) << "and raised it nothing";
         }
 
         // task_cancel_group over a task nothing joined, and over a null task: both are the

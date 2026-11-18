@@ -384,9 +384,9 @@ namespace kickos::init
 
     int Walk::park(uint16_t i, kos_program_t program, kos_cap_t copy)
     {
-        kos_cap_t watch = KOS_CAP_NONE;
+        // Written KOS_CAP_NONE on every refusal.
         int const rc = kos_watch(KOS_WATCH_INSTANCE, KOS_INSTANCE_STARTABLE, program, copy,
-                                 reinterpret_cast<uintptr_t>(name(i)), &watch);
+                                 reinterpret_cast<uintptr_t>(name(i)), &record(i).startwait);
         if (rc == -KOS_EALREADY)
         {
             return 0;
@@ -395,7 +395,6 @@ namespace kickos::init
         {
             return rc;
         }
-        record(i).startwait = watch;
         return PARKED;
     }
 
@@ -760,22 +759,12 @@ namespace kickos::init
 
     void Walk::failed(uint16_t i, kos_task_t handle, char const* step, int rc)
     {
-        // Slain before it is reported: a console driver's failed start may still hold stdout.
+        // Slain before it is reported: a console driver's failed start may still hold stdout,
+        // which its end darkens until the kernel's reclaim. A restart its members still sweeping
+        // are in the way of is answered -KOS_EAGAIN and waits on the instance's watch.
         if (handle != KOS_TASK_NONE)
         {
-            int const slay = kos_task_slay(handle, kos::after(SLAY_WAIT));
-            if (slay == -KOS_ETIMEDOUT)
-            {
-                // The init keeps its hold: the death arrives through the wait.
-                TaskRecord& r = record(i);
-                r.handle = handle;
-                r.ready = KOS_TASK_NONE;
-                r.phase = Phase::RUNNING;
-                report(Report::Kind::FAILED, i, step, rc);
-                report(Report::Kind::KEEPS, i, nullptr, 0);
-                return;
-            }
-            check(slay, "kos_task_slay", i);
+            check(kos_task_slay(handle), "kos_task_slay", i);
         }
         // Queued ahead of the death, which may end the system and print it then.
         report(Report::Kind::FAILED, i, step, rc);
@@ -825,7 +814,7 @@ namespace kickos::init
             }
             if ((state & KOS_TASK_DEAD) != 0)
             {
-                check(kos_task_slay(r.handle, KOS_POLL), "kos_task_slay", i);
+                check(kos_task_slay(r.handle), "kos_task_slay", i);
                 report(Report::Kind::RELEASED, i, nullptr, 0);
                 death(i);
                 continue;
@@ -932,13 +921,9 @@ namespace kickos::init
             {
                 m.add("failed to start: ").add(r.step).add(" answered ").add(r.rc);
             }
-            else if (r.kind == Report::Kind::RELEASED)
-            {
-                m.add("is dead and released");
-            }
             else
             {
-                m.add("keeps members past its slay");
+                m.add("is dead and released");
             }
             say(m);
         }

@@ -94,6 +94,69 @@ namespace kickos::apps
                                      bit, out);
     }
 
+    // kos_task_slay, and the task's death through a KOS_WATCH_TASK watch armed first, raising
+    // `notify_cap`'s badge bit `bit` on the notification the calling thread is bound to, waited
+    // on until `until`: 0 once dead, the watch's or the slay's refusal with nothing done, or the
+    // wait's -KOS_ETIMEDOUT or -KOS_ECANCELED with the task slain all the same.
+    // A task takes one TASK watch: this one replaces any the caller armed on `task`, and its
+    // DEAD is the only thing that may raise `bit` during the call.
+    inline int slay_until_dead(kos_task_t task, kos_monotonic_t until, kos_cap_t notify_cap,
+                               uint32_t bit)
+    {
+        int const armed = kos_watch(KOS_WATCH_TASK, KOS_TASK_DEAD, task, notify_cap, 0, nullptr);
+        if (armed != 0)
+        {
+            return armed;
+        }
+        int const slain = kos_task_slay(task);
+        if (slain != 0)
+        {
+            return slain;
+        }
+        // The slay's hold goes at the death, so a state read is the death's test, and a bit an
+        // earlier call left pending only ends one wait.
+        while (kos_task_state(task, nullptr) >= 0)
+        {
+            uint32_t bits = 0;
+            int const rc = kos_notify_wait(1u << bit, until, &bits);
+            if (rc != 0)
+            {
+                return rc;
+            }
+        }
+        return 0;
+    }
+
+    // The same through a notification of its own, bound for the wait, for a calling thread bound
+    // to nothing: where it cannot make or bind one, the task is slain all the same and the answer
+    // is that refusal.
+    inline int slay_until_dead(kos_task_t task, kos_monotonic_t until)
+    {
+        kos_cap_t note = KOS_CAP_NONE;
+        int rc = kos_notify_create(&note);
+        if (rc == 0)
+        {
+            rc = kos_notify_bind(note);
+        }
+        if (rc != 0)
+        {
+            int const slain = kos_task_slay(task);
+            if (slain != 0)
+            {
+                rc = slain;
+            }
+            if (note != KOS_CAP_NONE)
+            {
+                (void)kos_handle_close(note);
+            }
+            return rc;
+        }
+        int const dead = slay_until_dead(task, until, note, 0u);
+        (void)kos_notify_unbind(note);
+        (void)kos_handle_close(note);
+        return dead;
+    }
+
     // The value of a hex argument as `%p` prints it, with or without the 0x.
     inline uintptr_t hex_arg(char const* text)
     {

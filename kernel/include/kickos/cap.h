@@ -97,8 +97,8 @@ namespace kickos
         CAP_PROGRAM,  // a program; `obj` is its image's index, a static record with no refcount
         CAP_WATCH,    // an INSTANCE watch (kernel/task/start_watch.cc): `obj` names the
                       // notification it raises, by a counted reference; the badge and the spare
-                      // sequence bits carry its bit and declaration, and `obj_gen` links it while
-                      // armed
+                      // sequence bits carry its bit and declaration, and `obj_gen` holds its
+                      // links on that declaration's list, armed or raised
         CAP_KIND_MAX  // never stored: STAYS LAST, and the assert below reads it
     };
     // Keyed on the sentinel and never on the last kind by name: an assert naming CAP_IRQ
@@ -177,7 +177,7 @@ namespace kickos
         int32_t obj;
         // The whole generation of the object `obj` names, at the install; a pool handle
         // carries its low 16 bits. Read through cap_obj_live or cap_obj. A CAP_WATCH, whose
-        // reference pins its object, holds its link on the armed watches here instead.
+        // reference pins its object, holds its two list links here instead, armed or raised.
         uint32_t obj_gen;
         uint8_t type : KCAP_TYPE_BITS;
         // CAP_REPLY's call sequence, low half. cap_install_at zeroes both halves, so no entry

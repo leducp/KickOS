@@ -422,6 +422,60 @@ namespace
         EXPECT_EQ(status("console").state, 0u);
     }
 
+    // The report waits for the slain driver's death on the init's notification, the wait through
+    // which its watch lends the init's priority to the dying members; the console's dark wait,
+    // where the report would park otherwise, lends them nothing.
+    TEST_F(Driver, a_failed_handover_waits_for_the_driver_s_death_before_its_report)
+    {
+        fake::Config c = harness::config(systems::find("golden_xmc"));
+        c.console_receives = false;
+        use("golden_xmc", c);
+        fake::on_spawn = [](fake::Thread const&)
+        {
+            if (fake::instance("console") != nullptr)
+            {
+                fake::stall("console");
+            }
+        };
+        bool reported_before_death = true;
+        fake::script({
+            [&reported_before_death]
+            {
+                std::vector<std::string> const seq = fake::sequence({"kos_task_slay", "kos_kconsole_write"});
+                ASSERT_FALSE(seq.empty());
+                reported_before_death = seq.back() != "kos_task_slay";
+                fake::on_spawn = nullptr;
+                fake::sweep("console");
+            },
+        });
+        Outcome const outcome = run();
+        ASSERT_EQ(outcome.kind, Outcome::Kind::IDLE) << outcome.message;
+        EXPECT_FALSE(reported_before_death) << "the report did not wait for the driver's death";
+        EXPECT_NE(fake::console().find("[console] ERROR: the console handover probe was not taken\n"),
+                  std::string::npos)
+            << "the report reached the kernel console the death gave back: " << fake::console();
+        std::vector<fake::Call> const slays = fake::slays();
+        ASSERT_EQ(slays.size(), 1u);
+        uint64_t const bit = 1u << (harness::index_of(*system_, "console") % 32u);
+        uint64_t const probe_ns = static_cast<uint64_t>(
+            std::chrono::nanoseconds(kickos::driver::KOS_DRV_HANDOVER_PROBE).count());
+        std::vector<fake::Call> waits;
+        bool slain = false;
+        for (fake::Call const& w : fake::calls())
+        {
+            slain = slain or w.fn == "kos_task_slay";
+            if (slain and w.fn == "kos_notify_wait" and w.args[0] != 0xFFFFFFFFu)
+            {
+                waits.push_back(w);
+            }
+        }
+        ASSERT_EQ(waits.size(), 1u) << "one wait, which the DEAD ends";
+        EXPECT_EQ(waits[0].args[0], bit) << "the death's wait takes the console's bit alone";
+        EXPECT_EQ(waits[0].args[1], slays[0].at + probe_ns) << "bounded as the slay's own wait was";
+        EXPECT_EQ(waits[0].result, 0);
+        EXPECT_EQ(status("console").deaths, 1u);
+    }
+
     struct Ending
     {
         bool receives;

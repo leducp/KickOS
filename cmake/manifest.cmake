@@ -41,7 +41,8 @@ function(kickos_export_manifest export_dir)
       list(APPEND _pairs "[${_node}, ${_port}]")
     endforeach()
     _kickos_json_array(_jports ${_pairs})
-    set(_amp "{\"node\": ${KICKOS_AMP_SELF_NODE}, \"ports\": ${_jports}}")
+    # Each node's slice size in node order, empty where the nodes share one image.
+    set(_amp "{\"node\": ${KICKOS_AMP_SELF_NODE}, \"ports\": ${_jports}, \"slices\": [${KICKOS_AMP_SLICE_LIST}]}")
   endif()
 
   set(_exported "${export_dir}/platform/${KICKOS_CHIP}/chip.yaml"

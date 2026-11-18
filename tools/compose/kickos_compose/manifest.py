@@ -69,7 +69,8 @@ class Manifest:
         # The node whose kernel may reset the chip.
         self.amp_reset_owner = 0
         self.amp_list = []
-        # The partition's node slices as (base, stride) and its shared window as (base, size).
+        # The partition's node slices as (base, size) in node order, and its shared window as
+        # (base, size).
         self.amp_slices = None
         self.amp_window = None
         # Bytes of the partition's user share, the top of the region every node writes.
@@ -315,13 +316,21 @@ def check_amp(f, node, manifest):
         manifest.amp_share_cache = f.enum(values["share_cache"], "`target` amp share_cache",
                                           ("cached", "uncached")) or "cached"
     if "slices" in values:
-        manifest.amp_slices = f.pair(values["slices"], "`target` amp slices", "base", "stride", (64, 64))
+        items = f.sequence(values["slices"], "`target` amp slices")
+        if items is not None:
+            slices = [f.pair(item, "`target` amp slice", "base", "size", (64, 64)) for item in items]
+            if None not in slices:
+                manifest.amp_slices = slices
     if "window" in values:
         manifest.amp_window = f.pair(values["window"], "`target` amp window", "base", "size", (64, 64))
     if "nodes" not in values:
         return
     nodes = f.integer(values["nodes"], "`target` amp nodes", 8)
     manifest.amp_nodes = nodes
+    if manifest.amp_slices is not None and nodes is not None and len(manifest.amp_slices) != nodes:
+        f.refuse(values["slices"], "manifest.amp", "`target` amp slices sizes %d node(s) of the partition's %d"
+                 % (len(manifest.amp_slices), nodes))
+        manifest.amp_slices = None
     if "node" in values:
         own = f.integer(values["node"], "`target` amp node", 8)
         manifest.amp_node = own

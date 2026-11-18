@@ -242,7 +242,7 @@ namespace libcrace
         auto victim = spawn_in(entry, nullptr, name, VICTIM_PRIO, core_mask);
         if (victim.valid() and kos_sem_wait(&g_gates->entering, KOS_NEVER) != 0)
         {
-            victim.cancel_for(KOS_CANCEL_KILL, std::chrono::nanoseconds{0});
+            victim.cancel(KOS_CANCEL_KILL);
             victim.join();
             return kos::thread::Handle();
         }

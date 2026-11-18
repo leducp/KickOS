@@ -95,8 +95,7 @@ typedef struct
 
 // The longest duration, the deadline that never comes, and the one that has always passed, each
 // also as the brace form a C static initializer takes. A wait handed a passed deadline, or a
-// sleep a duration of zero or less, never parks. KOS_POLL alone, not any other passed deadline,
-// selects the no-wait mode of kos_thread_cancel and kos_task_slay.
+// sleep a duration of zero or less, never parks.
 #define KOS_FOREVER_INIT {INT64_MAX}
 #define KOS_NEVER_INIT {INT64_MAX}
 #define KOS_POLL_INIT {0}
@@ -187,7 +186,6 @@ static inline kos_duration_t kos_between(kos_monotonic_t from, kos_monotonic_t t
 // limit, and, for the calls that name one, a kind word saying which clock it is read against.
 // A deadline at or before the clock's reading is an immediate poll and never parks.
 #define KOS_LIMIT_NONE UINT64_MAX
-#define KOS_LIMIT_POLL 0u // KOS_POLL's word
 enum kos_limit_kind
 {
     KOS_LIMIT_MONOTONIC = 0, // a kos_monotonic_t deadline
@@ -397,23 +395,13 @@ enum kos_syscall_nr
                                //   console while its task lives, receiver or not.
                                //   EFAULT also answers a
                                //   rendezvous copy refused at either end (sys.h)
-    KOS_SYS_THREAD_CANCEL = 53, // (kos_thread_t, enum kos_cancel, deadline lo, deadline hi) -> 0
-                               //    (with KOS_LIMIT_POLL, the cancel is raised; otherwise the
-                               //    target is EXITED
-                               //    and its capability teardown finished), -KOS_ETIMEDOUT (the
-                               //    cancel raised, cleanup pending, a deadline passed at entry
-                               //    included), -KOS_ECANCELED (caller
-                               //    cancelled; target still cancelled), -KOS_EBADF (bad, stale or
-                               //    exited handle), -KOS_EPERM (different parent), -KOS_EINVAL
-                               //    (self, idle, or an unknown kind). A deadline not passed
-                               //    parks the caller before the cancel is raised
-    KOS_SYS_TASK_SLAY = 54,    // (kos_task_t, deadline lo, deadline hi) -> 0 (KOS_LIMIT_POLL:
-                               //   every live member
-                               //   is stopped and the creator's hold dropped, so the handle names
-                               //   nothing afterwards; otherwise the group is EMPTY and its slot
-                               //   released), -KOS_ETIMEDOUT (every member stopped, the hold
-                               //   kept, a deadline passed at entry included), -KOS_ECANCELED,
-                               //   -KOS_EBADF (never
+    KOS_SYS_THREAD_CANCEL = 53, // (kos_thread_t, enum kos_cancel) -> 0 (the cancel raised, never
+                               //    waiting), -KOS_EBADF (bad, stale or exited handle),
+                               //    -KOS_EPERM (different parent), -KOS_EINVAL (self, idle, or an
+                               //    unknown kind)
+    KOS_SYS_TASK_SLAY = 54,    // (kos_task_t) -> 0 (every live member stopped, never waiting;
+                               //   the creator's hold goes at the death, so the handle names
+                               //   nothing afterwards), -KOS_EBADF (never
                                //   created / freed under this handle / an idle or root task, which is
                                //   unnameable), -KOS_EPERM (the caller did not create it).
     KOS_SYS_CALL_REG = 56,     // (ep_cap, kos_call_lens_pack(send_len, recv_cap), payload in

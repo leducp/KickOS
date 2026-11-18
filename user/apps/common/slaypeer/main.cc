@@ -13,9 +13,9 @@
 // READY is claimed by the switch that starts it, and a victim sharing a core with a runnable
 // peer is claimed by the switch that peer takes anyway.
 //
-// WHAT THIS IMAGE ASSERTS is that a slay RETURNS 0 within a bound. On a tree whose
+// WHAT THIS IMAGE ASSERTS is that a slain victim's join RETURNS 0 within a bound. On a tree whose
 // available_to admits a slain thread whose frame the core holds, the victim's core re-picks it on
-// every pass forever and the call answers -KOS_ETIMEDOUT, which is the control: the bound is what
+// every pass forever and the join answers -KOS_ETIMEDOUT, which is the control: the bound is what
 // turns a hang into a verdict.
 
 #include <kickos/kos.h>
@@ -67,7 +67,11 @@ namespace
             kos_exit(1);
         }
         kos_sleep_for(kos_ns(SETTLE_NS));
-        g_slay_rc = kos_thread_cancel(v.id(), KOS_CANCEL_SLAY, kos::after(SLAY_BOUND));
+        g_slay_rc = v.cancel(KOS_CANCEL_SLAY);
+        if (g_slay_rc == 0)
+        {
+            g_slay_rc = v.join_for(SLAY_BOUND);
+        }
         kos_exit(0);
     }
 }
@@ -83,7 +87,7 @@ int main(int, char**)
         kos::print("[slaypeer] ERROR: slayer spawn refused\n");
         return 1;
     }
-    // Unbounded, the slay carrying the only bound this run needs: a second one here would
+    // Unbounded, the victim's join carrying the only bound this run needs: a second one here would
     // report the gate's patience instead of the kernel's answer.
     if (s.join() != 0)
     {

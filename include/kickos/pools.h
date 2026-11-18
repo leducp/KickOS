@@ -104,6 +104,10 @@ namespace kickos
         Task* tasks;
         TaskLinks* task_links;
         int task_count;
+        // Per declaration, by its dense index: the head of the INSTANCE watches armed on it
+        // (kernel/task/start_watch.cc).
+        uint16_t* start_watches;
+        int decl_count;
         Domain* domains;
         int domain_count;
 

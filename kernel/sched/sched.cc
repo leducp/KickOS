@@ -1071,25 +1071,21 @@ namespace kickos
                 {
                     k.live--;
                 }
-                // By the last member to finish its sweep, so a slay it wakes and a restart the
+                // By the last member to finish its sweep, so a watch it raises and a restart the
                 // report prompts find everything the task's threads held already free.
                 bool const task_dead = task_sweep_done(left_task);
-                // EXITED suppresses switching while this loop scans ThreadPool for join and
-                // task-empty waiters.
+                // EXITED suppresses switching while this loop scans ThreadPool for joiners.
                 for (int s = 0; s < k.threads.next; s++)
                 {
                     Thread* const w = &k.threads.slots()[s];
-                    // A task-empty waiter only once the group is empty and swept, compared by
-                    // pointer as membership is. The creator's watch is raised below the loop.
-                    if (w->wait_join_target() == c
-                        or (task_dead and w->wait_task_target() == left_task))
+                    if (w->wait_join_target() == c)
                     {
                         thread_abort_park(w, 0, lock);
                     }
                 }
                 if (task_dead)
                 {
-                    task_report_death(left_task, left_gen);
+                    task_report_death(left_task, left_gen, lock);
                 }
                 if (k.live == 0)
                 {

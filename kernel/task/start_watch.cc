@@ -20,35 +20,53 @@ namespace kickos
 {
     namespace
     {
-        // A link names an entry by its thread's pool slot plus one and its index, so neither 0
-        // nor LINK_END ever names one. Kernel::start_watches starts at 0; an armed entry's
-        // obj_gen holds LINK_END for the last, and 0 marks an entry no list holds.
-        constexpr uint32_t LINK_END = 0xFFFFFFFFu;
-        constexpr uint32_t LINK_INDEX_MASK = 0xFFFFu;
-        static_assert(KICKOS_THREAD_SLOT_CEILING < 0xFFFF and KCAP_WIDTH_CEILING <= LINK_INDEX_MASK,
-                      "a link packs a thread slot plus one and a capability index in 16 bits each");
+        // A link names an entry by its thread's pool slot plus one in the high byte and its index
+        // in the low one. LINK_NONE ends a list and marks an empty head; a high byte of 0xFF is
+        // never seated.
+        using Link = uint16_t;
+        constexpr Link LINK_NONE = 0;
+        constexpr uint32_t LINK_INDEX_MASK = 0xFFu;
+        static_assert(KICKOS_THREAD_SLOT_CEILING < 0xFF and KCAP_WIDTH_CEILING <= 0xFF,
+                      "a link packs a thread slot plus one and a capability index in a byte each");
+        static_assert(sizeof(CapEntry::obj_gen) == 2 * sizeof(Link),
+                      "an entry's obj_gen holds its two links");
 
-        bool names(uint32_t link)
+        Link link_of(int slot, uint32_t index)
         {
-            return link != 0 and link != LINK_END;
+            return static_cast<Link>((static_cast<uint32_t>(slot + 1) << 8) | index);
         }
 
-        uint32_t link_of(int slot, uint32_t index)
+        int slot_of(Link link)
         {
-            return (static_cast<uint32_t>(slot + 1) << 16) | index;
+            return static_cast<int>(link >> 8) - 1;
         }
 
         // An entry's address holds from its install to its close: a run is detached only once
-        // its thread's sweep has emptied it.
-        CapEntry* entry_of(uint32_t link)
+        // its thread's sweep has emptied it. `link` names one.
+        CapEntry* entry_of(Link link)
         {
-            Thread const& th = kernel().threads.slots()[static_cast<int>(link >> 16) - 1];
+            Thread const& th = kernel().threads.slots()[slot_of(link)];
             return cap_slot(th.caps, link & LINK_INDEX_MASK);
         }
 
-        size_t decl_of(CapEntry const& e)
+        Link next_of(CapEntry const& e)
         {
-            return cap_watch_decl(e);
+            return static_cast<Link>(e.obj_gen & 0xFFFFu);
+        }
+
+        Link prev_of(CapEntry const& e)
+        {
+            return static_cast<Link>(e.obj_gen >> 16);
+        }
+
+        void seat(CapEntry* e, Link prev, Link next)
+        {
+            e->obj_gen = (static_cast<uint32_t>(prev) << 16) | next;
+        }
+
+        Link& head_of(size_t decl)
+        {
+            return kernel().start_watches()[static_cast<int>(decl)];
         }
 
         // Never null while the entry stands: its reference pins the object.
@@ -62,26 +80,90 @@ namespace kickos
             return 1u << notify_cap_bit(e);
         }
 
-        // Whether the incarnation `decl`'s record holds has ended with threads still to die.
-        bool lends(size_t decl)
+        // A raised entry keeps its place, its badge KCAP_BADGE_NONE. On every list but the one
+        // raise_decl walks, each armed entry precedes every raised one, so a walk for the armed
+        // ones stops at the first raised one.
+        bool armed(CapEntry const& e)
         {
-            Task const* const r = task_decl_record(decl);
-            return task_ended(r) and (task_member_count(r) != 0 or task_sweeping(r) != 0);
+            return cap_badge(e) != KCAP_BADGE_NONE;
         }
 
-        void unlink(CapEntry* e)
+        // The armed entry `x` names, or null where the armed ones end.
+        CapEntry* armed_at(Link x)
         {
-            uint32_t* at = &kernel().start_watches;
-            while (names(*at))
+            if (x == LINK_NONE)
             {
-                CapEntry* const x = entry_of(*at);
-                if (x == e)
+                return nullptr;
+            }
+            CapEntry* const e = entry_of(x);
+            if (not armed(*e))
+            {
+                return nullptr;
+            }
+            return e;
+        }
+
+        void push(size_t decl, CapEntry* e, Link self)
+        {
+            Link& head = head_of(decl);
+            seat(e, LINK_NONE, head);
+            if (head != LINK_NONE)
+            {
+                CapEntry* const first = entry_of(head);
+                seat(first, self, next_of(*first));
+            }
+            head = self;
+        }
+
+        void unlink(size_t decl, CapEntry* e)
+        {
+            Link const prev = prev_of(*e);
+            Link const next = next_of(*e);
+            if (prev == LINK_NONE)
+            {
+                head_of(decl) = next;
+            }
+            else
+            {
+                CapEntry* const before = entry_of(prev);
+                seat(before, prev_of(*before), next);
+            }
+            if (next != LINK_NONE)
+            {
+                CapEntry* const after = entry_of(next);
+                seat(after, prev, next_of(*after));
+            }
+            seat(e, LINK_NONE, LINK_NONE);
+        }
+
+        // Thread slot `slot`'s watch on `decl`, armed or raised, or LINK_NONE.
+        Link own_link(size_t decl, int slot)
+        {
+            for (Link x = head_of(decl); x != LINK_NONE; x = next_of(*entry_of(x)))
+            {
+                if (slot_of(x) == slot)
                 {
-                    *at = e->obj_gen;
-                    e->obj_gen = 0;
-                    return;
+                    return x;
                 }
-                at = &x->obj_gen;
+            }
+            return LINK_NONE;
+        }
+
+        // `decl` is clear: raise its armed watches. No switch before the walk is done: the list
+        // it stands on is shared.
+        void raise_decl(size_t decl, Thread** top, Held held)
+        {
+            Link x = head_of(decl);
+            for (CapEntry* e = armed_at(x); e != nullptr; e = armed_at(x))
+            {
+                uint32_t const mask = mask_of(*e);
+                cap_badge_seat(e, KCAP_BADGE_NONE);
+                x = next_of(*e);
+                Thread* const woken = notify_raise_deferred(target_of(*e), mask);
+                if (woken != nullptr)
+                {
+                    sched::keep_top(woken, top, held);
+                }
             }
         }
     }
@@ -89,47 +171,70 @@ namespace kickos
     int start_watch_arm(Thread* c, size_t decl, int notify_obj, uint32_t bit, uint32_t* out_cap,
                         Held held)
     {
-        Kernel& k = kernel();
-        int const slot = k.threads.index_of(c);
+        int const slot = kernel().threads.index_of(c);
         KICKOS_ASSERT(slot >= 0);
-        if (not obj_ref_inc(CapType::CAP_WATCH, notify_obj, 0))
+        Link self = own_link(decl, slot);
+        bool same = false;
+        if (self != LINK_NONE)
+        {
+            same = entry_of(self)->obj == notify_obj;
+        }
+        if (not same and not obj_ref_inc(CapType::CAP_WATCH, notify_obj, 0))
         {
             return -KOS_EOVERFLOW;
         }
-        uint32_t const index = cap_run_peek_free(c->cap_free_head);
-        if (index == KCAP_NO_SLOT)
+        CapEntry* e = nullptr;
+        if (self != LINK_NONE)
         {
-            obj_ref_undo(CapType::CAP_WATCH, notify_obj, 0);
-            return -KOS_EMFILE;
+            e = entry_of(self);
+            int const prior = e->obj;
+            unlink(decl, e);
+            e->obj = notify_obj;
+            cap_badge_seat(e, bit + 1u);
+            // The handle the replaced watch was answered with stops naming the entry.
+            e->gen++;
+            if (not same)
+            {
+                notify_ref_drop(prior);
+            }
         }
-        CapEntry* const e = cap_install_at(c, static_cast<int>(index), notify_obj,
-                                           CapType::CAP_WATCH, 0, bit + 1u);
-        cap_watch_decl_seat(e, static_cast<uint8_t>(decl));
-        e->obj_gen = LINK_END;
-        if (names(k.start_watches))
+        else
         {
-            e->obj_gen = k.start_watches;
+            uint32_t const index = cap_run_peek_free(c->cap_free_head);
+            if (index == KCAP_NO_SLOT)
+            {
+                obj_ref_undo(CapType::CAP_WATCH, notify_obj, 0);
+                return -KOS_EMFILE;
+            }
+            e = cap_install_at(c, static_cast<int>(index), notify_obj, CapType::CAP_WATCH, 0,
+                               bit + 1u);
+            cap_watch_decl_seat(e, static_cast<uint8_t>(decl));
+            self = link_of(slot, index);
         }
-        k.start_watches = link_of(slot, index);
-        if (lends(decl))
+        push(decl, e, self);
+        Task* const dying = task_decl_dying(decl);
+        if (dying != nullptr)
         {
             notify_lend_mark(target_of(*e));
-            death_wait_lend(task_decl_record(decl), held);
+            watch_lend_task(dying, held);
         }
-        *out_cap = (static_cast<uint32_t>(e->gen) << KCAP_INDEX_BITS) | index;
+        *out_cap = (static_cast<uint32_t>(e->gen) << KCAP_INDEX_BITS) | (self & LINK_INDEX_MASK);
         return 0;
     }
 
     void start_watch_close(CapEntry& e, Held held)
     {
-        if (e.obj_gen == 0)
+        size_t const decl = cap_watch_decl(e);
+        bool const lent = armed(e);
+        unlink(decl, &e);
+        if (not lent)
         {
             return;
         }
-        unlink(&e);
-        if (lends(decl_of(e)))
+        Task* const dying = task_decl_dying(decl);
+        if (dying != nullptr)
         {
-            death_wait_lend(task_decl_record(decl_of(e)), held);
+            watch_lend_task(dying, held);
         }
     }
 
@@ -137,22 +242,12 @@ namespace kickos
     {
         IrqLock lock;
         Thread* top = nullptr;
-        uint32_t* at = &kernel().start_watches;
-        while (names(*at))
+        PoolSpan<Link> const heads = kernel().start_watches();
+        for (int d = 0; d < heads.size(); d++)
         {
-            CapEntry* const x = entry_of(*at);
-            if (not task_decl_clear(decl_of(*x), nullptr))
+            if (armed_at(heads[d]) != nullptr and task_decl_clear(static_cast<size_t>(d), nullptr))
             {
-                at = &x->obj_gen;
-                continue;
-            }
-            *at = x->obj_gen;
-            x->obj_gen = 0;
-            // No switch before the walk is done: the list it stands on is shared.
-            Thread* const woken = notify_raise_deferred(target_of(*x), mask_of(*x));
-            if (woken != nullptr)
-            {
-                sched::keep_top(woken, &top, lock);
+                raise_decl(static_cast<size_t>(d), &top, lock);
             }
         }
         if (top != nullptr)
@@ -164,14 +259,12 @@ namespace kickos
     bool start_watch_mark_decl(size_t decl)
     {
         bool any = false;
-        for (uint32_t at = kernel().start_watches; names(at); at = entry_of(at)->obj_gen)
+        Link x = head_of(decl);
+        for (CapEntry* e = armed_at(x); e != nullptr; e = armed_at(x))
         {
-            CapEntry const* const x = entry_of(at);
-            if (decl_of(*x) == decl)
-            {
-                notify_lend_mark(target_of(*x));
-                any = true;
-            }
+            notify_lend_mark(target_of(*e));
+            any = true;
+            x = next_of(*e);
         }
         return any;
     }
@@ -179,46 +272,41 @@ namespace kickos
     bool start_watch_owe_into(int notify_obj)
     {
         bool any = false;
-        for (uint32_t at = kernel().start_watches; names(at); at = entry_of(at)->obj_gen)
+        PoolSpan<Link> const heads = kernel().start_watches();
+        for (int d = 0; d < heads.size(); d++)
         {
-            CapEntry const* const x = entry_of(at);
-            if (x->obj == notify_obj and lends(decl_of(*x)))
+            if (armed_at(heads[d]) == nullptr)
             {
-                task_watch_lend_owe(task_decl_record(decl_of(*x)));
-                any = true;
+                continue;
+            }
+            Task* const dying = task_decl_dying(static_cast<size_t>(d));
+            Link x = heads[d];
+            for (CapEntry* e = armed_at(x); dying != nullptr and e != nullptr; e = armed_at(x))
+            {
+                if (e->obj == notify_obj)
+                {
+                    task_watch_lend_owe(dying);
+                    any = true;
+                    break;
+                }
+                x = next_of(*e);
             }
         }
         return any;
     }
 
-    uint8_t start_watch_lend(Task const* t, uint8_t p)
+    uint8_t start_watch_lend(size_t decl)
     {
-        if (not names(kernel().start_watches))
+        uint8_t p = 0;
+        Link x = head_of(decl);
+        for (CapEntry* e = armed_at(x); e != nullptr; e = armed_at(x))
         {
-            return p;
-        }
-        int const decl = task_decl_of(t);
-        if (decl < 0)
-        {
-            return p;
-        }
-        for (uint32_t at = kernel().start_watches; names(at); at = entry_of(at)->obj_gen)
-        {
-            CapEntry const* const x = entry_of(at);
-            if (decl_of(*x) != static_cast<size_t>(decl))
-            {
-                continue;
-            }
-            Notification const* const n = target_of(*x);
-            if (n == nullptr)
-            {
-                continue;
-            }
-            uint8_t const w = notify_lender_prio(n, mask_of(*x));
+            uint8_t const w = notify_lender_prio(target_of(*e), mask_of(*e));
             if (w > p)
             {
                 p = w;
             }
+            x = next_of(*e);
         }
         return p;
     }

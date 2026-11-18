@@ -69,6 +69,9 @@ namespace kickos
         uint8_t staged_decl = 0;
         // Every granule of an IMAGE stage holds its source's bytes.
         bool staged_full = false;
+        // The locked pass took a declaration's stage for its create: a call that does not
+        // succeed then owes that declaration's watches a look (start_watch_poke).
+        bool stage_taken = false;
         // The plan found no run, or no budget, for the stage the call needed: the locked pass
         // sends the call round only where the run is there by then.
         bool staged_short = false;

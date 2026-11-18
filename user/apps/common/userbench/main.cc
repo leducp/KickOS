@@ -398,7 +398,7 @@ namespace
         }
         if (w.valid())
         {
-            (void)w.cancel_for(KOS_CANCEL_KILL, std::chrono::nanoseconds{0});
+            (void)w.cancel(KOS_CANCEL_KILL);
             (void)w.join();
         }
         if (note != KOS_CAP_NONE)
@@ -556,7 +556,7 @@ namespace
             row("  xtask ping-pong: SKIP (task pool too small)\n");
             if (rb == 0)
             {
-                (void)kos_task_slay(peers.b, KOS_NEVER);
+                (void)kickos::apps::slay_until_dead(peers.b, KOS_NEVER);
             }
         }
         peers.close();
@@ -801,7 +801,7 @@ namespace
                 char s[96];
                 ksnprintf(s, sizeof(s), "  %s: FAIL (a hand-over was refused)\n", rowname);
                 kos::print(s);
-                (void)p.cancel_for(KOS_CANCEL_KILL, std::chrono::nanoseconds{0});
+                (void)p.cancel(KOS_CANCEL_KILL);
             }
             else if (FINE_CLOCK)
             {
@@ -888,8 +888,8 @@ namespace
     {
         if (p.a.valid() != p.b.valid())
         {
-            (void)p.a.cancel_for(KOS_CANCEL_KILL, std::chrono::nanoseconds{0});
-            (void)p.b.cancel_for(KOS_CANCEL_KILL, std::chrono::nanoseconds{0});
+            (void)p.a.cancel(KOS_CANCEL_KILL);
+            (void)p.b.cancel(KOS_CANCEL_KILL);
         }
         if (p.a.valid())
         {
@@ -1159,7 +1159,7 @@ namespace
             // cancelled instead.
             for (uint32_t i = 0; i < k; i++)
             {
-                (void)hs[i].cancel_for(KOS_CANCEL_KILL, std::chrono::nanoseconds{0});
+                (void)hs[i].cancel(KOS_CANCEL_KILL);
             }
         }
         for (uint32_t i = 0; i < k; i++)
@@ -1279,8 +1279,8 @@ int main(int, char**)
     }
 
     switch_vec(reporter_loop());
-    (void)ra.cancel_for(KOS_CANCEL_KILL, std::chrono::nanoseconds{0});
-    (void)rb.cancel_for(KOS_CANCEL_KILL, std::chrono::nanoseconds{0});
+    (void)ra.cancel(KOS_CANCEL_KILL);
+    (void)rb.cancel(KOS_CANCEL_KILL);
     (void)ra.join();
     (void)rb.join();
 

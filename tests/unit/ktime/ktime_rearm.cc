@@ -112,16 +112,6 @@ namespace kickos
         g_expired = t;
     }
 
-
-    // No death wait here either: the expiry loop's batch has nothing to leave.
-    void death_leave_batch_begin()
-    {
-    }
-
-    void death_leave_batch_end(Held)
-    {
-    }
-
     // realtime.cc is not linked here, and no arm here parks toward the wall clock.
     uint64_t realtime_now()
     {

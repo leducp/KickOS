@@ -6,6 +6,8 @@
  */
 
 #if KICKOS_AMP_OWN_IMAGE && KICKOS_AMP_NODE_ID == 0
+#include <amp_partition.ld.h>
+
     .section .rodata.lp_boot, "a", @progbits
     .balign 4
     .global kickos_c6_amp_lp_stub_start
@@ -15,9 +17,10 @@ kickos_c6_amp_lp_stub_start:
     .rept 32
     j       lp_early_fault
     .endr
-    /* Node 1's image was stored by another hart (the ROM loader on HP). */
+    /* Node 1's image was stored by another hart (the ROM loader on HP). It begins where node
+       0's slice ends. */
     fence.i
-    li      t0, (KICKOS_AMP_PARTITION_BASE + KICKOS_AMP_NODE_SHARE)
+    li      t0, KICKOS_AMP_IMAGE_END
     jr      t0
 lp_early_fault:
     li      t0, 0x50000204

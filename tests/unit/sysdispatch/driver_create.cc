@@ -10,6 +10,7 @@
 // the task.
 
 #include "../common/seam_pools.h"
+#include "../common/watch_lists.h"
 
 #include <kickos/cap.h>
 #include <kickos/instance.h>
@@ -396,7 +397,7 @@ namespace kickos
                                  note_, reinterpret_cast<uintptr_t>(text("drv", 16)), &w),
                       -KOS_EALREADY);
             EXPECT_EQ(c->cap_free_head, head) << "the arm that found nothing in the way took a slot";
-            EXPECT_TRUE(kernel().start_watches == 0 or kernel().start_watches == 0xFFFFFFFFu)
+            EXPECT_TRUE(testfix::no_watch_listed())
                 << "the arm that found nothing in the way armed a watch";
         }
 

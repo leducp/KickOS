@@ -175,17 +175,18 @@ namespace kickos
     // The creator gate. False for a kernel task and for KILL_TAG_NONE, so a thread with
     // no spawner matches nobody, exactly as the thread kill gate answers.
     bool task_created_by(Task const* t, uint16_t tag);
+    // The task `task` names, created by `c`'s task; else null with *err KOS_EBADF or KOS_EPERM.
+    Task* task_resolve_created(Thread* c, kos_task_t task, int* err);
 
     // Release the creator's hold: the group is no longer nameable, and the slot and its
     // domain go back as soon as the last member leaves (at once, if there is none). A member
     // its create has not started yet is started slain, so the task ends. Caller holds IrqLock.
     void task_drop_hold(Task* t, Held held);
-    // task_stop, then task_drop_hold: the hold is gone on return.
-    void task_stop_and_drop_hold(Task* t, Held held);
+    // task_stop, and the hold dropped at once where no member is left, else at the death's
+    // report (task_report_death); once slain, a second call does nothing.
+    void task_stop_for_slay(Task* t, Held held);
 
     // The TASK watch's halves (kernel/notify/watch.cc). Caller holds IrqLock.
-    // The task `task` names, created by `c`'s task; else null with *err KOS_EBADF or KOS_EPERM.
-    Task* task_watch_source(Thread* c, kos_task_t task, int* err);
     // Whether `t`'s declaration names a ready endpoint.
     bool task_watch_ready_named(Task const* t);
     void task_watch_disarm(Task* t, Held held);
@@ -258,24 +259,25 @@ namespace kickos
     // is stopped.
     void task_stop(Task* t, Held held);
     // Whether `t` has ended, which refuses it a new member. Null-safe: false.
-    bool task_ended(Task const* t);
-    // Marks `t` owed a recompute of what its death waiters lend. Caller holds IrqLock.
-    void task_lend_owe(Task* t);
-    // Whether `t` was owed one, which it no longer is. Caller holds IrqLock.
-    bool task_lend_owed_take(Task* t);
+    inline bool task_ended(Task const* t)
+    {
+        return t != nullptr and (t->marks & KOS_TASK_ENDED) != 0;
+    }
     // `t` serves the published console from here on, and no other task does: its end, or its
     // slot going back, is the console's death (cap_console_task_ended). Caller holds IrqLock.
     void task_console_serve(Task* t);
     // Whether `t` serves the published console, its task not yet ended. Null-safe: false.
     bool task_serves_console(Task const* t);
     // A member released from `t` has swept its capabilities: true when that leaves the record
-    // empty with no member sweeping, what a WAIT_TASK_EMPTY waiter waits for, also where the
-    // slot was freed during the sweep, its creator's hold gone. Caller holds IrqLock.
+    // empty with no member sweeping, also where the slot was freed during the sweep, its
+    // creator's hold gone. Caller holds IrqLock.
     bool task_sweep_done(Task* t);
     // The task emptied and every member's sweep ran: mark it ended and dead and raise the
-    // watch, once, if `t` is still the task of generation `gen`, then raise each INSTANCE watch
-    // nothing is in the way of any more (start_watch_poke). Caller holds IrqLock.
-    void task_report_death(Task* t, uint16_t gen);
+    // watch, once, if `t` is still the task of generation `gen` or its slot was freed during the
+    // sweep, whose watch is then cleared; a slain task's creator's hold is dropped there too.
+    // Then raise each INSTANCE watch nothing is in the way of any more (start_watch_poke). Caller
+    // holds IrqLock.
+    void task_report_death(Task* t, uint16_t gen, Held held);
     uint16_t task_gen(Task const* t); // null-safe: 0
     // A member of `t` is waiting to receive on the endpoint `ep_obj` names: raise the watch
     // the first time that is the armed endpoint, without a reschedule, since the receive has
@@ -303,6 +305,9 @@ namespace kickos
 #endif
     // Declaration `decl`'s own record, or null past the declarations.
     Task* task_decl_record(size_t decl);
+    // Declaration `decl`'s own record while its incarnation has ended with a member still running
+    // or sweeping, else null. Caller holds IrqLock.
+    Task* task_decl_dying(size_t decl);
 #if KICKOS_KERNEL_CORES > 1
     // The IRQ bindings `t`'s record pays for between their last capability's release and their
     // reclamation; null for a task outside the pool.

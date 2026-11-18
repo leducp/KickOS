@@ -6,7 +6,8 @@
 if(NOT TARGET userbench)
   return()
 endif()
-kickos_app_judge(userbench tests/integration/check_userbench.sh)
+# Its run outlasts the default capture window on the slowest boards (f411disco).
+kickos_app_judge(userbench tests/integration/check_userbench.sh WINDOW 60)
 if(KICKOS_ARCH STREQUAL "sim")
   add_test(NAME sim_userbench
     COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_userbench.sh" "$<TARGET_FILE:userbench>")

@@ -29,8 +29,6 @@ namespace kickos::init
         char const* program; // the program the user tasks are instances of
     };
 
-    // How long a slay waits for the group to empty (1.4).
-    constexpr std::chrono::milliseconds SLAY_WAIT{1};
     // A start's answer where it waits on its instance's watch rather than failing.
     constexpr int PARKED = 1;
 
@@ -116,9 +114,8 @@ namespace kickos::init
         {
             enum class Kind : uint8_t
             {
-                FAILED,   // a failed start
-                RELEASED, // a death released
-                KEEPS     // members left past its slay
+                FAILED,  // a failed start
+                RELEASED // a death released
             };
             Kind kind;
             uint16_t task;

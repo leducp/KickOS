@@ -35,9 +35,8 @@ namespace kickos
         constexpr uint8_t TASK_MARK_DEAD = KOS_TASK_DEAD;
         constexpr uint8_t TASK_MARK_ENDED = KOS_TASK_ENDED;
         constexpr uint8_t TASK_MARK_CONSOLE = 1u << 4; // serves the published console
-        // Its death waiters' lend is owed a recompute before the lock is released
-        // (death_leave_batch_end).
-        constexpr uint8_t TASK_MARK_LEND_OWED = 1u << 5;
+        // Slain with members left: the creator's hold goes at the death's report.
+        constexpr uint8_t TASK_MARK_SLAIN = 1u << 5;
         // Its threads are owed a recompute of what the watches on its death lend them
         // (pi_drain_deaths).
         constexpr uint8_t TASK_MARK_WATCH_OWED = 1u << 6;
@@ -251,7 +250,7 @@ namespace kickos
             }
             if (lends)
             {
-                death_wait_lend(t, held);
+                watch_lend_task(t, held);
             }
         }
 
@@ -267,12 +266,15 @@ namespace kickos
             cap_console_task_ended(held);
         }
 
+        // A caller that holds no member re-reads `t`'s generation after it: a switch inside can
+        // let `t` die and its slot be seated again.
         void mark_ended(Task* t, int code, bool latch, Held held)
         {
             if ((t->marks & TASK_MARK_ENDED) != 0)
             {
                 return;
             }
+            uint16_t const gen = t->gen;
             t->marks = static_cast<uint8_t>(t->marks | TASK_MARK_ENDED);
 #if KICKOS_HAVE_ASPACE
             domain_retire_handles(t->domain);
@@ -282,6 +284,10 @@ namespace kickos
                 t->exit_status = code;
             }
             console_leave(t, held);
+            if (t->gen != gen)
+            {
+                return;
+            }
             // Ahead of the raise, whose wake can switch this thread out.
             lend_on_end(t, held);
             watch_raise(t, TASK_MARK_ENDED);
@@ -292,12 +298,12 @@ namespace kickos
         void free_task(Task* t, Held held)
         {
             console_leave(t, held);
-            // A member still sweeping keeps no lend from a watch the slot no longer holds.
-            bool const lent = watch_lends(t);
-            watch_clear(t);
-            if (lent)
+            // A member still sweeping keeps the slot from being seated again, and the watch for
+            // the DEAD task_report_death raises at the last sweep, its lend with it.
+            if (t->sweeping == 0)
             {
-                death_wait_lend(t, held);
+                task_watch_disarm(t, held);
+                watch_clear(t);
             }
 #if KICKOS_HAVE_ASPACE
             if ((t->marks & TASK_MARK_ENDED) == 0)
@@ -440,7 +446,7 @@ namespace kickos
         return t->creator_tag == static_cast<TaskThreads>(tag);
     }
 
-    Task* task_watch_source(Thread* c, kos_task_t task, int* err)
+    Task* task_resolve_created(Thread* c, kos_task_t task, int* err)
     {
         Task* const t = task_resolve(task);
         if (t == nullptr)
@@ -468,7 +474,7 @@ namespace kickos
         t->watch_bit = 0;
         if (lent)
         {
-            death_wait_lend(t, held);
+            watch_lend_task(t, held);
         }
     }
 
@@ -487,7 +493,7 @@ namespace kickos
         }
         if (lent)
         {
-            death_wait_lend(t, held);
+            watch_lend_task(t, held);
         }
         watch_raise(t, static_cast<uint8_t>(t->marks & (TASK_MARK_READY | TASK_MARK_DEAD
                                                         | TASK_MARK_ENDED)));
@@ -530,14 +536,11 @@ namespace kickos
     int task_state_call(kos_task_t task, int32_t* status)
     {
         IrqLock lock;
-        Task* const t = task_resolve(task);
+        int err = 0;
+        Task* const t = task_resolve_created(sched::current(), task, &err);
         if (t == nullptr)
         {
-            return -KOS_EBADF;
-        }
-        if (not task_created_by(t, kernel().threads.kill_tag_of(sched::current())))
-        {
-            return -KOS_EPERM;
+            return -err;
         }
         int state = t->marks & (TASK_MARK_READY | TASK_MARK_DEAD | TASK_MARK_ENDED);
         if (t->refcount != 0)
@@ -571,16 +574,32 @@ namespace kickos
         }
     }
 
+    namespace
+    {
+        // False when a switch inside let `t` die and its slot go back, maybe seated again.
+        // Inlined: task_stop's only kernel caller is the slay, so an image links this copy alone.
+        inline __attribute__((always_inline)) bool stop_group(Task* t, Held held)
+        {
+            uint16_t const gen = t->gen;
+            // Marked before mark_ended, whose wakes can switch a running caller out.
+            task_cancel_mark(t, held);
+            mark_ended(t, 0, /*latch=*/false, held);
+            if (t->gen != gen)
+            {
+                return false;
+            }
+            task_cancel_parks(t, held);
+            return t->gen == gen;
+        }
+    }
+
     void task_stop(Task* t, Held held)
     {
         if (t == nullptr)
         {
             return;
         }
-        // Marked before mark_ended, whose wakes can switch a running caller out.
-        task_cancel_mark(t, held);
-        mark_ended(t, 0, /*latch=*/false, held);
-        task_cancel_parks(t, held);
+        (void)stop_group(t, held);
     }
 
     void task_watch_notify_gone(int notify_handle)
@@ -610,29 +629,6 @@ namespace kickos
     bool task_serves_console(Task const* t)
     {
         return t != nullptr and (t->marks & TASK_MARK_CONSOLE) != 0;
-    }
-
-    bool task_ended(Task const* t)
-    {
-        return t != nullptr and (t->marks & TASK_MARK_ENDED) != 0;
-    }
-
-    void task_lend_owe(Task* t)
-    {
-        if (t != nullptr)
-        {
-            t->marks = static_cast<uint8_t>(t->marks | TASK_MARK_LEND_OWED);
-        }
-    }
-
-    bool task_lend_owed_take(Task* t)
-    {
-        if (t == nullptr or (t->marks & TASK_MARK_LEND_OWED) == 0)
-        {
-            return false;
-        }
-        t->marks = static_cast<uint8_t>(t->marks & ~TASK_MARK_LEND_OWED);
-        return true;
     }
 
     void task_watch_lend_owe(Task* t)
@@ -670,6 +666,69 @@ namespace kickos
         return nullptr;
     }
 
+    namespace
+    {
+        // Each member its create has not started yet is started slain.
+        void start_unstarted_slain(Task* t, Held held)
+        {
+            // Added first: a thread not yet added takes no cancel.
+            for (ListNode* m = t->members.head; m != nullptr; m = m->next)
+            {
+                Thread* const th = KICKOS_CONTAINER_OF(m, Thread, member);
+                if (th->state == ThreadState::INACTIVE)
+                {
+                    sched::add(th, held);
+                    thread_cancel_kind(th, CANCEL_SLAY, held);
+                }
+            }
+        }
+
+        // True when a member still holds the slot. Inlined: a frame here deepens the exit stubs'
+        // teardown chain that the trap stack reservations bound.
+        inline __attribute__((always_inline)) bool release_hold(Task* t, Held held)
+        {
+            if (t == nullptr or t->creator_tag == ThreadPool::KILL_TAG_NONE)
+            {
+                return false;
+            }
+            start_unstarted_slain(t, held);
+            Kernel& kn = kernel();
+            int const ti = slot_of(t);
+            uint16_t const tag = t->creator_tag;
+            if (ti >= 0 and tag <= kn.threads.count())
+            {
+                // Out of the creator slot's created list. O(the tasks that slot holds).
+                TaskLinks* const tl = task_links();
+                uint8_t* at = &kn.threads.links()[tag - 1].created_head;
+                while (*at != 0 and *at != static_cast<uint8_t>(ti + 1))
+                {
+                    at = &tl[*at - 1].created_next;
+                }
+                if (*at != 0)
+                {
+                    *at = tl[ti].created_next;
+                }
+                tl[ti].created_next = 0;
+            }
+            t->creator_tag = ThreadPool::KILL_TAG_NONE;
+            t->marks = static_cast<uint8_t>(t->marks & ~TASK_MARK_SLAIN);
+            // The only place a live creator tag is cleared, which keeps task_holds exact:
+            // free_task sees an already-cleared tag or a task that never held one.
+            Kernel& k = kernel();
+            KICKOS_DEBUG_ASSERT(k.task_holds > 0);
+            k.task_holds--;
+            if (t->refcount == 0)
+            {
+                free_task(t, held);
+                return false;
+            }
+            // The domain reference this drops is the CREATOR's; the members' own, taken by the
+            // first task_ref, keeps the domain alive.
+            domain_release(t->domain);
+            return true;
+        }
+    }
+
     bool task_sweep_done(Task* t)
     {
         if (t == nullptr or t->sweeping == 0)
@@ -692,23 +751,35 @@ namespace kickos
         return t->gen;
     }
 
-    void task_report_death(Task* t, uint16_t gen)
+    void task_report_death(Task* t, uint16_t gen, Held held)
     {
-        // A slot freed during the teardown and seated again is another instance's.
-        if (t != nullptr and t->gen == gen and t->refcount == 0)
+        if (t != nullptr and t->refcount == 0)
         {
+            // Unequal only for a slot freed during the teardown, which free_task left its watch.
+            bool const freed = t->gen != gen;
 #if KICKOS_HAVE_ASPACE
-            if ((t->marks & TASK_MARK_ENDED) == 0)
+            if (not freed)
             {
-                domain_retire_handles(t->domain);
+                if ((t->marks & TASK_MARK_ENDED) == 0)
+                {
+                    domain_retire_handles(t->domain);
+                }
+                domain_retire_space(t->domain);
             }
-            domain_retire_space(t->domain);
 #endif
             uint8_t const fresh =
                 static_cast<uint8_t>(TASK_MARK_DEAD | (~t->marks & TASK_MARK_ENDED));
             t->marks = static_cast<uint8_t>((t->marks & ~TASK_MARK_READY) | TASK_MARK_DEAD
                                             | TASK_MARK_ENDED);
             watch_raise(t, fresh);
+            if (freed)
+            {
+                watch_clear(t);
+            }
+            else if ((t->marks & TASK_MARK_SLAIN) != 0)
+            {
+                task_drop_hold(t, held);
+            }
         }
         // Also for a slot freed during the teardown: its sweep was the last thing in the way.
         start_watch_poke();
@@ -882,62 +953,6 @@ namespace kickos
         }
     }
 
-    namespace
-    {
-        // True when a member still holds the slot. Inlined: a frame here deepens the exit stubs'
-        // teardown chain that the trap stack reservations bound.
-        inline __attribute__((always_inline)) bool release_hold(Task* t, Held held)
-        {
-            if (t == nullptr or t->creator_tag == ThreadPool::KILL_TAG_NONE)
-            {
-                return false;
-            }
-            // Added first: a thread not yet added takes no cancel.
-            for (ListNode* m = t->members.head; m != nullptr; m = m->next)
-            {
-                Thread* const th = KICKOS_CONTAINER_OF(m, Thread, member);
-                if (th->state == ThreadState::INACTIVE)
-                {
-                    sched::add(th, held);
-                    thread_cancel_kind(th, CANCEL_SLAY, held);
-                }
-            }
-            Kernel& kn = kernel();
-            int const ti = slot_of(t);
-            uint16_t const tag = t->creator_tag;
-            if (ti >= 0 and tag <= kn.threads.count())
-            {
-                // Out of the creator slot's created list. O(the tasks that slot holds).
-                TaskLinks* const tl = task_links();
-                uint8_t* at = &kn.threads.links()[tag - 1].created_head;
-                while (*at != 0 and *at != static_cast<uint8_t>(ti + 1))
-                {
-                    at = &tl[*at - 1].created_next;
-                }
-                if (*at != 0)
-                {
-                    *at = tl[ti].created_next;
-                }
-                tl[ti].created_next = 0;
-            }
-            t->creator_tag = ThreadPool::KILL_TAG_NONE;
-            // The only place a live creator tag is cleared, which keeps task_holds exact:
-            // free_task sees an already-cleared tag or a task that never held one.
-            Kernel& k = kernel();
-            KICKOS_DEBUG_ASSERT(k.task_holds > 0);
-            k.task_holds--;
-            if (t->refcount == 0)
-            {
-                free_task(t, held);
-                return false;
-            }
-            // The domain reference this drops is the CREATOR's; the members' own, taken by the
-            // first task_ref, keeps the domain alive.
-            domain_release(t->domain);
-            return true;
-        }
-    }
-
     void task_drop_hold(Task* t, Held held)
     {
         // Last, for it can switch: the walker that marked these members may never resume to end
@@ -948,13 +963,26 @@ namespace kickos
         }
     }
 
-    void task_stop_and_drop_hold(Task* t, Held held)
+    void task_stop_for_slay(Task* t, Held held)
     {
-        // Stopped first: the release can free the slot of an empty group, leaving `t` dangling.
-        task_stop(t, held);
-        // No walk after the release: the stop's own ended every park, and a marked member parks
-        // no more.
-        (void)release_hold(t, held);
+        if ((t->marks & TASK_MARK_SLAIN) != 0)
+        {
+            return;
+        }
+        // Marked before the stop, which can switch: a death reported meanwhile drops the hold and
+        // frees the slot, which may be seated again before this resumes.
+        t->marks = static_cast<uint8_t>(t->marks | TASK_MARK_SLAIN);
+        if (not stop_group(t, held))
+        {
+            return;
+        }
+        if (t->refcount == 0 and t->sweeping == 0)
+        {
+            task_drop_hold(t, held);
+            return;
+        }
+        // No walk: the stop's own ended every park, and a marked member parks no more.
+        start_unstarted_slain(t, held);
     }
 
     void task_ref(Task* t)
@@ -1197,6 +1225,16 @@ namespace kickos
             return nullptr;
         }
         return &decl_slot(decl);
+    }
+
+    Task* task_decl_dying(size_t decl)
+    {
+        Task& t = decl_slot(decl);
+        if ((t.refcount != 0 or t.sweeping != 0) and task_ended(&t))
+        {
+            return &t;
+        }
+        return nullptr;
     }
 
 #if KICKOS_KERNEL_CORES > 1

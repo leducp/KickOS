@@ -1423,9 +1423,8 @@ namespace kickos
     //
     // No timer is needed to reach a spinning victim: on one core a target distinct from the
     // caller is READY, BLOCKED or refused, and both live states are claimed at the resume.
-    int thread_cancel_call(kos_thread_t thread, uintptr_t kind, uint64_t deadline)
+    int thread_cancel_call(kos_thread_t thread, uintptr_t kind)
     {
-        WaitLimit const limit(deadline);
         uint8_t cancel = CANCEL_KILL;
         if (kind == KOS_CANCEL_SLAY)
         {
@@ -1435,51 +1434,15 @@ namespace kickos
         {
             return -KOS_EINVAL;
         }
-        Thread* const c = sched::current();
-        if (deadline == KOS_LIMIT_POLL)
+        IrqLock lock;
+        Thread* t = nullptr;
+        int const rc = cancel_target(sched::current(), thread, &t);
+        if (rc != 0)
         {
-            IrqLock lock;
-            Thread* t = nullptr;
-            int const rc = cancel_target(c, thread, &t);
-            if (rc != 0)
-            {
-                return rc;
-            }
-            thread_cancel_kind(t, cancel, lock);
-            return 0;
+            return rc;
         }
-        uint32_t epoch = 0;
-        {
-            IrqLock lock;
-            // Ahead of the park and of the cancel below: an exit taken between them would leave
-            // the victim uncancelled with the caller gone.
-            ParkToken const ask = park_cancel_pending(c);
-            if (ask.cancelled())
-            {
-                sched::exit_current(KOS_EXIT_CANCELLED, sched::EXIT_RETURN, &lock);
-            }
-            Thread* t = nullptr;
-            int const rc = cancel_target(c, thread, &t);
-            if (rc != 0)
-            {
-                return rc;
-            }
-            if (ktime_limit_passed(limit))
-            {
-                thread_cancel_kind(t, cancel, lock);
-                return -KOS_ETIMEDOUT;
-            }
-            // Parked first, so the cancel takes no pass: from a running caller it could run the
-            // victim to its exit, whose sweep would then find nobody parked on it.
-            epoch = park_queueless(ask)(c, WAIT_JOIN, t, lock);
-            ktime_limit_arm(c, limit, lock);
-            thread_cancel_kind(t, cancel, lock);
-            sched::reschedule(nullptr, lock);
-        }
-        wq_confirm_resume(c, epoch); // the lock is released across this: see sync.h
-        // 0 (the target is gone and swept), -KOS_ETIMEDOUT (cancelled but not yet gone), or
-        // -KOS_ECANCELED (the caller was itself cancelled, e.g. by the victim's group cancel).
-        return static_cast<int>(c->wait_result);
+        thread_cancel_kind(t, cancel, lock);
+        return 0;
     }
 
 #if KICKOS_KERNEL_CORES > 1
@@ -2391,84 +2354,19 @@ namespace kickos
         return -KOS_ENOENT;
     }
 
-    // Every member is slain, a member running no system call included. KOS_POLL drops the
-    // creator's hold at once and returns, the slot going back once the last member's sweep is
-    // done. Any other deadline drops it only on the way out of a successful wait: dropping it
-    // first frees the slot the moment the group empties, leaving `t` a dangling name in a wait
-    // edge. On a timeout, a deadline passed at entry included, the hold survives with the group.
-    int task_slay(kos_task_t task, uint64_t deadline)
+    // Every member is slain, a member running no system call included. The creator's hold goes
+    // with the death's report, at once for a task with no member left, and the slot with it.
+    int task_slay(kos_task_t task)
     {
-        WaitLimit const limit(deadline);
-        Thread* const c = sched::current();
-        if (deadline == KOS_LIMIT_POLL)
+        IrqLock lock;
+        int err = 0;
+        Task* const t = task_resolve_created(sched::current(), task, &err);
+        if (t == nullptr)
         {
-            IrqLock lock;
-            Task* const t = task_resolve(task);
-            if (t == nullptr)
-            {
-                return -KOS_EBADF;
-            }
-            if (not task_created_by(t, kernel().threads.kill_tag_of(c)))
-            {
-                return -KOS_EPERM;
-            }
-            task_stop_and_drop_hold(t, lock);
-            return 0;
+            return -err;
         }
-        uint32_t epoch = 0;
-        {
-            IrqLock lock;
-            // Ahead of the resolve: the hold this caller would owe a task_drop_hold is one
-            // task_orphan_created_by drops for it out of sched::exit_current.
-            ParkToken const ask = park_cancel_pending(c);
-            if (ask.cancelled())
-            {
-                sched::exit_current(KOS_EXIT_CANCELLED, sched::EXIT_RETURN, &lock);
-            }
-            Task* const t = task_resolve(task);
-            if (t == nullptr)
-            {
-                return -KOS_EBADF;
-            }
-            if (not task_created_by(t, kernel().threads.kill_tag_of(c)))
-            {
-                return -KOS_EPERM;
-            }
-            // Already empty and swept: nothing could wake a park here. A member still sweeping
-            // wakes it at the end of its sweep.
-            if (task_member_count(t) == 0 and task_sweeping(t) == 0)
-            {
-                task_drop_hold(t, lock);
-                return 0;
-            }
-            if (ktime_limit_passed(limit))
-            {
-                task_stop(t, lock);
-                return -KOS_ETIMEDOUT;
-            }
-            // Parked before the stop, as in thread_cancel_call, so the stop takes no pass: every
-            // member is marked and every park ended before the reschedule below switches.
-            epoch = death_park(ask)(c, t, lock);
-            ktime_limit_arm(c, limit, lock);
-            task_stop(t, lock);
-            // After the stop, which cut every wait of the task's threads in this hold.
-            death_wait_lend(t, lock);
-            sched::reschedule(nullptr, lock);
-        }
-        wq_confirm_resume(c, epoch);
-        int const rc = static_cast<int>(c->wait_result);
-        if (rc == 0)
-        {
-            // By the handle again: once the group is dead, a create of its declaration ends this
-            // hold and seats the record for its own creator, before this thread runs again.
-            IrqLock lock;
-            Task* const t = task_resolve(task);
-            if (task_created_by(t, kernel().threads.kill_tag_of(c)))
-            {
-                task_drop_hold(t, lock);
-            }
-        }
-        return rc;
+        task_stop_for_slay(t, lock);
+        return 0;
     }
 
     // The exit sweep in sched::exit_current is the only thing that wakes this park, apart from

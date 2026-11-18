@@ -102,36 +102,16 @@ namespace kickos
         return park_queueless;
     }
 
-    // death_park(ask)(c, t, held): park `c` on task `t`'s death (WAIT_TASK_EMPTY), on
-    // Kernel::death_waiters. Does not switch and lends nothing yet: death_wait_lend follows,
-    // once `t` is stopped. Returns the epoch for wq_confirm_resume.
-    using DeathPark = uint32_t(Thread* c, Task* t, Held held);
-    inline DeathPark& death_park(ParkToken const&)
-    {
-        // As wq_block's.
-        DeathPark death_park;
-        return death_park;
-    }
-    // The threads on stopped task `t`'s run list take the priority of every thread parked on its
-    // death, as a mutex holder takes its waiters', and of every waiter on a watch of it. Caller
-    // holds IrqLock.
-    void death_wait_lend(Task const* t, Held held);
+    // The threads on ended task `t`'s run list take again what every waiter on a watch of its
+    // death lends them. Caller holds IrqLock.
+    void watch_lend_task(Task* t, Held held);
     // The threads of every task task_watch_lend_owe marked take again what the watches on its
     // death lend them, within pi_drain_deaths' bound. Caller holds IrqLock.
     void watch_lend_settle(Held held);
-    // `w`, parked by death_park, leaves Kernel::death_waiters or death_dirty, and the threads of
-    // the task it waited on fall back to what still lends to them. The park unwind's alone.
-    // Caller holds IrqLock.
-    void death_wait_leave(Thread* w, Held held);
-    // Between the two, under one IrqLock, a death_wait_leave only unlinks its waiter and marks
-    // its task, whose threads keep the left waiters' lend until the end recomputes each marked
-    // task once; a wake decided in between against a current so lent is retaken there.
-    void death_leave_batch_begin();
-    void death_leave_batch_end(Held held);
     // `o` raised to `p`, or its effective priority recomputed, and the change passed on along
-    // what it waits on: a mutex's holder, and the threads of a task whose death it waits for,
-    // within pi_drain_deaths' bound. A raise for a waiter is made once the waiter is on the queue
-    // it waits on, or the recomputes do not count it. Caller holds IrqLock.
+    // what it waits on: a mutex's holder, and the threads of an ended task a watch it waits on
+    // names, within pi_drain_deaths' bound. A raise for a waiter is made once the waiter is on
+    // the queue it waits on, or the recomputes do not count it. Caller holds IrqLock.
     void pi_raise(Thread* o, uint8_t p, Held held);
     void pi_settle(Thread* o, Held held);
 

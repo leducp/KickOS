@@ -53,14 +53,14 @@ def main() -> None:
     require(panic != "", "usage", f"{PANIC} is empty, so no panic would be refused")
     banner = re.compile(panic)
     one("load", r"^load:0x40800000,len:0x[0-9a-f]+$", log)
-    one("load", r"^load:0x4083c000,len:0x[0-9a-f]+$", log)
+    one("load", r"^load:0x4083d000,len:0x[0-9a-f]+$", log)
     one("lp-rtc", r"^# c6amp: LP RTC ([0-9]+) Hz$", log)
     vector, self_clk = one("vectors", r"^# ampdiag: peer node=1 vectors=0x([0-9a-f]+) tag=0 clk=20000000 "
                            r"self clk=([0-9]+)$", log)
     vector = int(vector, 16)
     require(int(self_clk) == 160000000, "vectors",
             f"HP clock {self_clk} Hz is not the 160 MHz the boot's PLL bring-up selects")
-    require(0x4083c000 <= (vector & ~3) < 0x40878000 and (vector & 3) == 1, "vectors",
+    require(0x4083d000 <= (vector & ~3) < 0x40878000 and (vector & 3) == 1, "vectors",
             f"LP mtvec {vector:#x} is outside its HP-SRAM image or not vectored")
     one("alive", r"^ampping: 2 of 2 node app\(s\) alive on the port the partition names, own row 1$", log)
     own, held, foreign = (int(v, 16) for v in one(

@@ -230,10 +230,6 @@ namespace
     {
         return after_us(us);
     }
-    // A creator's whole run ends before the TX_WAIT_US waits of the workers it spawns give up; the
-    // arm's hold waits longer than it.
-    constexpr uint32_t CREATOR_US = STALL_TOLERANT_US - STALL_TOLERANT_US / 4;
-    constexpr uint32_t CREATOR_HOLD_US = 2 * STALL_TOLERANT_US;
 
     // Staging gate: every worker of a test must exist before ANY of them runs. It MUST be
     // its own semaphore: gating on the event-log mutex hands the unit straight to the next
@@ -2364,7 +2360,7 @@ namespace
         // wait, and that wait is what arms the line: a raise landing before it is cleared by
         // the arm itself, which is the behaviour under test. So raise until one is delivered,
         // bounded.
-        kos_monotonic_t const deadline = kos_after(kos_monotonic_now(), kos_ns(IRQ_EDGE_BUDGET_NS));
+        kos_monotonic_t const deadline = after_us(STALL_TOLERANT_US);
         TAP_CHECK(kos_irq_raise(irq) == 0);
         while (g_stale_seen == 0 and kos_monotonic_now().ns <= deadline.ns)
         {
@@ -2721,7 +2717,8 @@ namespace
             return;
         }
         uint32_t volatile* box = nullptr;
-        for (int tries = 0; tries < 2000 and box == nullptr; tries++)
+        kos_monotonic_t const until = after_us(STALL_TOLERANT_US);
+        while (box == nullptr and kos_monotonic_now().ns <= until.ns)
         {
             for (uintptr_t at = j.lo; at + PF_BOX_WORDS * 4u <= j.lo + j.size; at += 4u)
             {
@@ -2771,7 +2768,8 @@ namespace
         kos_cap_t ep = KOS_CAP_NONE;
         kos_task_t task = KOS_TASK_NONE;
         kos::thread::Handle helper;
-        ArmHold hold;
+        // The scribbler's wait for the victim's spin, and its scribble.
+        ArmHold hold(2u * STALL_TOLERANT_US);
         TAP_HOLD(hold.cap(&ep) and hold.task(&task) and hold.thread(&helper));
         TAP_CHECK(kos_endpoint_create(&ep) == 0);
         g_pf_job = {reinterpret_cast<uintptr_t>(raw), CSTK_RESERVE, how, 1};
@@ -3065,7 +3063,7 @@ namespace
             rep[XG_MEMBASE] = kos_task_create(prog, &p, &t);
             if (rep[XG_MEMBASE] == 0)
             {
-                (void)kos_task_slay(t, after_us(STALL_TOLERANT_US));
+                (void)slay_dead(t, after_us(STALL_TOLERANT_US));
             }
             (void)kos_handle_close(prog);
         }
@@ -7149,7 +7147,7 @@ namespace
             out.create = PeerRun("nop").start(&t, prog);
             if (out.create == 0)
             {
-                (void)kos_task_slay(t, after_us(STALL_TOLERANT_US));
+                (void)slay_dead(t, after_us(STALL_TOLERANT_US));
             }
             (void)kos_handle_close(prog);
         }
@@ -7822,13 +7820,15 @@ namespace
     // A task handle carries a generation over a BIASED index, so the all-zero word is
     // KOS_TASK_NONE and no live task is ever named by it. The gate is CREATORSHIP and takes
     // a second thread to witness, so this arm covers what one thread can see: every refusal
-    // the codec produces, and that a hold, once dropped, names nothing.
+    // the codec produces, that a slay answers at once and keeps the hold until the death a watch
+    // armed before it waits for, and that the handle names nothing once that death arrives.
     void t_task_handles()
     {
-        TAP_ASK(.tasks = 1);
+        TAP_ASK(.tasks = 1, .notifies = 1);
         kos_task_t task = KOS_TASK_NONE;
+        kos_cap_t n = KOS_CAP_NONE;
         ArmHold hold;
-        TAP_HOLD(hold.task(&task));
+        TAP_HOLD(hold.task(&task) and hold.bound(&n));
         // The out-pointer is validated BEFORE the task exists: a null one is malformed and a
         // misaligned one would take a privileged store the kernel must not make. Checked first,
         // because a create that cannot deliver its handle leaves a task nothing can name.
@@ -7839,24 +7839,33 @@ namespace
         TAP_CHECK(PeerRun("hold").start(&task) == 0);
         TAP_CHECK(task != KOS_TASK_NONE); // the bias is what makes this assertion possible
         // The two words nothing can mint: the sentinel, and a generation the slot never held.
-        TAP_CHECK(kos_task_slay(KOS_TASK_NONE, KOS_POLL) == -KOS_EBADF);
-        TAP_CHECK(kos_task_slay(task ^ 0xFFFF0000u, KOS_POLL) == -KOS_EBADF);
+        TAP_CHECK(kos_task_slay(KOS_TASK_NONE) == -KOS_EBADF);
+        TAP_CHECK(kos_task_slay(task ^ 0xFFFF0000u) == -KOS_EBADF);
         // An out-of-range index, whatever generation rides it.
-        TAP_CHECK(kos_task_slay(0x0000FFFFu, KOS_POLL) == -KOS_EBADF);
+        TAP_CHECK(kos_task_slay(0x0000FFFFu) == -KOS_EBADF);
         // The idle and root tasks are unnameable: idle's task is created first and root's second, so
         // slots 0 and 1 hold them and the biased codec names those two handles 1 and 2 at
         // generation 0. Neither slot is ever freed. Idle's carries the KERNEL domain, the
         // whole arena at R|W, so a handle that resolved would hand an unprivileged thread
         // the arena.
-        TAP_CHECK(kos_task_slay(1u, KOS_POLL) == -KOS_EBADF);
-        TAP_CHECK(kos_task_slay(2u, KOS_POLL) == -KOS_EBADF);
-        TAP_CHECK(kos_task_slay(task, after_us(ARM_SLAY_US)) == 0);
+        TAP_CHECK(kos_task_slay(1u) == -KOS_EBADF);
+        TAP_CHECK(kos_task_slay(2u) == -KOS_EBADF);
+        TAP_CHECK(kos_notify_create(&n) == 0 and kos_notify_bind(n) == 0);
+        TAP_CHECK(kos_watch(KOS_WATCH_TASK, KOS_TASK_DEAD, task, n, 0, nullptr) == 0);
         kos_task_t const killed = task;
+        TAP_CHECK(kos_task_slay(task) == 0);
         task = KOS_TASK_NONE;
-        // The slay DROPPED the hold, so the handle now names nothing, to a read as to a second
-        // slay, which is not idempotent and must not be.
+        // Ended and not dead while its member tears down, or already dead on another core.
+        int const right_after = kos_task_state(killed, nullptr);
+        TAP_CHECK((right_after >= 0 and (right_after & KOS_TASK_ENDED) != 0
+                   and (right_after & KOS_TASK_DEAD) == 0)
+                  or right_after == -KOS_EBADF);
+        uint32_t bits = 0;
+        TAP_CHECK(kos_notify_wait(1u, after_us(ARM_SLAY_US), &bits) == 0 and bits == 1u);
+        // Dead, the handle names nothing, to a read as to a second slay, which is not idempotent
+        // and must not be.
         TAP_CHECK(kos_task_state(killed, nullptr) == -KOS_EBADF);
-        TAP_CHECK(kos_task_slay(killed, KOS_POLL) == -KOS_EBADF);
+        TAP_CHECK(kos_task_slay(killed) == -KOS_EBADF);
     }
 
     // The creator gate, and it takes a second thread to witness at all: only the thread that
@@ -7867,7 +7876,7 @@ namespace
     {
         kos_task_t const t = static_cast<kos_task_t>(reinterpret_cast<uintptr_t>(arg));
         unsigned char answer[2] = {0u, 0u};
-        if (kos_task_slay(t, KOS_POLL) == -KOS_EPERM)
+        if (kos_task_slay(t) == -KOS_EPERM)
         {
             answer[0] = 1u;
         }
@@ -7908,7 +7917,7 @@ namespace
         TAP_CHECK(answer[1] == 1u); // nor watch it
         TAP_CHECK(hold.joined());
         // Still ours, so still killable: the refusals above cost the task nothing.
-        TAP_CHECK(kos_task_slay(task, after_us(ARM_SLAY_US)) == 0);
+        TAP_CHECK(slay_dead(task, after_us(ARM_SLAY_US)) == 0);
         task = KOS_TASK_NONE;
         TAP_CHECK(hold.close(&ep) == 0);
     }
@@ -7930,12 +7939,16 @@ namespace
     }
     constexpr uint8_t TW_CREATOR_PRIO = 14;
     constexpr uint8_t TW_MEMBER_PRIO = 11;
+    // The creator's steps: the start, five sends, and the ready, ended and dead waits.
+    constexpr uint32_t TW_CHAIN = 9;
+    // Above the creator's whole chain: no event the creator reads may be a member's timeout.
+    constexpr uint32_t TW_MEMBER_US = (TW_CHAIN + 1u) * STALL_TOLERANT_US;
 #if KICKOS_SELFTEST_PEER
     void tw_recv(kos_cap_t ep)
     {
         char b[4];
         struct kos_reply_recv_opts o;
-        kos_reply_recv_opts_init(&o, ep, KOS_RECV_NO_INFO, after_us(STALL_TOLERANT_US));
+        kos_reply_recv_opts_init(&o, ep, KOS_RECV_NO_INFO, after_us(TW_MEMBER_US));
         (void)kos_reply_recv(KOS_CAP_NONE, b, kos_call_lens_pack(0, sizeof(b)), &o);
     }
     int tw_member() // caps: served E(WAIT)@0, other E(WAIT)@1
@@ -7995,7 +8008,7 @@ namespace
             r->dead = kos_notify_wait(mask, until, &bits);
         }
         r->dead_state = kos_task_state(t, nullptr);
-        r->killed = kos_task_slay(t, KOS_POLL);
+        r->killed = kos_task_slay(t);
         r->stale = kos_task_state(t, nullptr);
     }
     void tw_creator(void*)
@@ -8008,7 +8021,7 @@ namespace
             and kos_endpoint_create(&ep) == 0 and kos_endpoint_create(&other) == 0
             and kos_notify_bind(n) == 0)
         {
-            tw_play(prog, n, ep, other, &g_tw, deadline_in(CREATOR_US));
+            tw_play(prog, n, ep, other, &g_tw, deadline_in(TW_CHAIN * STALL_TOLERANT_US));
             (void)kos_notify_unbind(n);
         }
         (void)kos_handle_close(prog);
@@ -8023,7 +8036,7 @@ namespace
         g_tw = {-99, -99, -99, -99, -99, -99, -99, -99, -99, -99, -99, -99, -99, -99, -99, 0u,
                 0u};
         kos::thread::Handle w;
-        ArmHold hold(CREATOR_HOLD_US);
+        ArmHold hold((TW_CHAIN + 1u) * STALL_TOLERANT_US);
         TAP_HOLD(hold.thread(&w));
         w = kos::thread::create(tw_creator, nullptr, "twC", TW_CREATOR_PRIO, KOS_POLICY_FIFO, 0ns,
                                 nullptr, 0, nullptr, 0, nullptr, 0, PEER_CREATOR, nullptr,
@@ -8052,7 +8065,6 @@ namespace
     // once every member's teardown is done. Every reading is taken before any check, so a
     // failing check leaves nothing behind for the arms that follow.
     constexpr uint32_t TX_WAIT_US = STALL_TOLERANT_US;
-    static_assert(CREATOR_US < TX_WAIT_US, "a creator must give up before its workers do");
     constexpr uint64_t TX_POLL_NS = 1000000ull;
     // The instant a TX_WAIT_US wait begun now gives up at, which every polling loop below
     // shares instead of counting passes.
@@ -8189,7 +8201,7 @@ namespace
         bool const dead = tx_await(t, KOS_TASK_DEAD);
         int const later = kos_task_state(t, &status);
         kos_task_t const stale = t;
-        int const slain = task_end(&t, TX_WAIT_US);
+        int const slain = task_end(&t, TX_WAIT_US, n);
         TAP_CHECK(bound == 0 and armed == 0);
         // A live task leaves the status untouched.
         TAP_CHECK(live >= 0 and (live & KOS_TASK_ENDED) == 0 and live_status == -99);
@@ -8226,7 +8238,7 @@ namespace
         TAP_CHECK(kos_notify(go) == 0);
         bool const dead = tx_await(t, KOS_TASK_DEAD);
         int const final_state = kos_task_state(t, &status);
-        int const killed = kos_task_slay(t, KOS_POLL);
+        int const killed = kos_task_slay(t);
         if (killed == 0)
         {
             t = KOS_TASK_NONE;
@@ -8352,14 +8364,17 @@ namespace
         TAP_CHECK(status == 0);
     }
 
-    // --- A death wait lends its priority -------------------------------------------------
+    // --- A wait on an instance watch lends its priority ------------------------------------
     // peer0's entry returns while its worker, at the lowest priority, sits below a spinner on
     // main's core. A creator above both, refused the start of peer0, waits on an instance watch
     // of it with a deadline shorter than the spin: the worker runs its death out on the
     // creator's priority, so the start lands while the spinner still spins.
     constexpr uint8_t DL_SPIN_PRIO = 8;
     constexpr uint8_t DL_CREATOR_PRIO = 14;
-    constexpr uint32_t DL_WAIT_US = CREATOR_US / 4;
+    // The creator's steps: the start, the end, the watch wait, the spinner's join, two slays.
+    constexpr uint32_t DL_CHAIN = 6;
+    // Outlasts the creator's start, end and watch wait, or the worker dies unlent.
+    constexpr uint32_t DL_SPIN_US = 4u * STALL_TOLERANT_US;
     struct DlRun
     {
         int pre, state, refused, waited, started, stale, watch;
@@ -8371,7 +8386,7 @@ namespace
     Atomic<int32_t, Order::RELAXED> g_dl_spun_out{0};
     void dl_spinner(void*)
     {
-        kos_monotonic_t const until = deadline_in(2u * DL_WAIT_US);
+        kos_monotonic_t const until = deadline_in(DL_SPIN_US);
         while (g_dl_done.load() == 0 and kos_monotonic_now().ns < until.ns)
         {
         }
@@ -8411,7 +8426,8 @@ namespace
         {
             return;
         }
-        g_dl.waited = kos_notify_wait(1u << PEER_START_BIT, after_us(DL_WAIT_US), &g_dl.woke);
+        g_dl.waited =
+            kos_notify_wait(1u << PEER_START_BIT, after_us(STALL_TOLERANT_US), &g_dl.woke);
         (void)kos_handle_close(g_dl.watch_cap);
         g_dl.started = kos_task_create(prog, &p, next);
     }
@@ -8470,23 +8486,23 @@ namespace
         }
         if (g_dl.started == 0)
         {
-            (void)kos_task_slay(next, after_us(STALL_TOLERANT_US));
+            (void)slay_dead(next, after_us(STALL_TOLERANT_US), n);
         }
         if (g_dl.stale != -KOS_EBADF)
         {
-            (void)kos_task_slay(t, after_us(STALL_TOLERANT_US));
+            (void)slay_dead(t, after_us(STALL_TOLERANT_US), n);
         }
         (void)kos_handle_close(n);
         (void)kos_handle_close(prog);
     }
-    void t_death_wait_lends_priority()
+    void t_instance_watch_lends_priority()
     {
         TAP_ASK(.workers = 2, .tasks = 1, .notifies = 1, .caps = 2, .peer_workers = 1);
         g_dl = {-99, -99, -99, -99, -99, -99, -99, KOS_CAP_NONE, 0u};
         g_dl_done.store(0);
         g_dl_spun_out.store(0);
         kos::thread::Handle w;
-        ArmHold hold(CREATOR_HOLD_US);
+        ArmHold hold((DL_CHAIN + 1u) * STALL_TOLERANT_US);
         TAP_HOLD(hold.thread(&w));
         w = kos::thread::create(dl_creator, nullptr, "dlc", DL_CREATOR_PRIO, KOS_POLICY_FIFO, 0ns,
                                 nullptr, 0, nullptr, 0, nullptr, 0, PEER_CREATOR, nullptr,
@@ -8508,11 +8524,138 @@ namespace
         TAP_CHECK(g_dl_spun_out.load() == 0);
     }
 
+    // --- A wait on a slain task's death lends its priority -----------------------------------
+    // peer0's entry seats a worker at the lowest priority on main's core and parks. A creator
+    // above a spinner there arms a DEAD watch, slays the task and waits on the watch with a
+    // deadline shorter than the spin: the worker runs its death out on the creator's priority.
+    constexpr uint32_t SL_READY_BIT = 4;
+    // The creator's steps: the start, the ready wait, the death wait, the spinner's join, the
+    // late death wait.
+    constexpr uint32_t SL_CHAIN = 5;
+    struct SlRun
+    {
+        int pre, slain, after, waited;
+        uint32_t woke;
+        int gone;
+    };
+    SlRun g_sl;
+#if KICKOS_SELFTEST_PEER
+    // caps: N(SIGNAL)@0, raised once the worker is a member.
+    int sl_slow_member()
+    {
+        (void)pd_slow_end();
+        (void)kos_notify(child_cap(0));
+        kos_sem_wait(&g_tx_never, KOS_NEVER);
+        return 0;
+    }
+#endif
+    void sl_creator(void*)
+    {
+        kos_cap_t n = KOS_CAP_NONE;
+        kos_cap_t ready = KOS_CAP_NONE;
+        kos_cap_t dead = KOS_CAP_NONE;
+        kos_program_t prog = KOS_CAP_NONE;
+        kos_task_t t = KOS_TASK_NONE;
+        int pre = kos_program_find("stpeer", &prog);
+        if (pre == 0)
+        {
+            pre = kos_notify_create(&n);
+        }
+        if (pre == 0)
+        {
+            pre = kos_notify_bind(n);
+        }
+        if (pre == 0)
+        {
+            pre = kos_notify_badge(n, SL_READY_BIT, &ready);
+        }
+        if (pre == 0)
+        {
+            pre = kos_notify_badge(n, PEER_START_BIT, &dead);
+        }
+        if (pre == 0)
+        {
+            kos_cap_grant const caps[1] = {{ready, KOS_CAP_SIGNAL}};
+            pre = PeerRun("slslow").caps(caps, 1).bound(n).start(&t, prog);
+        }
+        if (pre == 0)
+        {
+            uint32_t bits = 0;
+            pre = kos_notify_wait(1u << SL_READY_BIT, after_us(TX_WAIT_US), &bits);
+        }
+        if (pre == 0)
+        {
+            pre = kos_watch(KOS_WATCH_TASK, KOS_TASK_DEAD, t, dead, 0, nullptr);
+        }
+        auto const spinner = kos::thread::create(dl_spinner, nullptr, "sls", DL_SPIN_PRIO,
+                                                 KOS_POLICY_FIFO, 0ns, nullptr, 0, nullptr, 0,
+                                                 nullptr, 0, 0, nullptr, TAP_PIN_CORE);
+        if (pre == 0)
+        {
+            pre = spinner.error();
+        }
+        g_sl.pre = pre;
+        if (pre == 0)
+        {
+            g_sl.slain = kos_task_slay(t);
+            g_sl.after = kos_task_state(t, nullptr);
+            g_sl.waited =
+                kos_notify_wait(1u << PEER_START_BIT, after_us(STALL_TOLERANT_US), &g_sl.woke);
+            g_sl.gone = kos_task_state(t, nullptr);
+        }
+        else if (t != KOS_TASK_NONE)
+        {
+            (void)kos_task_slay(t);
+        }
+        g_dl_done.store(1);
+        if (spinner.valid())
+        {
+            (void)kos_thread_join(spinner.id(), after_us(STALL_TOLERANT_US));
+        }
+        if (g_sl.waited != 0 and g_sl.slain == 0)
+        {
+            uint32_t bits = 0;
+            (void)kos_notify_wait(1u << PEER_START_BIT, after_us(STALL_TOLERANT_US), &bits);
+        }
+        (void)kos_handle_close(dead);
+        (void)kos_handle_close(ready);
+        (void)kos_notify_unbind(n);
+        (void)kos_handle_close(n);
+        (void)kos_handle_close(prog);
+    }
+    void t_slay_watch_lends_priority()
+    {
+        TAP_ASK(.workers = 2, .tasks = 1, .notifies = 1, .caps = 3, .peer_workers = 1);
+        g_sl = {-99, -99, -99, -99, 0u, -99};
+        g_dl_done.store(0);
+        g_dl_spun_out.store(0);
+        kos::thread::Handle w;
+        ArmHold hold((SL_CHAIN + 1u) * STALL_TOLERANT_US);
+        TAP_HOLD(hold.thread(&w));
+        w = kos::thread::create(sl_creator, nullptr, "slc", DL_CREATOR_PRIO, KOS_POLICY_FIFO, 0ns,
+                                nullptr, 0, nullptr, 0, nullptr, 0, PEER_CREATOR, nullptr,
+                                TAP_PIN_CORE);
+        TAP_CHECK(w.valid());
+        TAP_CHECK(hold.joined());
+        SlRun const r = g_sl;
+        TAP_CHECK(r.pre == 0);
+        TAP_CHECK(r.slain == 0);
+        // The member dies only through the lend, so the slayer still reads the task, ended, and
+        // the handle names nothing once its death is reported.
+        TAP_CHECK(r.after >= 0 and (r.after & KOS_TASK_ENDED) != 0
+                  and (r.after & KOS_TASK_DEAD) == 0);
+        TAP_CHECK(r.waited == 0 and r.woke == (1u << PEER_START_BIT));
+        TAP_CHECK(r.gone == -KOS_EBADF);
+        TAP_CHECK(g_dl_spun_out.load() == 0);
+    }
+
     // --- A task is dead only once its members' teardown is done --------------------------
     // A creator calls the endpoint the entry alone receives on. The entry fills its table and
     // returns; its teardown closes that receive right first, which ends the call, and sweeps the
     // rest across lock gaps. The creator reads the task then: ended, no member, not yet dead.
     constexpr int TD_LOAD = 8;
+    // The creator's steps: the start, the call, the death.
+    constexpr uint32_t TD_CHAIN = 3;
     struct TdRun
     {
         int setup, called, mid, dead, final_state;
@@ -8547,7 +8690,7 @@ namespace
 #endif
     void td_creator(void*)
     {
-        kos_monotonic_t const until = deadline_in(CREATOR_US);
+        kos_monotonic_t const until = deadline_in(TD_CHAIN * STALL_TOLERANT_US);
         kos_task_t t = KOS_TASK_NONE;
         kos_cap_t ep = KOS_CAP_NONE;
         kos_program_t prog = KOS_CAP_NONE;
@@ -8568,7 +8711,7 @@ namespace
                 g_td.final_state = kos_task_state(t, nullptr);
             }
         }
-        (void)kos_task_slay(t, KOS_POLL);
+        (void)kos_task_slay(t);
         (void)kos_handle_close(ep);
         (void)kos_handle_close(prog);
     }
@@ -8578,7 +8721,7 @@ namespace
         TAP_ASK(.workers = 2, .tasks = 1, .endpoints = 1);
         g_td = {-99, -99, -99, 0, -99};
         kos::thread::Handle w;
-        ArmHold hold(CREATOR_HOLD_US);
+        ArmHold hold((TD_CHAIN + 1u) * STALL_TOLERANT_US);
         TAP_HOLD(hold.thread(&w));
         w = kos::thread::create(td_creator, nullptr, "tdc", 12, KOS_POLICY_FIFO, 0ns, nullptr, 0,
                                 nullptr, 0, nullptr, 0, PEER_CREATOR, nullptr, 1u);
@@ -8604,6 +8747,11 @@ namespace
     };
     TeRun g_te;
     Atomic<int32_t, Order::RELAXED> g_te_seq{0};
+    // The creator's steps: the start, the entry's run to its call, the sibling's sweep, the
+    // entry's return, the death, the watcher's join.
+    constexpr uint32_t TE_CHAIN = 6;
+    // Above the creator's whole chain: a call that ran out must not stand for a sweep's refusal.
+    constexpr uint32_t TE_MEMBER_US = (TE_CHAIN + 1u) * STALL_TOLERANT_US;
 #if KICKOS_SELFTEST_PEER
     void te_sibling(void*) // caps: E(WAIT)@0, probe E(WAIT) in the last slot
     {
@@ -8626,7 +8774,7 @@ namespace
             return 2;
         }
         char b[4] = {};
-        if (kos_call(child_cap(0), b, sizeof(b), sizeof(b), after_us(TX_WAIT_US)) >= 0)
+        if (kos_call(child_cap(0), b, sizeof(b), sizeof(b), after_us(TE_MEMBER_US)) >= 0)
         {
             return 1;
         }
@@ -8636,13 +8784,13 @@ namespace
     void te_watcher(void*) // caps: probe E(SIGNAL)@0
     {
         char b[4] = {};
-        g_te.probe_call = kos_call(child_cap(0), b, sizeof(b), sizeof(b), after_us(TX_WAIT_US));
+        g_te.probe_call = kos_call(child_cap(0), b, sizeof(b), sizeof(b), after_us(TE_MEMBER_US));
         g_te_seq = g_te_seq + 1;
         g_te.watcher_seq = g_te_seq;
     }
     void te_creator(void*)
     {
-        kos_monotonic_t const until = deadline_in(CREATOR_US);
+        kos_monotonic_t const until = deadline_in(TE_CHAIN * STALL_TOLERANT_US);
         kos_task_t t = KOS_TASK_NONE;
         kos_program_t prog = KOS_CAP_NONE;
         kos_cap_t ep = KOS_CAP_NONE;
@@ -8717,7 +8865,7 @@ namespace
         }
         (void)kos_handle_close(badged);
         (void)kos_handle_close(n);
-        (void)kos_task_slay(t, KOS_POLL);
+        (void)kos_task_slay(t);
         (void)kos_handle_close(probe);
         (void)kos_handle_close(ep);
         (void)kos_handle_close(prog);
@@ -8772,7 +8920,7 @@ namespace
         bool const dead = tx_await(t, KOS_TASK_DEAD);
         int status = -99;
         int const got = kos_task_state(t, &status);
-        int const killed = kos_task_slay(t, KOS_POLL);
+        int const killed = kos_task_slay(t);
         if (killed == 0)
         {
             t = KOS_TASK_NONE;
@@ -8881,7 +9029,7 @@ namespace
         bool const dead = tx_await(t, KOS_TASK_DEAD);
         int status = -99;
         int const got = kos_task_state(t, &status);
-        int const killed = kos_task_slay(t, KOS_POLL);
+        int const killed = kos_task_slay(t);
         if (killed == 0)
         {
             t = KOS_TASK_NONE;
@@ -8920,7 +9068,7 @@ namespace
         TAP_CHECK(report_await(ep, &entry, sizeof(entry)));
         char spun = 0;
         bool const parked = report_await(ep, &spun, 1) and spun == '1';
-        int const killed = kos_thread_cancel(entry, KOS_CANCEL_KILL, KOS_POLL);
+        int const killed = kos_thread_cancel(entry, KOS_CANCEL_KILL);
         bool const dead = tx_await(t, KOS_TASK_DEAD);
         int const state = kos_task_state(t, nullptr);
         int status = -99;
@@ -8981,11 +9129,15 @@ namespace
                                         &o);
                 if (slay)
                 {
-                    r.cancelled = kos_thread_cancel(entry, KOS_CANCEL_SLAY, after_us(TX_WAIT_US));
+                    r.cancelled = kos_thread_cancel(entry, KOS_CANCEL_SLAY);
+                    if (r.cancelled == 0)
+                    {
+                        r.cancelled = kos_thread_join(entry, after_us(TX_WAIT_US));
+                    }
                 }
                 else
                 {
-                    r.cancelled = kos_thread_cancel(entry, KOS_CANCEL_KILL, KOS_POLL);
+                    r.cancelled = kos_thread_cancel(entry, KOS_CANCEL_KILL);
                 }
                 // The entry is gone once its task has ended.
                 r.joined = -KOS_ETIMEDOUT;
@@ -9000,7 +9152,7 @@ namespace
         }
         if (t != KOS_TASK_NONE)
         {
-            r.released = kos_task_slay(t, KOS_POLL);
+            r.released = kos_task_slay(t);
         }
         if (ready != KOS_CAP_NONE)
         {
@@ -9115,7 +9267,10 @@ namespace
                                            KOS_AUTH_MEMORY);
         if (h.valid() and h.join_for(std::chrono::microseconds{STALL_TOLERANT_US}) != 0)
         {
-            (void)h.cancel_for(KOS_CANCEL_SLAY, std::chrono::microseconds{ARM_SLAY_US});
+            if (h.cancel(KOS_CANCEL_SLAY) == 0)
+            {
+                (void)h.join_for(std::chrono::microseconds{ARM_SLAY_US});
+            }
             return kos::thread::Handle(KOS_THREAD_NONE, -KOS_ETIMEDOUT);
         }
         return h;
@@ -9471,11 +9626,8 @@ namespace
         char spun = 0;
         TAP_CHECK(report_await(ready, &spun, 1));
         // 0, not ETIMEDOUT: each member has to be GONE, not just marked.
-        int const killed = kos_task_slay(task, after_us(TX_WAIT_US));
-        if (killed == 0)
-        {
-            task = KOS_TASK_NONE;
-        }
+        int const killed = slay_dead(task, after_us(TX_WAIT_US));
+        task = KOS_TASK_NONE;
         TAP_CHECK(killed == 0);
         if (spun != 's')
         {
@@ -9606,7 +9758,7 @@ namespace
         {
             TAP_CHECK(stage_a_parked_slay_worker(&killed));
             g_slay_window = 0;
-            TAP_CHECK(killed.cancel_for(KOS_CANCEL_KILL, std::chrono::microseconds{0}) == 0);
+            TAP_CHECK(killed.cancel(KOS_CANCEL_KILL) == 0);
             TAP_CHECK(thread_end(&killed) == 0);
             slay_window = g_slay_window;
         }
@@ -9619,28 +9771,23 @@ namespace
 
         // LEG 2, the subject. Same body, same park, same parent: only the verb differs.
         TAP_CHECK(stage_a_parked_slay_worker(&slain));
-        // 0, not -KOS_ETIMEDOUT: the call WAITS, and gone is what it returns.
-        //
         // The claim holds on either interleaving, which is why this leg needs no restaging.
         // A slay reaching a victim already parked aborts the park and switch_to redirects its
         // resume; one reaching a victim still short of that park is found at the victim's own
         // syscall entry. Neither lets it run a further user instruction, and above one kernel
         // core both are reachable.
-        TAP_CHECK(slain.cancel_for(KOS_CANCEL_SLAY,
-                                   std::chrono::microseconds{STALL_TOLERANT_US}) == 0);
+        TAP_CHECK(slain.cancel(KOS_CANCEL_SLAY) == 0);
+        TAP_CHECK(slain.join_for(std::chrono::microseconds{STALL_TOLERANT_US}) == 0);
         int const slay_window_after = g_slay_window;
         TAP_CHECK(slay_window_after == 1); // unchanged: it executed no further user instruction
-        // Gone means gone, and the join is the independent witness of it.
-        TAP_CHECK(kos_thread_join(slain.id(), after_us(JOIN_GENEROUS_US)) == 0);
         slain = kos::thread::Handle();
 
-        // LEG 3, a kill that waits. The worker outranks main, so it may take its window and
-        // exit inside the cancel itself: main is parked on it before the kill is raised, and
-        // the worker's exit sweep is what answers 0.
+        // LEG 3, a kill and then its join. The cancel answers once raised; the worker, which
+        // outranks main, may take its window and exit before the join parks, which then answers
+        // its end at once.
         TAP_CHECK(stage_a_parked_slay_worker(&waited));
-        TAP_CHECK(waited.cancel_for(KOS_CANCEL_KILL,
-                                    std::chrono::microseconds{STALL_TOLERANT_US}) == 0);
-        TAP_CHECK(kos_thread_join(waited.id(), after_us(JOIN_GENEROUS_US)) == 0);
+        TAP_CHECK(waited.cancel(KOS_CANCEL_KILL) == 0);
+        TAP_CHECK(waited.join_for(std::chrono::microseconds{STALL_TOLERANT_US}) == 0);
         waited = kos::thread::Handle();
     }
 
@@ -9659,11 +9806,11 @@ namespace
         g_slay_window = 0;
         victim = irq_spawn(slay_raise_worker, nullptr, "slrz", TAP_PRIO_AFTER, nullptr, 0);
         TAP_CHECK(victim.valid());
-        TAP_CHECK(kos_thread_cancel(victim.id(), static_cast<enum kos_cancel>(2), KOS_POLL)
+        TAP_CHECK(kos_thread_cancel(victim.id(), static_cast<enum kos_cancel>(2))
                   == -KOS_EINVAL);
-        TAP_CHECK(kos_thread_cancel(victim.id(), KOS_CANCEL_SLAY, KOS_POLL) == 0);
-        // A join of timeout 0 parks; a second cancel does not, and finds the victim not yet gone.
-        TAP_CHECK(kos_thread_cancel(victim.id(), KOS_CANCEL_KILL, KOS_POLL) == 0);
+        TAP_CHECK(kos_thread_cancel(victim.id(), KOS_CANCEL_SLAY) == 0);
+        // Below main, the victim has not run: a second cancel finds it not yet gone.
+        TAP_CHECK(kos_thread_cancel(victim.id(), KOS_CANCEL_KILL) == 0);
         TAP_CHECK(victim.join_for(std::chrono::microseconds{JOIN_GENEROUS_US}) == 0);
         TAP_CHECK(g_slay_window == 0);
         victim = kos::thread::Handle();
@@ -9715,7 +9862,7 @@ namespace
             TAP_CHECK(killed.valid());
             got = killed.id();
             TAP_CHECK(kos_sem_wait(&g_done, after_us(STALL_TOLERANT_US)) == 0);
-            TAP_CHECK(killed.cancel_for(KOS_CANCEL_KILL, std::chrono::microseconds{0}) == 0);
+            TAP_CHECK(killed.cancel(KOS_CANCEL_KILL) == 0);
             TAP_CHECK(thread_end(&killed) == 0);
         }
         if (g_self_wait != -KOS_ECANCELED)
@@ -9817,7 +9964,7 @@ namespace
                                               nullptr, 0);
             TAP_CHECK(killed.valid());
             TAP_CHECK(kos_sem_wait(&g_done, after_us(STALL_TOLERANT_US)) == 0);
-            TAP_CHECK(killed.cancel_for(KOS_CANCEL_KILL, std::chrono::microseconds{0}) == 0);
+            TAP_CHECK(killed.cancel(KOS_CANCEL_KILL) == 0);
             TAP_CHECK(thread_end(&killed) == 0);
         }
         if (g_clock_wait != -KOS_ECANCELED)
@@ -9834,7 +9981,7 @@ namespace
         // main is the init's child and not this thread's, so this is the parenthood arm and
         // not the self arm.
         char c = 'x';
-        if (kos_thread_cancel(g_main, KOS_CANCEL_SLAY, after_us(JOIN_GENEROUS_US)) == -KOS_EPERM)
+        if (kos_thread_cancel(g_main, KOS_CANCEL_SLAY) == -KOS_EPERM)
         {
             c = 'P';
         }
@@ -9849,22 +9996,18 @@ namespace
         kos::thread::Handle s;
         ArmHold hold;
         TAP_HOLD(hold.thread(&probe) and hold.thread(&s));
-        TAP_CHECK(kos_thread_cancel(KOS_THREAD_NONE, KOS_CANCEL_SLAY, after_us(JOIN_GENEROUS_US))
-                  == -KOS_EBADF);
-        TAP_CHECK(kos_thread_cancel(0x7fffffffu, KOS_CANCEL_SLAY,
-                                    after_us(JOIN_GENEROUS_US)) == -KOS_EBADF);
+        TAP_CHECK(kos_thread_cancel(KOS_THREAD_NONE, KOS_CANCEL_SLAY) == -KOS_EBADF);
+        TAP_CHECK(kos_thread_cancel(0x7fffffffu, KOS_CANCEL_SLAY) == -KOS_EBADF);
         // Not -KOS_EDEADLK as join answers: ending yourself is kos_exit, and this call has
         // to be able to return to its caller.
-        TAP_CHECK(kos_thread_cancel(g_main, KOS_CANCEL_SLAY,
-                                    after_us(JOIN_GENEROUS_US)) == -KOS_EINVAL);
+        TAP_CHECK(kos_thread_cancel(g_main, KOS_CANCEL_SLAY) == -KOS_EINVAL);
         // An EXITED-but-unreclaimed slot, which join deliberately ACCEPTS and every cancel
         // deliberately refuses: there is nothing left in it to condemn.
         probe = kos::thread::create(join_probe, nullptr, "slgn", 10);
         TAP_CHECK(probe.valid());
         kos_thread_t const exited = probe.id();
         TAP_CHECK(thread_end(&probe) == 0);
-        TAP_CHECK(kos_thread_cancel(exited, KOS_CANCEL_SLAY,
-                                    after_us(JOIN_GENEROUS_US)) == -KOS_EBADF);
+        TAP_CHECK(kos_thread_cancel(exited, KOS_CANCEL_SLAY) == -KOS_EBADF);
         s = kos::thread::create_caps(slay_gate_probe, nullptr, "slst", 10, nullptr, 0);
         TAP_CHECK(s.valid());
         TAP_CHECK(hold.joined());
@@ -9894,18 +10037,18 @@ namespace
         uint32_t bits = 0;
         TAP_CHECK(kos_notify_wait(~0u, after_us(STALL_TOLERANT_US), &bits) == 0);
         kos_task_t const slain = task;
-        // Every member is gone once the slay answers 0.
-        TAP_CHECK(task_end(&task) == 0);
-        // The hold went with the wait, so the handle names nothing: a second call cannot
-        // resolve it, which is the same shape a slay of timeout 0 leaves behind.
-        TAP_CHECK(kos_task_slay(slain, after_us(JOIN_GENEROUS_US)) == -KOS_EBADF);
+        // Every member is gone once the death watch reports it.
+        TAP_CHECK(task_end(&task, STALL_TOLERANT_US, announced) == 0);
+        // The hold went with the death, so the handle names nothing: a second call cannot
+        // resolve it.
+        TAP_CHECK(kos_task_slay(slain) == -KOS_EBADF);
     }
 
     void task_slay_stranger(void* arg)
     {
         kos_task_t const task = static_cast<kos_task_t>(reinterpret_cast<uintptr_t>(arg));
         char c = 'x';
-        if (kos_task_slay(task, after_us(JOIN_GENEROUS_US)) == -KOS_EPERM)
+        if (kos_task_slay(task) == -KOS_EPERM)
         {
             c = 'P';
         }
@@ -9920,27 +10063,28 @@ namespace
         kos::thread::Handle s;
         ArmHold hold;
         TAP_HOLD(hold.task(&task) and hold.thread(&s));
-        TAP_CHECK(kos_task_slay(KOS_TASK_NONE, after_us(JOIN_GENEROUS_US)) == -KOS_EBADF);
+        TAP_CHECK(kos_task_slay(KOS_TASK_NONE) == -KOS_EBADF);
         TAP_CHECK(PeerRun("hold").start(&task) == 0);
         s = kos::thread::create_caps(task_slay_stranger,
                                      reinterpret_cast<void*>(static_cast<uintptr_t>(task)), "tsst",
                                      10, nullptr, 0);
         TAP_CHECK(s.valid());
         TAP_CHECK(hold.joined());
-        TAP_CHECK(log_eq("P")); // creatorship, exactly as a slay of timeout 0 takes it
+        TAP_CHECK(log_eq("P")); // creatorship
         kos_task_t const slain = task;
         TAP_CHECK(task_end(&task) == 0);
-        TAP_CHECK(kos_task_slay(slain, after_us(JOIN_GENEROUS_US)) == -KOS_EBADF);
+        TAP_CHECK(kos_task_slay(slain) == -KOS_EBADF);
     }
 
-    // --- A slay returns once EVERY member's teardown is done ---------------------------------
+    // --- A slain task's death is reported once EVERY member's teardown is done ----------------
     // The entry returns at once and its end cancels the sibling, which leaves at its first
     // system call. The sibling holds the only receive right of the endpoint the creator calls
     // in its first slot, and of the probe a watcher above the creator calls in its last. Its
     // sweep ends the creator's call first, and the creator slays the task in the middle of that
-    // sweep, the task empty and still sweeping. The watcher's call ends when the sweep reaches
-    // the last slot, so its stamp has to come before the slay's return, and the restart takes
-    // the slot back. The watcher outranks the sweep the slay lends the creator's priority to.
+    // sweep, the task empty and still sweeping, and waits on its DEAD watch. The watcher's call
+    // ends when the sweep reaches the last slot, so its stamp has to come before the death's
+    // report, and the restart takes the slot back. The watcher outranks the sweep the creator's
+    // wait lends its priority to.
     struct TsRun
     {
         int setup, called, slain, watcher_seq, slay_seq, restarted, same_slot;
@@ -9948,6 +10092,11 @@ namespace
     };
     TsRun g_ts;
     Atomic<int32_t, Order::RELAXED> g_ts_seq{0};
+    // The creator's steps: the start, the entry's run, the sibling's sweep that ends the call,
+    // the slay, the restart, its slay, the watcher's join.
+    constexpr uint32_t TS_CHAIN = 7;
+    // Above the creator's whole chain: a call that ran out must not stamp before the slay.
+    constexpr uint32_t TS_MEMBER_US = (TS_CHAIN + 1u) * STALL_TOLERANT_US;
 #if KICKOS_SELFTEST_PEER
     void ts_sibling(void*) // caps: E(WAIT)@0, probe E(WAIT) in the last slot
     {
@@ -9974,18 +10123,27 @@ namespace
     void ts_watcher(void*) // caps: probe E(SIGNAL)@0
     {
         char b[4] = {};
-        (void)kos_call(child_cap(0), b, sizeof(b), sizeof(b), after_us(TX_WAIT_US));
+        (void)kos_call(child_cap(0), b, sizeof(b), sizeof(b), after_us(TS_MEMBER_US));
         g_ts_seq = g_ts_seq + 1;
         g_ts.watcher_seq = g_ts_seq;
     }
     void ts_creator(void*)
     {
-        kos_monotonic_t const until = deadline_in(CREATOR_US);
+        kos_monotonic_t const until = deadline_in(TS_CHAIN * STALL_TOLERANT_US);
         kos_task_t t = KOS_TASK_NONE;
         kos_program_t prog = KOS_CAP_NONE;
         kos_cap_t ep = KOS_CAP_NONE;
         kos_cap_t probe = KOS_CAP_NONE;
+        kos_cap_t n = KOS_CAP_NONE;
         int pre = kos_program_find("stpeer", &prog);
+        if (pre == 0)
+        {
+            pre = kos_notify_create(&n);
+        }
+        if (pre == 0)
+        {
+            pre = kos_notify_bind(n);
+        }
         if (pre == 0)
         {
             pre = kos_endpoint_create(&ep);
@@ -10000,7 +10158,7 @@ namespace
         run.p.instance = "peer0";
         if (pre == 0)
         {
-            pre = run.caps(scaps, 2).start(&t, prog);
+            pre = run.caps(scaps, 2).bound(n).start(&t, prog);
         }
         g_ts.pre = pre;
         if (pre == 0)
@@ -10020,37 +10178,44 @@ namespace
             {
                 char b[4] = {};
                 g_ts.called = kos_call(ep, b, sizeof(b), sizeof(b), until);
-                g_ts.slain = kos_task_slay(t, until);
+                kos_task_t const first = t;
+                g_ts.slain = slay_dead(t, until, n);
+                t = KOS_TASK_NONE;
                 g_ts_seq = g_ts_seq + 1;
                 g_ts.slay_seq = g_ts_seq;
                 kos_task_t again = KOS_TASK_NONE;
                 PeerRun restart("hold");
                 restart.p.instance = "peer0";
-                g_ts.restarted = restart.start(&again, prog);
-                g_ts.same_slot = ((again ^ t) & 0xFFFFu) == 0u;
-                (void)kos_task_slay(again, after_us(STALL_TOLERANT_US));
+                g_ts.restarted = restart.bound(n).start(&again, prog);
+                g_ts.same_slot = ((again ^ first) & 0xFFFFu) == 0u;
+                if (g_ts.restarted == 0)
+                {
+                    (void)slay_dead(again, after_us(STALL_TOLERANT_US), n);
+                }
             }
             if (watcher.valid())
             {
                 (void)kos_thread_join(watcher.id(), until);
             }
         }
-        if (g_ts.slain != 0)
+        if (t != KOS_TASK_NONE)
         {
-            (void)kos_task_slay(t, KOS_POLL);
+            (void)kos_task_slay(t);
         }
         (void)kos_handle_close(probe);
         (void)kos_handle_close(ep);
+        (void)kos_notify_unbind(n);
+        (void)kos_handle_close(n);
         (void)kos_handle_close(prog);
     }
-    void t_task_slay_after_every_sweep()
+    void t_slain_dead_after_every_sweep()
     {
-        // The creator's task and endpoints come out of main's task budgets.
-        TAP_ASK(.workers = 2, .tasks = 1, .endpoints = 2, .peer_workers = 1);
+        // The creator's task, endpoints and notification come out of main's task budgets.
+        TAP_ASK(.workers = 2, .tasks = 1, .endpoints = 2, .notifies = 1, .peer_workers = 1);
         g_ts = {-99, -99, -99, 0, 0, -99, 0, -99, -99};
         g_ts_seq = 0;
         kos::thread::Handle w;
-        ArmHold hold(CREATOR_HOLD_US);
+        ArmHold hold((TS_CHAIN + 1u) * STALL_TOLERANT_US);
         TAP_HOLD(hold.thread(&w));
         w = kos::thread::create(ts_creator, nullptr, "tsc", 14, KOS_POLICY_FIFO, 0ns, nullptr, 0,
                                 nullptr, 0, nullptr, 0, PEER_CREATOR, nullptr, 1u);
@@ -10138,7 +10303,7 @@ namespace
         int slain = -1;
         if (announce == 0)
         {
-            slain = task_end(&task, JOIN_GENEROUS_US);
+            slain = task_end(&task, JOIN_GENEROUS_US, announced);
         }
         TAP_CHECK(main_back());
         TAP_CHECK(started == 0);
@@ -10147,9 +10312,10 @@ namespace
     }
 
     // --- Slay: condemned is not yet gone ----------------------------------------
-    // The middle guarantee level. It needs a victim that CANNOT be scheduled while the
-    // deadline runs, so a higher-priority thread holds the CPU across it: the starvation
-    // hazard the timeout exists to make visible instead of hiding in an unbounded park.
+    // The cancel answers once raised, and a join bounded below the victim's death times out. It
+    // needs a victim that CANNOT be scheduled while the join's deadline runs, so a higher-priority
+    // thread holds the CPU across it: the starvation hazard the timeout exists to make visible
+    // instead of hiding in an unbounded park.
     constexpr uint32_t SLAY_TIMEOUT_US = 4000;
     constexpr uint64_t SLAY_HOG_NS = 60000000ull; // 15x the deadline
     constexpr uint8_t SLAY_HOG_PRIO = 11;
@@ -10171,7 +10337,7 @@ namespace
     }
 
     // The hog must have more window left than the deadline the caller is about to arm, or
-    // the slay measures nothing. Twice the deadline, so the margin is not itself the race.
+    // the join measures nothing. Twice the deadline, so the margin is not itself the race.
     bool hog_window_open()
     {
         uint32_t const start = g_hog_start_ns;
@@ -10193,7 +10359,7 @@ namespace
     void t_thread_slay_timeout()
     {
         // The instrument is starvation: one hog outranking the victim denies it THE core, so the
-        // slay's wait expires while the death stays owed. Above one core the placement of N spinners
+        // join's wait expires while the death stays owed. Above one core the placement of N spinners
         // is the scheduler's to choose.
         TAP_SKIP_ONE_CORE_ORDER();
         TAP_ASK(.workers = 2);
@@ -10205,19 +10371,21 @@ namespace
         g_slay_window = 0;
         TAP_CHECK(stage_a_parked_slay_worker(&victim));
         // Spawned AFTER the victim is staged: a spawn is not a barrier and this one would otherwise
-        // hog the staging itself. main stays above the hog until the slay's wait expires, so the
-        // hog runs only once main parks in the slay, and main is woken past it at the timeout.
+        // hog the staging itself. main stays above the hog until the join's wait expires, so the
+        // hog runs only once main parks in the join, and main is woken past it at the timeout.
         g_hog_start_ns = 0; // a previous arm's window must not read as this one's
         TAP_CHECK(main_above(SLAY_HOG_PRIO + 1));
         hog = kos::thread::create(slay_hog, nullptr, "shog", SLAY_HOG_PRIO);
         bool const open = hog.valid() and hog_window_open();
-        int slain = 0;
+        int slain = -99;
+        int joined = 0;
         int slay_window = -1;
         if (open)
         {
             // Condemned, not gone: the redirect is armed and irrevocable, and the sweep has not
             // run because the victim has not been given the CPU to run it on.
-            slain = victim.cancel_for(KOS_CANCEL_SLAY, std::chrono::microseconds{SLAY_TIMEOUT_US});
+            slain = victim.cancel(KOS_CANCEL_SLAY);
+            joined = victim.join_for(std::chrono::microseconds{SLAY_TIMEOUT_US});
             slay_window = g_slay_window;
         }
         TAP_CHECK(main_back());
@@ -10227,7 +10395,8 @@ namespace
             TAP_SKIP_VACUOUS("hog window spent before the slay, starvation not established");
             return;
         }
-        TAP_CHECK(slain == -KOS_ETIMEDOUT);
+        TAP_CHECK(slain == 0);
+        TAP_CHECK(joined == -KOS_ETIMEDOUT);
         TAP_CHECK(slay_window == 0); // and it never got its window either
         // Irrevocable is the claim, so the same handle must reach GONE with no second
         // request: the timeout gave up on the wait, never on the death.
@@ -10714,6 +10883,10 @@ namespace
         {
             return pd_slow_end();
         }
+        if (argc == 2 and peer_is(role, "slslow"))
+        {
+            return sl_slow_member();
+        }
         if (argc == 2 and peer_is(role, "pdspawn"))
         {
             return pd_spawns();
@@ -11014,12 +11187,12 @@ namespace
         TAP_CHECK(again == KOS_TASK_NONE);
         for (int i = 1; i < KICKOS_SELFTEST_PEERS; i++)
         {
-            TAP_CHECK(task_end(&rest[i]) == 0);
+            TAP_CHECK(task_end(&rest[i], STALL_TOLERANT_US, n) == 0);
         }
 
         TAP_CHECK(kos_notify(release) == 0);
         TAP_CHECK(peer_dead_status(t) == 0);
-        TAP_CHECK(kos_task_slay(t, KOS_POLL) == 0);
+        TAP_CHECK(kos_task_slay(t) == 0);
         TAP_CHECK(kos_handle_close(release) == 0);
         TAP_CHECK(kos_notify_unbind(n) == 0);
         TAP_CHECK(kos_handle_close(n) == 0);
@@ -11090,7 +11263,7 @@ namespace
         kos_task_t last = KOS_TASK_NONE;
         TAP_CHECK(pa_start("nop", nullptr, &last) == 0);
         TAP_CHECK(peer_dead_status(last) == PEER_OK);
-        TAP_CHECK(kos_task_slay(last, KOS_POLL) == 0);
+        TAP_CHECK(kos_task_slay(last) == 0);
     }
 
     // peer0's entry outranks main, so it has run to its end before the create returns.
@@ -11176,7 +11349,7 @@ namespace
         TAP_CHECK(kos_notify(release) == 0);
         TAP_CHECK(peer_dead_status(t) == PEER_OK);
         TAP_CHECK(not pa_nonblocking());
-        TAP_CHECK(kos_task_slay(t, KOS_POLL) == 0);
+        TAP_CHECK(kos_task_slay(t) == 0);
         TAP_CHECK(kos_handle_close(release) == 0);
         TAP_CHECK(kos_notify_unbind(n) == 0);
         TAP_CHECK(kos_handle_close(n) == 0);
@@ -11215,7 +11388,7 @@ namespace
         TAP_CHECK(refused == 0);
         TAP_CHECK(held == 0);
         TAP_CHECK(failed == 0);
-        TAP_CHECK(prev == KOS_TASK_NONE or kos_task_slay(prev, KOS_POLL) == 0);
+        TAP_CHECK(prev == KOS_TASK_NONE or kos_task_slay(prev) == 0);
     }
 }
 
@@ -11385,7 +11558,8 @@ int main(int, char**)
     TAP_ADD_PINNED("task_exit_entry_return", t_task_exit_entry_return);
     TAP_ADD("task_exit_member_exit", t_task_exit_member_exit);
     TAP_ADD_PINNED("peer_start_waits_out_dying", t_peer_start_waits_out_dying);
-    TAP_ADD_PINNED("death_wait_lends_priority", t_death_wait_lends_priority);
+    TAP_ADD_PINNED("instance_watch_lends_priority", t_instance_watch_lends_priority);
+    TAP_ADD_PINNED("slay_watch_lends_priority", t_slay_watch_lends_priority);
     TAP_ADD("prio_ceiling_refused", t_prio_ceiling_refused);
     TAP_ADD("task_dead_after_sweep", t_task_dead_after_sweep);
     TAP_ADD("task_handles", t_task_handles);
@@ -11401,7 +11575,7 @@ int main(int, char**)
     TAP_ADD("thread_slay_timeout", t_thread_slay_timeout);
     TAP_ADD("task_slay_group", t_task_slay_group);
     TAP_ADD("task_slay_gate", t_task_slay_gate);
-    TAP_ADD("task_slay_after_every_sweep", t_task_slay_after_every_sweep);
+    TAP_ADD("slain_dead_after_every_sweep", t_slain_dead_after_every_sweep);
     TAP_ADD_PINNED("task_slay_walk", t_task_slay_walk);
     TAP_ADD_PINNED("arm_hold", t_arm_hold);
     TAP_ADD_IRQ("irq_thread_ctx", t_irq);

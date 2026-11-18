@@ -139,7 +139,7 @@ namespace
         g_grandchild = kos::thread::create(nest_grandchild, nullptr, "nestgc", 9).id();
         // Root is unkillable: it leaves spawner_tag at KILL_TAG_NONE and kill_tag_of never
         // answers NONE.
-        g_root_kill_rc = kos_thread_cancel(ROOT_THREAD, KOS_CANCEL_KILL, KOS_POLL);
+        g_root_kill_rc = kos_thread_cancel(ROOT_THREAD, KOS_CANCEL_KILL);
         kos_sem_post(&g_nest_done);
         // Main's refuse-half probe needs the grandchild ALIVE, and a cancel reaches a
         // semaphore park, so the accept half below would otherwise race it dead. The gate
@@ -150,7 +150,7 @@ namespace
         kos_thread_t const gc = g_grandchild;
         if (gc != KOS_THREAD_NONE)
         {
-            g_child_kill_rc = kos_thread_cancel(gc, KOS_CANCEL_KILL, KOS_POLL);
+            g_child_kill_rc = kos_thread_cancel(gc, KOS_CANCEL_KILL);
         }
         kos_sem_post(&g_nest_done);
         kos_sem_wait(&g_nest_park, KOS_NEVER); // never posted: alive until main cancels it
@@ -164,8 +164,8 @@ namespace
     {
         // Both carry the reserved all-ones index (0x7fffffff at an aged generation), so
         // neither is mintable and both must fail to resolve.
-        *bad_handle_rc = kos_thread_cancel(KOS_THREAD_NONE, KOS_CANCEL_KILL, KOS_POLL);
-        *big_handle_rc = kos_thread_cancel(0x7fffffffu, KOS_CANCEL_KILL, KOS_POLL);
+        *bad_handle_rc = kos_thread_cancel(KOS_THREAD_NONE, KOS_CANCEL_KILL);
+        *big_handle_rc = kos_thread_cancel(0x7fffffffu, KOS_CANCEL_KILL);
         // 0 is never a legal answer for these, so an unrun matrix fails.
         *stranger_rc = 0;
         *child_kill_rc = 1;
@@ -179,7 +179,7 @@ namespace
         kos_thread_t const gc = g_grandchild;
         if (gc != KOS_THREAD_NONE)
         {
-            *stranger_rc = kos_thread_cancel(gc, KOS_CANCEL_KILL, KOS_POLL);
+            *stranger_rc = kos_thread_cancel(gc, KOS_CANCEL_KILL);
         }
         kos_sem_post(&g_nest_probe); // probed: the child may now cancel it for real
         kos_sem_wait(&g_nest_done, KOS_NEVER); // the child has tried its own cancel
@@ -187,18 +187,18 @@ namespace
         // runs above main, so it has exited by the time this returns. Killing it TWICE must not
         // resolve: the slot is EXITED and the generation only bumps at reclaim, so the
         // resolver has to reject on state, not on generation.
-        *child_kill_rc = kos_thread_cancel(child.id(), KOS_CANCEL_KILL, KOS_POLL);
-        *child_twice_rc = kos_thread_cancel(child.id(), KOS_CANCEL_KILL, KOS_POLL);
-        // A polling kill answers once raised and parks nothing: this target makes no
-        // system call until released, so a cancel that waited would answer -KOS_ETIMEDOUT.
+        *child_kill_rc = kos_thread_cancel(child.id(), KOS_CANCEL_KILL);
+        *child_twice_rc = kos_thread_cancel(child.id(), KOS_CANCEL_KILL);
+        // A kill answers once raised and parks nothing: this target makes no system call until
+        // released.
         kos::thread::Handle const spin =
             kos::thread::create(spinner, nullptr, "nestsp", KICKOS_PRIO_MIN);
         if (spin.valid())
         {
-            g_spin_rc[0] = spin.cancel_for(KOS_CANCEL_KILL, std::chrono::nanoseconds{0});
+            g_spin_rc[0] = spin.cancel(KOS_CANCEL_KILL);
             g_spin_release = 1u;
             g_spin_rc[1] = spin.join_for(WRITER_DONE);
-            g_spin_rc[2] = spin.cancel_for(KOS_CANCEL_KILL, std::chrono::nanoseconds{0});
+            g_spin_rc[2] = spin.cancel(KOS_CANCEL_KILL);
         }
     }
 }

@@ -261,8 +261,10 @@ namespace kickos
         WordRecord* plain_word(uint32_t* word);
         // Parked as KOS_SYS_WORD_WAIT parks, through the word's own address.
         void park_word_waiter(Thread* w, WordRecord* m);
-        // Parked as a death wait parks, on `t`, lending nothing: the lend is death_park's.
-        void park_death_waiter(Thread* w, Task* t);
+        // Parked in a notification wait on bit 0 of a notification of its own, which a DEAD watch
+        // of `t` raises, `t` marked ended with its members' waits left standing, a state no
+        // syscall reaches: lending nothing yet, the next recompute of `t`'s threads lends.
+        void park_watch_waiter(Thread* w, Task* t);
         // At a translating posture every hold of word_seam.cc fails while set, as a vanished
         // page's does. Reset clears it.
         extern bool g_word_fault;

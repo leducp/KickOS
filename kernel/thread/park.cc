@@ -101,11 +101,6 @@ namespace kickos
                 word_waiter_left(m);
                 break;
             }
-            case WAIT_TASK_EMPTY:
-            {
-                death_wait_leave(t, held);
-                break;
-            }
             case WAIT_NOTIFY:
             case WAIT_SLEEP:
             case WAIT_JOIN:

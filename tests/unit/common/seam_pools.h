@@ -16,6 +16,10 @@
 #ifndef KICKOS_SEAM_TASKS
 #define KICKOS_SEAM_TASKS 18
 #endif
+// The declarations a fixture may declare: one per task record.
+#ifndef KICKOS_SEAM_DECLS
+#define KICKOS_SEAM_DECLS KICKOS_SEAM_TASKS
+#endif
 #ifndef KICKOS_SEAM_DOMAINS
 #if KICKOS_HAVE_ASPACE
 #define KICKOS_SEAM_DOMAINS 20

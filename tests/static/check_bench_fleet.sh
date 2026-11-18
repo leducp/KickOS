@@ -99,12 +99,12 @@ printf 'RIG_SESSION=%s\n' "$TMP/session" > "$TMP/rig.conf"
 
 F="$TMP/fixture"
 {
-    printf 'hello|kernel|tests/integration/check_qemu_hello.sh|\n'
-    printf 'chaincheck_float|kernel|tests/integration/check_chaincheck.sh|\n'
+    printf 'hello|kernel|tests/integration/check_qemu_hello.sh||-\n'
+    printf 'chaincheck_float|kernel|tests/integration/check_chaincheck.sh||-\n'
 } > "$F/rx72m.images"
 cp "$F/rx72m.images" "$F/rx72m-flat.images"
-printf 'hello|kernel|tests/integration/check_qemu_hello.sh|\n' > "$F/esp32c6-wroom.images"
-printf 'ampping_n0|kernel|tests/integration/check_c6_amp_capture.sh|\n' \
+printf 'hello|kernel|tests/integration/check_qemu_hello.sh||-\n' > "$F/esp32c6-wroom.images"
+printf 'ampping_n0|kernel|tests/integration/check_c6_amp_capture.sh||-\n' \
     > "$F/esp32c6-wroom-amp2-n0.images"
 printf 'NOT EVALUATED: the planted clause\n' > "$F/ampping_n0.out"
 
@@ -220,7 +220,7 @@ sed -i 's|^    { "name": "esp32c6-wroom-amp2-n1", "generator": "Ninja", "binaryD
     "$TMP/tree/CMakePresets.json"
 grep -q 'esp32c6-wroom-solo-n1' "$TMP/tree/CMakePresets.json" || fail "the planted presets were not added"
 cp "$F/esp32c6-wroom-amp2-n0.images" "$F/esp32c6-wroom-amp3-n0.images"
-printf 'hello|kernel|tests/integration/check_qemu_hello.sh|\n' > "$F/esp32c6-wroom-solo-n1.images"
+printf 'hello|kernel|tests/integration/check_qemu_hello.sh||-\n' > "$F/esp32c6-wroom-solo-n1.images"
 fleet "$C6_BUS" esp32c6-wroom
 for row in 'esp32c6-wroom amp3-n0 ampping_n0 1 plantedamp3n0' 'esp32c6-wroom solo-n1 hello 0 plantedsolon1'; do
     grep -qxF "$row" "$F/flashed" || bad "the esp32c6-wroom pass did not flash [$row]"
@@ -241,12 +241,12 @@ cp "$TMP/presets.keep" "$TMP/tree/CMakePresets.json"
 
 # Every variant the tree declares for a board, each under its own tag.
 {
-    printf 'hello|kernel|tests/integration/check_qemu_hello.sh|\n'
-    printf 'cxxtest|kernel|tests/integration/check_qemu_cxxtest.sh|\n'
+    printf 'hello|kernel|tests/integration/check_qemu_hello.sh||-\n'
+    printf 'cxxtest|kernel|tests/integration/check_qemu_cxxtest.sh||-\n'
 } > "$F/esp32-wroom.images"
 {
     cat "$F/esp32-wroom.images"
-    printf 'slaypeer|kernel|tests/integration/check_slaypeer.sh|\n'
+    printf 'slaypeer|kernel|tests/integration/check_slaypeer.sh||-\n'
 } > "$F/esp32-wroom-smp.images"
 ESP_BUS='1a86:7523 CH340'
 fleet "$ESP_BUS" esp32-wroom
@@ -259,7 +259,7 @@ for row in 'esp32-wroom - hello 0 planted' 'esp32-wroom - cxxtest 0 planted' \
 done
 grep -qE '^  esp32-wroom +cxxtest \(smp\) +captured$' "$TMP/fleet.out" \
     || bad "the esp32-wroom coverage table does not show cxxtest (smp) captured"
-printf 'slaypeer|kernel|-|\n' >> "$F/esp32-wroom-smp.images"
+printf 'slaypeer|kernel|-||-\n' >> "$F/esp32-wroom-smp.images"
 fleet "$ESP_BUS" esp32-wroom
 got=$?
 [ "$got" -eq 1 ] || bad "a pass where an smp image names no judge exits $got, not 1"
@@ -302,7 +302,7 @@ case "$_k64" in
 esac
 
 F411_BUS='0483:3748 STLINK'
-printf 'f411spi|kernel|tests/integration/check_f411spi.sh|\n' > "$F/f411disco.images"
+printf 'f411spi|kernel|tests/integration/check_f411spi.sh||-\n' > "$F/f411disco.images"
 mkdir -p "$F/build"
 : > "$F/build/CMakeCache.txt"
 cp tests/integration/app_captures/f411spi-unwired.capture "$F/f411spi.capture"
@@ -330,7 +330,7 @@ got=$?
 
 # Two boards sharing nothing are captured at once, each capture of one waiting for the other's
 # first; every image is built before the first flash, and one board's captures keep their order.
-printf 'hello|kernel|tests/integration/check_qemu_hello.sh|\n' > "$F/f411disco.images"
+printf 'hello|kernel|tests/integration/check_qemu_hello.sh||-\n' > "$F/f411disco.images"
 printf 'RIG_CONSOLE_RX72M=/dev/planted-a\nRIG_CONSOLE_F411DISCO=/dev/planted-b\n' >> "$TMP/rig.conf"
 printf 'f411disco\n' > "$F/rx72m.peer"
 printf 'rx72m\n' > "$F/f411disco.peer"
@@ -363,8 +363,8 @@ awk '$1 == "start" { if (open) bad = 1; open = 1 } $1 == "end" { open = 0 } END 
 rm -f "$F/hold"
 
 # blackpill's capture is told the J-Link Pro's serial, read off the bus.
-printf 'hello|kernel|tests/integration/check_qemu_hello.sh|\n' > "$F/blackpill.images"
-printf 'hello|kernel|tests/integration/check_qemu_hello.sh|\n' > "$F/picopi.images"
+printf 'hello|kernel|tests/integration/check_qemu_hello.sh||-\n' > "$F/blackpill.images"
+printf 'hello|kernel|tests/integration/check_qemu_hello.sh||-\n' > "$F/picopi.images"
 cp "$F/picopi.images" "$F/pizero2350.images"
 JLINK_BUS='1366:1020 000177003338'
 RP_BUS='2e8a:0003 E0C9'

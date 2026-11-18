@@ -239,8 +239,8 @@ namespace kickos
                 << "a marked member stays parked behind a walker that has not resumed";
         }
 
-        // The hold dropped while the walker is out, as a timeout-0 slayer slain before it runs
-        // again drops it from its own exit: nothing else is left to end those parks.
+        // The hold dropped while the walker is out, as its creator's death drops it: nothing else
+        // is left to end those parks.
         TEST_F(SlayWalk, a_dropped_hold_ends_the_parks_of_an_ended_task)
         {
             ConsoleEnd const e = console_end(1, 3);

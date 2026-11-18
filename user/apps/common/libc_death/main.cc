@@ -98,7 +98,7 @@ int main(int, char**)
     }
     bool const parked = parked_inside_the_call();
     bool const killed =
-        v.cancel_for(KOS_CANCEL_KILL, std::chrono::nanoseconds{0}) == 0 and v.join() == 0;
+        v.cancel(KOS_CANCEL_KILL) == 0 and v.join() == 0;
     __malloc_unlock(_REENT);
     if (not parked or not killed)
     {

@@ -78,7 +78,7 @@ set(_selftest_regions 8)
 # A per-board property, not a fleet one, and the binding budget is a different one on each of them:
 # the 256 KiB pow2 PMP code window (`_code_size` in
 # arch/riscv/chip/esp32c6/esp32c6.ld) on an enforcing ESP32-C6, whose next step up would take 256
-# KiB straight off the thread arena, the 240 KiB node slice on the ESP32-C6's own-image AMP
+# KiB straight off the thread arena, the node slices on the ESP32-C6's own-image AMP
 # partition, and the arena that follows .bss on nrf51. None of these is a number the build can
 # read back from the board, so the cut is stated here and nowhere else: the chip, KICKOS_HAVE_MPU
 # and KICKOS_AMP_OWN_IMAGE come from the board's own config, and every gate takes

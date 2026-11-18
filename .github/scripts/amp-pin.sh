@@ -6,8 +6,8 @@
 #
 # usage: amp-pin.sh <build-dir> <expected node index> <shared|own> <expected node count>
 #
-# Every AMP gate is registered by a CMake clause keyed on the posture, so a preset that lost it
-# does not FAIL those gates, it stops registering them, and ctest passes on a run that covered
+# Every AMP test is registered by a CMake clause keyed on the posture, so a preset that lost it
+# does not FAIL those tests, it stops registering them, and ctest passes on a run that covered
 # the plain arm64 posture under another name.
 #
 # Non-circular by construction: the expected values are LITERALS the caller states, and the file
@@ -15,7 +15,7 @@
 # posture.
 #
 # The width is pinned for the same reason: KICKOS_AMP_NODES defaults to the core count, so a
-# preset that lost its stated width fails nothing. It registers every gate and passes them all
+# preset that lost its stated width fails nothing. It registers every test and passes them all
 # over a NARROWER partition under the wider one's name.
 
 set -eu
@@ -36,7 +36,7 @@ COUNT="$(read_def KICKOS_AMP_PORT_COUNT)"
 SELF="$(read_def KICKOS_AMP_SELF_NODE)"
 
 if [ -z "$COUNT" ] || [ "$((COUNT))" -eq 0 ]; then
-    echo "amp-pin: $BUILD states 0 partition crossing(s): every AMP gate de-registers here and"
+    echo "amp-pin: $BUILD states 0 partition crossing(s): every AMP test de-registers here and"
     echo "         this step would re-run the plain arm64 posture under another name"
     exit 1
 fi
@@ -65,7 +65,7 @@ NODES="$(sed -n 's/^CONFIG_KICKOS_AMP_NODES=\(.*\)$/\1/p' "$CFG" | tail -1)"
 if [ -z "$NODES" ] || [ "$((NODES))" -ne "$((WANT_NODES))" ]; then
     echo "amp-pin: $BUILD holds $NODES node(s) and this step needs $WANT_NODES."
     echo "         KICKOS_AMP_NODES defaults to the core count, so a lost width registers every"
-    echo "         gate and passes it while covering a narrower partition under this name."
+    echo "         test and passes it while covering a narrower partition under this name."
     exit 1
 fi
 

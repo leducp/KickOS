@@ -2,9 +2,10 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# The image listing the bench reads (<build>/kickos-images.txt): four fields a row; a judge that
+# The image listing the bench reads (<build>/kickos-images.txt): five fields a row; a judge that
 # is a gate script in the tree, an emulator, human or inapplicable mark, or `-`; a human or
-# inapplicable mark that says why, the latter on an image no test the build runs names; and an
+# inapplicable mark that says why, the latter on an image no test the build runs names; a capture
+# window that is a count of seconds or `-`; and an
 # image read as `emulator` exactly where a test the build's ctest runs names it, that test being
 # neither a `host` gate nor disabled. Those two clauses read ctest's own test list, not the
 # configure that wrote the listing.
@@ -37,13 +38,18 @@ read_listing() {
     while IFS= read -r _row; do
         _rows=$((_rows + 1))
         _fields="$(printf '%s\n' "$_row" | awk -F '|' '{ print NF }')"
-        if [ "$_fields" -ne 4 ]; then
-            echo "row $_rows carries $_fields field(s), not 4: $_row"
+        if [ "$_fields" -ne 5 ]; then
+            echo "row $_rows carries $_fields field(s), not 5: $_row"
             return 1
         fi
         _image="$(printf '%s\n' "$_row" | cut -d '|' -f 1)"
         _judge="$(printf '%s\n' "$_row" | cut -d '|' -f 3)"
         _args="$(printf '%s\n' "$_row" | cut -d '|' -f 4)"
+        _window="$(printf '%s\n' "$_row" | cut -d '|' -f 5)"
+        if [ "$_window" != - ] && ! printf '%s\n' "$_window" | grep -qx '[1-9][0-9]*'; then
+            echo "$_image states a capture window that is no count of seconds: '$_window'"
+            return 1
+        fi
         _run="$(awk -F '|' -v i="$_image" '$1 == i { print $2; exit }' "$3")"
         case "$_judge" in
             -) ;;
@@ -83,14 +89,15 @@ read_listing() {
 if [ "${1:-}" = --self-test ]; then
     scratch_dir
     src="$(cd "$(dirname "$0")/../.." && pwd)"
-    good='hello|kernel|tests/integration/check_qemu_hello.sh|
-stackdepth0|kernel|emulator-owed|
-blink|kernel|human|LED
-rootfault|kernel|inapplicable|memory not enforced
-fault|kernel|tests/integration/check_fault_dump.sh|THREAD FAULT
-panicgate1|kernel|emulator|
-rebootdemo|kernel|emulator|
-sysdefault|kernel|-|'
+    good='hello|kernel|tests/integration/check_qemu_hello.sh||-
+stackdepth0|kernel|emulator-owed||-
+blink|kernel|human|LED|-
+rootfault|kernel|inapplicable|memory not enforced|-
+fault|kernel|tests/integration/check_fault_dump.sh|THREAD FAULT|-
+userbench|kernel|tests/integration/check_userbench.sh||60
+panicgate1|kernel|emulator||-
+rebootdemo|kernel|emulator||-
+sysdefault|kernel|-||-'
     printf '%s\n' "$good" > "$TMP/good"
     # A stub ctest: panicgate1 and rebootdemo.efi are run by emulator gates; stackdepth0 is named
     # only by a host gate and by a disabled one. KOS_STUB_UNBUILT adds a test ctest gives no
@@ -132,17 +139,23 @@ STUB
         fi
         grep -qF -- "$3" "$TMP/out" || fail "a listing with $1 was refused as: $(cat "$TMP/out")"
     }
-    refused three-fields 'hello_c|kernel|tests/integration/check_qemu_hello.sh' 'not 4'
-    refused human-silent 'blink2|kernel|human|' 'says nothing of why'
-    refused void-silent 'mpu_fault|kernel|inapplicable|' 'says nothing of why'
-    refused directory 'stress|kernel|tests/integration|' 'no gate script'
-    refused missing-script 'stress|kernel|tests/integration/check_nothing.sh|' \
+    refused four-fields 'hello_c|kernel|tests/integration/check_qemu_hello.sh|' 'not 5'
+    refused window-empty 'hello_c|kernel|tests/integration/check_qemu_hello.sh||' \
+        'no count of seconds'
+    refused window-zero 'hello_c|kernel|tests/integration/check_qemu_hello.sh||0' \
+        'no count of seconds'
+    refused window-word 'hello_c|kernel|tests/integration/check_qemu_hello.sh||1m' \
+        'no count of seconds'
+    refused human-silent 'blink2|kernel|human||-' 'says nothing of why'
+    refused void-silent 'mpu_fault|kernel|inapplicable||-' 'says nothing of why'
+    refused directory 'stress|kernel|tests/integration||-' 'no gate script'
+    refused missing-script 'stress|kernel|tests/integration/check_nothing.sh||-' \
         'no gate script'
-    refused unrun 'stackdepth1|kernel|emulator|' 'no test this build runs names it'
-    refused host-only 'stackdepth0|kernel|emulator|' 'no test this build runs names it'
-    refused owed-run 'panicgate1|kernel|emulator-owed|' 'b_panicgate1 runs it'
-    refused owed-run-suffixed 'rebootdemo|kernel|emulator-owed|' 'b_rebootdemo runs it'
-    refused void-run 'panicgate1|kernel|inapplicable|planted' 'b_panicgate1 runs it'
+    refused unrun 'stackdepth1|kernel|emulator||-' 'no test this build runs names it'
+    refused host-only 'stackdepth0|kernel|emulator||-' 'no test this build runs names it'
+    refused owed-run 'panicgate1|kernel|emulator-owed||-' 'b_panicgate1 runs it'
+    refused owed-run-suffixed 'rebootdemo|kernel|emulator-owed||-' 'b_rebootdemo runs it'
+    refused void-run 'panicgate1|kernel|inapplicable|planted|-' 'b_panicgate1 runs it'
     KOS_STUB_UNBUILT=1 run_images "$src" "$TMP/ctest" "$TMP/build" .efi "$TMP/runs" \
         || fail "the unbuilt stub test list was not read: $(cat "$TMP/tests.err")"
     if read_listing "$TMP/good" "$src" "$TMP/runs" > "$TMP/out"; then
@@ -150,9 +163,10 @@ STUB
     fi
     grep -qF 'gives b_hello no command' "$TMP/out" \
         || fail "a commandless test was refused as: $(cat "$TMP/out")"
-    echo "PASS: a sound listing reads; a short row, a silent mark, a missing or directory judge,"
-    echo "  an emulator row no running test names, an owed or inapplicable row a running test"
-    echo "  names, with or without the executable suffix, and an unbuilt test list are refused"
+    echo "PASS: a sound listing reads; a short row, a window that is no count of seconds, a silent"
+    echo "  mark, a missing or directory judge, an emulator row no running test names, an owed or"
+    echo "  inapplicable row a running test names, with or without the executable suffix, and an"
+    echo "  unbuilt test list are refused"
     exit 0
 fi
 

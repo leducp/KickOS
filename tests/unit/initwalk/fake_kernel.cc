@@ -382,6 +382,7 @@ namespace fake
             return -1;
         }
 
+        // A past incarnation in the way of a create: scripted retiring, or ended and not dead.
         bool retiring(int decl)
         {
             for (uint16_t d : g_retiring)
@@ -391,7 +392,32 @@ namespace fake
                     return true;
                 }
             }
+            for (Task const& t : g_tasks)
+            {
+                if (t.decl == decl + 1 and not t.released and (t.state & KOS_TASK_ENDED) != 0u
+                    and (t.state & KOS_TASK_DEAD) == 0u)
+                {
+                    return true;
+                }
+            }
             return false;
+        }
+
+        // Each armed INSTANCE watch on `decl` is raised once nothing is in the way of it any more.
+        void startable(int decl)
+        {
+            if (decl < 0 or retiring(decl))
+            {
+                return;
+            }
+            for (Object& o : g_objects)
+            {
+                if (o.kind == Kind::WATCH and o.decl == decl and o.refs != 0u and o.armed)
+                {
+                    o.armed = false;
+                    g_objects[static_cast<size_t>(o.binding)].pending |= 1u << o.bit;
+                }
+            }
         }
 
         // Whether `line` is one a declaration in the way lists.
@@ -439,7 +465,7 @@ namespace fake
         }
 
         // A task the init may act on, or the errno the kernel answers: an unknown or released
-        // one, or one whose hold its kill dropped, is -KOS_EBADF, another creator's -KOS_EPERM.
+        // one, or one whose hold is gone, is -KOS_EBADF, another creator's -KOS_EPERM.
         int resolve(kos_task_t handle, Task** out)
         {
             Task* const t = find_task(handle);
@@ -626,6 +652,10 @@ namespace fake
         // The slot is freed once the creator's hold is gone and every member is swept.
         void release_if_done(Task& task)
         {
+            if (task.slain and (task.state & KOS_TASK_DEAD) != 0u)
+            {
+                task.held = false;
+            }
             if (task.released or task.held or (task.state & KOS_TASK_LIVE) != 0u or sweeping(task))
             {
                 return;
@@ -801,6 +831,7 @@ namespace fake
         task.state = task.state | KOS_TASK_ENDED | KOS_TASK_DEAD;
         raise(task, KOS_TASK_ENDED | KOS_TASK_DEAD);
         release_if_done(task);
+        startable(task.decl - 1);
     }
 
     void cancel(char const* name, int status)
@@ -818,6 +849,7 @@ namespace fake
         }
         raise(task, task.state & (KOS_TASK_ENDED | KOS_TASK_DEAD));
         release_if_done(task);
+        startable(task.decl - 1);
     }
 
     void stall(char const* name)
@@ -842,6 +874,7 @@ namespace fake
             raise(task, KOS_TASK_DEAD);
         }
         release_if_done(task);
+        startable(task.decl - 1);
     }
 
     void ready_all()
@@ -886,14 +919,7 @@ namespace fake
                 break;
             }
         }
-        for (Object& o : g_objects)
-        {
-            if (o.kind == Kind::WATCH and o.decl == decl and o.refs != 0u and o.armed)
-            {
-                o.armed = false;
-                g_objects[static_cast<size_t>(o.binding)].pending |= 1u << o.bit;
-            }
-        }
+        startable(decl);
     }
 
     std::vector<Call> const& calls()
@@ -919,7 +945,7 @@ namespace fake
         std::vector<Call> out;
         for (Call const& c : calls_of("kos_task_slay"))
         {
-            if (c.args[1] != static_cast<uint64_t>(KOS_POLL.ns))
+            if (c.args[1] == 0u)
             {
                 out.push_back(c);
             }
@@ -932,7 +958,7 @@ namespace fake
         std::vector<Call> out;
         for (Call const& c : calls_of("kos_task_slay"))
         {
-            if (c.args[1] == static_cast<uint64_t>(KOS_POLL.ns))
+            if (c.args[1] == 1u)
             {
                 out.push_back(c);
             }
@@ -1277,9 +1303,10 @@ int kos_notify_wait(uint32_t mask, kos_monotonic_t until, uint32_t* out_bits)
     {
         return finish(call, -KOS_EPERM);
     }
+    bool const poll = until.ns == KOS_POLL.ns;
     while (true)
     {
-        if (g_step < g_steps.size())
+        if (g_step < g_steps.size() and not poll)
         {
             g_step++;
             g_steps[g_step - 1u]();
@@ -1483,10 +1510,15 @@ int kos_task_create(kos_program_t prog, struct kos_task_params const* params, ko
     {
         return finish(call, -KOS_EPERM);
     }
+    // kernel/task/task.cc, task_decl_in_the_way: a dying incarnation is retried, a live one busy.
     for (Task const& live : g_tasks)
     {
         if (live.decl == decl + 1 and not live.released and (live.state & KOS_TASK_DEAD) == 0u)
         {
+            if ((live.state & KOS_TASK_ENDED) != 0u)
+            {
+                return finish(call, -KOS_EAGAIN);
+            }
             return finish(call, -KOS_EBUSY);
         }
     }
@@ -2224,9 +2256,10 @@ static int spawn_thread(struct kos_thread_params const* params, kos_task_t into,
     return finish(call, 0);
 }
 
-int kos_task_slay(kos_task_t task, kos_monotonic_t until)
+int kos_task_slay(kos_task_t task)
 {
-    size_t const call = record("kos_task_slay", {task, static_cast<uint64_t>(until.ns)});
+    // args[1] is 1 where the task was already dead: a release, not a kill.
+    size_t const call = record("kos_task_slay", {task, 0u});
     int const rc = scripted(call);
     if (rc != 1)
     {
@@ -2238,27 +2271,23 @@ int kos_task_slay(kos_task_t task, kos_monotonic_t until)
     {
         return finish(call, err);
     }
-    // Every member stops. KOS_POLL drops the creator's hold at once: the slot stays taken, its
-    // handle unreused, until every member is swept. Any other deadline returns once each is
-    // swept, or at its deadline, a passed one at once, with the sweeps left to finish.
-    bool const poll = until.ns == KOS_POLL.ns;
-    if (poll)
+    // Every member stops, and the creator's hold goes at the death: until every member is swept
+    // the handle still names the task, and the watch reports the end and the death.
+    uint32_t const before = t->state;
+    if ((before & KOS_TASK_DEAD) != 0u)
     {
-        t->held = false;
+        g_calls[call].args[1] = 1u;
     }
+    t->slain = true;
     condemn(*t);
     end_members(*t);
-    if (not poll and sweeping(*t))
+    if (not sweeping(*t))
     {
-        if (until.ns == KOS_NEVER.ns)
-        {
-            throw Panic{"fake: a slay waits forever on sweeps nothing finishes"};
-        }
-        wait_out(until);
-        return finish(call, -KOS_ETIMEDOUT);
+        t->state = t->state | KOS_TASK_DEAD;
     }
-    t->held = false;
+    raise(*t, t->state & ~before & (KOS_TASK_ENDED | KOS_TASK_DEAD));
     release_if_done(*t);
+    startable(t->decl - 1);
     return finish(call, 0);
 }
 
@@ -2270,9 +2299,8 @@ int kos_task_state(kos_task_t task, int* status)
     {
         return finish(call, rc);
     }
-    // Resolvable until its slot is freed, its creator's hold dropped or not.
     Task* const t = find_task(task);
-    if (t == nullptr or t->released)
+    if (t == nullptr or t->released or not t->held)
     {
         return finish(call, -KOS_EBADF);
     }

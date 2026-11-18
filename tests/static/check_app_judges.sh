@@ -306,9 +306,9 @@ tests/integration/check_inprstorm.sh|inprstorm.capture||no-fifo|after|rerouting 
 tests/integration/check_inprstorm.sh|inprstorm.capture||heartbeat-1|drop|[inprstorm] heartbeat |
 tests/integration/check_inprstorm.sh|inprstorm.capture||heartbeat-2|drop|[inprstorm] heartbeat 7||drop|[inprstorm] heartbeat 8|
 tests/integration/check_inprstorm.sh|inprstorm.capture||panic|after|rerouting INPR|KERNEL PANIC: planted
-tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||load|drop|load:0x4083c000|
+tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||load|drop|load:0x4083d000|
 tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||lp-rtc|drop|# c6amp: LP RTC|
-tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||vectors|swap|vectors=0x4083c001|vectors=0x4083c000
+tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||vectors|swap|vectors=0x4083d901|vectors=0x4083d900
 tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||vectors|swap|self clk=160000000|self clk=120000000
 tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||vectors|swap|self clk=160000000|self clk=40000000
 tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||vectors|swap|self clk=160000000|self clk=80000000
@@ -780,9 +780,6 @@ tests/integration/check_faultsurvive.sh;forge;rxv3;user|faultsurvive-rx-forge.ca
 tests/integration/check_faultsurvive.sh;forge;rxv3;user|faultsurvive-rx-forge.capture||panic|after|[fs] survivor ran|KERNEL PANIC: planted
 tests/integration/check_faultsurvive.sh;forge;rxv3;user|faultsurvive-rx-forge.capture||error|after|[fs] forger running|[fs] ERROR: the head reply was refused (-14)
 tests/integration/check_faultsurvive.sh;forge;rxv3;user|faultsurvive-rx-forge.capture||error|swap|[fs] [head] USER|[fs] ERROR: the head reply was not delivered (-14)
-tests/integration/check_fault_dump.sh;RX EXCEPTION (trap)|fault-rx.capture||marker|drop|=== RX EXCEPTION|
-tests/integration/check_fault_dump.sh;RX EXCEPTION (trap)|fault-rx.capture||doubled|after|PC=0xffc00400|=== RX EXCEPTION (trap) ===
-tests/integration/check_fault_dump.sh;RX EXCEPTION (trap)|fault-rx.capture||faulted|after|[fault] executing|[fault] ERROR: illegal instruction did not fault
 tests/integration/check_app_arms.sh;ringpriv;1|ringpriv-noring.capture||arms|drop|[ringpriv] ok - CONTROL.nPRIV=0|
 tests/integration/check_app_arms.sh;ringpriv;1|ringpriv-noring.capture||verdict|swap|PASS (1 arms)|PASS (2 arms)
 tests/integration/check_app_arms.sh;ringpriv;1|ringpriv-noring.capture||error|after|[ringpriv] ok - CONTROL.nPRIV=0|[ringpriv] ERROR: planted
@@ -792,8 +789,6 @@ tests/integration/check_fault_dump.sh;HARD FAULT|fault-hard.capture||announce|dr
 tests/integration/check_fault_dump.sh;HARD FAULT|fault-hard.capture||order|order|[fault] executing|=== HARD FAULT
 tests/integration/check_fault_dump.sh;THREAD FAULT|fault.capture||announce|drop|[fault] executing|
 tests/integration/check_fault_dump.sh;THREAD FAULT|fault.capture||order|order|[fault] executing|=== THREAD FAULT
-tests/integration/check_fault_dump.sh;RX EXCEPTION (trap)|fault-rx.capture||announce|drop|[fault] executing|
-tests/integration/check_fault_dump.sh;RX EXCEPTION (trap)|fault-rx.capture||order|order|[fault] executing|=== RX EXCEPTION
 tests/integration/check_fault_dump.sh;HARD FAULT|fault-hard.capture||marker|drop|=== HARD FAULT|
 tests/integration/check_fault_dump.sh;SIM FAULT|fault-sim.capture||marker|drop|=== SIM FAULT|
 tests/integration/check_fault_dump.sh;SIM FAULT|fault-sim.capture||doubled|after|=== SIM FAULT|=== SIM FAULT (illegal instruction) at 0xaaaacd2a0366 ===
@@ -1016,7 +1011,6 @@ tests/integration/check_faultsurvive.sh;ldiv0;rv32imac;returned:any|the system e
 tests/integration/check_faultsurvive.sh;ldiv0;rxv3;returned:any|the system exited 0 once main returned
 tests/integration/check_fault_dump.sh;DIVBYZERO: the UDF of __aeabi_idiv0/__aeabi_ldiv0|the fault ended the system with the status its marker implies
 tests/integration/check_fault_dump.sh;XTENSA EXCEPTION (integer divide by zero)|the fault ended the system with the status its marker implies
-tests/integration/check_fault_dump.sh;RX EXCEPTION (trap)|the fault ended the system with the status its marker implies
 tests/integration/check_fault_dump.sh;SIM FAULT|the fault ended the system with the status its marker implies
 tests/integration/check_fault_dump.sh;THREAD FAULT|the fault ended the system with the status its marker implies
 tests/integration/check_f411spi.sh|loopback (bench wiring absent)
@@ -1071,7 +1065,7 @@ if [ "${1:-}" = --listing ]; then
     [ -f "${2:-}" ] || fail "usage: check_app_judges.sh --listing <kickos-images.txt>"
     PROVED="$(printf '%s\n' "$ROWS" | cut -d '|' -f 1 | sort -u)"
     pairs=0
-    while IFS='|' read -r image _stdout judge args; do
+    while IFS='|' read -r image _stdout judge args _window; do
         case "$judge" in
             tests/integration/check_tap_stream.sh | - | emulator | emulator-owed | human | inapplicable | "") continue ;;
             *) ;;

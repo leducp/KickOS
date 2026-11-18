@@ -129,13 +129,15 @@ def manifest(facts, knobs):
         }
         if knob(knobs, "KICKOS_AMP_OWN_IMAGE", 0):
             target["amp"]["image"] = "own"
-        if knobs.get("KICKOS_AMP_PARTITION_BASE") and knobs.get("KICKOS_AMP_NODE_SHARE") \
+        if knobs.get("KICKOS_AMP_PARTITION_BASE") and facts["amp"].get("slices") \
                 and knobs.get("KICKOS_AMP_SHARED_SIZE"):
-            base = knob(knobs, "KICKOS_AMP_PARTITION_BASE")
-            stride = knob(knobs, "KICKOS_AMP_NODE_SHARE")
-            nodes = knob(knobs, "KICKOS_AMP_NODES")
-            target["amp"]["slices"] = [Hex(base), Hex(stride)]
-            target["amp"]["window"] = [Hex(base + nodes * stride), Hex(knob(knobs, "KICKOS_AMP_SHARED_SIZE"))]
+            at = knob(knobs, "KICKOS_AMP_PARTITION_BASE")
+            slices = []
+            for size in facts["amp"]["slices"]:
+                slices.append([Hex(at), Hex(size)])
+                at += size
+            target["amp"]["slices"] = slices
+            target["amp"]["window"] = [Hex(at), Hex(knob(knobs, "KICKOS_AMP_SHARED_SIZE"))]
         if knobs.get("KICKOS_AMP_USER_SHARE_UNCACHED") is True:
             target["amp"]["share_cache"] = "uncached"
 

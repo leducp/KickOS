@@ -798,7 +798,7 @@ int main(int, char**)
     while (kickos::apps::wait_dead(victim, &wild_status, std::chrono::seconds{1}) == -KOS_ETIMEDOUT)
     {
     }
-    (void)kos_task_slay(victim, KOS_POLL);
+    (void)kos_task_slay(victim);
     (void)kos_handle_close(prog);
 #if KICKOS_PSPGUARD_MODE == 6
     Arm volatile const* const back = static_cast<Arm volatile const*>(mem);

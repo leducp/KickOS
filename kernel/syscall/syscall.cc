@@ -640,18 +640,23 @@ uint64_t syscall_body(uintptr_t nr,
         {
             // UNGATED by authority: each kind gates on its source (watch.cc).
             uint32_t const spec = static_cast<uint32_t>(a0);
-            if ((spec >> KOS_WATCH_KIND_SHIFT) != KOS_WATCH_INSTANCE)
+            uint32_t h = KCAP_INVALID;
+            uint32_t* out = nullptr;
+            if ((spec >> KOS_WATCH_KIND_SHIFT) == KOS_WATCH_INSTANCE)
             {
-                return static_cast<uint64_t>(
-                    watch_call(sched::current(), spec, a1, static_cast<uint32_t>(a2), a3, nullptr));
+                int const rc = cap_out_check(a4);
+                if (rc != 0)
+                {
+                    return static_cast<uint64_t>(rc);
+                }
+                out = &h;
             }
-            int rc = cap_out_check(a4);
-            if (rc != 0)
+            int const rc =
+                watch_call(sched::current(), spec, a1, static_cast<uint32_t>(a2), a3, out);
+            if (out == nullptr)
             {
                 return static_cast<uint64_t>(rc);
             }
-            uint32_t h = KCAP_INVALID;
-            rc = watch_call(sched::current(), spec, a1, static_cast<uint32_t>(a2), a3, &h);
             return cap_out_deliver(a4, rc, h);
         }
         case KOS_SYS_WINDOW_GET:
@@ -717,17 +722,13 @@ uint64_t syscall_body(uintptr_t nr,
         }
         case KOS_SYS_THREAD_CANCEL:
         {
-            // UNGATED by authority, gated by parenthood inside (syscall_thread.cc). Blocks for
-            // a deadline not passed, so no dispatch IrqLock.
-            return static_cast<uint64_t>(thread_cancel_call(static_cast<kos_thread_t>(a0), a1,
-                                                            ktime_limit_word(a2, a3)));
+            // UNGATED by authority, gated by parenthood inside (syscall_thread.cc).
+            return static_cast<uint64_t>(thread_cancel_call(static_cast<kos_thread_t>(a0), a1));
         }
         case KOS_SYS_TASK_SLAY:
         {
-            // Blocks for a deadline not passed. UNGATED by authority, gated by creatorship
-            // inside (syscall_thread.cc).
-            return static_cast<uint64_t>(
-                task_slay(static_cast<kos_task_t>(a0), ktime_limit_word(a1, a2)));
+            // UNGATED by authority, gated by creatorship inside (syscall_thread.cc).
+            return static_cast<uint64_t>(task_slay(static_cast<kos_task_t>(a0)));
         }
         case KOS_SYS_EXIT:
         {

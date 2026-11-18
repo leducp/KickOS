@@ -436,7 +436,7 @@ namespace selftest
         TAP_CHECK(n == static_cast<int32_t>(sizeof(v)));
         TAP_CHECK(peer_dead_status(task) == 0);
         TAP_CHECK(vec_clean_ok(v, "another task"));
-        TAP_CHECK(kos_task_slay(task, KOS_POLL) == 0);
+        TAP_CHECK(kos_task_slay(task) == 0);
         task = KOS_TASK_NONE;
         TAP_CHECK(kos_handle_close(ep) == 0);
         ep = KOS_CAP_NONE;

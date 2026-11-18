@@ -334,14 +334,11 @@ void kos_exit(int code) __attribute__((noreturn));
 //                    reached.
 //   KOS_CANCEL_SLAY  forced. The target gets no device-cleanup window and must be scheduled for
 //                    teardown.
-// KOS_POLL answers 0 once the cancel is raised, which does not confirm death. Any other deadline
-// waits until `until` for the target to be gone, and answers 0 after its exit, capability
-// teardown and name release, -KOS_ETIMEDOUT with the cancel irreversible and cleanup pending (a
-// deadline already passed included), or -KOS_ECANCELED when the waiting caller was cancelled;
-// the target is cancelled all the same. Other errors: -KOS_EBADF for an invalid or
-// exited handle, -KOS_EPERM for a different parent, -KOS_EINVAL for self (use kos_exit), idle or
-// an unknown kind. A task's entry thread dying this way ends its task (kos_task_slay).
-int kos_thread_cancel(kos_thread_t thread, enum kos_cancel kind, kos_monotonic_t until);
+// Answers 0 once the cancel is raised, never waiting, which does not confirm death: the target's
+// end is kos_thread_join's. Errors: -KOS_EBADF for an invalid or exited handle, -KOS_EPERM for a
+// different parent, -KOS_EINVAL for self (use kos_exit), idle or an unknown kind. A task's entry
+// thread dying this way ends its task (kos_task_slay).
+int kos_thread_cancel(kos_thread_t thread, enum kos_cancel kind);
 
 // Set the cores a thread of the caller's task may run on, and answer the mask it now runs on;
 // another task's thread is refused. A nonzero mask intersects the machine and the task grant and
@@ -427,8 +424,9 @@ int kos_task_create(kos_program_t prog, struct kos_task_params const* params,
 //     receive on the ready endpoint its declaration names (asked of a task naming none:
 //     -KOS_EINVAL). An event reported before the arming is raised at once. One watch per task:
 //     arming replaces it, events 0 with KOS_CAP_NONE disarms it, and the task's slot being freed
-//     ends it. A creator's hold keeps the task's slot: release it with kos_task_slay(task,
-//     KOS_POLL) before creating the next instance. `out_watch` may be NULL.
+//     ends it, after the DEAD it asks for where a member was still tearing down. A creator's hold
+//     keeps the task's slot: release it with kos_task_slay before creating the next instance.
+//     `out_watch` may be NULL.
 //   KOS_WATCH_IRQ: `source` is a line capability with KOS_CAP_WAIT, `arg` 0, the event
 //     KOS_IRQ_FIRED. The ISR raises the bit, one signaller among others on the object, so badge
 //     the capability first if the object carries more than one source. ONE-WAY and once per line:
@@ -442,9 +440,13 @@ int kos_task_create(kos_program_t prog, struct kos_task_params const* params,
 //     the calling thread's own table holding a reference on the notification, lands in
 //     *out_watch (NULL: -KOS_EINVAL, unwritable: -KOS_EFAULT); kos_handle_close disarms it, and
 //     closes it once raised. That thread's death sweeps it unraised, not its task's: arm it on
-//     the thread that waits for it. -KOS_EALREADY where nothing is in the way, nothing armed: the next create reads
-//     the state, and a -KOS_EAGAIN it answers then is a budget's. A create that follows the
-//     event may still answer -KOS_EBUSY where another starter took the instance first.
+//     the thread that waits for it. A thread holds one watch per instance: arming again replaces
+//     it, raised or not, with the new notification and bit under a new handle, and the earlier
+//     handle then answers -KOS_EBADF; a refused re-arm leaves the earlier watch as it was. Each
+//     other thread's watch is its own. -KOS_EALREADY where nothing is in the way, nothing armed:
+//     the next create reads the state, and a -KOS_EAGAIN it answers then is a budget's. A create
+//     that follows the event may still answer -KOS_EBUSY where another starter took the instance
+//     first.
 //   A thread parked in kos_notify_wait, or in kos_reply_recv with the notification open, on a bit
 //   a TASK watch asking for KOS_TASK_DEAD or an INSTANCE watch raises lends its priority to the
 //   threads of that task, or of that instance's last incarnation, once it has ended and until
@@ -452,8 +454,9 @@ int kos_task_create(kos_program_t prog, struct kos_task_params const* params,
 int kos_watch(enum kos_watch_kind kind, uint32_t events, uintptr_t source, kos_cap_t notify_cap,
               uintptr_t arg, kos_cap_t* out_watch);
 
-// The enum kos_task_state bits for the task `task` names, or -KOS_EBADF once its slot is
-// freed, -KOS_EPERM for a task you did not create, -KOS_EINVAL / -KOS_EFAULT for a bad `status`.
+// The enum kos_task_state bits for the task `task` names, or -KOS_EBADF once your hold is gone,
+// which for a task you slew is its death (kos_task_slay), -KOS_EPERM for a task you did not
+// create, -KOS_EINVAL / -KOS_EFAULT for a bad `status`.
 // ENDED comes first, at the end's cause, with its members stopped and possibly still tearing
 // down; DEAD, not the absence of LIVE, is the death: it is set once every member's teardown is
 // done, and a watch asking for either is raised at it. Where ENDED is set and `status` is not
@@ -548,14 +551,12 @@ int kos_port_reg_write(uint16_t base, uint16_t offset, uint8_t value);
 // or kos_thread_cancel of the entry alone, the entry being the first member a non-member seated,
 // or when any member faults: every other member is stopped as here, and it takes no new member.
 // Every other member's own death ends that member alone.
-// KOS_POLL drops your hold on the task at once, so the handle stops naming anything, and answers
-// 0: the stop is committed, not every member gone. Any other deadline waits until `until` and
-// answers 0 once the task is empty, every member's teardown done, and released.
-// ETIMEDOUT, a deadline already passed included, leaves termination pending and the handle valid
-// for another wait. ECANCELED cancels
-// only the wait. Other errors: EBADF for an invalid task, KOS_TASK_NONE included, EPERM
-// for a caller that did not create it, a member of the task included. Error codes are negative.
-int kos_task_slay(kos_task_t task, kos_monotonic_t until);
+// It answers 0 at once: the stop is committed, not every member gone. Your hold on the task goes
+// at its death, the DEAD a KOS_WATCH_TASK watch reports, and at once where no member is left:
+// until then kos_task_state answers ENDED, and a second slay 0; from then on the handle names
+// nothing. Errors: EBADF for an invalid task, KOS_TASK_NONE included, EPERM for a caller that
+// did not create it, a member of the task included. Error codes are negative.
+int kos_task_slay(kos_task_t task);
 
 // Wait for a thread of the caller's task, or one the caller created, until `until`, for it to be
 // gone by any path: its slot and its

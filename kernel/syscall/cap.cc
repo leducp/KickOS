@@ -743,7 +743,8 @@ namespace kickos
         constexpr BudgetKind HELD_KIND[HELD_POOLS] = {
             BudgetKind::ENDPOINTS, BudgetKind::IRQ_BINDINGS, BudgetKind::NOTIFICATIONS};
 
-        // The held pool a capability of `type` names a slot of, -1 for none.
+        // The held pool a capability of `type` names a slot of, -1 for none: a watch names the
+        // notification it holds.
         constexpr int held_of(CapType type)
         {
             if (type == CapType::CAP_ENDPOINT)
@@ -754,7 +755,7 @@ namespace kickos
             {
                 return HELD_IRQ;
             }
-            if (type == CapType::CAP_NOTIFY)
+            if (type == CapType::CAP_NOTIFY or type == CapType::CAP_WATCH)
             {
                 return HELD_NOTIFY;
             }
@@ -899,15 +900,10 @@ namespace kickos
             return k.notifies.index_of(b->notify);
         }
 
-        // Stages the slot a capability of `type` on `obj_handle` names, for an IRQ binding the
-        // notification attached to it, and for a watch the notification it holds. True for a type
-        // no held pool counts.
+        // Stages the slot a capability of `type` on `obj_handle` names, and for an IRQ binding the
+        // notification attached to it. True for a type no held pool counts.
         bool stage_object(CapType type, int obj_handle, uint16_t epoch, TaskObjectHolds* h)
         {
-            if (type == CapType::CAP_WATCH)
-            {
-                return stage_hold(HELD_NOTIFY, held_live_index(HELD_NOTIFY, obj_handle), epoch, h);
-            }
             int const k = held_of(type);
             if (k < 0)
             {
@@ -1209,12 +1205,13 @@ namespace kickos
 
     bool cap_obj_live(CapEntry const& e)
     {
-        if (e.type < static_cast<uint8_t>(CapType::CAP_KIND_MAX)
-            and CAP_KINDS[e.type].gen == CapGen::PINNED)
+        if (cap_obj_generation(static_cast<CapType>(e.type), e.obj) == e.obj_gen)
         {
             return true;
         }
-        return cap_obj_generation(static_cast<CapType>(e.type), e.obj) == e.obj_gen;
+        // A PINNED entry's obj_gen holds its watch-list links instead.
+        return e.type < static_cast<uint8_t>(CapType::CAP_KIND_MAX)
+               and CAP_KINDS[e.type].gen == CapGen::PINNED;
     }
 
     int cap_obj(CapEntry const& e)

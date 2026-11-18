@@ -63,13 +63,15 @@ function(kickos_app_system app)
   set_target_properties(${app} PROPERTIES KICKOS_APP_SYSTEM ${_system})
 endfunction()
 
-# kickos_app_judge(<image> <judge> [ARGS <arg>...])
+# kickos_app_judge(<image> <judge> [ARGS <arg>...] [WINDOW <seconds>])
 #   Names the gate script, relative to the tree, that judges a silicon capture of <image> as
 #   tools/bench/bench.sh's JUDGE, and the arguments it takes after `<build> <tree> cmake`. The
 #   judge and its arguments are the third and fourth fields of the image's row in
-#   kickos-images.txt, which `LIST_IMAGES=1 tools/bench/bench.sh <board>` prints.
+#   kickos-images.txt, which `LIST_IMAGES=1 tools/bench/bench.sh <board>` prints. WINDOW is the
+#   capture window an image whose run outlasts a board's default needs, the fifth field, which
+#   bench.sh takes as CAP_SECS unless its caller set one.
 function(kickos_app_judge image judge)
-  cmake_parse_arguments(KAJ "" "" "ARGS" ${ARGN})
+  cmake_parse_arguments(KAJ "" "WINDOW" "ARGS" ${ARGN})
   if(KAJ_UNPARSED_ARGUMENTS)
     message(FATAL_ERROR "kickos_app_judge(${image}): unexpected ${KAJ_UNPARSED_ARGUMENTS}")
   endif()
@@ -83,8 +85,12 @@ function(kickos_app_judge image judge)
   if(_judge)
     message(FATAL_ERROR "kickos_app_judge(${image}): already ${_judge}")
   endif()
+  if(DEFINED KAJ_WINDOW AND NOT KAJ_WINDOW MATCHES "^[1-9][0-9]*$")
+    message(FATAL_ERROR "kickos_app_judge(${image}): WINDOW ${KAJ_WINDOW} is not in seconds")
+  endif()
   set_target_properties(${image} PROPERTIES KICKOS_IMAGE_JUDGE "${judge}"
-                                            KICKOS_IMAGE_JUDGE_ARGS "${KAJ_ARGS}")
+                                            KICKOS_IMAGE_JUDGE_ARGS "${KAJ_ARGS}"
+                                            KICKOS_IMAGE_CAPTURE_SECS "${KAJ_WINDOW}")
 endfunction()
 
 # kickos_human_judged(<image> <what a person reads>)

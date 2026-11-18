@@ -1007,13 +1007,13 @@ if(TARGET kickos_kernel_leaf)
     kickos_compose(${_system} "${_composition}" ${_local_args})
   endforeach()
 endif()
-# Every image this configure emits as `<image>|<stdout>|<judge>|<args>`: the stdout is `kernel`,
-# the packaged driver its system names, or `-` for an image composing no system of its own; the
-# judge is the gate script KICKOS_IMAGE_JUDGE names, `emulator` or `emulator-owed` for an image
-# kickos_emulator_judged marks, by whether a test this build runs names it, `human` or
+# Every image this configure emits as `<image>|<stdout>|<judge>|<args>|<window>`: the stdout is
+# `kernel`, the packaged driver its system names, or `-` for an image composing no system of its
+# own; the judge is the gate script KICKOS_IMAGE_JUDGE names, `emulator` or `emulator-owed` for an
+# image kickos_emulator_judged marks, by whether a test this build runs names it, `human` or
 # `inapplicable` for one kickos_human_judged or kickos_inapplicable marks, or `-`; the args are the
-# judge's, `;`-separated. The bench reads it. Deferred behind the systems a directory composes
-# once the manifest is written.
+# judge's, `;`-separated; the window is kickos_app_judge's WINDOW in seconds, or `-`. The bench
+# reads it. Deferred behind the systems a directory composes once the manifest is written.
 function(_kickos_write_images)
   get_property(_images GLOBAL PROPERTY KICKOS_EMITTED_IMAGES)
   get_property(_run_images GLOBAL PROPERTY KICKOS_RUN_IMAGES)
@@ -1044,7 +1044,11 @@ function(_kickos_write_images)
         set(_stdout kernel)
       endif()
     endif()
-    string(APPEND _rows "${_image}|${_stdout}|${_judge}|${_judge_args}\n")
+    get_target_property(_window ${_image} KICKOS_IMAGE_CAPTURE_SECS)
+    if(NOT _window)
+      set(_window "-")
+    endif()
+    string(APPEND _rows "${_image}|${_stdout}|${_judge}|${_judge_args}|${_window}\n")
     get_target_property(_why ${_image} KICKOS_IMAGE_UNBOOTED)
     if(NOT _image IN_LIST _run_images AND NOT _why
        AND NOT _judge MATCHES "^(human|inapplicable)$")

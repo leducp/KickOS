@@ -69,13 +69,30 @@ namespace kickos
     {
         return kind == KOS_LIMIT_MONOTONIC or kind == KOS_LIMIT_REALTIME;
     }
+    // ktime_limit_passed and ktime_limit_arm for a limit that is not none.
+    bool ktime_limit_word_passed(uint64_t word, uint32_t kind);
+    void ktime_limit_word_arm(Thread* t, uint64_t word, uint32_t kind, Held held);
     // Whether `limit` allows no wait at all: a deadline its clock has read.
-    bool ktime_limit_passed(WaitLimit limit);
+    inline bool ktime_limit_passed(WaitLimit const& limit)
+    {
+        if (limit.none())
+        {
+            return false;
+        }
+        return ktime_limit_word_passed(limit.word, limit.kind);
+    }
     // Give `t` the deadline `limit` names and put it on the delta list, so a park on some
     // OTHER queue can be unwound when it passes; no limit arms nothing. A realtime one is kept on
     // the monotonic timeline, marked, and moved by every set of the realtime clock while it is
     // queued. `t` is the calling core's current thread, parking in the caller's span.
-    void ktime_limit_arm(Thread* t, WaitLimit limit, Held held);
+    inline void ktime_limit_arm(Thread* t, WaitLimit const& limit, Held held)
+    {
+        if (limit.none())
+        {
+            return;
+        }
+        ktime_limit_word_arm(t, limit.word, limit.kind, held);
+    }
     // The limit word (lo, hi).
     inline uint64_t ktime_limit_word(uintptr_t lo, uintptr_t hi)
     {

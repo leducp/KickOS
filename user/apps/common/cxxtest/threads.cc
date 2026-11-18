@@ -361,7 +361,7 @@ namespace
         }
         if (cancel)
         {
-            (void)kos_thread_cancel(g_joinee.native_handle(), KOS_CANCEL_SLAY, KOS_POLL);
+            (void)kos_thread_cancel(g_joinee.native_handle(), KOS_CANCEL_SLAY);
         }
         (void)joiner.join();
         return g_nc_joined and g_nc_created and not g_nc_refused;

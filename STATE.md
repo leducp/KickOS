@@ -26,10 +26,10 @@ and an init provider that stays resident. `roadmap.md`'s `### M10` section is th
 only place its numbers are assigned; the sections at the bottom of this file say what each
 milestone's green runs do not.
 
-**M10.7 IS NEXT.** M10.6.12 took the performance bench out of the kernel, audited the test suite,
-closed the bench items M10.6.11 left open, and fixed what an audit of its code found: no return
-into a thread takes privilege state from memory a task can write, on Cortex-M, RV32 and RX; the
-M10.6.12 section at the bottom of this file says what its green runs do not.
+**M10.7 IS ON FOUR STACKED BRANCHES, M10.7.1 TO M10.7.4, NOT YET MERGED.** Time is typed down
+to the kernel, one watch call ties tasks, lines and restartable instances to a notification,
+and the create, the slay and the cancel no longer wait; the M10.7 section at the bottom of this
+file says what its green runs do not.
 
 **THE ORDER IS LOCKED: M10.6.12, THEN M10.7, THEN M10.8** (maintainer, 2026-10-13, M10.6.9 and
 M10.6.10 inserted 2026-10-21, M10.6.12 on 2026-11-05 and numbered so on 2026-11-07: "no need for
@@ -1144,6 +1144,33 @@ missing from one of those QEMU captures under load is this, not a flake to re-ru
   manual prints no encoding for the field. A `c6txidle` capture witnesses it at one baud, 115200,
   and one TX_IDLE_NUM, the reset 256: the field reads 2 while the line shifts and 0 once the last
   frame is out. No other baud or idle count was run.
+
+## M10.7: the API a usable kernel needs, and what these green runs do NOT say
+
+- **THE FIVE-WORD TRAP HAS SILICON WITNESSES ON FIVE BOARDS ONLY.** rx72m, f411disco,
+  xmc4800-relax, esp32c6-wroom and esp32-wroom ran the stack's tip; picopi (armv6m),
+  teensy41 (Cortex-M7) and pizero2350 (v8-M, the header's PSPLIM word) were off the bench, so
+  their trap path ran under QEMU only.
+- **M10.7.3 ALONE FAILS TWO CHECKS THAT M10.7.4 PASSES.** Its kernel growth left
+  `esp32c6-wroom-amp2-n0`'s `cxxtest` arena about 2 KB short, where the uneven node slices of
+  M10.7.4 leave the HP node about 8 KB; and on `qemu-arm64-amp` its IRQ path measures 880 B
+  against the 832 B of `KICKOS_ARMV8A_TRAP_DEPTH_IRQ`, where M10.7.4's flatter lend chain
+  measures 784 B. So the two merge together (maintainer, 2026-11-15 and 2026-11-18). The new
+  slice geometry has one silicon capture, `ampping` across both nodes.
+- **CALL/REPLY STILL COSTS 1.5 TO 2.8 PERCENT MORE THAN M10.6.12 ON CORTEX-M4F**, measured
+  with `userbench` on f411disco, against parity on esp32c6-wroom. Most of it is an FP-live
+  caller (`TODO.md`, the Cortex-M4F entry, accepted), the rest the fifth trap word.
+- **THE INSTANCE WATCH'S WORST LOCK HOLD IS A FITTED BOUND, NOT A MEASUREMENT.** A thread holds
+  at most one watch per instance, so every walk is bounded by the composition's thread slots. The
+  per-entry cost was fitted from QEMU runs on armv7m and rv32 (about 5.7k instructions at worst
+  on f411disco's largest composition, below the 14.4k of a task create); no run filled every
+  thread slot with watches, and no silicon timed it.
+- **NO SELFTEST ARM FAILS ON A SLOWER KERNEL ANY MORE.** `STALL_TOLERANT_US` bounds one event,
+  a fixed chain of N events N times that, and an arm that runs rounds fails only when no round
+  completes within one tolerance (maintainer, 2026-11-17). A slowdown shows in `userbench` alone.
+- **"NEVER EARLY" IS WITNESSED AGAINST THE DEADLINE, NEVER AGAINST A START TIME READ AFTER IT.**
+  A preemption between computing the deadline and reading the start makes the measured wait
+  short although the kernel kept the deadline; such an arm fails only under load.
 
 ## M10.6.12: the cleanup pass, and what these green runs do NOT say
 

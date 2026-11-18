@@ -53,7 +53,7 @@ int main(int, char**)
     char line[64];
     ksnprintf(line, sizeof(line), "cxxterm: the peer task is dead, status %d\n", status);
     kos::print(line);
-    (void)kos_task_slay(peer, KOS_POLL);
+    (void)kos_task_slay(peer);
     (void)kos_handle_close(prog);
     if (status != 128 + SIGABRT)
     {

@@ -61,12 +61,13 @@ an offset from where it linked, and this image is unreachable from its own entry
 the partition at that address, or add the level-1 entry that covers the one it states."
 #endif
 
-#if ((KICKOS_AMP_NODE_SHARE) % L2_BLOCK_SIZE) != 0
-#error "KICKOS_AMP_NODE_SHARE is not a whole number of L2_BLOCK_SIZE blocks. This table maps 2 \
-MiB blocks and nothing finer, so OWN_L2_LO truncates a node's base DOWN into its predecessor's \
-share and OWN_L2_HI truncates its top DOWN inside its own: node 0 keeps a mapping it does not \
-own and every node loses the tail of its RAM, with a clean link. Round the share up to a \
-multiple of 2 MiB."
+#if ((KICKOS_AMP_IMAGE_OFFSET) % L2_BLOCK_SIZE) != 0 || ((KICKOS_AMP_IMAGE_SIZE) % L2_BLOCK_SIZE) != 0 \
+    || ((KICKOS_AMP_SLICES_SIZE) % L2_BLOCK_SIZE) != 0
+#error "A node's slice is not a whole number of L2_BLOCK_SIZE blocks. This table maps 2 MiB \
+blocks and nothing finer, so OWN_L2_LO truncates a node's base DOWN into its predecessor's \
+slice, OWN_L2_HI truncates its top DOWN inside its own, and SHARED_L2_LO the shared region's base \
+DOWN into the last node's: a node keeps a mapping it does not own and loses the tail of its RAM, \
+with a clean link. Round every slice up to a multiple of 2 MiB."
 #endif
 
 #if ((KICKOS_AMP_SHARED_SIZE) % L2_BLOCK_SIZE) != 0
@@ -85,12 +86,12 @@ partition that boots and never converses. Round it up to a multiple of 2 MiB."
 (1 GiB) in total, and this table has one level-2 page for the whole partition. The .fill below \
 would run with a negative count, which the assembler only WARNS about, so the table ends short \
 of the partition and a slot past it aliases the next table in memory instead of faulting. Shrink \
-KICKOS_AMP_NODE_SHARE, KICKOS_AMP_NODES or KICKOS_AMP_SHARED_SIZE below 1 GiB, or add the second \
+the nodes' slices and KICKOS_AMP_SHARED_SIZE below 1 GiB, or add the second \
 level-2 table and level-1 entry a wider partition needs."
 #endif
 
 #define OWN_L2_LO       ((KICKOS_AMP_IMAGE_BASE - KICKOS_AMP_PARTITION_BASE) / L2_BLOCK_SIZE)
-#define OWN_L2_HI       (OWN_L2_LO + KICKOS_AMP_NODE_SHARE / L2_BLOCK_SIZE)
+#define OWN_L2_HI       (OWN_L2_LO + KICKOS_AMP_IMAGE_SIZE / L2_BLOCK_SIZE)
 #define SHARED_L2_LO    ((KICKOS_AMP_SHARED_BASE - KICKOS_AMP_PARTITION_BASE) / L2_BLOCK_SIZE)
 #define SHARED_L2_HI    (SHARED_L2_LO + KICKOS_AMP_SHARED_SIZE / L2_BLOCK_SIZE)
 
