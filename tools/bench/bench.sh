@@ -402,7 +402,11 @@ be rendered" >&2; return 1; }
   built=$(image_string "$IMG" kickos_build_time)
   [ -n "$built" ] || { echo "REFUSING: $IMG holds no kickos_build_time, so the identity rows \
 cannot be held to it" >&2; return 1; }
-  app=$(image_string "$IMG" kickos_app_stamp)
+  app=$(identity_app_stamp "$IMG")
+  if [ "$?" = 2 ]; then
+    echo "REFUSING: $IMG $app" >&2
+    return 1
+  fi
   if ! why=$(identity_verdict "$LOG" include/kickos/diag.h "$version" "$BOARD" \
                "$EXPECT_COMMIT" "$built" "$app"); then
     echo "REFUSING: $LOG is not a capture of the flashed image: $why" >&2

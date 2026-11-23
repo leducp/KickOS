@@ -11,14 +11,14 @@
 #include <kickos/kernel.h>
 #include <kickos/kruntime.h>
 #include <kickos/sys/image.h>
-
-#if KICKOS_HAVE_ASPACE
-#include <kickos/domain.h>
-#include <kickos/sched.h>
-#endif
+#include <kickos/task.h>
+#include <kickos/thread.h>
 
 #if KICKOS_HAVE_ASPACE and not KICKOS_REENT_PER_THREAD
 #error "the switch seats one word directly, which only a region backend's kernel can write"
+#endif
+#if not KICKOS_REENT_PER_THREAD and not KICKOS_ARCH_SWITCH_LANDS_LATER
+#error "the word is seated where the switch lands, after the incoming regions are committed"
 #endif
 
 namespace kickos
@@ -68,34 +68,39 @@ namespace kickos
         __builtin_memcpy(seat + sizeof(void*), &id, sizeof(id));
     }
 
-    void reent_prime(struct arch_aspace* space, size_t image, void* state)
+    void reent_prime(void* home, size_t image)
     {
         kos_image_header const& h = image_record(image);
+        // The image check places a template only for a nonzero width.
+        if (h.reent_width == 0)
+        {
+            return;
+        }
         // From the image's copy of its .data, which no task writes: the live state may be a past
         // incarnation's, or not yet copied in.
 #if KICKOS_HAVE_ASPACE
         void const* const pristine
             = aspace_image_alias(image, reinterpret_cast<void const*>(h.reent_template));
-        if (pristine == nullptr
-            or not kaccess_to_user(space, reinterpret_cast<uintptr_t>(state), pristine,
-                                   static_cast<size_t>(h.reent_width)))
-        {
-            thread_cancel_escalate(sched::current(), CANCEL_SLAY);
-        }
+        KICKOS_ASSERT(pristine != nullptr);
 #else
-        (void)space;
-        uintptr_t const pristine = h.data_load + (h.reent_template - h.data_start);
-        kmemcpy(state, reinterpret_cast<void const*>(pristine),
-                static_cast<size_t>(h.reent_width));
+        void const* const pristine
+            = reinterpret_cast<void const*>(h.data_load + (h.reent_template - h.data_start));
 #endif
+        kmemcpy(home, pristine, static_cast<size_t>(h.reent_width));
     }
 
 #if not KICKOS_REENT_PER_THREAD
-    void reent_seat(void* seat, void* state)
+    void reent_seat(Thread const* t)
     {
+        Task const* const tk = t->task;
+        if (tk == nullptr or tk->reent_seat == nullptr)
+        {
+            return;
+        }
         // __builtin_memcpy: under -ffreestanding a plain memcpy lowers to a call on every switch.
-        void** const word = static_cast<void**>(__builtin_assume_aligned(seat, sizeof(void*)));
-        __builtin_memcpy(word, &state, sizeof(state));
+        void** const word
+            = static_cast<void**>(__builtin_assume_aligned(tk->reent_seat, sizeof(void*)));
+        __builtin_memcpy(word, &t->reent, sizeof(t->reent));
     }
 #endif
 }

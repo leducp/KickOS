@@ -8,6 +8,7 @@
 #include <kickos/irqlock.h>
 #include <kickos/arch/arch.h>
 #include <kickos/kernel.h>
+#include <kickos/reent.h>
 #include <kickos/ktrace.h>
 
 #include <kickos/sys/errno.h>
@@ -440,11 +441,18 @@ namespace kickos
     // taken before this one landed owns the flag, and that booking's own landing settles it.
     extern "C" void kickos_switch_landed(struct arch_context const* landed)
     {
+        Thread const* const t = sched::current();
+#if KICKOS_LIBC_REENT and not KICKOS_REENT_PER_THREAD
+        // Under the running thread's regions: the outgoing thread's may hold the word read-only.
+        if (t != nullptr and &t->ctx == landed)
+        {
+            reent_seat(t);
+        }
+#endif
         if (kernel().switch_landing_owed[kickos_kernel_core()] == 0)
         {
             return;
         }
-        Thread const* const t = sched::current();
         if (t == nullptr or &t->ctx != landed)
         {
             return;

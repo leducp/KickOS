@@ -8,6 +8,8 @@
 // Selected through KICKOS_ARM_PMSAV8_SOURCE, from the chip file's pmsav8 unit.
 
 #include <kickos/arch/arch.h>
+#include <kickos/diag.h>
+#include <kickos/klink.h>
 
 #include "mpu.h"
 #include "pmsav8_encode.h"
@@ -20,8 +22,18 @@
 
 using namespace kickos::arm;
 
+namespace kickos
+{
+    void kpanic(char const* msg) __attribute__((noreturn));
+}
+
 extern "C"
 {
+
+#if ARCH_USER_STORE_CHECKED
+extern unsigned char __kickos_code_start[] KICKOS_LINK_BOUND;
+extern unsigned char __kickos_code_end[] KICKOS_LINK_BOUND;
+#endif
 
 // The shared stash arch_mpu_apply writes (arch/common/arch_mpu_stash.cc).
 struct arch_mpu_encoded const* kickos_arm_mpu_pending(void);
@@ -36,6 +48,12 @@ struct arch_mpu_encoded const* kickos_arm_mpu_pending(void);
 // static pool, so a pointer that was programmed once can address different words later.
 static struct arch_mpu_encoded g_mpu_held[KICKOS_NUM_CORES];
 static bool g_mpu_held_valid[KICKOS_NUM_CORES];
+#if ARCH_USER_STORE_CHECKED
+static_assert(ARCH_MPU_ENCODED_SLOTS <= 32, "one bit per slot in g_mpu_held_ro");
+// The slots of g_mpu_held that are enabled, read-only and execute-never. Only the code region is
+// execute-allowed (arch_mpu_encode), and user_range_ok refuses every store destination in it.
+static uint32_t g_mpu_held_ro[KICKOS_NUM_CORES];
+#endif
 
 // One-time PMSAv8 setup: the MAIR attribute indirection and MemManage enable. Runs once PER
 // CORE (the MPU is banked), before the scheduler starts.
@@ -76,6 +94,9 @@ void kickos_arm_pmsav8_init(void)
     // This core's descriptors stand at their reset values here, and the MAIR indirection
     // below changes what an already-programmed AttrIndx would have meant.
     g_mpu_held_valid[arch_cpu_id()] = false;
+#if ARCH_USER_STORE_CHECKED
+    g_mpu_held_ro[arch_cpu_id()] = 0;
+#endif
 
     // slot0 Normal cacheable, slot1 Device, slot2 Normal non-cacheable
     reg32(MPU_MAIR0) =
@@ -91,6 +112,18 @@ void kickos_arm_pmsav8_init(void)
 uint32_t arch_mpu_encode(struct arch_mpu_region const* regions, size_t n,
                          struct arch_mpu_encoded* out)
 {
+#if ARCH_USER_STORE_CHECKED
+    uintptr_t const code = reinterpret_cast<uintptr_t>(__kickos_code_start);
+    size_t const code_size = reinterpret_cast<uintptr_t>(__kickos_code_end) - code;
+    for (size_t i = 0; i < n; i++)
+    {
+        if ((regions[i].attr & ARCH_MPU_X) != 0
+            and (regions[i].base != code or regions[i].size != code_size))
+        {
+            kickos::kpanic(kickos::diag::kMpuExecWindow);
+        }
+    }
+#endif
     return pmsav8_encode(regions, n, out);
 }
 
@@ -148,6 +181,15 @@ void kickos_arch_mpu_commit(void)
         reg32(MPU_RLAR) = img->rlar[i];
         held->rbar[i] = img->rbar[i];
         held->rlar[i] = img->rlar[i];
+#if ARCH_USER_STORE_CHECKED
+        uint32_t const bit = 1u << i;
+        g_mpu_held_ro[core] = g_mpu_held_ro[core] & ~bit;
+        if ((img->rlar[i] & RLAR_EN) != 0
+            and (img->rbar[i] & (RBAR_AP_RO | RBAR_XN)) == (RBAR_AP_RO | RBAR_XN))
+        {
+            g_mpu_held_ro[core] = g_mpu_held_ro[core] | bit;
+        }
+#endif
     }
     g_mpu_held_valid[core] = true;
 
@@ -157,6 +199,39 @@ void kickos_arch_mpu_commit(void)
     __asm volatile("isb" ::: "memory");
     __asm volatile("msr primask, %0" ::"r"(primask) : "memory");
 }
+
+#if ARCH_USER_STORE_CHECKED
+bool arch_mpu_loaded_writable(uintptr_t base, size_t n)
+{
+    if (n == 0)
+    {
+        return true;
+    }
+    uintptr_t const last = base + (n - 1u);
+    if (last < base)
+    {
+        return false;
+    }
+    bool writable = true;
+    arch_irq_state_t const irq = arch_irq_save();
+    uint32_t const core = arch_cpu_id();
+    struct arch_mpu_encoded const* const held = &g_mpu_held[core];
+    uint32_t ro = g_mpu_held_ro[core];
+    while (ro != 0)
+    {
+        uint32_t const i = static_cast<uint32_t>(__builtin_ctz(ro));
+        ro = ro & (ro - 1u);
+        uintptr_t const lo = held->rbar[i] & RBAR_BASE_MASK;
+        uintptr_t const hi = (held->rlar[i] & RLAR_LIMIT_MASK) | ~RLAR_LIMIT_MASK;
+        if (base <= hi and lo <= last)
+        {
+            writable = false;
+        }
+    }
+    arch_irq_restore(irq);
+    return writable;
+}
+#endif
 
 // PMSAv8 is byte-granular on a 32-byte page: a window is encodable EXACTLY iff base and
 // base+size both land on a 32-byte boundary, any multiple of the granule being nameable.

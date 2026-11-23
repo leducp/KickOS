@@ -16,6 +16,7 @@
 // a reserved two-word TCB with the first thread_local above it.
 #define KICKOS_ARCH_TLS_TCB 8
 
+#include <kickos/arch/armv7m_trap_stack.h>
 #include <kickos/chip_limits.h>
 
 #define KICKOS_ARCH_ARENA_DCACHE KICKOS_CHIP_DCACHE
@@ -54,6 +55,13 @@ struct arch_context
 
 #if defined(KICKOS_HAVE_STACK_LIMIT) && KICKOS_HAVE_STACK_LIMIT
     uint32_t splim;
+#endif
+
+#if KICKOS_ARMV7M_RESULT_DEFERRED
+    // A fastpath result the switch-in seats in r4 while result_owed is set
+    // (arch_ctx_set_syscall_result).
+    uint32_t result;
+    uint32_t result_owed;
 #endif
 
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY

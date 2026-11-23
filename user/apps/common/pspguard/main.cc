@@ -146,6 +146,21 @@ namespace
     constexpr uint32_t FP_SAVE_OFF = SP_OFFSET - HW_FRAME_FP + 32u;
     constexpr uint32_t FP_SAVE_LEN = 17u * 4u; // {s0-s15} + FPSCR
     constexpr uint32_t FP_POISON = 0x0FF5A1EDu;
+    // What the wild thread leaves in every FP register but s16, its loop counter, for the thread
+    // switched in after its containment to find gone.
+    constexpr uint32_t FP_LEFT = 0xF1EA0000u;
+    struct FpLeft
+    {
+        uint32_t s[32];
+        constexpr FpLeft() : s{}
+        {
+            for (uint32_t i = 0; i < 32u; i++)
+            {
+                s[i] = FP_LEFT | i;
+            }
+        }
+    };
+    constexpr FpLeft FP_LEFT_BANK{};
     static_assert(FP_SAVE_OFF + FP_SAVE_LEN <= SP_OFFSET,
                   "the reservation must sit under the parked sp, or the loop below writes it");
 #if PG_SPLIM
@@ -291,8 +306,29 @@ namespace
     // Runs AFTER containment, on a thread that had nothing to do with the refusal. The FP
     // instruction is the trigger: a lazy save the refused entry left armed fires on the first
     // FP instruction ANY context executes, into the address that entry reserved.
+    uint32_t g_fp_seen[32];
+
     void fpcheck(void* arg)
     {
+        __asm volatile("vstmia %0, {s0-s31}" ::"r"(g_fp_seen) : "memory");
+        bool leaked = false;
+        for (uint32_t i = 0; i < 32u; i++)
+        {
+            if (i != 16u and g_fp_seen[i] == FP_LEFT_BANK.s[i])
+            {
+                leaked = true;
+            }
+        }
+        if (leaked)
+        {
+            kos::print("[pspguard] [fpleak] LEAKED: the thread after the slain one read its FP "
+                       "registers\n");
+        }
+        else
+        {
+            kos::print("[pspguard] [fpleak] CLEAR: the thread after the slain one read none of "
+                       "its FP registers\n");
+        }
         Arm const* const a = static_cast<Arm const*>(arg);
         __asm volatile("vmov s0, %0 \n\t"
                        "vadd.f32 s0, s0, s0 \n\t"
@@ -473,6 +509,9 @@ namespace
             // ADDS does not assemble. The same line the two v6-M blocks below carry.
             ".syntax unified         \n\t"
 #endif
+#if KICKOS_PSPGUARD_MODE == 1
+            "vldmia %[fl], {s0-s31}  \n\t"
+#endif
 #if KICKOS_PSPGUARD_MODE == 1 || KICKOS_PSPGUARD_MODE == 9
             "vmov   s16, %[bf]       \n\t"
 #endif
@@ -496,12 +535,19 @@ namespace
 #if defined(__ARM_ARCH) && (__ARM_ARCH >= 7)
             : [sv] "=&r"(saved), [sn] "=&r"(spins), [ob] "=&r"(observed)
             : [low] "r"(target), [ad] "r"(addr), [bf] "r"(before), [lim] "r"(SPIN_LIMIT)
+#if KICKOS_PSPGUARD_MODE == 1
+              , [fl] "r"(FP_LEFT_BANK.s)
+#endif
 #else
             : [sv] "=&l"(saved), [sn] "=&l"(spins), [ob] "=&l"(observed)
             : [low] "l"(target), [ad] "l"(addr), [bf] "l"(before), [lim] "l"(SPIN_LIMIT)
 #endif
             : "cc", "memory"
-#if KICKOS_PSPGUARD_MODE == 1 || KICKOS_PSPGUARD_MODE == 9
+#if KICKOS_PSPGUARD_MODE == 1
+            , "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "s10", "s11", "s12",
+              "s13", "s14", "s15", "s16", "s17", "s18", "s19", "s20", "s21", "s22", "s23", "s24",
+              "s25", "s26", "s27", "s28", "s29", "s30", "s31"
+#elif KICKOS_PSPGUARD_MODE == 9
             , "s16"
 #endif
         );

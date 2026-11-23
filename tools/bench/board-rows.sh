@@ -162,25 +162,64 @@ board_resources() {
     done
 }
 
-# elf_symbol_at <elf> <symbol>
+# elf_symbol_at <elf> <symbol> [<section prefix>]
 #
 # Prints the file offset and the size of <symbol>'s bytes in <elf>, read through readelf alone,
-# which takes every target's ELF. Returns 1 where the symbol is undefined or holds no file bytes.
+# which takes every target's ELF: its first definition, or with <section prefix> its first in a
+# section whose name starts so. Returns 1 where none is defined or the one found holds no file
+# bytes.
 elf_symbol_at() {
-    local sym sec at
-    sym=$(LC_ALL=C readelf -sW "$1" 2>/dev/null \
-        | awk -v name="$2" '$8 == name && $7 != "UND" { print $2, $3, $7; exit }')
-    [ -n "$sym" ] || return 1
-    # shellcheck disable=SC2086
-    set -- "$1" $sym
-    sec=$(LC_ALL=C readelf -SW "$1" 2>/dev/null \
-        | sed -n "s/^ *\[ *$4\] *//p" | awk '{ print $2, $3, $4; exit }')
-    [ -n "$sec" ] || return 1
-    # shellcheck disable=SC2086
-    set -- "$2" "$3" $sec
-    [ "$3" != NOBITS ] || return 1
-    at=$(( 0x$5 + 0x$1 - 0x$4 ))
-    printf '%s %s\n' "$at" "$(( $2 ))"
+    local value size ndx sec
+    while read -r value size ndx; do
+        sec=$(LC_ALL=C readelf -SW "$1" 2>/dev/null \
+            | sed -n "s/^ *\[ *$ndx\] *//p" | awk '{ print $1, $2, $3, $4; exit }')
+        [ -n "$sec" ] || continue
+        # shellcheck disable=SC2086
+        set -- "$1" "$2" "${3-}" $sec
+        case "$4" in
+            "$3"*) ;;
+            *) continue ;;
+        esac
+        [ "$5" != NOBITS ] || return 1
+        printf '%s %s\n' "$(( 0x$7 + 0x$value - 0x$6 ))" "$(( size ))"
+        return 0
+    done <<EOF_SYMS
+$(LC_ALL=C readelf -sW "$1" 2>/dev/null \
+    | awk -v name="$2" '$8 == name && $7 != "UND" { print $2, $3, $7 }')
+EOF_SYMS
+    return 1
+}
+
+# elf_image_prefix <elf> <symbol ERE> <symbol>
+#
+# Prints `.kickos_image<N>_` where the first symbol whose name matches <symbol ERE> is defined in
+# a section of image N of a placed multi-image ELF, and nothing where it is defined in no image's
+# section and neither is <symbol>, defined once at most. Returns 1 where none is defined, and 2
+# where it is defined in no image's section and <symbol> more than once or in an image's.
+elf_image_prefix() {
+    local ndx prefix defs
+    ndx=$(LC_ALL=C readelf -sW "$1" 2>/dev/null \
+        | awk -v re="$2" '$8 ~ re && $7 != "UND" { print $7; exit }')
+    [ -n "$ndx" ] || return 1
+    prefix=$(elf_section_image "$1" "$ndx")
+    if [ -z "$prefix" ]; then
+        defs=$(LC_ALL=C readelf -sW "$1" 2>/dev/null \
+            | awk -v name="$3" '$8 == name && $7 != "UND" { print $7 }')
+        [ "$(printf '%s\n' "$defs" | grep -c .)" -le 1 ] || return 2
+        for ndx in $defs; do
+            [ -z "$(elf_section_image "$1" "$ndx")" ] || return 2
+        done
+        return 0
+    fi
+    printf '%s\n' "$prefix"
+}
+
+# elf_section_image <elf> <section index>
+#
+# Prints `.kickos_image<N>_` where the section belongs to image N, and nothing otherwise.
+elf_section_image() {
+    LC_ALL=C readelf -SW "$1" 2>/dev/null | sed -n "s/^ *\[ *$2\] *//p" \
+        | awk '{ print $1; exit }' | sed -n 's/^\(\.kickos_image[0-9]*_\).*/\1/p'
 }
 
 # usb_console_image <elf>
@@ -194,12 +233,17 @@ usb_console_image() {
     [ "$byte" = 1 ]
 }
 
-# image_string <elf> <symbol>
+# image_string <elf> <symbol> [<anchor ERE>]
 #
-# Prints the string <symbol> holds in <elf>, up to its NUL. Returns 1 where it holds none.
+# Prints the string <symbol> holds in <elf>, up to its NUL: with <anchor ERE>, the one in the
+# image that defines the symbol it matches, an ELF of several images defining <symbol> in each.
+# Returns 1 where it holds none, or where the anchor tells no image of several apart.
 image_string() {
-    local span
-    span=$(elf_symbol_at "$1" "$2") || return 1
+    local span prefix=""
+    if [ -n "${3-}" ]; then
+        prefix=$(elf_image_prefix "$1" "$3" "$2") || return 1
+    fi
+    span=$(elf_symbol_at "$1" "$2" "$prefix") || return 1
     dd if="$1" bs=1 skip="${span% *}" count="${span#* }" 2>/dev/null | tr -d '\000'
 }
 

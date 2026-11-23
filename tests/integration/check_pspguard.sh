@@ -203,6 +203,13 @@ if [ "$mode" = 1 ]; then
         fail "mode=1: a lazy FP save fired through the frame the guard refused, so FPCCR.LSPACT
     survived containment and the offender still steered a privileged write"
     fi
+    if has "fpleak\] LEAKED"; then
+        fail "mode=1: the thread switched in after the slain one read its FP registers"
+    fi
+    if ! has "\[pspguard\] \[fpleak\] CLEAR"; then
+        fail "mode=1: no FP-leak verdict reached the wire, so the switch-in after the
+    containment was not read"
+    fi
     if ! has "\[pspguard\] \[lazyfp\] INTACT"; then
         fail "mode=1: no lazy-FP verdict reached the wire, so nothing here witnessed the
     reservation: the checker never ran, or this is not the mode 1 image"

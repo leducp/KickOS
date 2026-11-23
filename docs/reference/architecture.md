@@ -1066,16 +1066,17 @@ feeds the slave app.
   pinned newlib -- one newlib seam fleet-wide. (The full seam detail: `docs/design-kickcat-k64f.md`.)
 - **Per-thread reentrant state**: on every board but the sim, whose libc is the host's, gives every
   pool thread its own `struct _reent` at the base of its own stack block, below its TLS block, so
-  it can overlap no `thread_local`. It is primed at the thread's first switch-in from the image's
-  copy of libc's process-wide state, as the image's `.data` holds it before any start; idle runs on
-  image 0's live process-wide state. The carve ends in a two-word
+  it can overlap no `thread_local`. It is primed by `thread_create`, beside the cell, from the
+  image's copy of libc's process-wide state, as the image's `.data` holds it before any start;
+  idle runs on image 0's live process-wide state. The carve ends in a two-word
   cell that ends at the thread pointer, the state's address then the thread's lock id, both
   written once by `thread_create`. Under `KICKOS_REENT_PER_THREAD` (armv8a, rv64imac, lx6 and
   x86_64, whose KickOS-toolchain newlib is dynamic-reent) libc calls `__getreent()`, which reads
   that cell, and no switch writes anything. Elsewhere libc reads one word, `&_impure_ptr`, and
-  `switch_book` and `sched::start` (`kernel/sched/sched.cc`) rewrite it at every switch, which is
-  correct only while one core runs its readers. `errno` is that struct's first member, so this,
-  and not a `thread_local`, is what makes `errno` follow the thread.
+  `kickos_switch_landed` (`kernel/time/time.cc`) rewrites it at every switch, under the incoming
+  thread's regions, which is correct only while one core runs its readers. `errno` is that
+  struct's first member, so this, and not a `thread_local`, is what makes `errno` follow the
+  thread.
   `kos_thread_self` derives the caller's handle from the cell's lock id with one load and no
   kernel entry (read through `_impure_ptr` where libc reads that word), and from an
   instance-local word on the sim. The kernel never reads it back: every kernel path takes the

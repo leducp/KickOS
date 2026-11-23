@@ -144,11 +144,24 @@ static_assert(KICKOS_KERNEL_STACK_SIZE - sizeof(uint32_t) >= KICKOS_ARMV7M_TRAP_
               "KICKOS_KERNEL_STACK_SIZE is below the armv7m syscall kernel-stack "
               "requirement plus its canary word: raise the per-arch default in Kconfig, "
               "never the depth, which is a measurement");
+// The PSP PendSV sees under the deepest dispatch: the continuation header, the dispatch, the
+// STKALIGN pad and the FP-extended hardware frame of the interrupt that preempted it.
+static_assert(KICKOS_ARMV7M_BLOCK_PSP_MAX_DROP
+                  >= 24 + KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_SVCK + 4 + 104,
+              "PendSV's block leg refuses a PSP the deepest legal dispatch preempted reaches");
 #endif
 #if !KICKOS_KERNEL_STACKS
 static_assert(KICKOS_MIN_STACK_SIZE
                   >= KICKOS_ARMV7M_TRAP_NEST_EXIT + KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_EXIT,
               "the spawn floor cannot hold the death path where no kernel block is seated");
+#endif
+static_assert(KICKOS_ARMV7M_RESULT_DEFERRED == ARCH_USER_STORE_CHECKED,
+              "arch_ctx_set_syscall_result defers exactly where the switch-in seats");
+#if KICKOS_ARMV7M_RESULT_DEFERRED
+static_assert(offsetof(struct arch_context, result) == KICKOS_ARMV7M_CTX_OFF_RESULT
+                  and offsetof(struct arch_context, result_owed)
+                          == KICKOS_ARMV7M_CTX_OFF_RESULT_OWED,
+              "switch.S seats a deferred result from F_CTX_RESULT under F_CTX_RESULT_OWED");
 #endif
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
 static_assert(offsetof(struct arch_context, trace_tid) == KICKOS_ARMV7M_CTX_OFF_TRACE_TID,
@@ -240,6 +253,9 @@ void arch_context_init(struct arch_context* ctx,
     }
     ctx->npriv = npriv;
     ctx->resting_npriv = npriv;
+#if KICKOS_ARMV7M_RESULT_DEFERRED
+    ctx->result_owed = 0;
+#endif
 
     // The PSP guard in PendSV and SVC_Handler checks against these; `top` is the aligned
     // high edge.
@@ -410,6 +426,28 @@ void arch_fault_redirect_to_exit(void* frame)
         // would fire later through a pointer into its user stack.
         kickos::arm::reg32(FPU_FPCCR) &= ~FPU_FPCCR_LSPACT;
         __asm volatile("dsb\n\tisb" ::: "memory");
+        // The exit carries no FP state, so no switch away from it clears the dead thread's.
+        __asm volatile("mov r12, #0\n\t"
+                       "vmov s0, s1, r12, r12\n\t"
+                       "vmov s2, s3, r12, r12\n\t"
+                       "vmov s4, s5, r12, r12\n\t"
+                       "vmov s6, s7, r12, r12\n\t"
+                       "vmov s8, s9, r12, r12\n\t"
+                       "vmov s10, s11, r12, r12\n\t"
+                       "vmov s12, s13, r12, r12\n\t"
+                       "vmov s14, s15, r12, r12\n\t"
+                       "vmov s16, s17, r12, r12\n\t"
+                       "vmov s18, s19, r12, r12\n\t"
+                       "vmov s20, s21, r12, r12\n\t"
+                       "vmov s22, s23, r12, r12\n\t"
+                       "vmov s24, s25, r12, r12\n\t"
+                       "vmov s26, s27, r12, r12\n\t"
+                       "vmov s28, s29, r12, r12\n\t"
+                       "vmov s30, s31, r12, r12\n\t"
+                       "vmsr fpscr, r12\n\t"
+                       :
+                       :
+                       : "r12", "memory");
 #endif
 #if KICKOS_ARMV7M_SPLIM
         uint32_t limit = psplim;

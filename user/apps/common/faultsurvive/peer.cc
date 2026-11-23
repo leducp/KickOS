@@ -254,20 +254,12 @@ namespace
 
     void preempt_child(void*)
     {
-        bool supervisor = false;
-        do
+        // No PSW read in the loop: a copy live in a register when the wake preempts is saved on
+        // this stack, the forge rewrites it, and the verdict would read the forged copy.
+        while (not g_preempt_stop)
         {
-            if ((psw_now() & FS_PSW_PM) == 0)
-            {
-                supervisor = true;
-            }
-        } while (not g_preempt_stop);
-        // Once more: the resume may land after the last test of the loop.
-        if ((psw_now() & FS_PSW_PM) == 0)
-        {
-            supervisor = true;
         }
-        verdict("preempt", supervisor);
+        verdict("preempt", (psw_now() & FS_PSW_PM) == 0);
     }
 
     bool spawn(void (*entry)(void*), char const* name, uint8_t prio, void* stack,

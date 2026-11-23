@@ -161,6 +161,11 @@
 #define KICKOS_ARMV6M_TRAP_NEED_SVCK \
     (KICKOS_ARMV6M_TRAP_NEST_SVCK + KICKOS_ARMV6M_TRAP_KERNEL_DEPTH_SVCK)
 
+/* The deepest PSP PendSV's block leg accepts, down from the block's top: the save below it must
+   stop above the canary word. The deepest legal PSP can sit ON it, so the compare accepts the
+   equal case. Needs KICKOS_KERNEL_STACK_SIZE. */
+#define KICKOS_ARMV6M_BLOCK_PSP_MAX_DROP \
+    (KICKOS_KERNEL_STACK_SIZE - 4 - KICKOS_ARMV6M_TRAP_FRAME)
 /* struct arch_context field offsets the trap sites read as plain displacements. switch.S
    .equ's from these and arch_armv6m.cc static_asserts offsetof against them. The
    telemetry-only trace_tid is the LAST field precisely so that no build posture shifts them,

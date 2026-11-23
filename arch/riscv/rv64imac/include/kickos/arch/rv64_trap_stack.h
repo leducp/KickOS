@@ -43,13 +43,13 @@
 #define KICKOS_RV64_TRAP_ENTRY_FRAME 0
 #define KICKOS_RV64_TRAP_NEED_USER 0
 
-/* IRQ and IRQK. 944 on qemu-riscv64-smp and -smp2, 864 on qemu-riscv64, 848 on sv48. The
+/* IRQ and IRQK. 928 on qemu-riscv64-smp and -smp2, 848 on qemu-riscv64 and sv48. The
  * unexpected-cause report, whose line ends its chip-writer bracket by waking the publisher it
- * raced, the wake seating a thread whose reent state is primed through the space's tables:
+ * raced, the wake settling the lends a death left:
  *   kickos_rv64_isr_dispatch[48] -> kprintf[352] -> console_emit[80]
  *   -> console_chip_writer_leave[16] -> console_dark_wake[32] -> wake[16]
- *   -> resched_after_wake[16] -> pick_and_seat[64] -> reent_prime[48] -> kaccess_to_user[0]
- *   -> access_copy[96] -> arch_aspace_acquire[96] -> walk_leaf[80] */
+ *   -> wake_no_resched[32] -> watch_lend_settle[0] -> pi_drain_deaths[80] -> pi_settle_from[48]
+ *   -> set_prio[48] -> place[64] -> policy_place[80] -> sched_effective_level[32] */
 #define KICKOS_RV64_TRAP_DEPTH_IRQ 1024
 
 /* An interrupt's whole extent below the sp it interrupts, FRAME + DEPTH_IRQ, which

@@ -750,6 +750,10 @@ namespace kickos
     // ksrc is kernel storage, udst is user memory: disjoint for the same reason.
     bool kaccess_to_user(UserOwner dspace, uintptr_t udst, void const* ksrc, size_t n)
     {
+        if (not kstore_admitted(udst, n))
+        {
+            return false;
+        }
         return access_copy(dspace, udst, nullptr, reinterpret_cast<uintptr_t>(ksrc), n);
     }
 
@@ -757,7 +761,8 @@ namespace kickos
     // a granule boundary. Use memcpy to preserve effective-type rules (reent.h).
     bool kaccess_word_to_user(UserOwner dspace, uintptr_t udst, void const* kword)
     {
-        if ((udst & static_cast<uintptr_t>(sizeof(void*) - 1u)) != 0)
+        if ((udst & static_cast<uintptr_t>(sizeof(void*) - 1u)) != 0
+            or not kstore_admitted(udst, sizeof(void*)))
         {
             return false;
         }
@@ -829,7 +834,7 @@ namespace kickos
 #if KICKOS_HAVE_ASPACE
         one_space = dspace == sspace;
 #endif
-        if (one_space and dst + n > src and src + n > dst)
+        if ((one_space and dst + n > src and src + n > dst) or not kstore_admitted(dst, n))
         {
             return false;
         }

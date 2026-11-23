@@ -40,6 +40,8 @@ static inline bool arch_mpu_encoded_seated(struct arch_mpu_encoded const* img, u
 // ARMv8-M ARM, MPU region matching: an address two enabled regions match faults for every
 // access, a privileged one included, and PRIVDEFENA's background map does not apply.
 #define ARCH_MPU_OVERLAP ARCH_MPU_OVERLAP_FAULTS
+// MPU_RBAR.AP's read-only encodings deny a privileged write as well: none keeps the kernel's.
+#define ARCH_MPU_RO_KEEPS_KERNEL_WRITE 0
 
 struct arch_mpu_encoded
 {

@@ -101,6 +101,20 @@
 struct arch_mpu_encoded;
 #endif
 
+// 0 where an MPU's region read-only to the thread is read-only to the kernel too, defined in
+// its mpu_encoded.h.
+#ifndef ARCH_MPU_RO_KEEPS_KERNEL_WRITE
+#define ARCH_MPU_RO_KEEPS_KERNEL_WRITE 1
+#endif
+// Where such a region is enforced, every kernel store into user memory first asks
+// arch_mpu_loaded_writable: a block another thread holds read-only faults the kernel's store
+// while that thread's map is loaded.
+#if !ARCH_MPU_RO_KEEPS_KERNEL_WRITE && KICKOS_MEMORY_ENFORCED && !KICKOS_HAVE_ASPACE
+#define ARCH_USER_STORE_CHECKED 1
+#else
+#define ARCH_USER_STORE_CHECKED 0
+#endif
+
 // MMIO grants must exclude kernel-owned timers, interrupt and protection
 // controllers, bus access gates, and clock/reset registers.
 struct arch_reserved_block
@@ -442,6 +456,11 @@ void kickos_arch_mpu_commit(void);
 // it; where apply already programs the hardware this is apply.
 void arch_mpu_apply_now(struct arch_mpu_region const* regions, size_t n,
                         struct arch_mpu_encoded const* image);
+
+#if ARCH_USER_STORE_CHECKED
+// Whether a privileged store into [base, base + n) passes the regions this core has loaded now.
+bool arch_mpu_loaded_writable(uintptr_t base, size_t n);
+#endif
 
 // Nontranslating protection regions; translating ports use arch_aspace_*.
 
@@ -793,7 +812,8 @@ int32_t arch_syscall_reg(uint32_t* io);
 
 // Set the result in a saved, nonlive context for a thread parked by the
 // fastpath without a kernel continuation. Use the slot restored as the
-// syscall return register.
+// syscall return register. On a checked-store arch the result is deferred to the switch-in
+// when the frame is read-only under the map loaded; elsewhere it is written at once.
 void arch_ctx_set_syscall_result(struct arch_context* ctx, uint32_t result);
 #endif
 

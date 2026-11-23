@@ -26,9 +26,10 @@ namespace kickos
         constexpr uint32_t RBAR_BASE_MASK = 0xFFFFFFE0u;
         constexpr uint32_t RBAR_XN = 1u << 0; // execute-never
         // AP[2:1]: 00 RW priv-only, 01 RW any, 10 RO priv-only, 11 RO any, "any" meaning
-        // unprivileged access permitted. Privileged reaches everything via PRIVDEFENA.
+        // unprivileged access permitted. PRIVDEFENA reaches only what no region matches.
         constexpr uint32_t RBAR_AP_RW_ANY = 0x1u << 1;
         constexpr uint32_t RBAR_AP_RO_ANY = 0x3u << 1;
+        constexpr uint32_t RBAR_AP_RO = 0x1u << 2; // AP[2]: no write, privileged included
         // SH[4:3] is left 0: these parts have no per-core data cache, so shareability has no
         // effect. A part with one must set it on shared data.
 

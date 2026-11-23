@@ -318,6 +318,13 @@ milestone does not close while any of them still composes a system.
           share.
         - Unchanged by ruling: `invariants.md:158` keeps `KOS_SYS_DIAG_LED_SET` as it is, and
           arm64 EL0 keeps `SCTLR_EL1` UCT, UCI and DZE set.
+      - M10.8.1, the libc state primed at creation and its word seated where the switch lands:
+        - `docs/design-m6-mmu.md:1198`: the switch path neither primes nor asks `aspace_seated_for`;
+        - `docs/design-m6-mmu.md:1207`: `aspace_seated_for` is gone;
+        - `docs/design-m10-toolchain.md:361`: `pick_and_seat` primes no libc state any more;
+        - `docs/journey/04-mutex.md:123`: `seat_reent` in `kernel/sched/sched.cc` is gone;
+        - `docs/journey/04-mutex.md:145`: `reent_seat` runs where the switch lands;
+        - `docs/journey/04-mutex.md:163`: the `reent_seat` breakpoint shows another signature.
       - The boot banner (maintainer, 2026-11-03): its version (the project's 0.5.1) and its text
         are out of date.
       - Every guarantee states its limits beside it (maintainer, 2026-11-05). KickOS provides a
@@ -332,6 +339,67 @@ milestone does not close while any of them still composes a system.
         rationale another box or a doc points at) moves to its proper home (docs/reference, a
         design note, STATE.md) and every reference to the box is fixed, since git history is not
         an archive a reader follows.
+- [ ] **M10.8.1: THE CORTEX-M TRAP ENTRY (the M10.8 audit, verified 2026-11-18).**
+      **RULED (maintainer, 2026-11-18)** on the audit's findings:
+      - Area 2 F2 (a K64F client's slow DSPI rate polled at a lent priority) is DROPPED: a granted
+        client's legal but bad settings are the integrator's problem. No floor, no doc line.
+      - A wild or overflowed unprivileged SP on ARM stops only its task (M10.8.6): killed on every
+        ARM path where the fault handler runs, the armv6m lockup on a fault during HardFault entry
+        stated as a hardware limit. It changes `fault-frame-untrusted-until-proved` and the
+        `terminated` outcomes `check_faultsurvive.sh` expects.
+      - D (2026-11-21, replacing D1, which refused `KOS_WINDOW_RO` on PMSAv8 with
+        `-KOS_ENOTSUP`): PMSAv8 admits a read-only window. A kernel store into user memory
+        that the map loaded at that moment holds read-only answers `-KOS_EFAULT` and never
+        faults or panics, so the hardware limit shows exactly where it bites: a delivery copied
+        under the map of a sender holding the receiver's buffer read-only answers `-KOS_EFAULT`.
+      - D2 (M10.8.3): device windows are whitelisted by range. Every chip file's `apertures` are
+        narrowed to its user-peripheral spans, gate blocks fall outside them, and `owner: kernel`
+        rows stay for the kernel's devices inside a span.
+      - D3 (M10.8.7): RX gets an INTB entry per vector dispatching `kickos_isr_irq(n)`.
+      **CLOSED here:**
+      - The SVC fastpath read PENDSVSET before it masked, so a device wake in between ran the IPC
+        leaf as the woken thread. The armv6m and armv7m trap now mask first. `callrace`: the
+        emulator gate pends a line at `kickos_armv[67]m_svc_pend_read`, red before the fix (the
+        server saw the waker's badge on microbit, a kernel MPU fault on qemu-m3).
+      - The armv7m syscall trampoline lowered PRIMASK with no `isb` before the dispatch reads the
+        current thread; ARMv7-M ARM B5.2.1 makes a lowered priority visible only after an ISB or
+        an exception boundary, so it now issues one. Settled from the manual; no run shows it.
+      - An armv7m thread switched in with no FP frame read the previous thread's s0-s31 and
+        FPSCR flags. The switcher clears them once an FP-live thread was saved, at the PendSV
+        restore, the SVC fastpath's and the contained wild-PSP resume, and the fault exit clears
+        a killed thread's. `fp_switch`'s fresh-thread and fastpath-server arms, and `pspguard`
+        mode 1's reader after the containment (after the STKOF kill on qemu-m33), each red with
+        its site's clear removed.
+      - On PMSAv8 a read-only window is read-only for the kernel too, so a store into the block
+        under that window's map faulted the kernel. Per D, every store a call makes asks the
+        loaded map first and answers `-KOS_EFAULT`; the switch-in scrubs the incoming frame
+        after the region commit, and the fastpath's result word, which no call answers, waits
+        in the caller's context for its switch-in to seat it. A thread's libc state is primed
+        at its creation, under the map that admitted its stack, and the `_impure_ptr` word is
+        seated where the switch lands; a held console record refused under another thread's
+        map stays held, and the driver's receive, answered `-KOS_EFAULT`, is retried by its
+        service loop. The selftest's `window_ro_store` (a send and a call meeting a receive
+        whose info lies in the block, its payload landing outside it, the register form
+        answering the fallback where it completes for a receive whose info lies outside the
+        block; a fastpath reply, answered through the register form; a spawn naming a stack;
+        and a thread first switched in from the one holding its stack read-only, which panicked
+        qemu-m33 in the switch-in's prime), `restartwit` on the QEMU core presets, whose watcher
+        holds `/init/status` read-only, and `fused_wake`, a receive taking a queued send whose
+        info store is refused failing both ends. The parked-word store a dying mutex owner
+        makes is not asked: its map could write the word.
+      - PendSV's kernel-block bound reserved the block's whole nest instead of the save it makes,
+        52 bytes too tight on armv6m and 132 on armv7m; it now reserves the canary and the save,
+        asserted at build on both against the deepest preempted dispatch's own terms. rxv3
+        already derived it that way.
+      - The armv6m trampoline returned r2, r3 and r12 as the kernel left them; it now clears
+        them. The selftest's `trap_scratch`, which M10.8.7 extends to RX R3 and R4.
+      - Ruled 2026-11-19: `callrace`'s emulator arm is the fastpath race's proof; no silicon
+        soak and no kernel test counter.
+      - OWED, silicon: a picopi (RP2040, the fleet's only enforcing armv6m) fleet pass. It covers
+        the switch-in order with the MPU enforcing (the reent word seated after the region commit),
+        the trap clearing r2, r3 and r12 (`trap_scratch`), the kernel-block PSP bound under the
+        pspguard and faultsurvive images, and the SVC fastpath masking under real interrupts.
+
 - [ ] **A DEFERRED DELIVERY ON A REGION BACKEND RE-PROVES NOTHING (M10.6.12 audit review,
       2026-11-11).** A translating backend re-proves an out word or a parked receiver's buffer at
       the access, through the acquire. A region backend writes the address the boundary check
@@ -3633,8 +3701,10 @@ follows is what survived that.
       thread as an FPU user, enables the FPU for it and re-runs the instruction; from then on its
       state is saved and restored eagerly at every switch. NOT lazy switching, which leaves the
       previous thread's registers live until the next thread touches them: that is the LazyFP
-      leak (CVE-2018-3665) and is refused. ARMv7-M already gets this from its lazy stacking, and
-      RISC-V can save only a dirty state by `mstatus.FS` with no trap. Measure first: the save's
+      leak (CVE-2018-3665) and is refused. ARMv7-M saves only an FPU user through its lazy
+      stacking, and its switcher clears the registers a thread with no FP state is switched in on
+      (M10.8.1: lazy stacking alone left them live); RISC-V can save only a dirty state by
+      `mstatus.FS` with no trap. Measure first: the save's
       cost per switch, and how many threads of real workloads touch the FPU at all (a compiler may
       use SIMD registers for plain copies, which would make the trap fire almost always). It would
       be the first fault a task survives.

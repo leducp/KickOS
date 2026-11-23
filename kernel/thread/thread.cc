@@ -692,16 +692,14 @@ namespace kickos
         }
 #endif
 #if KICKOS_LIBC_REENT
-        // Selection only: priming happens at this thread's first switch-in. Idle runs on the
-        // shared state, which is what every prime copies from.
+        // Idle runs on the shared state, which is what every prime copies from.
         t->reent = reent_shared_state();
-        t->reent_fresh = false;
         if (carve_home != nullptr and kernel().threads.index_of(t) >= 0)
         {
+            size_t const image = task_image(t->task);
             t->reent = stack_base;
-            t->reent_fresh = true;
-            reent_cell_seat(carve_home, stack_base, t->lock_id,
-                            tls_libc_carve(task_image(t->task)));
+            reent_cell_seat(carve_home, stack_base, t->lock_id, tls_libc_carve(image));
+            reent_prime(carve_home, image);
         }
 #endif
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY

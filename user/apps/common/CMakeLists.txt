@@ -102,7 +102,7 @@ add_subdirectory(fault)
 add_subdirectory(panicgate)
 # A task restarted from its own image, image 1.
 if(NOT KICKOS_ARCH STREQUAL "sim")
-  kickos_shape_app(restartwit)
+  kickos_shape_app(restartwit core)
 endif()
 
 # --- A C library on the target -----------------------------------------------------------
@@ -185,6 +185,13 @@ endif()
 if(KICKOS_ARCH STREQUAL "armv7m" OR KICKOS_ARCH STREQUAL "armv6m")
   kickos_shape_app(ringpriv core)
   add_subdirectory(pspguard)
+endif()
+# The Cortex-M SVC trap against a device interrupt landing inside it, which only an emulator's
+# debugger places there.
+kickos_qemu_machine("${KICKOS_BOARD}" _kos_cr_env _kos_cr_machine)
+if((KICKOS_ARCH STREQUAL "armv7m" OR KICKOS_ARCH STREQUAL "armv6m")
+   AND NOT _kos_cr_machine STREQUAL "")
+  kickos_shape_app(callrace core)
 endif()
 # Needs a privilege ring to escape from, and an emulator's debugger to place the preemption.
 if(KICKOS_ARCH STREQUAL "armv7m" AND KICKOS_KERNEL_STACKS AND KICKOS_FAULT_ISOLATION)

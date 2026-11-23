@@ -21,7 +21,6 @@
 #include <kickos/time.h>
 #include <kickos/irqlock.h>
 #include <kickos/klock.h>
-#include <kickos/reent.h>
 #include <kickos/ustack.h>
 
 #include <kickos/sys/abi.h>
@@ -363,31 +362,6 @@ namespace kickos
 #endif
         }
 
-#if KICKOS_LIBC_REENT
-        // Only after the incoming memory view is installed, and only when that view belongs to
-        // the incoming thread.
-        inline __attribute__((always_inline)) void seat_reent(struct arch_aspace* rspace,
-                                                              Thread* next)
-        {
-            if (aspace_seated_with(rspace))
-            {
-                size_t const image = task_image(next->task);
-                if (next->reent_fresh)
-                {
-                    next->reent_fresh = false;
-                    reent_prime(rspace, image, next->reent);
-                }
-#if not KICKOS_REENT_PER_THREAD
-                Task const* const tk = next->task;
-                if (tk != nullptr and tk->reent_seat != nullptr)
-                {
-                    reent_seat(tk->reent_seat, next->reent);
-                }
-#endif
-            }
-        }
-#endif
-
         // prev is the published thread and may already differ from the executing one after a
         // deferred switch. Keep this inline for timing. Use the core ID only before
         // arch_switch; the thread may resume elsewhere.
@@ -421,11 +395,8 @@ namespace kickos
             KOS_TRACE(::kickos::KOS_TR_RUN, KOS_TRACE_ID(next), next->prio);
             next->switch_count.store(next->switch_count.load() + 1u);
             // What the incoming thread may touch is installed here and nowhere else.
-            [[maybe_unused]] struct arch_aspace* const rspace = aspace_activate_for(next);
+            (void)aspace_activate_for(next);
             next->mpu.apply();
-#if KICKOS_LIBC_REENT
-            seat_reent(rspace, next);
-#endif
 #if KICKOS_KERNEL_CORES > 1
             if (displaced != nullptr)
             {
@@ -753,9 +724,6 @@ namespace kickos
                 aspace_install_boot();
             }
             first->mpu.apply();
-#if KICKOS_LIBC_REENT
-            seat_reent(rspace, first);
-#endif
             policy_on_switch_in(first);
             ktime_rearm(first, lock);
 #if KICKOS_KERNEL_CORES > 1

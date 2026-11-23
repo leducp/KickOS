@@ -1850,6 +1850,16 @@ instance's threads held, and the init keeps its endpoint and ring block for the 
 | M10.7.3 | `kos_task_create` no longer waits: a starter waits for "this instance can start again" through the watch call, the IRQ retirement completes on its own, the init waits on that event instead of retrying, and a watch on an ended task lends the waiter's priority to its members |
 | M10.7.4 | slay and cancel commit and return without waiting |
 | M10.8 | the exit record, and the reference documents reconciled against what shipped |
+| M10.8.1 | the Cortex-M trap entry: the SVC fastpath masks before it tests for a pending switch, a thread with no FP state starts with clear FP registers, a kernel store into a block the loaded PMSAv8 map holds read-only answers -KOS_EFAULT, the armv6m trap returns no kernel scratch |
+| M10.8.2 | kernel audit fixes: a dying thread runs on the boot root, task and driver creation read user arguments once and within bounds, thread names are filtered |
+| M10.8.3 | services and composition: a line grant carries its cluster's offset, the console's mode and input need a granted badge, a DSPI rate is never another slot's, device windows are confined to the chip's peripheral apertures |
+| M10.8.4 | ESP32-C6 partition: the LP side reaches only its slice, the APM is written and read back, the CPU-GPIO registers are refused |
+| M10.8.5 | ESP32-C6: node 0's task images execute from flash (XIP) under AMP |
+| M10.8.6 | a wild or overflowed stack on Cortex-M kills only its task, and the v8-M Non-secure state is closed |
+| M10.8.7 | RX: every vector is dispatched, the trap returns no kernel scratch, the wild-stack print marks no thread |
+| M10.8.8 | cross-node IPC: a blocking far send or call waits for a slot, a far send is held until its receiver takes it, each port has its own share of the call ring, ECONNREFUSED for an endpoint nobody serves, POSIX codes for polled waits |
+| M10.8.9 | the AMP console as an ordinary cross-node service: each node's kernel has its own UART or none, other nodes' tasks print through a relay, the shared console claim is gone |
+| M10.8.10 | the exit record |
 
 **THE TOOLCHAIN IS KICKOS'S OWN, BUILT FROM PINNED SOURCES ON ANY HOST** (maintainer,
 2026-09-30). C and full C++ on every target, x86_64 included, from one toolchain version the tree

@@ -52,9 +52,8 @@
 #define KICKOS_X86_64_TRAP_NEED_USER 0
 
 /* IRQ, IRQK and the frame term of every class an interrupt lands under. The deepest chain is an
- * interrupt's wake seating a thread through pick_and_seat, which primes the incoming thread's
- * libc state from its image: reent_prime copies into its space through arch_aspace_acquire
- * (docs/design-m10-toolchain.md section 5.5). qemu-x86_64 measures 624 under GCC 16.2. */
+ * interrupt's wake settling the lends a death left, through watch_lend_settle and
+ * pi_drain_deaths. qemu-x86_64 measures 568 under GCC 16.2. */
 #define KICKOS_X86_64_TRAP_DEPTH_IRQ 704
 
 /* A ring 0 interrupt's whole extent below the rsp it interrupts, FRAME_IRQ + DEPTH_IRQ, which

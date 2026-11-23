@@ -394,7 +394,9 @@ enum kos_syscall_nr
                                //   KOS_LIMIT_NONE parks indefinitely, and on the published
                                //   console while its task lives, receiver or not.
                                //   EFAULT also answers a
-                               //   rendezvous copy refused at either end (sys.h)
+                               //   rendezvous copy refused at either end, and the receiver's
+                               //   info refused after the payload landed, the message lost
+                               //   (sys.h)
     KOS_SYS_THREAD_CANCEL = 53, // (kos_thread_t, enum kos_cancel) -> 0 (the cancel raised, never
                                //    waiting), -KOS_EBADF (bad, stale or exited handle),
                                //    -KOS_EPERM (different parent), -KOS_EINVAL (self, idle, or an
@@ -911,7 +913,11 @@ enum kos_window_kind
 // A memory window's flags; a device window takes none (-KOS_EINVAL).
 enum kos_window_flags
 {
-    KOS_WINDOW_RO = 1 << 0,      // reads only: a write faults the thread
+    KOS_WINDOW_RO = 1 << 0,      // reads only: a write faults the thread; on PMSAv8 a call
+                                 // storing into the block while this thread's map is loaded
+                                 // answers -KOS_EFAULT, and a receive's info so refused after
+                                 // its payload landed wakes both ends -KOS_EFAULT, the message
+                                 // lost
     KOS_WINDOW_UNCACHED = 1 << 1 // as KOS_MEM_NOCACHE; -KOS_ENOTSUP where the chip cannot
 };
 
