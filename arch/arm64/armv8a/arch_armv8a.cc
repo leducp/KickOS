@@ -14,7 +14,9 @@
 #include <kickos/sys/atomic.h>
 
 #include "../common/gic.h"
+#include "serror_armv8a.h"
 #include "uguard_armv8a.h"
+#include "vector_slots.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -338,7 +340,9 @@ namespace
     // The EL0 synchronous slot, which reaches the reporter only for a fault the kill rule
     // declined (switch.S .Lel0_fault_panic): root before the scheduler runs, a privileged
     // thread, a thread already dying, or a frame the entry did not build.
-    constexpr unsigned long SLOT_EL0_SYNC = 8;
+    constexpr unsigned long SLOT_EL0_SYNC = KICKOS_ARMV8A_SLOT_EL0_SYNC;
+    // The EL0 SError slot, for the same reason (switch.S .Lel0_serror_panic).
+    constexpr unsigned long SLOT_EL0_SERROR = KICKOS_ARMV8A_SLOT_EL0_SERROR;
 
     // FAR_EL1 is stale outside the abort, alignment and watchpoint classes, so it is read
     // only when the class says so and ESR_EL1.FnV is clear (MMFAR behind MMARVALID).
@@ -589,6 +593,14 @@ bool arch_fault_is_user_thread(void* frame)
     {
         return false;
     }
+    uint64_t esr = 0;
+    uint64_t pfr0 = 0;
+    __asm volatile("mrs %0, esr_el1" : "=r"(esr));
+    __asm volatile("mrs %0, id_aa64pfr0_el1" : "=r"(pfr0));
+    if (((esr >> 26) & 0x3Fu) == KICKOS_ARMV8A_EC_SERROR and not kickos::armv8a::serror_containable(esr, pfr0))
+    {
+        return false;
+    }
     uintptr_t const top = kickos_fault_stack_top();
     if (top < ARMV8A_FRAME_SIZE)
     {
@@ -608,13 +620,20 @@ void arch_fault_redirect_to_exit(void* frame)
     __asm volatile("mrs %0, esr_el1" : "=r"(esr));
     __asm volatile("mrs %0, elr_el1" : "=r"(elr));
     __asm volatile("mrs %0, far_el1" : "=r"(far));
-    int addr_valid = 0;
-    if (far_is_valid(esr))
+    if (((esr >> 26) & 0x3Fu) == KICKOS_ARMV8A_EC_SERROR)
     {
-        addr_valid = 1;
+        kickos_fault_record_unverified_pc("ESR_EL1", esr, static_cast<uintptr_t>(elr));
     }
-    kickos_fault_record("ESR_EL1", esr, static_cast<uintptr_t>(elr),
-                        static_cast<uintptr_t>(far), addr_valid);
+    else
+    {
+        int addr_valid = 0;
+        if (far_is_valid(esr))
+        {
+            addr_valid = 1;
+        }
+        kickos_fault_record("ESR_EL1", esr, static_cast<uintptr_t>(elr),
+                            static_cast<uintptr_t>(far), addr_valid);
+    }
 
     uint64_t* const f = static_cast<uint64_t*>(frame);
     f[ARMV8A_F_ELR / 8] = reinterpret_cast<uint64_t>(&kickos_thread_fault_exit);
@@ -623,14 +642,15 @@ void arch_fault_redirect_to_exit(void* frame)
 
 // --- Exceptions -------------------------------------------------------------
 // Every reporting slot lands here with its index and the interrupted x30 (vectors.S); nothing
-// resumes from here. A fault the EL0 synchronous entry cannot contain arrives as slot 8.
+// resumes from here. A fault the EL0 synchronous or SError entry cannot contain arrives as slot
+// 8 or 11.
 void kickos_armv8a_exception(unsigned long slot, unsigned long lr)
 {
     // First, ahead of the space swap and the console, which can fault back into here.
     kickos_fault_report_begin();
     kickos_armv8a_ttbr0_to_empty(); // a fault in the reporter cannot reach a user page
     kpanic_enter();
-    if (slot == SLOT_SP_EL1_SYNC or slot == SLOT_EL0_SYNC)
+    if (slot == SLOT_SP_EL1_SYNC or slot == SLOT_EL0_SYNC or slot == SLOT_EL0_SERROR)
     {
         ::kickos::kprintf("\n=== ARMV8A EXCEPTION ===\n");
     }
@@ -669,6 +689,16 @@ void kickos_armv8a_exception(unsigned long slot, unsigned long lr)
     (void)lr;
 #endif
     kfault_terminate();
+}
+
+// A return to EL0 found an SError pending (switch.S RESTORE_FRAME_AND_ERET), raised by one of the
+// kernel's accesses or by one of a thread's that its entry's drain did not complete: the system
+// ends rather than name a culprit it cannot tell.
+void kickos_armv8a_kernel_serror(void)
+{
+    kickos_fault_report_begin();
+    kickos_armv8a_ttbr0_to_empty();
+    ::kickos::kpanic(::kickos::diag::kSerrorKernel);
 }
 
 // The IRQ vector's C half (vectors.S); it keeps the depth behind arch_in_isr.

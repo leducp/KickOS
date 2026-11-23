@@ -49,6 +49,8 @@ namespace kickos
 
         uint32_t frames_allocated();
         uint32_t frames_freed();
+        // The allocations the pool can still answer: neither run out nor over budget.
+        size_t frames_left();
 
         // Remaining successful allocations before failure. Reset restores full capacity.
         void set_frame_budget(uint32_t frames);

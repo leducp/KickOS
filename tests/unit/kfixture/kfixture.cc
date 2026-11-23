@@ -105,6 +105,7 @@ namespace kickos
         uint32_t g_fault_fmts = 0;
         bool g_console_dark = false;
         bool g_console_window_held = false;
+        void (*g_domain_for_probe)() = nullptr;
         uint32_t g_parked = 0;
         uintptr_t g_periph_disabled[PERIPH_RECORD_MAX] = {};
         uint32_t g_periph_disables = 0;
@@ -510,6 +511,7 @@ namespace kickos
             g_fault_fmts = 0;
             g_console_dark = false;
             g_console_window_held = false;
+            g_domain_for_probe = nullptr;
             g_parked = 0;
             for (uintptr_t& b : g_periph_disabled)
             {

@@ -620,13 +620,18 @@ namespace kickos
                 return;
             }
             r->has_windows = kaccess_from_user(r->windows, user_space_of(c), wu, bytes);
+            r->window_count = n;
         }
 
 #if KICKOS_ARCH_ALIAS_DCACHE
-        void presync_windows_note(Thread const* c, PresyncRecord const* r, uint16_t n)
+        void presync_windows_note(Thread const* c, PresyncRecord const* r)
         {
+            if (not r->has_windows)
+            {
+                return;
+            }
             VirtualRanges const* const own = domain_ranges(thread_domain(c));
-            for (uint16_t i = 0; i < n; i++)
+            for (uint16_t i = 0; i < r->window_count; i++)
             {
                 kos_window const& w = r->windows[i];
                 if (w.kind != KOS_WINDOW_MEMORY)
@@ -690,7 +695,7 @@ namespace kickos
             return;
         }
 #if KICKOS_ARCH_ALIAS_DCACHE
-        presync_windows_note(c, r, p.window_count);
+        presync_windows_note(c, r);
 #endif
     }
 
@@ -746,7 +751,7 @@ namespace kickos
         }
         create_plan(c, tp.block, tp.size, attr, static_cast<size_t>(sel));
 #if KICKOS_ARCH_ALIAS_DCACHE
-        presync_windows_note(c, r, tp.window_count);
+        presync_windows_note(c, r);
 #endif
     }
 
@@ -765,8 +770,10 @@ namespace kickos
 
         // A create's argv: the caller's vector, or none for { name }, and the bytes its strings
         // took with their NULs when they were measured.
-        // `driver`: window_stage holds the entry thread's windows already, in place of p->windows,
-        // and the entry thread is built and left out of the scheduler, for the caller to add.
+        // `caps_staged`: the spawn takes its delegations from grant_stage and dest_stage in place
+        // of p->caps and p->cap_dest. `driver`: window_stage holds the entry thread's windows
+        // already, in place of p->windows, and the entry thread is built and left out of the
+        // scheduler, for the caller to add.
         struct ArgBlock
         {
             uintptr_t vector;
@@ -775,6 +782,7 @@ namespace kickos
             uint16_t decl;
             uint16_t bytes;
             bool driver;
+            bool caps_staged;
         };
         static_assert(KICKOS_ARGV_MAX <= UINT16_MAX, "an ArgBlock count no longer fits its field");
 
@@ -956,9 +964,11 @@ namespace kickos
 
         if (ncaps > 0)
         {
+            bool const staged = args != nullptr and args->caps_staged;
             uintptr_t const cu = reinterpret_cast<uintptr_t>(p->caps);
             // user_readable_ok, as for the params struct: the array may be a global.
-            if (not user_readable_ok(cu, sizeof(kos_cap_grant) * static_cast<size_t>(ncaps)))
+            if (not staged
+                and not user_readable_ok(cu, sizeof(kos_cap_grant) * static_cast<size_t>(ncaps)))
             {
                 return -KOS_EFAULT;
             }
@@ -968,9 +978,13 @@ namespace kickos
             for (int ci = 0; ci < ncaps; ci++)
             {
                 kos_cap_grant g;
-                if (not kaccess_from_user(&g, user_space_of(spawner),
-                                          cu + static_cast<size_t>(ci) * sizeof(kos_cap_grant),
-                                          sizeof(kos_cap_grant)))
+                if (staged)
+                {
+                    g = kernel().grant_stage[ci];
+                }
+                else if (not kaccess_from_user(&g, user_space_of(spawner),
+                                               cu + static_cast<size_t>(ci) * sizeof(kos_cap_grant),
+                                               sizeof(kos_cap_grant)))
                 {
                     return -KOS_EFAULT;
                 }
@@ -978,7 +992,14 @@ namespace kickos
                 deleg_kind[ci] = g.rights_mask;
                 deleg_dest[ci] = 0;
             }
-            if (p->cap_dest != nullptr)
+            if (staged)
+            {
+                for (int ci = 0; ci < ncaps; ci++)
+                {
+                    deleg_dest[ci] = kernel().dest_stage[ci];
+                }
+            }
+            else if (p->cap_dest != nullptr)
             {
                 uintptr_t const du = reinterpret_cast<uintptr_t>(p->cap_dest);
                 // Must precede the copy: a misaligned halfword load traps in the kernel on a
@@ -1366,6 +1387,7 @@ namespace kickos
                     name_ok = true;
                     break;
                 }
+                namebuf[ni] = user_text_byte(namebuf[ni]);
             }
             if (ni + 1 >= sizeof(namebuf))
             {
@@ -1805,23 +1827,16 @@ namespace kickos
             return instance_select(c, tp, static_cast<size_t>(image));
         }
 
-        // The caller's capability that delegated capability `at` of the create's list names, of
-        // `type`.
+        // The caller's capability that delegated capability `at` of the create's staged list
+        // names, of `type`.
         int create_source(Thread* c, kos_task_params const& tp, uint32_t at, CapType type,
                           uint32_t* out)
         {
-            uintptr_t const gu = reinterpret_cast<uintptr_t>(tp.caps) + at * sizeof(kos_cap_grant);
-            if (at >= tp.cap_count or tp.caps == nullptr
-                or (gu & (alignof(kos_cap_grant) - 1)) != 0)
+            if (at >= tp.cap_count)
             {
                 return -KOS_EINVAL;
             }
-            kos_cap_grant g;
-            if (not user_readable_ok(gu, sizeof(g))
-                or not kaccess_from_user(&g, user_space_of(c), gu, sizeof(g)))
-            {
-                return -KOS_EFAULT;
-            }
+            kos_cap_grant const& g = kernel().grant_stage[at];
             CapEntry const* const e = cap_lookup(c, g.source_cap);
             if (e == nullptr or static_cast<CapType>(e->type) != type)
             {
@@ -1844,19 +1859,39 @@ namespace kickos
             return 0;
         }
 
-        // The entry thread's destination of each delegated capability, as spawn_locked places it.
-        int create_dests(Thread* c, kos_task_params const& tp, uint16_t* out)
+        // Stages the create's delegations and the entry thread's destination of each, as
+        // spawn_locked places it.
+        int create_grants_in(Thread* c, kos_task_params const& tp)
         {
+            if (tp.cap_count == 0)
+            {
+                return 0;
+            }
             if (tp.cap_count > KICKOS_MAX_SPAWN_GRANTS)
             {
                 return -KOS_EINVAL;
             }
+            uintptr_t const gu = reinterpret_cast<uintptr_t>(tp.caps);
+            size_t const gbytes = sizeof(kos_cap_grant) * tp.cap_count;
+            if (gu == 0 or (gu & (alignof(kos_cap_grant) - 1)) != 0)
+            {
+                return -KOS_EINVAL;
+            }
+            if (not user_readable_ok(gu, gbytes)
+                or not kaccess_from_user(kernel().grant_stage, user_space_of(c), gu, gbytes))
+            {
+                return -KOS_EFAULT;
+            }
+            uint16_t* const out = kernel().dest_stage;
             uintptr_t const du = reinterpret_cast<uintptr_t>(tp.cap_dest);
+            size_t const dbytes = sizeof(uint16_t) * tp.cap_count;
+            if (tp.cap_dest != nullptr and (du & (alignof(uint16_t) - 1)) != 0)
+            {
+                return -KOS_EINVAL;
+            }
             if (tp.cap_dest != nullptr
-                and ((du & (alignof(uint16_t) - 1)) != 0
-                     or not user_readable_ok(du, sizeof(uint16_t) * tp.cap_count)
-                     or not kaccess_from_user(out, user_space_of(c), du,
-                                              sizeof(uint16_t) * tp.cap_count)))
+                and (not user_readable_ok(du, dbytes)
+                     or not kaccess_from_user(out, user_space_of(c), du, dbytes)))
             {
                 return -KOS_EFAULT;
             }
@@ -1939,12 +1974,8 @@ namespace kickos
             {
                 return -KOS_EINVAL;
             }
-            uint16_t dest[KICKOS_MAX_SPAWN_GRANTS] = {};
-            int rc = create_dests(c, tp, dest);
-            if (rc != 0)
-            {
-                return rc;
-            }
+            uint16_t const* const dest = kernel().dest_stage;
+            int rc = 0;
             bool const console = (d.flags & KOS_DECL_CONSOLE) != 0;
             int freed = -1;
             if (console)
@@ -2193,6 +2224,13 @@ namespace kickos
             }
             kos_task_decl const& d = *image_decl(static_cast<size_t>(sel));
             bool const driver = (d.flags & KOS_DECL_DRIVER) != 0;
+            ArgBlock args{};
+            rc = create_grants_in(c, tp);
+            if (rc != 0)
+            {
+                return rc;
+            }
+            args.caps_staged = true;
             int ready = -1;
             if (d.ready != 0)
             {
@@ -2202,7 +2240,6 @@ namespace kickos
                     return rc;
                 }
             }
-            ArgBlock args{};
             args.decl = static_cast<uint16_t>(sel);
             args.driver = driver;
             rc = argv_in(c, tp, d, &args);

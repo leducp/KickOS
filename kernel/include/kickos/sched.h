@@ -175,10 +175,10 @@ namespace kickos
         // Yield within this priority and reschedule. Takes IrqLock internally.
         void yield();
 
-        // Remove `current` from the ready list without rescheduling. A blocking
-        // primitive must call this before parking the thread on a wait queue,
+        // Remove `c`, which must be `current`, from the ready list without rescheduling. A
+        // blocking primitive must call this before parking the thread on a wait queue,
         // since the ready list and wait queues share the TCB link node.
-        void detach_current(Held held);
+        void detach_current(Thread* c, Held held);
 
         // Make a previously-removed thread runnable again; preempts if warranted.
         void wake(Thread* t, Held held);

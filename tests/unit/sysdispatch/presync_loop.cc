@@ -702,6 +702,38 @@ namespace kickos
                 EXPECT_EQ(g_syncs, 0u);
             }
 
+            // A count past the array leaves nothing copied, so the plan must read none of the
+            // record's window bytes: the slots a refused spawn left, and past them the task
+            // parameters, here shaped as a sixth uncached entry on the block.
+            TEST_F(SysPresync, a_create_whose_window_count_passes_the_array_answers_and_notes_nothing)
+            {
+                uintptr_t const block = reserve_only(G);
+                ASSERT_NE(block, 0u);
+                kos_task_params* const tp = task_params(MAIN_PARAMS, block, G, KOS_MEM_NOCACHE);
+                kos_window const stale = {block, static_cast<uint32_t>(G), KOS_WINDOW_MEMORY,
+                                          KOS_WINDOW_UNCACHED};
+                constexpr size_t past = offsetof(PresyncRecord, windows)
+                                        + (2u * KICKOS_MAX_THREAD_WINDOWS - 1u) * sizeof(kos_window)
+                                        - offsetof(PresyncRecord, task_params);
+                static_assert(offsetof(PresyncRecord, task_params)
+                                      < offsetof(PresyncRecord, windows)
+                                            + 2u * KICKOS_MAX_THREAD_WINDOWS * sizeof(kos_window),
+                              "the arm shapes a window past the array out of the task parameters");
+                static_assert(past + sizeof(kos_window) <= sizeof(kos_task_params));
+                memcpy(reinterpret_cast<unsigned char*>(tp) + past, &stale, sizeof(stale));
+                tp->window_count = 2u * KICKOS_MAX_THREAD_WINDOWS;
+                sys_seam_reset();
+                PresyncRecord& r = record_of(g_main);
+                for (kos_window& w : r.windows)
+                {
+                    w = stale;
+                }
+                kos_task_t t = KOS_TASK_NONE;
+                EXPECT_EQ(create_staged(g_main, MAIN_PARAMS, MAIN_OUT, &t), -KOS_ENOMEM);
+                EXPECT_EQ(t, KOS_TASK_NONE);
+                EXPECT_FALSE(record_of(g_main).active);
+            }
+
             TEST_F(SysPresync, every_unprivileged_thread_enters_through_the_image_s_startup)
             {
                 uintptr_t const grant = reserve_only(G);

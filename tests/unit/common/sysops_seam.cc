@@ -193,6 +193,20 @@ namespace kickos
             return g_frames_freed;
         }
 
+        size_t frames_left()
+        {
+            size_t left = 0;
+            if (g_next_frame < SYSOPS_FRAMES)
+            {
+                left = SYSOPS_FRAMES - g_next_frame;
+            }
+            if (g_frame_budget < left)
+            {
+                left = g_frame_budget;
+            }
+            return left;
+        }
+
         void set_frame_budget(uint32_t frames)
         {
             g_frame_budget = frames;

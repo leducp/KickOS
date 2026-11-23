@@ -5,6 +5,8 @@
 // the spawner's syscall descent, so a stager holding the badge narrower than its stored width
 // would hand the child the low bits of another identity, with nothing refused.
 
+#include <string.h>
+
 #include <kickos/cap.h>
 #include <kickos/endpoint.h>
 #include <kickos/instance.h>
@@ -26,6 +28,7 @@ namespace
         kos_thread_params p;
         kos_cap_grant grant;
         kos_thread_t out;
+        char name[kickos::KICKOS_THREAD_NAME_MAX];
     };
     GrantBlock g_grants;
 
@@ -103,6 +106,34 @@ namespace kickos
             ASSERT_EQ(ce->type, static_cast<uint8_t>(CapType::CAP_ENDPOINT));
             EXPECT_EQ(ce->rights, static_cast<uint8_t>(CAP_SIGNAL));
             EXPECT_EQ(cap_badge(*ce), BADGE) << "the stager narrowed the delegated badge";
+        }
+        // The name reaches fault and panic records, so a byte that would move the console's
+        // cursor reaches them as '?'.
+        TEST_F(SpawnBadge, a_spawned_thread_s_name_carries_no_control_byte)
+        {
+            Kernel& k = kernel();
+            Thread* const spawner = seat_pool(2, 5);
+            join_task(spawner, task(0));
+            attach_caps(spawner, KICKOS_SEAM_CAP_WIDTH);
+            k.current(kickos_kernel_core()) = spawner;
+            ASSERT_TRUE(spawner->mpu.add(reinterpret_cast<uintptr_t>(&g_grants), sizeof(g_grants),
+                                         ARCH_MPU_R | ARCH_MPU_W));
+            static char const forged[] = "a\n=== PANIC\x1b\x7f";
+            static_assert(sizeof(forged) <= KICKOS_THREAD_NAME_MAX);
+            memcpy(g_grants.name, forged, sizeof(forged));
+            kos_thread_params& p = g_grants.p;
+            p = {};
+            p.entry = entry;
+            p.name = g_grants.name;
+            p.prio = 1;
+            ASSERT_EQ(thread_create_call(&p, reinterpret_cast<uintptr_t>(&g_grants.out)), 0);
+            Thread* child = nullptr;
+            {
+                IrqLock lock;
+                child = k.threads.resolve(g_grants.out);
+            }
+            ASSERT_NE(child, nullptr);
+            EXPECT_STREQ(child->name, "a?=== PANIC??");
         }
     }
 }

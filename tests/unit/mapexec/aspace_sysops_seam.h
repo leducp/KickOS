@@ -7,7 +7,10 @@
 #ifndef KICKOS_TESTS_UNIT_MAPEXEC_ASPACE_SYSOPS_SEAM_H
 #define KICKOS_TESTS_UNIT_MAPEXEC_ASPACE_SYSOPS_SEAM_H
 
+#include <stddef.h>
 #include <stdint.h>
+
+#include <kickos/arch/arch.h>
 
 #include "sysops_seam.h"
 
@@ -38,8 +41,29 @@ namespace kickos
         uint64_t user_ttbr0_of(uint32_t core);
         void set_user_ttbr0(uint32_t core, uint64_t ttbr);
 
-        // Puts every core on no translation, empties the frame pool and clears the record.
+        // Puts every core on no translation, empties the frame pool and clears the record. TTBR1
+        // then maps the RAM window and TTBR1_GATE_RUNS, each at its direct-map address, as normal
+        // writable memory, and the backend has recorded it.
         void sysops_reset();
+
+        // The frames outside the pool the gates map user leaves over.
+        struct TtbrRun
+        {
+            arch_phys_addr_t pa;
+            size_t pages;
+        };
+        constexpr TtbrRun TTBR1_GATE_RUNS[] = {{0x08000000, 1024}, {0x20000000, 16}};
+
+        // TTBR1 with no mapping; nothing is recorded until ttbr1_record.
+        void ttbr1_reset();
+        // Pages at the direct-map address of `at` naming `pa`, with descriptor bits `attrs`
+        // (AttrIndx, AP) added. False when the seam's table frames run out.
+        bool ttbr1_map(arch_phys_addr_t at, arch_phys_addr_t pa, size_t pages, uint64_t attrs);
+        // A level-1 or level-2 block at the direct-map address of `pa`, which the caller aligns to
+        // the block.
+        bool ttbr1_block(arch_phys_addr_t pa, int level, uint64_t attrs);
+        // The backend's record of what TTBR1 now maps.
+        void ttbr1_record();
 
         // Frame-free count at the last whole-TLB invalidate, for reclamation-order checks.
         uint32_t frames_freed_at_sweep();

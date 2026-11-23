@@ -80,6 +80,8 @@ namespace kickos
         // and its locked pass read these and never the caller's memory again.
         bool has_params = false;
         bool has_windows = false;
+        // The count copied with the list: the caller's own count may pass the array.
+        uint16_t window_count = 0;
         kos_thread_params params = {};
         kos_window windows[KICKOS_MAX_THREAD_WINDOWS] = {};
         // A task create's, read the same way.

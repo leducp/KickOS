@@ -43,6 +43,16 @@ namespace kickos
     static_assert(sizeof(endpoint_reply_recv(0, 0, 0, 0)) == 4, "must be exactly 4 bytes");
     static_assert(sizeof(endpoint_call(0, 0, 0, 0, 0)) == 4, "must be exactly 4 bytes");
 
+    char user_text_byte(char b)
+    {
+        unsigned char const c = static_cast<unsigned char>(b);
+        if (c < 0x20u or c == 0x7Fu)
+        {
+            return '?';
+        }
+        return b;
+    }
+
     namespace
     {
 #if KICKOS_HAVE_ASPACE
@@ -124,9 +134,7 @@ namespace kickos
             return static_cast<int32_t>(done);
         }
 
-        // The caller's message, bounded to `cap` and NUL-terminated, with no control byte: it
-        // prints after a trusted prefix, and a newline would let the caller continue on fresh
-        // lines that read as kernel output.
+        // The caller's message, bounded to `cap` and NUL-terminated, with no control byte.
         void user_panic_text(char* buf, size_t cap, uintptr_t msg)
         {
             buf[0] = '\0';
@@ -152,11 +160,7 @@ namespace kickos
                 {
                     break;
                 }
-                unsigned char const c = static_cast<unsigned char>(buf[i]);
-                if (c < 0x20u or c == 0x7Fu)
-                {
-                    buf[i] = '?';
-                }
+                buf[i] = user_text_byte(buf[i]);
             }
             buf[i] = '\0';
             // <kickos/sys.h> promises a visible truncation. The probe byte is the first one

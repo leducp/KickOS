@@ -64,6 +64,13 @@ extern "C"
         __asm volatile("msr ttbr0_el1, %0" ::"r"(ttbr) : "memory");
     }
 
+    inline uint64_t kickos_armv8a_read_ttbr1_el1(void)
+    {
+        uint64_t ttbr = 0;
+        __asm volatile("mrs %0, ttbr1_el1" : "=r"(ttbr));
+        return ttbr;
+    }
+
     inline void kickos_armv8a_dsb_ishst(void)
     {
         __asm volatile("dsb ishst" ::: "memory");
@@ -108,6 +115,7 @@ extern "C"
     uint64_t kickos_armv8a_read_mmfr0_el1(void);
     uint64_t kickos_armv8a_read_ttbr0_el1(void);
     void kickos_armv8a_write_ttbr0_el1(uint64_t ttbr);
+    uint64_t kickos_armv8a_read_ttbr1_el1(void);
     void kickos_armv8a_dsb_ishst(void);
     void kickos_armv8a_dsb_ish(void);
     void kickos_armv8a_isb(void);

@@ -52,6 +52,7 @@ TEST(FaultLine, every_fixed_record_fits_the_bound)
     expect_fits(width(KDIAG_F_FAULT_PC, wild_ptr()));
     expect_fits(width(KDIAG_F_FAULT_PC_STAT, wild_ptr(), kStatus, ~0ull));
     expect_fits(width(KDIAG_F_FAULT_NO_PC, kStatus, ~0ull));
+    expect_fits(width(KDIAG_F_FAULT_PC_UNVERIFIED, wild_ptr(), kStatus, ~0ull));
     expect_fits(width(KDIAG_F_FAULT_ADDR, wild_ptr()));
 }
 

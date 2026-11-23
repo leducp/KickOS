@@ -45,6 +45,10 @@ namespace kickos
     bool user_writable_ok(uintptr_t ptr, size_t len);
     // The same, for thread `c` rather than the caller.
     bool thread_writable_ok(Thread const* c, uintptr_t ptr, size_t len);
+
+    // A caller's byte as a kernel record prints it: '?' for a control byte, which would let the
+    // caller start lines that read as kernel output.
+    char user_text_byte(char b);
 #if KICKOS_HAVE_ASPACE
     // The same, with `found` what c's range list answers for [ptr, ptr + len), null for none.
     bool thread_writable_found(Thread const* c, uintptr_t ptr, size_t len,

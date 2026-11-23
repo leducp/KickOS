@@ -3,9 +3,19 @@
 //
 // See aspace_sysops_seam.h.
 
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
 #include <kickos/arch/arch.h>
 
 #include "aspace_sysops_seam.h"
+
+extern "C"
+{
+    extern unsigned char __kickos_arm64_va_base[];
+    void kickos_armv8a_direct_map_record(void);
+}
 
 namespace
 {
@@ -17,10 +27,10 @@ namespace
     uint64_t g_user_ttbr0[KICKOS_NUM_CORES] = {};
     bool g_deferred = false;
 
-    // TCR_EL1 as startup.S programs it: T0SZ 25, so a 39-bit low half whose walk starts at
+    // TCR_EL1 as startup.S programs it: T0SZ and T1SZ 25, so 39-bit halves whose walks start at
     // level 1, IPS 0b010 for a 40-bit output, and AS for a 16-bit identifier.
     constexpr uint64_t TCR_AS = 1ull << 36;
-    constexpr uint64_t TCR_DEFAULT = 25ull | (2ull << 32) | TCR_AS;
+    constexpr uint64_t TCR_DEFAULT = 25ull | (25ull << 16) | (2ull << 32) | TCR_AS;
     // ID_AA64MMFR0_EL1 as the A53 reports it: PARange 0b0010 (40 bits), ASIDBits 0b0010 (16),
     // and 0 in each of the three granule fields, whose senses differ.
     constexpr uint64_t MMFR0_DEFAULT = 2ull | (2ull << 4);
@@ -28,12 +38,57 @@ namespace
     uint64_t g_tcr = TCR_DEFAULT;
     uint64_t g_mmfr0 = MMFR0_DEFAULT;
     uint32_t g_freed_at_sweep = 0;
-}
 
+    // TTBR1's tables take the RAM window's first frames, which the pool never hands out; the
+    // root is frame 0. The most the gates build: the root, one level-2 table for each of the five
+    // regions they map in, and five level-3 tables.
+    constexpr size_t TTBR1_TABLES = 11;
+    constexpr uint64_t TTBR1_ROOT = 0;
+    constexpr uint64_t DESC_VALID_TABLE = 3;
+    constexpr uint64_t DESC_AF = 1ull << 10;
+    constexpr uint64_t DESC_OA = 0x0000FFFFFFFFF000ull;
+    constexpr size_t PTES = kickos::testfix::SYSOPS_GRANULE / sizeof(uint64_t);
+    size_t g_ttbr1_tables = 1;
+
+    uint64_t* table_at(uint64_t pa)
+    {
+        return reinterpret_cast<uint64_t*>(&__kickos_arm64_va_base[pa]);
+    }
+
+    // The low 39 bits of where the direct map puts `pa`, which is what TTBR1's index path names.
+    uint64_t direct_va(uint64_t pa)
+    {
+        uint64_t const va = reinterpret_cast<uintptr_t>(__kickos_arm64_va_base) + pa;
+        return va & ((1ull << 39) - 1u);
+    }
+
+    // The table under `parent[index]`, made from the next reserved frame if absent.
+    uint64_t* ttbr1_child(uint64_t* parent, size_t index)
+    {
+        if ((parent[index] & DESC_VALID_TABLE) != DESC_VALID_TABLE)
+        {
+            if (g_ttbr1_tables == TTBR1_TABLES)
+            {
+                return nullptr;
+            }
+            uint64_t const pa = g_ttbr1_tables * kickos::testfix::SYSOPS_GRANULE;
+            g_ttbr1_tables++;
+            memset(table_at(pa), 0, kickos::testfix::SYSOPS_GRANULE);
+            parent[index] = pa | DESC_VALID_TABLE;
+        }
+        return table_at(parent[index] & DESC_OA);
+    }
+
+    size_t index_at(uint64_t va, int level)
+    {
+        return static_cast<size_t>((va >> (12u + 9u * static_cast<unsigned>(3 - level))) & (PTES - 1u));
+    }
+}
 extern "C"
 {
-    // The array models the physical RAM window; PA is its byte offset.
-    alignas(kickos::testfix::SYSOPS_GRANULE) unsigned char
+    // The array models the physical RAM window; PA is its byte offset. Aligned to a level-2
+    // block, so a block's direct-map address can be as aligned as its frame.
+    alignas(0x200000) unsigned char
         __kickos_arm64_va_base[kickos::testfix::SYSOPS_FRAMES * kickos::testfix::SYSOPS_GRANULE] =
             {};
 
@@ -71,6 +126,11 @@ extern "C"
     {
         g_ttbr0[cpu()] = ttbr;
         sysop_record(kickos::testfix::OP_WRITE_TTBR0, ttbr);
+    }
+
+    uint64_t kickos_armv8a_read_ttbr1_el1(void)
+    {
+        return TTBR1_ROOT;
     }
 
     void kickos_armv8a_dsb_ishst(void)
@@ -169,7 +229,7 @@ namespace kickos
 
         void sysops_reset()
         {
-            sysops_reset_common(1);
+            sysops_reset_common(TTBR1_TABLES);
             for (uint32_t c = 0; c < KICKOS_NUM_CORES; c++)
             {
                 g_ttbr0[c] = 0;
@@ -179,6 +239,65 @@ namespace kickos
             g_mmfr0 = MMFR0_DEFAULT;
             g_freed_at_sweep = 0;
             g_deferred = false;
+            ttbr1_reset();
+            bool mapped = ttbr1_map(0, 0, SYSOPS_FRAMES, 0);
+            for (TtbrRun const& r : TTBR1_GATE_RUNS)
+            {
+                mapped = mapped and ttbr1_map(r.pa, r.pa, r.pages, 0);
+            }
+            if (not mapped)
+            {
+                fprintf(stderr, "FIXTURE FAIL: the seam's TTBR1 table frames ran out\n");
+                exit(1);
+            }
+            ttbr1_record();
+        }
+
+        void ttbr1_reset()
+        {
+            g_ttbr1_tables = 1;
+            memset(table_at(TTBR1_ROOT), 0, SYSOPS_GRANULE);
+        }
+
+        bool ttbr1_map(arch_phys_addr_t at, arch_phys_addr_t pa, size_t pages, uint64_t attrs)
+        {
+            for (size_t i = 0; i < pages; i++)
+            {
+                uint64_t const va = direct_va(at + i * SYSOPS_GRANULE);
+                uint64_t* const l2 = ttbr1_child(table_at(TTBR1_ROOT), index_at(va, 1));
+                if (l2 == nullptr)
+                {
+                    return false;
+                }
+                uint64_t* const l3 = ttbr1_child(l2, index_at(va, 2));
+                if (l3 == nullptr)
+                {
+                    return false;
+                }
+                l3[index_at(va, 3)] = (pa + i * SYSOPS_GRANULE) | DESC_VALID_TABLE | DESC_AF | attrs;
+            }
+            return true;
+        }
+
+        bool ttbr1_block(arch_phys_addr_t pa, int level, uint64_t attrs)
+        {
+            uint64_t const va = direct_va(pa);
+            uint64_t* table = table_at(TTBR1_ROOT);
+            if (level == 2)
+            {
+                table = ttbr1_child(table, index_at(va, 1));
+                if (table == nullptr)
+                {
+                    return false;
+                }
+            }
+            table[index_at(va, level)] = pa | 1u | DESC_AF | attrs;
+            return true;
+        }
+
+        void ttbr1_record()
+        {
+            kickos_armv8a_direct_map_record();
         }
 
         uint32_t frames_freed_at_sweep()

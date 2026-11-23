@@ -259,6 +259,23 @@ TEST_F(MapShoot, TheTablesAnUnmapEmptiesGoBackOnlyAfterEveryCoreReloads)
 
 // The boot space, a null space and the refusals this backend makes beside the shared contract.
 
+// An iretq to a user RIP at the canonical edge faults in ring 0 on the user GS base, so the
+// page below the edge is never user; the windows' area stays where it was.
+TEST_F(MapShoot, ThePageBelowTheCanonicalEdgeIsNotUser)
+{
+    uintptr_t const edge = static_cast<uintptr_t>(1) << 47;
+    uintptr_t const page = 0x1000u;
+    EXPECT_NE(arch_aspace_map(space, edge - page, PA_A, 1, RIGHTS_DATA, ARCH_MAP_NORMAL),
+              ARCH_ASPACE_OK);
+    EXPECT_EQ(arch_aspace_map(space, edge - 2u * page, PA_A, 1, RIGHTS_DATA, ARCH_MAP_NORMAL),
+              ARCH_ASPACE_OK);
+    uintptr_t base = 0;
+    size_t size = 0;
+    arch_aspace_window_area(&base, &size);
+    EXPECT_EQ(base, arch_aspace_user_offset() + (edge - arch_aspace_user_offset()) / 2u);
+    EXPECT_EQ(base % size, 0u);
+}
+
 TEST_F(MapShoot, TheBootSpaceRefusesAnUnmapAndItsDestroyFreesNothing)
 {
     uint32_t const allocated = frames_allocated();

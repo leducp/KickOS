@@ -756,6 +756,11 @@ namespace kickos::x86_64
         {
             refuse("the adopted root leaves no top-level slot for a space to map");
         }
+        // An iretq to a user RIP at the canonical edge faults in ring 0 on the user GS base.
+        if (g_user_hi == static_cast<uintptr_t>(low_slots) * span_at(top))
+        {
+            g_user_hi = g_user_hi - GRANULE;
+        }
         // A task reaches every frame of the arena at the physical address plus the first user
         // slot's base (arch_aspace_user_offset), so it has to land in slots the firmware left
         // absent.
@@ -1008,8 +1013,9 @@ uintptr_t arch_aspace_user_offset(void)
 // and 1 GiB of it is theirs.
 void arch_aspace_window_area(uintptr_t* base, size_t* size)
 {
-    *base = g_user_lo + (g_user_hi - g_user_lo) / 2u;
     *size = static_cast<size_t>(1) << 30;
+    uintptr_t const mid = g_user_lo + (g_user_hi - g_user_lo) / 2u;
+    *base = (mid + *size - 1u) & ~static_cast<uintptr_t>(*size - 1u);
 }
 
 struct arch_aspace* arch_aspace_boot(void)

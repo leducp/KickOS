@@ -291,6 +291,11 @@ namespace kickos
         return 0;
     }
 
+    bool cap_slot_vacant(Thread const*, int)
+    {
+        return true;
+    }
+
     CapEntry* cap_install_at(Thread*, int, int obj, CapType, uint8_t rights, uint32_t)
     {
         g_installed_handle = obj;

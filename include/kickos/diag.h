@@ -64,6 +64,14 @@ namespace kickos
         inline constexpr char const kMmuNoGranule[] = "armv8a: the MMU offers no 4 KiB granule";
         inline constexpr char const kMmuPaNarrow[] =
             "armv8a: the MMU's physical range is narrower than TCR_EL1.IPS";
+        inline constexpr char const kSerrorKernel[] =
+            "armv8a: an SError the kernel's own access raised is pending at a return to EL0";
+        inline constexpr char const kMmuDirectSpans[] =
+            "armv8a: TTBR1 maps more memory spans than the direct map records";
+        inline constexpr char const kMmuDirectNone[] =
+            "armv8a: TTBR1 maps no memory at its direct-map address";
+        inline constexpr char const kMmuTtbr1Width[] =
+            "armv8a: TCR_EL1.T1SZ names a kernel half whose walk does not start at level 1";
         inline constexpr char const kUguardMixed[] =
             "armv8a: a core disagrees with the boot core on PAN";
         inline constexpr char const kUguardNotTaken[] =
@@ -134,6 +142,7 @@ namespace kickos
 #define KDIAG_F_FAULT_PC      "  PC=%p\n"
 #define KDIAG_F_FAULT_PC_STAT "  PC=%p %s=0x%llx\n"
 #define KDIAG_F_FAULT_NO_PC   "  PC unknown %s=0x%llx\n"
+#define KDIAG_F_FAULT_PC_UNVERIFIED "  PC=%p unverified %s=0x%llx\n"
 #define KDIAG_F_FAULT_ADDR    "  ADDR=%p\n"
 // A kos_panic that ends only its caller's task (kernel/syscall/syscall.cc), on the same record
 // path and bound. Not a fault banner: the system runs on.

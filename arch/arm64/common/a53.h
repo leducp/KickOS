@@ -37,6 +37,10 @@ extern "C"
     // Panics where this core's MMU cannot run the port's translation regime.
     void kickos_armv8a_mmu_check(void);
 
+    // Records the frames the kernel half's direct map reaches, from TTBR1's tables, which
+    // nothing edits after boot. The boot core, before any peer is released.
+    void kickos_armv8a_direct_map_record(void);
+
     // Keeps this core's EL1 out of user pages, in the form the boot core chose; panics on a
     // core that cannot take it.
     void kickos_armv8a_uguard_init(void);

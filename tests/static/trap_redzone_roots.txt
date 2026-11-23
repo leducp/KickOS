@@ -467,9 +467,9 @@ init    armv6m __init_array_start __init_array_end reason: Reset_Handler@1/1 is 
 arch    lx6 header=arch/xtensa/lx6/include/kickos/arch/lx6_trap_stack.h
 
 # --- armv8a --------------------------------------------------------------------
-# ELEVEN classes. switch.S takes four entries: the EL1h IRQ slot, which builds its frame on the
-# stack it interrupts, idle's or a death-path stub's block; the EL0 IRQ and synchronous slots,
-# which build theirs on the thread's KERNEL BLOCK, SP_EL1 already naming its top; and the EL1h
+# ELEVEN classes. switch.S takes five entries: the EL1h IRQ slot, which builds its frame on the
+# stack it interrupts, idle's or a death-path stub's block; the EL0 IRQ, synchronous and SError
+# slots, which build theirs on the thread's KERNEL BLOCK, SP_EL1 already naming its top; and the EL1h
 # synchronous slot, whose reporter runs on the stack that faulted, idle's. IRQ, FAULT and IDLE
 # are therefore stack=idle. Every other slot reports
 # after seating SP_EL1 from the kernel's own record, or is unreachable by construction, SPSel
@@ -498,6 +498,8 @@ root    armv8a IRQK    ?kickos_switch_unlock
 root    armv8a SYSK    syscall_dispatch
 root    armv8a SYSK    kickos_fault_kill_thread
 root    armv8a SYSK    kickos_armv8a_exception
+# An SError pending at a return to EL0, on the thread's block once its frame is popped.
+root    armv8a SYSK    kickos_armv8a_kernel_serror
 root    armv8a SYSWIN  syscall_dispatch
 root    armv8a EXITK   kickos_thread_fault_exit
 root    armv8a EXITK   kickos_thread_slay_exit

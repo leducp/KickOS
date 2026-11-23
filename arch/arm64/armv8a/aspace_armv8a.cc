@@ -483,6 +483,70 @@ namespace
         return static_cast<uint64_t>(end) <= (static_cast<uint64_t>(1) << bits);
     }
 
+    // The physical spans TTBR1 maps as memory at PA + va_base: the only frames the direct map
+    // reaches, and for a write only the writable ones.
+    constexpr size_t DIRECT_SPANS = 8;
+    struct DirectSpan
+    {
+        arch_phys_addr_t lo;
+        arch_phys_addr_t hi;
+        bool writable;
+    };
+    DirectSpan g_direct[DIRECT_SPANS] = {};
+    size_t g_direct_count = 0;
+
+    // APTable[1]: nothing below this table descriptor is writable.
+    constexpr uint64_t DESC_APTABLE_RO = 1ull << 62;
+
+    // The width of TTBR1's region, which is the top 2^bits of the address space: a descriptor's
+    // VA is its index path within it.
+    unsigned ttbr1_va_bits()
+    {
+        uint64_t const tcr = kickos_armv8a_read_tcr_el1();
+        return 64u - static_cast<unsigned>((tcr >> 16) & 0x3Fu);
+    }
+
+    void direct_note(uint64_t desc, int level, uintptr_t va, bool table_ro)
+    {
+        if (((desc >> 2) & 7u) == ATTR_DEVICE)
+        {
+            return;
+        }
+        unsigned const shift = GRANULE_SHIFT + INDEX_BITS * static_cast<unsigned>(LEVEL_LEAF - level);
+        arch_phys_addr_t const size = static_cast<arch_phys_addr_t>(1) << shift;
+        arch_phys_addr_t const lo = entry_pa(desc) & ~(size - 1u);
+        uintptr_t const region = (static_cast<uintptr_t>(1) << ttbr1_va_bits()) - 1u;
+        if (((static_cast<uintptr_t>(lo) + va_base()) & region) != va)
+        {
+            return;
+        }
+        bool const writable = not table_ro and (desc & DESC_AP_RO) == 0;
+        if (g_direct_count != 0 and g_direct[g_direct_count - 1].hi == lo
+            and g_direct[g_direct_count - 1].writable == writable)
+        {
+            g_direct[g_direct_count - 1].hi = lo + size;
+            return;
+        }
+        if (g_direct_count == DIRECT_SPANS)
+        {
+            kickos::kpanic(kickos::diag::kMmuDirectSpans);
+        }
+        g_direct[g_direct_count] = {lo, lo + size, writable};
+        g_direct_count++;
+    }
+
+    bool direct_reaches(arch_phys_addr_t page, bool write)
+    {
+        for (size_t i = 0; i < g_direct_count; i++)
+        {
+            if (page >= g_direct[i].lo and page < g_direct[i].hi)
+            {
+                return g_direct[i].writable or not write;
+            }
+        }
+        return false;
+    }
+
     bool range_ok(uintptr_t va, size_t pages)
     {
         uintptr_t last = 0;
@@ -500,6 +564,62 @@ extern "C"
 size_t arch_aspace_granule(void)
 {
     return GRANULE;
+}
+
+void kickos_armv8a_direct_map_record(void)
+{
+    // A 4 KiB-granule walk starts at level 1 for a region of 31 to 39 bits.
+    unsigned const bits = ttbr1_va_bits();
+    if (bits < GRANULE_SHIFT + INDEX_BITS * 2u + 1u or bits > GRANULE_SHIFT + INDEX_BITS * 3u)
+    {
+        kickos::kpanic(kickos::diag::kMmuTtbr1Width);
+    }
+    g_direct_count = 0;
+    uint64_t const* const l1 = table_at(entry_pa(kickos_armv8a_read_ttbr1_el1()));
+    for (size_t i = 0; i < PTES; i++)
+    {
+        uint64_t const d1 = l1[i];
+        uintptr_t const va1 = static_cast<uintptr_t>(i) << (GRANULE_SHIFT + 2 * INDEX_BITS);
+        if ((d1 & DESC_VALID) == 0)
+        {
+            continue;
+        }
+        if (not entry_table(d1, LEVEL_ROOT))
+        {
+            direct_note(d1, LEVEL_ROOT, va1, false);
+            continue;
+        }
+        bool const ro1 = (d1 & DESC_APTABLE_RO) != 0;
+        uint64_t const* const l2 = table_at(entry_pa(d1));
+        for (size_t j = 0; j < PTES; j++)
+        {
+            uint64_t const d2 = l2[j];
+            uintptr_t const va2 = va1 | (static_cast<uintptr_t>(j) << (GRANULE_SHIFT + INDEX_BITS));
+            if ((d2 & DESC_VALID) == 0)
+            {
+                continue;
+            }
+            if (not entry_table(d2, LEVEL_ROOT + 1))
+            {
+                direct_note(d2, LEVEL_ROOT + 1, va2, ro1);
+                continue;
+            }
+            bool const ro2 = ro1 or (d2 & DESC_APTABLE_RO) != 0;
+            uint64_t const* const l3 = table_at(entry_pa(d2));
+            for (size_t k = 0; k < PTES; k++)
+            {
+                if (entry_table(l3[k], LEVEL_LEAF))
+                {
+                    direct_note(l3[k], LEVEL_LEAF, va2 | (static_cast<uintptr_t>(k) << GRANULE_SHIFT),
+                                ro2);
+                }
+            }
+        }
+    }
+    if (g_direct_count == 0)
+    {
+        kickos::kpanic(kickos::diag::kMmuDirectNone);
+    }
 }
 
 void kickos_armv8a_mmu_check(void)
@@ -710,7 +830,8 @@ void* arch_aspace_acquire(struct arch_aspace* space, uintptr_t va,
         *frame = out;
     }
     uint64_t const attr = (desc >> 2) & 7u;
-    if (attr == ATTR_DEVICE or (access == ARCH_ASPACE_WRITE and (desc & DESC_AP_RO) != 0))
+    if (attr == ATTR_DEVICE or (access == ARCH_ASPACE_WRITE and (desc & DESC_AP_RO) != 0)
+        or not direct_reaches(out, access == ARCH_ASPACE_WRITE))
     {
         return nullptr;
     }
