@@ -15,14 +15,17 @@ family: none
 exits_on_fault: false
 interrupts: { count: { value: 86, ref: "Table 37 Vector table, p.205" } }
 
-# The peripheral buses, each from its first device to its last.
 apertures:
-  - { window: [0x40000000, 0x7400], ref: "Table 1 APB1, p.39" }
-  - { window: [0x40010000, 0x5400], ref: "Table 1 APB2, p.39" }
-  - { window: [0x40020000, 0x6800], ref: "Table 1 AHB1, p.38" }
-  - { window: [0x50000000, 0x40000], ref: "Table 1 AHB2, p.38" }
+  - { window: [0x40000000, 0x6000], ref: "Table 1, APB1 TIM2 to I2C3, p.39" }
+  - { window: [0x40010000, 0x3800], ref: "Table 1, APB2 TIM1 to SPI4, p.39" }
+  - { window: [0x40014000, 0x1400], ref: "Table 1, APB2 TIM9 to SPI5, p.39" }
+  - { window: [0x40023000, 0x400], ref: "Table 1, AHB1 CRC, p.38" }
+  - { window: [0x40026000, 0x800], ref: "Table 1, AHB1 DMA1 and DMA2, p.38" }
+  - { window: [0x50000000, 0x40000], ref: "Table 1, AHB2 USB OTG FS, p.38" }
 
 devices:
+  wwdg: { window: [0x40002C00, 0x400], ref: "Table 1, p.39" }
+  iwdg: { window: [0x40003000, 0x400], ref: "Table 1, p.39" }
   # Windows are the minimal PMSAv7 cover of the registers a driver uses, not the device's
   # whole 1 KiB bus slot.
   usart2:

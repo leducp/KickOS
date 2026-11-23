@@ -146,7 +146,7 @@ class Generated(unittest.TestCase):
             "\nset(KICKOS_CHIP_REGION_UNIT \"pmsav7\")\nset(KICKOS_CHIP_TRANSLATES OFF)\n"))
         self.assertIn("\nset(KICKOS_CHIP_PRIVILEGE ON)\n", outputs["chip.cmake"])
         self.assertIn("\nset(KICKOS_CHIP_KERNEL_LINES \"TIMER_TICK=7\")\n", outputs["chip.cmake"])
-        self.assertIn("\nset(KICKOS_CHIP_RESERVED_BLOCKS 2)\nset(KICKOS_CHIP_RESERVED_BLOCK0 0x50000000 0x4000)\n",
+        self.assertIn("\nset(KICKOS_CHIP_PRIVILEGE ON)\nset(KICKOS_CHIP_RESERVED_IN_APERTURE0 0x50000000 0x4000)\n",
                       outputs["chip.cmake"])
         self.assertNotIn("KICKOS_CHIP_ESPTOOL_IMAGE", outputs["chip.cmake"])
         self.assertNotIn("KICKOS_QEMU_", outputs["chip.cmake"])
@@ -244,17 +244,24 @@ class Generated(unittest.TestCase):
             else:
                 self.assertNotIn("KICKOS_CHIP_CPU", text, name)
 
-    def test_tree_reserved_blocks(self):
-        for name, count, first in (("sim", 0, None), ("mps2", 1, "0x40002000 0x1000"),
-                                   ("xmc4800", 3, "0x4000C000 0x4000"),
-                                   ("esp32c6", 17, "0x60091040 0xFC0"), ("rx72m", 8, "0x8C100 0x100")):
+    def test_tree_reserved_block_in_an_aperture(self):
+        # The selftest's grant_reserved spawn names this block; a chip of None runs it partial.
+        first = {
+            "an505": "0x50002000 0x1000", "esp32": None, "esp32c6": "0x60006000 0x1000", "imx8mp": None,
+            "imxrt1062": "0x401EC000 0x4000", "mk64f": "0x40037000 0x120", "mps2": "0x40002000 0x1000",
+            "nrf51": None, "q35": None, "rp2040": "0x40054000 0x4000", "rp2350": "0x400B0000 0x4000",
+            "rx72m": "0x94200 0x100", "sam3x8e": "0x40080000 0x4000", "sim": None,
+            "stm32f411": "0x40000000 0x400", "virt_arm64": None, "virt_rv32": None, "virt_rv64": None,
+            "xmc4800": "0x4000C000 0x4000",
+        }
+        self.assertEqual(sorted(first), sorted(ARCHES))
+        for name, block in first.items():
             path = os.path.join(TREE, "platform", name, "chip.yaml")
             text = chip.generate(self.view(path, ARCHES[name]))["chip.cmake"]
-            self.assertIn("\nset(KICKOS_CHIP_RESERVED_BLOCKS %d)\n" % count, text, name)
-            if first is None:
-                self.assertNotIn("KICKOS_CHIP_RESERVED_BLOCK0", text, name)
+            if block is None:
+                self.assertNotIn("KICKOS_CHIP_RESERVED_IN_APERTURE0", text, name)
             else:
-                self.assertIn("\nset(KICKOS_CHIP_RESERVED_BLOCK0 %s)\n" % first, text, name)
+                self.assertIn("\nset(KICKOS_CHIP_RESERVED_IN_APERTURE0 %s)\n" % block, text, name)
 
     def test_tree_kernel_lines(self):
         for name, lines, doorbell in (
@@ -392,7 +399,9 @@ class Generated(unittest.TestCase):
         self.assertIn((0x402E0000, 0x200), [(b, s) for b, s, r in rows["bus_master_apertures"]])
         self.assertIn((0x400E8000, 0x4000), [(b, s) for b, s, r in rows["bus_master_apertures"]])
         self.assertEqual([(b, s) for b, s, r in rows["window_apertures"]],
-                         [(0x40000000, 0x400000), (0x42000000, 0x100000)])
+                         [(0x40084000, 0x14000), (0x400B4000, 0x20000), (0x400E0000, 0x4000), (0x400E8000, 0x8000),
+                          (0x40184000, 0x70000), (0x401FC000, 0x4000), (0x402B4000, 0x30000), (0x402FC000, 0x4000),
+                          (0x40380000, 0x6C000), (0x403F0000, 0x10000), (0x42000000, 0x24000)])
 
     def test_each_bus_master_the_manual_lists_is_marked(self):
         masters = {

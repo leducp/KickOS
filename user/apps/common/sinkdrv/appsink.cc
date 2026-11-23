@@ -8,6 +8,7 @@
 #include <kickos/board_config.h> // KICKOS_USER_STACK_SIZE, which the stack bound reads
 #include <kickos/driver/declared/appsink.h>
 #include <kickos/sys/driver_service.h>
+#include <kickos/sys/rights.h>
 #include <kickos/sys/uart.h>
 
 #include <stdint.h>
@@ -33,6 +34,7 @@ namespace
         {
             // Seated: a zeroed one is stdout's reserved index rather than the empty capability.
             opts.info.reply_cap = KOS_CAP_NONE;
+            opts.info.badge = KOS_BADGE_NONE;
             int32_t const n = kos_reply_recv(reply_cap, msg.bytes,
                                              kos_call_lens_pack(reply_len, sizeof(msg)), &opts);
             reply_cap = KOS_CAP_NONE;
@@ -44,16 +46,25 @@ namespace
             if (opts.info.reply_cap != KOS_CAP_NONE)
             {
                 reply_cap = opts.info.reply_cap;
-                if (n == 1 and msg.bytes[0] == 'Q')
+                // The count answers the endpoint's creator alone, whose copy is unbadged.
+                if (n == 1 and msg.bytes[0] == 'Q' and opts.info.badge == KOS_BADGE_NONE)
                 {
                     msg.count = total;
                     reply_len = sizeof(msg.count);
                     continue;
                 }
                 msg.rsp.status = 0;
+                if (not kos_badge_grants(opts.info.badge, KOS_RIGHT_WRITE))
+                {
+                    msg.rsp.status = -KOS_EACCES;
+                }
                 msg.rsp.len = 0;
                 msg.rsp.rsv = 0;
                 reply_len = sizeof(msg.rsp);
+                continue;
+            }
+            if (not kos_badge_grants(opts.info.badge, KOS_RIGHT_WRITE))
+            {
                 continue;
             }
             total = total + n;

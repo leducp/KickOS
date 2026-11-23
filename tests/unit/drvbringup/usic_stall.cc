@@ -46,6 +46,8 @@ namespace
     uint32_t g_word_us = 0;
     uint32_t g_silent_from = NEVER;
     bool g_lands_late = false;
+    // A notify bit the line raised after its wait expired, which the next wait takes at once.
+    bool g_banked = false;
 
     uint32_t g_words = 0;
     uint32_t g_polls = 0;
@@ -67,6 +69,7 @@ namespace
             g_word_us = 0;
             g_silent_from = NEVER;
             g_lands_late = false;
+            g_banked = false;
             g_words = 0;
             g_polls = 0;
             g_ccr_at_poll = 0;
@@ -122,6 +125,11 @@ extern "C"
         word(ru::off::PSR) &= ~(pscr & RX_FLAGS);
         word(ru::off::PSCR) = 0u;
 
+        if (g_banked)
+        {
+            g_banked = false;
+            return 0;
+        }
         if (until.ns <= NOW_NS)
         {
             g_polls++;
@@ -150,6 +158,7 @@ extern "C"
         word(ru::off::PSR) |= ru::PSR_AIF;
         if (g_lands_late)
         {
+            g_banked = true;
             return -KOS_ETIMEDOUT;
         }
         return 0;
@@ -210,7 +219,8 @@ TEST_F(UsicStall, a_word_whose_event_races_the_expiry_is_still_progress)
     EXPECT_EQ(transfer(&dev_, buf, sizeof(buf)), 2);
     EXPECT_EQ(word(ru::off::CCR), CCR_RUNNING);
     EXPECT_EQ(buf[0], 0xA1u);
-    EXPECT_EQ(buf[1], 0xB2u);
+    EXPECT_EQ(buf[1], 0xB2u) << "the second word is read after its own event, not the first's late bit";
+    EXPECT_FALSE(g_banked) << "no late bit is left for the next transfer";
 }
 
 TEST_F(UsicStall, a_word_at_the_slowest_clock_and_the_longest_delays_still_completes)

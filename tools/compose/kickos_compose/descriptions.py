@@ -732,11 +732,14 @@ def check_interrupts(f, node, chip):
             f.refuse(values[field], "chip.line-range",
                      "`interrupts` %s %d is past the %d lines `count` gives" % (field, value, count))
     for device in chip.devices.values():
+        last = 0
+        if device.count is not None:
+            last = device.count - 1
         for line, number in device.sources.items():
-            if number >= count:
+            if number + last >= count:
                 f.refuse(device.lines[line], "chip.line-range",
                          "line `/dev/%s/%s` %d is past the %d lines `interrupts` count gives"
-                         % (device.name, line, number, count))
+                         % (device.name, line, number + last, count))
 
 
 def check_protection(f, node, what, chip, view):
@@ -1214,7 +1217,7 @@ def check_memory(f, top, root, chip, translates, windows):
                 f.refuse(values["link"], "form.inapplicable",
                          "%s has no `base`, the host placing it, so the link has no region to place there" % what)
             if "bank_line" in values:
-                check_bank_line(f, values, what, None, True, chip.arch)
+                check_bank_line(f, values, what, None, True, chip)
             if size is not None:
                 entry = Memory(name, size, {PART: None}, check_named(f, values, what))
                 entry.node = key
@@ -1262,7 +1265,7 @@ def check_memory(f, top, root, chip, translates, windows):
             arena = f.boolean(values["arena"], "%s arena" % what)
         line = None
         if "bank_line" in values and entry is not None:
-            line = check_bank_line(f, values, what, entry, arena, chip.arch)
+            line = check_bank_line(f, values, what, entry, arena, chip)
         if chip.arch in M_PROFILE and entry is not None:
             check_map_boundary(f, key, what, entry, line)
             if arena and entry.link is not None and entry.link[0] != "RAM":
@@ -1314,7 +1317,7 @@ def check_map_boundary(f, node, what, entry, bank_line):
             return
 
 
-def check_bank_line(f, values, what, entry, arena, arch):
+def check_bank_line(f, values, what, entry, arena, chip):
     """The bank line of the arena entry `entry`, or None where refused. It lies inside every base's
     span, on a multiple of the entry's size rounded up to a power of two, which every block the
     arena hands out is aligned to, so no free range the allocator keeps runs across it."""
@@ -1326,8 +1329,13 @@ def check_bank_line(f, values, what, entry, arena, arch):
         reason = "and the host places it, so no address of it is known"
     elif not arena:
         reason = "and it is not the arena, which alone keeps its blocks off a bank line"
-    elif arch not in M_PROFILE:
-        reason = "and only the M-profile link keeps the kernel's statics, the image windows and the main stack off one"
+    elif any(chip.cluster_arch.get(view, chip.arch) not in M_PROFILE for view in entry.bases):
+        others = sorted({str(chip.cluster_arch.get(view, chip.arch)) for view in entry.bases
+                         if chip.cluster_arch.get(view, chip.arch) not in M_PROFILE})
+        reason = ("and %s reaches it, where only the M-profile link keeps the kernel's statics, the image "
+                  "windows and the main stack off one" % ", ".join("`%s`" % arch for arch in others))
+    elif chip.clusters and not chip.cluster_arch:
+        reason = "and the part's clusters share its `arch`, so no build looks a bank line up"
     elif any(not base < line < base + entry.size for base in entry.bases.values()):
         reason = "which does not lie inside it"
     elif line % (1 << (entry.size - 1).bit_length()):

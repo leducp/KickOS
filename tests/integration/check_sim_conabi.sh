@@ -40,11 +40,14 @@ has '\[simcon\] driver up (host fd 1)' \
 
 # The stream verdict is check_tap_stream.sh's, so plan against case count, the completion
 # marker and the skip/partial permission sets stay in one place.
-printf '%s\n' "$OUT" | "$(dirname "$0")/check_tap_stream.sh" sim_console_abi 9
+printf '%s\n' "$OUT" | "$(dirname "$0")/check_tap_stream.sh" sim_console_abi 11
 
 # The framed WRITE's payload reaches the wire as BYTES. Every line above is a verdict the
 # app reached; this one is the route carrying data.
 has '^\[conabi\] framed payload on the wire' \
   || fail "the framed write was acknowledged but its payload never reached the wire"
+if has '\[conabi\] a send without write'; then
+  fail "bytes sent through a use holding no write reached the wire"
+fi
 
 echo "PASS: a published console driver answers every framed op on its endpoint, and a request frame is never written to the wire as text"

@@ -204,7 +204,10 @@ device paths, each a register window or a port range, so one task can hold a DMA
 its peripheral; `lines`, a mapping from the names the task looks up to line paths; `serves`, an
 endpoint path or a crossing `/amp/<port>` the partition names this node's; `uses`, endpoint paths
 or crossings, a use of a bus service written `{ path: <path>, slots: [<slot>...] }` with the
-device slots it reaches; `maps`, shared region paths each `ro` or `rw`;
+device slots it reaches, and a use of a service whose driver declares rights written
+`{ path: <path>, rights: [<right>...] }` with the rights of `<kickos/sys/rights.h>` it holds over
+the service, which it must name, both minted into its badge; `maps`, shared region paths each `ro`
+or `rw`;
 `watches`, task names; `authority`, the kernel authorities it holds; `accepts`, the grant-level
 limitations it runs with; `restart: { max: N }`; and `start`, `init` (the default: the init starts
 it) or `on_request`: a creator holding `AUTH_TASKS` starts it with `kos_task_create`, and it holds
@@ -411,7 +414,12 @@ The descriptions' own rules are `chip.*` and `board.*`, a name that resolves to 
 things is `name.*`, a packaged driver's roles and authority are `driver.*`, a port range among
 them included, since a driver's descriptor takes every window role as a device window
 (`driver.port-window`), and a driver task on a chip that holds one task (`driver.one-task`), and a
-manifest's own are `manifest.*`.
+use naming a right its server's driver does not declare (`driver.right`) or naming none of a driver
+that declares some (`driver.rights-missing`), and a manifest's own are
+`manifest.*`, a driver declaring a right `<kickos/sys/rights.h>` does not list among them
+(`manifest.right`) and a console driver declaring no `write`, the right every stdout seat carries
+(`manifest.console`, which also holds a console driver to the `handover` posture and a USB device
+console to `console`).
 
 ## The emitted table
 
@@ -460,7 +468,7 @@ grant     kind u8 (endpoint_serve, endpoint_use, notification, window, ports, re
           base u64 (a window's PHYSICAL base, or a port range's first port),
           size u32 (bytes, or ports), line_index u16, line u16 (the source number the kernel
           takes), priv_first u16, priv_count u16 -> priv[]: the privileged registers inside it,
-          badge u32 (an endpoint use's badge, a bus client's slot mask, which the init mints the
+          badge u32 (an endpoint use's badge, its slot mask and its rights, which the init mints the
           delegated copy with; 0 for none)
 
 ref       task u16
@@ -494,7 +502,8 @@ refused.
 
 A task's grants are contiguous and in declaration order: the order its entry writes its fields
 in, and each field's items in theirs. `serves` is an endpoint served, each of `uses` an endpoint
-used whose target is the serving task and whose badge is the slot mask its `slots` name, `watches` one notification named `/init/events` and the
+used whose target is the serving task and whose badge is the slot mask its `slots` name and the
+rights it holds, `watches` one notification named `/init/events` and the
 read-only status window `/init/status`, the watcher's own status block, a crossing served or used a
 `port` grant whose flags are the right the init delegates from the port the kernel seated in root,
 `KOS_CAP_WAIT` to its server and `KOS_CAP_SIGNAL` to a user, its base the port and its target the

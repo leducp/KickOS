@@ -13,6 +13,7 @@
 #include <kickos/task.h>
 
 #include <kickos/sys/errno.h>
+#include <kickos/sys/rights.h>
 
 #include "kseam_test.h"
 
@@ -143,6 +144,8 @@ namespace kickos
             EXPECT_EQ(cap_console_endpoint(), p.ep) << "the endpoint is the console";
             EXPECT_EQ(cap_slot(p.publisher->caps, 0)->type, static_cast<uint8_t>(CapType::CAP_ENDPOINT))
                 << "and the publisher's stdout names it";
+            EXPECT_EQ(cap_badge(*cap_slot(p.publisher->caps, 0)), static_cast<uint32_t>(KOS_RIGHT_WRITE))
+                << "a stdout seat carries `write` and no other right";
         }
 
         TEST_F(ConsolePublish, a_receiving_publisher_is_not_counted_twice)

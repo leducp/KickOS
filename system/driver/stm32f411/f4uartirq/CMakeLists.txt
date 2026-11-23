@@ -22,5 +22,6 @@ kickos_add_driver(f4uartirq SOURCES f4uartirq.cc ../uart_stm32f4.cc
                   BASE mmap::USART2_BASE WINDOWS regs LINES global:level
                   BLOCK ${KICKOS_UART_BLOCK_SIZE} INIT block_init BARRIER 1 READY uart::KOS_UART_READY_OFFSET
                   POSTURE handover CONSOLE START f4uartirq_console_start
+                  RIGHTS write read control
                   THREAD uartirq PRIORITY 1 ENTRY irq_entry ARG block WINDOW regs CAPS notify:wait global:wait
                   THREAD service ENTRY uart::console_thread ARG block CAPS ep:wait notify:signal:doorbell)

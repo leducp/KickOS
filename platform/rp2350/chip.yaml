@@ -57,8 +57,11 @@ partition_gate:
     xip_aux: 0xE8
 
 apertures:
-  - { window: [0x40000000, 0x168000], ref: "Table 13 Address map, SYSINFO_BASE to TBMAN_BASE, pp.31-33" }
-  - { window: [0x50000000, 0x800000], ref: "Table 14 Address map, DMA_BASE to CORESIGHT_TRACE_BASE, p.33" }
+  - { window: [0x40070000, 0x58000], ref: "Table 13 Address map, UART0_BASE to HSTX_CTRL_BASE, p.32" }
+  - { window: [0x400D8000, 0x8000], ref: "Table 13 Address map, WATCHDOG_BASE, p.32" }
+  - { window: [0x400F0000, 0x10000], ref: "Table 13 Address map, TRNG_BASE to SHA256_BASE, p.32" }
+  - { window: [0x50000000, 0x500000], ref: "Table 14 Address map, DMA_BASE to PIO2_BASE, p.33" }
+  - { window: [0x50600000, 0x100000], ref: "Table 14 Address map, HSTX_FIFO_BASE, p.33" }
 
 devices:
   # An APB window is a device's registers and the XOR, SET and CLR aliases above them.
@@ -97,7 +100,7 @@ devices:
   timer0: { window: [0x400B0000, 0x4000], owner: kernel, ref: "Table 13 Address map, p.32" }
   ticks: { window: [0x40108000, 0x4000], owner: kernel, ref: "Table 13 Address map, p.32" }
   accessctrl: { window: [0x40060000, 0x4000], owner: kernel, ref: "Table 13 Address map, p.32" }
-  watchdog: { window: [0x400D8000, 0x4000], owner: kernel, ref: "Table 13 Address map, p.32" }
+  watchdog: { window: [0x400D8000, 0x4000], ref: "Table 13 Address map, p.32" }
   # The cache and the QSPI interface every task's code is fetched through: XIP_CTRL powers down
   # and pins the cache, XIP_QMI translates the XIP window and sends raw commands to the flash.
   xip_ctrl: { window: [0x400C8000, 0x4000], owner: kernel, ref: "Table 13 Address map, p.32" }

@@ -15,6 +15,7 @@
 
 #include <kickos/driver/spi.h>
 #include <kickos/sys/bus.h>   // kos_bus_req/seg/rsp/cfg wire ABI
+#include <kickos/sys/bus_rights.h>
 #include <kickos/sys/bytes.h> // mem_copy
 #include <kickos/sys/driver_service.h>
 #include <kickos/sys/serve.h>
@@ -62,7 +63,7 @@ inline bool slot_granted(uint32_t badge, uint8_t device)
 {
     return ((badge >> device) & 1u) != 0u;
 }
-static_assert(KOS_BUS_DEV_MAX <= 32, "a client's slot mask is its 32-bit badge");
+static_assert(KOS_BUS_DEV_MAX <= KOS_BADGE_SLOT_BITS, "a client's slot mask is its badge's low bits");
 
 // One device handle per kos_bus_req.device. A slot with no CONFIG yet holds no handle, and a
 // transfer naming it is refused rather than run against a zeroed profile.
@@ -116,6 +117,10 @@ inline size_t serve_one(struct kos_spi_bus* bus, SlotTable& slots, uint32_t badg
     if (not slot_granted(badge, req.device))
     {
         return reply_error(buf, -KOS_EACCES); // another client's slot, or none of this one's
+    }
+    if (not kos_badge_grants(badge, bus::request_rights(req, nullptr, 0u)))
+    {
+        return reply_error(buf, -KOS_EACCES);
     }
 
     if (req.op == KOS_BUS_OP_CONFIG)

@@ -133,6 +133,10 @@ int main(int, char**)
         kos_sleep_for(kos_ms(10));
     }
 
+    // Bytes through the creator's unbadged copy, which holds no `write`: the sink drops them.
+    char const unbadged[] = "unbadged";
+    (void)kos_send(ep, unbadged, sizeof(unbadged) - 1u, kos::after(std::chrono::seconds{1}));
+
     int rc = 1;
     if (sink_bytes(ep) == static_cast<int32_t>(PAYLOAD_LEN))
     {

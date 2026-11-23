@@ -7,6 +7,7 @@
 
 #include <kickos/driver/declared/testpl011.h>
 #include <kickos/sys/driver_service.h>
+#include <kickos/sys/rights.h>
 #include <kickos/sys/uart.h>
 
 #include <stdint.h>
@@ -100,6 +101,18 @@ namespace
             if (n < 0)
             {
                 drv::trap();
+            }
+            if (not kos_badge_grants(opts.info.badge, KOS_RIGHT_WRITE))
+            {
+                if (opts.info.reply_cap != KOS_CAP_NONE)
+                {
+                    msg.rsp.status = -KOS_EACCES;
+                    msg.rsp.len = 0;
+                    msg.rsp.rsv = 0;
+                    reply_len = sizeof(msg.rsp);
+                    reply_cap = opts.info.reply_cap;
+                }
+                continue;
             }
             if (opts.info.reply_cap != KOS_CAP_NONE)
             {

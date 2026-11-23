@@ -17,7 +17,11 @@ exits_on_fault: false
 interrupts: { count: { value: 45, ref: "Table 9-1 Peripheral Identifiers, p.39" } }
 
 apertures:
-  - { window: [0x40000000, 0x20000000], ref: "Figure 7-1 SAM3X/A Product Mapping, Peripherals, p.31" }
+  - { window: [0x40000000, 0xCC000], ref: "Figure 7-1 SAM3X/A Product Mapping, HSMCI to DACC, p.31" }
+  - { window: [0x400E0800, 0x140], ref: "Figure 7-1 SAM3X/A Product Mapping, UART, p.31" }
+  - { window: [0x400E1A30, 0x20], ref: "Figure 7-1 SAM3X/A Product Mapping, RTT, p.31" }
+  - { window: [0x400E1A50, 0x10], ref: "Figure 7-1 SAM3X/A Product Mapping, WDT, p.31" }
+  - { window: [0x400E1A60, 0x50], ref: "Figure 7-1 SAM3X/A Product Mapping, RTC and GPBR, p.31" }
 
 devices:
   # Its PDC channel masters the bus from inside the window (Table 21-1 List of Bus Matrix

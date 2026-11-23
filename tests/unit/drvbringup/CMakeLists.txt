@@ -72,6 +72,15 @@ kickos_add_unit_test(NAME drv_usic_stall
            "${PROJECT_BINARY_DIR}/generated/include")
 target_compile_options(drv_usic_stall PRIVATE -include "${CMAKE_CURRENT_SOURCE_DIR}/usic_mmap.h")
 
+# The RX72M RIICa engine's device open over a host buffer for one channel's window.
+# HOST-ONLY: riic_open.cc defines public kos_* names.
+kickos_add_unit_test(NAME drv_riic_open
+  SOURCES riic_open.cc
+          "${PROJECT_SOURCE_DIR}/system/driver/rx72m/i2c_riic.cc"
+  INCLUDES "${PROJECT_SOURCE_DIR}/arch/rx/chip/rx72m"
+           "${PROJECT_SOURCE_DIR}/user/include" "${PROJECT_SOURCE_DIR}/system/include"
+           "${PROJECT_BINARY_DIR}/generated/include")
+
 # The K64F DSPI engine's bound on a frame that never completes, its open and its close, over host
 # buffers for its window and ports. dspi_stall.cc answers dspi_rx_count, which is how a case
 # times a received frame. HOST-ONLY: dspi_stall.cc defines public kos_* names.

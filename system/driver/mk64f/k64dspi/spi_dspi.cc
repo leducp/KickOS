@@ -324,6 +324,12 @@ int32_t kos_spi_device_open(struct kos_spi_device* d, struct kos_spi_bus* b,
         cs = (pin.port << PROG_CS_PORT_SHIFT) | pin.bit;
     }
 
+    if (cfg->hz == 0u)
+    {
+        // CTAR0 holds the last transferred slot's profile, so a rate read back would be another
+        // device's.
+        return -KOS_EINVAL;
+    }
     uint32_t f = kos_periph_clock_hz(b->base);
     if (f == 0u)
     {
@@ -344,23 +350,13 @@ int32_t kos_spi_device_open(struct kos_spi_device* d, struct kos_spi_bus* b,
         ctar |= CTAR_LSBFE;
     }
 
-    if (cfg->hz == 0u)
-    {
-        // Keep the LIVE CTAR0 baud fields and report what they produce. Before any device has
-        // been opened on this bus those are CTAR0's RESET fields (/2 * /2), a rate genuinely
-        // read back rather than one anybody negotiated.
-        ctar |= r32(b->base + CTAR0_OFFSET) & ((0x3u << CTAR_PBR_SHIFT) | 0xFu | CTAR_DBR);
-    }
-    else
-    {
-        ctar |= derive_baud_fields(f, cfg->hz);
-    }
+    ctar |= derive_baud_fields(f, cfg->hz);
     uint32_t const rate = ctar_rate(f, ctar);
     if (rate == 0u)
     {
         return -KOS_ENOTSUP;
     }
-    if (cfg->hz != 0u and rate > cfg->hz)
+    if (rate > cfg->hz)
     {
         // The divider cannot reach that low, and clocking the device faster than it asked is
         // not a rounding difference.

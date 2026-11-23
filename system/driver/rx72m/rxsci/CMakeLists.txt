@@ -18,5 +18,6 @@ kickos_add_driver(rxsci SOURCES rxsci.cc ../uart_sci.cc REGDIR arch/rx/chip/rx72
                   BASE mmap::SCI6 WINDOWS regs LINES txi:edge rxi:edge
                   BLOCK ${KICKOS_UART_BLOCK_SIZE} INIT block_init BARRIER 1 READY uart::KOS_UART_READY_OFFSET
                   POSTURE handover CONSOLE START rxsci_console_start
+                  RIGHTS write read control
                   THREAD rxsciirq PRIORITY 1 ENTRY irq_entry ARG block WINDOW regs CAPS notify:wait txi:wait rxi:wait
                   THREAD service ENTRY uart::console_thread ARG block CAPS ep:wait notify:signal:doorbell)

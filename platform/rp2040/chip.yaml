@@ -20,8 +20,8 @@ interrupts:
   soft_only_from: { value: 26, ref: "2.3.2 Interrupts, p.60" }
 
 apertures:
-  - { window: [0x40000000, 0x70000], ref: "2.2.2 Detail, SYSINFO_BASE to TBMAN_BASE, pp.25-26" }
-  - { window: [0x50000000, 0x500000], ref: "2.2.2 Detail, DMA_BASE to XIP_AUX_BASE, p.26" }
+  - { window: [0x40034000, 0x2C000], ref: "2.2.2 Detail, UART0_BASE to RTC_BASE, p.25" }
+  - { window: [0x50000000, 0x400000], ref: "2.2.2 Detail, DMA_BASE to PIO1_BASE, p.26" }
 
 devices:
   # An APB window is the device's whole 16 KiB slot: its registers and the XOR, SET and CLR
@@ -53,7 +53,8 @@ devices:
   xosc: { window: [0x40024000, 0x4000], owner: kernel, ref: "2.2.2 Detail, p.25" }
   pll_sys: { window: [0x40028000, 0x4000], owner: kernel, ref: "2.2.2 Detail, p.25" }
   pll_usb: { window: [0x4002C000, 0x4000], owner: kernel, ref: "2.2.2 Detail, p.25" }
-  # The monotonic time base, and the watchdog whose tick generator clocks it.
+  # The monotonic time base, and the watchdog block whose TICK generator clocks it: a window over
+  # the watchdog is a window over the kernel's clock, the region unit splitting no page of it.
   timer: { window: [0x40054000, 0x4000], owner: kernel, ref: "2.2.2 Detail, p.25" }
   watchdog: { window: [0x40058000, 0x4000], owner: kernel, ref: "2.2.2 Detail, p.25" }
   # GPIO output, the inter-core FIFOs and the spinlocks.

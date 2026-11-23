@@ -11,6 +11,32 @@
 namespace kickos::console
 {
 
+uint32_t op_right(uint8_t op)
+{
+    switch (op)
+    {
+    case KOS_UART_READ:
+    {
+        return KOS_RIGHT_READ;
+    }
+    case KOS_UART_SET_MODE:
+    case KOS_UART_CONFIGURE:
+    {
+        return KOS_RIGHT_CONTROL;
+    }
+    case KOS_UART_WRITE:
+    case KOS_UART_STATS:
+    case KOS_UART_DRAIN:
+    {
+        return KOS_RIGHT_WRITE;
+    }
+    default:
+    {
+        return KOS_RIGHT_NONE;
+    }
+    }
+}
+
 int32_t mode_apply(Atomic<uint32_t, Order::RELAXED>* mode, uint32_t flags, uint32_t required)
 {
     if ((flags & ~static_cast<uint32_t>(KOS_CONSOLE_MODE_MASK)) != 0u)
@@ -30,18 +56,21 @@ constexpr uint32_t KOS_UART_STATS_WORDS = 9;
 static_assert(KOS_UART_STATS_WORDS * sizeof(uint32_t) == sizeof(struct kos_uart_stats),
               "kos_uart_stats gained or lost a field; pack and unpack must follow");
 
-void stats_pack(uint8_t* wire, struct kos_uart_stats const* live, uint32_t tx_lost)
+void stats_pack(uint8_t* wire, struct kos_uart_stats const* live, uint32_t tx_lost, uint32_t badge)
 {
-    uint32_t f[KOS_UART_STATS_WORDS];
+    uint32_t f[KOS_UART_STATS_WORDS] = {};
     f[0] = kos_counter_load(&live->tx_bytes);
-    f[1] = kos_counter_load(&live->rx_bytes);
     f[2] = kos_counter_load(&live->tx_dropped) + tx_lost;
-    f[3] = kos_counter_load(&live->rx_dropped);
-    f[4] = kos_counter_load(&live->rx_overrun);
-    f[5] = kos_counter_load(&live->rx_framing);
-    f[6] = kos_counter_load(&live->rx_parity);
-    f[7] = kos_counter_load(&live->irq_wakes);
-    f[8] = kos_counter_load(&live->irq_spurious);
+    if (kos_badge_grants(badge, KOS_RIGHT_READ))
+    {
+        f[1] = kos_counter_load(&live->rx_bytes);
+        f[3] = kos_counter_load(&live->rx_dropped);
+        f[4] = kos_counter_load(&live->rx_overrun);
+        f[5] = kos_counter_load(&live->rx_framing);
+        f[6] = kos_counter_load(&live->rx_parity);
+        f[7] = kos_counter_load(&live->irq_wakes);
+        f[8] = kos_counter_load(&live->irq_spurious);
+    }
     mem_copy(wire, f, sizeof(f));
 }
 

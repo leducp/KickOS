@@ -379,8 +379,7 @@ def build(admitted):
                     else:
                         made = grant("endpoint_use", used, used)
                         made.target = served[used]
-                        if used in task.use_slots:
-                            made.badge = sum(1 << slot for slot in task.use_slots[used][0])
+                        made.badge = task.use_badges.get(used, 0)
             elif field == "watches" and task.watches:
                 grant("notification", EVENTS, EVENTS)
                 made = grant("status", STATUS, STATUS)
@@ -421,7 +420,7 @@ def build(admitted):
                 for line in lines:
                     made = grant("line", line.name, line.path)
                     made.line_index = line.index
-                    made.line = line.source
+                    made.line = line.line
                     if task.driver is not None:
                         k = task.catalogue.lines.index(line.name)
                         made.trigger = task.catalogue.triggers[k]

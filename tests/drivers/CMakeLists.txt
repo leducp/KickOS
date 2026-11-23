@@ -27,7 +27,7 @@ kickos_add_driver(testfails SOURCES testfails.cc BASE 0x1000u BLOCK none BARRIER
 # Bound to a window and lines virt_arm64's chip file names, as no other emulated chip's does.
 if(KICKOS_CHIP STREQUAL "virt_arm64")
   kickos_add_driver(testpl011 SOURCES testpl011.cc WINDOWS regs BLOCK none BARRIER none
-                    POSTURE handover CONSOLE START testpl011_start
+                    POSTURE handover CONSOLE START testpl011_start RIGHTS write
                     THREAD service ENTRY service WINDOW regs CAPS ep:wait)
 
   kickos_add_driver(testline SOURCES testline.cc LINES routed:edge held:edge
@@ -42,6 +42,6 @@ endif()
 if(KICKOS_CHIP STREQUAL "xmc4800")
   kickos_add_driver(testusic SOURCES testusic.cc "${PROJECT_SOURCE_DIR}/system/driver/xmc4800/uart_usic.cc"
                     CLASS kickos_class_xmc4800 REGDIR arch/arm/chip/xmc4800
-                    WINDOWS regs BLOCK none BARRIER none POSTURE handover CONSOLE START testusic_start
+                    WINDOWS regs BLOCK none BARRIER none POSTURE handover CONSOLE START testusic_start RIGHTS write
                     THREAD service ENTRY service ARG window WINDOW regs CAPS ep:wait)
 endif()

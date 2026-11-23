@@ -25,7 +25,7 @@ CEILING_POOLS = ("threads", "tasks", "domains", "endpoints", "notifies", "irq_bi
                  "ram_owners")
 TARGET_FIELDS = ("board", "chip", "arch", "cores", "kernel_cores", "isolated_cores", "amp")
 PROTECTION_FIELDS = ("enforced", "window_rule", "smallest_window", "thread_windows", "fault_isolation")
-ABI_FIELDS = ("table", "cap_reserved", "cap_chunk", "cap_width_max", "symbol_prefix")
+ABI_FIELDS = ("table", "cap_reserved", "cap_chunk", "cap_width_max", "symbol_prefix", "slot_bits", "rights")
 # What the C ABI puts before a C name in the link: none, or rx-elf's one underscore.
 SYMBOL_PREFIX = re.compile(r"_*")
 THREAD_FIELDS = ("priority", "min_stack", "user_stack", "idle_stack", "root_stack", "stack_align", "stack_stride")
@@ -86,6 +86,10 @@ class Manifest:
         self.cap_chunk = None
         self.cap_width_max = None
         self.symbol_prefix = None
+        # The badge's slot-mask width, and the badge bit of each right a service checks
+        # (<kickos/sys/rights.h>).
+        self.slot_bits = None
+        self.rights = None
         self.table = None
         self.enforced = None
         # Whether a fault ends its task rather than the system.
@@ -153,6 +157,8 @@ class Driver:
         self.slots = 0
         # The authority its entry thread runs START with, by name; its other threads take none.
         self.authority = []
+        # The rights its protocol checks on a client's badge, by name; a use naming none holds all.
+        self.rights = []
 
 
 def check_manifests(paths):
@@ -204,6 +210,10 @@ def check_manifest(path, text, report):
             manifest.cap_width_max = f.integer(abi["cap_width_max"], "`abi` cap_width_max", 16)
         if abi is not None and "symbol_prefix" in abi:
             manifest.symbol_prefix = f.name(abi["symbol_prefix"], "`abi` symbol_prefix", SYMBOL_PREFIX)
+        if abi is not None and "slot_bits" in abi:
+            manifest.slot_bits = f.integer(abi["slot_bits"], "`abi` slot_bits", 8)
+        if abi is not None and "rights" in abi:
+            check_rights(f, abi["rights"], manifest)
     target = None
     if "target" in top:
         target = check_target(f, top["target"], manifest)
@@ -239,8 +249,26 @@ def check_manifest(path, text, report):
         drivers = f.mapping(top["drivers"], "`drivers`")
         for name, (key, value) in (drivers or {}).items():
             f.name(key, "driver", IDENTIFIER)
-            manifest.drivers[name] = check_driver(f, value, "driver `%s`" % name)
+            manifest.drivers[name] = check_driver(f, value, "driver `%s`" % name, manifest)
     return manifest
+
+
+def check_rights(f, node, manifest):
+    """The badge bit of each right, every one above the slot mask and below the badge's top."""
+    rights = f.mapping(node, "`abi` rights")
+    manifest.rights = {}
+    for name, (key, value) in (rights or {}).items():
+        if f.name(key, "right", IDENTIFIER) is None:
+            continue
+        bit = f.integer(value, "`abi` right `%s`" % name, 8)
+        if bit is None:
+            continue
+        if manifest.slot_bits is not None and not manifest.slot_bits <= bit < BADGE_BITS:
+            f.refuse(value, "manifest.bound",
+                     "right `%s` is badge bit %d, outside the %d bits above the %d-bit slot mask"
+                     % (name, bit, BADGE_BITS - manifest.slot_bits, manifest.slot_bits))
+            continue
+        manifest.rights[name] = bit
 
 
 def check_budgets(f, node, manifest):
@@ -524,7 +552,7 @@ def roles(f, node, what, pattern=IDENTIFIER, kind="a role"):
     return list(seen)
 
 
-def check_driver(f, node, what):
+def check_driver(f, node, what, manifest):
     driver = Driver()
     values = f.fields(node, what, DRIVER_FIELDS,
                       tuple(field for field in DRIVER_FIELDS if field not in DRIVER_OPTIONAL))
@@ -631,12 +659,28 @@ def check_driver(f, node, what):
         driver.client = roles(f, values["client"], "%s client" % what, C_IDENTIFIER, "a library")
     if "slots" in values:
         slots = f.integer(values["slots"], "%s slots" % what, 8)
-        if slots is not None and slots > BADGE_BITS:
+        mask = BADGE_BITS
+        if manifest.slot_bits is not None:
+            mask = manifest.slot_bits
+        if slots is not None and slots > mask:
             f.refuse(values["slots"], "manifest.bound",
                      "%s keys %d device slots on a client's badge, which carries a mask of %d"
-                     % (what, slots, BADGE_BITS))
+                     % (what, slots, mask))
         elif slots is not None:
             driver.slots = slots
+    if "rights" in values:
+        for item in f.sequence(values["rights"], "%s rights" % what) or ():
+            name = f.name(item, "a right in %s rights" % what, IDENTIFIER)
+            if name is None:
+                continue
+            if manifest.rights is not None and name not in manifest.rights:
+                f.refuse(item, "manifest.right",
+                         "%s checks right `%s`, which <kickos/sys/rights.h> does not list (%s)"
+                         % (what, name, ", ".join(sorted(manifest.rights))))
+            elif name in driver.rights:
+                f.refuse(item, "form.duplicate-entry", "%s rights lists `%s` twice" % (what, name))
+            else:
+                driver.rights.append(name)
     if "receiver" in values:
         receiver = f.name(values["receiver"], "%s receiver" % what, IDENTIFIER)
         names = [name for name, offset, stack in driver.threads]
@@ -649,6 +693,9 @@ def check_driver(f, node, what):
         f.refuse(values["console"], "manifest.console",
                  "%s has posture `%s` and console %s; a console driver hands its endpoint over, any other "
                  "retains it" % (what, posture, str(driver.console).lower()))
+    if driver.console and "write" not in driver.rights:
+        f.refuse(values["console"], "manifest.console",
+                 "%s serves the console and checks no `write`, the one right every stdout seat carries" % what)
     if driver.usb_device and not driver.console:
         f.refuse(values["usb_device"], "manifest.console",
                  "%s serves the console over the board's USB device controller and takes no console" % what)

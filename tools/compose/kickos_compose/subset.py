@@ -52,7 +52,7 @@ RULES = (
     "enforcement.coarse-gate", "enforcement.port-bank", "enforcement.bus-master", "enforcement.unneeded",
     "memory.uncached", "memory.cached-incoherent",
     "name.driver-unknown", "driver.line-role", "driver.line-name", "driver.window-role", "driver.port-window",
-    "driver.authority",
+    "driver.authority", "driver.right", "driver.rights-missing",
     "scheduling.priority", "scheduling.ceiling", "scheduling.core", "scheduling.line-core",
     "scheduling.stdout-order", "scheduling.console-driver", "scheduling.init-priority-range", "scheduling.hosted",
     "supply.pool", "supply.budget", "supply.budget-kind", "supply.ceiling", "supply.spawn-grants", "supply.cap-width",
@@ -60,7 +60,7 @@ RULES = (
     "manifest.cores", "manifest.amp", "manifest.window", "manifest.priority", "manifest.barrier",
     "manifest.description-path", "manifest.description-unknown", "manifest.default-path", "manifest.default-unknown",
     "manifest.bound", "manifest.console", "manifest.block-cache",
-    "manifest.target", "manifest.receiver",
+    "manifest.target", "manifest.receiver", "manifest.right",
     "partition.device", "partition.port", "partition.unserved", "partition.region", "partition.cached-incoherent",
     "partition.gate-budget", "partition.lone", "partition.bootloader",
 )

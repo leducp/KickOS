@@ -742,20 +742,23 @@ int32_t kos_i2c_device_open(struct kos_i2c_device* d, struct kos_i2c_bus* b,
         }
     }
 
+    if (cfg->hz == 0u)
+    {
+        // The live divider is the last transferred device's profile, so a rate read back would
+        // be another device's.
+        return -KOS_EINVAL;
+    }
     uint32_t const pclkb = kos_periph_clock_hz(b->base);
     if (pclkb == 0u)
     {
         return -KOS_ENOSYS; // no branch-clock oracle for this block: the rate is unknowable
     }
 
-    uint32_t word = live_rate_word(b->base);
-    if (cfg->hz != 0u)
+    uint32_t word = 0u;
+    int32_t const bad = derive_rate(pclkb, cfg->hz, &word);
+    if (bad != 0)
     {
-        int32_t const bad = derive_rate(pclkb, cfg->hz, &word);
-        if (bad != 0)
-        {
-            return bad;
-        }
+        return bad;
     }
     // The rate reported below is read back off the live registers, never computed from what
     // was meant to be written.

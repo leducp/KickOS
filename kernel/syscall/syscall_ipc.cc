@@ -20,6 +20,7 @@
 
 #include <kickos/sys/abi.h>
 #include <kickos/sys/errno.h>
+#include <kickos/sys/rights.h>
 
 #include "syscall_internal.h"
 
@@ -461,9 +462,10 @@ namespace kickos
         }
 
         // The front of the held records, as much as `cap` takes, into a receiver's buffer and
-        // metadata. Taken on a refused copy too, or every receive into that buffer refuses it
-        // again; kept where the map loaded is not the receiver's (`foreign`) and refuses the
-        // store, for the receiver's own next receive. The caller has checked something is held.
+        // metadata, badged as a stdout seat's send. Taken on a refused copy too, or every receive
+        // into that buffer refuses it again; kept where the map loaded is not the receiver's
+        // (`foreign`) and refuses the store, for the receiver's own next receive. The caller has
+        // checked something is held.
         int32_t held_copy(UserOwner buf_space, UserOwner info_space, uintptr_t buf, size_t cap,
                           uintptr_t badge_out, bool foreign)
         {
@@ -480,7 +482,7 @@ namespace kickos
             }
             int32_t result = static_cast<int32_t>(n);
             if (not kaccess_to_user(buf_space, buf, console_held_data(), n)
-                or not write_recv_info(info_space, badge_out, KOS_BADGE_NONE, KCAP_INVALID))
+                or not write_recv_info(info_space, badge_out, KOS_RIGHT_WRITE, KCAP_INVALID))
             {
                 result = -KOS_EFAULT;
             }

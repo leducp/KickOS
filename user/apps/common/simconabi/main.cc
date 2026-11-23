@@ -21,8 +21,8 @@
 
 namespace
 {
-    // Cap 0 is this thread's stdout: the console endpoint the driver published.
-    constexpr int CH_EP = 0;
+    kos_cap_t CH_EP = KOS_CAP_NONE;
+    constexpr kos_cap_t STDOUT_SEAT = 0;
 
     // Clear of kos_uart_op, so a future op cannot turn this into a valid request.
     constexpr uint8_t OP_BOGUS = 200;
@@ -32,10 +32,10 @@ namespace
     constexpr uint16_t WIRE_LEN = sizeof(wire_line) - 1; // no NUL on the wire
 
     // The reply header's status, with its len apart: kos_uart_call folds the two into one number.
-    int uart_status(uint8_t* buf, uint8_t op, uint8_t flags, uint16_t len, size_t carried,
+    int uart_status(kos_cap_t ep, uint8_t* buf, uint8_t op, uint8_t flags, uint16_t len, size_t carried,
                     uint16_t* got)
     {
-        int const rc = kos_uart_call_in_place(CH_EP, buf, op, flags, len, carried);
+        int const rc = kos_uart_call_in_place(ep, buf, op, flags, len, carried);
         if (rc < 0)
         {
             return rc;
@@ -54,7 +54,7 @@ namespace
     {
         uint8_t buf[KOS_EP_MSG_MAX];
         uint16_t got = 0;
-        TAP_CHECK(uart_status(buf, KOS_UART_SET_MODE, KOS_UART_F_NONBLOCK, 0, 0, &got) == 0);
+        TAP_CHECK(uart_status(CH_EP, buf, KOS_UART_SET_MODE, KOS_UART_F_NONBLOCK, 0, 0, &got) == 0);
     }
 
     // A host fd write always completes, so a request to block is satisfiable.
@@ -62,7 +62,7 @@ namespace
     {
         uint8_t buf[KOS_EP_MSG_MAX];
         uint16_t got = 0;
-        TAP_CHECK(uart_status(buf, KOS_UART_SET_MODE, 0, 0, 0, &got) == 0);
+        TAP_CHECK(uart_status(CH_EP, buf, KOS_UART_SET_MODE, 0, 0, 0, &got) == 0);
     }
 
     void t_set_mode_bad_bit()
@@ -92,7 +92,7 @@ namespace
     // A frame claiming more payload than it carried is refused rather than read past.
     void t_short_frame_refused()
     {
-        TAP_CHECK(kos_uart_call(CH_EP, KOS_UART_WRITE, 0, 64, nullptr, nullptr, 0)
+        TAP_CHECK(kos_uart_call(STDOUT_SEAT, KOS_UART_WRITE, 0, 64, nullptr, nullptr, 0)
                   == -KOS_EINVAL);
     }
 
@@ -104,7 +104,7 @@ namespace
             buf[sizeof(struct kos_uart_req) + i] = static_cast<uint8_t>(wire_line[i]);
         }
         uint16_t took = 0;
-        TAP_CHECK(uart_status(buf, KOS_UART_WRITE, 0, WIRE_LEN, WIRE_LEN, &took) == 0);
+        TAP_CHECK(uart_status(STDOUT_SEAT, buf, KOS_UART_WRITE, 0, WIRE_LEN, WIRE_LEN, &took) == 0);
         TAP_CHECK(took == WIRE_LEN);
     }
 
@@ -114,16 +114,48 @@ namespace
     {
         uint8_t buf[KOS_EP_MSG_MAX];
         uint16_t stlen = 0;
-        TAP_CHECK(uart_status(buf, KOS_UART_STATS, 0, 0, 0, &stlen) == 0);
+        TAP_CHECK(uart_status(STDOUT_SEAT, buf, KOS_UART_STATS, 0, 0, 0, &stlen) == 0);
         TAP_CHECK(stlen == sizeof(struct kos_uart_stats));
         struct kos_uart_stats s;
         kickos::console::stats_unpack(&s, buf + sizeof(struct kos_uart_rsp));
         TAP_CHECK(kos_counter_load(&s.tx_bytes) >= WIRE_LEN);
     }
+
+    uint32_t tx_bytes()
+    {
+        uint8_t buf[KOS_EP_MSG_MAX];
+        uint16_t stlen = 0;
+        if (uart_status(STDOUT_SEAT, buf, KOS_UART_STATS, 0, 0, 0, &stlen) != 0)
+        {
+            return UINT32_MAX;
+        }
+        struct kos_uart_stats s;
+        kickos::console::stats_unpack(&s, buf + sizeof(struct kos_uart_rsp));
+        return kos_counter_load(&s.tx_bytes);
+    }
+
+    // Bytes sent through a use holding no `write` never reach the wire.
+    void t_plain_send_without_write()
+    {
+        uint32_t const before = tx_bytes();
+        char const bytes[] = "[conabi] a send without write\n";
+        TAP_CHECK(kos_send(CH_EP, bytes, sizeof(bytes) - 1u, KOS_NEVER) == static_cast<int32_t>(sizeof(bytes) - 1u));
+        TAP_CHECK(tx_bytes() == before);
+    }
+
+    // The stdout seat writes, and is refused every op that needs `read` or `control`.
+    void t_stdout_seat_writes_only()
+    {
+        uint8_t buf[KOS_EP_MSG_MAX];
+        TAP_CHECK(kos_uart_call_in_place(STDOUT_SEAT, buf, KOS_UART_READ, 0, 4, 0) == -KOS_EACCES);
+        TAP_CHECK(kos_uart_call_in_place(STDOUT_SEAT, buf, KOS_UART_SET_MODE, 0, 0, 0) == -KOS_EACCES);
+        TAP_CHECK(kos_uart_call_in_place(STDOUT_SEAT, buf, KOS_UART_DRAIN, 0, 0, 0) == 0);
+    }
 }
 
 int main(int, char**)
 {
+    CH_EP = kos_grant_endpoint("/svc/console");
     tap::add("set_mode_nonblock", t_set_mode_nonblock);
     tap::add("set_mode_blocking", t_set_mode_blocking);
     tap::add("set_mode_bad_bit", t_set_mode_bad_bit);
@@ -133,5 +165,7 @@ int main(int, char**)
     tap::add("short_frame_refused", t_short_frame_refused);
     tap::add("framed_write", t_framed_write);
     tap::add("stats", t_stats);
+    tap::add("stdout_seat_writes_only", t_stdout_seat_writes_only);
+    tap::add("plain_send_without_write", t_plain_send_without_write);
     return tap::run_all();
 }

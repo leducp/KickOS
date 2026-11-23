@@ -241,7 +241,7 @@ namespace
     // there is no ring and no device here. Every op must ANSWER, refusal included: a
     // kos_call left unanswered parks the caller forever.
     int simcon_serve_one(struct kos_uart_stats* stats,
-                         kickos::Atomic<uint32_t, kickos::Order::RELAXED>* mode,
+                         kickos::Atomic<uint32_t, kickos::Order::RELAXED>* mode, uint32_t badge,
                          uint8_t const* msg, size_t n, kos_cap_t reply_cap)
     {
         if (n < sizeof(struct kos_uart_req))
@@ -250,6 +250,10 @@ namespace
         }
         struct kos_uart_req req;
         mem_copy(&req, msg, sizeof(req));
+        if (not kos_badge_grants(badge, kickos::console::op_right(req.op)))
+        {
+            return simcon_reply_status(reply_cap, -KOS_EACCES, 0);
+        }
         uint8_t const* payload = msg + sizeof(req);
         size_t const payload_len = n - sizeof(req);
 
@@ -284,7 +288,7 @@ namespace
                 rsp.len = static_cast<uint16_t>(sizeof(struct kos_uart_stats));
                 rsp.rsv = 0;
                 mem_copy(out, &rsp, sizeof(rsp));
-                kickos::console::stats_pack(out + sizeof(rsp), stats, 0u);
+                kickos::console::stats_pack(out + sizeof(rsp), stats, 0u, badge);
                 return kos_reply(reply_cap, out, sizeof(out));
             }
             case KOS_UART_SET_MODE:
@@ -348,6 +352,7 @@ extern "C"
         while (true)
         {
             opts.info.reply_cap = KOS_CAP_NONE;
+            opts.info.badge = KOS_BADGE_NONE;
             int32_t const n =
                 kos_reply_recv(KOS_CAP_NONE, buf, kos_call_lens_pack(0, sizeof(buf)), &opts);
             if (n < 0)
@@ -358,13 +363,13 @@ extern "C"
             {
                 // A failed reply leaves a caller parked on one, so it is said rather than
                 // swallowed; the loop continues, one dead caller not being the console's end.
-                if (simcon_serve_one(&stats, &mode, buf, static_cast<size_t>(n),
+                if (simcon_serve_one(&stats, &mode, opts.info.badge, buf, static_cast<size_t>(n),
                                      opts.info.reply_cap) < 0)
                 {
                     wire_puts("[simcon] reply failed\n");
                 }
             }
-            else
+            else if (kos_badge_grants(opts.info.badge, KOS_RIGHT_WRITE))
             {
                 // Zero length means FLUSH, and nothing is buffered to drain. A plain send
                 // has no reply, so a short write can only be counted, not reported.

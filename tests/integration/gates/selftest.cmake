@@ -247,11 +247,8 @@ if(KICKOS_CHIP STREQUAL "virt_rv64")
   list(APPEND KICKOS_EXPECT_SKIPS mutex_retype_ends_wait)
 endif()
 if(KICKOS_HAVE_MPU)
-  # The reserved-block spawn needs at least one arch_reserved_blocks entry.
-  if(NOT KICKOS_CHIP_RESERVED_BLOCKS MATCHES "^[0-9]+$")
-    message(FATAL_ERROR "selftest: the generated chip.cmake states no KICKOS_CHIP_RESERVED_BLOCKS")
-  endif()
-  if(KICKOS_CHIP_RESERVED_BLOCKS EQUAL 0)
+  # The reserved-block spawn needs an arch_reserved_blocks entry inside an aperture.
+  if(NOT DEFINED KICKOS_CHIP_RESERVED_IN_APERTURE0)
     list(APPEND KICKOS_EXPECT_PARTIALS grant_reserved)
   endif()
   # dev_window_aperture's bus master half needs a bus master the chip file marks.

@@ -1165,14 +1165,16 @@ install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/tools/compose/pyproject.toml"
 
 # kickos.cmake include()s driver_geometry.cmake, driver_metadata.cmake, heap_symbol.cmake,
 # qemu_cpu.cmake and compose.cmake list-dir-relative, so they must land
-# beside it, as must image_header.c, which KickOS::kernel compiles into every image, the
-# image link with the names it renames, and the esptool image.
+# beside it, as must rights.h, whose slot-mask width driver_metadata.cmake reads, image_header.c,
+# which KickOS::kernel compiles into every image, the image link with the names it renames, and
+# the esptool image.
 install(FILES
           "${CMAKE_CURRENT_BINARY_DIR}/KickOSConfig.cmake"
           "${CMAKE_CURRENT_BINARY_DIR}/KickOSConfigVersion.cmake"
           "${CMAKE_CURRENT_SOURCE_DIR}/cmake/kickos.cmake"
           "${CMAKE_CURRENT_SOURCE_DIR}/cmake/driver_geometry.cmake"
           "${CMAKE_CURRENT_SOURCE_DIR}/cmake/driver_metadata.cmake"
+          "${CMAKE_CURRENT_SOURCE_DIR}/user/include/kickos/sys/rights.h"
           "${CMAKE_CURRENT_SOURCE_DIR}/cmake/heap_symbol.cmake"
           "${CMAKE_CURRENT_SOURCE_DIR}/cmake/qemu_cpu.cmake"
           "${CMAKE_CURRENT_SOURCE_DIR}/cmake/compose.cmake"

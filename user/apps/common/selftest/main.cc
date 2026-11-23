@@ -3876,9 +3876,10 @@ namespace
                       == -KOS_EPERM);
         }
 #if defined(KICKOS_SELFTEST_RESERVED_BASE)
-        // A device window inside the chip's first reserved block, naturally aligned and a power
-        // of two from 32 bytes so every region backend can encode it: only the overlap with the
-        // block can refuse it, though main holds the authority a device window needs.
+        // A device window inside the chip's first reserved block that lies in an aperture,
+        // naturally aligned and a power of two from 32 bytes so every region backend can encode
+        // it: only the overlap with the block can refuse it, though main holds the authority a
+        // device window needs.
         uintptr_t const rbase = KICKOS_SELFTEST_RESERVED_BASE;
         uint32_t rsize = 32;
         while (2u * rsize <= KICKOS_SELFTEST_RESERVED_SIZE and rbase % (2u * rsize) == 0)
@@ -3890,7 +3891,7 @@ namespace
         TAP_CHECK(rbase % rsize == 0 and rsize <= KICKOS_SELFTEST_RESERVED_SIZE);
         TAP_CHECK(rc.error() == -KOS_EPERM);
 #else
-        tap::partial("reserved-block spawn not run (board reserves nothing)");
+        tap::partial("reserved-block spawn not run (no reserved block lies in an aperture)");
 #endif
 #if defined(KICKOS_SELFTEST_CODE_MAP_BLOCKS)
         // The blocks that remap or rewrite the flash every task's code runs from.
@@ -3898,13 +3899,16 @@ namespace
         ArmHold hold;
         TAP_HOLD(hold.thread(&stray));
         uintptr_t const code_map[] = {KICKOS_SELFTEST_CODE_MAP_BLOCKS};
-        for (uintptr_t const block : code_map)
+        int const answers[] = {KICKOS_SELFTEST_CODE_MAP_ANSWERS};
+        static_assert(sizeof(code_map) / sizeof(code_map[0]) == sizeof(answers) / sizeof(answers[0]));
+        for (size_t i = 0; i < sizeof(code_map) / sizeof(code_map[0]); i++)
         {
             stray = kos::thread::create(grant_noop, nullptr, "rsvd", 10, KOS_POLICY_FIFO, 0ns,
-                                        nullptr, 0, DeviceWindow(block, 0x1000).list(), 1);
-            if (stray.error() != -KOS_EPERM)
+                                        nullptr, 0, DeviceWindow(code_map[i], 0x1000).list(), 1);
+            if (stray.error() != answers[i])
             {
-                tap::fail("window 0x%lx answered %d", static_cast<unsigned long>(block), stray.error());
+                tap::fail("window 0x%lx answered %d, not %d", static_cast<unsigned long>(code_map[i]),
+                          stray.error(), answers[i]);
                 return;
             }
         }

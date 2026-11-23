@@ -45,10 +45,25 @@ interrupts:
 
 # The M7's: the A53 translates, and its device windows lie in its devices' own.
 apertures:
-  - { window: [0x30000000, 0x1000000], ref: "2.3 Cortex-M7 Memory Map, AIPS-1, AIPS-2, AIPS-3 and AIPS-5, p.27" }
-  - { window: [0x32C00000, 0x400000], ref: "2.3 Cortex-M7 Memory Map, AIPS-4, p.27" }
+  - { window: [0x30200000, 0x50000], ref: "Table 2-3 AIPS1 Memory Map, GPIO1 to GPIO5, p.31" }
+  - { window: [0x30290000, 0x20000], ref: "Table 2-3 AIPS1 Memory Map, WDOG2 and WDOG3, p.30" }
+  - { window: [0x302D0000, 0x30000], ref: "Table 2-3 AIPS1 Memory Map, GPT1 to GPT3, p.30" }
+  - { window: [0x30660000, 0x60000], ref: "Table 2-4 AIPS2 Memory Map, PWM1 to System_Counter_CMP, pp.31-32" }
+  - { window: [0x306E0000, 0x30000], ref: "Table 2-4 AIPS2 Memory Map, GPT6 to GPT4, p.31" }
+  - { window: [0x30820000, 0xC0000], ref: "Table 2-5 AIPS3 Memory Map, eCSPI1 to FlexCAN2, p.33" }
+  - { window: [0x30A20000, 0x50000], ref: "Table 2-5 AIPS3 Memory Map, I2C1 to UART4, p.33" }
+  - { window: [0x30AA0000, 0x20000], ref: "Table 2-5 AIPS3 Memory Map, MU_1_A and MU_1_B, p.32" }
+  - { window: [0x30AD0000, 0x20000], ref: "Table 2-5 AIPS3 Memory Map, I2C5 and I2C6, p.32" }
+  - { window: [0x30B40000, 0x30000], ref: "Table 2-5 AIPS3 Memory Map, uSDHC1 to uSDHC3, p.32" }
+  - { window: [0x30BD0000, 0x30000], ref: "Table 2-5 AIPS3 Memory Map, SDMA1 to ENET2_TSN, p.32" }
+  - { window: [0x30C10000, 0xC0000], ref: "Table 2-7 AIPS5 Memory Map, SAI1 to AUDIO XCVR RX, p.36" }
+  - { window: [0x30E00000, 0x20000], ref: "Table 2-7 AIPS5 Memory Map, SDMA3 and SDMA2, p.35" }
+  - { window: [0x30E30000, 0x70000], ref: "Table 2-7 AIPS5 Memory Map, eDMA Management Page to MU_3_B, p.35" }
+  - { window: [0x32E00000, 0xA0000], ref: "Table 2-6 AIPS4 Memory Map, ISI to LCDIF2, p.34" }
 
 devices:
+  wdog2: { window: [0x30290000, 0x10000], ref: "Table 2-3 AIPS1 Memory Map, p.30" }
+  wdog3: { window: [0x302A0000, 0x10000], ref: "Table 2-3 AIPS1 Memory Map, p.30" }
   uart1: { window: [0x30860000, 0x1000], ref: "Table 2-5 AIPS3 Memory Map, p.33" } # the A53 kernel's console
 
   # SAI5 and SAI6 raise the SAME source, 90: their eight interrupts are ORed onto one line.

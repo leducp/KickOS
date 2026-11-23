@@ -14,11 +14,25 @@ from unittest import mock
 from kickos_compose import composition, descriptions, emit, manifest, partition, region, subset, supply
 from kickos_compose.composition import admit, region_size
 from kickos_compose.descriptions import check_platform
+from kickos_compose import manifest_fields
 from kickos_compose.manifest import check_manifests
 from kickos_compose.__main__ import REFUSED, main
 from kickos_compose.subset import RULES
 
 TREE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..")
+RIGHTS_HEADER = os.path.join(TREE, "user", "include", "kickos", "sys", "rights.h")
+
+
+def APERTURES_OF(chip):
+    """The `apertures:` block of a chip file, as it stands in the tree."""
+    with open(os.path.join(TREE, "platform", chip, "chip.yaml"), encoding="utf-8") as stream:
+        text = stream.read()
+    start = text.index("apertures:\n")
+    return text[start:text.index("\n\n", start) + 1]
+
+
+# The badge layout every manifest here states, read from the header the export manifest reads.
+SLOT_BITS, RIGHT_BITS = manifest_fields.badge_layout(RIGHTS_HEADER)
 PLATFORM = os.path.join(TREE, "platform")
 SYSTEMS = os.path.join(TREE, "examples", "composition", "systems")
 XMC_DEFAULT = os.path.join("boards", "xmc4800-relax", "composition.yaml")
@@ -63,9 +77,26 @@ WATCHED = ("\n  - name: health\n", "".join("\n  - name: w%d\n    program: w%d_ma
 WATCHES_33 = ", ".join(["sensor"] + ["w%d" % n for n in range(32)])
 WATCHES_32 = ", ".join(["w%d" % n for n in range(32)])
 
-# virt_rv32's kernel-owned blocks, each given up.
+# The imx8mp's DTCM split per cluster, the M7's the arena and straddling the 0.5 GB boundary.
+IMX_DTCM_SPLIT = ('dtcm: { size: 0x20000, at: { a53: 0x00800000, m7: 0x20000000 }, arena: true, '
+                  'ref: "2.2, p.26; 2.3, p.28" }',
+                  'dtcm: { size: 0x20000, base: 0x00800000, cluster: a53, ref: "2.2, p.26" }\n'
+                  '  dtcm_m7: { size: 0x20000, base: 0x1FFF0000, cluster: m7, arena: true, ref: "2.3, p.28" }')
+
+# The K64F's one unit split over two clusters that share the part's `arch`.
+K64F_UNIT = ("{ unit: sysmpu, granule: 32, covers_devices: false, memory_type: false, device_gate: { kind: aips_slot, "
+             "size: 0x1000, per_thread: false, ranges: [[0x40000000, 0x80000], [0x40080000, 0x7F000]] } }")
+K64F_CLUSTERED = ("protection:\n  unit: sysmpu\n  granule: 32\n  covers_devices: false\n  memory_type: false\n"
+                  "  # The two bridges' slots. GPIO at 0x400FF000 is a crossbar slave behind neither.\n"
+                  "  device_gate:\n    kind: aips_slot\n    size: 0x1000\n    per_thread: false\n"
+                  "    ranges: [[0x40000000, 0x80000], [0x40080000, 0x7F000]]\n",
+                  "cores:\n  a:\n    protection: %s\n  b:\n    protection: %s\n" % (K64F_UNIT, K64F_UNIT))
+
+# virt_rv32's kernel-owned blocks, each given up and inside an aperture.
 RV32_UNRESERVED = [("[0x02000000, 0x10000], owner: kernel, ", "[0x02000000, 0x10000], "),
-                   ("[0x00100000, 0x1000], owner: kernel, ", "[0x00100000, 0x1000], ")]
+                   ("[0x00100000, 0x1000], owner: kernel, ", "[0x00100000, 0x1000], "),
+                   ("apertures:\n",
+                    "apertures:\n  - { window: [0x00100000, 0x1000] }\n  - { window: [0x02000000, 0x10000] }\n")]
 
 ARMS = [
     ("chip.line-order", "xmc4800/chip.yaml", [("      sr1: 85\n      sr2: 86\n", "      sr2: 86\n      sr1: 85\n")], False),
@@ -172,7 +203,7 @@ ARMS = [
     ("form.text", "xmc4800/chip.yaml", [('ref: "Table 7-2 Memory Map, p.7-5"', 'ref: "Table 7-2 \\\\ p.7-5"')], False),
     ("form.text", "xmc4800/chip.yaml", [('ref: "Table 7-2 Memory Map, p.7-5"', 'ref: "Table 7-2, p.7\u20135"')], False),
     ("form.text", "xmc4800/chip.yaml", [('manual: "XMC4700', 'manual: "\\nXMC4700')], False),
-    (None, "virt_arm64/chip.yaml", [("    count: 32\n", "    count: 0xFFFF\n")], False),
+    (None, "virt_arm64/chip.yaml", [("    count: 32\n", "    count: 0xFFFF\n"), ("    lines: { irq: 48 }\n", "")], False),
     (None, "imx8mp/imx8mp-evk.yaml",
      [("dram: { base: 0x40000000, size: 0x4000000,", "dram: { base: 0x40000000, size: 0x100000000,")], False),
     ("form.inapplicable", "esp32c6/chip.yaml", [("data_cache: false\n", "data_cache: false\nclusters_coherent: false\n")], False),
@@ -281,29 +312,23 @@ ARMS = [
     ("chip.cluster-unknown", "imx8mp/chip.yaml", [("cluster: m7, lines", "cluster: m4, lines")], False),
     ("chip.cluster-unknown", "imx8mp/chip.yaml", [("m7: 0x20200000", "m4: 0x20200000")], False),
     ("chip.cluster-unknown", "stm32f411/chip.yaml", [("  spi1: { window", "  spi1: { cluster: m4, window")], False),
-    ("chip.kernel-window", "stm32f411/chip.yaml", [("\ndevices:\n", "\ndevices:\n  iwdg: { owner: kernel }\n")], False),
+    ("chip.kernel-window", "stm32f411/chip.yaml", [("\ndevices:\n", "\ndevices:\n  kwdg: { owner: kernel }\n")], False),
     (["chip.memory-required", "form.missing"], "q35/chip.yaml",
      [("unit: mmu, page: 0x1000, covers_devices: true,", "unit: pmp, granule: 8, covers_devices: true,")], True),
     # The bus apertures a device window lies in.
-    ("form.missing", "stm32f411/chip.yaml",
-     [("apertures:\n  - { window: [0x40000000, 0x7400], ref: \"Table 1 APB1, p.39\" }\n"
-       "  - { window: [0x40010000, 0x5400], ref: \"Table 1 APB2, p.39\" }\n"
-       "  - { window: [0x40020000, 0x6800], ref: \"Table 1 AHB1, p.38\" }\n"
-       "  - { window: [0x50000000, 0x40000], ref: \"Table 1 AHB2, p.38\" }\n", "")], True),
-    ("form.missing", "mps2/chip.yaml",
-     [("apertures:\n  - { window: [0x40000000, 0x200000] }\n  - { window: [0x40200000, 0x100] }\n"
-       "  - { window: [0x41000000, 0x200000] }\n  - { window: [0xA0000000, 0x100] }\n", "apertures: []\n")], False),
+    ("form.missing", "stm32f411/chip.yaml", [(APERTURES_OF("stm32f411"), "")], True),
+    (("form.missing", "chip.aperture-outside"), "mps2/chip.yaml", [(APERTURES_OF("mps2"), "apertures: []\n")], True),
     ("form.inapplicable", "esp32/chip.yaml",
      [("exits_on_fault: false\n", "exits_on_fault: false\napertures:\n  - { window: [0x3FF40000, 0x1000] }\n")], False),
     ("chip.aperture-memory", "stm32f411/chip.yaml",
      [("- { window: [0x50000000, 0x40000]", "- { window: [0x20000000, 0x40000]")], False),
     ("chip.aperture-outside", "stm32f411/chip.yaml",
-     [("- { window: [0x40000000, 0x7400]", "- { window: [0x40000000, 0x441F]")], True),
-    (None, "stm32f411/chip.yaml", [("- { window: [0x40000000, 0x7400]", "- { window: [0x40000000, 0x4420]")], False),
+     [("- { window: [0x40000000, 0x6000]", "- { window: [0x40000000, 0x441F]")], True),
+    (None, "stm32f411/chip.yaml", [("- { window: [0x40000000, 0x6000]", "- { window: [0x40000000, 0x4420]")], False),
     ("chip.address-width", "stm32f411/chip.yaml",
      [("- { window: [0x50000000, 0x40000]", "- { window: [0xFFFFFFFFFFFC0000, 0x40000]")], False),
     ("board.memory-overlap", "rp2040/picopi.yaml",
-     [("    base: 0x10000000\n    size: 0x200000\n", "    base: 0x40000000\n    size: 0x4000\n")], False),
+     [("    base: 0x10000000\n    size: 0x200000\n", "    base: 0x40034000\n    size: 0x4000\n")], False),
     ("chip.arena", "stm32f411/chip.yaml", [("arena: true", "arena: false")], True),
     ("chip.map-boundary", "mk64f/chip.yaml", [("arena: true, bank_line: 0x20000000,", "arena: true,")], False),
     ("chip.arena", "mk64f/chip.yaml", [("bank_line: 0x20000000, link: { region: RAM,",
@@ -316,6 +341,13 @@ ARMS = [
      [("size: 0x80000, link: { region: FLASH", "size: 0x80000, bank_line: 0x08040000, link: { region: FLASH")],
      False),
     ("chip.bank-line", "rx72m/chip.yaml", [("    arena: true\n", "    arena: true\n    bank_line: 0x40000\n")], False),
+    (("chip.bank-line", "chip.map-boundary"), "mk64f/chip.yaml", [K64F_CLUSTERED], True),
+    ("chip.bank-line", "imx8mp/chip.yaml", [("m7: 0x20000000 }, arena: true,", "m7: 0x20000000 }, arena: true, bank_line: 0x20010000,")],
+     False),
+    (None, "imx8mp/chip.yaml", [IMX_DTCM_SPLIT, ("arena: true, ref: \"2.3, p.28\" }",
+                                                  "arena: true, bank_line: 0x20000000, ref: \"2.3, p.28\" }")], False),
+    (None, "mk64f/chip.yaml", [K64F_CLUSTERED, ("sram: { base: 0x1FFF0000, size: 0x40000, arena: true, bank_line: 0x20000000,",
+                                                "sram: { base: 0x20000000, size: 0x30000, arena: true,")], True),
     ("chip.bank-line", "sim/chip.yaml",
      [("arena: { size: 0x200000, arena: true }", "arena: { size: 0x200000, arena: true, bank_line: 0x100000 }")],
      False),
@@ -416,7 +448,8 @@ ARMS = [
     ("chip.line-range", "stm32f411/chip.yaml", [("lines: { global: 35 }", "lines: { global: 86 }")], False),
     (None, "stm32f411/chip.yaml", [("lines: { global: 35 }", "lines: { global: 85 }")], False),
     ("chip.line-range", "virt_arm64/chip.yaml", [("    lines: { irq: 48 }\n", "    lines: { irq: 288 }\n")], False),
-    (None, "virt_arm64/chip.yaml", [("    lines: { irq: 48 }\n", "    lines: { irq: 287 }\n")], False),
+    ("chip.line-range", "virt_arm64/chip.yaml", [("    lines: { irq: 48 }\n", "    lines: { irq: 257 }\n")], False),
+    (None, "virt_arm64/chip.yaml", [("    lines: { irq: 48 }\n", "    lines: { irq: 256 }\n")], False),
     ("chip.line-range", "esp32c6/chip.yaml", [("soft_only_from: 26", "soft_only_from: 32")], False),
     (None, "esp32c6/chip.yaml", [("soft_only_from: 26", "soft_only_from: 31")], False),
     ("chip.line-range", "virt_arm64/chip.yaml", [("free_from: 200", "free_from: 288")], False),
@@ -509,7 +542,7 @@ ARM64_HOSTED_CORE = ("    ceiling: 11\n", "    ceiling: 11\n    core: 3\n")
 CONSOLE_DRIVER = ("    posture: retain\n    barrier: none\n    console: false\n    usb_device: false\n"
                   "    start: plain_start\n",
                   "    posture: handover\n    barrier: none\n    console: true\n    usb_device: false\n"
-                  "    start: plain_start\n")
+                  "    start: plain_start\n    rights: [write]\n")
 SINK_REQUEST = ("    maps: { /shm/history: ro }\n",
                 "    maps: { /shm/history: ro }\n\n  - name: sink\n    driver: plain\n    serves: /svc/sink\n"
                 "    priority: 11\n    start: on_request\n")
@@ -631,7 +664,7 @@ COMPOSITION_ARMS = [
     (("form.inapplicable", "order.forward"), "xmc4800-relax.yaml",
      [("    serves: /svc/spi0\n", "    serves: /svc/spi0\n    uses: [/svc/sensor]\n")],
      False),
-    ("order.forward", "xmc4800-relax.yaml", [("uses: [{ path: /svc/spi0, slots: [0] }]", "uses: [{ path: /svc/spi0, slots: [0] }, /svc/sensor]")], False),
+    ("order.forward", "xmc4800-relax.yaml", [("uses: [{ path: /svc/spi0, slots: [0], rights: [transfer, config] }]", "uses: [{ path: /svc/spi0, slots: [0], rights: [transfer, config] }, /svc/sensor]")], False),
     ("order.undeclared", "qemu-x86_64.yaml", [("watches: [sensor]", "watches: [sensors]")], False),
     ("order.forward", "qemu-x86_64.yaml", [("    serves: /svc/sensor\n", "    serves: /svc/sensor\n    watches: [health]\n")],
      False),
@@ -706,6 +739,7 @@ abi:
   cap_chunk: 8
   cap_width_max: 248
   symbol_prefix: ""
+%s
 target:
   board: xmc4800-relax
   chip: xmc4800
@@ -781,6 +815,7 @@ drivers:
     receiver: bus
     client: [kickos_spi_proxy]
     slots: 4
+    rights: [transfer, config]
   xmcuartirq:
     windows: [regs]
     lines: [irq]
@@ -801,7 +836,9 @@ drivers:
     receiver: service
     client: []
     slots: 0
-"""
+    rights: [write, read, control]
+""" % ("  slot_bits: %d\n  rights:\n%s"
+       % (SLOT_BITS, "\n".join("    %s: %d" % (name, bit) for name, bit in RIGHT_BITS.items())))
 
 MANIFEST_DEFAULT = ("drivers:\n  xmcssc:", "default:\n  composition: boards/xmc4800-relax/composition.yaml\ndrivers:\n  xmcssc:")
 MANIFEST_AMP = "  amp:\n    node: 0\n    nodes: 2\n    ports: [[0, 2], [1, 3]]\n    share: 0x4000\n    share_cache: uncached\n"
@@ -1137,23 +1174,40 @@ ADMISSION_ARMS = [
     ("scheduling.line-core", "xmc4800-relax.yaml", [], [("  cores: 1\n  kernel_cores: 1\n", "  cores: 2\n  kernel_cores: 2\n")], True),
     (None, "xmc4800-relax.yaml", [("    priority: 12\n", "    priority: 12\n    core: 0\n"), ("    priority: 11\n", "    priority: 11\n    core: 1\n")],
      [("  cores: 1\n  kernel_cores: 1\n", "  cores: 2\n  kernel_cores: 2\n")], False),
-    ("scheduling.core", "xmc4800-relax.yaml", [("    uses: [{ path: /svc/spi0, slots: [0] }]\n", "    uses: [{ path: /svc/spi0, slots: [0] }]\n    core: 1\n")], [], False),
-    (None, "xmc4800-relax.yaml", [("    uses: [{ path: /svc/spi0, slots: [0] }]\n", "    uses: [{ path: /svc/spi0, slots: [0] }]\n    core: 0\n")], [], False),
+    ("scheduling.core", "xmc4800-relax.yaml", [("    uses: [{ path: /svc/spi0, slots: [0], rights: [transfer, config] }]\n", "    uses: [{ path: /svc/spi0, slots: [0], rights: [transfer, config] }]\n    core: 1\n")], [], False),
+    (None, "xmc4800-relax.yaml", [("    uses: [{ path: /svc/spi0, slots: [0], rights: [transfer, config] }]\n", "    uses: [{ path: /svc/spi0, slots: [0], rights: [transfer, config] }]\n    core: 0\n")], [], False),
     (None, "xmc4800-relax.yaml", [("    priority: 10\n    ceiling: 10\n", "    priority: 13\n    ceiling: 13\n")], [("    receiver: service\n", "    receiver: uartirq\n")],
      False),
     # A second client of the bus, on a slot of its own, and on the sensor's.
-    (None, "xmc4800-relax.yaml", [("    uses: [/svc/sensor]\n", "    uses: [/svc/sensor, { path: /svc/spi0, slots: [1] }]\n")], [], False),
-    ("ownership.slot", "xmc4800-relax.yaml", [("    uses: [/svc/sensor]\n", "    uses: [/svc/sensor, { path: /svc/spi0, slots: [0] }]\n")], [], False),
-    ("ownership.slot", "xmc4800-relax.yaml", [("    uses: [/svc/sensor]\n", "    uses: [/svc/sensor, { path: /svc/spi0, slots: [1, 0] }]\n")], [], False),
-    ("form.missing", "xmc4800-relax.yaml", [("    uses: [/svc/sensor]\n", "    uses: [/svc/sensor, /svc/spi0]\n")], [], False),
-    ("form.missing", "xmc4800-relax.yaml", [("uses: [{ path: /svc/spi0, slots: [0] }]", "uses: [{ path: /svc/spi0 }]")], [], False),
+    (None, "xmc4800-relax.yaml", [("    uses: [/svc/sensor]\n", "    uses: [/svc/sensor, { path: /svc/spi0, slots: [1], rights: [transfer] }]\n")], [], False),
+    ("ownership.slot", "xmc4800-relax.yaml", [("    uses: [/svc/sensor]\n", "    uses: [/svc/sensor, { path: /svc/spi0, slots: [0], rights: [transfer, config] }]\n")], [], False),
+    ("ownership.slot", "xmc4800-relax.yaml", [("    uses: [/svc/sensor]\n", "    uses: [/svc/sensor, { path: /svc/spi0, slots: [1, 0], rights: [transfer] }]\n")], [], False),
+    ("form.missing", "xmc4800-relax.yaml", [("    uses: [/svc/sensor]\n", "    uses: [/svc/sensor, { path: /svc/spi0, rights: [transfer] }]\n")], [], False),
+    ("form.missing", "xmc4800-relax.yaml", [("uses: [{ path: /svc/spi0, slots: [0], rights: [transfer, config] }]", "uses: [{ path: /svc/spi0 }]")], [], False),
+    ("driver.right", "xmc4800-relax.yaml",
+     [("uses: [{ path: /svc/spi0, slots: [0], rights: [transfer, config] }]", "uses: [{ path: /svc/spi0, slots: [0], rights: [read] }]")], [],
+     False),
+    (None, "xmc4800-relax.yaml",
+     [("uses: [{ path: /svc/spi0, slots: [0], rights: [transfer, config] }]", "uses: [{ path: /svc/spi0, slots: [0], rights: [config] }]")], [],
+     False),
+    ("driver.right", "xmc4800-relax.yaml",
+     [("    uses: [/svc/sensor]\n", "    uses: [{ path: /svc/sensor, rights: [write] }]\n")], [], False),
+    ("driver.rights-missing", "xmc4800-relax.yaml",
+     [("    uses: [/svc/sensor]\n", "    uses: [/svc/sensor, /svc/console]\n")], [], False),
+    ("form.missing", "xmc4800-relax.yaml", [("    uses: [/svc/sensor]\n", "    uses: [{ path: /svc/sensor }]\n")], [],
+     False),
+    ("form.range", "xmc4800-relax.yaml",
+     [("uses: [{ path: /svc/spi0, slots: [0], rights: [transfer, config] }]", "uses: [{ path: /svc/spi0, slots: [0], rights: [] }]")], [], False),
+    ("form.duplicate-entry", "xmc4800-relax.yaml",
+     [("uses: [{ path: /svc/spi0, slots: [0], rights: [transfer, config] }]", "uses: [{ path: /svc/spi0, slots: [0], rights: [config, config] }]")],
+     [], False),
     ("form.inapplicable", "xmc4800-relax.yaml", [("    uses: [/svc/sensor]\n", "    uses: [{ path: /svc/sensor, slots: [0] }]\n")], [], False),
-    ("form.range", "xmc4800-relax.yaml", [("slots: [0] }]", "slots: [4] }]")], [], False),
-    (None, "xmc4800-relax.yaml", [("slots: [0] }]", "slots: [3] }]")], [], False),
-    ("form.range", "xmc4800-relax.yaml", [("slots: [0] }]", "slots: [32] }]")], [], False),
-    ("form.range", "xmc4800-relax.yaml", [("slots: [0] }]", "slots: [] }]")], [], False),
-    ("form.duplicate-entry", "xmc4800-relax.yaml", [("slots: [0] }]", "slots: [0, 0] }]")], [], False),
-    (None, "xmc4800-relax.yaml", [("slots: [0] }]", "slots: [0, 3] }]")], [], False),
+    ("form.range", "xmc4800-relax.yaml", [("slots: [0], rights", "slots: [4], rights")], [], False),
+    (None, "xmc4800-relax.yaml", [("slots: [0], rights", "slots: [3], rights")], [], False),
+    ("form.range", "xmc4800-relax.yaml", [("slots: [0], rights", "slots: [32], rights")], [], False),
+    ("form.range", "xmc4800-relax.yaml", [("slots: [0], rights", "slots: [], rights")], [], False),
+    ("form.duplicate-entry", "xmc4800-relax.yaml", [("slots: [0], rights", "slots: [0, 0], rights")], [], False),
+    (None, "xmc4800-relax.yaml", [("slots: [0], rights", "slots: [0, 3], rights")], [], False),
     (("form.inapplicable", "partition.port"), "xmc4800-relax.yaml",
      [("    uses: [/svc/sensor]\n", "    uses: [/svc/sensor, { path: /amp/3, slots: [0] }]\n")], [], False),
     ("supply.spawn-grants", "xmc4800-relax.yaml", [], [("  KICKOS_MAX_SPAWN_GRANTS: 6\n", "  KICKOS_MAX_SPAWN_GRANTS: 1\n")],
@@ -1275,8 +1329,17 @@ MANIFEST_ARMS = [
     ("form.name", [("    lines: [irq]\n    triggers: [edge]\n    entry: [notify, \"line:0\", ep, doorbell]\n    threads:\n      - { name: uartirq",
                     "    lines: [IRQ]\n    triggers: [edge]\n    entry: [notify, \"line:0\", ep, doorbell]\n    threads:\n      - { name: uartirq")], False),
     ("form.name", [("  xmcssc:\n", "  XmcSsc:\n")], False),
-    ("manifest.bound", [("    slots: 4\n", "    slots: 33\n")], False),
-    (None, [("    slots: 4\n", "    slots: 32\n")], False),
+    ("manifest.bound", [("    slots: 4\n", "    slots: %d\n" % (SLOT_BITS + 1))], False),
+    (None, [("    slots: 4\n", "    slots: %d\n" % SLOT_BITS)], False),
+    ("manifest.right", [("    rights: [transfer, config]\n", "    rights: [transfer, erase]\n")], False),
+    ("form.missing", [("  slot_bits: %d\n" % SLOT_BITS, "")], True),
+    ("form.missing", [("  rights:\n" + "".join("    %s: %d\n" % pair for pair in RIGHT_BITS.items()), "")], True),
+    ("form.duplicate-entry", [("    rights: [transfer, config]\n", "    rights: [transfer, transfer]\n")], False),
+    (("manifest.bound", "manifest.right"),
+     [("    transfer: %d\n" % RIGHT_BITS["transfer"], "    transfer: 32\n")], True),
+    (("manifest.bound", "manifest.right"),
+     [("    transfer: %d\n" % RIGHT_BITS["transfer"], "    transfer: %d\n" % (SLOT_BITS - 1))], True),
+    ("manifest.console", [("    rights: [write, read, control]\n", "    rights: [read, control]\n")], True),
     (None, [("    block: 1024\n", "    block: none\n"), ("    barrier: 1\n", "    barrier: none\n")], False),
     (None, [("stack: default, caps: 2, badged: 0 }\n      - { name: service",
              "stack: 2048, caps: 2, badged: 0 }\n      - { name: service")], False),
@@ -1324,7 +1387,8 @@ MANIFEST_ARMS = [
     ("manifest.barrier", [("    barrier: none\n", "    barrier: 1\n")], False),
     ("manifest.console", [("    console: false\n", "    console: true\n")], False),
     ("manifest.console", [("    console: true\n", "    console: false\n")], False),
-    (None, [("    console: false\n", "    console: true\n"), ("posture: retain", "posture: handover")], False),
+    (None, [("    console: false\n", "    console: true\n"), ("posture: retain", "posture: handover"),
+            ("    rights: [transfer, config]\n", "    rights: [write]\n")], False),
     ("manifest.console", [("    console: false\n    usb_device: false\n", "    console: false\n    usb_device: true\n")],
      False),
     (None, [("    console: true\n    usb_device: false\n", "    console: true\n    usb_device: true\n")], False),
@@ -1948,7 +2012,13 @@ def table_limits(counts, fields, strings, names):
 
 
 U0C1 = "    devices: [/dev/usic0/ch1]\n"
-VIRTIO_WIDE = [("    count: 32\n", "    count: 0xFFFF\n")]
+
+
+def imx_sai5_line(number):
+    """The imx8mp chip file with every source a 16-bit count reaches and SAI5 raising `number`."""
+    return (("imx8mp/chip.yaml", [("count: { value: 160,", "count: { value: 0xFFFF,"),
+                                  ("sai5: { window: [0x30C50000, 0x1000], lines: { shared: 90 }",
+                                   "sai5: { window: [0x30C50000, 0x1000], lines: { shared: %d }" % number)]),)
 
 
 def amp_of(text, kernel_cores, ports, share, cache, slices, window):
@@ -2286,18 +2356,18 @@ SCENARIOS = [
                                [("ch1: { window: [0x40030200, 0x200] }", "ch1: { window: [0x40030280, 0x100] }")], XMC_MANIFEST)),
     (None, on_xmc([], [], [("ch1: { window: [0x40030200, 0x200] }", "ch1: { window: [0x40030280, 0x100] }")],
                   XMC_MANIFEST.replace("window_rule: pow2", "window_rule: granule"))),
-    ("form.range", on_arm64([("devices: [/dev/rtc]", "devices: [/dev/rtc]\n    lines: { irq: /dev/virtio/65488/irq }")],
-                            [("    lines: { irq", "form.range")], VIRTIO_WIDE)),
-    ("form.range", on_arm64([("devices: [/dev/rtc]", "devices: [/dev/rtc]\n    lines: { irq: /dev/virtio/65487/irq }")],
-                            [("    lines: { irq", "form.range")], VIRTIO_WIDE)),
-    (None, on_arm64([("devices: [/dev/rtc]", "devices: [/dev/rtc]\n    lines: { irq: /dev/virtio/65486/irq }")], [],
-                    VIRTIO_WIDE)),
+    ("form.range", composed("imx8mp-evk.yaml", IMX_SYSTEM, [], [("    lines: { irq", "form.range")],
+                            ("imx8mp/imx8mp-evk.yaml", IMX_BOARD), imx_sai5_line(0xFFE0))),
+    ("form.range", composed("imx8mp-evk.yaml", IMX_SYSTEM, [], [("    lines: { irq", "form.range")],
+                            ("imx8mp/imx8mp-evk.yaml", IMX_BOARD), imx_sai5_line(0xFFDF))),
+    (None, composed("imx8mp-evk.yaml", IMX_SYSTEM, [], [], ("imx8mp/imx8mp-evk.yaml", IMX_BOARD), imx_sai5_line(0xFFDE))),
     ("encoding.table", table_limits(0, 0, 0, ["5 tasks", "16 grants", "4 refs", "3 privileged registers",
                                                "1 regions", "bytes of strings", "catalogue driver 1",
                                                "line 1 of a device"])),
     (None, table_limits(16, 1, 0xFFFFFFFF, [])),
     ("supply.budget", on_xmc([("    uses: [/svc/sensor]\n",
-                               "    uses: [/svc/sensor, { path: /svc/spi0, slots: [1] }, /svc/console]\n"
+                               "    uses: [/svc/sensor, { path: /svc/spi0, slots: [1], rights: [transfer] },\n"
+                               "           { path: /svc/console, rights: [write] }]\n"
                                "    budgets: { endpoints: 2 }\n")],
                              [("    budgets: {", "supply.budget")], [], XMC_ENDPOINTS_2, names="holds 4 of them")),
     ("supply.arena", on_xmc([], [("version: ", "supply.arena")], [(XMC_ARENA, XMC_ARENA.replace("size: 0x40000", "size: 0x7000"))],
@@ -2357,7 +2427,7 @@ SCENARIOS = [
                                                              (1, "    serves: ", "partition.port")],
                                    ARM64_AMP.replace("[[0, 2], [1, 3], [1, 4]]", "[[0, 3], [1, 3]]"))),
     ("partition.port", composed("xmc4800-relax.yaml", read(os.path.join(SYSTEMS, "xmc4800-relax.yaml")),
-                                [("    serves: /svc/spi0\n", "    serves: /amp/3\n"), ("    uses: [{ path: /svc/spi0, slots: [0] }]\n", "")],
+                                [("    serves: /svc/spi0\n", "    serves: /amp/3\n"), ("    uses: [{ path: /svc/spi0, slots: [0], rights: [transfer, config] }]\n", "")],
                                 [("    serves: /amp/3", "partition.port")])),
     ("partition.unserved", partitioned("arm64", ARM64_PAIR, {1: [("    serves: /amp/3\n", "")]},
                                        [(0, "    uses: ", "partition.unserved")], ARM64_AMP)),

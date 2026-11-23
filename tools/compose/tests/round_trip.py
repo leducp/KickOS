@@ -17,8 +17,11 @@ import tempfile
 import unittest
 
 from kickos_compose import emit, partition
-from test_arms import (ARM64_AMP, ARM64_UNPINNED, MANIFESTS, PLATFORM, PONG, SYSTEMS, TREE, VIRTIO, XMC_HOSTED, mutate, read,
-                       write)
+from test_arms import (ARM64_AMP, ARM64_UNPINNED, MANIFESTS, PLATFORM, PONG, RIGHT_BITS, SYSTEMS, TREE, VIRTIO,
+                       XMC_HOSTED, mutate, read, write)
+
+# The xmc golden's sensor: slot 0 and every right xmcssc checks.
+SPI0_BADGE = 1 | (1 << RIGHT_BITS["transfer"]) | (1 << RIGHT_BITS["config"])
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOOL = os.path.join(HERE, "..")
@@ -62,7 +65,8 @@ EXPECTED = {
         ("priv", {"#": "0"}, {"offset": "0x10", "width": "4"}),
         ("priv", {"#": "1"}, {"offset": "0x14", "width": "4"}),
         ("priv", {"#": "2"}, {"offset": "0x40", "width": "4"}),
-        ("grant", {"kind": "endpoint_use", "path": "/svc/spi0"}, {"target": "1", "cap_slot": "cap0+0", "badge": "0x1"}),
+        ("grant", {"kind": "endpoint_use", "path": "/svc/spi0"},
+         {"target": "1", "cap_slot": "cap0+0", "badge": "0x%X" % SPI0_BADGE}),
         ("grant", {"kind": "endpoint_use", "path": "/svc/sensor"}, {"target": "2", "badge": "0x0"}),
         ("task", {"name": "health"}, {"watches": "2+2", "authority": "-"}),
         ("ref", {"#": "2"}, {"task": "1"}),

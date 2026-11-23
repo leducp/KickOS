@@ -120,6 +120,12 @@ dedicated RIICa block (`system/driver/rx72m/i2c_riic.cc`), a local backend of th
 rather than a service. The many-modes blocks the SPI services use (XMC USIC IIC mode, RX SCI
 simple-I2C) can carry it too, and there mode-select resolves inside the class, not the wire.
 
+**An I2C service checks its client's rights as the contract below states** (*Device slots*):
+`KOS_BUS_OP_CONFIG` needs `config`, and a transfer needs `write` if any segment writes and `read`
+if any reads, so a client holding `read` alone cannot write a register. Its driver declares
+`RIGHTS read write config`, and it checks them with `kickos::bus::request_rights`
+(`<kickos/sys/bus_rights.h>`), whose I2C arm is that rule; no service calls it yet.
+
 **`kos_bus_rsp.len` is read against the SIGN of `status`, and an error reply carries no
 payload.** On the error path (`status < 0`) the reply carries NO rx bytes and `len` is the
 bytes transferred before the failure; a reader must branch on the sign of `status` before
@@ -188,9 +194,9 @@ that were only written at CONFIG time would still let the last CONFIG win.
 
 **A client reaches the slots its BADGE names, and no other.** Each client of a bus holds a copy of
 the service endpoint carrying a badge (`kos_endpoint_badge`, `ipc-call-reply.md`, *The sender's
-badge*), and the badge is its slot mask: bit `d` grants slot `d`. The service reads the badge out
+badge*), and its low bits are its slot mask: bit `d` grants slot `d`. The service reads the badge out
 of the `kos_recv_info` of every request and checks `req.device` against it
-(`kickos::spi::slot_granted`) before it reads anything else of the request's op, so a client
+(`kickos::spi::slot_granted`) before it acts on the request's op, so a client
 naming a slot outside its mask is refused whatever it sends, and an unbadged client reaches no
 slot at all. The device byte still selects the profile: the badge decides who may name it.
 
@@ -200,9 +206,11 @@ isolating mutually untrusting owners needs the device grant `TODO.md` plans for 
 slot's chip select comes from the board and composition rather than from the client.
 
 The composition hands out the masks. A use of a path whose server is a bus names its slots,
-`uses: [{ path: /svc/spi0, slots: [0] }]`; admission refuses a use of a bus that names none, a
+`uses: [{ path: /svc/spi0, slots: [0], rights: [transfer, config] }]`; admission refuses a use of a
+bus that names none, a
 slot past the slots the driver declares (`kickos_add_driver(... SLOTS 4)`, `KICKOS_DRIVER_SLOTS`,
-which the service asserts equal to `KOS_BUS_DEV_MAX`), and a slot two clients name
+which the service asserts equal to `KOS_BUS_DEV_MAX`, at most `KOS_BADGE_SLOT_BITS`), and a slot
+two clients name
 (`ownership.slot`). The init mints each client's copy with `kos_endpoint_badge` from the endpoint
 it keeps `HANDOUT` on, delegates it `SIGNAL` only, and closes its own copy once the spawn holds
 it, so it keeps no client's badge. A client cannot pass its copy on, spawn-time delegation
@@ -210,8 +218,19 @@ refusing a source without `CAP_TRANSFER`, and a copy cannot mint another badge. 
 behind one client are several slots of its mask; several mutually untrusting clients on one bus
 each hold slots of their own.
 
+**A client does what its badge's RIGHTS allow.** Above the slot mask, the badge carries one bit
+per right of `<kickos/sys/rights.h>` (`kos_endpoint_badge`, `ipc-call-reply.md`, *The sender's
+badge*). A bus service checks them with `kickos::bus::request_rights` and `kos_badge_grants`
+right after the slot: `KOS_BUS_OP_CONFIG` needs `config`; an SPI `KOS_BUS_OP_XFER` needs
+`transfer`; an I2C one needs `write` for any segment that writes and `read` for any that reads.
+The driver declares the rights it checks (`kickos_add_driver(... RIGHTS transfer config)`), a use
+names the ones it holds, `uses: [{ path: /svc/spi0, slots: [0], rights: [transfer] }]`, and must
+name them: admission refuses a use naming none (`driver.rights-missing`), an empty list, and a
+right the driver does not declare (`driver.right`).
+
 Refusals: `device >= KOS_BUS_DEV_MAX` is `status = -KOS_EINVAL`; a slot outside the caller's
-badge is `-KOS_EACCES`, on `KOS_BUS_OP_CONFIG` and `KOS_BUS_OP_XFER` alike; and a
+badge, or a right the op needs that the badge does not carry, is `-KOS_EACCES`, on
+`KOS_BUS_OP_CONFIG` and `KOS_BUS_OP_XFER` alike; and a
 `KOS_BUS_OP_XFER` naming a granted slot that has had no `KOS_BUS_OP_CONFIG` yet is
 `-KOS_EINVAL` -- there is no profile to apply, and a service must never clock a device on another
 device's profile.
@@ -248,8 +267,8 @@ under one SPI byte time -- so no dirty-tracking of the live slot is worth its st
 **The reply cap is consumed on EVERY loop path.** A malformed request (bad `proto` / `op`
 / `nseg`, segment lengths exceeding the message, a reply that would not fit the wire, a
 `region_cap != -1`) gets an immediate `kos_reply` carrying `status = -KOS_EINVAL` (or
-`-KOS_ENOSYS` for the region path), and a slot outside the caller's badge one carrying
-`-KOS_EACCES`. A leaked reply cap parks the client forever (until the
+`-KOS_ENOSYS` for the region path), and a slot outside the caller's badge, or a right the op
+needs that its badge lacks, one carrying `-KOS_EACCES`. A leaked reply cap parks the client forever (until the
 driver dies). The service loop is: `kos_reply_recv` a request, reading the `kos_recv_info`
 nested in its opts; if `reply_cap` is `KOS_CAP_NONE` it is a plain send (not this protocol) --
 ignore;
@@ -262,7 +281,8 @@ The service is a THIN TRANSPORT over the SPI class and there is no engine interf
 template: `kickos::spi::serve_loop(bus)` blocks on the delegated WAIT recv cap
 (`KOS_SPAWN_DELEGATED_CAP0`), drops plain sends (no reply cap), and hands every call to
 `serve_one` with the badge its `kos_recv_info` carried, which parses the `kos_bus_req` / `seg` /
-`cfg` framing, enforces the inline budget, refuses a slot the badge does not grant, routes
+`cfg` framing, enforces the inline budget, refuses a slot the badge does not grant and an op
+whose right it does not carry, routes
 `req.device` to its slot, calls the class, and builds the `kos_bus_rsp` reply OVER the
 request in the loop's one buffer, ALWAYS answering a length (the invariant above: an arm
 answering zero would leak the reply capability). The LOOP completes the call, on the

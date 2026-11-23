@@ -24,8 +24,17 @@ exits_on_fault: false
 interrupts: { count: { value: 160, ref: "Table 4-2 CM7 domain interrupt summary, p.52" } }
 
 apertures:
-  - { window: [0x40000000, 0x400000], ref: "Table 3-1 System memory map (CM7), AIPS-1 to AIPS-4, p.36" }
-  - { window: [0x42000000, 0x100000], ref: "Table 3-1 System memory map (CM7), AIPS-5, p.35" }
+  - { window: [0x40084000, 0x14000], ref: "Table 3-2 AIPS-1 memory map, PIT to ACMP, p.37" }
+  - { window: [0x400B4000, 0x20000], ref: "Table 3-2 AIPS-1 memory map, EWM to WDOG2, p.37" }
+  - { window: [0x400E0000, 0x4000], ref: "Table 3-2 AIPS-1 memory map, TSC_DIG, p.37" }
+  - { window: [0x400E8000, 0x8000], ref: "Table 3-2 AIPS-1 memory map, eDMA and DMA_CH_MUX, p.37" }
+  - { window: [0x40184000, 0x70000], ref: "Table 3-3 AIPS-2 memory map, LPUART1 to GPT2, p.38" }
+  - { window: [0x401FC000, 0x4000], ref: "Table 3-3 AIPS-2 memory map, KPP, p.38" }
+  - { window: [0x402B4000, 0x30000], ref: "Table 3-4 AIPS-3 memory map, PXP to USB, p.39" }
+  - { window: [0x402FC000, 0x4000], ref: "Table 3-4 AIPS-3 memory map, DCP, p.39" }
+  - { window: [0x40380000, 0x6C000], ref: "Table 3-5 AIPS-4 memory map, SPDIF to FLEXPWM4, p.40" }
+  - { window: [0x403F0000, 0x10000], ref: "Table 3-5 AIPS-4 memory map, LPI2C1 to LPI2C4, p.40" }
+  - { window: [0x42000000, 0x24000], ref: "Table 3-6 AIPS-5 memory map, GPIO6 to FlexIO3, p.41" }
 
 devices:
   # A device on an AIPS bridge is its whole 16 KiB slot.
@@ -56,6 +65,7 @@ devices:
   wdog1: { window: [0x400B8000, 0x4000], ref: "Table 3-2 AIPS-1 memory map, p.37" }
   wdog2: { window: [0x400D0000, 0x4000], ref: "Table 3-2 AIPS-1 memory map, p.37" }
   rtwdog: { window: [0x400BC000, 0x4000], ref: "Table 3-2 AIPS-1 memory map, p.37" }
+  ewm: { window: [0x400B4000, 0x4000], ref: "Table 3-2 AIPS-1 memory map, p.37" }
 
   gpt1:
     window: [0x401EC000, 0x4000]

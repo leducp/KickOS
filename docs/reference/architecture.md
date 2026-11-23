@@ -754,10 +754,11 @@ it cannot gate peripherals at all -- a separate, coarser authority does, and tha
 per-thread. (Narrative + the worked K64F bring-up: `../book/peripheral-isolation-and-the-hardware-ceiling.md`.)
 
 **A device window lies inside one of the chip's bus apertures on every enforcing backend.** On a
-region chip the apertures are the chip file's `apertures:` rows, the manual's peripheral bus
-windows; on a translating one they are its grantable devices' own windows. No aperture holds RAM,
-so a task holding `AUTH_MEMORY` can never map kernel RAM as a device window (`-KOS_EINVAL`), and a
-chip file without `apertures:` is refused. A window over a device the chip file marks
+region chip the apertures are the chip file's `apertures:` rows, the manual's user-peripheral
+spans, so no clock, reset, power, pad, flash or bus-control block lies in one; on a translating
+one they are its grantable devices' own windows. No aperture holds RAM, so a task holding
+`AUTH_MEMORY` can never map kernel RAM as a device window (`-KOS_EINVAL`), and a chip file without
+`apertures:` is refused. A window over a device the chip file marks
 `bus_master` also needs `AUTH_BUS_MASTER` (`-KOS_EPERM`): every DMA engine and every other block
 that writes memory by physical address is listed and marked. A device window is also never the
 buffer of a kernel copy: a system call's pointer into one answers `-KOS_EFAULT`.

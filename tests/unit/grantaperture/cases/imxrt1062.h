@@ -1,0 +1,33 @@
+// SPDX-License-Identifier: CECILL-C
+// Copyright (c) 2026 Philippe Leduc
+//
+// The imxrt1062 windows, from IMXRT1060RM Tables 3-2 to 3-5.
+
+#ifndef KICKOS_TESTS_UNIT_GRANTAPERTURE_CASES_IMXRT1062_H
+#define KICKOS_TESTS_UNIT_GRANTAPERTURE_CASES_IMXRT1062_H
+
+#include "../aperture_case.h"
+
+constexpr ApertureCase CASES[] = {
+    {"AIPSTZ1", 0x4007C000u, 0x4000u, -KOS_EINVAL},
+    {"DCDC", 0x40080000u, 0x4000u, -KOS_EINVAL},
+    {"IOMUXC_GPR", 0x400AC000u, 0x4000u, -KOS_EINVAL},
+    {"SNVS", 0x400D4000u, 0x4000u, -KOS_EINVAL},
+    {"ANALOG", 0x400D8000u, 0x4000u, -KOS_EINVAL},
+    {"CSU", 0x400DC000u, 0x4000u, -KOS_EINVAL},
+    {"GPC", 0x400F4000u, 0x4000u, -KOS_EINVAL},
+    {"SRC", 0x400F8000u, 0x4000u, -KOS_EINVAL},
+    {"CCM", 0x400FC000u, 0x4000u, -KOS_EINVAL},
+    {"OCOTP", 0x401F4000u, 0x4000u, -KOS_EINVAL},
+    {"IOMUXC", 0x401F8000u, 0x4000u, -KOS_EINVAL},
+    {"FLEXSPI", 0x402A8000u, 0x4000u, -KOS_EINVAL},
+    {"SEMC", 0x402F0000u, 0x4000u, -KOS_EINVAL},
+    {"BEE", 0x403EC000u, 0x4000u, -KOS_EINVAL},
+    {"GPT1", 0x401EC000u, 0x4000u, -KOS_EPERM},
+    {"LPUART1", 0x40184000u, 0x4000u, 0},
+    {"EWM", 0x400B4000u, 0x4000u, 0},
+    {"WDOG1", 0x400B8000u, 0x4000u, 0},
+    KICKOS_CASE_ARMV7M_MPU,
+};
+
+#endif

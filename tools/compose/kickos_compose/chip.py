@@ -436,12 +436,14 @@ def emit_cmake(view):
     privilege = "OFF"
     if not units or any(unit.privilege is not False for unit in units):
         privilege = "ON"
-    reserved = table_rows(view)["reserved_blocks"]
-    facts = ["set(KICKOS_CHIP_PRIVILEGE %s)\n" % privilege,
-             "set(KICKOS_CHIP_RESERVED_BLOCKS %d)\n" % len(reserved)]
-    if reserved:
-        facts.append("set(KICKOS_CHIP_RESERVED_BLOCK0 0x%X 0x%X)\n" % (reserved[0][0], reserved[0][1]))
     tables = table_rows(view)
+    facts = ["set(KICKOS_CHIP_PRIVILEGE %s)\n" % privilege]
+    # A spawn's device window outside every aperture answers -KOS_EINVAL before any reserved-block
+    # test, so only a block inside one is refused -KOS_EPERM for its overlap.
+    inside = [(base, size) for base, size, ref in tables["reserved_blocks"]
+              if any(a <= base and base + size <= a + span for a, span, aref in tables["window_apertures"])]
+    if inside:
+        facts.append("set(KICKOS_CHIP_RESERVED_IN_APERTURE0 0x%X 0x%X)\n" % inside[0])
     for table, name in (("window_apertures", "APERTURE0"), ("bus_master_apertures", "BUS_MASTER0")):
         if tables[table]:
             facts.append("set(KICKOS_CHIP_%s 0x%X 0x%X)\n" % (name, tables[table][0][0], tables[table][0][1]))

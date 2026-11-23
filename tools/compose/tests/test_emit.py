@@ -11,15 +11,16 @@ import tempfile
 import types
 import unittest
 
-from kickos_compose import descriptions, emit, partition, region, supply
+from kickos_compose import descriptions, emit, manifest_fields, partition, region, supply
 from kickos_compose.composition import Cache, admit_composition
 from kickos_compose.manifest import read_manifest
 
 from kickos_compose.subset import File, Report
 from kickos_compose.__main__ import REFUSED
 from test_arms import (
-    ARM64_AMP, ARM64_PAIR, C6_AMP, C6_PAIR, LOCAL, MANIFESTS, ON_REQUEST_SERVING, PLATFORM, RP_AMP, RP_PAIR, SYSTEMS,
-    TREE, VIRTIO, mutate, read, write,
+    ARM64_AMP, ARM64_PAIR, C6_AMP, C6_PAIR, IMX_MANIFEST, IMX_SYSTEM, LOCAL, MANIFESTS, ON_REQUEST_SERVING, PLATFORM,
+    REGION_POOLS, RIGHT_BITS, RIGHTS_HEADER, RP_AMP, RP_PAIR, SLOT_BITS, SYSTEMS, TREE, VIRTIO, XMC_PROTECTION,
+    manifest_of, mutate, read, write,
 )
 
 sys.path.insert(0, os.path.join(TREE, "tools", "manifest"))
@@ -165,6 +166,36 @@ class Emitted(unittest.TestCase):
         region = [g for g in sensor if g.kind == "region"][0]
         self.assertEqual(region.flags, ["uncached"])
         self.assertEqual((table.ends_task, table.tasks[2].authority), (2, ["memory", "system"]))
+
+    def test_a_use_s_badge_carries_its_slots_and_its_rights(self):
+        transfer, config, write, read, control = (1 << RIGHT_BITS[name]
+                                                  for name in ("transfer", "config", "write", "read", "control"))
+        refusals, table, path, manifest = self.table(
+            "xmc4800-relax.yaml", [("    uses: [/svc/sensor]\n",
+                                    "    uses: [/svc/sensor, { path: /svc/console, rights: [read] }]\n")])
+        self.assertEqual(refusals, [])
+        uses = [(g.path, g.badge) for task in ("sensor", "app") for g in self.grants_of(table, task)
+                if g.kind == "endpoint_use"]
+        self.assertEqual(uses, [("/svc/spi0", 1 | transfer | config), ("/svc/sensor", 0), ("/svc/console", read)])
+        refusals, table, path, manifest = self.table(
+            "xmc4800-relax.yaml", [("    uses: [/svc/sensor]\n",
+                                    "    uses: [/svc/sensor, { path: /svc/console, rights: [write, read, control] }]\n")])
+        self.assertEqual([g.badge for g in self.grants_of(table, "app") if g.path == "/svc/console"],
+                         [write | read | control])
+
+    def test_a_line_grant_is_emitted_as_its_cluster_numbers_it(self):
+        m7 = manifest_of("imx8mp-evk", "imx8mp", "armv7m", XMC_PROTECTION, 1, REGION_POOLS,
+                         (960, 4096, 512, 4096, "4096"))
+        emitted = []
+        for cluster, manifest_text in (("a53", IMX_MANIFEST), ("m7", m7)):
+            path = os.path.join(self.systems, "emitted-imx8mp-%s.yaml" % cluster)
+            write(path, mutate(IMX_SYSTEM, [("cluster: a53\n", "cluster: %s\n" % cluster)])[0])
+            manifest = os.path.join(self.scratch, "manifest.yaml")
+            write(manifest, manifest_text)
+            report, table = emit.table_of(path, manifest)
+            self.assertEqual([str(r) for r in report.refusals], [])
+            emitted.append([g.line for g in self.grants_of(table, "audio") if g.kind == "line"])
+        self.assertEqual(emitted, [[90 + 32], [90]])
 
     def test_the_init_lowers_itself_above_the_lowest_unless_the_composition_states_its_priority(self):
         refusals, table, path, manifest = self.table("qemu-arm64.yaml")
@@ -641,6 +672,36 @@ class Partitioned(unittest.TestCase):
                              + ["--manifest", self.manifest, "--node", "0"], env=env, capture_output=True, text=True)
         self.assertEqual(run.returncode, REFUSED, run.stdout + run.stderr)
         self.assertIn("partition.unserved", run.stdout)
+
+
+class BadgeLayout(unittest.TestCase):
+    """The export manifest's badge layout is <kickos/sys/rights.h>'s, so a change there reaches the
+    composer, and a header stating none is refused by name."""
+
+    def layout_of(self, text):
+        scratch = tempfile.mkdtemp(prefix="kickos-rights-")
+        try:
+            path = os.path.join(scratch, "rights.h")
+            write(path, text)
+            return manifest_fields.badge_layout(path)
+        finally:
+            shutil.rmtree(scratch)
+
+    def test_the_writer_reads_the_header_the_services_include(self):
+        self.assertEqual(os.path.realpath(genmanifest.RIGHTS_HEADER), os.path.realpath(RIGHTS_HEADER))
+
+    def test_a_moved_bit_or_slot_mask_reaches_the_manifest(self):
+        text = read(RIGHTS_HEADER)
+        slot_bits, rights = self.layout_of(mutate(text, [("X(TRANSFER, transfer, 4)", "X(TRANSFER, transfer, 6)")])[0])
+        self.assertEqual((slot_bits, rights["transfer"]), (SLOT_BITS, SLOT_BITS + 6))
+        slot_bits, rights = self.layout_of(mutate(text, [("#define KOS_BADGE_SLOT_BITS %du" % SLOT_BITS,
+                                                          "#define KOS_BADGE_SLOT_BITS 20u")])[0])
+        self.assertEqual((slot_bits, rights["write"]), (20, 20))
+
+    def test_a_header_stating_no_slot_mask_is_refused_by_name(self):
+        text = mutate(read(RIGHTS_HEADER), [("#define KOS_BADGE_SLOT_BITS %du\n" % SLOT_BITS, "")])[0]
+        with self.assertRaises(manifest_fields.BadgeLayoutError):
+            self.layout_of(text)
 
 
 class Reserved(unittest.TestCase):

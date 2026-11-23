@@ -28,6 +28,7 @@ kickos_add_driver(spi_xmcssc SOURCES spi_usic.cc REGDIR arch/arm/chip/xmc4800)
 kickos_add_driver(xmcssc SOURCES xmcssc.cc spi_usic.cc REGDIR arch/arm/chip/xmc4800
                   BASE mmap::USIC0_CH1_BASE WINDOWS regs LINES irq:edge BLOCK none BARRIER none
                   POSTURE retain START xmc_spi0_start CLIENT kickos_spi_proxy SLOTS 4
+                  RIGHTS transfer config
                   THREAD service ENTRY bus_thread ARG line0_index WINDOW regs CAPS ep:wait notify:wait irq:wait)
 target_compile_definitions(kickos_xmcssc PRIVATE
   kos_spi_bus_open=xmcssc_bus_open

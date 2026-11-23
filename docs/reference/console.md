@@ -739,6 +739,19 @@ writes the request frame to the wire as though it were text AND never replies, s
 parks forever on a reply that cannot come.** An unimplemented op is refused, never ignored:
 refusing costs the caller an error, ignoring costs it the system.
 
+**Every op needs a right of the caller's badge** (`<kickos/sys/rights.h>`), checked before the
+driver acts on the op, and a missing one is refused `-KOS_EACCES`: `KOS_UART_READ` needs `read`,
+`KOS_UART_SET_MODE` and `KOS_UART_CONFIGURE` need `control`, and `KOS_UART_WRITE`, `KOS_UART_STATS`
+and `KOS_UART_DRAIN` need `write`, as does a plain send, which a driver drops without it and counts
+nowhere a writer reads. `KOS_UART_STATS` answers every receive and IRQ counter as 0 to a caller
+without `read`, their timing being the console's input. Every task's stdout seat carries `write`
+alone: the kernel seats it with
+`KOS_RIGHT_WRITE` and delivers its own held records under that badge. A task that reads the
+console or sets its mode holds a use of the console's path, `uses: [{ path: /svc/console, rights:
+[read] }]`, whose badge the init mints; a use of the console names the rights it holds, of those
+the driver declares (`kickos_add_driver(... RIGHTS write read control)`), and admission refuses one
+naming none.
+
 | op | answer |
 | --- | --- |
 | `KOS_UART_WRITE` | queues bytes; `rsp.len` is the count ACCEPTED, which may be short, and the client retries the remainder |

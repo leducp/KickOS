@@ -16,5 +16,6 @@ kickos_add_driver(c6uart SOURCES c6uart.cc uart_c6.cc ../../espuart/uart_esp.cc 
                   BASE mmap::UART0_BASE WINDOWS regs LINES uart0:level
                   BLOCK ${KICKOS_UART_BLOCK_SIZE} INIT block_init BARRIER 1 READY uart::KOS_UART_READY_OFFSET
                   POSTURE handover CONSOLE START c6uart_console_start
+                  RIGHTS write read control
                   THREAD c6uartirq PRIORITY 1 ENTRY irq_entry ARG block WINDOW regs CAPS notify:wait uart0:wait
                   THREAD service ENTRY uart::console_thread ARG block CAPS ep:wait notify:signal:doorbell)
