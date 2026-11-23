@@ -2,9 +2,11 @@
 # Copyright (c) 2026 Philippe Leduc
 #
 # tools/esp-image.py over ELFs written here, with an nm that prints the symbols the test names:
-# the flash offset it prints and the segment shapes it refuses before esptool runs, and
-# tools/flash-esptool.sh writing the esp32 image at that offset.
+# the flash offset it prints, the segment shapes it refuses before esptool runs, the digest it
+# appends to a RAM-only-header image, and tools/flash-esptool.sh writing the esp32 image at that
+# offset.
 
+import hashlib
 import os
 import struct
 import subprocess
@@ -159,6 +161,79 @@ class Window(Fixture):
         self.assertEqual(image[:4], b"BOOT")
         self.assertEqual(image[0x90000 + 0x100:0x90000 + 0x140], payload)
         self.assertEqual(len(image), 0x90000 + C6_END - C6_START)
+
+
+# A stub esptool's output: an image header (magic, one segment) of 24 bytes, one empty segment
+# and the checksum's pad, 48 bytes in all; byte 23 is hash_appended.
+def boot(flagged=False):
+    image = bytearray(48)
+    image[0] = 0xE9
+    image[1] = 1
+    if flagged:
+        image[23] = 1
+    return bytes(image)
+
+
+class Digest(Fixture):
+    def stub(self, image):
+        source = os.path.join(self.dir.name, "boot.bin")
+        with open(source, "wb") as f:
+            f.write(image)
+        stub = os.path.join(self.dir.name, "esptool")
+        with open(stub, "w") as f:
+            f.write("#!/bin/sh\nwhile [ \"$1\" != --output ]; do shift; done\ncp '%s' \"$2\"\n" % source)
+        os.chmod(stub, 0o755)
+        return stub
+
+    def plain(self, image, *options):
+        self.symbols("")
+        with open(self.elf, "wb") as f:
+            f.write(elf([]))
+        out = os.path.join(self.dir.name, "out")
+        result = self.run_tool(self.stub(image), "esp32c6", self.nm, self.elf, out, *options)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        with open(out, "rb") as f:
+            return f.read()
+
+    def flash_text(self, load, image):
+        self.symbols("%08x A __kickos_esp32_flash_text_start\n%08x A __kickos_esp32_flash_text_end\n"
+                     "%08x A __kickos_esp32_flash_text_load\n"
+                     "00000000 A __kickos_esp32_flash_image_offset\n%s" % (C6_START, C6_END, load, C6_WINDOW))
+        with open(self.elf, "wb") as f:
+            f.write(elf([(C6_START, 0x40, 0x40)], bytes(range(0x40))))
+        out = os.path.join(self.dir.name, "out")
+        return out, self.run_tool(self.stub(image), "esp32c6", self.nm, self.elf, out, "--ram-only-header")
+
+    def assert_sealed(self, image, length):
+        self.assertEqual(image[23], 1)
+        self.assertEqual(image[length:length + 32], hashlib.sha256(image[:length]).digest())
+
+    def test_the_plain_path_appends_the_digest_to_a_ram_only_header_image(self):
+        image = self.plain(boot(), "--ram-only-header")
+        self.assertEqual(len(image), 48 + 32)
+        self.assert_sealed(image, 48)
+
+    def test_the_flash_text_path_appends_the_digest_ahead_of_the_text(self):
+        out, result = self.flash_text(0x1000, boot())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        with open(out, "rb") as f:
+            image = f.read()
+        self.assert_sealed(image, 48)
+        self.assertEqual(image[48 + 32:0x1000], b"\xff" * (0x1000 - 48 - 32))
+        self.assertEqual(image[0x1000:0x1040], bytes(range(0x40)))
+
+    def test_the_digest_counts_against_the_text_load(self):
+        out, result = self.flash_text(48 + 31, boot())
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("past its text at 0x4F", result.stderr)
+        out, result = self.flash_text(48 + 32, boot())
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_an_image_already_flagged_is_left_as_is(self):
+        self.assertEqual(self.plain(boot(flagged=True), "--ram-only-header"), boot(flagged=True))
+
+    def test_an_image_with_a_header_of_its_own_is_left_as_is(self):
+        self.assertEqual(self.plain(boot()), boot())
 
 
 if __name__ == "__main__":

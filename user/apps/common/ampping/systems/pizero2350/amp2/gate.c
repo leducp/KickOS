@@ -22,9 +22,14 @@ static uint32_t gate_read32(uintptr_t at)
     return *(volatile uint32_t const*)at;
 }
 
-void ampping_gate_serve(struct ampbook_row* row)
+void ampping_gate_arm(struct ampbook_row* book)
 {
-    (void)row;
+    (void)book;
+}
+
+void ampping_gate_serve(struct ampbook_row* book)
+{
+    (void)book;
 }
 
 void ampping_gate_report(struct ampbook_row* book)

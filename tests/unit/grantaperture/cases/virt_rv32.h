@@ -12,6 +12,10 @@ constexpr ApertureCase CASES[] = {
     {"TEST", 0x00100000u, 0x1000u, -KOS_EINVAL},
     {"CLINT", 0x02000000u, 0x10000u, -KOS_EINVAL},
     {"PLIC", 0x0C000000u, 0x1000u, -KOS_EINVAL},
+    // A PCI device is a DMA master, and every BAR and config space reaches one.
+    {"PCIE_PIO", 0x03000000u, 0x10000u, -KOS_EINVAL},
+    {"PCIE_ECAM", 0x30000000u, 0x1000u, -KOS_EINVAL},
+    {"PCIE_MMIO", 0x40000000u, 0x1000u, -KOS_EINVAL},
     {"RTC", 0x00101000u, 0x1000u, 0},
 };
 

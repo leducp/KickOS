@@ -458,6 +458,49 @@ milestone does not close while any of them still composes a system.
         - Open, not fixed here: devices that reach memory by physical address carry no
           `bus_master` row on sam3x8e (every PDC peripheral) and on the imx8mp M7 (uSDHC, ENET2,
           SDMA, eDMA, ISI, LCDIF).
+      - M10.8.4 (the ESP32-C6 partition findings):
+        - 6-F1: the LP CPU reaches HP SRAM through HP_APM's path M2, not LP_APM0, which fronts
+          only LP SRAM's high-speed path (TRM v1.2 Figure 16.3-1, p.562). The amp2 gate witness
+          now has the LP node store to and load from a word of node 0's own memory; its judge
+          requires the load to read 0 and the word unchanged. Silicon at 4e9747176: the
+          esp32c6-wroom-amp2 ampping partition judged PASS by `check_c6_amp_capture.sh`
+          (`.session/logs/m1086amp-esp32c6-wroom-ampping_n0.log`), which `ampping-c6.capture` now
+          holds.
+        - 6-F2: node 1's PMU row is the LP kernel's own words, PMU_LP_INT_ST to
+          PMU_HP_LP_CPU_COMM (0x600B0170, 0x18), not the page. Arms: `c6apm`, no REE1 row over a
+          PMU word outside them and every word the LP kernel uses covered; `test_emit.py`'s C6
+          rows.
+        - 6-F4: the gate writes every word it rests on, each gate's catch-all, FILTER_EN and
+          FUNC_CTRL, the HP CPU's mode and the LP CPU's HP SRAM bypass, reads each back under
+          the register's implemented bits once all are written, and refuses the boot naming a
+          word that does not hold; the LP CPU's mode is read back at release. LP_APM0 is the
+          third gate, rows none. Its base is ESP-IDF's (HP_APM + 0x800): TRM 16.6.3 (p.568) says
+          HP_APM + 0x1000, which Table 5.3-2 leaves reserved, so the boot first reads LP_APM0's
+          DATE (Reg 16.52) there and refuses naming the base on a mismatch. HP_APM's DATE resets to
+          the same value, so the DATE read alone does not tell LP_APM0 from an alias of HP_APM;
+          the read-back after every write does. Arms: `c6apm` over a register file
+          that keeps only each register's implemented bits. Silicon at 4e9747176: the full
+          esp32c6-wroom fleet (TAG m1086a, `.session/logs/m1086a*-esp32c6-wroom-*.log`) ran clean,
+          no partition-gate refusal line.
+        - 6-F6: CSRs 0x803 (R/W), 0x804 (RO) and 0x805 (R/W) sit in the RISC-V CSR map's
+          user-level custom range (Privileged ISA Table 3, 0x800-0x8FF), the TRM states no
+          privilege (1.14, p.85), and cpu_gpio_out0 to _out7 are out-sel 28 to 35 (Table
+          7.11-1, p.258); `arch_pinmux_set` refuses them `-KOS_EINVAL`. Silicon: c6blink red
+          with the refusal backed out, both out-sels accepted
+          (`.session/logs/m1086red-esp32c6-wroom-c6blink.log`), and green at 4e9747176, judged
+          PASS (`.session/logs/m1086blink-esp32c6-wroom-c6blink.log`), which `c6blink.capture`
+          now holds.
+        - 6-side: on the gate's command line QEMU 11.1.3 `virt` attaches no PCI function (`info
+          pci`: the host bridge alone); the PCIe PIO, ECAM and MMIO windows are no longer
+          apertures, nothing in-tree granting them. Arm: `grant_aperture_virt_rv32`.
+        - The ROM's `SHA-256 comparison failed`: esptool appends no digest to a
+          `--ram-only-header` image and the C6 ROM checks one anyway; every C6 image and the
+          amp2 partition now carry it with the header's flag set. Arms: `check_esp_segments.sh`
+          under `--app-bin`, and `--digest` on the partition image where it is built;
+          `test_esp_image.py`. Silicon at 4e9747176: the line is gone from every log of the
+          esp32c6-wroom fleet (TAG m1086a) and of the partition run.
+        - Docs left stale: `docs/design-m10-fleet.md` section 9.5 states two gates and "the PMU
+          page".
 - [ ] **M10.8.1: THE CORTEX-M TRAP ENTRY (the M10.8 audit, verified 2026-11-18).**
       **RULED (maintainer, 2026-11-18)** on the audit's findings:
       - Area 2 F2 (a K64F client's slow DSPI rate polled at a lent priority) is DROPPED: a granted

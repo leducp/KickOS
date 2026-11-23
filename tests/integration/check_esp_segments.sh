@@ -19,8 +19,14 @@
 # over that span count as no ROM segment and must end inside it. With --app-bin, no segment
 # the header lists may load into the span, the boot image must end below the load, and the bytes
 # at the load, counted from the image offset the .app.bin is flashed at, must be the ELF's own.
+# With --app-bin, every .app.bin's header says a digest follows the image, and the 32 bytes after
+# its checksum are the SHA-256 of everything before them: the ROM compares the two whatever the
+# header says, and prints its refusal on every boot.
+#
+# --digest checks that digest alone, on .app.bin files built from no listed ELF.
 #
 #   check_esp_segments.sh --images <list> <readelf> <nm> <esptool options> [--app-bin]
+#   check_esp_segments.sh --digest <app.bin>...
 #   check_esp_segments.sh --self-test
 
 set -u
@@ -134,6 +140,38 @@ flash_cover() {
     done < "$TMP/flash_rows"
 }
 
+# <file> <offset> <count>: <count> bytes from <offset>, as hex.
+hex_at() {
+    od -An -tx1 -v -j "$2" -N "$3" "$1" | tr -d ' \n'
+}
+
+# <name> <app.bin> <count>: the digest the ROM checks after the image's checksum. Sets rc.
+digest_bin() {
+    _db_at=24
+    _db_i=0
+    while [ "$_db_i" -lt "$3" ]; do
+        _db_len="$(le32_at "$2" $((_db_at + 4)))"
+        if [ -z "$_db_len" ]; then
+            echo "FAIL: $1: $2 ends inside its segment headers" >&2
+            rc=1
+            return
+        fi
+        _db_at=$((_db_at + 8 + _db_len))
+        _db_i=$((_db_i + 1))
+    done
+    _db_end=$(((_db_at | 15) + 1))
+    if [ "$(hex_at "$2" 23 1)" != 01 ]; then
+        echo "FAIL: $1: $2's header says no digest follows the image, and the ROM checks one" >&2
+        rc=1
+    fi
+    _db_want="$(head -c "$_db_end" "$2" | sha256sum | cut -c1-64)"
+    _db_got="$(hex_at "$2" "$_db_end" 32)"
+    if [ "$_db_got" != "$_db_want" ]; then
+        echo "FAIL: $1: the 32 bytes after $2's image at 0x$(printf '%X' "$_db_end") are not its SHA-256, so the ROM's comparison fails" >&2
+        rc=1
+    fi
+}
+
 # <name> <elf> <app.bin> <count>: the boot image's segments against the flash text, and the
 # flash text's bytes in the .app.bin against the ELF's. Sets rc.
 flash_bin() {
@@ -198,9 +236,28 @@ if [ "${1:-}" = --self-test ]; then
         } > "$TMP/$_pl_name.phdrs"
         echo "$TMP/$_pl_name.map" >> "$TMP/$_pl_list"
     }
-    # <name> <count>: its .app.bin header, holding <count> segments.
+    # <file>: the image closed as esptool closes it, the checksum's 16-byte pad, the header's
+    # digest byte set, and the SHA-256 of all of it after.
+    seal() {
+        _se_pad=$((15 - $(wc -c < "$1") % 16 + 1))
+        head -c "$_se_pad" /dev/zero >> "$1"
+        printf '\001' | dd of="$1" bs=1 seek=23 conv=notrunc 2>/dev/null
+        for _se_b in $(sha256sum "$1" | cut -c1-64 | sed 's/../& /g'); do
+            printf "\\$(printf '%03o' "0x$_se_b")"
+        done >> "$1"
+    }
+    # <name> <count>: its .app.bin, holding <count> empty segments.
     app_bin() {
-        printf "\\351\\$(printf '%03o' "$2")\\002\\040" > "$TMP/$1.app.bin"
+        {
+            printf "\\351\\$(printf '%03o' "$2")\\002\\040"
+            head -c 20 /dev/zero
+            _ab_i=0
+            while [ "$_ab_i" -lt "$2" ]; do
+                head -c 8 /dev/zero
+                _ab_i=$((_ab_i + 1))
+            done
+        } > "$TMP/$1.app.bin"
+        seal "$TMP/$1.app.bin"
     }
     # <list> [--app-bin]: the gate over the planted list, into $TMP/run.out.
     gate() {
@@ -259,6 +316,29 @@ if [ "${1:-}" = --self-test ]; then
     app_bin one 1
     gate ok.list --app-bin \
         || fail "headers that agree with the program headers are refused: $(cat "$TMP/run.out")"
+    # The ROM's digest: missing, or the header saying none follows.
+    printf '\377' | dd of="$TMP/one.app.bin" bs=1 seek=$(($(wc -c < "$TMP/one.app.bin") - 1)) conv=notrunc 2>/dev/null
+    if gate ok.list --app-bin; then
+        fail "an .app.bin whose digest is not its image's SHA-256 passes"
+    fi
+    grep -qF "one: the 32 bytes after $TMP/one.app.bin's image at 0x30 are not its SHA-256" "$TMP/run.out" \
+        || fail "a wrong digest is refused for another reason: $(cat "$TMP/run.out")"
+    app_bin one 1
+    printf '\000' | dd of="$TMP/one.app.bin" bs=1 seek=23 conv=notrunc 2>/dev/null
+    if gate ok.list --app-bin; then
+        fail "an .app.bin whose header says no digest follows passes"
+    fi
+    grep -qF "one: $TMP/one.app.bin's header says no digest follows the image" "$TMP/run.out" \
+        || fail "a cleared digest byte is refused for another reason: $(cat "$TMP/run.out")"
+    app_bin one 1
+    sh "$0" --digest "$TMP/one.app.bin" "$TMP/two.app.bin" > "$TMP/run.out" 2>&1 \
+        || fail "sealed images are refused under --digest: $(cat "$TMP/run.out")"
+    printf '\000' | dd of="$TMP/two.app.bin" bs=1 seek=23 conv=notrunc 2>/dev/null
+    if sh "$0" --digest "$TMP/one.app.bin" "$TMP/two.app.bin" > "$TMP/run.out" 2>&1; then
+        fail "an unflagged image passes under --digest"
+    fi
+    grep -qF "two.app.bin's header says no digest follows the image" "$TMP/run.out" \
+        || fail "an unflagged image is refused for another reason under --digest: $(cat "$TMP/run.out")"
     app_bin two 3
     if gate ok.list --app-bin; then
         fail "an .app.bin of another count than the program headers passes"
@@ -302,6 +382,7 @@ if [ "${1:-}" = --self-test ]; then
             le32 256
             head -c 256 /dev/zero
         } > "$TMP/$1.app.bin"
+        seal "$TMP/$1.app.bin"
         _fp_pad=$((0x6f000 - $(wc -c < "$TMP/$1.app.bin")))
         head -c "$_fp_pad" /dev/zero | tr '\000' '\377' >> "$TMP/$1.app.bin"
         tail -c +$((0x100 + 1)) "$TMP/$1" >> "$TMP/$1.app.bin"
@@ -352,9 +433,29 @@ if [ "${1:-}" = --self-test ]; then
         || fail "three flash text symbols are refused for another reason: $(cat "$TMP/run.out")"
     echo "PASS: program headers count as esptool merges them; an image of 17 segments, one whose"
     echo "  window the ROM loads, options with no --use-segments, and under --app-bin a header of"
-    echo "  another count or none are refused; flash text counts as no ROM segment, and a load"
-    echo "  segment past its end, three of its symbols, and under --app-bin a boot image loading,"
-    echo "  reaching or carrying other bytes of it are refused"
+    echo "  another count or none, or a ROM digest wrong or unflagged, are refused, and under"
+    echo "  --digest an unflagged image; flash text counts as no ROM segment, and a load segment"
+    echo "  past its end, three of its symbols, and under --app-bin a boot image loading, reaching"
+    echo "  or carrying other bytes of it are refused"
+    exit 0
+fi
+
+if [ "${1:-}" = --digest ]; then
+    shift
+    [ "$#" -ge 1 ] || fail "usage: check_esp_segments.sh --digest <app.bin>..."
+    BAD=0
+    for BIN in "$@"; do
+        [ -f "$BIN" ] || fail "no $BIN"
+        E="$(app_bin_segments "$BIN")"
+        [ -n "$E" ] || fail "$BIN holds no esptool image header"
+        rc=0
+        digest_bin "$(basename "$BIN")" "$BIN" "$E"
+        if [ "$rc" -ne 0 ]; then
+            BAD=$((BAD + 1))
+        fi
+    done
+    [ "$BAD" -eq 0 ] || fail "$BAD image(s) without the digest the ROM checks"
+    echo "PASS: $# image(s) carry the digest the ROM checks"
     exit 0
 fi
 
@@ -407,8 +508,11 @@ while IFS= read -r MAP; do
         if [ "$E" != "$N" ]; then
             echo "FAIL: $NAME: esptool wrote $E segments, the program headers give $N" >&2
             BAD=$((BAD + 1))
-        elif [ "$FT_END" -ne 0 ]; then
-            flash_bin "$NAME" "$ELF" "$BIN" "$E"
+        else
+            digest_bin "$NAME" "$BIN" "$E"
+            if [ "$FT_END" -ne 0 ]; then
+                flash_bin "$NAME" "$ELF" "$BIN" "$E"
+            fi
         fi
     fi
     if [ "$rc" -ne 0 ]; then

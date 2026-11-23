@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// ESP32-C6 access-permission (HP_APM, LP_APM) and TEE registers. APM is the bus-side,
+// ESP32-C6 access-permission (HP_APM, LP_APM, LP_APM0) and TEE registers. APM is the bus-side,
 // per-security-mode unit IN SERIES with PMP: PMP checks first, then APM. The reset posture
 // denies all REE access to every peripheral (region 0 catch-all), so a U-mode driver reaches
 // nothing until node 0 programs the gate.
@@ -10,8 +10,6 @@
 //  - An APM denial does NOT trap (TRM 16.5): a read returns 0, a write is dropped,
 //    and a separate HP_APM interrupt fires. Only PMP produces a load/store fault. So
 //    per-thread isolation proofs must ride the PMP fault, never APM.
-//  - HP_TEE_M0_MODE_CTRL resets to 0 => the HP CPU (master M0) runs U-mode as
-//    security mode REE0; KickOS relies on that reset default (no write needed).
 //  - Permissions are per security mode, never per master: every bus master but the two
 //    CPUs is REE2 at power-up (TRM 16.3.2.3 Note), so a REE2 permit opens to DMA too.
 
@@ -25,22 +23,39 @@
 namespace kickos::esp32c6::reg::apm
 {
     // --- HP_TEE mode controller. TEE_Mn_MODE_CTRL_REG = 0x00 + 0x4*n (Reg 16.53);
-    //     HP CPU is master M0 (TRM 16.3.1). Reset 0 => U-mode security mode is REE0.
+    //     HP CPU is master M0 (TRM 16.3.1). At MODE_TEE its user mode is REE0 and its machine
+    //     mode TEE.
     constexpr uintptr_t HP_TEE_M0_MODE_CTRL = mmap::HP_TEE_BASE + 0x00u;
 
     // --- The LP CPU's mode (Reg 16.56, reset 3).
     constexpr uintptr_t LP_TEE_M0_MODE_CTRL = mmap::LP_TEE_BASE + 0x00u;
+    // Set, the LP CPU reaches HP SRAM past every APM region (Reg 16.58, reset 0).
+    constexpr uintptr_t LP_TEE_FORCE_ACC_HP = mmap::LP_TEE_BASE + 0x90u;
+    constexpr uint32_t FORCE_ACC_MASK = 0x1u;
 
-    // LP_TEE_M0_MODE values (Reg 16.56).
+    // TEE_M0_MODE and LP_TEE_M0_MODE values, bits 1:0 (Reg 16.53, 16.56).
+    constexpr uint32_t MODE_MASK = 0x3u;
+    constexpr uint32_t MODE_TEE = 0u;
     constexpr uint32_t MODE_REE0 = 1u;
     constexpr uint32_t MODE_REE1 = 2u;
     constexpr uint32_t MODE_REE2 = 3u;
 
-    // --- Region controllers. HP_APM (Reg 16.1-16.4) and LP_APM (Reg 16.25-16.28) share
-    //     one layout; FILTER_EN resets to 0x01 (region 0 on), region 0 END to 0xFFFFFFFF.
+    // --- Region controllers. HP_APM (Reg 16.1-16.5), LP_APM (Reg 16.25-16.29) and LP_APM0
+    //     (Reg 16.41-16.45) share one layout.
     constexpr uintptr_t HP_APM_BASE = mmap::HP_APM_BASE;
     constexpr uintptr_t LP_APM_BASE = mmap::LP_APM_BASE;
+    constexpr uintptr_t LP_APM0_BASE = mmap::LP_APM0_BASE;
     constexpr uintptr_t REGION_STRIDE = 0x0Cu;
+
+    // An address's low two bits are 0 (16.3.2.2); ATTR is bits 10:0 less 3 and 7 (Reg 16.4,
+    // 16.28, 16.44).
+    constexpr uint32_t ADDR_MASK = ~3u;
+    constexpr uint32_t ATTR_MASK = 0x777u;
+
+    // LP_APM0_DATE (Reg 16.52): bits 27:0, reset 0x2205240.
+    constexpr uintptr_t LP_APM0_DATE = LP_APM0_BASE + 0x7FCu;
+    constexpr uint32_t DATE_MASK = 0x0FFFFFFFu;
+    constexpr uint32_t DATE = 0x2205240u;
 
     inline constexpr uintptr_t filter_en(uintptr_t gate)
     {
@@ -57,6 +72,10 @@ namespace kickos::esp32c6::reg::apm
     inline constexpr uintptr_t region_attr_of(uintptr_t gate, uint32_t n)
     {
         return gate + 0x0Cu + REGION_STRIDE * n;
+    }
+    inline constexpr uintptr_t func_ctrl(uintptr_t gate) // each access path's enable
+    {
+        return gate + 0xC4u;
     }
 
     constexpr uintptr_t FILTER_EN = filter_en(HP_APM_BASE);

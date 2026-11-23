@@ -38,6 +38,10 @@ namespace kickos::esp32c6::reg::gpio
 
     constexpr uint32_t OUT_SEL_SIMPLE = 128u;    // out-sel value: bit n of GPIO_OUT drives the pad
     constexpr uint32_t RMT_SIG_OUT0_IDX = 71u;   // GPIO matrix signal index: RMT ch-0 TX
+    // cpu_gpio_out0 to _out7 (Table 7.11-1, p.258), driven by CSRs 0x803 and 0x805, which the
+    // RISC-V CSR map gives user mode and no PMP or APM region covers.
+    constexpr uint32_t CPU_GPIO_OUT_FIRST_IDX = 28u;
+    constexpr uint32_t CPU_GPIO_OUT_LAST_IDX = 35u;
 
     // arch_pinmux_set `func` encoding: [15:0] the IO_MUX_GPIOn_REG word, [23] arm the matrix
     // out-sel write, [31:24] the out-sel signal index. [22:16] must be zero (reserved).

@@ -28,7 +28,11 @@ struct ampbook_row
     _Atomic uint32_t gate_foreign;
     // Set before the foreign read, so a read that never returned is told from one never made.
     _Atomic uint32_t gate_probing;
-    uint32_t rsv[11];
+    // A memory witness: in node 0's row the address of a word node 0 owns, in the serving node's
+    // the address it stored to and loaded from, and what the load returned.
+    _Atomic uint32_t gate_word;
+    _Atomic uint32_t gate_word_read;
+    uint32_t rsv[9];
 };
 
 _Static_assert(sizeof(struct ampbook_row) == 64u, "a row is its own 64 bytes");
@@ -41,10 +45,11 @@ uint32_t ampping_crossing(uint8_t right, uint32_t node, kos_cap_t* cap);
 // The rounds node 0 calls across.
 #define AMPPING_ROUNDS 4
 
-// The board's gate witness: the serving node's reads, made before it serves, node 0's report of
-// them, and the serving node's step after each answer, `served` answers in. Each is empty on a
-// board whose partition states no gate.
-void ampping_gate_serve(struct ampbook_row* row);
+// The board's gate witness: node 0's step before it marks its row, the serving node's reads, made
+// before it serves, node 0's report of them, and the serving node's step after each answer,
+// `served` answers in. Each is empty on a board whose partition states no gate.
+void ampping_gate_arm(struct ampbook_row* book);
+void ampping_gate_serve(struct ampbook_row* book);
 void ampping_gate_report(struct ampbook_row* book);
 void ampping_gate_served(struct ampbook_row* row, uint32_t served);
 

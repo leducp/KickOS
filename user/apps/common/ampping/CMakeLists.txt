@@ -120,10 +120,13 @@ if(KICKOS_AMP_NODE_ID EQUAL 0)
     # does every other image's .app.bin.
     find_program(KICKOS_ESPTOOL NAMES esptool esptool.py)
     if(KICKOS_ESPTOOL)
+      find_program(KICKOS_PYTHON3 NAMES python3 REQUIRED)
       add_custom_command(OUTPUT "${_esp_amp_flash}"
-        COMMAND "${KICKOS_ESPTOOL}" --chip ${KICKOS_CHIP} elf2image ${KICKOS_CHIP_ESPTOOL_IMAGE}
-                --output "${_esp_amp_flash}" "${_amp_artefact}"
-        DEPENDS "${_amp_artefact}"
+        COMMAND ${KICKOS_PYTHON3} -I ${KICKOS_ESP_IMAGE_TOOL} ${KICKOS_ESPTOOL} ${KICKOS_CHIP} ${CMAKE_NM}
+                "${_amp_artefact}" "${_esp_amp_flash}" ${KICKOS_CHIP_ESPTOOL_IMAGE}
+        COMMAND sh "${PROJECT_SOURCE_DIR}/tests/integration/check_esp_segments.sh" --digest "${_esp_amp_flash}"
+        DEPENDS "${_amp_artefact}" "${KICKOS_ESP_IMAGE_TOOL}"
+                "${PROJECT_SOURCE_DIR}/tests/integration/check_esp_segments.sh"
         COMMENT "packing every AMP node's LOAD segments into one ROM image"
         VERBATIM)
       add_custom_target(esp_amp_partition_image DEPENDS "${_esp_amp_flash}")
@@ -132,8 +135,8 @@ if(KICKOS_AMP_NODE_ID EQUAL 0)
       list(JOIN KICKOS_CHIP_ESPTOOL_IMAGE " " _esp_options)
       message(STATUS "KickOS: esptool not found: kickos-partition.app.bin (bootable "
         "${KICKOS_CHIP} AMP partition) not produced. Activate the esp-idf env, or run: "
-        "esptool --chip ${KICKOS_CHIP} elf2image ${_esp_options} --output kickos-partition.app.bin "
-        "kickos-partition.elf")
+        "python3 tools/esp-image.py esptool ${KICKOS_CHIP} nm kickos-partition.elf "
+        "kickos-partition.app.bin ${_esp_options}")
     endif()
   endif()
 

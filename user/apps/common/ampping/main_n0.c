@@ -63,6 +63,7 @@ int main(void)
     // NOTHING A GATE READS MAY BE PRINTED ABOVE THE SWEEP: every node queues its whole boot output
     // before it marks its row, and two kernels share one console with no lock across them (N6h).
     uint32_t const own = ampping_first_port((uint32_t)KOS_AMP_SELF_NODE);
+    ampping_gate_arm(book);
     atomic_store_explicit(&book[KOS_AMP_SELF_NODE].alive, own + 1u, memory_order_release);
     unsigned alive = 0;
     unsigned own_row = 0;

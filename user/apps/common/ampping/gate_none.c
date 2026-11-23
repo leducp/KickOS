@@ -3,9 +3,14 @@
 
 #include "book.h"
 
-void ampping_gate_serve(struct ampbook_row* row)
+void ampping_gate_arm(struct ampbook_row* book)
 {
-    (void)row;
+    (void)book;
+}
+
+void ampping_gate_serve(struct ampbook_row* book)
+{
+    (void)book;
 }
 
 void ampping_gate_report(struct ampbook_row* book)

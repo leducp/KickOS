@@ -18,7 +18,12 @@
 # __kickos_esp32_flash_window_start and _end, the addresses the cache maps, a segment loading
 # there outside the span is refused: nothing would map it. The section headers are left alone:
 # objcopy -R rewrites the program headers and loses the load addresses --use-segments reads.
+#
+# esptool appends no digest to a --ram-only-header image, and the ESP32-C6 ROM compares the 32
+# bytes after the image's checksum with its SHA-256 whatever the header says: such an image gets
+# the digest here, and its header's hash_appended byte set.
 
+import hashlib
 import os
 import struct
 import subprocess
@@ -26,6 +31,7 @@ import sys
 
 PT_NULL = 0
 PT_LOAD = 1
+HASH_APPENDED = 23
 SYMBOLS = ("__kickos_esp32_flash_text_start", "__kickos_esp32_flash_text_end",
            "__kickos_esp32_flash_text_load", "__kickos_esp32_flash_image_offset")
 WINDOW = ("__kickos_esp32_flash_window_start", "__kickos_esp32_flash_window_end")
@@ -72,6 +78,14 @@ def esptool(command, args):
         fail("`%s` failed:\n%s%s" % (" ".join(command + args), error.stdout, error.stderr))
 
 
+def sealed(image):
+    if image[HASH_APPENDED] != 0:
+        return image
+    image = bytearray(image)
+    image[HASH_APPENDED] = 1
+    return bytes(image) + hashlib.sha256(image).digest()
+
+
 def main(argv):
     if len(argv) == 4 and argv[1] == "--offset":
         found = symbols(argv[2], argv[3])
@@ -83,9 +97,15 @@ def main(argv):
         fail("usage: esp-image.py <esptool> <chip> <nm> <elf> <out> [<elf2image option>...]")
     tool, chip, nm, elf, out = argv[1:6]
     command = [tool, "--chip", chip, "elf2image"] + argv[6:]
+    seal = "--ram-only-header" in argv[6:]
     found = symbols(nm, elf)
     if "__kickos_esp32_flash_text_load" not in found:
         esptool(command, ["--output", out, elf])
+        if seal:
+            with open(out, "rb") as f:
+                image = f.read()
+            with open(out, "wb") as f:
+                f.write(sealed(image))
         return 0
     if not all(name in found for name in SYMBOLS):
         fail("%s names a flash text load but not all of %s" % (elf, ", ".join(SYMBOLS)))
@@ -136,6 +156,8 @@ def main(argv):
         esptool(command, ["--output", ram_bin, ram_elf])
         with open(ram_bin, "rb") as f:
             image = f.read()
+        if seal:
+            image = sealed(image)
     finally:
         for path in (ram_elf, ram_bin):
             if os.path.exists(path):

@@ -5,7 +5,8 @@
 // peripheral passes PMP first, then the bus-side APM (TRM 16.1), and only PMP traps: an APM denial
 // reads 0 or drops the write and raises a separate interrupt (TRM 16.5). The task's entry muxes
 // GPIO10 through kos_pinmux_set, probes kos_periph_enable as the window's holder, drives and reads
-// back the pad through the 64-byte pin bank its composition grants, then a child thread holding no
+// back the pad through the 64-byte pin bank its composition grants, is refused the CPU's
+// dedicated-GPIO outputs as a pad's signal, then a child thread holding no
 // window probes the same call and writes GPIO10's matrix out-sel, the escalation surface
 // kos_pinmux_set owns, in the same block but outside the window: PMP kills the child and the task
 // ends.
@@ -36,6 +37,10 @@ namespace
     constexpr uint32_t PINMUX_MATRIX_EN = 1u << 23;
     constexpr uint32_t PINMUX_OUT_SEL_S = 24;
     constexpr uint32_t OUT_SEL_SIMPLE = 128u; // bit n of GPIO_OUT drives the pad (TRM 7.4.1)
+    // cpu_gpio_out0 and _out7 (TRM Table 7.11-1, p.258), driven by any U-mode thread through the
+    // CPU's dedicated-GPIO CSRs.
+    constexpr uint32_t OUT_SEL_CPU_GPIO_FIRST = 28u;
+    constexpr uint32_t OUT_SEL_CPU_GPIO_LAST = 35u;
 
     // GPIO10 is a non-strapping header pin (strapping 8/9/15, USB-JTAG 12/13, console 16/17).
     constexpr int BLINK_PIN = 10;
@@ -145,6 +150,16 @@ int main(int, char**)
     else
     {
         kos::print("[c6blink] FAIL (pad did not track the drive)\n");
+    }
+
+    for (uint32_t const sel : {OUT_SEL_CPU_GPIO_FIRST, OUT_SEL_CPU_GPIO_LAST})
+    {
+        char what[40];
+        ksnprintf(what, sizeof(what), "pinmux cpu-gpio out-sel %lu", static_cast<unsigned long>(sel));
+        verdict(what,
+                kos_pinmux_set(0, BLINK_PIN,
+                               IO_MUX_MCU_SEL_GPIO | IO_MUX_FUN_DRV_2 | PINMUX_MATRIX_EN | (sel << PINMUX_OUT_SEL_S)),
+                -KOS_EINVAL);
     }
 
     auto const child = kos::thread::create(poker, reinterpret_cast<void*>(win), "c6poke", 10);

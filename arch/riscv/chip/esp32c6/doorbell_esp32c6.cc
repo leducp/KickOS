@@ -15,13 +15,13 @@
 
 #include <stdint.h>
 
+#include "regs/pmu.h"
+
 extern "C" void kickos_isr_timer(void);
 
 namespace
 {
-    constexpr uintptr_t PMU_COMM = 0x600B0184u;
-    constexpr uintptr_t HP_INT_CLR = 0x600B0168u;
-    constexpr uintptr_t LP_INT_CLR = 0x600B0178u;
+    namespace pmu = kickos::esp32c6::reg::pmu;
     constexpr uint32_t LP_TO_HP = 1u << 30;
     constexpr uint32_t HP_TO_LP = 1u << 31;
 
@@ -32,9 +32,9 @@ namespace
         static void clear(void)
         {
 #if KICKOS_AMP_NODE_ID == 0
-            r32(HP_INT_CLR) = 1u << 29;
+            r32(pmu::HP_INT_CLR) = 1u << 29;
 #else
-            r32(LP_INT_CLR) = 1u << 31;
+            r32(pmu::LP_INT_CLR) = 1u << 31;
 #endif
             __asm volatile("fence iorw, iorw" ::: "memory");
         }
@@ -71,11 +71,11 @@ void kickos_doorbell_raise(uint32_t cores)
     __asm volatile("fence iorw, iorw" ::: "memory");
     if ((cores & 1u) != 0u)
     {
-        r32(PMU_COMM) = LP_TO_HP;
+        r32(pmu::HP_LP_CPU_COMM) = LP_TO_HP;
     }
     if ((cores & 2u) != 0u)
     {
-        r32(PMU_COMM) = HP_TO_LP;
+        r32(pmu::HP_LP_CPU_COMM) = HP_TO_LP;
     }
 }
 
@@ -89,7 +89,7 @@ void arch_ipi_fence(void)
 void kickos_c6_amp_doorbell_service(void)
 {
 #if KICKOS_RV32_LP
-    if ((r32(0x600B0170u) & (1u << 31)) != 0u)
+    if ((r32(pmu::LP_INT_ST) & (1u << 31)) != 0u)
     {
         Part::clear();
         kickos_doorbell_service();
