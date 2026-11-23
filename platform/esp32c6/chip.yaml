@@ -15,7 +15,7 @@ data_cache: false
 # A RAM-only header at flash 0x0 with no second-stage loader: the ROM loads the SRAM segments
 # alone, and mis-reads a QIO header ("Checksum failure"). The task text the cache maps follows
 # in the same file (tools/esp-image.py), each image's .data template with it.
-esptool_image: [--use-segments, --ram-only-header, --dont-append-digest, --flash-mode, dio]
+esptool_image: [--use-segments, --ram-only-header, --flash-mode, dio]
 c: { line_enum: "kernel_line : int", led: addressable }
 
 # Two cores, two postures. An own-image AMP node per core, so a composition is per node.
@@ -40,19 +40,25 @@ cores:
 partition_gate:
   kind: apm
   gates:
+    # The LP CPU reaches HP SRAM through HP_APM's path M2, not LP_APM0 (Figure 16.3-1, p.562).
     hp_apm:
       regions: { value: 16, ref: "Table 16.3-1, p.562" }
       ranges: [[0x60000000, 0xB0000]]
       memory: [[0x40800000, 0x80000]]
     lp_apm:
-      regions: { value: 4, ref: "Table 16.3-1, p.562" }
+      regions: { value: 4, ref: "Table 16.3-1, p.563" }
       ranges: [[0x600B0000, 0x10000]]
       kernel:
-        - { window: [0x600B0000, 0x400], access: rw, ref: "PMU, Table 5.3-2, p.176" }
+        # The LP kernel's own PMU words alone: the rest of the page drives the HP power domain.
+        - { window: [0x600B0170, 0x18], access: rw, ref: "PMU_LP_INT_ST_REG to PMU_HP_LP_CPU_COMM_REG, 12.9.1, p.435" }
         # LP_APM sees the LP CPU's reset fetch from LP SRAM at this alias, which Table 5.3-1
         # leaves reserved (archived `M9.9_lp_probe_captures/m99probe12.log`).
         - { window: [0x70000000, 0x400], access: rwx }
         - { window: [0x600B0C00, 0x400], access: rw, ref: "RTC_TIMER, Table 5.3-2, p.176" }
+    # LP SRAM's high-speed path, which no node is given: its catch-all alone denies every REE mode.
+    lp_apm0:
+      regions: { value: 4, ref: "Table 16.3-1, p.563" }
+      ranges: [[0x50000000, 0x4000]]
 
 family: none
 exits_on_fault: false
@@ -113,7 +119,12 @@ devices:
   io_mux: { window: [0x60090000, 0x1000], owner: kernel, ref: "Table 5.3-2, p.176" }
   pcr: { window: [0x60096000, 0x1000], owner: kernel, ref: "Table 5.3-2, p.176" }    # clock and reset gates
   hp_tee: { window: [0x60098000, 0x1000], owner: kernel, ref: "Table 5.3-2, p.176" }
-  hp_apm: { window: [0x60099000, 0x1000], owner: kernel, ref: "Table 5.3-2, p.176" } # LP_APM0 sits at +0x800 inside it
+  hp_apm: { window: [0x60099000, 0x800], owner: kernel, ref: "Table 5.3-2, p.176" }
+  # The boot refuses an LP_APM0 whose DATE (Reg 16.52) does not read back at this base.
+  lp_apm0:
+    window: [0x60099800, 0x800]
+    owner: kernel
+    ref: "ESP-IDF soc/esp32c6 reg_base.h; TRM 16.6.3 (p.568) says HP_APM + 0x1000, which Table 5.3-2 (p.176) leaves reserved, giving HP_APM one 4 KB block"
   intpri: { window: [0x600C5000, 0x1000], owner: kernel, ref: "Table 5.3-2, p.176" } # the inject doorbell's source
   # The flash controllers and the cache over every task's code: SPI0 holds the cache MMU, SPI1
   # writes and erases the flash. The table names SPI0's block after the XTS_AES registers inside

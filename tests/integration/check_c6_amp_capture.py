@@ -12,6 +12,10 @@ import sys
 from pathlib import Path
 
 PANIC = Path(__file__).resolve().parent.parent / "lib" / "panic.ere"
+# Node 0's slice of HP SRAM, below the LP slice and the partition window
+# (user/apps/common/ampping/systems/esp32c6-wroom/amp2/gate.c holds the word).
+NODE0_OWN = (0x40800000, 0x4083C000)
+GATE_WORD = 0x600DF00D
 
 
 def require(ok: bool, token: str, why: str) -> None:
@@ -69,6 +73,16 @@ def main() -> None:
     require(own != 0, "gate", "node 0 read zero from the timg0 it holds")
     require(held != 0, "gate", "the LP read zero from the timg1 it holds")
     require(foreign == 0, "gate", f"the LP read {foreign:#x} from node 0's timg0, which the APM must deny it")
+    stored, hit, word, loaded, kept = (int(v, 16) for v in one(
+        "memory", r"^ampping: gate: node 1 stored 0x([0-9a-f]+) to 0x([0-9a-f]+), node 0's word at 0x([0-9a-f]+), "
+        r"and loaded 0x([0-9a-f]+); node 0 reads 0x([0-9a-f]+) there$", log))
+    require(hit == word, "memory", f"the LP stored to {hit:#x}, not node 0's word at {word:#x}")
+    require(NODE0_OWN[0] <= word < NODE0_OWN[1], "memory",
+            f"node 0's word at {word:#x} is outside node 0's own HP SRAM [{NODE0_OWN[0]:#x}, {NODE0_OWN[1]:#x})")
+    # An APM denial reads 0 and drops the write (ESP32-C6 TRM v1.2 section 16.5).
+    require(loaded == 0, "memory", f"the LP loaded {loaded:#x} from node 0's word, which the APM must deny it")
+    require(kept == GATE_WORD and kept != stored, "memory",
+            f"node 0's word reads {kept:#x} after the LP's store of {stored:#x}, not the {GATE_WORD:#x} it holds")
     one("call", r"^ampping: node 0 calls node 1 port 3$", log)
     for n in range(1, 5):
         one("round", rf"^  ping {n} -> pong {n + 1} from node 1 \(4 byte\(s\)\)$", log)
@@ -86,7 +100,7 @@ def main() -> None:
     require(not panics, "panic", f"a panic or fault banner in the capture: {panics[0] if panics else ''}")
     require("=== THREAD FAULT ===" not in log, "fault", "a thread fault in the capture, where none is expected")
     print(f"PASS: ESP32-C6 HP/LP AMP, four far replies, LP served record {served}, "
-          f"LP timg1 {held:#x} and node 0's timg0 denied")
+          f"LP timg1 {held:#x}, node 0's timg0 and node 0's word at {word:#x} denied")
 
 
 if __name__ == "__main__":

@@ -215,8 +215,11 @@ tests/integration/check_c6blink.sh|c6blink.capture||holder|swap|holder rc -38 (w
 tests/integration/check_c6blink.sh|c6blink.capture||blink-start|drop|blinking GPIO10|
 tests/integration/check_c6blink.sh|c6blink.capture||blink|drop|PASS (pad tracked|
 tests/integration/check_c6blink.sh|c6blink.capture||error|swap|[c6blink] blink 4 pad=1/1|[c6blink] FAIL blink 4 pad=1/0
+tests/integration/check_c6blink.sh|c6blink.capture||cpu-gpio|drop|out-sel 28 rc|
+tests/integration/check_c6blink.sh|c6blink.capture||error|swap|PASS pinmux cpu-gpio out-sel 35 rc -22|FAIL pinmux cpu-gpio out-sel 35 rc 0
 tests/integration/check_c6blink.sh|c6blink.capture||non-holder|drop|periph_enable non-holder|
-tests/integration/check_c6blink.sh|c6blink.capture||non-holder|order|PASS (pad tracked|periph_enable non-holder
+tests/integration/check_c6blink.sh|c6blink.capture||non-holder|order|out-sel 35 rc|periph_enable non-holder
+tests/integration/check_c6blink.sh|c6blink.capture||cpu-gpio|order|PASS (pad tracked|out-sel 28 rc
 tests/integration/check_c6blink.sh|c6blink.capture||announce|drop|poking UNGRANTED|
 tests/integration/check_c6blink.sh|c6blink.capture||killed|swap|thread 'c6poke'|thread 'c6blink'
 tests/integration/check_c6blink.sh|c6blink.capture||kill-address|swap|ADDR=0x6009157c|ADDR=0x60091040
@@ -315,6 +318,11 @@ tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||vectors|swap|self 
 tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||vectors|swap|self clk=160000000|self clk=1600000000
 tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||alive|swap|2 of 2 node app(s)|1 of 2 node app(s)
 tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||gate|swap|and 0x0 from node 0's timg0|and 0x5a3c from node 0's timg0
+tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||memory|drop|ampping: gate: node 1 stored|
+tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||memory|swap|and loaded 0x0;|and loaded 0xbadc0de5;
+tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||memory|swap|node 0 reads 0x600df00d there|node 0 reads 0xbadc0de5 there
+tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||memory|swap|to 0x4081b9b8,|to 0x4081b9bc,
+tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||memory|swap|to 0x4081b9b8,|to 0x40850000,|swap|word at 0x4081b9b8|word at 0x40850000
 tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||call|drop|ampping: node 0 calls node 1 port 3|
 tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||round|drop|  ping 3 -> pong 4|
 tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||attempt|after|  ping 4 -> pong 5|  (node 1 answered on attempt 2)

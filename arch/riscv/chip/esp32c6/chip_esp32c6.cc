@@ -579,6 +579,10 @@ int arch_pinmux_set(uint32_t port, uint32_t pin, uint32_t func)
     {
         return -KOS_EINVAL;
     }
+    if (out_sel >= reg::gpio::CPU_GPIO_OUT_FIRST_IDX and out_sel <= reg::gpio::CPU_GPIO_OUT_LAST_IDX)
+    {
+        return -KOS_EINVAL;
+    }
     if (kickos::board_pin_kernel_owned(port, pin))
     {
         return -KOS_EBUSY;
@@ -640,11 +644,6 @@ uint32_t arch_periph_clock_hz(uintptr_t base)
     return src / (div_num + 1u);
 }
 
-static void apm_write(uintptr_t at, uint32_t value)
-{
-    r32(at) = value;
-}
-
 // A refusal ahead of arch_init must not leave the ROM-armed watchdogs to reset into it again.
 static void c6_refuse_n(char const* msg, size_t n)
 {
@@ -664,14 +663,21 @@ static void c6_refuse(char const* msg)
     c6_refuse_n(msg, n);
 }
 
+struct ApmRefusal
+{
+    char const* why; // nullptr where the gate holds
+    uintptr_t at;    // the word named, 0 for a refusal of the rows
+};
+
 // Node 1's rows stay inert until arch_amp_release_peers moves the LP CPU to their mode.
-static void apm_program_gate(void)
+//
+// noinline, the refusal left to the caller: the image's frame stays off the refusal's path, which
+// the trap_redzone gate bounds on the main stack.
+static __attribute__((noinline)) ApmRefusal apm_program_gate(void)
 {
     namespace apm = kickos::esp32c6::apm;
     apm::Image image;
-    apm::Refusal const refusal = apm::image_of(kickos_gate_rows, kickos_gate_row_count, image);
-    char const* why = nullptr;
-    switch (refusal)
+    switch (apm::image_of(kickos_gate_rows, kickos_gate_row_count, image))
     {
         case apm::Refusal::NONE:
         {
@@ -679,36 +685,52 @@ static void apm_program_gate(void)
         }
         case apm::Refusal::GATE:
         {
-            why = "KickOS: ESP32-C6 partition gate: a row names no APM gate\n";
-            break;
+            return {"KickOS: ESP32-C6 partition gate: a row names no APM gate\n", 0u};
         }
         case apm::Refusal::NODE:
         {
-            why = "KickOS: ESP32-C6 partition gate: a row names a node with no security mode\n";
-            break;
+            return {"KickOS: ESP32-C6 partition gate: a row names a node with no security mode\n", 0u};
         }
         case apm::Refusal::BUDGET:
         {
-            why = "KickOS: ESP32-C6 partition gate: more rows than an APM gate has regions\n";
-            break;
+            return {"KickOS: ESP32-C6 partition gate: more rows than an APM gate has regions\n", 0u};
         }
         case apm::Refusal::RANGE:
         {
-            why = "KickOS: ESP32-C6 partition gate: a row's range is not an APM region\n";
-            break;
+            return {"KickOS: ESP32-C6 partition gate: a row's range is not an APM region\n", 0u};
         }
         case apm::Refusal::ACCESS:
         {
-            why = "KickOS: ESP32-C6 partition gate: a row's access is not R, W and X\n";
-            break;
+            return {"KickOS: ESP32-C6 partition gate: a row's access is not R, W and X\n", 0u};
         }
     }
-    if (why != nullptr)
-    {
-        c6_refuse(why);
-    }
-    apm::program(image, apm_write);
+    uintptr_t const at = apm::program(
+        image, [](uintptr_t word, uint32_t value) { r32(word) = value; }, [](uintptr_t word) { return r32(word); });
     __asm volatile("fence" ::: "memory");
+    if (at == kickos::esp32c6::reg::apm::LP_APM0_DATE)
+    {
+        return {"KickOS: ESP32-C6 partition gate: no LP_APM0 at ", kickos::esp32c6::reg::apm::LP_APM0_BASE};
+    }
+    if (at != 0u)
+    {
+        return {"KickOS: ESP32-C6 partition gate: this word does not hold what was written: ", at};
+    }
+    return {nullptr, 0u};
+}
+
+static __attribute__((noinline)) void apm_refuse(ApmRefusal refusal)
+{
+    if (refusal.at == 0u)
+    {
+        c6_refuse(refusal.why);
+        return;
+    }
+    namespace d = kickos::esp32c6::detail;
+    char msg[112];
+    size_t at = d::put_text(msg, 0, refusal.why);
+    at = d::put_hex(msg, at, static_cast<uint32_t>(refusal.at));
+    at = d::put_text(msg, at, "\n");
+    c6_refuse_n(msg, at);
 }
 
 #if !KICKOS_AMP_OWN_IMAGE
@@ -803,7 +825,11 @@ void arch_init(void)
     r32(reg::clint::MTIMECTL) = reg::clint::MTIMECTL_MTCE | reg::clint::MTIMECTL_MTIE;
 
     kickos_rv32_init();
-    apm_program_gate();
+    ApmRefusal const refusal = apm_program_gate();
+    if (refusal.why != nullptr)
+    {
+        apm_refuse(refusal);
+    }
     c6_early_mark('F');  // mtvec + mie + permissive bootstrap PMP installed
     inject_doorbell_init();
     c6_early_mark('G');  // inject doorbell wired
@@ -935,6 +961,10 @@ void arch_amp_release_peers(void)
     __asm volatile("fence iorw, iorw" ::: "memory");
     // Before the wake: node 1's rows are at its NODE_MODE, and no row grants its reset REE2.
     r32(reg::apm::LP_TEE_M0_MODE_CTRL) = kickos::esp32c6::apm::NODE_MODE[1];
+    if ((r32(reg::apm::LP_TEE_M0_MODE_CTRL) & reg::apm::MODE_MASK) != kickos::esp32c6::apm::NODE_MODE[1])
+    {
+        c6_refuse("KickOS: ESP32-C6 partition gate: the LP CPU's security mode does not hold\n");
+    }
     r32(0x600B1048u) = (r32(0x600B1048u) & ~(1u << 31)) | (1u << 30);
     r32(0x600B0174u) |= 1u << 31;
     r32(0x600B017Cu) |= 3u << 30;

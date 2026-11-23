@@ -13,6 +13,9 @@
 #include <kickos/trace/record.h>
 
 #include "pmp_encode.h"
+#if KICKOS_RV32_LP
+#include "../chip/esp32c6/regs/pmu.h"
+#endif
 
 #include <bit>
 
@@ -271,7 +274,7 @@ void arch_switch(struct arch_context* from, struct arch_context* to)
     // switch runs after the current trap has returned to the thread frame.
     // The pending word must be visible before the device store that raises it.
     __asm volatile("fence iorw, iorw" ::: "memory");
-    *reinterpret_cast<volatile uint32_t*>(0x600B0184u) = 1u << 31;
+    *reinterpret_cast<volatile uint32_t*>(kickos::esp32c6::reg::pmu::HP_LP_CPU_COMM) = 1u << 31;
 #else
     *g_clint_msip = 1; // pend machine software interrupt
 #endif

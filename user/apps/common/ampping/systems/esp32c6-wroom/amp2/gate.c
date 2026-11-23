@@ -3,7 +3,8 @@
 //
 // The ESP32-C6 partition gate's witness (docs/design-m10-fleet.md, section 9.5): the LP node reads
 // the timer group version register through its own /dev/timg1 and through node 0's /dev/timg0,
-// which the APM denies it, and node 0 reports both beside its own read of /dev/timg0.
+// which the APM denies it, then stores to and loads from a word of node 0's own memory, outside its
+// slice and the partition window, and node 0 reports all of it beside its own reads.
 
 #include <iso646.h> // and / or / not are macros in C, not keywords
 #include <stdatomic.h>
@@ -12,6 +13,7 @@
 
 #include "book.h"
 
+#include <kickos/amp.h>
 #include <kickos/sys.h>
 
 // TIMG_NTIMERS_DATE_REG, reset 0x2206072 (TRM v1.2 Register 14.25, p.541).
@@ -21,6 +23,11 @@
 #define AMPPING_GATE_NODE 1u
 #define AMPPING_GATE_WAIT_NS (20ull * 1000ull * 1000ull)
 #define AMPPING_GATE_TRIES 40
+#define AMPPING_GATE_WORD 0x600DF00Du
+#define AMPPING_GATE_STORE 0xBADC0DE5u
+
+// In node 0's image, node 0's own data: outside the LP slice and the window.
+static uint32_t volatile ampping_gate_word = AMPPING_GATE_WORD;
 
 static uint32_t ampping_date(char const* device)
 {
@@ -32,13 +39,39 @@ static uint32_t ampping_date(char const* device)
     return *(uint32_t const volatile*)((uintptr_t)kos_window_addr(window) + AMPPING_TIMG_DATE);
 }
 
-void ampping_gate_serve(struct ampbook_row* row)
+void ampping_gate_arm(struct ampbook_row* book)
 {
+    atomic_store_explicit(&book[0].gate_word, (uint32_t)(uintptr_t)&ampping_gate_word, memory_order_release);
+}
+
+void ampping_gate_serve(struct ampbook_row* book)
+{
+    struct ampbook_row* const row = &book[KOS_AMP_SELF_NODE];
     atomic_store_explicit(&row->gate_held, ampping_date("/dev/timg1"), memory_order_release);
     atomic_store_explicit(&row->gate_probing, 1u, memory_order_release);
     // An APM denial reads zero and does not trap (TRM v1.2 section 16.5).
     uint32_t const foreign = *(uint32_t const volatile*)(AMPPING_TIMG0_BASE + AMPPING_TIMG_DATE);
     atomic_store_explicit(&row->gate_foreign, foreign, memory_order_release);
+
+    uint32_t word = AMPBOOK_UNSET;
+    int tries;
+    for (tries = 0; tries < AMPPING_GATE_TRIES; tries++)
+    {
+        word = atomic_load_explicit(&book[0].gate_word, memory_order_acquire);
+        if (word != AMPBOOK_UNSET)
+        {
+            break;
+        }
+        kos_sleep_for(kos_ns(AMPPING_GATE_WAIT_NS));
+    }
+    if (word == AMPBOOK_UNSET)
+    {
+        return;
+    }
+    uint32_t volatile* const at = (uint32_t volatile*)(uintptr_t)word;
+    *at = AMPPING_GATE_STORE;
+    atomic_store_explicit(&row->gate_word_read, *at, memory_order_release);
+    atomic_store_explicit(&row->gate_word, word, memory_order_release);
 }
 
 void ampping_gate_report(struct ampbook_row* book)
@@ -69,6 +102,18 @@ void ampping_gate_report(struct ampbook_row* book)
     printf("ampping: gate: node 0 read 0x%lx from its timg0, node %u read 0x%lx from its timg1 and 0x%lx from "
            "node 0's timg0\n",
            (unsigned long)own, AMPPING_GATE_NODE, held, foreign);
+    unsigned long const word = (unsigned long)atomic_load_explicit(&book[0].gate_word, memory_order_acquire);
+    unsigned long const hit = (unsigned long)atomic_load_explicit(&lp->gate_word, memory_order_acquire);
+    unsigned long const read = (unsigned long)atomic_load_explicit(&lp->gate_word_read, memory_order_acquire);
+    if (hit == AMPBOOK_UNSET)
+    {
+        printf("ampping: gate: node %u made no store to node 0's word at 0x%lx\n", AMPPING_GATE_NODE, word);
+        return;
+    }
+    printf("ampping: gate: node %u stored 0x%lx to 0x%lx, node 0's word at 0x%lx, and loaded 0x%lx; node 0 "
+           "reads 0x%lx there\n",
+           AMPPING_GATE_NODE, (unsigned long)AMPPING_GATE_STORE, hit, word, read,
+           (unsigned long)ampping_gate_word);
 }
 
 void ampping_gate_served(struct ampbook_row* row, uint32_t served)

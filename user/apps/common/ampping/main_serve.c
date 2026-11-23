@@ -31,7 +31,7 @@ int main(void)
     }
     printf("ampping: node %u serves port %u\n", (unsigned)KOS_AMP_SELF_NODE, (unsigned)port);
     struct ampbook_row* const row = &book[KOS_AMP_SELF_NODE];
-    ampping_gate_serve(row);
+    ampping_gate_serve(book);
     // After the announcement is queued: node 0 prints nothing a gate reads before every row is set.
     atomic_store_explicit(&row->alive, port + 1u, memory_order_release);
 
