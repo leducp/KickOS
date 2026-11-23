@@ -30,13 +30,15 @@ namespace
 
     unsigned char const* template_of(kos_image_header const& h, size_t image)
     {
-        void const* const own = reinterpret_cast<void const*>(h.tls_template);
-        void const* const alias = aspace_image_alias(image, own);
-        if (alias != nullptr)
-        {
-            return static_cast<unsigned char const*>(alias);
-        }
-        return static_cast<unsigned char const*>(own);
+#if KICKOS_HAVE_ASPACE
+        void const* const alias
+            = aspace_image_alias(image, reinterpret_cast<void const*>(h.tls_template));
+        KICKOS_ASSERT(alias != nullptr);
+        return static_cast<unsigned char const*>(alias);
+#else
+        (void)image;
+        return reinterpret_cast<unsigned char const*>(h.tls_template);
+#endif
     }
 }
 
@@ -65,7 +67,11 @@ void tls_seat(void* block, size_t image)
     kos_image_header const& h = tls_of(image);
     unsigned char* const p = static_cast<unsigned char*>(block) + KICKOS_ARCH_TLS_TCB;
     size_t const initialised = static_cast<size_t>(h.tls_init);
-    kmemcpy(p, template_of(h, image), initialised);
+    // An empty template may sit past the image's end, where no alias reaches.
+    if (initialised != 0)
+    {
+        kmemcpy(p, template_of(h, image), initialised);
+    }
     // From the end of the template to the end of the span: any alignment gap the linker
     // inserted, then .tbss. Both must read as zero.
     kmemset(p + initialised, 0, static_cast<size_t>(h.tls_total) - initialised);

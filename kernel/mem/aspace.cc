@@ -1711,17 +1711,6 @@ namespace kickos
         return space;
     }
 
-    bool aspace_seated_for(Thread const* t)
-    {
-        struct arch_aspace* const space = domain_space(thread_domain(t));
-        if (space == nullptr)
-        {
-            return false;
-        }
-        uint32_t const cpu = arch_cpu_id();
-        return space == g_current[cpu];
-    }
-
     void aspace_install_boot(void)
     {
         seat(arch_aspace_boot());

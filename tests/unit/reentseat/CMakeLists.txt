@@ -20,12 +20,17 @@ target_link_options(reent_seat PRIVATE -Wl,--gc-sections)
 include("${PROJECT_SOURCE_DIR}/tests/unit/common/host_image.cmake")
 kickos_host_image(reent_seat TEXT g_reent_image 0 DATA g_reent_data 32)
 
+# The word is seated where the switch lands, over the real time.cc.
+set(_reent_word_posture KICKOS_HAVE_ASPACE=0 KICKOS_HAVE_MPU=1 KICKOS_ARCH_SWITCH_LANDS_LATER=1
+  KICKOS_LIBC_REENT=1 KICKOS_REENT_PER_THREAD=0 KICKOS_REENT_CARVE=160 KICKOS_REENT_CARVE_MAX=160)
 kickos_add_kseam(kickos_kseam_reent_word
-  EXTRA "${PROJECT_SOURCE_DIR}/kernel/thread/reent.cc"
-  POSTURE KICKOS_HAVE_ASPACE=0 KICKOS_LIBC_REENT=1 KICKOS_REENT_PER_THREAD=0
-          KICKOS_REENT_CARVE=160 KICKOS_REENT_CARVE_MAX=160)
+  EXTRA "${PROJECT_SOURCE_DIR}/kernel/thread/reent.cc" "${PROJECT_SOURCE_DIR}/kernel/time/time.cc"
+        "${PROJECT_SOURCE_DIR}/kernel/time/realtime.cc"
+  POSTURE ${_reent_word_posture})
+target_compile_definitions(kickos_kseam_reent_word PRIVATE KFIXTURE_REAL_TIME=1)
 kickos_add_unit_test(NAME reent_word SOURCES reent_word.cc
-  LIBRARIES kickos_kseam_reent_word)
+  LIBRARIES kickos_kseam_reent_word
+  POSTURE ${_reent_word_posture})
 
 # The cell at the top of the carve, and the descriptor read that refuses a state running into it.
 kickos_add_kseam(kickos_kseam_reent_cell

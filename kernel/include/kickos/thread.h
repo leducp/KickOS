@@ -190,13 +190,6 @@ namespace kickos
         // deadline_ns is a realtime deadline, which a set of the wall clock moves.
         uint8_t timer_wall : 1 = 0;
 
-#if KICKOS_LIBC_REENT
-        // True while `reent` still holds whatever its stack held. Cleared by the first switch-in,
-        // which is what primes it. It sits in on_timer's padding before `id` on
-        // every target, so thread_scalar_bytes does not count it.
-        bool reent_fresh = false;
-#endif
-
         // Assigned in thread_create (KICKOS_TID_* above); 0 is idle-only after wrap.
         uint16_t id = 0;
 

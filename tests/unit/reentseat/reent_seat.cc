@@ -26,38 +26,15 @@ using namespace kickos::testfix;
 
 namespace
 {
-    struct Write
-    {
-        struct arch_aspace* space = nullptr;
-        uintptr_t dst = 0;
-        size_t n = 0;
-        uintptr_t word = 0;
-        void const* src = nullptr;
-        Thread const* running = nullptr;
-        bool seated = false;
-    };
-
-    constexpr int WRITES = 8;
-    Write g_writes[WRITES];
     int g_write_count = 0;
-
-    void record(struct arch_aspace* space, uintptr_t dst, size_t n, uintptr_t word,
-                void const* src)
-    {
-        if (g_write_count >= WRITES)
-        {
-            ADD_FAILURE() << "more reent writes than the gate records";
-            return;
-        }
-        Thread const* const c = sched::current();
-        g_writes[g_write_count] = Write{space, dst, n, word, src, c, aspace_seated_for(c)};
-        g_write_count++;
-    }
+    int g_copy_count = 0;
 
     constexpr size_t STATE_BYTES = 32;
 
     // A thread's carve, its state at the base and the cell the prime leaves alone above it.
     unsigned char g_states[KICKOS_SEAM_THREAD_SLOTS][KICKOS_REENT_CARVE];
+    // The kernel's view of the loader's frames of the window, apart from the window's own bytes.
+    unsigned char g_alias[STATE_BYTES];
 }
 
 extern "C"
@@ -69,6 +46,12 @@ extern "C"
     uintptr_t arch_aspace_user_offset(void)
     {
         return 0;
+    }
+
+    void* kmemcpy(void* dst, void const* src, size_t n)
+    {
+        g_copy_count++;
+        return __builtin_memcpy(dst, src, n);
     }
 }
 
@@ -86,32 +69,42 @@ namespace kickos
         return h;
     }
 
-    // The one image's record the libc state is primed from.
-    kos_image_header const& image_record(size_t)
+    // Image 0's record the libc state is primed from, and image 1's, which links no libc state
+    // and has no frames row.
+    kos_image_header const& image_record(size_t image)
     {
         static kos_image_header const h = header_with_seam();
+        static kos_image_header const none = {};
+        if (image == 1)
+        {
+            return none;
+        }
         return h;
     }
 
-    // The kernel's view of a frame, apart from every address a space names. Never dereferenced:
-    // kaccess_to_user is the gate's.
+    // The kernel's view of a frame, apart from every address a space names: g_alias for the
+    // window's, never dereferenced for any other.
     constexpr uintptr_t ALIAS = 0x1000;
     void* frame_pool_alias(arch_phys_addr_t frame)
     {
-        return reinterpret_cast<void*>(static_cast<uintptr_t>(frame) + ALIAS);
+        uintptr_t const at = static_cast<uintptr_t>(frame);
+        uintptr_t const window = reinterpret_cast<uintptr_t>(g_reent_data);
+        if (at >= window and at - window < STATE_BYTES)
+        {
+            return g_alias + (at - window);
+        }
+        return reinterpret_cast<void*>(at + ALIAS);
     }
 
-    bool kaccess_to_user(UserOwner dspace, uintptr_t udst, void const* ksrc, size_t n)
+    bool kaccess_to_user(UserOwner, uintptr_t, void const*, size_t)
     {
-        record(dspace, udst, n, 0, ksrc);
+        g_write_count++;
         return true;
     }
 
-    bool kaccess_word_to_user(UserOwner dspace, uintptr_t udst, void const* kword)
+    bool kaccess_word_to_user(UserOwner, uintptr_t, void const*)
     {
-        uintptr_t word = 0;
-        __builtin_memcpy(&word, kword, sizeof(word));
-        record(dspace, udst, sizeof(word), word, kword);
+        g_write_count++;
         return true;
     }
 }
@@ -133,15 +126,6 @@ namespace
             g_write_count = 0;
         }
 
-        void TearDown() override
-        {
-            for (int i = 0; i < g_write_count; i++)
-            {
-                EXPECT_TRUE(g_writes[i].seated)
-                    << "write " << i << " for a thread whose space was not installed";
-            }
-        }
-
         static Thread* fresh(int slot, uint8_t prio, Task* group)
         {
             Thread* const t = seat_pool(slot, prio);
@@ -150,7 +134,6 @@ namespace
                 join_task(t, group);
             }
             t->reent = g_states[slot];
-            t->reent_fresh = true;
             t->lock_id = kernel().threads.lock_id_for(slot);
             return t;
         }
@@ -167,59 +150,70 @@ namespace
     {
         Task* const group = task(0);
         ASSERT_NE(group, nullptr);
+        for (int slot = 0; slot < 2; slot++)
+        {
+            for (size_t i = 0; i < KICKOS_REENT_CARVE; i++)
+            {
+                g_states[slot][i] = 0xA5u;
+            }
+        }
         (void)fresh(0, PRIO_MID, group);
         switch_now();
-        int const before = g_write_count;
 
         Thread* const spaceless = fresh(1, PRIO_HIGH, nullptr);
+        g_copy_count = 0;
         switch_now();
         ASSERT_EQ(sched::current(), spaceless) << "the spaceless thread never switched in";
         ASSERT_EQ(installed_on(0), space_of(task_domain(group)))
             << "fixture: the case needs another task's root left installed under it";
-        EXPECT_EQ(g_write_count, before) << "a switch-in wrote reent state for a thread with no "
-                                            "space, through the root left installed";
-        EXPECT_TRUE(spaceless->reent_fresh);
+        EXPECT_EQ(g_write_count, 0) << "a switch-in wrote reent state into user memory";
+        EXPECT_EQ(g_copy_count, 0) << "a switch-in primed reent state";
+        for (int slot = 0; slot < 2; slot++)
+        {
+            for (size_t i = 0; i < KICKOS_REENT_CARVE; i++)
+            {
+                EXPECT_EQ(g_states[slot][i], 0xA5u) << "slot " << slot << " byte " << i;
+            }
+        }
     }
 
-    TEST_F(ReentSeat, members_of_two_tasks_are_each_primed_through_their_own_space)
+    TEST_F(ReentSeat, a_prime_copies_the_state_alone_from_the_kernels_view_of_the_loaders_frames)
     {
-        Task* const first = task(0);
-        Task* const second = task(1);
-        ASSERT_NE(first, nullptr);
-        ASSERT_NE(second, nullptr);
-        Thread* const a = fresh(0, PRIO_LOW, first);
-        switch_now();
-        Thread* const b = fresh(1, PRIO_MID, second);
-        switch_now();
-        ASSERT_EQ(sched::current(), b);
-
-        // One copy per prime, the cell being create's to write.
-        ASSERT_EQ(g_write_count, 2);
-        EXPECT_EQ(g_writes[0].running, a);
-        EXPECT_EQ(g_writes[0].space, space_of(task_domain(first)));
-        EXPECT_EQ(g_writes[0].dst, reinterpret_cast<uintptr_t>(a->reent));
-        EXPECT_FALSE(a->reent_fresh);
-        EXPECT_EQ(g_writes[1].running, b);
-        EXPECT_EQ(g_writes[1].space, space_of(task_domain(second)));
-        EXPECT_EQ(g_writes[1].dst, reinterpret_cast<uintptr_t>(b->reent));
+        for (size_t i = 0; i < STATE_BYTES; i++)
+        {
+            g_alias[i] = static_cast<unsigned char>(0x40u + i);
+            g_reent_data[i] = 0;
+        }
+        unsigned char* const carve = g_states[1];
+        for (size_t i = 0; i < KICKOS_REENT_CARVE; i++)
+        {
+            carve[i] = 0xA5u;
+        }
+        reent_prime(carve, 0);
+        for (size_t i = 0; i < STATE_BYTES; i++)
+        {
+            EXPECT_EQ(carve[i], g_alias[i]) << "byte " << i;
+        }
+        for (size_t i = STATE_BYTES; i < KICKOS_REENT_CARVE; i++)
+        {
+            EXPECT_EQ(carve[i], 0xA5u) << "byte " << i << " is past the state";
+        }
+        EXPECT_EQ(g_write_count, 0) << "a prime reached user memory through the kaccess seam";
     }
 
-    TEST_F(ReentSeat, a_prime_copies_the_state_alone)
+    TEST_F(ReentSeat, a_prime_of_an_image_with_no_libc_state_copies_nothing)
     {
-        Task* const group = task(0);
-        ASSERT_NE(group, nullptr);
-        Thread* const a = fresh(1, PRIO_MID, group);
-        switch_now();
-        ASSERT_EQ(sched::current(), a);
-
-        ASSERT_EQ(g_write_count, 1);
-        Write const& copy = g_writes[0];
-        EXPECT_EQ(copy.dst, reinterpret_cast<uintptr_t>(g_states[1]));
-        EXPECT_EQ(reinterpret_cast<uintptr_t>(copy.src),
-                  reinterpret_cast<uintptr_t>(g_reent_data) + ALIAS)
-            << "primed from other bytes than the kernel's view of the loader's frames";
-        EXPECT_EQ(copy.n, STATE_BYTES);
-        EXPECT_LE(copy.n, KICKOS_REENT_CARVE - KICKOS_REENT_CELL_WORDS * sizeof(void*))
-            << "the state's copy reaches the cell";
+        unsigned char* const carve = g_states[1];
+        for (size_t i = 0; i < KICKOS_REENT_CARVE; i++)
+        {
+            carve[i] = 0xA5u;
+        }
+        g_copy_count = 0;
+        reent_prime(carve, 1);
+        EXPECT_EQ(g_copy_count, 0) << "a prime copied a state the image does not link";
+        for (size_t i = 0; i < KICKOS_REENT_CARVE; i++)
+        {
+            EXPECT_EQ(carve[i], 0xA5u) << "byte " << i;
+        }
     }
 }

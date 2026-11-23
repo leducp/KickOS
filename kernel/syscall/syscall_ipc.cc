@@ -407,15 +407,16 @@ namespace kickos
             if (w != nullptr)
             {
                 size_t const n = ipc_len_min(len, w->ipc.len); // datagram truncation, not an error
-                if (not ep_copy(ipc_buf_space(w), w->ipc.buf, user_space_of(c), buf, n))
+                // Wake the removed receiver with EFAULT; a partial copy is not a zero-length
+                // message.
+                if (not ep_copy(ipc_buf_space(w), w->ipc.buf, user_space_of(c), buf, n)
+                    or not write_recv_info(user_space_of(w), w->ipc.badge_out, badge,
+                                           KCAP_INVALID))
                 {
-                    // Wake the removed receiver with EFAULT; a partial copy is not a zero-length
-                    // message.
                     w->wait_result = -KOS_EFAULT;
                     sched::wake(w, lock);
                     return -KOS_EFAULT;
                 }
-                (void)write_recv_info(user_space_of(w), w->ipc.badge_out, badge, KCAP_INVALID);
                 w->wait_result = static_cast<intptr_t>(n);
                 sched::wake(w, lock);
                 return static_cast<int>(n); // did not block: no resume barrier
@@ -461,14 +462,21 @@ namespace kickos
 
         // The front of the held records, as much as `cap` takes, into a receiver's buffer and
         // metadata. Taken on a refused copy too, or every receive into that buffer refuses it
-        // again. The caller has checked something is held.
+        // again; kept where the map loaded is not the receiver's (`foreign`) and refuses the
+        // store, for the receiver's own next receive. The caller has checked something is held.
         int32_t held_copy(UserOwner buf_space, UserOwner info_space, uintptr_t buf, size_t cap,
-                          uintptr_t badge_out)
+                          uintptr_t badge_out, bool foreign)
         {
             uint32_t n = console_held_ready();
             if (cap < n)
             {
                 n = static_cast<uint32_t>(cap);
+            }
+            if (foreign
+                and (not kstore_admitted(buf, n)
+                     or (badge_out != 0 and not kstore_admitted(badge_out, sizeof(kos_recv_info)))))
+            {
+                return -KOS_EFAULT;
             }
             int32_t result = static_cast<int32_t>(n);
             if (not kaccess_to_user(buf_space, buf, console_held_data(), n)
@@ -493,7 +501,7 @@ namespace kickos
                 return HELD_NONE;
             }
             UserOwner const space = user_space_of(sched::current());
-            return held_copy(space, space, buf, cap_len, badge_out);
+            return held_copy(space, space, buf, cap_len, badge_out, false);
         }
     }
 
@@ -511,7 +519,7 @@ namespace kickos
         }
         (void)wq_pop_highest(e->recv_waiters);
         w->wait_result = held_copy(ipc_buf_space(w), user_space_of(w), w->ipc.buf, w->ipc.len,
-                                   w->ipc.badge_out);
+                                   w->ipc.badge_out, true);
         sched::wake(w, held);
     }
 
@@ -614,7 +622,11 @@ namespace kickos
                 }
                 return -KOS_EFAULT;
             }
-            (void)write_recv_info(user_space_of(c), badge_out, s->ipc.badge, KCAP_INVALID);
+            if (not write_recv_info(user_space_of(c), badge_out, s->ipc.badge, KCAP_INVALID))
+            {
+                caller_refuse(c, s, -KOS_EFAULT, dw);
+                return -KOS_EFAULT;
+            }
             s->wait_result = static_cast<intptr_t>(n);
             if (sched::wake_no_resched(s, dw->held()))
             {

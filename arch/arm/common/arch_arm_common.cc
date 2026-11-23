@@ -100,6 +100,17 @@ void arch_switch(struct arch_context* from, struct arch_context* to)
 // AAPCS r0, is the register the trap's own ABI answers in (arch_syscall_reg in switch.S).
 void arch_ctx_set_syscall_result(struct arch_context* ctx, uint32_t result)
 {
+#if ARCH_USER_STORE_CHECKED
+    // The parked thread's own stack, which the thread switching away may hold read-only: the
+    // switch-in seats the result instead, under the parked thread's own regions.
+    ctx->result_owed = 0;
+    if (not arch_mpu_loaded_writable(ctx->sp, sizeof(uint32_t)))
+    {
+        ctx->result = result;
+        ctx->result_owed = 1;
+        return;
+    }
+#endif
     reinterpret_cast<uint32_t*>(ctx->sp)[0] = result;
 }
 

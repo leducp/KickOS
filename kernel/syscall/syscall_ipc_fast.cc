@@ -113,12 +113,15 @@ namespace kickos
         // is what a null owner names; the receiver's end is its own space.
         //
         // AHEAD of the commit below, unlike the copy in every other IPC path: this file
-        // compiles on non-translating arches ONLY, where access_copy cannot fail and the one
-        // refusal ep_copy has left is the overlap test, which moves no byte. A receiver that
-        // named a range inside this caller's saved frame, reachable through a task-mate's
-        // regions, is that case, and it must not be a panic.
-        if (not ep_copy(ipc_buf_space(w), w->ipc.buf, nullptr,
-                        reinterpret_cast<uintptr_t>(&args[3]), n))
+        // compiles on non-translating arches ONLY, where access_copy cannot fail and ep_copy's
+        // refusals move no byte: the overlap test, and a destination the caller's map holds
+        // read-only. A receiver that named a range inside this caller's saved frame, reachable
+        // through a task-mate's regions, is the first, and it must not be a panic. The info
+        // word, written past the commit, is asked before the copy, which a refusal must not
+        // leave in a receiver that stays parked.
+        if (not kstore_admitted(w->ipc.badge_out, sizeof(kos_recv_info))
+            or not ep_copy(ipc_buf_space(w), w->ipc.buf, nullptr,
+                           reinterpret_cast<uintptr_t>(&args[3]), n))
         {
             return nullptr; // a fall-through, so endpoint_call answers it
         }

@@ -44,8 +44,11 @@
 #                user mode ignores a write to PSW.I without a trap, so an interrupt mask
 #                there masks nothing
 #   armv7m_kernel_fp  no instruction outside the .kickos_image<n> sections is an FP one but the
-#                switcher's own, in PendSV_Handler and SVC_Handler: any other fires a thread's
-#                pending lazy FP save before a PSP guard has bounded the frame it writes
+#                switcher's own, in PendSV_Handler and SVC_Handler, whose tail after the
+#                kickos_armv7m_svc_pend_read label is still SVC_Handler's, and the fault exit's
+#                clear in arch_fault_redirect_to_exit, after it drops the pending lazy save: any
+#                other fires a thread's pending lazy FP save before a PSP guard has bounded the
+#                frame it writes
 #
 # usage: check_image_rules.sh <rule> <objdump> <elf> [arg]...
 #   The nm and readelf beside <objdump> read the symbols and sections.
@@ -465,7 +468,8 @@ rule_armv7m_kernel_fp() {
         { t = insn($0); n++ }
         # A data run inside code (a $d span) dumps as `addr:<TAB>sixteen characters`; an
         # instruction is `addr:<TAB>mnemonic<TAB>operands`.
-        $0 ~ /:\tv[a-z0-9.]+\t/ && b != "PendSV_Handler" && b != "SVC_Handler" {
+        $0 ~ /:\tv[a-z0-9.]+\t/ && b != "PendSV_Handler" && b != "SVC_Handler" \
+            && b != "kickos_armv7m_svc_pend_read" && b != "arch_fault_redirect_to_exit" {
             print s ": " b ": " t
         }
         END { if (!n) print "no instruction outside the .kickos_image<n> sections" }' "$D"

@@ -75,6 +75,31 @@ identity_row() { # <diag> <macro> <value>
   printf "$_ir_fmt" "$3"
 }
 
+# The app stamp the identity rows print: of an ELF of several images, the one in the image that
+# links kickos::banner_identity, whose size_t mangles per target. Returns 1 where that image
+# defines none, and 2, printing why, where a stamp is defined but no image is known to print the
+# rows.
+identity_app_stamp() { # <elf>
+  local _ias_at='^_ZN6kickos15banner_identityEPc[jm]$'
+  image_string "$1" kickos_app_stamp "$_ias_at" && return 0
+  elf_image_prefix "$1" "$_ias_at" kickos_app_stamp > /dev/null
+  case $? in
+    1)
+      if elf_symbol_at "$1" kickos_app_stamp > /dev/null; then
+        echo "defines an app stamp but no banner_identity symbol, which an LTO link may have \
+inlined away, so no image is known to print the rows"
+        return 2
+      fi
+      ;;
+    2)
+      echo "links banner_identity in no image, while the app stamp sits in one or is defined \
+more than once"
+      return 2
+      ;;
+  esac
+  return 1
+}
+
 # A USB device console's capture: its last identity block (kickos/sys/banner_identity.h), the
 # banner's title, board, build, app and commit rows a host's configuration opens the stream with,
 # names the flashed image, so it stands in for the kernel banner that console never carries. The

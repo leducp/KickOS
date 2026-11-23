@@ -248,7 +248,8 @@ int kos_amp_count(uint32_t node, uint32_t which, uint32_t* out);
 // answered so only once that task has ended. A zero-length message is valid.
 //
 // For all IPC copies, either buffer may become inaccessible after validation.
-// Both parties receive EFAULT; any bytes already copied remain changed.
+// Both parties receive EFAULT; any bytes already copied remain changed. A receiver's info refused
+// after the payload landed answers the same, and the message is lost.
 // See docs/reference/ipc-call-reply.md for partial-copy behavior.
 int32_t kos_send(kos_cap_t ep, void const* buf, size_t len, kos_monotonic_t until);
 // Receive through kos_reply_recv with KOS_CAP_NONE as the reply capability.

@@ -100,6 +100,14 @@ if(KICKOS_ARCH STREQUAL "armv7m")
   string(FIND "${KICKOS_MCPU}" "mfpu" _pg_has_fpu)
   if(_pg_has_fpu GREATER -1)
     pspguard_image(pspguard_fp 1)
+    # fpcheck's own code may hold nothing in an FP register, or it masks the leak it reads.
+    # The hard float ABI refuses the flag on any header declaring a float.
+    if(NOT KICKOS_MFLOAT_ABI STREQUAL "hard")
+      target_compile_options(pspguard_fp PRIVATE -mgeneral-regs-only)
+      if(TARGET pspguard_fp_peer)
+        target_compile_options(pspguard_fp_peer PRIVATE -mgeneral-regs-only)
+      endif()
+    endif()
     pspguard_image(pspguard_fphi 9)
   endif()
 

@@ -3,7 +3,8 @@
 //
 // FP context-switch torture test: a checker seeds the FP state a switch owes, blocks while a
 // lower-priority trasher clobbers it, and checks it on wake. What a switch owes is per ISA:
-//   - armv7m: s16-s31, the callee-saved half the hardware does not stack on exception entry;
+//   - armv7m: s16-s31, the callee-saved half the hardware does not stack on exception entry,
+//     and none of s0-s31 or FPSCR's flags for a thread switched in with no FP state;
 //   - armv8a: all thirty-two vector registers, both halves, and FPCR/FPSR;
 //   - x86_64: the sixteen xmm registers and MXCSR;
 //   - lx6: FCR and FSR across a block, and f0-f15 across a preemption.
@@ -17,6 +18,11 @@
 
 #include <kickos/kos.h>
 #include <kickos/libc/fmt.h>
+
+#if defined(__arm__)
+// fresh.cc: a thread switched in with no FP state, at the switcher and at the SVC fastpath.
+bool fp_fresh_starts_clean();
+#endif
 
 namespace
 {
@@ -376,6 +382,7 @@ namespace
         return 0;
     }
     inline void fp_ctl_write(unsigned, bool) {}
+
 #endif
 
     // The trasher's control values differ from the checker's in both fields, or the seeded
@@ -498,6 +505,12 @@ int main(int, char**)
 {
     kos::print("FP switch test: checker verifies its FP state survives a switch while\n");
     kos::print("a lower-priority trasher clobbers it. Result lines follow.\n\n");
+#if defined(__arm__)
+    if (not fp_fresh_starts_clean())
+    {
+        return 1;
+    }
+#endif
 
     // All on ONE core: on another core the trasher clobbers registers the checker never sees,
     // and a dropped restore passes.

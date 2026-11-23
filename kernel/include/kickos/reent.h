@@ -85,6 +85,8 @@ struct kos_image_header;
 
 namespace kickos
 {
+    struct Thread;
+
     // Must precede the first thread_create, over image `image`'s published header, each image in
     // turn. Panics on a carve that is off the stack alignment or leaves the state no room below
     // its cell.
@@ -97,20 +99,14 @@ namespace kickos
     // state is `state` in the thread's own view and whose image's carve is `carve`.
     void reent_cell_seat(void* home, void* state, uint32_t self, size_t carve);
 
-    // SWITCH-IN AND NOWHERE ELSE, with kernel().current already the INCOMING thread: it writes
-    // hundreds of bytes into memory that thread owns. `space` is its own, reached through the
-    // kaccess seam; null with no translating backend.
-    //
-    // A REFUSED WRITE SLAYS THE INCOMING THREAD AND MUST NOT PANIC: switch_book's claim three
-    // statements past the call redirects the resume.
-    // On sched::start's path nothing claims a resume, so a kill lands at its next syscall entry.
-    // The state is primed from image `image`'s, the thread's own.
-    void reent_prime(struct arch_aspace* space, size_t image, void* state);
+    // At thread creation, under the map that admitted the stack: image `image`'s pristine state
+    // into the carve the kernel reaches at `home`.
+    void reent_prime(void* home, size_t image);
 
 #if not KICKOS_REENT_PER_THREAD
-    // Runs on EVERY switch, into `seat`, the word the incoming thread's task caches for its
-    // image (Task::reent_seat).
-    void reent_seat(void* seat, void* state);
+    // Runs on EVERY switch, after the incoming regions are committed: `t`'s state into the word
+    // its task caches for its image (Task::reent_seat).
+    void reent_seat(Thread const* t);
 #endif
 }
 

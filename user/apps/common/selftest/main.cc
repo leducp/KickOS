@@ -38,6 +38,41 @@ using namespace selftest;
 #define ST_MPU_OVERLAP (-1)
 #endif
 
+// st_trap_scratch(nr, sentinel, out): issues the generic syscall nr with r1 zero and every
+// scratch register that carries no result (r2, r3, r12) holding the sentinel, then stores what
+// each holds after the trap at out, in that order.
+#if defined(__ARM_ARCH_6M__)
+#define ST_TRAP_SCRATCH_REGS 3
+extern "C" void st_trap_scratch(uint32_t nr, uint32_t sentinel, uint32_t* out);
+__asm__(".syntax unified\n"
+        ".pushsection .text.st_trap_scratch,\"ax\",%progbits\n"
+        ".global st_trap_scratch\n"
+        ".type st_trap_scratch, %function\n"
+        ".thumb_func\n"
+        "st_trap_scratch:\n"
+        "    push {r2, r4, r5, lr}\n"
+        "    mov r12, r1\n"
+        "    mov r3, r1\n"
+        "    mov r2, r1\n"
+        "    movs r1, #0\n"
+        "    adr r4, 1f\n"
+        "    adds r4, #1\n"
+        "    mov lr, r4\n"
+        "    movs r4, #0\n"
+        "    svc #0\n"
+        "    .balign 4\n"
+        "1:  mov r4, r2\n"
+        "    ldr r2, [sp]\n"
+        "    str r4, [r2]\n"
+        "    str r3, [r2, #4]\n"
+        "    mov r3, r12\n"
+        "    str r3, [r2, #8]\n"
+        "    pop {r2, r4, r5, pc}\n"
+        ".size st_trap_scratch, . - st_trap_scratch\n"
+        ".popsection\n"
+        ".syntax divided\n");
+#endif
+
 namespace
 {
 
@@ -296,6 +331,37 @@ namespace
         return took == static_cast<int32_t>(n);
 #endif
     }
+
+#if defined(ST_TRAP_SCRATCH_REGS)
+    // No register the dispatch was free to use comes back holding what it left there. Several
+    // calls with every argument zero but the sentinel, since one dispatch may happen to leave 0.
+    void t_trap_scratch()
+    {
+        constexpr uint32_t SENTINEL = 0x5C7A7C40u;
+        constexpr uint32_t CALLS[] = {KOS_SYS_MONOTONIC_NOW, KOS_SYS_REALTIME_NOW,
+                                      KOS_SYS_CPU_CLOCK_HZ,  KOS_SYS_PERIPH_CLOCK_HZ,
+                                      KOS_SYS_MEM_COUNT,     KOS_SYS_TASK_CORES,
+                                      KOS_SYS_WINDOW_GET,    KOS_SYS_YIELD};
+        for (uint32_t nr : CALLS)
+        {
+            uint32_t got[ST_TRAP_SCRATCH_REGS];
+            for (uint32_t i = 0; i < ST_TRAP_SCRATCH_REGS; i++)
+            {
+                got[i] = SENTINEL;
+            }
+            st_trap_scratch(nr, SENTINEL, got);
+            for (uint32_t i = 0; i < ST_TRAP_SCRATCH_REGS; i++)
+            {
+                if (got[i] != 0u)
+                {
+                    tap::fail("syscall %u returned scratch register %u as 0x%x",
+                              static_cast<unsigned>(nr), static_cast<unsigned>(i),
+                              static_cast<unsigned>(got[i]));
+                }
+            }
+        }
+    }
+#endif
 
     // --- SVC argument/return roundtrip -----------------------------------------
     // kos_kconsole_write returns `len` even when console_emit discards every byte of a thread
@@ -3323,6 +3389,323 @@ namespace
         void* const shared = st_ram<WRO_RAM, 3>();
         TAP_CHECK(PeerRun("hold").block(shared, size, KOS_MEM_NOCACHE).start(&nc_task) == 0);
         TAP_CHECK(PeerRun("nop").block(shared, size).start(&cached_task) == -KOS_EBUSY);
+    }
+#endif
+
+#if KICKOS_MEMORY_ENFORCED and not KICKOS_HAVE_ASPACE
+    // --- A kernel store into a block the loaded map holds read-only --------------------------
+    // Threads of main's task hold main's blocks through windows, main never reaching them. A
+    // receiver holds one read-write and a sender read-only, so the kernel delivers under the
+    // sender's map. Where a read-only region binds the kernel too (ARCH_USER_STORE_CHECKED) the
+    // send and the receive answer -KOS_EFAULT and the block is untouched; so do a send and a call
+    // meeting a receive whose info lies in the block, a reply into a caller whose stack the server
+    // holds read-only, and a spawn naming a stack its spawner holds read-only. A thread spawned on
+    // a stack another thread holds read-only runs, first switched in from that thread.
+    constexpr uint32_t RS_WORD = 0xA5C3E10Fu;
+    constexpr uint32_t RS_STACK = 4096;
+#if ARCH_USER_STORE_CHECKED
+    // The second granule holds a receive's options, and block 2, outside every read-only window,
+    // its buffer.
+    constexpr uint32_t RS_GRANULES = 2;
+    constexpr RamAsk RS_RAM = {ST_GRANULES(RS_GRANULES), RS_STACK, ST_GRANULES(1)};
+    constexpr uint32_t RS_WORD_REG = 0x5A3C1EF0u;
+#else
+    constexpr uint32_t RS_GRANULES = 1;
+    constexpr RamAsk RS_RAM = {ST_GRANULES(RS_GRANULES)};
+#endif
+    // [0] the receive, [1] the send, [2] the reply, [3] the call, [4] the spawn, [5] the receive
+    // a send meets, [6] that send, [7] the receive a call meets, [8] the register form of that
+    // call, [9] its buffer form, [10] the holder's reply, [11] the control's receive, [12] its
+    // reply, [13] its register call.
+    constexpr int RS_RCS = 14;
+    Atomic<int32_t, Order::RELAXED> g_rs_rc[RS_RCS];
+    // What the buffer held after the receive at that index, and [8] after the register call,
+    // whose refusal leaves the box as the parked receiver zeroed it.
+    Atomic<uint32_t, Order::RELAXED> g_rs_seen[RS_RCS];
+    Atomic<uint32_t, Order::RELAXED> g_rs_word{0}; // what the receiver reads after its receive
+    void rs_receiver(void* at) // caps: E(WAIT)@0
+    {
+        struct kos_reply_recv_opts o;
+        kos_reply_recv_opts_init(&o, child_cap(0), KOS_RECV_NO_INFO, after_us(STALL_TOLERANT_US));
+        g_rs_rc[0] = kos_reply_recv(KOS_CAP_NONE, at, kos_call_lens_pack(0, sizeof(uint32_t)), &o);
+        g_rs_word = *static_cast<uint32_t volatile*>(at);
+    }
+    void rs_sender(void*) // caps: E(SIGNAL)@0
+    {
+        uint32_t const word = RS_WORD;
+        g_rs_rc[1] = kos_send(child_cap(0), &word, sizeof(word), after_us(STALL_TOLERANT_US));
+    }
+#if ARCH_USER_STORE_CHECKED
+#if KICKOS_ARCH_HAS_IPC_FASTPATH
+    extern "C" int32_t arch_syscall_reg(uint32_t* io);
+    // The register form alone, never re-issued: KOS_CALL_REG_FALLBACK is the fastpath's refusal.
+    int32_t rs_call_reg(uint32_t word)
+    {
+        uint32_t io[KOS_CALL_REG_WORDS + 3] = {};
+        io[0] = KOS_SYS_CALL_REG;
+        io[1] = static_cast<uint32_t>(child_cap(0));
+        io[2] = static_cast<uint32_t>(kos_call_lens_pack(sizeof(word), sizeof(word)));
+        io[3] = word;
+        return arch_syscall_reg(io);
+    }
+#endif
+    struct RsInfo
+    {
+        struct kos_reply_recv_opts* opts; // null: on the receiver's own stack
+        uint32_t* box;
+        int slot;
+    };
+    RsInfo g_rs_info[3];
+    void rs_info_receiver(void* arg) // caps: E(WAIT)@0
+    {
+        RsInfo const* const r = static_cast<RsInfo const*>(arg);
+        struct kos_reply_recv_opts own;
+        struct kos_reply_recv_opts* o = r->opts;
+        if (o == nullptr)
+        {
+            o = &own;
+        }
+        kos_reply_recv_opts_init(o, child_cap(0), 0, after_us(STALL_TOLERANT_US));
+        uint32_t volatile* const box = r->box;
+        *box = 0;
+        int32_t const rc
+            = kos_reply_recv(KOS_CAP_NONE, r->box, kos_call_lens_pack(0, sizeof(uint32_t)), o);
+        g_rs_rc[r->slot] = rc;
+        g_rs_seen[r->slot] = *box;
+        if (rc >= 0 and o->info.reply_cap != KOS_CAP_NONE)
+        {
+            uint32_t const back = RS_WORD;
+            g_rs_rc[r->slot + 1] = kos_reply(o->info.reply_cap, &back, sizeof(back));
+        }
+    }
+    void rs_info_sender(void*) // caps: E(SIGNAL)@0
+    {
+        uint32_t const word = RS_WORD;
+        g_rs_rc[6] = kos_send(child_cap(0), &word, sizeof(word), after_us(STALL_TOLERANT_US));
+    }
+    void rs_info_caller(void* box) // caps: E(SIGNAL)@0
+    {
+#if KICKOS_ARCH_HAS_IPC_FASTPATH
+        g_rs_rc[8] = rs_call_reg(RS_WORD_REG);
+        g_rs_seen[8] = *static_cast<uint32_t volatile*>(box);
+#else
+        (void)box;
+#endif
+        uint32_t word = RS_WORD;
+        g_rs_rc[9] = kos_call_generic(child_cap(0), &word, sizeof(word), sizeof(word),
+                                      after_us(STALL_TOLERANT_US));
+    }
+#if KICKOS_ARCH_HAS_IPC_FASTPATH
+    void rs_control_caller(void*) // caps: E(SIGNAL)@0
+    {
+        g_rs_rc[13] = rs_call_reg(RS_WORD_REG);
+    }
+#endif
+    void* g_rs_stack = nullptr;
+    void rs_server(void*) // caps: E(WAIT)@0
+    {
+        uint32_t got = 0;
+        struct kos_reply_recv_opts o;
+        kos_reply_recv_opts_init(&o, child_cap(0), 0, after_us(STALL_TOLERANT_US));
+        if (kos_reply_recv(KOS_CAP_NONE, &got, kos_call_lens_pack(0, sizeof(got)), &o) >= 0)
+        {
+            uint32_t const back = RS_WORD;
+            g_rs_rc[2] = kos_reply(o.info.reply_cap, &back, sizeof(back));
+        }
+    }
+    // Under the fastpath the answer comes through the switch that resumes it, under the server's
+    // map.
+    void rs_caller(void*) // caps: E(SIGNAL)@0
+    {
+#if KICKOS_ARCH_HAS_IPC_FASTPATH
+        g_rs_rc[3] = rs_call_reg(0);
+#else
+        uint32_t word = 0;
+        g_rs_rc[3] = kos_call(child_cap(0), &word, sizeof(word), sizeof(word), KOS_NEVER);
+#endif
+    }
+    void rs_noop(void*) {}
+    void rs_spawner(void*)
+    {
+        g_rs_rc[4] = kos::thread::create(rs_noop, nullptr, "rsn", 10, KOS_POLICY_FIFO, 0ns,
+                                         g_rs_stack, RS_STACK)
+                         .error();
+    }
+    // Holder above main above fresh: fresh first switches in from the holder.
+    constexpr uint8_t RS_MAIN_PRIO = TAP_PRIO_PARKS - 1;
+    constexpr uint8_t RS_FRESH_PRIO = TAP_PRIO_PARKS - 2;
+    Atomic<uint32_t, Order::RELAXED> g_rs_fresh_ran{0};
+    void rs_holder(void*) // caps: E(WAIT)@0
+    {
+        uint32_t got = 0;
+        struct kos_reply_recv_opts o;
+        kos_reply_recv_opts_init(&o, child_cap(0), 0, after_us(STALL_TOLERANT_US));
+        if (kos_reply_recv(KOS_CAP_NONE, &got, kos_call_lens_pack(0, sizeof(got)), &o) >= 0)
+        {
+            kos_sleep_for(kos_us(1000));
+            g_rs_rc[10] = kos_reply(o.info.reply_cap, &got, sizeof(got));
+        }
+    }
+    void rs_fresh(void*)
+    {
+        g_rs_fresh_ran = 1;
+    }
+#endif
+    void t_window_ro_store()
+    {
+        TAP_ASK(.workers = 2, .endpoints = 1);
+        kos_cap_t ep = KOS_CAP_NONE;
+        kos::thread::Handle first;
+        kos::thread::Handle second;
+        ArmHold hold;
+        TAP_HOLD(hold.cap(&ep) and hold.thread(&first) and hold.thread(&second));
+        void* const blk = st_ram<RS_RAM, 0>();
+        TAP_CHECK(blk != nullptr);
+        TAP_CHECK(kos_endpoint_create(&ep) == 0);
+        for (int i = 0; i < RS_RCS; i++)
+        {
+            g_rs_rc[i] = 1;
+            g_rs_seen[i] = 0;
+        }
+        g_rs_word = 0;
+        uint32_t const size = static_cast<uint32_t>(arena_granule()) * RS_GRANULES;
+        kos_window const rw = {reinterpret_cast<uintptr_t>(blk), size, KOS_WINDOW_MEMORY, 0};
+        kos_window const ro = {reinterpret_cast<uintptr_t>(blk), size, KOS_WINDOW_MEMORY,
+                               KOS_WINDOW_RO};
+        kos_cap_grant const wait[] = {{ep, KOS_CAP_WAIT}};
+        kos_cap_grant const signal[] = {{ep, KOS_CAP_SIGNAL}};
+        // The receiver parks before the sender, which runs below main, sends.
+        void* const at = static_cast<unsigned char*>(blk) + sizeof(uint32_t);
+        first = kos::thread::create(rs_receiver, at, "rsr", TAP_PRIO_PARKS, KOS_POLICY_FIFO, 0ns,
+                                    nullptr, 0, &rw, 1, wait, 1, 0, nullptr, TAP_PIN_CORE);
+        second = kos::thread::create(rs_sender, nullptr, "rss", TAP_PRIO_AFTER, KOS_POLICY_FIFO,
+                                     0ns, nullptr, 0, &ro, 1, signal, 1, 0, nullptr, TAP_PIN_CORE);
+        TAP_CHECK(first.valid() and second.valid());
+        TAP_CHECK(hold.joined());
+        first = kos::thread::Handle();
+        second = kos::thread::Handle();
+        tap::diag("send %ld, receive %ld, word 0x%x", static_cast<long>(g_rs_rc[1].load()),
+                  static_cast<long>(g_rs_rc[0].load()), static_cast<unsigned>(g_rs_word.load()));
+#if ARCH_USER_STORE_CHECKED
+        TAP_CHECK(g_rs_rc[1] == -KOS_EFAULT and g_rs_rc[0] == -KOS_EFAULT);
+        TAP_CHECK(g_rs_word != RS_WORD);
+        // The same block, read-write to the receiver and read-only to its peer, holds the
+        // receive's info, its buffer in block 2: a send, then the register and the buffer form of
+        // a call, and the register form again meeting a receive whose info is on its stack.
+        uint32_t* const box = static_cast<uint32_t*>(st_ram<RS_RAM, 2>());
+        TAP_CHECK(box != nullptr);
+        uint32_t const box_size = static_cast<uint32_t>(arena_granule());
+        kos_window const rw_info[] = {
+            rw, {reinterpret_cast<uintptr_t>(box), box_size, KOS_WINDOW_MEMORY, 0}};
+        kos_window const ro_info[] = {
+            ro, {reinterpret_cast<uintptr_t>(box), box_size, KOS_WINDOW_MEMORY, 0}};
+        auto* const opts = reinterpret_cast<struct kos_reply_recv_opts*>(
+            static_cast<unsigned char*>(blk) + arena_granule());
+        g_rs_info[0] = {opts, box, 5};
+        g_rs_info[1] = {opts, box, 7};
+        g_rs_info[2] = {nullptr, box, 11};
+        first = kos::thread::create(rs_info_receiver, &g_rs_info[0], "rsi", TAP_PRIO_PARKS,
+                                    KOS_POLICY_FIFO, 0ns, nullptr, 0, rw_info, 2, wait, 1, 0,
+                                    nullptr, TAP_PIN_CORE);
+        second = kos::thread::create(rs_info_sender, nullptr, "rsj", TAP_PRIO_AFTER,
+                                     KOS_POLICY_FIFO, 0ns, nullptr, 0, &ro, 1, signal, 1, 0,
+                                     nullptr, TAP_PIN_CORE);
+        TAP_CHECK(first.valid() and second.valid());
+        TAP_CHECK(hold.joined());
+        first = kos::thread::Handle();
+        second = kos::thread::Handle();
+        first = kos::thread::create(rs_info_receiver, &g_rs_info[1], "rsi", TAP_PRIO_PARKS,
+                                    KOS_POLICY_FIFO, 0ns, nullptr, 0, rw_info, 2, wait, 1, 0,
+                                    nullptr, TAP_PIN_CORE);
+        second = kos::thread::create(rs_info_caller, box, "rsl", TAP_PRIO_AFTER, KOS_POLICY_FIFO,
+                                     0ns, nullptr, 0, ro_info, 2, signal, 1, 0, nullptr,
+                                     TAP_PIN_CORE);
+        TAP_CHECK(first.valid() and second.valid());
+        TAP_CHECK(hold.joined());
+        first = kos::thread::Handle();
+        second = kos::thread::Handle();
+        tap::diag("info: send %ld, receive %ld, seen 0x%x", static_cast<long>(g_rs_rc[6].load()),
+                  static_cast<long>(g_rs_rc[5].load()), static_cast<unsigned>(g_rs_seen[5].load()));
+        tap::diag("info: register call %ld, seen 0x%x; call %ld, receive %ld, seen 0x%x",
+                  static_cast<long>(g_rs_rc[8].load()), static_cast<unsigned>(g_rs_seen[8].load()),
+                  static_cast<long>(g_rs_rc[9].load()), static_cast<long>(g_rs_rc[7].load()),
+                  static_cast<unsigned>(g_rs_seen[7].load()));
+        TAP_CHECK(g_rs_rc[6] == -KOS_EFAULT and g_rs_rc[5] == -KOS_EFAULT);
+        TAP_CHECK(g_rs_seen[5] == RS_WORD);
+#if KICKOS_ARCH_HAS_IPC_FASTPATH
+        TAP_CHECK(g_rs_rc[8] == KOS_CALL_REG_FALLBACK and g_rs_seen[8] == 0);
+#endif
+        TAP_CHECK(g_rs_rc[9] == -KOS_EFAULT and g_rs_rc[7] == -KOS_EFAULT);
+        TAP_CHECK(g_rs_seen[7] == RS_WORD);
+#if KICKOS_ARCH_HAS_IPC_FASTPATH
+        first = kos::thread::create(rs_info_receiver, &g_rs_info[2], "rsi", TAP_PRIO_PARKS,
+                                    KOS_POLICY_FIFO, 0ns, nullptr, 0, rw_info, 2, wait, 1, 0,
+                                    nullptr, TAP_PIN_CORE);
+        second = kos::thread::create(rs_control_caller, nullptr, "rsl", TAP_PRIO_AFTER,
+                                     KOS_POLICY_FIFO, 0ns, nullptr, 0, ro_info, 2, signal, 1, 0,
+                                     nullptr, TAP_PIN_CORE);
+        TAP_CHECK(first.valid() and second.valid());
+        TAP_CHECK(hold.joined());
+        first = kos::thread::Handle();
+        second = kos::thread::Handle();
+        tap::diag("control: register call %ld, receive %ld, reply %ld",
+                  static_cast<long>(g_rs_rc[13].load()), static_cast<long>(g_rs_rc[11].load()),
+                  static_cast<long>(g_rs_rc[12].load()));
+        TAP_CHECK(g_rs_rc[13] == static_cast<int32_t>(sizeof(uint32_t)));
+        TAP_CHECK(g_rs_rc[11] == static_cast<int32_t>(sizeof(uint32_t)) and g_rs_rc[12] == 0);
+        TAP_CHECK(g_rs_seen[11] == RS_WORD_REG);
+#endif
+        g_rs_stack = st_ram<RS_RAM, 1>();
+        TAP_CHECK(g_rs_stack != nullptr);
+        kos_window const ro_stack = {reinterpret_cast<uintptr_t>(g_rs_stack), RS_STACK,
+                                     KOS_WINDOW_MEMORY, KOS_WINDOW_RO};
+        // The server parks, then the caller on the stack the server holds read-only calls it.
+        first = kos::thread::create(rs_server, nullptr, "rsv", TAP_PRIO_PARKS, KOS_POLICY_FIFO,
+                                    0ns, nullptr, 0, &ro_stack, 1, wait, 1, 0, nullptr,
+                                    TAP_PIN_CORE);
+        second = kos::thread::create(rs_caller, nullptr, "rsc", TAP_PRIO_PARKS, KOS_POLICY_FIFO,
+                                     0ns, g_rs_stack, RS_STACK, nullptr, 0, signal, 1, 0, nullptr,
+                                     TAP_PIN_CORE);
+        TAP_CHECK(first.valid() and second.valid());
+        TAP_CHECK(hold.joined());
+        first = kos::thread::Handle();
+        second = kos::thread::Handle();
+        first = kos::thread::create(rs_spawner, nullptr, "rsk", TAP_PRIO_PARKS, KOS_POLICY_FIFO,
+                                    0ns, nullptr, 0, &ro_stack, 1, nullptr, 0, 0, nullptr,
+                                    TAP_PIN_CORE);
+        TAP_CHECK(first.valid());
+        TAP_CHECK(hold.joined());
+        first = kos::thread::Handle();
+        tap::diag("reply %ld, call %ld, spawn %ld", static_cast<long>(g_rs_rc[2].load()),
+                  static_cast<long>(g_rs_rc[3].load()), static_cast<long>(g_rs_rc[4].load()));
+        TAP_CHECK(g_rs_rc[2] == -KOS_EFAULT and g_rs_rc[3] == -KOS_EFAULT);
+        TAP_CHECK(g_rs_rc[4] == -KOS_EFAULT);
+        g_rs_fresh_ran = 0;
+        TAP_CHECK(kos_thread_set_priority(RS_MAIN_PRIO) == 0);
+        second = kos::thread::create(rs_fresh, nullptr, "rsf", RS_FRESH_PRIO, KOS_POLICY_FIFO,
+                                     0ns, g_rs_stack, RS_STACK, nullptr, 0, nullptr, 0, 0, nullptr,
+                                     TAP_PIN_CORE);
+        first = kos::thread::create(rs_holder, nullptr, "rsh", TAP_PRIO_PARKS, KOS_POLICY_FIFO,
+                                    0ns, nullptr, 0, &ro_stack, 1, wait, 1, 0, nullptr,
+                                    TAP_PIN_CORE);
+        uint32_t word = RS_WORD;
+        int32_t const held_call = kos_call(ep, &word, sizeof(word), sizeof(word),
+                                           after_us(STALL_TOLERANT_US));
+        TAP_CHECK(kos_thread_set_priority(g_self->priority) == 0);
+        TAP_CHECK(first.valid() and second.valid());
+        TAP_CHECK(hold.joined());
+        first = kos::thread::Handle();
+        second = kos::thread::Handle();
+        tap::diag("holder: call %ld, reply %ld, ran %u", static_cast<long>(held_call),
+                  static_cast<long>(g_rs_rc[10].load()),
+                  static_cast<unsigned>(g_rs_fresh_ran.load()));
+        TAP_CHECK(held_call == static_cast<int32_t>(sizeof(word)) and g_rs_rc[10] == 0);
+        TAP_CHECK(g_rs_fresh_ran == 1);
+#else
+        TAP_CHECK(g_rs_rc[1] == static_cast<int32_t>(sizeof(uint32_t))
+                  and g_rs_rc[0] == static_cast<int32_t>(sizeof(uint32_t)));
+        TAP_CHECK(g_rs_word == RS_WORD);
+#endif
     }
 #endif
 
@@ -11430,6 +11813,9 @@ int main(int, char**)
 #define TAP_ADD(name, ...) TAP_ADD_ELIDED(name, __VA_ARGS__)
 #endif
     TAP_ADD("svc_roundtrip", t_svc);
+#if defined(__ARM_ARCH_6M__)
+    TAP_ADD("trap_scratch", t_trap_scratch);
+#endif
     TAP_ADD("fifo_order", t_fifo);
     TAP_ADD("preempt_on_ready", t_preempt);
     TAP_ADD("periph_clock_hz", t_periph_clock_hz);
@@ -11623,6 +12009,9 @@ int main(int, char**)
 #endif
 #if KICKOS_HAVE_MPU || defined(KICKOS_SELFTEST_SPARE_DEV)
     TAP_ADD("window_get", t_window_get, WG_RAM);
+#endif
+#if KICKOS_MEMORY_ENFORCED and not KICKOS_HAVE_ASPACE
+    TAP_ADD_PINNED("window_ro_store", t_window_ro_store, RS_RAM);
 #endif
 #if not KICKOS_HAVE_ASPACE
     TAP_ADD_PINNED("uncached_grant_sync", t_uncached_grant_sync, UG_RAM);

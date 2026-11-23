@@ -78,6 +78,8 @@ namespace kickos
             "rv32imac: the PMP did not take the user code window";
         inline constexpr char const kPmpStaleEntry[] =
             "rv32imac: a boot stage left a PMP entry the kernel cannot clear";
+        inline constexpr char const kMpuExecWindow[] =
+            "pmsav8: a region other than the code region allows execute";
         inline constexpr char const kBannerRule[] =
             "  ==============================================\n";
     }

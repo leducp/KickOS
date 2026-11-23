@@ -60,9 +60,10 @@ namespace kickos
 
     // The kernel's hold on the word `w` names, reached as kaccess reaches any user byte: through
     // the kernel's alias on a translating backend, at the word's own address elsewhere. Not
-    // reached where the word's page is gone, no longer writable, or no longer cacheable. The load
-    // is acquire, the compare-and-swap acquire and release, the store release. Caller holds
-    // IrqLock across the whole hold and parks nowhere inside it.
+    // reached where the word's page is gone, no longer writable, or no longer cacheable, nor,
+    // named by a caller, where the map loaded holds it read-only (kstore_admitted). The load is
+    // acquire, the compare-and-swap acquire and release, the store release. Caller holds IrqLock
+    // across the whole hold and parks nowhere inside it.
     class WordAccess
     {
       public:
@@ -73,6 +74,12 @@ namespace kickos
             status_ = word_open(c, va, named, &word_);
 #if KICKOS_HAVE_ASPACE
             ref_ = *named;
+#else
+            if (status_ == 0 and not kstore_admitted(va, sizeof(uint32_t)))
+            {
+                word_ = nullptr;
+                status_ = -KOS_EFAULT;
+            }
 #endif
         }
 
@@ -91,7 +98,8 @@ namespace kickos
             }
         }
 #else
-        // word_ref checked the address the kernel reaches the word at.
+        // word_ref checked the address the kernel reaches the word at. The dying holder's map
+        // writes it: word_ref or word_could_hold checked so, and a self-grant is read-write only.
         __attribute__((always_inline)) explicit WordAccess(WordRef const& w)
             : word_(reinterpret_cast<uint32_t*>(w.va))
         {

@@ -12,7 +12,10 @@
 #   - every row at its widest renders whole into BANNER_IDENTITY_MAX, the buffer a USB device
 #     console holds the rows in;
 #   - the app stamp kickos/app.h compiles names its image, so two images compiled in the same
-#     second carry different stamps.
+#     second carry different stamps;
+#   - of an ELF holding several images, the route reads the app stamp of the image that links
+#     banner_identity, none where that image defines none, and refuses an ELF defining a stamp
+#     where no image links banner_identity or the one linking it is no image's.
 # tests/static/check_bench_banner.sh holds the verdict to planted captures.
 #
 #   check_usb_identity.sh <host c++ compiler>
@@ -144,13 +147,74 @@ for app in 0 1; do
     # What the route reads back out of the image is what the image printed.
     got=$(image_string "$TMP/render$app" kickos_build_time)
     [ "$got" = "$BUILT" ] || bad "the build stamp read out of the image is [$got], not [$BUILT]"
-    if got=$(image_string "$TMP/render$app" kickos_app_stamp); then
+    if got=$(identity_app_stamp "$TMP/render$app"); then
         [ "$got" = "$stamp" ] || bad "the app stamp read out of the image is [$got], not [$stamp]"
     elif [ -n "$stamp" ]; then
         bad "no app stamp is read out of an image that defines one"
     fi
 done
 done
+
+# --- of several images, the route reads the stamp of the one printing the rows ---------------
+# Each image's stamp a local of its own, as the image link leaves it, the first object linked
+# listed first in the symbol table. C, where a local's name is not mangled. The renderer linked
+# into image 0, image 1, no image's section, or nowhere.
+for n in 0 1; do
+    printf 'static char const kickos_app_stamp[] __attribute__((section(".kickos_image%s_rodata"), used)) = "image%s";\n' \
+        "$n" "$n" > "$TMP/image$n.c"
+    "$CXX" -x c -c "$TMP/image$n.c" -o "$TMP/image$n.o" 2> "$TMP/cc.err" \
+        || fail "an image's stamp does not compile: $(head -n 5 "$TMP/cc.err")"
+done
+for at in image0 image1 plain none; do
+    {
+        printf '%s\n' '#include <stddef.h>' 'int main() { return 0; }'
+        case "$at" in
+            image*) printf 'namespace kickos { __attribute__((section(".kickos_%s_text"), used)) size_t banner_identity(char*, size_t) { return 0; } }\n' "$at" ;;
+            plain) printf '%s\n' 'namespace kickos { __attribute__((used)) size_t banner_identity(char*, size_t) { return 0; } }' ;;
+        esac
+    } > "$TMP/anchor_$at.cc"
+done
+# <name> <anchor> <object>...: links the probe $TMP/<name>.
+probe() {
+    local name=$1 at=$2
+    shift 2
+    "$CXX" -std=c++17 "$@" "$TMP/anchor_$at.cc" -o "$TMP/$name" 2> "$TMP/cc.err" \
+        || fail "the probe $name does not link: $(head -n 5 "$TMP/cc.err")"
+}
+first_listed() { # <probe> <stamp>
+    [ "$(image_string "$TMP/$1" kickos_app_stamp)" = "$2" ] \
+        || fail "the probe $1 does not list [$2]'s stamp first, so it tells no image from another"
+}
+probe images image1 "$TMP/image0.o" "$TMP/image1.o"
+first_listed images image0
+got=$(identity_app_stamp "$TMP/images")
+[ "$got" = image1 ] \
+    || bad "of two images the route reads the app stamp [$got], not banner_identity's image's [image1]"
+probe images_first image0 "$TMP/image1.o" "$TMP/image0.o"
+first_listed images_first image1
+got=$(identity_app_stamp "$TMP/images_first")
+[ "$got" = image0 ] \
+    || bad "of two images the route reads the app stamp [$got], not banner_identity's image's [image0]"
+probe unstamped image1 "$TMP/image0.o"
+got=$(identity_app_stamp "$TMP/unstamped")
+st=$?
+[ "$st" = 1 ] && [ -z "$got" ] \
+    || bad "banner_identity's image defines no stamp, yet the route reads [$got] with status $st"
+probe unanchored none "$TMP/image0.o" "$TMP/image1.o"
+got=$(identity_app_stamp "$TMP/unanchored")
+st=$?
+[ "$st" = 2 ] && [ -n "$got" ] \
+    || bad "no image links banner_identity, yet the route reads [$got] with status $st, not a refusal"
+probe unplaced plain "$TMP/image0.o" "$TMP/image1.o"
+got=$(identity_app_stamp "$TMP/unplaced")
+st=$?
+[ "$st" = 2 ] && [ -n "$got" ] \
+    || bad "banner_identity lies in no image of two, yet the route reads [$got] with status $st, not a refusal"
+probe unplaced_one plain "$TMP/image0.o"
+got=$(identity_app_stamp "$TMP/unplaced_one")
+st=$?
+[ "$st" = 2 ] && [ -n "$got" ] \
+    || bad "banner_identity lies in no image, the stamp in one, yet the route reads [$got] with status $st, not a refusal"
 
 # --- the longest block fits the USB console's buffer ------------------------------------------
 # Every value at its row's widest: a 45-character image name stamps the widest app row.

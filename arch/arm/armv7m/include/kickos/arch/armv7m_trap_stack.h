@@ -59,6 +59,20 @@
 #else
 #define KICKOS_ARMV7M_SPLIM 0
 #endif
+/* PMSAv8's read-only region binds privileged code too, so the fastpath's result word cannot be
+ * stored into a parked caller's frame under a map holding that stack read-only: it waits in the
+ * caller's context and its switch-in seats it in r4, after the caller's regions are committed.
+ * arch_armv7m.cc holds this to ARCH_USER_STORE_CHECKED. */
+#if defined(KICKOS_ARM_MPU) && defined(KICKOS_ARM_MPU_PMSAV8) && defined(KICKOS_MEMORY_ENFORCED) \
+    && defined(KICKOS_HAVE_ASPACE)
+#if KICKOS_ARM_MPU == KICKOS_ARM_MPU_PMSAV8 && KICKOS_MEMORY_ENFORCED && !KICKOS_HAVE_ASPACE
+#define KICKOS_ARMV7M_RESULT_DEFERRED 1
+#endif
+#endif
+#ifndef KICKOS_ARMV7M_RESULT_DEFERRED
+#define KICKOS_ARMV7M_RESULT_DEFERRED 0
+#endif
+
 #if KICKOS_ARMV7M_SPLIM && !KICKOS_KERNEL_STACKS
 #error "the stack limit is programmed only around the kernel blocks' syscall entry; the red-zone dispatch would run privileged on the limited user stack"
 #endif
@@ -253,6 +267,12 @@
 #define KICKOS_ARMV7M_TRAP_NEED_SVCK \
     (KICKOS_ARMV7M_TRAP_NEST_SVCK + KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_SVCK)
 
+/* The deepest PSP PendSV's block leg accepts, down from the block's top: the save below it must
+ * stop above the canary word. The deepest legal PSP can sit ON it, so the compare accepts the
+ * equal case. Needs KICKOS_KERNEL_STACK_SIZE. */
+#define KICKOS_ARMV7M_BLOCK_PSP_MAX_DROP \
+    (KICKOS_KERNEL_STACK_SIZE - 4 - KICKOS_ARMV7M_TRAP_FRAME_MAX)
+
 /* struct arch_context field offsets the trap sites read as plain displacements. switch.S
  * .equ's from these and arch_armv7m.cc static_asserts offsetof against them. The
  * telemetry-only trace_tid is the LAST field precisely so that no build posture shifts them,
@@ -264,9 +284,16 @@
 #define KICKOS_ARMV7M_CTX_OFF_EXC_RETURN 24
 #if KICKOS_ARMV7M_SPLIM
 #define KICKOS_ARMV7M_CTX_OFF_SPLIM 28
-#define KICKOS_ARMV7M_CTX_OFF_TRACE_TID 32
+#define KICKOS_ARMV7M_CTX_PAST_SPLIM 32
 #else
-#define KICKOS_ARMV7M_CTX_OFF_TRACE_TID 28
+#define KICKOS_ARMV7M_CTX_PAST_SPLIM 28
+#endif
+#if KICKOS_ARMV7M_RESULT_DEFERRED
+#define KICKOS_ARMV7M_CTX_OFF_RESULT KICKOS_ARMV7M_CTX_PAST_SPLIM
+#define KICKOS_ARMV7M_CTX_OFF_RESULT_OWED (KICKOS_ARMV7M_CTX_PAST_SPLIM + 4)
+#define KICKOS_ARMV7M_CTX_OFF_TRACE_TID (KICKOS_ARMV7M_CTX_PAST_SPLIM + 8)
+#else
+#define KICKOS_ARMV7M_CTX_OFF_TRACE_TID KICKOS_ARMV7M_CTX_PAST_SPLIM
 #endif
 
 /* THE PANIC REPORTER'S OWN STACK, which kickos_panic_stack_enter (switch.S) moves to before a

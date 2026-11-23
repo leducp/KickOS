@@ -19,8 +19,9 @@ namespace kickos
 {
     namespace arm
     {
-        // The MPU_RBAR low attribute bits (SH|AP|XN). attr is the UNPRIVILEGED access;
-        // supervisor comes from the PRIVDEFENA background.
+        // The MPU_RBAR low attribute bits (SH|AP|XN). The AP chosen binds privileged code in the
+        // region too: PRIVDEFENA's background applies only where no region matches, so the
+        // kernel's stores ask arch_mpu_loaded_writable first.
         inline uint32_t pmsav8_rbar_attr(uint32_t attr)
         {
             if (attr & ARCH_MPU_X)

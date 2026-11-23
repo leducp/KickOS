@@ -32,19 +32,12 @@
 #if KICKOS_ARMV7M_SPLIM
     .equ F_CTX_SPLIM, KICKOS_ARMV7M_CTX_OFF_SPLIM
 #endif
+#if KICKOS_ARMV7M_RESULT_DEFERRED
+    .equ F_CTX_RESULT, KICKOS_ARMV7M_CTX_OFF_RESULT
+    .equ F_CTX_RESULT_OWED, KICKOS_ARMV7M_CTX_OFF_RESULT_OWED
+#endif
 
-/* The deepest a PSP may sit inside a kernel block and still be accepted by PendSV's block leg,
-   as a distance DOWN from the block's top because that is what the compare there holds. SIZE,
-   less the lowest word (the overflow canary in kernel/thread/thread.cc, which no frame may
-   consume), less NEST_SVCK: the room the block's own sizing reserves BELOW a dispatch for
-   every frame an exception can pile on it, the PendSV save under test among them.
-   AS TIGHT AS THE SIZING AND NO TIGHTER, which is what makes it safe to enforce: the deepest
-   legitimate PSP is KERNEL_DEPTH_SVCK below the top, and this bound less that depth is
-   (SIZE - 4) - NEED_SVCK, the block's own slack. So check_trap_redzone.sh passing is exactly
-   the statement that this leg admits every legal depth. Same derivation as rxv3's
-   BLOCK_USP_MAX_DROP. */
-    .equ BLOCK_PSP_MAX_DROP, \
-        KICKOS_KERNEL_STACK_SIZE - KICKOS_ARMV7M_TRAP_NEST_SVCK - 4
+    .equ BLOCK_PSP_MAX_DROP, KICKOS_ARMV7M_BLOCK_PSP_MAX_DROP
 
 /* The frame a switch-in returns through, in a stack a task-mate can write: a stacked PC with
    bit 0 set is UNPREDICTABLE on exception return, so it is cleared in handler mode first.
@@ -54,6 +47,57 @@
     bic     \t, \t, #1
     str     \t, [\f, #24]
     .endm
+
+/* After the commit: the outgoing thread's regions may hold the incoming stack read-only.
+   Clobbers r0-r2, r12. */
+    .macro SWITCH_IN_FRAME
+#if KICKOS_ARMV7M_RESULT_DEFERRED
+    ldr     r1, =g_arch_current
+    ldr     r1, [r1]
+    ldr     r2, [r1, #F_CTX_RESULT_OWED]
+    cbz     r2, 1f
+    ldr     r4, [r1, #F_CTX_RESULT]
+    movs    r2, #0
+    str     r2, [r1, #F_CTX_RESULT_OWED]
+1:
+#endif
+    mrs     r0, psp
+    SCRUB_PC r0, r12
+    .endm
+
+#if defined(__ARM_FP)
+/* Clears s0-s31 and FPSCR for an incoming context with no FP frame. CONTROL.FPCA is clear on
+   entry and set only by the save of an FP-live outgoing, which is the test; \always skips it
+   where no save ran. In: lr = the incoming EXC_RETURN; clobbers \t. */
+    .macro FP_SCRUB_UNOWNED t, always
+    tst     lr, #0x10
+    beq     1f
+    .if \always == 0
+    mrs     \t, control
+    tst     \t, #4
+    beq     1f
+    .endif
+    mov     \t, #0
+    vmov    s0, s1, \t, \t
+    vmov    s2, s3, \t, \t
+    vmov    s4, s5, \t, \t
+    vmov    s6, s7, \t, \t
+    vmov    s8, s9, \t, \t
+    vmov    s10, s11, \t, \t
+    vmov    s12, s13, \t, \t
+    vmov    s14, s15, \t, \t
+    vmov    s16, s17, \t, \t
+    vmov    s18, s19, \t, \t
+    vmov    s20, s21, \t, \t
+    vmov    s22, s23, \t, \t
+    vmov    s24, s25, \t, \t
+    vmov    s26, s27, \t, \t
+    vmov    s28, s29, \t, \t
+    vmov    s30, s31, \t, \t
+    vmsr    fpscr, \t
+1:
+    .endm
+#endif
 
 /* The upper leg: the whole entry frame below stack_hi. SCRUB_PC writes its PC word in handler
    mode at the switch-in, and an FP frame's {s0-s15, FPSCR} words were only RESERVED by the
@@ -204,9 +248,9 @@ PendSV_Handler:
     tst     lr, #0x10
     it      eq
     vldmiaeq r0!, {s16-s31}
+    FP_SCRUB_UNOWNED r12, 0
 #endif
     msr     psp, r0
-    SCRUB_PC r0, r12
 #if KICKOS_ARMV7M_SPLIM
     ldr     r12, [r1, #F_CTX_SPLIM]
     msr     psplim, r12
@@ -239,6 +283,7 @@ PendSV_Handler:
     ldr     r0, [r0]
     bl      kickos_switch_landed
     pop     {r0, lr}
+    SWITCH_IN_FRAME
     clrex                           /* the incoming thread's cut STREX fails (DDI0403E A3.4.4) */
     cpsie   i                       /* pair consumed; never resume a thread masked */
     bx      lr                      /* EXC_RETURN -> resume incoming on PSP */
@@ -330,9 +375,9 @@ PendSV_Handler:
     tst     lr, #0x10
     it      eq
     vldmiaeq r0!, {s16-s31}
+    FP_SCRUB_UNOWNED r12, 1
 #endif
     msr     psp, r0
-    SCRUB_PC r0, r12
 #if KICKOS_ARMV7M_SPLIM
     ldr     r12, [r1, #F_CTX_SPLIM]
     msr     psplim, r12
@@ -348,6 +393,7 @@ PendSV_Handler:
     ldr     r0, [r0]
     bl      kickos_switch_landed
     pop     {r0, lr}
+    SWITCH_IN_FRAME
     clrex
     cpsie   i
     bx      lr                      /* EXC_RETURN -> resume incoming on PSP */
@@ -399,18 +445,22 @@ SVC_Handler:
     mrs     r2, basepri
     orrs    r1, r1, r2
     bne     .Lsvc_slow
-    ldr     r1, =0xE000ED04         /* SCB->ICSR */
-    ldr     r1, [r1]
-    tst     r1, #0x10000000         /* PENDSVSET */
-    bne     .Lsvc_slow
     /* BASEPRI at the kernel-lock level, not PRIMASK: arch_irq_save takes its nested fast
        path at exactly this value, so the IrqLocks inside the leaf neither raise nor DROP the
        mask. A PRIMASK-only bracket would have the first of them restore BASEPRI to 0 and
-       unmask the rest of the leaf. */
+       unmask the rest of the leaf.
+       RAISED BEFORE PENDSVSET IS READ: a device wake between an unmasked read and the mask
+       moves kernel().current with the stale word still passing. */
     mov     r1, #0x20               /* PRIO_LOCK_BASEPRI (regs.h) */
     msr     basepri, r1
     dsb
     isb
+    ldr     r1, =0xE000ED04         /* SCB->ICSR */
+    ldr     r1, [r1]
+    .global kickos_armv7m_svc_pend_read
+kickos_armv7m_svc_pend_read:        /* check_callrace.sh pends a device line here */
+    tst     r1, #0x10000000         /* PENDSVSET */
+    bne     .Lsvc_fp_refused
     /* Save the callee block exactly as PendSV does. That block IS the leaf's argument array,
        because stmdb seats r4 lowest: args[0] = r4 (the result slot the resuming switch
        writes), args[1] = r5 (endpoint cap), args[2] = r6 (packed lengths), args[3..7] =
@@ -455,9 +505,9 @@ SVC_Handler:
     tst     lr, #0x10
     it      eq
     vldmiaeq r1!, {s16-s31}
+    FP_SCRUB_UNOWNED r2, 0
 #endif
     msr     psp, r1
-    SCRUB_PC r1, r2
 #if KICKOS_ARMV7M_SPLIM
     ldr     r2, [r0, #F_CTX_SPLIM]
     msr     psplim, r2
@@ -486,6 +536,7 @@ SVC_Handler:
     ldr     r0, [r0]
     bl      kickos_switch_landed
     pop     {r0, lr}
+    SWITCH_IN_FRAME
     clrex
     cpsie   i                       /* the pair is consumed */
     mov     r1, #0
@@ -630,6 +681,9 @@ svc_trampoline:
    back on the thread's own stack: the header is kernel .bss and an unprivileged read of it
    faults. */
     cpsie   i
+    isb                             /* a lowered mask is only sure to be seen after it, and a
+                                       switch pended meanwhile must land before the dispatch
+                                       reads current (DDI0403E B5.2.1) */
 #if defined(KICKOS_SPLIM_PLANT_KBLOCK)
     bl      kickos_splim_plant      /* test-only: overflow this kernel block, privileged */
 #endif

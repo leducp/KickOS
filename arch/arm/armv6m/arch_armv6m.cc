@@ -118,6 +118,11 @@ static_assert(KICKOS_KERNEL_STACK_SIZE - sizeof(uint32_t) >= KICKOS_ARMV6M_TRAP_
               "KICKOS_KERNEL_STACK_SIZE is below the armv6m syscall kernel-stack "
               "requirement plus its canary word: raise the per-arch default in Kconfig, "
               "never the depth, which is a measurement");
+// The PSP PendSV sees under the deepest dispatch: the continuation header, the dispatch, the
+// STKALIGN pad and the hardware frame of the interrupt that preempted it.
+static_assert(KICKOS_ARMV6M_BLOCK_PSP_MAX_DROP
+                  >= 16 + KICKOS_ARMV6M_TRAP_KERNEL_DEPTH_SVCK + 4 + 32,
+              "PendSV's block leg refuses a PSP the deepest legal dispatch preempted reaches");
 
 namespace
 {

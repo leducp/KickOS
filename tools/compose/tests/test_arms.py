@@ -2016,6 +2016,26 @@ C6_ACCEPTS = "accepts: [no_protection, no_privilege_split]\n"
 ARM64_PAIR = (PING % ("qemu-arm64", "", "uncached", 8192), PONG % ("qemu-arm64", "", "uncached", 8192))
 C6_PAIR = (PING % ("esp32c6-wroom", C6_ACCEPTS, "cached", 1024), PONG % ("esp32c6-wroom", C6_ACCEPTS, "cached", 1024))
 RP_PAIR = (PING % ("pizero2350", "", "cached", 1024), PONG % ("pizero2350", "", "cached", 1024))
+# Every watcher holds the init's status block read-only.
+RP_WATCHER = """version: 1
+board: pizero2350
+stdout: kernel
+ends: main
+heap: 0
+tasks:
+  - name: witness
+    program: witness_main
+    stack: 1024
+    priority: 3
+    ceiling: 9
+    restart: { max: 1 }
+  - name: main
+    program: main
+    stack: 1024
+    priority: 2
+    ceiling: 9
+    watches: [witness]
+"""
 IMX_PAIR = (PING % ("imx8mp-evk", "cluster: a53\naccepts: [no_protection]\n", "cached", 8192),
             PONG % ("imx8mp-evk", "cluster: m7\naccepts: [no_protection]\n", "cached", 8192))
 IMX_ACCEPT = ("accepts: [no_protection]", "accepts: [no_protection, cached_incoherent]")
@@ -2402,6 +2422,8 @@ SCENARIOS = [
                                                                 "    serves: /amp/3\n    devices: [/dev/timg1]\n")]},
                                           [(1, "    devices: ", "partition.gate-budget")], C6_AMP,
                                           [("esp32c6/chip.yaml", C6_HP_NARROW)])),
+    (None, partitioned("rp", RP_PAIR, {0: [("    maps: { /shm/book: rw }", "    maps: { /shm/book: ro }")]}, [], RP_AMP)),
+    (None, composed("pizero2350.yaml", RP_WATCHER, [], [], manifest=RP_MANIFEST)),
     (None, partitioned("rp", RP_PAIR, {0: [("    uses: [/amp/3]\n", "    uses: [/amp/3]\n    devices: [/dev/uart0/0, /dev/uart0/1]\n")]},
                        [], RP_AMP, [("rp2350/chip.yaml", RP_UART_REPEAT)])),
     ("partition.gate-budget", partitioned("rp", RP_PAIR,

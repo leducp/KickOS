@@ -36,17 +36,7 @@
     .equ F_CTX_KERNEL_SP, KICKOS_ARMV6M_CTX_OFF_KERNEL_SP
     .equ F_CTX_TRACE_TID, KICKOS_ARMV6M_CTX_OFF_TRACE_TID
 
-/* The deepest a PSP may sit inside a kernel block and still be accepted by PendSV's block leg,
-   as a distance DOWN from the block's top because that is what the compare there holds. SIZE,
-   less the lowest word (the overflow canary in kernel/thread/thread.cc, which no frame may
-   consume), less NEST_SVCK: the room the block's own sizing reserves BELOW a dispatch for
-   every frame an exception can pile on it, the PendSV save under test among them.
-   AS TIGHT AS THE SIZING AND NO TIGHTER: this bound less the deepest legitimate PSP
-   (KERNEL_DEPTH_SVCK below the top) is (SIZE - 4) - NEED_SVCK, the block's own slack, which on
-   this arch is ZERO. So the compare must accept the equal case or the deepest legal dispatch
-   is refused. Same derivation as rxv3's BLOCK_USP_MAX_DROP. */
-    .equ BLOCK_PSP_MAX_DROP, \
-        KICKOS_KERNEL_STACK_SIZE - KICKOS_ARMV6M_TRAP_NEST_SVCK - 4
+    .equ BLOCK_PSP_MAX_DROP, KICKOS_ARMV6M_BLOCK_PSP_MAX_DROP
 
 /* The software block both guarded pushes write below the live PSP: {r4-r11}, eight
    words. A REGISTER COUNT, not a measured depth, and arch_armv6m.cc asserts it against
@@ -340,14 +330,18 @@ SVC_Handler:
     mrs     r1, primask
     cmp     r1, #0
     bne     .Lsvc_slow
+    /* The kernel lock IS PRIMASK on v6-M, so masking at the one level there is nests
+       exactly: each IrqLock inside the leaf saves 1, masks, and restores 1.
+       MASKED BEFORE PENDSVSET IS READ: a device wake between an unmasked read and the mask
+       moves kernel().current with the stale word still passing. */
+    cpsid   i
     ldr     r1, =0xE000ED04         /* SCB->ICSR */
     ldr     r1, [r1]
+    .global kickos_armv6m_svc_pend_read
+kickos_armv6m_svc_pend_read:        /* check_callrace.sh pends a device line here */
     ldr     r2, =0x10000000         /* PENDSVSET */
     tst     r1, r2
-    bne     .Lsvc_slow
-    /* The kernel lock IS PRIMASK on v6-M, so masking at the one level there is nests
-       exactly: each IrqLock inside the leaf saves 1, masks, and restores 1. */
-    cpsid   i
+    bne     .Lsvc_unmask_slow
     /* Save the callee block exactly as PendSV does. That block IS the leaf's argument
        array: args[0] = r4 (the result slot the resuming switch writes), args[1] = r5
        (endpoint cap), args[2] = r6 (packed lengths), args[3..7] = r7-r11 (the payload).
@@ -424,6 +418,7 @@ SVC_Handler:
     /* The block store above shuffled r8-r11 through r4-r7, so the caller's r4-r7 survive
        only in the dead words below PSP. The generic path resumes on the register file. */
     ldmia   r1!, {r4-r7}
+.Lsvc_unmask_slow:
     cpsie   i
     mrs     r0, psp                 /* PSP never moved; the redirect below wants it back */
 .Lsvc_slow:
@@ -496,6 +491,8 @@ SVC_Handler:
     .global svc_trampoline
 svc_trampoline:
     bl      syscall_dispatch        /* (r0..r3, [sp]=a3, [sp+4]=a4) -> result in r0:r1 */
+    movs    r2, #0
+    mov     r12, r2
     ldr     r2, [sp, #8]            /* the caller-return */
     mov     lr, r2
     /* The caller's resting privilege, read here because nothing after the stack move may need
@@ -514,6 +511,8 @@ kickos_armv6m_svc_drop:
     orrs    r2, r3                  /* CONTROL.nPRIV = resting privilege */
     msr     control, r2
     isb
+    movs    r2, #0                  /* no kernel value but r0:r1 returns to the thread */
+    movs    r3, #0
     bx      lr                      /* -> arch_syscall's caller, r0:r1=result */
 
 /* ------------------------------------------------------------------------- */

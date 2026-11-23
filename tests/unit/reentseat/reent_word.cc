@@ -15,8 +15,9 @@
 
 #include <stdint.h>
 
-#if not KICKOS_LIBC_REENT or KICKOS_REENT_PER_THREAD or KICKOS_HAVE_ASPACE
-#error "this gate's posture is one seated word on a region backend"
+#if not KICKOS_LIBC_REENT or KICKOS_REENT_PER_THREAD or KICKOS_HAVE_ASPACE \
+    or not KICKOS_ARCH_SWITCH_LANDS_LATER
+#error "this gate's posture is one seated word on a region backend whose switch lands later"
 #endif
 
 using namespace kickos;
@@ -78,7 +79,6 @@ namespace
             Thread* const t = seat_pool(slot, prio);
             t->task = &g_task;
             t->reent = g_states[slot];
-            t->reent_fresh = true;
             t->lock_id = kernel().threads.lock_id_for(slot);
             return t;
         }
@@ -88,23 +88,69 @@ namespace
             IrqLock lock;
             sched::reschedule(nullptr, lock);
         }
+
+        // The arch, its regions committed, landing the switch.
+        static void land()
+        {
+            kickos_switch_landed(&sched::current()->ctx);
+        }
     };
 
-    TEST_F(ReentWord, every_switch_in_seats_the_incoming_threads_state)
+    TEST_F(ReentWord, every_switch_in_seats_the_incoming_threads_state_where_it_lands)
     {
         Thread* const a = fresh(0, PRIO_LOW);
         switch_now();
         ASSERT_EQ(sched::current(), a);
+        EXPECT_EQ(g_seat, nullptr) << "the word was seated ahead of the incoming regions";
+        land();
         EXPECT_EQ(g_seat, a->reent);
 
         Thread* const b = fresh(1, PRIO_HIGH);
         switch_now();
         ASSERT_EQ(sched::current(), b);
+        EXPECT_EQ(g_seat, a->reent) << "the word was seated ahead of the incoming regions";
+        land();
         EXPECT_EQ(g_seat, b->reent);
 
         run_exit(0);
+        land();
         ASSERT_EQ(sched::current(), a);
-        EXPECT_FALSE(a->reent_fresh);
         EXPECT_EQ(g_seat, a->reent) << "a switch back left the outgoing thread's state seated";
+    }
+
+    // A switch booked past the one landing: the running context is the landed one, not current's.
+    TEST_F(ReentWord, a_landing_of_another_context_than_currents_seats_nothing)
+    {
+        Thread* const a = fresh(0, PRIO_LOW);
+        switch_now();
+        land();
+        ASSERT_EQ(g_seat, a->reent);
+        Thread* const b = fresh(1, PRIO_HIGH);
+        switch_now();
+        ASSERT_EQ(sched::current(), b);
+        kickos_switch_landed(&a->ctx);
+        EXPECT_EQ(g_seat, a->reent) << "current's state was seated under another context's regions";
+    }
+
+    TEST_F(ReentWord, a_prime_copies_the_image_copy_of_the_state_and_leaves_the_cell)
+    {
+        for (size_t i = 0; i < STATE_BYTES; i++)
+        {
+            g_shared[i] = static_cast<unsigned char>(0x40u + i);
+        }
+        unsigned char* const carve = g_states[0];
+        for (size_t i = 0; i < KICKOS_REENT_CARVE; i++)
+        {
+            carve[i] = 0xA5u;
+        }
+        reent_prime(carve, 0);
+        for (size_t i = 0; i < STATE_BYTES; i++)
+        {
+            EXPECT_EQ(carve[i], g_shared[i]) << "byte " << i;
+        }
+        for (size_t i = STATE_BYTES; i < KICKOS_REENT_CARVE; i++)
+        {
+            EXPECT_EQ(carve[i], 0xA5u) << "byte " << i << " is in the cell";
+        }
     }
 }

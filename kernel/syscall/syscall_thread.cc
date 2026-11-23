@@ -462,6 +462,10 @@ namespace kickos
                 {
                     return arc;
                 }
+                if (not kstore_admitted(base, p->stack_size))
+                {
+                    return -KOS_EFAULT;
+                }
 #endif
             }
             return 0;

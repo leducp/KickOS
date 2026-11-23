@@ -46,6 +46,19 @@ namespace kickos
     }
 #endif
 
+    // Whether the kernel may store into [base, base + n) of user memory under the map this core
+    // has loaded now; every store a call makes asks first, and answers -KOS_EFAULT where not.
+    inline bool kstore_admitted(uintptr_t base, size_t n)
+    {
+#if ARCH_USER_STORE_CHECKED
+        return arch_mpu_loaded_writable(base, n);
+#else
+        (void)base;
+        (void)n;
+        return true;
+#endif
+    }
+
     // Copy through each owning space's acquire interface, one granule at a time.
     // Failure can leave a copied prefix. Return an error rather than panic;
     // the fault reporter also uses these functions.
@@ -311,14 +324,6 @@ namespace kickos
     // single-core builds retain the current root.
     struct arch_aspace* aspace_activate_for(Thread const* t);
 
-    // aspace_seated_for's verdict read off what aspace_activate_for just answered, for a caller
-    // that already has it.
-    inline bool aspace_seated_with(struct arch_aspace* space) { return space != nullptr; }
-
-    // Return whether this core holds the thread's own space. Spaceless threads
-    // must not write libc state through another process's app mapping.
-    bool aspace_seated_for(Thread const* t);
-
     // Install the boot root on THIS core and record it. For a caller about to stop being a
     // member of the space it is running in: the last member's release frees these tables.
     void aspace_install_boot(void);
@@ -326,10 +331,6 @@ namespace kickos
 #else
 
     inline struct arch_aspace* aspace_activate_for(Thread const*) { return nullptr; }
-    // Null here names no space rather than no seat: the app half is one flat view and every
-    // thread is seated in it.
-    inline bool aspace_seated_with(struct arch_aspace*) { return true; }
-    inline bool aspace_seated_for(Thread const*) { return true; }
     inline void aspace_install_boot(void) {}
     inline void* aspace_image_alias(size_t, void const*) { return nullptr; }
 

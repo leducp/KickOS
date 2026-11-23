@@ -444,6 +444,29 @@ TEST_F(FusedWake, a_refused_write_back_still_answers_the_received_message)
     EXPECT_EQ(opts.notify, 0u) << "the accepted mask reads as consumed bits";
 }
 
+// A receive taking a queued plain send whose info store is refused, the payload landed, answers
+// both ends EFAULT.
+TEST_F(FusedWake, a_refused_info_store_after_a_queued_send_landed_fails_both_ends)
+{
+    Fused f{};
+    ASSERT_NO_FATAL_FAILURE(stage(&f, PRIO_HIGH, ON_ME, PRIO_LOW, ON_ME));
+
+    kos_reply_recv_opts opts{};
+    kos_reply_recv_opts_init(&opts, f.ep_cap, 0, KOS_NEVER);
+    g_ipc_seam_refuse_write_from_copy = reinterpret_cast<uintptr_t>(&opts.info);
+    int32_t const rc = endpoint_reply_recv(KOS_CAP_NONE, reinterpret_cast<uintptr_t>(f.server_buf),
+                                           kos_call_lens_pack(0, sizeof(f.server_buf)),
+                                           reinterpret_cast<uintptr_t>(&opts));
+    bool const refused_mid_call = g_ipc_seam_refuse_write != 0;
+    g_ipc_seam_refuse_write_from_copy = 0;
+    g_ipc_seam_refuse_write = 0;
+    ASSERT_TRUE(refused_mid_call) << "fixture: no copy armed the refusal";
+    EXPECT_EQ(memcmp(f.server_buf, f.sender_buf, sizeof(f.sender_buf)), 0)
+        << "fixture: the payload did not land";
+    EXPECT_EQ(rc, -KOS_EFAULT) << "the receiver was answered with stale info";
+    EXPECT_EQ(f.sender->wait_result, -KOS_EFAULT) << "the sender was answered as delivered";
+}
+
 // The same after a park, the bit raised while the receive waits.
 TEST_F(FusedWake, a_parked_receive_whose_write_back_is_refused_leaves_the_bit_pending)
 {
