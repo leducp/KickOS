@@ -63,32 +63,41 @@ __asm__(".pushsection .text, \"ax\", %progbits\n"
 #define BENCH_VEC_DIRTY 0
 #endif
 
-#if defined(__XTENSA__)
+#if defined(USERBENCH_FLASH_TEXT) && defined(__XTENSA__)
 #define BENCH_FLASH_TEXT 1
-// Eight functions one cache way apart (16 KiB, half the 32 KiB two-way cache, ESP32 TRM v5.8
-// 3.3.4): all eight share a set, so calling them in turn misses on six of eight calls at least,
-// whatever the undocumented replacement.
-#define BENCH_FLASH_ALIAS(n)                                                                      \
-    "    .balign 16384\n"                                                                        \
-    "    .globl bench_flash_alias" #n "\n"                                                       \
-    "    .type bench_flash_alias" #n ", @function\n"                                             \
-    "bench_flash_alias" #n ":\n"                                                                 \
-    "    entry a1, 16\n"                                                                         \
-    "    retw.n\n"
-extern "C" void bench_flash_alias0(void);
-extern "C" void bench_flash_alias1(void);
-extern "C" void bench_flash_alias2(void);
-extern "C" void bench_flash_alias3(void);
-extern "C" void bench_flash_alias4(void);
-extern "C" void bench_flash_alias5(void);
-extern "C" void bench_flash_alias6(void);
-extern "C" void bench_flash_alias7(void);
-__asm__(".pushsection .text.bench_flash_alias, \"ax\", @progbits\n"
-        BENCH_FLASH_ALIAS(0) BENCH_FLASH_ALIAS(1) BENCH_FLASH_ALIAS(2) BENCH_FLASH_ALIAS(3)
-        BENCH_FLASH_ALIAS(4) BENCH_FLASH_ALIAS(5) BENCH_FLASH_ALIAS(6) BENCH_FLASH_ALIAS(7)
-        ".popsection\n");
+// 16 KiB apart: the two-way 32 KiB cache's way size (ESP32 TRM v5.8 3.3.4). Eight in one set
+// miss on six of eight calls at least, whatever the undocumented replacement.
+#define BENCH_FLASH_ALIGN "16384"
+#define BENCH_FLASH_EACH(X) X(0) X(1) X(2) X(3) X(4) X(5) X(6) X(7)
+#define BENCH_FLASH_COUNT 8u
+#define BENCH_FLASH_BODY "    entry a1, 16\n    retw.n\n"
+#elif defined(USERBENCH_FLASH_TEXT) && defined(__riscv)
+#define BENCH_FLASH_TEXT 1
+// 8 KiB apart: the four-way 32 KiB cache's way size, in 32-byte blocks (ESP32-C6 TRM v1.2
+// 5.3.3.2). Sixteen in one set overflow it even at eight ways.
+#define BENCH_FLASH_ALIGN "8192"
+#define BENCH_FLASH_EACH(X)                                                                       \
+    X(0) X(1) X(2) X(3) X(4) X(5) X(6) X(7) X(8) X(9) X(10) X(11) X(12) X(13) X(14) X(15)
+#define BENCH_FLASH_COUNT 16u
+#define BENCH_FLASH_BODY "    ret\n"
+#elif defined(USERBENCH_FLASH_TEXT)
+#error "userbench: USERBENCH_FLASH_TEXT on an arch with no flash text row"
 #else
 #define BENCH_FLASH_TEXT 0
+#endif
+
+#if BENCH_FLASH_TEXT
+#define BENCH_FLASH_DECLARE(n) extern "C" void bench_flash_alias##n(void);
+#define BENCH_FLASH_ALIAS(n)                                                                      \
+    "    .balign " BENCH_FLASH_ALIGN "\n"                                                         \
+    "    .globl bench_flash_alias" #n "\n"                                                       \
+    "    .type bench_flash_alias" #n ", @function\n"                                             \
+    "bench_flash_alias" #n ":\n" BENCH_FLASH_BODY
+#define BENCH_FLASH_ENTRY(n) bench_flash_alias##n,
+BENCH_FLASH_EACH(BENCH_FLASH_DECLARE)
+__asm__(".pushsection .text.bench_flash_alias, \"ax\", @progbits\n"
+        BENCH_FLASH_EACH(BENCH_FLASH_ALIAS)
+        ".popsection\n");
 #endif
 
 namespace
@@ -690,16 +699,14 @@ namespace
 #if BENCH_FLASH_TEXT
 namespace
 {
-    constexpr uint32_t FLASH_ROUNDS = 2000;
-    constexpr uint32_t FLASH_CALLS = FLASH_ROUNDS * 8u;
-    void (*const g_flash_alias[8])(void) = {
-        bench_flash_alias0, bench_flash_alias1, bench_flash_alias2, bench_flash_alias3,
-        bench_flash_alias4, bench_flash_alias5, bench_flash_alias6, bench_flash_alias7,
-    };
+    constexpr uint32_t FLASH_CALLS = 16000;
+    void (*const g_flash_alias[BENCH_FLASH_COUNT])(void) = {BENCH_FLASH_EACH(BENCH_FLASH_ENTRY)};
+    static_assert((BENCH_FLASH_COUNT & (BENCH_FLASH_COUNT - 1u)) == 0u,
+                  "the alias mask needs a power of two");
     uint32_t volatile g_flash_mask;
 
-    // The same loop twice: once calling one function, whose line stays cached, once calling the
-    // eight in turn.
+    // The same loop twice: once calling one function, whose line stays cached, once calling
+    // every alias in turn.
     uint64_t flash_calls_ns(uint32_t mask)
     {
         g_flash_mask = mask;
@@ -715,7 +722,7 @@ namespace
     void flash_text()
     {
         uint64_t const hit = flash_calls_ns(0u);
-        uint64_t const miss = flash_calls_ns(7u);
+        uint64_t const miss = flash_calls_ns(BENCH_FLASH_COUNT - 1u);
         char s[160];
         ksnprintf(s, sizeof(s), "  flash text: hit %u ns, miss %u ns per call  (%u calls each)\n",
                   static_cast<unsigned>(hit / FLASH_CALLS), static_cast<unsigned>(miss / FLASH_CALLS),

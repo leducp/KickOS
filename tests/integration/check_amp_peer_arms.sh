@@ -13,6 +13,13 @@
 #
 # usage: check_amp_peer_arms.sh <unused.elf> <cmake> <build-dir> <artefact>
 #        check_amp_peer_arms.sh --controls     judges planted captures only
+#        KOS_CAPTURE=<log> check_amp_peer_arms.sh <board-build> <kickos-source> <cmake> <arm>...
+#            judges a silicon capture of the selftest partition: each <arm> of the five above,
+#            the ones the image registers, must run, and any other <arm> is ignored
+#        check_amp_peer_arms.sh --peer-arms|--other-skips <skips>
+#            the arms of a comma-separated skip set that are the five above, `;`-separated, or
+#            the others, comma-separated: in a partition the first must run and leave the set
+#            (tools/bench/bench.sh)
 #
 # The own-image posture expects these arms to skip (KICKOS_EXPECT_SKIPS in
 # tests/integration/gates/selftest.cmake), because the same image runs standalone and inside
@@ -105,6 +112,27 @@ judge() {
     done
 }
 
+# <mode> <skips>: --peer-arms or --other-skips over the skip set.
+split_skips() {
+    _peer=""
+    _rest=""
+    for _arm in $(printf '%s' "$2" | tr ',;' '  '); do
+        case " $ARMS " in
+            *" $_arm "*) _peer="$_peer;$_arm" ;;
+            *) _rest="$_rest,$_arm" ;;
+        esac
+    done
+    if [ "$1" = --peer-arms ]; then
+        echo "${_peer#;}"
+    else
+        echo "${_rest#,}"
+    fi
+}
+if [ "${1:-}" = --peer-arms ] || [ "${1:-}" = --other-skips ]; then
+    split_skips "$1" "${2:-}"
+    exit 0
+fi
+
 if [ "${1:-}" = "--controls" ]; then
     good() { # [skip|drop <arm>]
         echo "amp far call: 1 of 1 peer node(s) answered"
@@ -143,7 +171,51 @@ $_ctl_out"
     ctl 'no peer answered' refuse "$(good | grep -v 'peer node(s) answered')"
     ctl 'one peer of two answered' refuse "$(good | sed 's/1 of 1 peer/1 of 2 peer/')"
     ctl 'no peer of one answered' refuse "$(good | sed 's/1 of 1 peer/0 of 1 peer/')"
+    # The selftest partition's route over an esp32c6-wroom capture, with selftest_p4's manifest
+    # row: its skip set loses the peer arms, which this judge then requires to run.
+    scratch_dir
+    _cap="$here/app_captures/amp-partition-selftest-c6.capture"
+    _row=amp_far_call,amp_far_reply_empty,amp_share_crossing
+    _split="$(split_skips --peer-arms "$_row,planted_other")"
+    [ "$_split" = "amp_far_call;amp_far_reply_empty;amp_share_crossing" ] \
+        || fail "the peer arms of a skip set are not split out of it"
+    [ "$(split_skips --other-skips "$_row,planted_other")" = planted_other ] \
+        || fail "a skip set without its peer arms keeps another set"
+    # <capture>: the route's TAP verdict and this judge's, status 0 when both pass.
+    route() {
+        EXPECT_SKIPS="$(split_skips --other-skips "$_row")" \
+            EXPECT_PARTIALS=irq_kernel_line_reserved EXPECT_FAULTS=txtrap \
+            sh "$here/check_tap_stream.sh" partition 27 < "$1" > "$TMP/route.out" 2>&1 || return 1
+        KOS_CAPTURE="$1" sh "$0" "$TMP" "$here/../.." cmake amp_far_call amp_far_reply_empty \
+            amp_share_crossing >> "$TMP/route.out" 2>&1
+    }
+    route "$_cap" || fail "the selftest partition route refuses a capture whose peer arms ran:
+$(cat "$TMP/route.out")"
+    echo "== the selftest partition route, peer arms ok: pass"
+    sed 's/^\(ok [0-9]* - amp_far_call\)$/\1 # SKIP no peer/' "$_cap" > "$TMP/skipped.capture"
+    cmp -s "$_cap" "$TMP/skipped.capture" && fail "the planted skip leaves the capture unchanged"
+    if route "$TMP/skipped.capture"; then
+        fail "the selftest partition route passes a capture whose peer arm skipped"
+    fi
+    echo "== the selftest partition route, a peer arm skipped: refuse"
     echo "PASS: the planted captures are judged as stated"
+    exit 0
+fi
+
+if judging_capture; then
+    shift 3
+    _registered=""
+    for _arm in "$@"; do
+        case " $ARMS " in
+            *" $_arm "*) _registered="$_registered $_arm" ;;
+            *) ;;
+        esac
+    done
+    [ -n "$_registered" ] || fail "no arm that needs a running peer is named, so nothing would be judged"
+    ARMS="${_registered# }"
+    judge_capture "the selftest partition"
+    judge
+    echo "PASS: no arm reported not ok, and $n_arms arm(s) that needed a running peer ran against one and none of them skipped"
     exit 0
 fi
 

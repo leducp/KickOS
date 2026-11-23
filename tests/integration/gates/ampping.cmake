@@ -54,9 +54,14 @@ add_test(NAME amp_peer_arms_controls
   COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_amp_peer_arms.sh" --controls)
 kickos_host_gate(amp_peer_arms_controls TIMEOUT 60)
 
+# Where the ROM boots esptool's format, the selftest partition's ROM image is built by nothing else.
+set(_amp_fresh_more "")
+if(_amp_st_artefact AND TARGET esp_amp_partition_selftest_image)
+  set(_amp_fresh_more amp_partition_selftest)
+endif()
 add_test(NAME amp_fresh_tree_build
   COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_amp_fresh_tree_build.sh"
-          "${PROJECT_SOURCE_DIR}" "${CMAKE_COMMAND}" "${_fs_preset_key}")
+          "${PROJECT_SOURCE_DIR}" "${CMAKE_COMMAND}" "${_fs_preset_key}" ${_amp_fresh_more})
 kickos_host_gate(amp_fresh_tree_build TIMEOUT 1800)
 
 if(_amp_emulated)

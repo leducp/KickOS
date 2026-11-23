@@ -25,8 +25,16 @@
 #
 # --digest checks that digest alone, on .app.bin files built from no listed ELF.
 #
+# --partition checks a merged AMP partition (tools/amp/merge-partition.sh) against the node ELFs
+# its <node list> names, one path per line, node 0 first: every node's load segments' bytes at
+# their load address in the partition ELF, and its .app.bin against the partition's program
+# headers and node 0's flash text symbols, which the merged ELF does not carry: its segment
+# count, its digest, and where node 0 names a flash text, no boot segment in that span and node
+# 0's own bytes at the load.
+#
 #   check_esp_segments.sh --images <list> <readelf> <nm> <esptool options> [--app-bin]
 #   check_esp_segments.sh --digest <app.bin>...
+#   check_esp_segments.sh --partition <readelf> <nm> <partition elf> <app.bin> <node list>
 #   check_esp_segments.sh --self-test
 
 set -u
@@ -205,6 +213,38 @@ flash_bin() {
             rc=1
         fi
     done < "$TMP/flash_rows"
+}
+
+# <readelf> <partition elf> <node elf> <name>: each load segment's file bytes of the node, at
+# its load address in the partition. Sets rc.
+node_bytes() {
+    "$1" -lW "$2" 2>/dev/null | awk '$1 == "LOAD" { print $2, $4, $5 }' > "$TMP/part_rows"
+    "$1" -lW "$3" 2>/dev/null | awk '$1 == "LOAD" { print $2, $4, $5 }' > "$TMP/node_rows"
+    while read -r _nb_off _nb_at _nb_size; do
+        _nb_off=$((_nb_off))
+        _nb_at=$((_nb_at))
+        _nb_size=$((_nb_size))
+        if [ "$_nb_size" -eq 0 ]; then
+            continue
+        fi
+        _nb_in=""
+        while read -r _nb_poff _nb_pat _nb_psize; do
+            _nb_poff=$((_nb_poff))
+            _nb_pat=$((_nb_pat))
+            _nb_psize=$((_nb_psize))
+            if [ "$_nb_at" -ge "$_nb_pat" ] && [ $((_nb_at + _nb_size)) -le $((_nb_pat + _nb_psize)) ]; then
+                _nb_in=$((_nb_poff + _nb_at - _nb_pat))
+                break
+            fi
+        done < "$TMP/part_rows"
+        if [ -z "$_nb_in" ]; then
+            echo "FAIL: $4: no load segment of the partition holds the $_nb_size bytes $(basename "$3") loads at 0x$(printf '%X' "$_nb_at")" >&2
+            rc=1
+        elif ! cmp -s -n "$_nb_size" "$3" "$2" "$_nb_off" "$_nb_in"; then
+            echo "FAIL: $4: the $_nb_size bytes $(basename "$3") loads at 0x$(printf '%X' "$_nb_at") are not the partition's" >&2
+            rc=1
+        fi
+    done < "$TMP/node_rows"
 }
 
 scratch_dir
@@ -431,12 +471,67 @@ if [ "${1:-}" = --self-test ]; then
     fi
     grep -qF 'names some of its flash text symbols, not all four' "$TMP/run.out" \
         || fail "three flash text symbols are refused for another reason: $(cat "$TMP/run.out")"
+    # A partition of ft as node 0 and a peer: the RAM rows of both nodes, at the file offsets the
+    # nodes hold their bytes at, and node 0's flash text as one more row, with no symbol of its
+    # own, packed into ft.app.bin.
+    : > "$TMP/flash.list"
+    plant_flash ft flash.list 00070000 '0x400d0000 0x08000 0x000100' '0x400d8000 0x08000 0x008100'
+    plant peer peer.list 3ffcf000 3ffcf800 '0x3ffb0100 0x00100 0x002000'
+    yes 'peer data ' | head -c $((0x2100)) > "$TMP/peer"
+    # <peer row>: the partition's program headers, the peer's RAM row as given.
+    plant_part() {
+        plant part part.list 3ffbf000 3ffbf800 '0x3ffb0000 0x00100' '0x400a0000 0x00100' \
+            "$1" '0x400d0000 0x10000 0x000100'
+        : > "$TMP/part.syms"
+        cp "$TMP/ft" "$TMP/part"
+        tail -c +$((0x2000 + 1)) "$TMP/peer" | dd of="$TMP/part" bs=1 seek=$((0x10100)) 2>/dev/null
+    }
+    plant_part '0x3ffb0100 0x00100 0x010100'
+    printf '%s\n%s\n' "$TMP/ft" "$TMP/peer" > "$TMP/nodes"
+    flash_bin_plant ft $((0x3ffb0000))
+    # <app.bin>: the partition arm over ft as node 0 and peer, into $TMP/run.out.
+    partition() {
+        sh "$0" --partition "$TMP/readelf" "$TMP/nm" "$TMP/part" "$1" "$TMP/nodes" > "$TMP/run.out" 2>&1
+    }
+    partition "$TMP/ft.app.bin" \
+        || fail "a partition whose .app.bin carries node 0's flash text is refused: $(cat "$TMP/run.out")"
+    grep -qF 'part: 2 segments' "$TMP/run.out" \
+        || fail "the partition's flash text counts as a ROM segment: $(cat "$TMP/run.out")"
+    # A byte of node 0's RAM, and the peer's row, not what the nodes load.
+    cp "$TMP/part" "$TMP/part.good"
+    printf 'X' | dd of="$TMP/part" bs=1 seek=$((0x1005)) conv=notrunc 2>/dev/null
+    if partition "$TMP/ft.app.bin"; then
+        fail "a partition whose RAM is not node 0's passes"
+    fi
+    grep -qF 'part: the 256 bytes ft loads at 0x3FFB0000 are not the partition'"'"'s' "$TMP/run.out" \
+        || fail "a partition's changed RAM is refused for another reason: $(cat "$TMP/run.out")"
+    plant_part '0x3ffd0000 0x00100 0x010100'
+    if partition "$TMP/ft.app.bin"; then
+        fail "a partition holding no load of the peer's RAM passes"
+    fi
+    grep -qF 'part: no load segment of the partition holds the 256 bytes peer loads at 0x3FFB0100' "$TMP/run.out" \
+        || fail "a partition missing the peer's RAM is refused for another reason: $(cat "$TMP/run.out")"
+    plant_part '0x3ffb0100 0x00100 0x010100'
+    printf 'X' | dd of="$TMP/ft.app.bin" bs=1 seek=$((0x6f000 + 0x9000)) conv=notrunc 2>/dev/null
+    if partition "$TMP/ft.app.bin"; then
+        fail "a partition .app.bin whose flash text is not node 0's passes"
+    fi
+    grep -qF 'part: the 32768 bytes at flash 0x78000' "$TMP/run.out" \
+        || fail "a partition's changed text is refused for another reason: $(cat "$TMP/run.out")"
+    flash_bin_plant ft $((0x400d0000))
+    if partition "$TMP/ft.app.bin"; then
+        fail "a partition .app.bin loading a segment into node 0's flash text passes"
+    fi
+    grep -qF 'part: the boot image loads segment 0 at 0x400D0000, inside the flash text' "$TMP/run.out" \
+        || fail "a partition's loaded flash text is refused for another reason: $(cat "$TMP/run.out")"
     echo "PASS: program headers count as esptool merges them; an image of 17 segments, one whose"
     echo "  window the ROM loads, options with no --use-segments, and under --app-bin a header of"
     echo "  another count or none, or a ROM digest wrong or unflagged, are refused, and under"
     echo "  --digest an unflagged image; flash text counts as no ROM segment, and a load segment"
     echo "  past its end, three of its symbols, and under --app-bin a boot image loading, reaching"
-    echo "  or carrying other bytes of it are refused"
+    echo "  or carrying other bytes of it are refused, and so are a partition loading node 0's flash"
+    echo "  text or carrying other bytes than node 0's, and one whose ELF holds other bytes than a"
+    echo "  node loads, or none"
     exit 0
 fi
 
@@ -456,6 +551,56 @@ if [ "${1:-}" = --digest ]; then
     done
     [ "$BAD" -eq 0 ] || fail "$BAD image(s) without the digest the ROM checks"
     echo "PASS: $# image(s) carry the digest the ROM checks"
+    exit 0
+fi
+
+if [ "${1:-}" = --partition ]; then
+    [ "$#" -eq 6 ] \
+        || fail "usage: check_esp_segments.sh --partition <readelf> <nm> <partition elf> <app.bin> <node list>"
+    READELF="$2"
+    NM="$3"
+    ELF="$4"
+    BIN="$5"
+    NODES="$6"
+    NAME="$(basename "$ELF")"
+    for f in "$ELF" "$BIN" "$NODES"; do
+        [ -f "$f" ] || fail "no $f"
+    done
+    grep -v '^$' "$NODES" > "$TMP/nodes"
+    NODE0="$(head -n 1 "$TMP/nodes")"
+    [ -n "$NODE0" ] || fail "$NAME: $NODES names no node"
+    rc=0
+    while IFS= read -r NODE; do
+        [ -f "$NODE" ] || fail "no $NODE"
+        node_bytes "$READELF" "$ELF" "$NODE" "$NAME"
+    done < "$TMP/nodes"
+    echo "$NAME: the load segments of $(grep -c . "$TMP/nodes") node(s) at their addresses"
+    flash_text "$NM" "$NODE0" || fail "$NAME: $NM names some of node 0's flash text symbols, not all four"
+    N="$(load_runs "$READELF" "$ELF")"
+    [ -n "$N" ] || fail "$NAME: $READELF lists no program header of $ELF"
+    echo "$NAME: $N segments"
+    if [ "$FT_END" -ne 0 ]; then
+        echo "$NAME: node 0's flash text 0x$(printf '%X' $((FT_END - FT_START))) bytes at flash 0x$(printf '%X' "$FT_LOAD")"
+        flash_cover "$NAME"
+    fi
+    if [ "$N" -gt "$MAX_SEGMENTS" ]; then
+        echo "FAIL: $NAME: $N segments, above the $MAX_SEGMENTS the ROM loader reads" >&2
+        rc=1
+    fi
+    E="$(app_bin_segments "$BIN")"
+    [ -n "$E" ] || fail "$NAME: $BIN holds no esptool image header"
+    if [ "$E" != "$N" ]; then
+        echo "FAIL: $NAME: esptool wrote $E segments, the program headers give $N" >&2
+        rc=1
+    else
+        digest_bin "$NAME" "$BIN" "$E"
+        if [ "$FT_END" -ne 0 ]; then
+            load_runs "$READELF" "$NODE0" > /dev/null
+            flash_bin "$NAME" "$NODE0" "$BIN" "$E"
+        fi
+    fi
+    [ "$rc" -eq 0 ] || fail "$NAME: the partition's boot image is not what node 0 and the merge state"
+    echo "PASS: $NAME holds every node's loads, at most $MAX_SEGMENTS segments, the digest the ROM checks, and node 0's flash text where it names one"
     exit 0
 fi
 

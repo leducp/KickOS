@@ -501,6 +501,23 @@ milestone does not close while any of them still composes a system.
           esp32c6-wroom fleet (TAG m1086a) and of the partition run.
         - Docs left stale: `docs/design-m10-fleet.md` section 9.5 states two gates and "the PMU
           page".
+      - M10.8.5 (the ESP32-C6 `amp2` HP node's task images run from flash; maintainer rulings
+        2026-11-22: the kernel text stays in SRAM on every C6 posture, the partition merge learns
+        a generic load-apart span and leaves every node naming none as it was, slices
+        0x33000,0x45000, and a C6 userbench flash text row with the alias stride from the cache
+        geometry). Silicon on `esp32c6-wroom` (GlaDOS, 2026-11-22), run before the review fixes:
+        - PASS, the ampping partition (`kickos-partition.app.bin` of `esp32c6-wroom-amp2-n0`),
+          judged by `check_c6_amp_capture.sh`: the ROM loads node 0 at 0x40800000 and node 1 at
+          0x40833000, `vectors=0x40833901`, node 1's store to node 0's word at 0x408163b8 denied,
+          four rounds across (`.session/logs/m1088amp-esp32c6-wroom-ampping_n0.log`).
+        - PASS, the base fleet, the `base` selftest among it (`.session/logs/m1088a-*`).
+        - PASS, `userbench` on `base` with eight aliases: `flash text: hit 100 ns, miss 4099 ns
+          per call` (`.session/logs/m1088a-esp32c6-wroom-userbench.log`).
+        Still owed:
+        - The selftest partition (`AMP_PARTITION=1 APP=selftest VARIANT=amp2-n0`), its node 0
+          `selftest_p4`, its plan run to the end with no failure and its peer arms run, not
+          skipped.
+        - `userbench` on `base` with sixteen aliases, its miss four times its hit at least.
 - [ ] **M10.8.1: THE CORTEX-M TRAP ENTRY (the M10.8 audit, verified 2026-11-18).**
       **RULED (maintainer, 2026-11-18)** on the audit's findings:
       - Area 2 F2 (a K64F client's slow DSPI rate polled at a lent priority) is DROPPED: a granted
@@ -722,27 +739,27 @@ by ruling and sits in `roadmap.md`'s `Later`.
 
 - [ ] **M11, FIRST: RAM-RESIDENT CODE LIMITS WHAT A NODE OR A SMALL BOARD CAN RUN.** Where the code
       is copied to RAM, each byte of text is a byte the arena loses, so an image's code caps its
-      thread pool. The ESP32-C6 AMP nodes link `cxxtest` only on nano newlib, with 1,776 B to spare
-      on the HP node (measured 2026-11-03); M10.7.3 alone was about 2 KB short (measured
-      2026-11-14), so M10.7.3 and M10.7.4 merge together (maintainer, 2026-11-15). Since the
-      uneven slices below, the HP node keeps about 8 KB and the LP node, which runs no `cxxtest`,
-      976 B of a link it never boots (2026-11-16); this item lands when the margin runs out, not
-      before. Building on the LP node only the images it runs, about 76 KB more for the HP node,
-      is not done: XIP supersedes it (maintainer, 2026-11-16). Code runs from RAM today on two boards. On
-      `esp32c6-wroom` (rv32imac) every configuration links the kernel and every image into the
-      512 KiB HP SRAM, the LP core's node included, and the flash cache is unused. On
-      `esp32-wroom` (Xtensa LX6) the kernel's text is in SRAM1 and every image's in SRAM0, with the
-      flash cache off. Every Cortex-M board and `rx72m` execute from flash (`picopi`, `pizero2350`
-      and `teensy41` through their XIP caches). The emulated `qemu-riscv` and the MMU boards load
-      into DRAM, their only memory. So the concern is not one arch: rv32imac and Xtensa today, and
-      any later chip whose loader copies the image to RAM. Two levers:
-      - **Uneven AMP node slices. LANDED (M10.7.4, maintainer 2026-11-16):** `KICKOS_AMP_NODE_SLICES`
-        gives each node its own size, and the C6 `amp2` configuration gives the HP node 0x3D000
-        and the LP node 0x3B000; an empty list keeps `KICKOS_AMP_NODE_SHARE` for every node.
-      - **Execute code from flash through the chip's cache (XIP)** instead of copying it to RAM,
-        leaving RAM to data and stacks. The protection windows over each image's code then cover
-        its flash address. On the ESP32 it is the second half of "M10.6.11: ESP32 CODE PAST SRAM0
-        AND SRAM1" (`git log -S'ESP32 CODE PAST SRAM0' -- TODO.md`).
+      thread pool. Where code runs today: every Cortex-M board and `rx72m` execute from flash
+      (`picopi`, `pizero2350` and `teensy41` through their XIP caches); the emulated `qemu-riscv`
+      and the MMU boards load into DRAM, their only memory. On `esp32-wroom` (Xtensa LX6) the
+      kernel's text is in SRAM0's upper 128 KiB and every task image's text runs from flash
+      through the cache. On `esp32c6-wroom` (rv32imac) the kernel's text stays in HP SRAM on every
+      configuration (maintainer, 2026-11-22), and every task image's code, rodata and data
+      template run from flash through the cache, the `amp2` HP node included since M10.8.5. What
+      remains is the `amp2` LP node: the LP CPU cannot reach flash (C6 TRM v1.2 5.3.1), so its
+      images stay in its slice of HP SRAM, and its build links every image the HP node's does.
+      Since M10.8.5 the slices are 0x33000 for the HP node and 0x45000 for the LP node, which
+      leaves 8 KB over the HP node's fattest link (`userbench`) and 44 KB over the LP node's
+      (`cxxtest`) (measured 2026-11-22). The two levers, both landed:
+      - **Uneven AMP node slices (M10.7.4, maintainer 2026-11-16):** `KICKOS_AMP_NODE_SLICES`
+        gives each node its own size; an empty list keeps `KICKOS_AMP_NODE_SHARE` for every node.
+      - **Execute code from flash through the chip's cache (XIP):** on `esp32-wroom` the task
+        text, and on `esp32c6-wroom` every HP image's task code (M10.8.5 for the `amp2` HP node).
+        The protection window over each image's code covers its flash address. The ESP32's kernel
+        text and the C6's stay in SRAM.
+      Open: building on the LP node only the images it runs, set aside while XIP was the lever
+      (maintainer, 2026-11-16), is the one way left to give the LP node room, and any later chip
+      whose loader copies the image to RAM meets this item again.
 
 - [ ] **M11: API CLEANUP LIST (not bug-driven, deferred by the M10-end rule) (maintainer,
       2026-11-05).** These open boxes, each named by its title:

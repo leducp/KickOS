@@ -309,28 +309,33 @@ tests/integration/check_inprstorm.sh|inprstorm.capture||no-fifo|after|rerouting 
 tests/integration/check_inprstorm.sh|inprstorm.capture||heartbeat-1|drop|[inprstorm] heartbeat |
 tests/integration/check_inprstorm.sh|inprstorm.capture||heartbeat-2|drop|[inprstorm] heartbeat 7||drop|[inprstorm] heartbeat 8|
 tests/integration/check_inprstorm.sh|inprstorm.capture||panic|after|rerouting INPR|KERNEL PANIC: planted
-tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||load|drop|load:0x4083d000|
-tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||lp-rtc|drop|# c6amp: LP RTC|
-tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||vectors|swap|vectors=0x4083d901|vectors=0x4083d900
-tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||vectors|swap|self clk=160000000|self clk=120000000
-tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||vectors|swap|self clk=160000000|self clk=40000000
-tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||vectors|swap|self clk=160000000|self clk=80000000
-tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||vectors|swap|self clk=160000000|self clk=1600000000
-tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||alive|swap|2 of 2 node app(s)|1 of 2 node app(s)
-tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||gate|swap|and 0x0 from node 0's timg0|and 0x5a3c from node 0's timg0
-tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||memory|drop|ampping: gate: node 1 stored|
-tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||memory|swap|and loaded 0x0;|and loaded 0xbadc0de5;
-tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||memory|swap|node 0 reads 0x600df00d there|node 0 reads 0xbadc0de5 there
-tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||memory|swap|to 0x4081b9b8,|to 0x4081b9bc,
-tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||memory|swap|to 0x4081b9b8,|to 0x40850000,|swap|word at 0x4081b9b8|word at 0x40850000
-tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||call|drop|ampping: node 0 calls node 1 port 3|
-tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||round|drop|  ping 3 -> pong 4|
-tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||attempt|after|  ping 4 -> pong 5|  (node 1 answered on attempt 2)
-tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||served|swap|its own record says 4|its own record says 3
-tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||done|drop|ampping: node 0 done|
-tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||panic|after|ampping: node 0 done|KERNEL PANIC: planted
-tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||panic|after|ampping: node 0 done|=== RISC-V TRAP ===
-tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||fault|after|ampping: node 0 done|=== THREAD FAULT === thread 'ampping' killed, system continues
+tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000;0x40878000|ampping-c6.capture||load|drop|load:0x40833000|
+tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000;0x40878000|ampping-c6.capture||load|swap|load:0x40833000|load:0x4083d000
+tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000;0x40878000|ampping-c6.capture||load|drop|load:0x40800000|
+tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000;0x40878000|ampping-c6.capture||lp-rtc|drop|# c6amp: LP RTC|
+tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000;0x40878000|ampping-c6.capture||vectors|swap|vectors=0x40833901|vectors=0x40833900
+tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000;0x40878000|ampping-c6.capture||vectors|swap|vectors=0x40833901|vectors=0x40878901
+tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000;0x40878000|ampping-c6.capture||vectors|swap|self clk=160000000|self clk=120000000
+tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000;0x40878000|ampping-c6.capture||vectors|swap|self clk=160000000|self clk=40000000
+tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000;0x40878000|ampping-c6.capture||vectors|swap|self clk=160000000|self clk=80000000
+tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000;0x40878000|ampping-c6.capture||vectors|swap|self clk=160000000|self clk=1600000000
+tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000;0x40878000|ampping-c6.capture||alive|swap|2 of 2 node app(s)|1 of 2 node app(s)
+tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000;0x40878000|ampping-c6.capture||gate|swap|and 0x0 from node 0's timg0|and 0x5a3c from node 0's timg0
+tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000;0x40878000|ampping-c6.capture||memory|drop|ampping: gate: node 1 stored|
+tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000;0x40878000|ampping-c6.capture||memory|swap|and loaded 0x0;|and loaded 0xbadc0de5;
+tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000;0x40878000|ampping-c6.capture||memory|swap|node 0 reads 0x600df00d there|node 0 reads 0xbadc0de5 there
+tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000;0x40878000|ampping-c6.capture||memory|swap|to 0x408163b8,|to 0x408163bc,
+tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000;0x40878000|ampping-c6.capture||memory|swap|to 0x408163b8,|to 0x40850000,|swap|word at 0x408163b8|word at 0x40850000
+tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000;0x40878000|ampping-c6.capture||memory|swap|to 0x408163b8,|to 0x40833000,|swap|word at 0x408163b8|word at 0x40833000
+tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000;0x40878000|ampping-c6-top.capture||memory|swap|to 0x40832ffc,|to 0x40833000,|swap|word at 0x40832ffc|word at 0x40833000
+tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000;0x40878000|ampping-c6.capture||call|drop|ampping: node 0 calls node 1 port 3|
+tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000;0x40878000|ampping-c6.capture||round|drop|  ping 3 -> pong 4|
+tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000;0x40878000|ampping-c6.capture||attempt|after|  ping 4 -> pong 5|  (node 1 answered on attempt 2)
+tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000;0x40878000|ampping-c6.capture||served|swap|its own record says 4|its own record says 3
+tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000;0x40878000|ampping-c6.capture||done|drop|ampping: node 0 done|
+tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000;0x40878000|ampping-c6.capture||panic|after|ampping: node 0 done|KERNEL PANIC: planted
+tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000;0x40878000|ampping-c6.capture||panic|after|ampping: node 0 done|=== RISC-V TRAP ===
+tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000;0x40878000|ampping-c6.capture||fault|after|ampping: node 0 done|=== THREAD FAULT === thread 'ampping' killed, system continues
 tests/integration/check_pizero_amp_gate.sh|ampping-pizero.capture||readback|drop|# accessctrl: 0xa0|
 tests/integration/check_pizero_amp_gate.sh|ampping-pizero.capture||readback|swap|# accessctrl: 0xa0 = 0x9c|# accessctrl: 0xa0 = 0xbc
 tests/integration/check_pizero_amp_gate.sh|ampping-pizero.capture||banners|after|# accessctrl: 0xa0|   KickOS 0.5.1  -  microkernel RTOS
@@ -427,7 +432,10 @@ tests/integration/check_userbench.sh|userbench.capture||xcore|swap|cores 2,|core
 tests/integration/check_userbench.sh|userbench.capture||workload|drop|  w4-reseat:|
 tests/integration/check_userbench.sh|userbench.capture||workload|drop|  w2:|
 tests/integration/check_userbench.sh|userbench.capture||vec|drop|  switch-vec:|
-tests/integration/check_userbench.sh|userbench.capture||flash|swap|vector yes, aspace yes, flash no|vector no, aspace yes, flash yes|swap|arch    x86_64|arch    lx6
+tests/integration/check_userbench.sh;flash|userbench-c6.capture||flash|drop|  flash text:|
+tests/integration/check_userbench.sh;flash|userbench-c6.capture||flash|swap|hit 100 ns, miss 4099 ns|hit 100 ns, miss 100 ns
+tests/integration/check_userbench.sh;flash|userbench-c6.capture||flash|swap|hit 100 ns, miss 4099 ns|hit 100 ns, miss 399 ns
+tests/integration/check_userbench.sh;flash|userbench-c6.capture||posture|swap|flash yes|flash no
 tests/integration/check_userbench.sh|userbench.capture||posture|swap|cores 2,|cores 1,
 tests/integration/check_userbench.sh|userbench.capture||posture|drop|# smp sched:|
 tests/integration/check_userbench.sh|userbench.capture||posture|swap|aspace yes|aspace no
@@ -1057,6 +1065,7 @@ tests/integration/check_libcrace.sh|main returned 0
 tests/integration/check_mutexbench.sh|the bench ended
 tests/integration/check_mutexbench.sh;aspace|the bench ended
 tests/integration/check_userbench.sh|the bench ended
+tests/integration/check_userbench.sh;flash|the bench ended
 tests/integration/check_qemu_cxxterm.sh|terminate stopped the image
 tests/integration/check_qemu_cxxterm.sh;--worker|the creator ended the system cleanly
 tests/integration/check_reclaimwit.sh;drain|the drain arm shut the system down with status 0

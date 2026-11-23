@@ -1,0 +1,76 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+# Recorded on esp32c6-wroom.
+ESP-ROM:esp32c6-20220919
+Build:Sep 19 2022
+rst:0x1 (POWERON),boot:0xc (SPI_FAST_FLASH_BOOT)
+SPIWP:0xee
+mode:DIO, clock div:2
+load:0x40800000,len:0x12984
+load:0x40833000,len:0x16d28
+entry 0x40800000
+
+  ==============================================
+   KickOS 0.5.1  -  microkernel RTOS
+  ==============================================
+   board   esp32c6-wroom
+   arch    rv32imac
+   cpu     rv32imac_zicsr_zifencei
+   mpu     off
+   sched   tickless
+   heap    none
+   kstack  1184 B x 7 = 8288 B
+
+# c6amp: LP RTC 149538 Hz
+# ampdiag: peer node=1 vectors=0x40833901 tag=0 clk=20000000 self clk=160000000
+1..27
+# tap route: kernel debug console (stdout not published)
+ok 1 - mem_self_grant_nonpow2
+ok 2 - region_mode # SKIP VACUOUS no enforcement: every self-grant is already reachable
+ok 3 - domain_share
+ok 4 - cross_task_block
+ok 5 - mmio_grant
+
+=== THREAD FAULT === thread 'txtrap' killed, system continues
+  PC=0x4200bfbe mcause=0x2
+ok 6 - task_exit_driver_trap
+# self-grant 0, cacheable 0, recv 0, cacheable recv 0, retype to cacheable 0
+ok 7 - uncached_grant_sync
+ok 8 - caller_stack
+ok 9 - reent_stack
+# a stack in its task's block 0, under its own window 0, over its self-grant 0 (want 0)
+ok 10 - caller_stack_overlap
+ok 11 - irq_kernel_line_reserved # PARTIAL this chip routes every line through the first-level ISR
+ok 12 - amp_count_reads
+# partition ports: node 0 holds 1 local and 2 far of the 3 its composition names, from 3 entr(ies)
+ok 13 - amp_port_seating
+# unnamed crossing: port 5 is named for no node, and its capability is none
+ok 14 - amp_port_unnamed
+# far call to node 1 returned 16
+# amp far call: 1 of 1 peer node(s) answered
+# send to node 1: 16, sent 1->2, refused 0->0
+ok 15 - amp_far_call
+# far reply empty: node 1 answered a refused call with 0 byte(s)
+ok 16 - amp_far_reply_empty
+# share: node 1's word through this node's window: 0x53480001
+ok 17 - amp_share_crossing
+# main's crossing 1: -9 from another task, -13 from main
+ok 18 - amp_crossing_task_local
+# one buffer both ends: recv -14, send -14
+ok 19 - ipc_one_buffer_both_ends
+# [confdep] unpriv rodata buffer accepted by the readable floor
+ok 20 - confused_deputy
+ok 21 - mem_self_grant
+ok 22 - program_api
+ok 23 - image_statics
+ok 24 - image_preempts_creator
+# two instances' own statics: 0, 0
+ok 25 - image_statics_instances
+ok 26 - image_restart_churn
+ok 27 - image_nonblock
+# todo: 0
+# todo-fixed: 0
+# skipped: 0
+# vacuous: 1
+# partial: 1
+# all tests passed (0 skipped, 1 vacuous, 1 partial)

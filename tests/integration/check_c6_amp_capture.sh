@@ -6,15 +6,16 @@
 # section 9): both nodes' images loaded by the ROM, the LP core's gate witness and the four rounds
 # across, read by check_c6_amp_capture.py.
 #
-#   KOS_CAPTURE=<log> check_c6_amp_capture.sh <board-build> <kickos-source> <cmake>
+#   KOS_CAPTURE=<log> check_c6_amp_capture.sh <board-build> <kickos-source> <cmake> <node 0 base>
+#       <node 1 base> <node 1 end>
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
 
-USAGE="usage: KOS_CAPTURE=<log> check_c6_amp_capture.sh <board-build> <kickos-source> <cmake>"
-: "${1:?$USAGE}" "${2:?$USAGE}" "${3:?$USAGE}"
+USAGE="usage: KOS_CAPTURE=<log> check_c6_amp_capture.sh <board-build> <kickos-source> <cmake> <node 0 base> <node 1 base> <node 1 end>"
+: "${1:?$USAGE}" "${2:?$USAGE}" "${3:?$USAGE}" "${4:?$USAGE}" "${5:?$USAGE}" "${6:?$USAGE}"
 if [ -z "${KOS_CAPTURE:-}" ]; then
     jfail no-capture "no KOS_CAPTURE: this partition is judged from a silicon capture only"
 fi
 [ -s "$KOS_CAPTURE" ] || jfail no-capture "no capture at $KOS_CAPTURE"
-python3 "$(dirname "$0")/check_c6_amp_capture.py" "$KOS_CAPTURE"
+python3 "$(dirname "$0")/check_c6_amp_capture.py" "$KOS_CAPTURE" "$4" "$5" "$6"

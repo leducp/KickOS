@@ -100,7 +100,14 @@ if(KICKOS_AMP_NODE_ID EQUAL 0)
   set_target_properties(ampping_n0 PROPERTIES KICKOS_AMP_ARTEFACT "${_amp_artefact}")
   # The judge of the partition's silicon capture, which no emulator runs on these boards.
   if(KICKOS_BOARD STREQUAL "esp32c6-wroom")
-    kickos_app_judge(ampping_n0 tests/integration/check_c6_amp_capture.sh)
+    string(REPLACE "," ";" _amp_slices "${KICKOS_AMP_SLICE_LIST}")
+    list(GET _amp_slices 0 _amp_slice0)
+    list(GET _amp_slices 1 _amp_slice1)
+    math(EXPR _amp_n0 "${KICKOS_AMP_PARTITION_BASE}" OUTPUT_FORMAT HEXADECIMAL)
+    math(EXPR _amp_n1 "${KICKOS_AMP_PARTITION_BASE} + ${_amp_slice0}" OUTPUT_FORMAT HEXADECIMAL)
+    math(EXPR _amp_n1_end "${_amp_n1} + ${_amp_slice1}" OUTPUT_FORMAT HEXADECIMAL)
+    kickos_app_judge(ampping_n0 tests/integration/check_c6_amp_capture.sh
+                     ARGS ${_amp_n0} ${_amp_n1} ${_amp_n1_end})
   elseif(KICKOS_BOARD STREQUAL "pizero2350")
     kickos_app_judge(ampping_n0 tests/integration/check_pizero_amp_gate.sh)
   endif()
@@ -114,36 +121,63 @@ if(KICKOS_AMP_NODE_ID EQUAL 0)
   add_custom_target(amp_partition_base DEPENDS "${_amp_base}")
   add_dependencies(amp_partition amp_partition_base)
 
+  # The merged ELF carries no symbol: node 0's own names its flash text. Where the ROM boots
+  # esptool's format alone, a partition with no ROM image is not built.
   if(DEFINED KICKOS_CHIP_ESPTOOL_IMAGE)
-    set(_esp_amp_flash "${CMAKE_BINARY_DIR}/kickos-partition.app.bin")
-    # Only the bench flash reads the ROM image, so a missing esptool skips it as it
-    # does every other image's .app.bin.
     find_program(KICKOS_ESPTOOL NAMES esptool esptool.py)
+    find_program(KICKOS_PYTHON3 NAMES python3 REQUIRED)
+  endif()
+  function(_ampping_esp_image elf node0 nodes tag)
+    string(REGEX REPLACE "\\.elf$" ".app.bin" _flash "${elf}")
     if(KICKOS_ESPTOOL)
-      find_program(KICKOS_PYTHON3 NAMES python3 REQUIRED)
-      add_custom_command(OUTPUT "${_esp_amp_flash}"
-        COMMAND ${KICKOS_PYTHON3} -I ${KICKOS_ESP_IMAGE_TOOL} ${KICKOS_ESPTOOL} ${KICKOS_CHIP} ${CMAKE_NM}
-                "${_amp_artefact}" "${_esp_amp_flash}" ${KICKOS_CHIP_ESPTOOL_IMAGE}
-        COMMAND sh "${PROJECT_SOURCE_DIR}/tests/integration/check_esp_segments.sh" --digest "${_esp_amp_flash}"
-        DEPENDS "${_amp_artefact}" "${KICKOS_ESP_IMAGE_TOOL}"
+      add_custom_command(OUTPUT "${_flash}"
+        COMMAND ${KICKOS_PYTHON3} -I ${KICKOS_ESP_IMAGE_TOOL} --symbols "${node0}"
+                ${KICKOS_ESPTOOL} ${KICKOS_CHIP} ${CMAKE_NM} "${elf}" "${_flash}"
+                ${KICKOS_CHIP_ESPTOOL_IMAGE}
+        COMMAND sh "${PROJECT_SOURCE_DIR}/tests/integration/check_esp_segments.sh" --partition
+                "${CMAKE_READELF}" "${CMAKE_NM}" "${elf}" "${_flash}" "${nodes}"
+        DEPENDS "${elf}" "${KICKOS_ESP_IMAGE_TOOL}"
                 "${PROJECT_SOURCE_DIR}/tests/integration/check_esp_segments.sh"
         COMMENT "packing every AMP node's LOAD segments into one ROM image"
         VERBATIM)
-      add_custom_target(esp_amp_partition_image DEPENDS "${_esp_amp_flash}")
-      add_dependencies(amp_partition esp_amp_partition_image)
+      add_custom_target(${tag} DEPENDS "${_flash}")
     else()
       list(JOIN KICKOS_CHIP_ESPTOOL_IMAGE " " _esp_options)
-      message(STATUS "KickOS: esptool not found: kickos-partition.app.bin (bootable "
-        "${KICKOS_CHIP} AMP partition) not produced. Activate the esp-idf env, or run: "
-        "python3 tools/esp-image.py esptool ${KICKOS_CHIP} nm kickos-partition.elf "
-        "kickos-partition.app.bin ${_esp_options}")
+      get_filename_component(_name "${_flash}" NAME)
+      add_custom_target(${tag}
+        COMMAND ${CMAKE_COMMAND} -E echo "KickOS: esptool not found, so ${_name}, the only"
+                "image the ${KICKOS_CHIP} ROM boots of this partition, cannot be built. Activate"
+                "the esp-idf env, or run: python3 tools/esp-image.py --symbols ${node0} esptool"
+                "${KICKOS_CHIP} nm ${elf} ${_flash} ${_esp_options}"
+        COMMAND ${CMAKE_COMMAND} -E false
+        VERBATIM)
     endif()
+  endfunction()
+  if(DEFINED KICKOS_CHIP_ESPTOOL_IMAGE)
+    _ampping_esp_image("${_amp_artefact}" "$<TARGET_FILE:ampping_n0>"
+                       "${CMAKE_BINARY_DIR}/amp-peers/nodes" esp_amp_partition_image)
+    add_dependencies(amp_partition esp_amp_partition_image)
   endif()
 
-  # The second artefact: node 0 is the selftest and node 1 a peer that echoes, so the arms
-  # needing a running peer have one. They are compiled on every posture and decide at runtime,
-  # so this changes the ANSWER they get and not which of them exist.
-  if(TARGET selftest)
+  # The second artefact: node 0 is the selftest image on the kernel console that registers the
+  # arms needing a running peer, and node 1 a peer that echoes, so those arms have one. They are
+  # compiled on every posture and decide at runtime, so this changes the ANSWER they get and not
+  # which of them exist. <build>/kickos-partition-selftest.node0 names that image.
+  set(_amp_st_node0 "")
+  get_property(_amp_st_images GLOBAL PROPERTY KICKOS_SELFTEST_IMAGES)
+  foreach(_img IN LISTS _amp_st_images)
+    get_target_property(_img_console ${_img} KICKOS_SELFTEST_CONSOLE)
+    get_target_property(_img_names ${_img} KICKOS_SELFTEST_ARM_NAMES)
+    if(_img_console STREQUAL "kernel" AND "amp_far_call" IN_LIST _img_names)
+      set(_amp_st_node0 ${_img})
+    endif()
+  endforeach()
+  if(TARGET selftest AND NOT _amp_st_node0)
+    message(FATAL_ERROR "ampping: no selftest image on the kernel console registers amp_far_call, "
+      "so the selftest partition would run no arm that needs its peer")
+  endif()
+  if(_amp_st_node0)
+    file(WRITE "${CMAKE_BINARY_DIR}/kickos-partition-selftest.node0" "${_amp_st_node0}\n")
     set(_amp_st_artefact "${CMAKE_BINARY_DIR}/kickos-partition-selftest.elf")
     add_custom_command(OUTPUT "${_amp_st_artefact}"
       COMMAND "${PROJECT_SOURCE_DIR}/tools/amp/build-partition.sh"
@@ -152,10 +186,22 @@ if(KICKOS_AMP_NODE_ID EQUAL 0)
               "${CMAKE_OBJCOPY}" "${CMAKE_LINKER}" "${CMAKE_READELF}" "${CMAKE_OBJDUMP}"
               "${CMAKE_TOOLCHAIN_FILE}" "${CMAKE_BUILD_TYPE}"
               "${_amp_st_artefact}" "${KICKOS_BOARD}" "${KICKOS_CONFIG_VARIANT}"
-              "$<TARGET_FILE:selftest>" ${_amp_peer_echoes}
-      DEPENDS selftest
-      COMMENT "assembling the AMP partition with the selftest as node 0")
+              "$<TARGET_FILE:${_amp_st_node0}>" ${_amp_peer_echoes}
+      DEPENDS ${_amp_st_node0}
+      COMMENT "assembling the AMP partition with ${_amp_st_node0} as node 0")
     add_custom_target(amp_partition_selftest DEPENDS "${_amp_st_artefact}")
+    set(_amp_st_base "${CMAKE_BINARY_DIR}/kickos-partition-selftest")
+    add_custom_command(OUTPUT "${_amp_st_base}"
+      COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${_amp_st_artefact}" "${_amp_st_base}"
+      DEPENDS "${_amp_st_artefact}"
+      VERBATIM)
+    add_custom_target(amp_partition_selftest_base DEPENDS "${_amp_st_base}")
+    add_dependencies(amp_partition_selftest amp_partition_selftest_base)
+    if(DEFINED KICKOS_CHIP_ESPTOOL_IMAGE)
+      _ampping_esp_image("${_amp_st_artefact}" "$<TARGET_FILE:${_amp_st_node0}>"
+                         "${CMAKE_BINARY_DIR}/amp-peers-st/nodes" esp_amp_partition_selftest_image)
+      add_dependencies(amp_partition_selftest esp_amp_partition_selftest_image)
+    endif()
     set_target_properties(ampping_n0 PROPERTIES
       KICKOS_AMP_ARTEFACT_SELFTEST "${_amp_st_artefact}")
   endif()

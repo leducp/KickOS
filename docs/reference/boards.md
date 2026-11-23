@@ -705,27 +705,28 @@ Each declared task runs an image of its own, and a task's threads write only its
 code region is the whole flash on ARM and RX and the TOR code window on RV32, and it holds every image's
 code, rodata and `.data` template. So every task can read every other task's initialised data and
 constants as they were at link time. A secret belongs in memory the task fills at run time, or in a
-kernel object. On the ESP32 every image's text is in `IRAM` and the rest, its `.data` template
+kernel object. On the ESP32 every image's text is in flash and the rest, its `.data` template
 included, in `DRAM`, and as a flat board it closes no task's memory to another.
 
-### `esp32-wroom`: the kernel's code in SRAM1, every image's in SRAM0
+### `esp32-wroom`: the kernel's code in SRAM0, every image's text in flash
 
-The ROM copies every segment of the image into internal SRAM and jumps to `_start`. Nothing runs
-from flash. The link regions are in `platform/esp32/chip.yaml` (TRM v5.8, Table 3.3-2):
+The ROM copies the image's SRAM segments in and jumps to `_start`; `Reset_Handler` then maps every
+task image's text from flash through the cache. The link regions are in `platform/esp32/chip.yaml`
+(TRM v5.8, Table 3.3-2):
 
-- `IRAM1`, SRAM1's instruction alias from `0x400A_0000`, 96 KiB: the kernel's vectors and text.
-- `IRAM`, the upper 128 KiB of SRAM0 from `0x4008_0000`: every image's text.
-- `DRAM`, SRAM2 from `0x3FFB_0000` to `0x3FFE_0000`: all data, every image's rodata and window
-  included, and the boot stacks at the top.
+- `IRAM`, the upper 128 KiB of SRAM0 from `0x4008_0000`: the kernel's vectors and text. The low
+  64 KiB of SRAM0 is the two caches' pools.
+- `FLASHTEXT`, VAddr1 from `0x400D_0000` (Table 4.3-9): every image's text, placed at flash
+  `0x70000` in the same file as the boot image, which is written at flash `0x1000`.
+- `DRAM`, SRAM2 from `0x3FFB_0000` to `0x3FFE_0000`: what the ROM loads, every image's rodata
+  included, then the kernel's `.data` and `.bss` and the arena. The instruction bus reads whole
+  words only, so rodata stays on the data bus.
+- `DRAM1`, SRAM1's data alias from `0x3FFE_8000`: every image's window, and the boot stacks at
+  its top.
 
-SRAM1 is one set of words on two buses. Instruction `0x400A_0000` is data `0x3FFF_FFFC`, and the
-order runs backwards word by word (3.3.2.4). The ROM keeps its data and both CPUs' boot stacks at
-data `0x3FFE_0000` to `0x3FFE_7E30` (`__stack_app` in Espressif's ROM ELF), which is instruction
-`0x400B_81D0` and up. The ROM runs on them while it loads the image, and the APP_CPU runs on its
-part when core 1 is released. So `IRAM1` ends at `0x400B_8000`, and `esp32.ld` refuses kernel text
-past `0x400B_81D0` and any data at or past `0x3FFE_0000`.
-
-Task code stays in SRAM0.
+The ROM keeps its data and both CPUs' boot stacks at data `0x3FFE_0000` to `0x3FFE_7E30`
+(`__stack_app` in Espressif's ROM ELF). The ROM runs on them while it loads the image, and the
+APP_CPU runs on its part when core 1 is released, so `DRAM1` starts above them.
 
 The ESP32 runs KickOS flat. It has no task isolation: every task can reach every other task's
 memory and the kernel's. Its PID controller could isolate tasks, but it costs:
@@ -740,30 +741,38 @@ memory and the kernel's. Its PID controller could isolate tasks, but it costs:
 KickOS does not carry that cost for a legacy part. The ESP32-C6 is the Espressif board where
 KickOS isolates tasks, with RISC-V PMP.
 
-The low 64 KiB of SRAM0 is the flash cache pool. KickOS leaves it unused and the cache off.
-
 `esptool elf2image` refuses an image of more than 16 segments. It builds the image from the ELF's
-load segments (`--use-segments`), and makes one segment of every run of loaded bytes. So every image
-gives one run in `DRAM`: its header, rodata, constructor window and the template its `.data` loads
-at, each part ending on 8 bytes, all of them next to the kernel's rodata and `.data`. The windows
-come after the kernel's `.bss`, and the ROM loads nothing there. Each image's start stub copies its
-`.data` in from the template at every start (`Reset_Handler` does it for images 0 and 1). A boot
-image is then three segments, `DRAM`, `IRAM` and `IRAM1`, however many task images it holds. The
+load segments (`--use-segments`), and makes one segment of every run of loaded bytes.
+`tools/esp-image.py` hides the flash text's segments from it and appends the span's bytes at its
+flash load. So every image gives one run in `DRAM`: its header, rodata, constructor window and the
+template its `.data` loads at, each part ending on 8 bytes, all of them next to the kernel's rodata
+and `.data`. The windows are in `DRAM1`, and the ROM loads nothing there. Each image's start stub
+copies its `.data` in from the template at every start (`Reset_Handler` does it for images 0 and
+1). A boot image is then a `DRAM` and an `IRAM` segment however many task images it holds. The
 templates cost `DRAM`: every image's `.data` twice, about 250 bytes an image in the tree's apps. The
 `images_esp_segments` gate counts every image's load segments as esptool merges them, checks
-the count against the `.app.bin` where esptool wrote one, and refuses an image above 16 or one
-whose boot image loads a window.
+the count against the `.app.bin` where esptool wrote one, and refuses an image above 16, one
+whose boot image loads a window, and one whose flash text is not the ELF's own.
 
-### `esp32c6-wroom`: one boot segment
+### `esp32c6-wroom`: one boot segment, the task images in flash
 
-The C6 takes the same image format, built the same way (`platform/esp32c6/chip.yaml`). Its image
-template (`arch/riscv/chip/esp32c6/esp32c6.image.ld`) gives every image a `.data` template in its
-code span, which the ROM loads, each part of the span ending on 8 bytes. The windows load nothing.
-Code, templates and the kernel's `.data` are then one run, and a boot image is one segment however
-many task images it holds. A template costs the image's `.data` once more: 328 bytes an image in
-the tree's apps, and 1752 for an image that formats floats, newlib's malloc state included. On
-`esp32c6-wroom-amp2-n0` that leaves the node's slice room for five thread stacks, so the `amp2`
-nodes take five thread slots.
+The C6 takes the same image format, built the same way (`platform/esp32c6/chip.yaml`). The kernel's
+text, its data and every window are in HP SRAM, on every configuration. Every task image's code
+span, its rodata and the template its `.data` starts from included, links in `FLASHTEXT` from
+`0x4200_0000` (TRM v1.2 5.3.3.1): `tools/esp-image.py` places it at flash `0x90000` in the same
+file as the boot image, written at flash `0`, and `Reset_Handler` maps it through the cache before
+it copies any image's `.data` in. Fetch and load share that address, so one TOR window covers an
+unprivileged thread's code and its read-only data. The ROM loads the kernel alone, one segment
+however many task images the build holds. A template costs the image's `.data` once more, in
+flash.
+
+The `amp2` partition does the same for its HP node, node 0. Its LP node keeps every image in its
+slice of HP SRAM, since the LP CPU cannot reach external memory (TRM v1.2 5.3.1). The partition's
+boot image is two segments, one per node's slice, with node 0's flash text after it at flash
+`0x90000`: `tools/amp/merge-partition.sh` keeps that span apart from node 0's slice.
+
+The cache is 32 KiB, four-way set-associative, in 32-byte blocks, and serves the instruction and
+the data bus one at a time (TRM v1.2 5.3.3.2).
 
 ### `xmc4800-relax` -- two USIC-SSC facts and the two addresses every probe uses
 
@@ -1006,10 +1015,9 @@ operational belongs in this file.
 ### The selftest ships as SEVERAL images on three boards
 
 `microbit` and the ENFORCING and own-image AMP `esp32c6-wroom` variants, and the SMP
-`esp32-wroom` ones, two images of which the second holds the arms that need four peers at once:
-the task images share the 128 KiB of SRAM0. The condition is in
-`user/apps/common/selftest/CMakeLists.txt`: the CHIP for `nrf51`, and the chip plus
-`KICKOS_HAVE_MPU` or `KICKOS_AMP_OWN_IMAGE` for `esp32c6`, whose flat variant carves no code
+`esp32-wroom` ones, two images of which the second holds the arms that need four peers at once.
+The condition is in `user/apps/common/selftest/CMakeLists.txt`: the CHIP for `nrf51`, and the chip
+plus `KICKOS_HAVE_MPU` or `KICKOS_AMP_OWN_IMAGE` for `esp32c6`, whose flat variant carves no code
 window and stays one image. Every other board still produces one `selftest`, unchanged. The
 images are self-contained and partition the arms between them.
 
@@ -1022,8 +1030,8 @@ by board and the cut points do not. Each board's cut is `_selftest_firsts` in
 `esp32-wroom` takes TWO (1-7, 8).
 An enforcing `xmc4800-relax` build takes ONE: its thread arena runs from the app window through
 DSRAM2 to the kernel stack, about 184 KiB, which the whole suite never spends.
-Every other `esp32-wroom` build takes ONE: the kernel's code is in SRAM1, so the 128 KiB of SRAM0 holds
-task images alone (see *`esp32-wroom`: the kernel's code in SRAM1, every image's in SRAM0*).
+Every other `esp32-wroom` build takes ONE (see *`esp32-wroom`: the kernel's code in SRAM0, every
+image's text in flash*).
 
 The selftest is `main` of a composition (`user/apps/common/selftest/system.yaml`, stdout on the
 kernel console). A board with a console driver also builds one composition per driver,
@@ -1039,9 +1047,8 @@ build no driver images.
 
 `esp32c6` split for a resource that is neither FLASH nor
 arena: its unprivileged code and rodata are ONE TOR window (PMP entries 8 and 9, written once at
-boot) from the end of the kernel's text to the end of the last image's code. Each task's image
-carries its own copy of the C library. The window ends where the code ends, so the SRAM is the
-only limit, and the kernel's text lies below it, out of user reach. The base variant runs 14
+boot) over every image's code span in flash, and the kernel's text in SRAM lies outside it, out
+of user reach. Each task's image carries its own copy of the C library. The base variant runs 14
 threads to leave the arena room. And **`microbit` split for the
 opposite resource, and no longer needs to**: its FLASH
 is 256 KiB and never binding, but

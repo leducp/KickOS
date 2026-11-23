@@ -64,9 +64,12 @@
 # An image that no row and no JUDGE judges is refused, and so is one its row marks emulator-judged,
 # human-judged or inapplicable; JUDGE=none takes the capture unjudged.
 set -u
-# AMP_PARTITION=1, with APP=ampping_n0 and VARIANT=amp2-n0, builds the board's whole AMP partition,
-# every node's image merged into one, flashes that, and judges the capture with the judge
-# ampping_n0's row names.
+# AMP_PARTITION=1, with VARIANT=amp2-n0, builds one of the board's AMP partitions, every node's
+# image merged into one, flashes that, and logs the capture under the partition's target:
+# APP=ampping_n0 is amp_partition (kickos-partition), judged by ampping_n0's row's judge;
+# APP=selftest is amp_partition_selftest (kickos-partition-selftest), whose node 0 is the selftest
+# image the build names, judged by that image's TAP stream and by
+# tests/integration/check_amp_peer_arms.sh.
 #
 # WHICH IMAGES THIS BOARD'S BUILD SHIPS IS A PROPERTY OF ITS CONFIGURE, and LIST_IMAGES=1 is how a
 # caller asks: configure, print one `<image>|<stdout>|<judge>|<args>` row per image, flash nothing.
@@ -146,7 +149,31 @@ if [ -n "$VARIANT" ]; then
   PRESET="$BOARD-$VARIANT"
   BUILD="$BUILD-$VARIANT"
 fi
-LOG="$SESSION/logs/$TAG-$BOARD-$APP.log"
+BUILD_TARGET="$APP"
+AMP_IMAGE=""
+if [ "${AMP_PARTITION:-0}" = "1" ]; then
+  case "$APP" in
+    ampping_n0)
+      BUILD_TARGET=amp_partition
+      AMP_IMAGE=kickos-partition
+      ;;
+    selftest)
+      BUILD_TARGET=amp_partition_selftest
+      AMP_IMAGE=kickos-partition-selftest
+      ;;
+    *) ;;
+  esac
+  if [ -z "$AMP_IMAGE" ] || [ "$VARIANT" != "amp2-n0" ]; then
+    echo "REFUSING: AMP_PARTITION=1 requires APP=ampping_n0 or APP=selftest, VARIANT=amp2-n0" >&2
+    exit 1
+  fi
+fi
+# A partition's capture is named by its target, never by its node 0's image.
+LABEL="$BUILD_TARGET"
+if [ -z "$AMP_IMAGE" ]; then
+  LABEL="$APP"
+fi
+LOG="$SESSION/logs/$TAG-$BOARD-$LABEL.log"
 mkdir -p "$SESSION/logs"
 
 # The RP boards cannot be reflashed once KickOS runs (J-Link finds the SW-DP and then fails to
@@ -220,6 +247,14 @@ if [ "${LIST_IMAGES:-0}" = "1" ]; then
   exit 0
 fi
 
+# The selftest partition's node 0 is the selftest image its build names, judged as that image
+# is and by the gate that requires the peer arms it registers to run.
+if [ "$AMP_IMAGE" = kickos-partition-selftest ]; then
+  APP=$(cat "$BUILD/kickos-partition-selftest.node0" 2>/dev/null)
+  [ -n "$APP" ] || { echo "REFUSING: $BUILD names no selftest partition node 0 image" >&2; exit 1; }
+  JUDGE="${JUDGE:-tests/integration/check_amp_peer_arms.sh}"
+  echo "=== the selftest partition's node 0 is $APP"
+fi
 APP_ROW=$(awk -F '|' -v app="$APP" '$1 == app { print; exit }' "$IMAGES")
 APP_STDOUT=""
 APP_JUDGE=""
@@ -299,15 +334,16 @@ MROW
   *) ;;
 esac
 export EXPECT_ARMS EXPECT_SKIPS EXPECT_PARTIALS EXPECT_FAULTS
-
-BUILD_TARGET="$APP"
-if [ "${AMP_PARTITION:-0}" = "1" ]; then
-  if [ "$APP" != "ampping_n0" ] || [ "$VARIANT" != "amp2-n0" ]; then
-    echo "REFUSING: AMP_PARTITION=1 requires APP=ampping_n0, VARIANT=amp2-n0" >&2
-    exit 1
+# The peer arms the image may skip alone are the ones its partition must run: they leave the
+# skip set and the peer arm judge requires each to report ok.
+if [ "$AMP_IMAGE" = kickos-partition-selftest ]; then
+  PEER_ARMS=$(sh tests/integration/check_amp_peer_arms.sh --peer-arms "$EXPECT_SKIPS")
+  EXPECT_SKIPS=$(sh tests/integration/check_amp_peer_arms.sh --other-skips "$EXPECT_SKIPS")
+  if [ -z "${JUDGE_ARGS:-}" ]; then
+    JUDGE_ARGS="$PEER_ARMS"
   fi
-  BUILD_TARGET=amp_partition
 fi
+
 IMG=""
 if [ -n "${PACKAGE_PROJECT:-}" ]; then
   [ -f "$PACKAGE_PROJECT/CMakeLists.txt" ] || { echo "REFUSING: PACKAGE_PROJECT $PACKAGE_PROJECT names no CMake project in $TREE" >&2; exit 1; }
@@ -355,7 +391,7 @@ export PEER_ERASE
 # blind spot.
 BASE=${APP%_p[0-9]}
 if [ "${AMP_PARTITION:-0}" = "1" ]; then
-  IMG="$PWD/$BUILD/kickos-partition"
+  IMG="$PWD/$BUILD/$AMP_IMAGE"
 fi
 for d in "$PWD/$BUILD/user/apps/$BOARD/$APP" "$PWD/$BUILD/user/apps/common/$APP" \
          "$PWD/$BUILD/user/apps/$BOARD/$BASE" "$PWD/$BUILD/user/apps/common/$BASE"; do
@@ -448,8 +484,8 @@ fi
 # --- boards on the bench host --------------------------------------------------
 rig_need RIG_REMOTE_ROOT "the directory on the bench host holding the shipped tree and the run outputs"
 RROOT="${RIG_REMOTE_ROOT}/tree"
-RRUN="${RIG_REMOTE_ROOT}/run/$TAG-$BOARD-$APP"
-RLOG="$RRUN/$TAG-$BOARD-$APP.log"
+RRUN="${RIG_REMOTE_ROOT}/run/$TAG-$BOARD-$LABEL"
+RLOG="$RRUN/$TAG-$BOARD-$LABEL.log"
 echo "=== $BENCH_WHERE"
 
 SSH=("${BENCH_SSH[@]}")

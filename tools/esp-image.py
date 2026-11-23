@@ -3,8 +3,11 @@
 #
 # The bootable esptool image of an ELF (kickos_emit_image in cmake/kickos.cmake):
 #
-#   python3 esp-image.py <esptool> <chip> <nm> <elf> <out> [<elf2image option>...]
+#   python3 esp-image.py [--symbols <symbol elf>] <esptool> <chip> <nm> <elf> <out> [<elf2image option>...]
 #   python3 esp-image.py --offset <nm> <elf>
+#
+# --symbols reads the symbols below from <symbol elf> instead of <elf>: a merged AMP partition
+# (tools/amp/merge-partition.sh) carries none, and node 0's own ELF names its flash text.
 #
 # --offset prints the flash offset an ELF's image is written at, the one place it is stated
 # (__kickos_esp32_flash_image_offset in arch/xtensa/chip/esp32/esp32.ld).
@@ -16,8 +19,9 @@
 # __kickos_esp32_flash_image_offset, the flash offset <out> is written at. A segment that runs
 # elsewhere and loads in the span is a template the kernel copies from. Where the ELF also names
 # __kickos_esp32_flash_window_start and _end, the addresses the cache maps, a segment loading
-# there outside the span is refused: nothing would map it. The section headers are left alone:
-# objcopy -R rewrites the program headers and loses the load addresses --use-segments reads.
+# there outside the span, or at all where it names no flash text, is refused: nothing would map
+# it. The section headers are left alone: objcopy -R rewrites the program headers and loses the
+# load addresses --use-segments reads.
 #
 # esptool appends no digest to a --ram-only-header image, and the ESP32-C6 ROM compares the 32
 # bytes after the image's checksum with its SHA-256 whatever the header says: such an image gets
@@ -93,13 +97,30 @@ def main(argv):
             fail("%s names no __kickos_esp32_flash_image_offset" % argv[3])
         print("0x%x" % found["__kickos_esp32_flash_image_offset"])
         return 0
+    symbol_elf = None
+    if len(argv) > 2 and argv[1] == "--symbols":
+        symbol_elf = argv[2]
+        argv = argv[:1] + argv[3:]
     if len(argv) < 6:
-        fail("usage: esp-image.py <esptool> <chip> <nm> <elf> <out> [<elf2image option>...]")
+        fail("usage: esp-image.py [--symbols <symbol elf>] <esptool> <chip> <nm> <elf> <out> [<elf2image option>...]")
     tool, chip, nm, elf, out = argv[1:6]
     command = [tool, "--chip", chip, "elf2image"] + argv[6:]
     seal = "--ram-only-header" in argv[6:]
-    found = symbols(nm, elf)
+    if symbol_elf is None:
+        symbol_elf = elf
+    found = symbols(nm, symbol_elf)
+    window = None
+    if any(name in found for name in WINDOW):
+        if not all(name in found for name in WINDOW):
+            fail("%s names a flash window but not both of %s" % (symbol_elf, ", ".join(WINDOW)))
+        window = (found[WINDOW[0]], found[WINDOW[1]])
     if "__kickos_esp32_flash_text_load" not in found:
+        if window is not None:
+            with open(elf, "rb") as f:
+                data = f.read()
+            for _, p_type, _, _, p_paddr, p_filesz, _ in program_headers(data):
+                if p_type == PT_LOAD and p_filesz != 0 and window[0] <= p_paddr < window[1]:
+                    fail("%s: the load segment at 0x%X is in the flash window, and no flash text names it" % (elf, p_paddr))
         esptool(command, ["--output", out, elf])
         if seal:
             with open(out, "rb") as f:
@@ -108,16 +129,11 @@ def main(argv):
                 f.write(sealed(image))
         return 0
     if not all(name in found for name in SYMBOLS):
-        fail("%s names a flash text load but not all of %s" % (elf, ", ".join(SYMBOLS)))
+        fail("%s names a flash text load but not all of %s" % (symbol_elf, ", ".join(SYMBOLS)))
     start = found["__kickos_esp32_flash_text_start"]
     end = found["__kickos_esp32_flash_text_end"]
     load = found["__kickos_esp32_flash_text_load"]
     offset = found["__kickos_esp32_flash_image_offset"]
-    window = None
-    if any(name in found for name in WINDOW):
-        if not all(name in found for name in WINDOW):
-            fail("%s names a flash window but not both of %s" % (elf, ", ".join(WINDOW)))
-        window = (found[WINDOW[0]], found[WINDOW[1]])
     with open(elf, "rb") as f:
         data = bytearray(f.read())
     text = bytearray(end - start)

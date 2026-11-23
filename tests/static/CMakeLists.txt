@@ -142,11 +142,14 @@ endforeach()
 _add_test(NAME string_provider_controls
           COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_string_provider.sh"
                   --self-test "${CMAKE_C_COMPILER}" "${CMAKE_AR}" "${CMAKE_NM}")
+_add_test(NAME merge_partition_controls
+          COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/check_merge_partition.sh" "${CMAKE_C_COMPILER}"
+                  "${CMAKE_OBJCOPY}" "${CMAKE_LINKER}" "${CMAKE_READELF}" "${CMAKE_OBJDUMP}")
 kickos_tree_gate(bench_banner_controls stlink_capture_controls selftest_demands_controls
                  boot_tp_controls board_predicates stamp_lines esp_image no_eh_runtime_controls
                  no_libnosys_controls ctors_kept_controls image_listing_controls
                  esp_segments_controls string_provider_controls libc_profile_controls
-                 TIMEOUT 60)
+                 merge_partition_controls TIMEOUT 60)
 
 _add_test(NAME trap_redzone_walk
           COMMAND python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/test_trap_redzone.py")
