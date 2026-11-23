@@ -18,12 +18,13 @@ exits_on_fault: false
 interrupts: { count: { value: 112, ref: "4.1 Features, p.4-4" } }
 
 apertures:
-  - { window: [0x40000000, 0x8000000], ref: "Table 7-1 Memory Regions, Peripheral 0, p.7-3" }
-  - { window: [0x48000000, 0x8000000], ref: "Table 7-1 Memory Regions, Peripheral 1, p.7-3" }
-  - { window: [0x50000000, 0x8000000], ref: "Table 7-1 Memory Regions, Peripheral 2, p.7-3" }
-  - { window: [0x58000000, 0x8000000], ref: "Table 7-1 Memory Regions, Peripheral 3, p.7-3" }
+  - { window: [0x40004000, 0x30000], ref: "Table 7-2 Memory Map, VADC to USIC0, p.7-5" }
+  - { window: [0x48004000, 0x25000], ref: "Table 7-2 Memory Map, CCU43 to PORTS, p.7-5; Table 26-2, p.26-12" }
+  - { window: [0x50008000, 0x78000], ref: "Table 7-2 Memory Map, WDT to USB, p.7-6; Table 5-6, p.5-59" }
+  - { window: [0x54010000, 0x4000], ref: "Table 7-2 Memory Map, ECAT0, p.7-6" }
 
 devices:
+  wdt: { window: [0x50008000, 0x4000], ref: "Table 7-2 Memory Map, p.7-6" }
   # USIC0 is a MODULE of two channels. Each channel is its own register window, but the
   # module's service-request lines are shared: a channel raises whichever line its INPR
   # register points at. So the lines belong to the module, named /dev/usic0/sr0 and so on,

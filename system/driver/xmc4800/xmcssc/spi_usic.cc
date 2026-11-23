@@ -418,7 +418,12 @@ int32_t kos_spi_transfer(struct kos_spi_device* d, struct kos_bus_seg const* seg
 
         *pscr = PSCR_CLEAR_RX; // W1C AIF/RIF BEFORE re-arm: an un-cleared level re-asserts
                                // the line on unmask and storms it.
-        kos_irq_ack(irq);      // unmask the line (flag already clear -> no storm)
+        if (waited != 0)
+        {
+            // The late event banked its bit after the expiry; left, the next word's wait takes it.
+            (void)kos_notify_wait(note_bit, KOS_POLL, nullptr);
+        }
+        kos_irq_ack(irq); // unmask the line (flag already clear -> no storm)
     }
 
     if (cs_hw)

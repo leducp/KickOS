@@ -16,6 +16,7 @@
 
 #include <kickos/sys/atomic.h>
 #include <kickos/sys/byte_ring.h>
+#include <kickos/sys/rights.h>
 #include <kickos/sys/uart.h>
 
 #include <stdint.h>
@@ -44,6 +45,10 @@ enum
     KOS_CONSOLE_MODE_MASK = KOS_UART_F_NONBLOCK
 };
 
+// The right a framed op needs of its caller's badge (<kickos/sys/rights.h>); an unknown op needs
+// none, and is refused as unknown.
+uint32_t op_right(uint8_t op);
+
 // Apply a KOS_UART_SET_MODE request. Returns 0, or the negative KOS_E* to reply with.
 //
 // `required` names mode bits the transport cannot clear. A ring whose consumer may never
@@ -60,8 +65,9 @@ int32_t mode_apply(Atomic<uint32_t, Order::RELAXED>* mode, uint32_t flags, uint3
 // other thread keeps writing them, so no two fields need belong to the same instant.
 //
 // `tx_lost` is added into tx_dropped, for a service that counts part of its TX loss in a
-// field of its own. A service that does not passes 0.
-void stats_pack(uint8_t* wire, struct kos_uart_stats const* live, uint32_t tx_lost);
+// field of its own. A service that does not passes 0. Every receive and IRQ field reads 0 to a
+// caller whose `badge` lacks `read`: their timing is the console's input.
+void stats_pack(uint8_t* wire, struct kos_uart_stats const* live, uint32_t tx_lost, uint32_t badge);
 
 // The client side of the same reply.
 void stats_unpack(struct kos_uart_stats* dst, uint8_t const* wire);

@@ -3,6 +3,8 @@
 
 #include <kickos/grant.h>
 
+#include <kickos/sys/errno.h>
+
 #if KICKOS_HAVE_ASPACE or KICKOS_MEMORY_ENFORCED
 namespace kickos
 {
@@ -266,3 +268,41 @@ namespace kickos
 }
 
 #endif // KICKOS_MEMORY_ENFORCED
+
+namespace kickos
+{
+    int grant_device_window_admit(uintptr_t base, size_t size)
+    {
+        if (size == 0 or base + size < base)
+        {
+            return -KOS_EINVAL;
+        }
+#if KICKOS_HAVE_ASPACE
+        // Whole granules inside an aperture the chip states, which holds no RAM: a window over
+        // RAM would hand the task whatever frames sit there.
+        if (not grant_window_aperture_ok(base, size))
+        {
+            return -KOS_EINVAL;
+        }
+        if (grant_hits_reserved(base, size))
+        {
+            return -KOS_EPERM; // the kernel's own device
+        }
+        if (not grant_memtype_at(ARCH_MAP_DEVICE, static_cast<arch_phys_addr_t>(base), size))
+        {
+            return -KOS_ENOTSUP;
+        }
+#else
+        // Inside an aperture the chip states, which holds no RAM, as a translating build asks.
+        if (not arch_mpu_region_encodable(base, size) or not grant_window_in_aperture(base, size))
+        {
+            return -KOS_EINVAL;
+        }
+        if (not grant_region_admissible(base, size, ARCH_MPU_R | ARCH_MPU_W | ARCH_MPU_DEV, true))
+        {
+            return -KOS_EPERM; // reserved block / bit-band alias
+        }
+#endif
+        return 0;
+    }
+}

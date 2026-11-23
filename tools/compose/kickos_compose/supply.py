@@ -210,7 +210,7 @@ def start_of(task):
     held.copies = 1
     if task.catalogue is None:
         held.lines = len(task.lines)
-        held.copies = held.copies + len(task.use_slots)
+        held.copies = held.copies + len([badge for badge in task.use_badges.values() if badge])
         # A program of another name than the executable's, found for the create alone.
         if task.program is not None and task.program != "main":
             held.programs = 1

@@ -15,6 +15,7 @@
 #   * a device window or interrupt line held by two tasks, and the board's console device
 #     granted to any task but the one `stdout` names;
 #   * a use of a bus service that names no `slots`, and a slot two of its clients name;
+#   * a use of a service whose driver checks rights that names none of them;
 #   * `restart` on the task `ends` names, whose one exit ends the system;
 #   * a grant the platform cannot enforce, unless the limitation the chip file names is listed
 #     under `accepts`;
@@ -84,8 +85,9 @@ tasks:
     stack: 2048
     priority: 9
     ceiling: 9
-    # A bus client names the device slots it reaches, which no other client may name.
-    uses: [{ path: /svc/spi0, slots: [0] }]
+    # A bus client names the device slots it reaches, which no other client may name, and the
+    # rights it holds over the bus.
+    uses: [{ path: /svc/spi0, slots: [0], rights: [transfer, config] }]
     serves: /svc/sensor
     maps: { /shm/history: rw }
     restart: { max: 3 }

@@ -33,8 +33,13 @@ exits_on_fault: false
 interrupts: { count: { value: 86, ref: "Table 3-5 Interrupt vector assignments, p.76" } }
 
 apertures:
-  - { window: [0x40000000, 0x80000], ref: "Table 4-1 System memory map, AIPS0, p.170" }
-  - { window: [0x40080000, 0x7F000], ref: "Table 4-1 System memory map, AIPS1, p.170" }
+  - { window: [0x40008000, 0x2000], ref: "Table 4-2 Peripheral bridge 0 slot assignments, DMA, p.175" }
+  - { window: [0x40021000, 0x1B000], ref: "Table 4-2 Peripheral bridge 0 slot assignments, DMAMUX to ADC0, pp.176-177" }
+  - { window: [0x4003E000, 0x4000], ref: "Table 4-2 Peripheral bridge 0 slot assignments, VBAT to system register file, p.177" }
+  - { window: [0x40052000, 0x1000], ref: "Table 4-2 Peripheral bridge 0 slot assignments, software watchdog, p.177" }
+  - { window: [0x40061000, 0x2000], ref: "Table 4-2 Peripheral bridge 0 slot assignments, EWM and CMT, p.177" }
+  - { window: [0x40066000, 0xE000], ref: "Table 4-2 Peripheral bridge 0 slot assignments, I2C0 to CMP, p.178" }
+  - { window: [0x400A0000, 0x4C000], ref: "Table 4-3 Peripheral bridge 1 slot assignments, RNGA to UART5, pp.179-181" }
   - { window: [0x400FF000, 0x1000], ref: "Table 4-1 System memory map, GPIO, p.170" }
 
 devices:
@@ -78,6 +83,7 @@ devices:
   ftfe: { window: [0x40020000, 0x1000], owner: kernel, ref: "Table 4-2 Peripheral bridge 0 slot assignments, p.176" }
   # Disabled at boot, then grantable.
   wdog: { window: [0x40052000, 0x1000], ref: "Table 4-2 Peripheral bridge 0 slot assignments, p.177" }
+  ewm: { window: [0x40061000, 0x1000], ref: "Table 4-2 Peripheral bridge 0 slot assignments, p.177" }
   # Clock gates and pin mux: reached through kos_periph_enable and kos_pinmux_set only. SOPT1
   # sits in the slot below the rest.
   sim:

@@ -14,7 +14,7 @@ tasks:
     priority: 10
     ceiling: 13
     core: 0
-    uses: [/svc/simuart]
+    uses: [{ path: /svc/simuart, rights: [write, read] }]
     authority: [memory, system]
     drivers:
       - driver: simuart

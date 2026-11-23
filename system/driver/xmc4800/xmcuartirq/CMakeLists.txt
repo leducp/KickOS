@@ -21,6 +21,7 @@ kickos_add_driver(xmcuartirq SOURCES xmcuartirq.cc ../uart_usic.cc
                   BASE mmap::USIC0_CH0_BASE WINDOWS regs LINES irq:edge
                   BLOCK ${KICKOS_UART_BLOCK_SIZE} INIT block_init BARRIER 1 READY uart::KOS_UART_READY_OFFSET
                   POSTURE handover CONSOLE START xmcuartirq_console_start
+                  RIGHTS write read control
                   THREAD uartirq PRIORITY 1 ENTRY irq_entry ARG block WINDOW regs CAPS notify:wait irq:wait
                   THREAD service ENTRY uart::console_thread ARG block CAPS ep:wait notify:signal:doorbell)
 

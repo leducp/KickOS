@@ -8,9 +8,14 @@
 
 set(KICKOS_DRIVER_OPTIONS CONSOLE USB_DEVICE LOCAL)
 set(KICKOS_DRIVER_SINGLE CLASS REGDIR TAG BASE BLOCK BLOCK_CACHE INIT POSTURE BARRIER READY START SLOTS)
-set(KICKOS_DRIVER_MULTI SOURCES WINDOWS LINES CLIENT THREAD AUTHORITY)
+set(KICKOS_DRIVER_MULTI SOURCES WINDOWS LINES CLIENT THREAD AUTHORITY RIGHTS)
 set(KICKOS_DRIVER_METADATA TAG BASE WINDOWS LINES BLOCK BLOCK_CACHE INIT POSTURE BARRIER READY START CONSOLE
-    USB_DEVICE CLIENT SLOTS AUTHORITY)
+    USB_DEVICE CLIENT SLOTS AUTHORITY RIGHTS)
+# The badge layout a client's slot mask rides: installed beside this file, in the tree under user/.
+set(KICKOS_DRIVER_RIGHTS_HEADER "${CMAKE_CURRENT_LIST_DIR}/rights.h")
+if(NOT EXISTS "${KICKOS_DRIVER_RIGHTS_HEADER}")
+  set(KICKOS_DRIVER_RIGHTS_HEADER "${CMAKE_CURRENT_LIST_DIR}/../user/include/kickos/sys/rights.h")
+endif()
 # The authority a driver's entry thread may run START with (<kickos/sys/cap_rights.h>).
 set(KICKOS_DRIVER_AUTHORITIES memory pinmux pstate irq system console tasks bus_master bootloader)
 
@@ -110,12 +115,20 @@ function(kickos_driver_metadata name out_packaged out_json out_header)
   if(NOT DEFINED M_BASE)
     set(M_BASE 0)
   endif()
-  # The device slots the service keys on each client's badge, a slot mask of 32 bits.
+  # The device slots the service keys on each client's badge, a slot mask of
+  # KOS_BADGE_SLOT_BITS (<kickos/sys/rights.h>).
   if(NOT DEFINED M_SLOTS)
     set(M_SLOTS 0)
-  elseif(NOT M_SLOTS MATCHES "^([1-9]|[12][0-9]|3[0-2])$")
-    message(FATAL_ERROR "kickos_add_driver(${name}): SLOTS ${M_SLOTS} is not a count from 1 to 32, "
-      "the bits of the badge a client's slot mask rides")
+  else()
+    file(STRINGS "${KICKOS_DRIVER_RIGHTS_HEADER}" _slot_bits REGEX "^#define KOS_BADGE_SLOT_BITS [0-9]+u$")
+    if(NOT _slot_bits MATCHES "^#define KOS_BADGE_SLOT_BITS ([0-9]+)u$")
+      message(FATAL_ERROR "${KICKOS_DRIVER_RIGHTS_HEADER} states no KOS_BADGE_SLOT_BITS")
+    endif()
+    set(_slot_bits "${CMAKE_MATCH_1}")
+    if(NOT M_SLOTS MATCHES "^[1-9][0-9]*$" OR M_SLOTS GREATER _slot_bits)
+      message(FATAL_ERROR "kickos_add_driver(${name}): SLOTS ${M_SLOTS} is not a count from 1 to ${_slot_bits}, "
+        "the bits of the badge a client's slot mask rides")
+    endif()
   endif()
   set(_barrier_count FALSE)
   if(M_BARRIER MATCHES "^[0-9]+$")
@@ -337,6 +350,16 @@ function(kickos_driver_metadata name out_packaged out_json out_header)
     _kickos_json_quote("${_a}" _qa)
     list(APPEND _authority "${_qa}")
   endforeach()
+  # The rights its protocol checks on a client's badge, each a name of <kickos/sys/rights.h>,
+  # which the export manifest's check holds them to.
+  set(_protocol_rights "")
+  foreach(_r IN LISTS M_RIGHTS)
+    if(NOT _r MATCHES "^[a-z][a-z0-9_]*$")
+      message(FATAL_ERROR "kickos_add_driver(${name}): RIGHTS '${_r}' is not a right's name")
+    endif()
+    _kickos_json_quote("${_r}" _qr)
+    list(APPEND _protocol_rights "${_qr}")
+  endforeach()
   # The libraries a task using the driver links, which kickos_compose links in a system naming it.
   set(_clients "")
   foreach(_c IN LISTS M_CLIENT)
@@ -352,6 +375,7 @@ function(kickos_driver_metadata name out_packaged out_json out_header)
   _kickos_json_array(_jthreads ${_threads})
   _kickos_json_array(_jclients ${_clients})
   _kickos_json_array(_jauthority ${_authority})
+  _kickos_json_array(_jrights ${_protocol_rights})
   _kickos_json_quote("${M_POSTURE}" _qposture)
   _kickos_json_quote("${M_BLOCK_CACHE}" _qblock_cache)
   set(_block_flags 0u)
@@ -365,7 +389,7 @@ function(kickos_driver_metadata name out_packaged out_json out_header)
 \"endpoints\": ${KICKOS_DRIVER_ENDPOINTS}, \"notifications\": ${_notifications}, \
 \"block\": ${_qblock}, \"block_cache\": ${_qblock_cache}, \"posture\": ${_qposture}, \"barrier\": ${_qbarrier}, \"console\": ${_console}, \
 \"usb_device\": ${_usb_device}, \"start\": ${_qstart}, \"receiver\": ${_qreceiver}, \"client\": ${_jclients}, \
-\"slots\": ${M_SLOTS}, \"authority\": ${_jauthority}}"
+\"slots\": ${M_SLOTS}, \"authority\": ${_jauthority}, \"rights\": ${_jrights}}"
       PARENT_SCOPE)
 
   set(_block_macro "")

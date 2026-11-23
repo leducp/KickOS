@@ -6,7 +6,7 @@ import os
 from ruamel.yaml.nodes import MappingNode, ScalarNode
 
 from .descriptions import PART, check_board, cluster_views, reaches, unit_views
-from .manifest import BADGE_BITS, CORES, read_manifest
+from .manifest import CORES, read_manifest
 from .region import ram_size
 from .supply import check_drivers, check_priorities, check_scheduling, check_supply
 from .subset import FILE_NAME, IDENTIFIER, PROGRAM_NAME, File, Report, index_below, line_of, read_utf8
@@ -26,7 +26,7 @@ CAPS_FIELDS = ("width", "slots")
 BUDGET_BITS = 32
 # A packaged driver listed under a task's `drivers`, which runs as threads of that task.
 HOSTED_FIELDS = ("name", "driver", "priority", "devices", "lines", "serves", "accepts")
-USE_FIELDS = ("path", "slots")
+USE_FIELDS = ("path", "slots", "rights")
 SHARED_FIELDS = ("name", "size", "cache", "partition")
 SHARED_REQUIRED = ("name", "size", "cache")
 AUTHORITIES = ("memory", "pinmux", "pstate", "irq", "system", "console", "tasks", "bus_master",
@@ -73,9 +73,10 @@ class Grant:
 
 
 class Line:
-    def __init__(self, task, source, index, path, node):
+    def __init__(self, task, line, index, path, node):
         self.task = task
-        self.source = source
+        # As the cluster numbers it: the chip file's source plus the cluster's line_offset.
+        self.line = line
         # The line's position among its device's lines, and their names in that order.
         self.index = index
         self.device_lines = []
@@ -94,6 +95,10 @@ class Task:
         self.uses = []
         # Each used path whose use names device slots, mapped to (the slots, their node).
         self.use_slots = {}
+        # Each used path whose use names rights, mapped to (the rights, their node).
+        self.use_rights = {}
+        # Each used path's badge, its slot mask and its rights, once a manifest names the bits.
+        self.use_badges = {}
         self.watches = []
         self.maps = []
         self.grants = []
@@ -289,7 +294,7 @@ def admit_composition(path, text, platform, report, cache, manifest, partition=F
             if name not in needed:
                 unneeded(f, node, "the composition's", name)
         check_drivers(f, tasks, manifest)
-        check_slots(f, tasks, served)
+        check_slots(f, tasks, served, manifest)
         check_priorities(f, tasks, manifest)
         check_scheduling(f, top, tasks, stdout, manifest)
         init_priority = check_init_priority(f, root, init_priority, init_node, manifest)
@@ -799,27 +804,65 @@ def check_hosted(f, node, index, host, chip, cluster):
 
 
 def check_use(f, node, task, what):
-    """One item of `uses`: a path, or `{ path, slots }` naming the device slots of a bus it uses."""
+    """One item of `uses`: a path, or `{ path, slots, rights }` naming the device slots of a bus it
+    uses or the rights it holds over the service, either or both."""
     path_node = node
     slots = None
     slots_node = None
+    rights = None
+    rights_node = None
     if isinstance(node, MappingNode):
-        use = f.fields(node, "%s use" % what, USE_FIELDS, USE_FIELDS)
-        if use is None or "path" not in use or "slots" not in use:
+        use = f.fields(node, "%s use" % what, USE_FIELDS, ("path",))
+        if use is None or "path" not in use:
+            return
+        if "slots" not in use and "rights" not in use:
+            f.refuse(node, "form.missing",
+                     "%s use names neither `slots` nor `rights`; a plain path says the same" % what)
             return
         path_node = use["path"]
-        slots_node = use["slots"]
-        slots = read_slots(f, slots_node, "%s slots" % what)
+        if "slots" in use:
+            slots_node = use["slots"]
+            slots = read_slots(f, slots_node, "%s slots" % what)
+        if "rights" in use:
+            rights_node = use["rights"]
+            rights = read_rights(f, rights_node, "%s rights" % what)
     path = declared_path(f, path_node, "%s used endpoint" % what, "svc", True)
     if path is None:
         return
-    if slots_node is not None and amp_port(path) is not None:
-        f.refuse(slots_node, "form.inapplicable",
-                 "%s names slots of crossing `%s`, whose server runs on another node and is handed no "
-                 "client's badge" % (what, path))
-    elif slots_node is not None:
-        task.use_slots[path] = (slots or [], slots_node)
+    for named, kind in ((slots_node, "slots"), (rights_node, "rights")):
+        if named is not None and amp_port(path) is not None:
+            f.refuse(named, "form.inapplicable",
+                     "%s names %s of crossing `%s`, whose server runs on another node and is handed no "
+                     "client's badge" % (what, kind, path))
+    if amp_port(path) is None:
+        if slots_node is not None:
+            task.use_slots[path] = (slots or [], slots_node)
+        if rights_node is not None:
+            task.use_rights[path] = (rights or [], rights_node)
     task.uses.append((path, path_node))
+
+
+def read_rights(f, node, what):
+    """The rights a `rights` list names, or None once refused."""
+    items = f.sequence(node, what)
+    if items is None:
+        return None
+    if not items:
+        f.refuse(node, "form.range", "%s names no right, so the badge it is handed reaches nothing" % what)
+        return None
+    rights = []
+    seen = {}
+    for item in items:
+        name = f.name(item, "a right in %s" % what, IDENTIFIER)
+        if name is None:
+            continue
+        if name in seen:
+            f.refuse(item, "form.duplicate-entry",
+                     "%s lists right `%s` twice, first on line %d" % (what, name, seen[name]))
+        else:
+            seen[name] = line_of(item)
+            rights.append(name)
+    return rights
 
 
 def read_slots(f, node, what):
@@ -836,10 +879,7 @@ def read_slots(f, node, what):
         slot = f.integer(item, "a slot in %s" % what, 8)
         if slot is None:
             continue
-        if slot >= BADGE_BITS:
-            f.refuse(item, "form.range",
-                     "%s names slot %d, and a client's slot mask is its %d-bit badge" % (what, slot, BADGE_BITS))
-        elif slot in seen:
+        if slot in seen:
             f.refuse(item, "form.duplicate-entry", "%s lists slot %d twice, first on line %d" % (what, slot, seen[slot]))
         else:
             seen[slot] = line_of(item)
@@ -865,8 +905,10 @@ def check_slot_owners(f, tasks):
                          "client each slot" % (task.label(), slot, path, first[0].label(), line_of(first[1])))
 
 
-def check_slots(f, tasks, served):
-    """Each use of a bus names its slots, within what the bus keys, and no other use names any."""
+def check_slots(f, tasks, served, manifest):
+    """Each use of a bus names its slots, within what the bus keys, and no other use names any; a use
+    of a server whose driver checks rights names the ones it holds, each one the driver checks. Each
+    use's badge is its slot mask and its rights."""
     for task in tasks:
         for path, node in task.uses:
             server = served.get(path)
@@ -874,6 +916,27 @@ def check_slots(f, tasks, served):
                 continue
             if server.driver is not None and server.catalogue is None:
                 continue
+            declared = []
+            if server.catalogue is not None:
+                declared = server.catalogue.rights
+            rights = []
+            if declared and path not in task.use_rights:
+                f.refuse(node, "driver.rights-missing",
+                         "%s uses `%s` naming no rights, and %s checks %s; a use names the ones it holds, "
+                         "`{ path: %s, rights: [...] }`" % (task.label(), path, server.label(),
+                                                             ", ".join("`%s`" % right for right in declared), path))
+            if path in task.use_rights:
+                named, rights_node = task.use_rights[path]
+                for right in named:
+                    if right not in declared:
+                        f.refuse(rights_node, "driver.right",
+                                 "%s names right `%s` of `%s`, which %s does not check%s"
+                                 % (task.label(), right, path, server.label(), rights_prose(declared)))
+                rights = [right for right in named if right in declared]
+            badge = sum(1 << manifest.rights[right] for right in rights if right in (manifest.rights or {}))
+            if path in task.use_slots:
+                badge = badge | sum(1 << slot for slot in task.use_slots[path][0])
+            task.use_badges[path] = badge
             bus = 0
             if server.catalogue is not None:
                 bus = server.catalogue.slots
@@ -890,8 +953,15 @@ def check_slots(f, tasks, served):
                 for slot in named[0]:
                     if slot >= bus:
                         f.refuse(named[1], "form.range",
-                                 "%s names slot %d of `%s`, which %s keys %d device slots of"
-                                 % (task.label(), slot, path, server.label(), bus))
+                                 "%s names slot %d of `%s`, which %s keys %d device slots of, at most the "
+                                 "%d of a client's badge" % (task.label(), slot, path, server.label(), bus,
+                                                             manifest.slot_bits))
+
+
+def rights_prose(declared):
+    if not declared:
+        return ""
+    return "; it checks %s" % ", ".join("`%s`" % right for right in declared)
 
 
 def from_cluster(cluster):
@@ -975,23 +1045,26 @@ def resolve_line(f, chip, cluster, task, node, what):
     if device.owner == "kernel":
         kernel_owned(f, node, "%s, `%s`," % (what, path), device)
         return None
-    raiser = kernel_line(chip, cluster, source)
+    number = source + chip.line_offsets.get(cluster, 0)
+    raiser = kernel_line(chip, cluster, number)
     if raiser is not None:
         f.refuse(node, "ownership.kernel",
-                 "%s, `%s`, is source %d, which kernel-owned device `%s` raises too" % (what, path, source, raiser.name))
+                 "%s, `%s`, is interrupt line %d, which kernel-owned device `%s` raises too"
+                 % (what, path, number, raiser.name))
         return None
-    if source >= LINE_NONE:
+    if number >= LINE_NONE:
         f.refuse(node, "form.range",
-                 "%s, `%s`, is source %d, past the %d the table carries a line as, %d meaning none"
-                 % (what, path, source, LINE_NONE - 1, LINE_NONE))
+                 "%s, `%s`, is interrupt line %d, past the %d the table carries a line as, %d meaning none"
+                 % (what, path, number, LINE_NONE - 1, LINE_NONE))
         return None
-    line = Line(task, source, list(device.sources).index(parts[-1]), path, node)
+    line = Line(task, number, list(device.sources).index(parts[-1]), path, node)
     line.device_lines = list(device.sources)
     return line
 
 
-def kernel_line(chip, cluster, source):
-    """The kernel-owned device raising line `source`, or None."""
+def kernel_line(chip, cluster, line):
+    """The kernel-owned device raising `line`, as the cluster numbers it, or None."""
+    offset = chip.line_offsets.get(cluster, 0)
     for device in chip.devices.values():
         if device.owner != "kernel" or not reaches(device, cluster):
             continue
@@ -999,7 +1072,7 @@ def kernel_line(chip, cluster, source):
         if device.count is not None:
             count = device.count
         for number in device.sources.values():
-            if number <= source < number + count:
+            if number + offset <= line < number + offset + count:
                 return device
     return None
 
@@ -1275,10 +1348,10 @@ def check_ownership(f, tasks, chip, cluster, board, stdout):
     lines = [line for task in tasks for line in task.lines]
     for i, later in enumerate(lines):
         for earlier in lines[:i]:
-            if earlier.source == later.source:
+            if earlier.line == later.line:
                 f.refuse(later.node, "ownership.line",
-                         "`%s` of %s is source %d, which %s takes as `%s` on line %d"
-                         % (later.path, later.task.label(), later.source, earlier.task.label(), earlier.path,
+                         "`%s` of %s is interrupt line %d, which %s takes as `%s` on line %d"
+                         % (later.path, later.task.label(), later.line, earlier.task.label(), earlier.path,
                             line_of(earlier.node)))
                 break
 

@@ -12,6 +12,7 @@
 #include <kickos/sys/uart_service.h>
 
 #include <kickos/sys/errno.h>
+#include <kickos/sys/rights.h>
 
 #include <gtest/gtest.h>
 
@@ -59,6 +60,7 @@ namespace
     constexpr kos_cap_t REPLY_CAP = 40;
     char const* const DRAIN = "drain";
     char const* g_script[4] = {};
+    uint32_t g_script_badge[4] = {};
     uint32_t g_script_len = 0u;
     uint32_t g_receives = 0u;
     uint32_t g_fifo_at_return = 0u;
@@ -82,6 +84,10 @@ namespace
         g_rx_stats = nullptr;
         g_waits = 0u;
         g_script_len = 0u;
+        for (uint32_t& badge : g_script_badge)
+        {
+            badge = KOS_RIGHT_WRITE;
+        }
         g_receives = 0u;
         g_fifo_at_return = 0u;
         g_wire_at_return.clear();
@@ -130,6 +136,10 @@ extern "C"
         }
         uint32_t const i = g_receives;
         g_receives++;
+        if (i < g_script_len)
+        {
+            opts->info.badge = g_script_badge[i];
+        }
         if (i < g_script_len and g_script[i] == DRAIN)
         {
             struct kos_uart_req req = {};
@@ -288,6 +298,18 @@ namespace
         EXPECT_FALSE(g_replied);
         EXPECT_EQ(kos_byte_ring_used(&g_sh.tx), 0u);
         EXPECT_EQ(g_sleeps, 0u) << "a probe started a drain";
+    }
+
+    TEST(UartFlush, a_plain_send_without_write_is_dropped_uncounted)
+    {
+        arm_reset();
+        uart::shared_init(&g_sh);
+        g_script[0] = "secret\n";
+        g_script_badge[0] = KOS_RIGHT_READ | KOS_RIGHT_CONTROL;
+        g_script_len = 1u;
+        EXPECT_EQ(kickos::console::console_serve_loop<uart::Transport>(&g_sh), -KOS_EBADF);
+        EXPECT_EQ(kos_byte_ring_used(&g_sh.tx), 0u) << "a send without `write` reached the ring";
+        EXPECT_EQ(kos_counter_load(&g_sh.stats.tx_dropped), 0u) << "a refused send counted as a writer's loss";
     }
 
     TEST(UartFlush, a_request_raised_before_the_irq_thread_first_waits_is_answered)

@@ -520,7 +520,8 @@ endfunction()
 #                   [TAG <word>] [BASE <expr>] [WINDOWS <role>...] [LINES <role>:edge|level...]
 #                   [BLOCK <bytes>|none] [BLOCK_CACHE cached|uncached] [INIT <function>]
 #                   [POSTURE handover|retain] [BARRIER <threads before the poll>|none] [READY <expr>]
-#                   [START <symbol>] [CONSOLE [USB_DEVICE]] [CLIENT <target>...] [SLOTS <count>] [LOCAL]
+#                   [START <symbol>] [CONSOLE [USB_DEVICE]] [CLIENT <target>...] [SLOTS <count>]
+#                   [RIGHTS <right>...] [LOCAL]
 #                   [THREAD <role> [PRIORITY <offset>] ENTRY <function>
 #                           [ARG none|block|window|line0_index] [WINDOW <role>] [CAPS <grant>...]]...)
 #   The one shape of an unprivileged chip/device driver library: a freestanding STATIC lib
@@ -542,6 +543,8 @@ endfunction()
 #   names the libraries a task using the driver links, which kickos_compose links in a system
 #   naming it. SLOTS is the device slots a bus service keys on each client's badge, which the
 #   composition hands each client as a slot mask (KICKOS_DRIVER_SLOTS in the generated header).
+#   RIGHTS names the rights of <kickos/sys/rights.h> the service checks on each client's badge,
+#   which the composition mints above the slot mask, the ones each use names.
 #   ENTRY, INIT, BASE and READY are C++ expressions: the driver's TU expands
 #   KICKOS_DRIVER_DESCRIPTOR from the generated <kickos/driver/declared/<name>.h> where they are in
 #   scope. The catalogue entry joins the KICKOS_DRIVER_CATALOGUE global property for the manifest.

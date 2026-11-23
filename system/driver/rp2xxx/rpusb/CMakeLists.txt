@@ -18,5 +18,6 @@ kickos_add_driver(rpusb
                   BASE reg::DPRAM_BASE WINDOWS regs LINES irq:level
                   BLOCK ${KICKOS_USB_BLOCK_SIZE} INIT block_init BARRIER 1 READY usb::KOS_USB_READY_OFFSET
                   POSTURE handover CONSOLE USB_DEVICE START rpusb_console_start
+                  RIGHTS write read control
                   THREAD rpusbirq PRIORITY 1 ENTRY rpusb_irq_thread ARG block WINDOW regs CAPS notify:wait irq:wait
                   THREAD service ENTRY rpusb_service_thread ARG block CAPS ep:wait notify:signal:doorbell)

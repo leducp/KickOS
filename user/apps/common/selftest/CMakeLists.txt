@@ -24,25 +24,21 @@ endif()
 if(DEFINED _selftest_spare_dev)
   list(APPEND _selftest_defs KICKOS_SELFTEST_SPARE_DEV=${_selftest_spare_dev})
 endif()
-# A block the kernel owns for life, a device window over which grant_reserved asks a spawn for.
-if(DEFINED KICKOS_CHIP_RESERVED_BLOCK0)
-  list(GET KICKOS_CHIP_RESERVED_BLOCK0 0 _selftest_reserved_base)
-  list(GET KICKOS_CHIP_RESERVED_BLOCK0 1 _selftest_reserved_size)
+# A block the kernel owns for life inside an aperture, a device window over which grant_reserved
+# asks a spawn for.
+if(DEFINED KICKOS_CHIP_RESERVED_IN_APERTURE0)
+  list(GET KICKOS_CHIP_RESERVED_IN_APERTURE0 0 _selftest_reserved_base)
+  list(GET KICKOS_CHIP_RESERVED_IN_APERTURE0 1 _selftest_reserved_size)
   list(APPEND _selftest_defs KICKOS_SELFTEST_RESERVED_BASE=${_selftest_reserved_base}
                              KICKOS_SELFTEST_RESERVED_SIZE=${_selftest_reserved_size})
 endif()
 # The blocks that remap or rewrite the flash task code runs from, which grant_reserved asks a
-# spawn for.
-if(KICKOS_CHIP STREQUAL "esp32c6")
-  list(APPEND _selftest_defs "KICKOS_SELFTEST_CODE_MAP_BLOCKS=0x60002000,0x60003000,0x600C8000")
-elseif(KICKOS_CHIP STREQUAL "rp2350")
-  list(APPEND _selftest_defs "KICKOS_SELFTEST_CODE_MAP_BLOCKS=0x400C8000,0x400D0000")
-elseif(KICKOS_CHIP STREQUAL "imxrt1062")
-  list(APPEND _selftest_defs "KICKOS_SELFTEST_CODE_MAP_BLOCKS=0x402A8000,0x403EC000")
-elseif(KICKOS_CHIP STREQUAL "mk64f")
-  list(APPEND _selftest_defs "KICKOS_SELFTEST_CODE_MAP_BLOCKS=0x4001F000,0x40020000")
-elseif(KICKOS_CHIP STREQUAL "rx72m")
-  list(APPEND _selftest_defs "KICKOS_SELFTEST_CODE_MAP_BLOCKS=0x007FE000")
+# spawn for, and the answer each gets.
+include("${CMAKE_CURRENT_SOURCE_DIR}/code_map.cmake")
+kickos_code_map("${KICKOS_CHIP}" _selftest_code_map _selftest_code_map_answers)
+if(_selftest_code_map)
+  list(APPEND _selftest_defs "KICKOS_SELFTEST_CODE_MAP_BLOCKS=${_selftest_code_map}"
+                             "KICKOS_SELFTEST_CODE_MAP_ANSWERS=${_selftest_code_map_answers}")
 endif()
 # A region chip's first bus aperture, where the device window discoveries start, and its first
 # bus master.

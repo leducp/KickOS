@@ -26,4 +26,5 @@ tasks:
     stack: 8192
     priority: 2
     ceiling: 2
+    uses: [{ path: /svc/console, rights: [read] }]
     authority: [memory, system, tasks]

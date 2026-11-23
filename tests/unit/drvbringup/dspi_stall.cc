@@ -58,6 +58,7 @@ namespace
     // The read on which one received frame shows; 0 never.
     uint32_t g_rx_reads = 0;
     uint32_t g_rx_on_read = 0;
+    uint32_t g_clock_hz = 60000000u;
 
     uintptr_t gpioc()
     {
@@ -124,6 +125,7 @@ namespace
             g_psor_at_disable = 0;
             g_rx_reads = 0;
             g_rx_on_read = 0;
+            g_clock_hz = 60000000u;
 
             struct kos_spi_bus_config const cfg = bus_config();
             ASSERT_EQ(kos_spi_bus_open(&bus_, &cfg), 0);
@@ -164,7 +166,7 @@ extern "C"
 
     uint32_t kos_periph_clock_hz(uintptr_t)
     {
-        return 60000000u;
+        return g_clock_hz;
     }
 
     int kos_pinmux_set(uint32_t, uint32_t, uint32_t)
@@ -247,4 +249,21 @@ TEST_F(DspiStall, a_refused_enable_leaves_no_open_bus)
     EXPECT_EQ(reg(gpioc() + PSOR), CS_BIT) << "the chip selects idle all the same";
     EXPECT_EQ(kos_spi_bus_close(&refused), 0);
     EXPECT_EQ(g_disables, 0u) << "and closing it disables nothing";
+}
+
+TEST_F(DspiStall, a_device_opened_at_rate_zero_is_refused_after_another_slot_transferred)
+{
+    g_rx_on_read = 1u;
+    unsigned char buf[1] = {0x3Cu};
+    ASSERT_EQ(transfer_or_die(&dev_, buf, sizeof(buf)), 1);
+
+    struct kos_spi_device other;
+    EXPECT_EQ(open_device(&other, &bus_, 0u), -KOS_EINVAL) << "the live CTAR0 holds the other slot's rate";
+}
+
+TEST_F(DspiStall, a_device_opened_at_rate_zero_is_refused_before_the_clock_is_asked)
+{
+    g_clock_hz = 0u;
+    struct kos_spi_device other;
+    EXPECT_EQ(open_device(&other, &bus_, 0u), -KOS_EINVAL);
 }

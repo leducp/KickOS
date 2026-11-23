@@ -8,6 +8,7 @@
 kickos_add_driver(simuart
                   LINES irq:edge BLOCK ${KICKOS_UART_BLOCK_SIZE} INIT block_init
                   BARRIER 1 READY uart::KOS_UART_READY_OFFSET POSTURE retain START simuart_start
+                  RIGHTS write read control
                   THREAD uartirq PRIORITY 1 ENTRY uart_irq_thread ARG block CAPS notify:wait irq:wait
                   THREAD service ENTRY uart::console_thread ARG block CAPS ep:wait notify:signal:doorbell)
 target_include_directories(kickos_simuart PRIVATE "${PROJECT_BINARY_DIR}/generated/chip")

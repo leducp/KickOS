@@ -19,4 +19,4 @@ tasks:
     program: main
     priority: 9
     ceiling: 9
-    uses: [{ path: /svc/spi0, slots: [0] }]
+    uses: [{ path: /svc/spi0, slots: [0], rights: [transfer, config] }]

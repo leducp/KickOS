@@ -139,5 +139,6 @@ function(kickos_export_manifest export_dir)
   set_property(DIRECTORY "${PROJECT_SOURCE_DIR}" APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
                "${PROJECT_SOURCE_DIR}/tools/manifest/genmanifest.py"
                "${PROJECT_SOURCE_DIR}/tools/compose/kickos_compose/manifest_fields.py"
-               "${PROJECT_SOURCE_DIR}/user/include/kickos/sys/budget.h")
+               "${PROJECT_SOURCE_DIR}/user/include/kickos/sys/budget.h"
+               "${PROJECT_SOURCE_DIR}/user/include/kickos/sys/rights.h")
 endfunction()

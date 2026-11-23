@@ -18,6 +18,7 @@
 #include <kickos/thread.h>
 
 #include <kickos/sys/abi.h>
+#include <kickos/sys/rights.h>
 
 #include "kseam_test.h"
 #include "syscall_internal.h"
@@ -93,14 +94,19 @@ namespace
         c->ep->send_waiters.push_back(&c->sender->link);
     }
 
-    int32_t serve(Console* c)
+    int32_t serve(Console* c, uint32_t* badge = nullptr)
     {
         memset(c->driver_buf, 0, sizeof(c->driver_buf));
         kos_reply_recv_opts opts{};
         kos_reply_recv_opts_init(&opts, c->ep_cap, 0, KOS_NEVER);
-        return endpoint_reply_recv(KOS_CAP_NONE, reinterpret_cast<uintptr_t>(c->driver_buf),
-                                   kos_call_lens_pack(0, sizeof(c->driver_buf)),
-                                   reinterpret_cast<uintptr_t>(&opts));
+        int32_t const n = endpoint_reply_recv(KOS_CAP_NONE, reinterpret_cast<uintptr_t>(c->driver_buf),
+                                              kos_call_lens_pack(0, sizeof(c->driver_buf)),
+                                              reinterpret_cast<uintptr_t>(&opts));
+        if (badge != nullptr)
+        {
+            *badge = opts.info.badge;
+        }
+        return n;
     }
 
     std::string got(Console const& c, int32_t n)
@@ -124,6 +130,17 @@ TEST_F(ConsoleHeldRecv, the_driver_takes_a_held_record_ahead_of_a_queued_sender)
     int32_t const second = serve(&c);
     ASSERT_EQ(second, 4);
     EXPECT_EQ(got(c, second), "abcd");
+}
+
+// A console driver that drops a plain send lacking `write` still prints the kernel's records.
+TEST_F(ConsoleHeldRecv, a_held_record_arrives_badged_with_write)
+{
+    Console c{};
+    ASSERT_NO_FATAL_FAILURE(stage(&c, true));
+    seed_held("REC\n");
+    uint32_t badge = KOS_BADGE_NONE;
+    ASSERT_EQ(serve(&c, &badge), 4);
+    EXPECT_EQ(badge, static_cast<uint32_t>(KOS_RIGHT_WRITE));
 }
 
 // Eight bytes of buffer and a twelve-byte record: the rest comes on the next receive, before

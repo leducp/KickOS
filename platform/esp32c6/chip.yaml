@@ -59,7 +59,16 @@ exits_on_fault: false
 interrupts: { count: { value: 32, ref: "10.3.2 CPU Interrupts, p.384" }, soft_only_from: 26 }
 
 apertures:
-  - { window: [0x60000000, 0xD0000], ref: "Table 5.3-1 Memory Address Mapping, Peripherals, p.171" }
+  - { window: [0x60000000, 0x2000], ref: "Table 5.3-2, UART0 and UART1, p.175" }
+  - { window: [0x60004000, 0xC000], ref: "Table 5.3-2, I2C to USB Serial/JTAG, p.175" }
+  - { window: [0x60012000, 0x1000], ref: "Table 5.3-2, PCNT, p.175" }
+  - { window: [0x60014000, 0x5000], ref: "Table 5.3-2, MCPWM to SDIO SLCHOST, p.175" }
+  - { window: [0x60080000, 0x2000], ref: "Table 5.3-2, GDMA and GP-SPI2, p.175" }
+  - { window: [0x60088000, 0x6000], ref: "Table 5.3-2, AES to HMAC, pp.175-176" }
+  - { window: [0x60091000, 0x40], ref: "Table 5.3-2, GPIO, p.176" }
+  - { window: [0x60092000, 0x1000], ref: "Table 5.3-2, MEM_MONITOR, p.176" }
+  - { window: [0x600B1400, 0xC00], ref: "Table 5.3-2, LP_UART to RTC_WDT, p.176" }
+  - { window: [0x600C0000, 0x1000], ref: "Table 5.3-2, TRACE, p.176" }
 
 devices:
   # Interrupts are routed: a peripheral's matrix source reaches a CPU interrupt, and the

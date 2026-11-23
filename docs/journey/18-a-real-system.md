@@ -105,7 +105,7 @@ tasks:
     program: main
     priority: 9
     ceiling: 9
-    uses: [{ path: /svc/spi0, slots: [0] }]
+    uses: [{ path: /svc/spi0, slots: [0], rights: [transfer, config] }]
 ```
 
 Read it line by line, because every grant in the rest of the chapter starts here.
@@ -117,10 +117,11 @@ Read it line by line, because every grant in the rest of the chapter starts here
   that device its address and size: `dspi0: { window: [0x4002C000, 0x40], ... }`. A window is a
   range of device addresses a thread is allowed to reach.
 - `serves: /svc/spi0` makes the driver the receiver of an **endpoint** called `/svc/spi0`, and
-  `uses: [{ path: /svc/spi0, slots: [0] }]` gives the client the right to call it. An endpoint is
-  the kernel object a call and its reply meet on ([05](05-call-and-reply.md)). The client's copy
-  of the endpoint carries a badge naming device slot 0, and the service refuses it any other
-  slot, so a second client on the bus would be given slots of its own.
+  `uses: [{ path: /svc/spi0, slots: [0], rights: [transfer, config] }]` gives the client the right
+  to call it. An endpoint is the kernel object a call and its reply meet on
+  ([05](05-call-and-reply.md)). The client's copy of the endpoint carries a badge naming device
+  slot 0 and the two rights it may exercise, and the service refuses it any other slot or op, so a
+  second client on the bus would be given slots of its own.
 - The client gets nothing else: no window, no interrupt line, no authority bit. Its whole power
   over the SPI bus is one capability it can call through.
 - There is **no interrupt line** (`lines:`) anywhere. This engine polls the controller's FIFOs

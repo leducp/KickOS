@@ -21,6 +21,7 @@
 #include <kickos/task.h>
 
 #include <kickos/sys/errno.h>
+#include <kickos/sys/rights.h>
 
 namespace kickos
 {
@@ -1812,7 +1813,7 @@ namespace kickos
         e.obj_gen = cap_obj_generation(CapType::CAP_ENDPOINT, target);
         e.type = static_cast<uint8_t>(CapType::CAP_ENDPOINT);
         e.rights = CAP_SIGNAL;
-        cap_badge_seat(&e, KCAP_BADGE_NONE); // as cap_install_at: never inherited
+        cap_badge_seat(&e, KOS_RIGHT_WRITE); // never inherited
         cap_reply_seq_seat(&e, 0u);
         if (had_prior)
         {

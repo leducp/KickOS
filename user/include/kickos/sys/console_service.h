@@ -22,6 +22,7 @@
 #include <kickos/sys/console_ring.h>
 #include <kickos/sys/driver_service.h> // service_publish
 #include <kickos/sys/errno.h>
+#include <kickos/sys/rights.h>
 #include <kickos/sys/serve.h>
 #include <kickos/sys/uart.h>
 
@@ -65,7 +66,7 @@ void shared_init(Shared* s)
 // Handle one request in place and return the response length. Read request
 // fields before overwriting them. Every path must build a response.
 template <typename Transport, typename Shared>
-size_t serve_one(Shared* sh, uint8_t* buf, size_t n)
+size_t serve_one(Shared* sh, uint32_t badge, uint8_t* buf, size_t n)
 {
     if (n < sizeof(struct kos_uart_req))
     {
@@ -73,6 +74,10 @@ size_t serve_one(Shared* sh, uint8_t* buf, size_t n)
     }
     struct kos_uart_req req;
     mem_copy(&req, buf, sizeof(req));
+    if (not kos_badge_grants(badge, op_right(req.op)))
+    {
+        return reply_status(buf, -KOS_EACCES, 0);
+    }
     uint8_t const* payload = buf + sizeof(req);
     size_t const payload_len = n - sizeof(req);
 
@@ -115,7 +120,7 @@ size_t serve_one(Shared* sh, uint8_t* buf, size_t n)
         rsp.len = static_cast<uint16_t>(sizeof(struct kos_uart_stats));
         rsp.rsv = 0;
         mem_copy(buf, &rsp, sizeof(rsp));
-        stats_pack(buf + sizeof(rsp), &sh->stats, Transport::tx_lost(sh));
+        stats_pack(buf + sizeof(rsp), &sh->stats, Transport::tx_lost(sh), badge);
         return sizeof(rsp) + sizeof(struct kos_uart_stats);
     }
     case KOS_UART_SET_MODE:
@@ -158,6 +163,7 @@ int32_t console_serve_loop(Shared* sh)
         // reply_cap SEATED: the kernel writes it only where the copy out succeeds, and a
         // ZEROED one is stdout's reserved index rather than the empty capability.
         opts.info.reply_cap = KOS_CAP_NONE;
+        opts.info.badge = KOS_BADGE_NONE;
         int32_t const n = kos_reply_recv(reply_cap, msg,
                                          kos_call_lens_pack(reply_len, sizeof(msg)), &opts);
         reply_cap = KOS_CAP_NONE;
@@ -173,12 +179,16 @@ int32_t console_serve_loop(Shared* sh)
         }
         if (opts.info.reply_cap != KOS_CAP_NONE)
         {
-            reply_len = serve_one<Transport>(sh, msg, static_cast<size_t>(n));
+            reply_len = serve_one<Transport>(sh, opts.info.badge, msg, static_cast<size_t>(n));
             reply_cap = opts.info.reply_cap;
             continue;
         }
         // A zero-length plain send is a readiness probe and carries nothing.
         if (n == 0)
+        {
+            continue;
+        }
+        if (not kos_badge_grants(opts.info.badge, KOS_RIGHT_WRITE))
         {
             continue;
         }

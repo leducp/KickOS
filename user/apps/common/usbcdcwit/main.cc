@@ -19,7 +19,8 @@
 
 namespace
 {
-    // Cap 0 is this thread's stdout: the console endpoint the driver published.
+    // Cap 0 is this thread's stdout: the console endpoint the driver published, `write` alone; a
+    // READ goes through the task's use, which holds `read`.
     constexpr int CH_EP = 0;
 
     // Eight laps of the 1024-byte TX ring, so it reaches FULL repeatedly and the client is
@@ -139,7 +140,8 @@ int main(int, char**)
 
     // What the host wrote, escaped, so an echo or a probe names itself.
     uint8_t rx[24];
-    int const got = kos_uart_call(CH_EP, KOS_UART_READ, 0, sizeof(rx), nullptr, rx, sizeof(rx));
+    int const got = kos_uart_call(kos_grant_endpoint("/svc/console"), KOS_UART_READ, 0, sizeof(rx), nullptr, rx,
+                                  sizeof(rx));
     if (got > 0)
     {
         char line[sizeof(rx) * 4 + 32];

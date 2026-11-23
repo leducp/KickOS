@@ -423,9 +423,11 @@ out-struct they carried survives, nested in `kos_reply_recv_opts`:
   mutually exclusive.
 
 This is a deliberate DoS closure: a service that must not have its handle table filled by
-untrusted callers (the console, which every task holds a `SIGNAL` cap on) receives info-less,
-so hostile `kos_call`s bounce with `ENOTSUP` instead of burning cap slots and pinning the
-server's priority.
+untrusted callers receives info-less, so hostile `kos_call`s bounce with `ENOTSUP` instead of
+burning cap slots and pinning the server's priority. The console does not: it serves framed calls
+from every task's stdout seat and tells what each caller may do by the rights its badge carries,
+a seat holding `write` alone (`console.md`, *The two protocols a published console endpoint
+carries*).
 
 **`kos_recv_info` never grew an input field, and the nesting is what keeps it that way.** A
 timeout member on it would have put an *input* inside the struct every receive loop declares,
@@ -454,8 +456,13 @@ the party that handed the capability out chose.
   (`amp::Slot::badge`) into the record its receiver lands (`amp::Inbound::badge`). A reply
   carries none. A far badge is the sending kernel's word, which a node trusts and does not
   validate (`kernel/include/kickos/ampwindow.h`).
-- The init mints each badge a composition declares, a bus client's slot mask
-  (`bus-service.md`, *Device slots*).
+- **A badge is a slot mask and a set of rights** (`<kickos/sys/rights.h>`): bits below
+  `KOS_BADGE_SLOT_BITS` (24) are a bus client's device slots, and each bit above is one right
+  over the service's protocol, `KOS_RIGHT_WRITE`, `READ`, `CONTROL`, `CONFIG` and `TRANSFER`. A
+  service checks the right an op needs with `kos_badge_grants` before it acts on the op.
+- The init mints each badge a composition declares, a bus client's slot mask and the rights of
+  each use (`bus-service.md`, *Device slots*). The kernel seats every task's stdout with
+  `KOS_RIGHT_WRITE` alone, the one badge it mints itself.
 
 ## A copy the boundary check cannot promise
 

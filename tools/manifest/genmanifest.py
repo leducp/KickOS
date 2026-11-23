@@ -19,12 +19,17 @@ import sys
 sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "compose"))
 
-from kickos_compose.manifest_fields import BUDGET_KNOB, DRIVER_FIELDS, WINDOWS_KNOB, budget_kinds, is_pool
+from kickos_compose.manifest_fields import (
+    BUDGET_KNOB, DRIVER_FIELDS, DRIVER_OPTIONAL, WINDOWS_KNOB, BadgeLayoutError, badge_layout, budget_kinds, is_pool,
+)
 
 MANIFEST_VERSION = 1
 # The one list of budget kinds, which the kernel's BudgetKind is generated from too.
 BUDGET_HEADER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "user", "include",
                              "kickos", "sys", "budget.h")
+# The badge layout and the rights a service checks, which the services' checks come from too.
+RIGHTS_HEADER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "user", "include",
+                             "kickos", "sys", "rights.h")
 
 CONFIG_LINE = re.compile(r"CONFIG_(KICKOS_[A-Z0-9_]+)=(.*)")
 PLAIN = re.compile(r"[A-Za-z_][A-Za-z0-9_./-]*")
@@ -203,9 +208,11 @@ def manifest(facts, knobs):
         "stack_stride": facts["stack_stride"],
     }
 
+    abi = dict(facts["abi"])
+    abi["slot_bits"], abi["rights"] = badge_layout(RIGHTS_HEADER)
     document = {
         "version": MANIFEST_VERSION,
-        "abi": facts["abi"],
+        "abi": abi,
         "target": target,
         "protection": protection,
         "pools": pools,
@@ -227,7 +234,9 @@ def manifest(facts, knobs):
 
 def catalogue(drivers):
     """The catalogue by driver name, whose order a table's `driver` index counts in."""
-    return {name: {field: drivers[name][field] for field in DRIVER_FIELDS} for name in sorted(drivers)}
+    return {name: {field: drivers[name][field] for field in DRIVER_FIELDS
+                   if field in drivers[name] or field not in DRIVER_OPTIONAL}
+            for name in sorted(drivers)}
 
 
 def render(document):
@@ -244,7 +253,7 @@ def main(argv):
         with open(argv[0], encoding="utf-8") as stream:
             facts = json.load(stream)
         text = render(manifest(facts, read_config(facts["config"])))
-    except (OSError, ValueError, KeyError, Refused) as error:
+    except (OSError, ValueError, KeyError, Refused, BadgeLayoutError) as error:
         print("genmanifest.py: %s" % error, file=sys.stderr)
         return 1
     try:

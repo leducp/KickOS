@@ -1,0 +1,31 @@
+// SPDX-License-Identifier: CECILL-C
+// Copyright (c) 2026 Philippe Leduc
+//
+// The rp2350 windows, from RP2350 Datasheet Tables 13 and 14.
+
+#ifndef KICKOS_TESTS_UNIT_GRANTAPERTURE_CASES_RP2350_H
+#define KICKOS_TESTS_UNIT_GRANTAPERTURE_CASES_RP2350_H
+
+#include "../aperture_case.h"
+
+constexpr ApertureCase CASES[] = {
+    {"SYSINFO", 0x40000000u, 0x8000u, -KOS_EINVAL},
+    {"SYSCFG", 0x40008000u, 0x8000u, -KOS_EINVAL},
+    {"CLOCKS", 0x40010000u, 0x8000u, -KOS_EINVAL},
+    {"PSM", 0x40018000u, 0x8000u, -KOS_EINVAL},
+    {"RESETS", 0x40020000u, 0x8000u, -KOS_EINVAL},
+    {"IO_QSPI", 0x40030000u, 0x8000u, -KOS_EINVAL},
+    {"PADS_BANK0", 0x40038000u, 0x8000u, -KOS_EINVAL},
+    {"XOSC", 0x40048000u, 0x8000u, -KOS_EINVAL},
+    {"PLL_SYS", 0x40050000u, 0x8000u, -KOS_EINVAL},
+    {"ACCESSCTRL", 0x40060000u, 0x8000u, -KOS_EINVAL},
+    {"BUSCTRL", 0x40068000u, 0x8000u, -KOS_EINVAL},
+    {"WATCHDOG", 0x400D8000u, 0x8000u, 0},
+    {"POWMAN", 0x40100000u, 0x8000u, -KOS_EINVAL},
+    {"OTP", 0x40120000u, 0x8000u, -KOS_EINVAL},
+    {"TIMER0", 0x400B0000u, 0x8000u, -KOS_EPERM},
+    {"UART1", 0x40078000u, 0x4000u, 0},
+    KICKOS_CASE_ARMV7M_MPU,
+};
+
+#endif

@@ -10,15 +10,18 @@
 if(KICKOS_SIMCON_IRQ_WEDGE)
   kickos_add_driver(simcon BLOCK 64 INIT block_init BARRIER 1 READY SIMCON_READY_OFFSET
                     POSTURE handover CONSOLE START simcon_console_start AUTHORITY memory
+                    RIGHTS write read control
                     THREAD entry ENTRY simconsole_entry_thread ARG block
                     THREAD service ENTRY simconsole_driver CAPS ep:wait)
 elseif(KICKOS_SIMCON_WINDOW_THREAD)
   kickos_add_driver(simcon BLOCK 64 INIT block_init BARRIER 1 READY SIMCON_READY_OFFSET
                     POSTURE handover CONSOLE START simcon_console_start AUTHORITY memory
+                    RIGHTS write read control
                     THREAD entry ENTRY simconsole_entry_thread ARG block
                     THREAD service ENTRY simconsole_driver CAPS ep:wait)
 else()
   kickos_add_driver(simcon BLOCK none BARRIER none POSTURE handover CONSOLE START simcon_console_start
+                    RIGHTS write read control
                     THREAD service ENTRY simconsole_driver CAPS ep:wait)
 endif()
 

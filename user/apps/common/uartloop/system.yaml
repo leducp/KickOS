@@ -20,5 +20,5 @@ tasks:
     program: uartloop
     priority: 10
     ceiling: 10
-    uses: [/svc/simuart]
+    uses: [{ path: /svc/simuart, rights: [write, read] }]
     authority: [memory, system]

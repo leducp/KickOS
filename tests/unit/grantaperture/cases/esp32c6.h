@@ -1,0 +1,37 @@
+// SPDX-License-Identifier: CECILL-C
+// Copyright (c) 2026 Philippe Leduc
+//
+// The esp32c6 windows, from ESP32-C6 TRM Table 5.3-2.
+
+#ifndef KICKOS_TESTS_UNIT_GRANTAPERTURE_CASES_ESP32C6_H
+#define KICKOS_TESTS_UNIT_GRANTAPERTURE_CASES_ESP32C6_H
+
+#include "../aperture_case.h"
+
+constexpr ApertureCase CASES[] = {
+    {"SPI0", 0x60002000u, 0x1000u, -KOS_EINVAL},
+    {"INTMTX", 0x60010000u, 0x1000u, -KOS_EINVAL},
+    {"SOC_ETM", 0x60013000u, 0x1000u, -KOS_EINVAL},
+    {"IO_MUX", 0x60090000u, 0x1000u, -KOS_EINVAL},
+    {"HP_SYSREG", 0x60095000u, 0x1000u, -KOS_EINVAL},
+    {"PCR", 0x60096000u, 0x1000u, -KOS_EINVAL},
+    {"TEE", 0x60098000u, 0x1000u, -KOS_EINVAL},
+    {"HP_APM", 0x60099000u, 0x1000u, -KOS_EINVAL},
+    {"PMU", 0x600B0000u, 0x400u, -KOS_EINVAL},
+    {"LP_CLKRST", 0x600B0400u, 0x400u, -KOS_EINVAL},
+    {"EFUSE", 0x600B0800u, 0x400u, -KOS_EINVAL},
+    {"LP_AON", 0x600B1000u, 0x400u, -KOS_EINVAL},
+    {"LP_IO_MUX", 0x600B2000u, 0x400u, -KOS_EINVAL},
+    {"I2C_ANA_MST", 0x600B2400u, 0x400u, -KOS_EINVAL},
+    {"LPPERI", 0x600B2800u, 0x400u, -KOS_EINVAL},
+    {"LP_ANA_PERI", 0x600B2C00u, 0x400u, -KOS_EINVAL},
+    {"LP_APM", 0x600B3800u, 0x400u, -KOS_EINVAL},
+    {"ASSIST_DEBUG", 0x600C2000u, 0x1000u, -KOS_EINVAL},
+    {"INTPRI", 0x600C5000u, 0x1000u, -KOS_EINVAL},
+    {"RMT", 0x60006000u, 0x1000u, -KOS_EPERM},
+    {"UART1", 0x60001000u, 0x1000u, 0},
+    {"LP_I2C", 0x600B1800u, 0x400u, 0},
+    {"RTC_WDT", 0x600B1C00u, 0x400u, 0},
+};
+
+#endif

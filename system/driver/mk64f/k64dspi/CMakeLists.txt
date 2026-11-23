@@ -31,6 +31,7 @@ kickos_add_driver(spi_k64dspi SOURCES spi_dspi.cc CLASS kickos_class_mk64f REGDI
 kickos_add_driver(k64dspi SOURCES k64dspi.cc spi_dspi.cc CLASS kickos_class_mk64f REGDIR arch/arm/chip/mk64f
                   WINDOWS regs BLOCK none BARRIER none
                   POSTURE retain START k64dspi_spi_start CLIENT kickos_spi_proxy SLOTS 4 AUTHORITY pinmux
+                  RIGHTS transfer config
                   THREAD service ENTRY bus_thread ARG window WINDOW regs CAPS ep:wait)
 target_compile_definitions(kickos_k64dspi PRIVATE
   kos_spi_bus_open=k64dspi_bus_open

@@ -23,13 +23,19 @@ interrupts:
   count: { value: 416, ref: "15.3.1 Interrupt Vector Table, p.520; Table 15.6 Types of Group Interrupts, p.529" }
   vectors: { value: 256, ref: "15.3.1 Interrupt Vector Table, p.520" }
 
-# The peripheral I/O registers, the standby RAM between the first two excluded.
 apertures:
-  - { window: [0x00080000, 0x24000], ref: "Figure 4.1 Memory Map in Each Operating Mode, p.208" }
-  - { window: [0x000A6000, 0x5A000], ref: "Figure 4.1 Memory Map in Each Operating Mode, p.208" }
-  - { window: [0x007FC000, 0x4000], ref: "Figure 4.1 Memory Map in Each Operating Mode, p.208" }
+  - { window: [0x00082000, 0xC00], ref: "Table 5.1 List of I/O Registers (Address Order), DMAC to EXDMAC, pp.214-217" }
+  - { window: [0x00088000, 0x1200], ref: "Table 5.1 List of I/O Registers (Address Order), CMT to S12AD, pp.224-232" }
+  - { window: [0x0008A000, 0x1100], ref: "Table 5.1 List of I/O Registers (Address Order), SCI to DOC, pp.232-240" }
+  - { window: [0x0008B300, 0x40], ref: "Table 5.1 List of I/O Registers (Address Order), SCI12, pp.241-243" }
+  - { window: [0x0008C000, 0x100], ref: "Table 5.1 List of I/O Registers (Address Order), PORT, pp.243-246" }
+  - { window: [0x0008C400, 0x14400], ref: "Table 5.1 List of I/O Registers (Address Order), RTC to DSMIF, pp.251-257" }
+  - { window: [0x000C0000, 0x4E00], ref: "Table 5.1 List of I/O Registers (Address Order), EDMAC to EPTPC, pp.257-273" }
+  - { window: [0x000C5880, 0x25780], ref: "Table 5.1 List of I/O Registers (Address Order), PMGI to ESC, pp.273-292" }
 
 devices:
+  wdt: { window: [0x00088020, 0x10], ref: "Table 5.1 List of I/O Registers (Address Order), p.224" }
+  iwdt: { window: [0x00088030, 0x10], ref: "Table 5.1 List of I/O Registers (Address Order), p.224" }
   sci6:
     window: [0x0008A0C0, 0x20]
     symbol: SCI6

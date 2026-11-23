@@ -12,6 +12,7 @@
 
 #include <kickos/sys/driver_service.h>
 #include <kickos/sys/errno.h>
+#include <kickos/sys/rights.h>
 #include <kickos/sys/init_status.h>
 
 #include <gtest/gtest.h>
@@ -1076,7 +1077,7 @@ namespace
 
     // A BUS CLIENT is delegated a copy of the bus endpoint badged with its slot mask, which the init
     // mints for the spawn and closes after it, so the init holds no client's badge.
-    TEST_F(Walk, a_bus_client_is_handed_a_copy_badged_with_its_slots_and_the_init_keeps_none)
+    TEST_F(Walk, a_bus_client_is_handed_a_copy_badged_with_its_slots_and_rights_and_the_init_keeps_none)
     {
         use("golden_xmc");
         fake::script({step::ready_all(), step::ready_all()});
@@ -1085,13 +1086,14 @@ namespace
         std::vector<fake::Call> const mints = fake::calls_of("kos_endpoint_badge");
         ASSERT_EQ(mints.size(), 1u) << "one badged use, minted once";
         EXPECT_EQ(mints[0].args[0], bus) << "minted from another endpoint than the bus's";
-        EXPECT_EQ(mints[0].args[1], 1u) << "slot 0 is bit 0 of the mask";
+        uint32_t const badge = 1u | KOS_RIGHT_TRANSFER | KOS_RIGHT_CONFIG;
+        EXPECT_EQ(mints[0].args[1], badge) << "slot 0 is bit 0 of the mask, every right xmcssc checks above it";
 
         fake::Cap const* const sensor = use_cap(*system_, "sensor", "/svc/spi0");
         ASSERT_NE(sensor, nullptr);
         EXPECT_EQ(static_cast<int64_t>(sensor->object), fake::object_of(bus));
         EXPECT_EQ(sensor->rights, KOS_CAP_SIGNAL);
-        EXPECT_EQ(sensor->badge, 1) << "the sensor holds no copy badged with its slot";
+        EXPECT_EQ(sensor->badge, static_cast<int64_t>(badge)) << "the sensor holds no copy badged with its slot";
         fake::Cap const* const app = use_cap(*system_, "app", "/svc/sensor");
         ASSERT_NE(app, nullptr);
         EXPECT_EQ(app->badge, -1) << "a use naming no slots was handed a badge";

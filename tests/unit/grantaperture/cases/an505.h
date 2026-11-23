@@ -1,0 +1,28 @@
+// SPDX-License-Identifier: CECILL-C
+// Copyright (c) 2026 Philippe Leduc
+//
+// The an505 windows, from SSE-200 TRM Tables 3-3 to 3-5, DAI0505B Table 3-7.
+
+#ifndef KICKOS_TESTS_UNIT_GRANTAPERTURE_CASES_AN505_H
+#define KICKOS_TESTS_UNIT_GRANTAPERTURE_CASES_AN505_H
+
+#include "../aperture_case.h"
+
+constexpr ApertureCase CASES[] = {
+    {"SYSINFO", 0x40020000u, 0x1000u, -KOS_EINVAL},
+    {"S_SYSCONTROL", 0x50021000u, 0x1000u, -KOS_EINVAL},
+    {"PPU", 0x50022000u, 0x1000u, -KOS_EINVAL},
+    {"S32KWATCHDOG", 0x5002E000u, 0x1000u, 0},
+    {"NSPCTRL", 0x40080000u, 0x1000u, -KOS_EINVAL},
+    {"SPCTRL", 0x50080000u, 0x1000u, -KOS_EINVAL},
+    {"MPC", 0x50083000u, 0x1000u, -KOS_EINVAL},
+    {"SCC", 0x40300000u, 0x1000u, -KOS_EINVAL},
+    {"DUALTIMER_NS", 0x40002000u, 0x1000u, -KOS_EPERM},
+    {"DUALTIMER", 0x50002000u, 0x1000u, -KOS_EPERM},
+    {"UART0", 0x40200000u, 0x1000u, 0},
+    {"WATCHDOG_NS", 0x40081000u, 0x1000u, 0},
+    {"WATCHDOG", 0x50081000u, 0x1000u, 0},
+    KICKOS_CASE_ARMV7M_MPU,
+};
+
+#endif

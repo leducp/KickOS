@@ -44,7 +44,8 @@ if(KICKOS_BUILD_UNIT_TESTS)
   foreach(_unit IN ITEMS
       ampconsole amphold ampreset ampshare ampwindow atomiccas c6apm ccrbringup clockbringup consolebaud consoleline consoleown
       consolering consoletxsmp ctxredirect dcacheplan
-      deathspace doorbell drvbringup fastrefuse faultline flashmmu frame fusedwake gthrtimed grantlookup grantnocache
+      deathspace doorbell drvbringup fastrefuse faultline flashmmu frame fusedwake gthrtimed grantaperture grantlookup
+      grantnocache
       heapbreak imagecheck imagecrt0 imxrtgate initwalk irqquiesce isrresume kstring
       k64fsysmpu mapexec mapfence mapshoot mpuoverlap mpuskip mtimeconv placeadmit presync ramalign ramowner regionsync
       reschedowed rp2350gate rp2xxxbringup slotpool

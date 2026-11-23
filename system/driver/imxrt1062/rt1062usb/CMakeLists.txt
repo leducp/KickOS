@@ -14,5 +14,6 @@ kickos_add_driver(rt1062usb SOURCES rt1062usb.cc
                   BLOCK ${KICKOS_RT1062USB_BLOCK_SIZE} BLOCK_CACHE uncached INIT block_init
                   BARRIER 1 READY READY_OFFSET
                   POSTURE handover CONSOLE USB_DEVICE START rtusb_console_start
+                  RIGHTS write read control
                   THREAD rtusbirq PRIORITY 1 ENTRY rtusb_irq_thread ARG block WINDOW regs CAPS notify:wait irq:wait
                   THREAD service ENTRY rtusb_service_thread ARG block CAPS ep:wait notify:signal:doorbell)

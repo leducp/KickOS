@@ -4,6 +4,7 @@
 #include <kickos/sys/spi_service.h>
 
 #include <kickos/sys/errno.h>
+#include <kickos/sys/rights.h>
 
 #include <gtest/gtest.h>
 
@@ -15,8 +16,8 @@ namespace
 {
     struct kos_spi_bus g_bus;
     spi::SlotTable* g_slots = nullptr;
-    // The badge the calling client's capability carries, a slot mask.
     uint32_t g_badge = 0u;
+    constexpr uint32_t SPI_RIGHTS = KOS_RIGHT_TRANSFER | KOS_RIGHT_CONFIG;
     uint32_t g_opens = 0u;
     uint32_t g_transfers = 0u;
 }
@@ -138,7 +139,7 @@ namespace
             struct kos_spi_bus_config bcfg = {0u, KOS_CAP_NONE, KOS_CAP_NONE, KOS_CAP_NONE, 0u, 0u};
             ASSERT_EQ(kos_spi_bus_open(&g_bus, &bcfg), 0);
             g_slots = &slots;
-            g_badge = (1u << KOS_BUS_DEV_MAX) - 1u;
+            g_badge = ((1u << KOS_BUS_DEV_MAX) - 1u) | SPI_RIGHTS;
             g_opens = 0u;
             g_transfers = 0u;
         }
@@ -181,9 +182,9 @@ namespace
     // both ops before the backend, and A's slot keeps A's profile.
     TEST_F(SpiServe, a_client_naming_a_slot_outside_its_badge_is_refused)
     {
-        g_badge = 1u << 0;
+        g_badge = (1u << 0) | SPI_RIGHTS;
         ASSERT_EQ(config(0, 8), 0);
-        g_badge = 1u << 1;
+        g_badge = (1u << 1) | SPI_RIGHTS;
         ASSERT_EQ(config(1, 16), 0) << "the control: B's own slot opens";
         uint32_t const opens = g_opens;
         EXPECT_EQ(config(0, 16), -KOS_EACCES) << "B reconfigured A's slot";
@@ -192,7 +193,7 @@ namespace
         EXPECT_EQ(g_opens, opens) << "a refused slot reached the backend";
         EXPECT_EQ(g_transfers, 0u) << "a refused slot reached the backend";
 
-        g_badge = 1u << 0;
+        g_badge = (1u << 0) | SPI_RIGHTS;
         unsigned char a[2] = {0, 0};
         EXPECT_EQ(xfer(0, sizeof(a), a), 2);
         EXPECT_EQ(a[0], 8) << "A's slot carries B's profile";
@@ -206,5 +207,34 @@ namespace
         EXPECT_EQ(xfer(0, sizeof(sink), sink), -KOS_EACCES);
         EXPECT_EQ(g_opens, 0u);
         EXPECT_EQ(g_transfers, 0u);
+    }
+
+    TEST_F(SpiServe, config_and_transfer_need_their_rights)
+    {
+        g_badge = (1u << 0) | KOS_RIGHT_TRANSFER;
+        EXPECT_EQ(config(0, 8), -KOS_EACCES) << "a client without `config` set a profile";
+        EXPECT_EQ(g_opens, 0u);
+        g_badge = (1u << 0) | KOS_RIGHT_CONFIG;
+        ASSERT_EQ(config(0, 8), 0);
+        unsigned char sink[2] = {0, 0};
+        EXPECT_EQ(xfer(0, sizeof(sink), sink), -KOS_EACCES) << "a client without `transfer` clocked its device";
+        EXPECT_EQ(g_transfers, 0u);
+        g_badge = (1u << 0) | KOS_RIGHT_TRANSFER;
+        EXPECT_EQ(xfer(0, sizeof(sink), sink), 2);
+    }
+
+    TEST(BusRights, an_i2c_transfer_needs_write_for_a_write_segment_and_read_for_a_read_one)
+    {
+        struct kos_bus_req req = {KOS_BUS_I2C, KOS_BUS_OP_XFER, 0u, 2u, -1, 0u};
+        struct kos_bus_seg const write_read[2] = {{1u, 0u, 0u}, {2u, KOS_BUS_SEG_RD | KOS_BUS_SEG_STOP, 0u}};
+        struct kos_bus_seg const read_only[1] = {{2u, KOS_BUS_SEG_RD | KOS_BUS_SEG_STOP, 0u}};
+        uint32_t const needed = kickos::bus::request_rights(req, write_read, 2u);
+        EXPECT_EQ(needed, static_cast<uint32_t>(KOS_RIGHT_WRITE | KOS_RIGHT_READ));
+        EXPECT_FALSE(kos_badge_grants(1u | KOS_RIGHT_READ, needed)) << "a read-only client wrote a register";
+        EXPECT_TRUE(kos_badge_grants(1u | KOS_RIGHT_READ, kickos::bus::request_rights(req, read_only, 1u)));
+        req.op = KOS_BUS_OP_CONFIG;
+        uint32_t const config = kickos::bus::request_rights(req, nullptr, 0u);
+        EXPECT_FALSE(kos_badge_grants(1u | KOS_RIGHT_READ | KOS_RIGHT_WRITE, config))
+            << "a client without `config` set a profile";
     }
 }

@@ -19,9 +19,12 @@ BUDGET_KIND = re.compile(r"^\s*X\(\s*([A-Z0-9_]+)\s*,\s*([a-z0-9_]+)\s*,\s*([a-z
 
 DRIVER_FIELDS = ("windows", "lines", "triggers", "entry", "threads", "endpoints", "notifications", "block",
                  "block_cache", "posture", "barrier", "console", "usb_device", "start", "receiver", "client",
-                 "slots", "authority")
+                 "slots", "authority", "rights")
 # A catalogue entry may leave these out.
-DRIVER_OPTIONAL = ("authority",)
+DRIVER_OPTIONAL = ("authority", "rights")
+# <kickos/sys/rights.h>'s slot-mask width, and one right of its KOS_RIGHTS: X(NAME, name, bit).
+SLOT_BITS = re.compile(r"^#define KOS_BADGE_SLOT_BITS ([0-9]+)u$")
+RIGHT = re.compile(r"^\s*X\(\s*[A-Z0-9_]+\s*,\s*([a-z0-9_]+)\s*,\s*([0-9]+)\s*\)\s*\\?\s*$")
 
 
 def is_pool(name):
@@ -37,3 +40,26 @@ def budget_kinds(header):
             if match is not None:
                 kinds.append(match.groups())
     return kinds
+
+
+class BadgeLayoutError(Exception):
+    """<kickos/sys/rights.h> states no badge layout this reader recognises."""
+
+
+def badge_layout(header):
+    """(the slot mask's width, {right: its badge bit}) <kickos/sys/rights.h> states."""
+    slot_bits = None
+    rights = {}
+    with open(header, encoding="utf-8") as stream:
+        for line in stream:
+            match = SLOT_BITS.match(line.rstrip("\n"))
+            if match is not None:
+                slot_bits = int(match.group(1))
+            match = RIGHT.match(line)
+            if match is not None:
+                rights[match.group(1)] = int(match.group(2))
+    if slot_bits is None:
+        raise BadgeLayoutError("%s states no `#define KOS_BADGE_SLOT_BITS <n>u`" % header)
+    if not rights:
+        raise BadgeLayoutError("%s lists no right in KOS_RIGHTS" % header)
+    return slot_bits, {name: slot_bits + bit for name, bit in rights.items()}

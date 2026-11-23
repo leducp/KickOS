@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# The packaged simcon serving stdout, then main, which calls the endpoint simcon serves.
+# The packaged simcon serving stdout, then main, which calls the endpoint simcon serves through a
+# use holding `read` and `control`, and through its stdout seat, which holds `write` alone.
 
 version: 1
 stdout: /svc/console
@@ -17,4 +18,5 @@ tasks:
     program: simconabi_main
     priority: 2
     ceiling: 2
+    uses: [{ path: /svc/console, rights: [read, control] }]
     authority: [memory, system, tasks]

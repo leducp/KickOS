@@ -411,6 +411,53 @@ milestone does not close while any of them still composes a system.
           free that word under a parked waiter today (no RAM release, a parked waiter's stack
           stays, `word_ref` refuses a word outside its reach). It needs a re-proof only once a
           region backend can give memory back.
+      - M10.8.3, closed (services and composition):
+        - A10 F1: a line grant carried the chip file's source number, so an a53 composition bound
+          the wrong GIC ID; admission now adds the cluster's `line_offset` before the kernel-line
+          test, the range check and the emitted `.line`. Arm: `test_emit.py`, imx8mp sai5 emits
+          122 on a53 and 90 on m7.
+        - A10 F2: an instanced device's line was range-checked for instance 0 only; the chip check
+          now bounds its last instance. Arm: `test_arms.py` `chip.line-range`, virtio at 257.
+        - A10 F3: a `bank_line` on a clustered single-arch chip was admitted and then dropped;
+          `chip.bank-line` now refuses it. Arm: `test_arms.py`, the K64F split into two clusters.
+        - 2-F3: a K64F DSPI or RX72M RIIC device opened at `hz == 0` took the live divider,
+          another device's rate; both engines now refuse `hz == 0` with `-KOS_EINVAL`, before
+          they ask the clock. Arms: `drv_dspi_stall` (slot B transfers, then a device opened at 0
+          is refused) and `drv_riic_open`.
+        - 2-F4: an XMC SSC word whose event raced its wait's expiry left its notify bit banked,
+          so the next word's wait returned at once and read the receive buffer early; the engine
+          now drains that bit before it rearms the line. Arm: `drv_usic_stall`, the fake banks a
+          late word's bit and the race arm checks the second word.
+        - 4-F2 and 6-F3 (ruling D2): every region chip's `apertures:` spanned its whole peripheral
+          buses, so a privileged spawner could grant a window over a clock, reset, power, pad,
+          QSPI, syscfg or bus-control block no row reserved (RP2040 VREG and IO_QSPI, the C6's
+          LP_CLKRST, LPPERI, eFuse, HP_SYSREG and LP_ANA); each chip file's apertures are now its
+          user-peripheral spans, cited per span from its manual, and the an505's non-secure
+          dual-timer alias is reserved beside the secure one. Arm: `grant_aperture_<chip>` for
+          every region chip, the spawn's device-window admission over the chip's emitted tables,
+          including the answer the selftest expects for each code-map block.
+          RULED (maintainer, 2026-11-19): the judgement calls stand as drawn (FPGAIO, XBAR, the
+          C6 trace and RTC grantable; the K64F RTC, the RX ELC and QSPI, the imx8mp CAAM and
+          semaphores out), and every chip's watchdog is a grantable declared device inside a
+          span, "a user/integration concern, not a kernel concern". The one exception is RP2040,
+          whose watchdog block holds the TICK generator that clocks TIMER, the kernel's
+          timebase: a window over it is a window over the kernel's clock, so it stays kernel-owned.
+        - 2-F1: the console's framed SET_MODE and READ were served to the unbadged stdout seat
+          every task holds. RULED (maintainer, 2026-11-19): a general rights mechanism. A
+          driver declares the rights its protocol checks (`RIGHTS`), a use names the ones it
+          holds, and must (RULED, maintainer, 2026-11-19: "a declaration, no silently giving
+          everything"; a bare use and `rights: []` are refused), the init mints them into the
+          badge above the slot mask (`<kickos/sys/rights.h>`), and every service checks the
+          right each op needs; the kernel seats every stdout with `write` alone. Arms:
+          `drv_thread_trap` (UartServe), `drv_spi_serve`, `console_publish_through`, the
+          compose `driver.right`, `driver.rights-missing` and `manifest.right` arms and
+          `test_emit.py`, and
+          `simconabi`'s stdout-seat arm end to end.
+        - Next step, not built: shared slots with per-client rights (a read-only monitor beside
+          a writer on one device), which changes `ownership.slot`.
+        - Open, not fixed here: devices that reach memory by physical address carry no
+          `bus_master` row on sam3x8e (every PDC peripheral) and on the imx8mp M7 (uSDHC, ENET2,
+          SDMA, eDMA, ISI, LCDIF).
 - [ ] **M10.8.1: THE CORTEX-M TRAP ENTRY (the M10.8 audit, verified 2026-11-18).**
       **RULED (maintainer, 2026-11-18)** on the audit's findings:
       - Area 2 F2 (a K64F client's slow DSPI rate polled at a lent priority) is DROPPED: a granted

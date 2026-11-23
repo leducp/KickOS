@@ -21,7 +21,7 @@ tasks:
     program: drvdeath
     priority: 2
     ceiling: 10
-    uses: [/svc/console]
+    uses: [{ path: /svc/console, rights: [write] }]
     watches: [simcon]
     authority: [memory, system, tasks]
 

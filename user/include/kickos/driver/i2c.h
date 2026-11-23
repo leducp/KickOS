@@ -80,7 +80,7 @@ extern "C"
 
     struct kos_i2c_device_config
     {
-        uint32_t hz;    // 0 = adopt the rate the bus is already programmed to
+        uint32_t hz;    // 0 only where the engine fixes one rate for the whole bus
         uint16_t addr;  // 7-bit address, or 10-bit with KOS_BUS_ADDR_10BIT in mode
         uint8_t slot;   // this device's slot on the bus, < KOS_BUS_DEV_MAX
         uint8_t mode;   // enum kos_bus_mode; only KOS_BUS_ADDR_10BIT is an I2C bit
@@ -112,8 +112,9 @@ extern "C"
     // Issue a device handle against an open bus. Returns THE SCL FREQUENCY THIS DEVICE WILL
     // ACTUALLY BE CLOCKED AT, rounded DOWN, or a negative kos_errno. NEVER an echo of
     // cfg->hz; a backend that can neither program the rate nor read the divider back REFUSES.
-    // cfg->hz == 0 asks for no rate change and reports the rate already programmed, which is
-    // not a licence to return an unknown rate.
+    // cfg->hz == 0 is admitted only by an engine that fixes one rate for the whole bus at
+    // kos_i2c_bus_open, and reports that rate; an engine that keeps a rate per device refuses it
+    // -KOS_EINVAL, the rate its controller holds being another device's.
     //
     // THE REPORTED RATE CARRIES A BOARD ASSUMPTION. SCL rise and fall are set by the bus
     // capacitance and the pull-ups, which no controller can measure; a backend whose rate
