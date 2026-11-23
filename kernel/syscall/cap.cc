@@ -1410,21 +1410,23 @@ namespace kickos
         *out_width = 0;
     }
 
+    bool cap_slot_vacant(Thread const* c, int index)
+    {
+        if (index < KOS_CAP_FIRST_DYNAMIC or index >= static_cast<int>(thread_cap_capacity(c)))
+        {
+            return false;
+        }
+        return cap_slot(c->caps, static_cast<uint32_t>(index))->type
+               == static_cast<uint8_t>(CapType::CAP_EMPTY);
+    }
+
     CapEntry* cap_install_at(Thread* c, int index, int obj_handle, CapType type, uint8_t rights,
                              uint32_t badge)
     {
-        // The reserved indices are the kernel's seats alone, so no delegation or own-create may
-        // alias one. An out-of-range index is a kernel bug, so it traps in debug and no-ops in
-        // release rather than scribble another thread's slot.
-        if (index < KOS_CAP_FIRST_DYNAMIC or index >= static_cast<int>(thread_cap_capacity(c)))
-        {
-            KICKOS_ASSERT(false);
-            return nullptr;
-        }
+        // A live entry is not in the free list, so overwriting one would strand its reference
+        // AND unlink a slot the list never held.
+        KICKOS_ASSERT(cap_slot_vacant(c, index));
         CapEntry& e = *cap_slot(c->caps, static_cast<uint32_t>(index));
-        // Both halves of the free-list contract: a live entry is not in the list, so
-        // overwriting one would strand its reference AND unlink a slot the list never held.
-        KICKOS_ASSERT(e.type == static_cast<uint8_t>(CapType::CAP_EMPTY));
         cap_run_free_unlink(c->caps, static_cast<uint32_t>(index), &c->cap_free_head);
         e.obj = obj_handle;
         e.obj_gen = cap_obj_generation(type, obj_handle);

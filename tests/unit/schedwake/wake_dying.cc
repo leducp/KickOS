@@ -634,13 +634,33 @@ TEST_F(SchedWake, the_exit_sweep_reclaims_the_console_once)
 // instead of a return code.
 TEST_F(SchedWakeDeathTest, blocking_from_isr_context_panics)
 {
-    running_thread();
+    Thread* c = running_thread();
     g_in_isr = true;
 
     KICKOS_EXPECT_PANIC(
         {
             IrqLock lock;
-            sched::detach_current(lock);
+            sched::detach_current(c, lock);
         },
         diag::kBlockInIsr);
+}
+
+// A wake that books a switch moves `current` to the peer before the parking thread's lock
+// span ends, so the park must take its own thread and refuse any other.
+TEST_F(SchedWakeDeathTest, a_park_after_a_booked_switch_detaches_no_other_thread)
+{
+    Thread* c = running_thread();
+    Thread* p = blocked_peer(1, PRIO_DYING + 1);
+    {
+        IrqLock lock;
+        sched::wake(p, lock);
+    }
+    ASSERT_EQ(kernel().current(kickos_kernel_core()), p) << "fixture: the wake booked no switch";
+
+    KICKOS_EXPECT_PANIC(
+        {
+            IrqLock lock;
+            (void)park_queueless(park_cancel_pending(c))(c, WAIT_SLEEP, nullptr, lock);
+        },
+        "assert: c == sched::current()");
 }

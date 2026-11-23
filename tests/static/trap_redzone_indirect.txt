@@ -884,7 +884,6 @@ site lx6 * ?doorbell_protocol.cc:doorbell_round@indirect NONE reason: no indirec
 site lx6 * kickos::task_create_call@indirect NONE reason: no indirect call in the emitted body
 site lx6 * kickos::task_create_declared@indirect NONE reason: no indirect call in the emitted body
 site lx6 * syscall_thread.cc:spawn_locked@indirect NONE reason: no indirect call in the emitted body
-site lx6 * syscall_thread.cc:driver_admit@indirect NONE reason: no indirect call in the emitted body
 site lx6 * kickos::watch_call@indirect NONE reason: no indirect call in the emitted body, each placeholder sits beside target_of's own edge
 
 # --- The task entry of a driver an app creates (user/apps/common/sinkdrv) ----------------------

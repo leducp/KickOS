@@ -320,8 +320,9 @@ namespace kickos
     void aspace_release_handoff(struct arch_aspace* space, VirtualRanges* ranges);
 
     // Install and return the thread's task space, skipping redundant root writes.
-    // For spaceless threads, return null; SMP installs the boot root, while
-    // single-core builds retain the current root.
+    // For a spaceless thread, and above one kernel core for one whose exit has left its task's
+    // space (Thread::left_space), return null; SMP installs the boot root, while single-core
+    // builds retain the current root.
     struct arch_aspace* aspace_activate_for(Thread const* t);
 
     // Install the boot root on THIS core and record it. For a caller about to stop being a

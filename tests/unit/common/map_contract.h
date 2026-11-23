@@ -621,7 +621,7 @@ TEST_F(MAP_CONTRACT_FIXTURE, APartiallyMappedUnmapIsRefusedAndKeepsTheLeaf)
 TEST_F(MAP_CONTRACT_FIXTURE, ASpacePastTheResidencyRowsIsRefusedAndKeepsNoFrame)
 {
     size_t const rows = static_cast<size_t>(kickos::kickos_kernel_pools.domain_count);
-    ASSERT_LT(rows + 4u, static_cast<size_t>(kickos::testfix::SYSOPS_FRAMES))
+    ASSERT_LT(rows * arch_aspace_create_pages() + 4u, kickos::testfix::frames_left())
         << "the seam's frame pool cannot fill the record";
     struct arch_aspace* filler[kickos::testfix::SYSOPS_FRAMES] = {};
     size_t made = 0;
@@ -636,6 +636,8 @@ TEST_F(MAP_CONTRACT_FIXTURE, ASpacePastTheResidencyRowsIsRefusedAndKeepsNoFrame)
     }
     ASSERT_GT(made, 0u);
     ASSERT_LT(made, rows) << "the fixture's space holds a row, so fewer than the rows are left";
+    ASSERT_GE(kickos::testfix::frames_left(), arch_aspace_create_pages())
+        << "the creates stopped on the frame pool, not on the rows";
     FrameCensus const census;
     EXPECT_EQ(arch_aspace_create(), nullptr);
     EXPECT_EQ(census.taken(), census.given()) << "the refused create kept a frame";

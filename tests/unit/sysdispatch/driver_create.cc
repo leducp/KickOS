@@ -159,6 +159,21 @@ namespace kickos
                 kickos_thread_slay_exit(nullptr);
             }
 
+            // Moves the first delegated capability onto the declared line slot, as a sibling
+            // thread of the creator could store between two reads of the array.
+            void dest_onto_the_line()
+            {
+                g_block.dest[0] = LINE_SLOT;
+            }
+
+            // Names another of the creator's capabilities as the first delegated one.
+            uint32_t g_other_source = KCAP_INVALID;
+
+            void source_onto_another()
+            {
+                g_block.caps[0].source_cap = g_other_source;
+            }
+
             void create_con()
             {
                 (void)task_create_call(g_prog, reinterpret_cast<uintptr_t>(&g_block.p),
@@ -336,6 +351,19 @@ namespace kickos
                     kernel().current(kickos_kernel_core()) = c;
                 }
 
+                int bindings_held()
+                {
+                    int n = 0;
+                    for (int i = 0; i < kernel().irq_bindings.count(); i++)
+                    {
+                        if (kernel().irq_bindings.refs()[i] != 0)
+                        {
+                            n++;
+                        }
+                    }
+                    return n;
+                }
+
                 bool line_free(uint16_t line)
                 {
                     IrqLock lock;
@@ -423,6 +451,64 @@ namespace kickos
             g_block.p.cap_dest = nullptr;
             g_decls.grant[0].slot = 0u;
             refused("drv", -KOS_EINVAL, "a reserved index");
+        }
+
+        TEST_F(DriverCreate, the_destinations_admitted_are_the_ones_the_entry_thread_gets)
+        {
+            root(AUTH_TASKS | AUTH_IRQ);
+            g_block.dest[0] = KOS_SPAWN_DELEGATED_CAP0;
+            g_block.p.cap_dest = g_block.dest;
+            g_domain_for_probe = dest_onto_the_line;
+            kos_task_t h = KOS_TASK_NONE;
+            ASSERT_EQ(create("drv", &h), 0);
+            EXPECT_EQ(g_domain_for_probe, nullptr) << "the create built no domain";
+            Thread* const e = entry_of(h);
+            ASSERT_NE(e, nullptr);
+            IrqLock lock;
+            EXPECT_EQ(static_cast<CapType>(cap_lookup(e, KOS_SPAWN_DELEGATED_CAP0)->type),
+                      CapType::CAP_NOTIFY);
+            EXPECT_EQ(static_cast<CapType>(cap_lookup(e, LINE_SLOT)->type), CapType::CAP_IRQ);
+        }
+
+        TEST_F(DriverCreate, the_grants_admitted_are_the_ones_the_entry_thread_gets)
+        {
+            root(AUTH_TASKS | AUTH_IRQ);
+            Thread* const c = sched::current();
+            ASSERT_EQ(notify_create(c, &g_other_source), 0);
+            int const admitted = cap_lookup(c, note_)->obj;
+            ASSERT_NE(cap_lookup(c, g_other_source)->obj, admitted);
+            g_domain_for_probe = source_onto_another;
+            kos_task_t h = KOS_TASK_NONE;
+            ASSERT_EQ(create("drv", &h), 0);
+            EXPECT_EQ(g_domain_for_probe, nullptr) << "the create built no domain";
+            Thread* const e = entry_of(h);
+            ASSERT_NE(e, nullptr);
+            IrqLock lock;
+            EXPECT_EQ(cap_lookup(e, KOS_SPAWN_DELEGATED_CAP0)->obj, admitted)
+                << "the entry thread got a capability its create never admitted";
+        }
+
+        TEST_F(DriverCreate, a_declared_claim_on_a_taken_or_absent_slot_is_refused)
+        {
+            root(AUTH_TASKS | AUTH_IRQ);
+            Thread* const c = sched::current();
+            IrqLock lock;
+            int err = 0;
+            Notification* const n = static_cast<Notification*>(
+                cap_resolve_e(c, note_, CapType::CAP_NOTIFY, CAP_SIGNAL, &err));
+            ASSERT_NE(n, nullptr);
+            int const obj = cap_lookup(c, note_)->obj;
+            uint16_t const taken = static_cast<uint16_t>(note_);
+            uint16_t const absent = static_cast<uint16_t>(thread_cap_capacity(c));
+            int const bindings = bindings_held();
+            EXPECT_EQ(irq_declared_claim(c, LINE, KOS_IRQ_EDGE, kickos_kernel_core(), taken, n, obj, 0),
+                      -KOS_EINVAL);
+            EXPECT_EQ(irq_declared_claim(c, LINE, KOS_IRQ_EDGE, kickos_kernel_core(), absent, n, obj, 0),
+                      -KOS_EINVAL);
+            EXPECT_EQ(static_cast<CapType>(cap_lookup(c, note_)->type), CapType::CAP_NOTIFY);
+            EXPECT_EQ(bindings_held(), bindings) << "a refused claim kept its binding";
+            EXPECT_EQ(irq_declared_admit(LINE, KOS_IRQ_EDGE, nullptr, false), 0)
+                << "a refused claim kept the line";
         }
 
         TEST_F(DriverCreate, lines_bound_to_no_notification_are_refused)

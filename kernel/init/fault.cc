@@ -35,6 +35,13 @@ namespace
     // exit_current runs), so a second thread's fault can overwrite this before the first stub
     // reads it. `owner` keeps that honest: a stub that does not own the record prints no fault
     // facts instead of printing another thread's.
+    enum class PcKind : uint8_t
+    {
+        EXACT,
+        UNVERIFIED,
+        NONE
+    };
+
     struct FaultRecord
     {
         ::kickos::Thread const* owner;
@@ -44,9 +51,7 @@ namespace
         uintptr_t addr;
         bool addr_valid;
         bool valid;
-#if KICKOS_HAVE_STACK_LIMIT
-        bool pc_valid;
-#endif
+        PcKind pc_kind;
     };
 
     // Indexed by arch_cpu_id().
@@ -70,9 +75,14 @@ extern "C" void kickos_fault_record(char const* status_name, uint64_t status,
     r.addr = addr;
     r.addr_valid = (addr_valid != 0);
     r.valid = true;
-#if KICKOS_HAVE_STACK_LIMIT
-    r.pc_valid = true;
-#endif
+    r.pc_kind = PcKind::EXACT;
+}
+
+extern "C" void kickos_fault_record_unverified_pc(char const* status_name, uint64_t status,
+                                                  uintptr_t pc)
+{
+    kickos_fault_record(status_name, status, pc, 0, 0);
+    fault_record().pc_kind = PcKind::UNVERIFIED;
 }
 
 #if KICKOS_HAVE_STACK_LIMIT
@@ -80,7 +90,7 @@ extern "C" void kickos_fault_record_no_pc(char const* status_name, uint64_t stat
                                           uintptr_t addr, int addr_valid)
 {
     kickos_fault_record(status_name, status, 0, addr, addr_valid);
-    fault_record().pc_valid = false;
+    fault_record().pc_kind = PcKind::NONE;
 }
 #endif
 
@@ -210,9 +220,7 @@ namespace
         void* const pc = reinterpret_cast<void*>(r.pc);
         void* const addr = reinterpret_cast<void*>(r.addr);
         bool const addr_valid = r.addr_valid;
-#if KICKOS_HAVE_STACK_LIMIT
-        bool const pc_valid = r.pc_valid;
-#endif
+        PcKind const pc_kind = r.pc_kind;
         if (owned)
         {
             // Consumed, so a later kill that somehow reaches here without a fresh capture
@@ -233,15 +241,15 @@ namespace
         {
             return;
         }
-#if KICKOS_HAVE_STACK_LIMIT
-        if (not pc_valid)
+        if (pc_kind == PcKind::NONE)
         {
             ::kickos::kprintf_record(KDIAG_F_FAULT_NO_PC, status_name, status);
         }
+        else if (pc_kind == PcKind::UNVERIFIED)
+        {
+            ::kickos::kprintf_record(KDIAG_F_FAULT_PC_UNVERIFIED, pc, status_name, status);
+        }
         else if (status_name == nullptr)
-#else
-        if (status_name == nullptr)
-#endif
         {
             // status_name is null on v6-M, whose profile supplies the PC alone.
             ::kickos::kprintf_record(KDIAG_F_FAULT_PC, pc);

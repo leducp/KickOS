@@ -1022,6 +1022,10 @@ uintptr_t kickos_fault_stack_top(void);
 void kickos_fault_record(char const* status_name, uint64_t status,
                          uintptr_t pc, uintptr_t addr, int addr_valid);
 
+// The same, for an asynchronous error: `pc` is where the thread was when it arrived, which need
+// not be the access that raised it.
+void kickos_fault_record_unverified_pc(char const* status_name, uint64_t status, uintptr_t pc);
+
 #if KICKOS_HAVE_STACK_LIMIT
 // The same, for a fault whose frame was never stacked, so no PC is known.
 void kickos_fault_record_no_pc(char const* status_name, uint64_t status,

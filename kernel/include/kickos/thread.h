@@ -234,6 +234,10 @@ namespace kickos
         // so a zeroing for the next occupant keeps it: such an entry may outlive the previous
         // occupant in a ring.
         uint8_t reseat_owed = 0;
+        // Set where exit_current leaves its task's space, ahead of its task_release, and never
+        // cleared: a switch back in seats the boot root. Not `dying`, which a slay claim sets
+        // while the stub's ustack_free still owes the space.
+        bool left_space = false;
         static_assert(KICKOS_KERNEL_CORES <= 32,
                       "a core set is a 32-bit mask, as the doorbell's core mask is "
                       "(arch_ipi_send) and as an AMP node mask is (kickos/ampwindow.h). "

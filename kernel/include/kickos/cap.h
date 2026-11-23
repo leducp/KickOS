@@ -563,9 +563,12 @@ namespace kickos
     [[nodiscard]] int cap_install(Thread* c, int obj_handle, CapType type, uint8_t rights,
                                   uint32_t* out_cap);
 
-    // Install at a specified empty index without changing the refcount.
-    // Delegated cap i uses child index KICKOS_CAP_FIRST_DYNAMIC + i. Returns the entry, or
-    // nullptr for an invalid index. Asserts that the slot is empty to protect the free list.
+    // Whether `index` is a dynamic index of `c`'s table holding no capability.
+    bool cap_slot_vacant(Thread const* c, int index);
+
+    // Install at a specified empty index without changing the refcount, and return the entry.
+    // Delegated cap i uses child index KICKOS_CAP_FIRST_DYNAMIC + i. Panics in every build on an
+    // index cap_slot_vacant refuses, so a caller handed the index tests it first.
     //
     // `badge` is NOT defaulted, and that is the whole of it: a released entry keeps the badge
     // its last occupant left, so every install site has to say what this one carries.

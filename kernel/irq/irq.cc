@@ -739,8 +739,11 @@ namespace kickos
             {
                 rc = cap_install(holder, obj, CapType::CAP_IRQ, rights, &cap);
             }
-            else if (cap_install_at(holder, slot, obj, CapType::CAP_IRQ, rights, KCAP_BADGE_NONE)
-                     == nullptr)
+            else if (cap_slot_vacant(holder, slot))
+            {
+                (void)cap_install_at(holder, slot, obj, CapType::CAP_IRQ, rights, KCAP_BADGE_NONE);
+            }
+            else
             {
                 rc = -KOS_EINVAL;
             }

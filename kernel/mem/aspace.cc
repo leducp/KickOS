@@ -1694,15 +1694,27 @@ namespace kickos
         arch_aspace_destroy(space);
     }
 
+    // The space `t` may run on: null for a spaceless thread and, above one kernel core, for one
+    // whose exit has left its task's space.
+    static struct arch_aspace* space_for(Thread const* t)
+    {
+#if KICKOS_KERNEL_CORES > 1
+        if (t != nullptr and t->left_space)
+        {
+            return nullptr;
+        }
+#endif
+        return domain_space(thread_domain(t));
+    }
+
     struct arch_aspace* aspace_activate_for(Thread const* t)
     {
-        struct arch_aspace* const space = domain_space(thread_domain(t));
+        struct arch_aspace* const space = space_for(t);
         if (space == nullptr)
         {
 #if KICKOS_KERNEL_CORES > 1
-            // On SMP, spaceless threads must install the boot root so they cannot
-            // retain a table another core frees. On one core, aspace_release switches
-            // away before freeing, so no extra switch is needed here.
+            // Another core may free the root this core would otherwise keep. At one core,
+            // aspace_release leaves the root before it frees it.
             aspace_install_boot();
 #endif
             return nullptr;

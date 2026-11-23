@@ -322,6 +322,10 @@ namespace kickos
         // is one of each thread's kernel block on the trap red zone. Read only within the
         // IrqLock hold that wrote it, which is the cross-core kernel lock above one core.
         kos_window window_stage[KICKOS_MAX_THREAD_WINDOWS] = {};
+        // A create's delegations and their destinations, read once from the caller as it
+        // starts: its admission and its spawn read these, under the same rule as window_stage.
+        kos_cap_grant grant_stage[KICKOS_MAX_SPAWN_GRANTS] = {};
+        uint16_t dest_stage[KICKOS_MAX_SPAWN_GRANTS] = {};
 #if not KICKOS_PRESYNC
         // A create's parameter copies, under the same rule as window_stage. The presync record
         // holds them where there is one.

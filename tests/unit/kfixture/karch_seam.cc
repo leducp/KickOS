@@ -369,6 +369,12 @@ namespace kickos
     // A domain per task: the production default-user singleton is not shared here.
     Domain* domain_for(uint32_t, void*, size_t, uint32_t, Domain*, int* err)
     {
+        void (*const probe)() = testfix::g_domain_for_probe;
+        testfix::g_domain_for_probe = nullptr;
+        if (probe != nullptr)
+        {
+            probe();
+        }
         *err = 0;
         for (int i = 0; i < testfix::FIXTURE_DOMAIN_SLOTS; i++)
         {

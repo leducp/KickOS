@@ -87,6 +87,15 @@ namespace kickos
                 t->state.to<ThreadState::RUNNING>();
                 install_for(t);
             }
+
+            Thread* g_switched_in = nullptr;
+            struct arch_aspace* g_seated_after_switch = nullptr;
+
+            void switch_back_in()
+            {
+                install_for(g_switched_in);
+                g_seated_after_switch = installed_on(0);
+            }
         }
 
         // A NON-LAST member's death: the group keeps a member, so no release can reach these
@@ -123,6 +132,32 @@ namespace kickos
             EXPECT_EQ(installed_on(0), space)
                 << "the core stays on the space the surviving member still holds";
             (void)survivor;
+        }
+
+        // A switch back in during the sweep: at one core no peer can free the space under it,
+        // so it is seated as for any member.
+        TEST_F(LeaveSpaceOneCore, a_dying_member_switched_back_in_keeps_its_space)
+        {
+            (void)seat_pool(SLOT_BYSTANDER, PRIO_LOW);
+            Task* const group = task(0);
+            ASSERT_NE(group, nullptr);
+            Thread* const dying = member_of(SLOT_DYING, PRIO_MID, group);
+            Thread* const survivor = member_of(SLOT_SURVIVOR, PRIO_MID, group);
+            own_stack(dying);
+            attach_caps(dying, KICKOS_SEAM_CAP_WIDTH);
+
+            struct arch_aspace* const space = space_of(task_domain(group));
+            run_as(survivor);
+            run_as(dying);
+            g_switched_in = dying;
+            g_seated_after_switch = nullptr;
+            trace_reset();
+            run_in_chunk_gap(switch_back_in, 1u);
+            run_exit(0);
+            ASSERT_NE(g_seated_after_switch, nullptr)
+                << "the sweep opened no chunk gap, so the arm switched nothing in";
+            EXPECT_EQ(g_seated_after_switch, space);
+            EXPECT_FALSE(traced("install_boot")) << "trace " << trace();
         }
 
         // The LAST member's death, for the discriminator the arm above needs: the trace is the

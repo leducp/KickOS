@@ -31,7 +31,7 @@
     .endm
 
 /* A lower-EL reporting slot seats SP_EL1 from the kernel's own record: reaching one (an AArch32
- * entry or an EL0 SError) means SP_EL1 carries no promise, and the reporter would otherwise
+ * entry or an EL0 FIQ) means SP_EL1 carries no promise, and the reporter would otherwise
  * build privileged frames on memory an unprivileged thread can write.
  *
  * kernel_sp sits at displacement 0 of the per-core block (percpu.h static_asserts it). Above
@@ -74,7 +74,8 @@ kickos_armv8a_vectors:
     .balign 128
     b       kickos_armv8a_el0_irq_entry     /* 0x480 IRQ: an EL0 thread preempted */
     LOWER_EL_SLOT 10                /* 0x500 FIQ         */
-    LOWER_EL_SLOT 11                /* 0x580 SError      */
+    .balign 128
+    b       kickos_armv8a_el0_serror_entry  /* 0x580 SError: the thread's own access */
 
     /* Lower EL in AArch32, which this port never enters. */
     LOWER_EL_SLOT 12                /* 0x600 synchronous */

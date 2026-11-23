@@ -176,6 +176,7 @@ void arch_init(void)
     }
 
     kickos_armv8a_gic_dist_init();
+    kickos_armv8a_direct_map_record();
     kickos_armv8a_percore_init();
 
     // PSTATE.I stays SET: interrupts first reach the core through the initial thread's SPSR.

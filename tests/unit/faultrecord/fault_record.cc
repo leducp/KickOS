@@ -71,6 +71,17 @@ namespace kickos
                 EXPECT_FALSE(printed(KDIAG_F_FAULT_PC_STAT));
             }
 
+            // An asynchronous error's return address is where the thread was when it arrived,
+            // not the access that raised it.
+            TEST_F(FaultRecordPc, an_asynchronous_error_prints_its_pc_as_unverified)
+            {
+                seat_victim();
+                kickos_fault_record_unverified_pc("ESR_EL1", 0xBE000000u, 0x1234u);
+                run_noreturn(fault_exit);
+                EXPECT_TRUE(printed(KDIAG_F_FAULT_PC_UNVERIFIED));
+                EXPECT_FALSE(printed(KDIAG_F_FAULT_PC_STAT));
+            }
+
             TEST_F(FaultRecordPc, a_fault_with_a_frame_prints_its_pc)
             {
                 seat_victim();

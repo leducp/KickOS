@@ -106,6 +106,16 @@ namespace kickos
                 testfix::seat_running_on(t, core);
                 install_for(t);
             }
+
+            // The switch back in that a chunk gap allows, read on the exiting core.
+            Thread* g_switched_in = nullptr;
+            struct arch_aspace* g_seated_after_switch = nullptr;
+
+            void switch_back_in()
+            {
+                install_for(g_switched_in);
+                g_seated_after_switch = installed_on(g_core);
+            }
         }
 
         // The order is the fix: ustack_free first, because the page maintenance it pays is
@@ -194,6 +204,57 @@ namespace kickos
             ASSERT_NE(g_gap_holders, HOLDERS_UNREAD);
             EXPECT_EQ(g_gap_holders, 0u)
                 << "and no core held the root arch_aspace_destroy is entitled to free";
+        }
+
+        // The sweep drops IrqLock between chunks, so the dying member can be switched back in
+        // past its task_release, while a sibling's last release is free to destroy the space.
+        TEST_F(LeaveSpace, a_dying_member_switched_back_in_after_its_release_runs_on_the_boot_root)
+        {
+            (void)seat_pool(SLOT_BYSTANDER, PRIO_LOW);
+            g_core = 1;
+            Thread* const spare = seat_pool(SLOT_SPARE, PRIO_LOW);
+            ASSERT_EQ(spare->queue_core, 1u);
+            g_core = 0;
+            Task* const group = task(0);
+            ASSERT_NE(group, nullptr);
+            Thread* const dying = member_of(SLOT_DYING, PRIO_MID, group);
+            Thread* const peer = member_of(SLOT_PEER, PRIO_MID, group);
+            own_stack(dying);
+            attach_caps(dying, KICKOS_SEAM_CAP_WIDTH);
+
+            struct arch_aspace* const space = space_of(task_domain(group));
+            run_as(1, peer);
+            run_as(0, dying);
+            ASSERT_EQ(installed_on(0), space);
+
+            g_switched_in = dying;
+            g_seated_after_switch = nullptr;
+            run_in_chunk_gap(switch_back_in, 1u);
+            run_exit(0);
+            ASSERT_NE(g_seated_after_switch, nullptr)
+                << "the sweep opened no chunk gap, so the arm switched nothing in";
+            EXPECT_EQ(g_seated_after_switch, boot_space())
+                << "a switch back in must not put the task's root back on this core: the peer's "
+                   "last release may free it while this core still runs the sweep on it";
+            EXPECT_EQ(task_member_count(group), 1);
+        }
+
+        // A slay claim marks its victim dying before the stub reaches exit_current, and the
+        // stub can be preempted there: its ustack_free still owes the space, so a switch in
+        // before the release must seat it.
+        TEST_F(LeaveSpace, a_slain_member_switched_in_before_its_release_keeps_its_space)
+        {
+            (void)seat_pool(SLOT_BYSTANDER, PRIO_LOW);
+            Task* const group = task(0);
+            ASSERT_NE(group, nullptr);
+            Thread* const slain = member_of(SLOT_DYING, PRIO_MID, group);
+            slain->cancel_kind = CANCEL_SLAY;
+            slain->dying = true;
+
+            g_core = 0;
+            testfix::seat_running_on(slain, 0);
+            install_for(slain);
+            EXPECT_EQ(installed_on(0), space_of(task_domain(group)));
         }
 
         // The spaceless case: the install is unconditional, so a thread whose task holds no

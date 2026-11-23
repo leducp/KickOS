@@ -92,6 +92,9 @@ namespace kickos
         extern bool g_console_dark;
         // What console_window_held_outside answers. Reset clears it.
         extern bool g_console_window_held;
+        // Run once by the next domain_for, as a sibling on another core would act while a create
+        // builds its task. Reset clears it.
+        extern void (*g_domain_for_probe)();
         extern uint32_t g_parked;
         // arch_periph_disable's calls: the first PERIPH_RECORD_MAX bases in order, the count,
         // and how many found the base still a device window of the current thread; and what it

@@ -12,6 +12,7 @@ endif()
 
 kickos_add_kernel_host_lib(kickos_aspace_armv8a_host
   SOURCES "${_mapexec_backend}" "${PROJECT_SOURCE_DIR}/arch/arm64/armv8a/uguard_armv8a.cc"
+          "${PROJECT_SOURCE_DIR}/arch/arm64/armv8a/serror_armv8a.cc"
           aspace_sysops_seam.cc
           "${PROJECT_SOURCE_DIR}/tests/unit/common/sysops_seam.cc"
           "${PROJECT_SOURCE_DIR}/tests/unit/common/kpanic_seam.cc"

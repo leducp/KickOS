@@ -85,7 +85,7 @@ namespace kickos
         // re-seat, and only a park forfeits the RR slice remainder. The removal reads `link`,
         // so it must run before anything re-uses that node.
         c->state.block();
-        sched::detach_current(held);
+        sched::detach_current(c, held);
         c->wait_queue = nullptr;
         c->wait_kind = kind;
         c->wait_obj = obj;

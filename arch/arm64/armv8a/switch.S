@@ -16,6 +16,8 @@
 #include <kickos/board_config.h>
 #include <kickos/arch/armv8a_trap_stack.h>
 
+#include "vector_slots.h"
+
 #define FRAME_SIZE  KICKOS_ARMV8A_TRAP_FRAME
 #define F_X30       240
 #define F_ELR       248
@@ -97,8 +99,13 @@
 /* x0 is the scratch until it is the last register loaded.
 
    Under the reserved-root form an eret to EL0t installs the space the cell names; the eret is
-   the context synchronisation that makes it live. Every EL1 return keeps the empty root. */
-    .macro  RESTORE_FRAME_AND_ERET
+   the context synchronisation that makes it live. Every EL1 return keeps the empty root.
+
+   An SError pending at a return to EL0 would be taken in the thread's name, so it is tested
+   after the last access before the eret, with FAR_EL1 holding x0: nothing reads FAR_EL1 outside
+   an abort's own handling. No ESB: under FEAT_RAS it would defer the error out of ISR_EL1.
+   `serror_check` 0 is for the one return that carries the thread's own. */
+    .macro  RESTORE_FRAME_AND_ERET serror_check=1
     ldr     x0, [sp, #F_SPSR]
     msr     spsr_el1, x0
     tst     x0, #0xf                        /* M[3:0] == 0 is EL0t */
@@ -150,6 +157,19 @@
     ldp     x2, x3, [sp, #16]
     ldp     x0, x1, [sp, #0]
     add     sp, sp, #FRAME_SIZE
+    .if \serror_check
+    msr     far_el1, x0
+    mrs     x0, spsr_el1
+    tst     x0, #0xf                        /* M[3:0] == 0 is EL0t */
+    b.ne    6f
+    dsb     sy
+    isb
+    mrs     x0, isr_el1
+    tbz     x0, #8, 6f                      /* ISR_EL1.A */
+    b       kickos_armv8a_kernel_serror
+6:
+    mrs     x0, far_el1
+    .endif
     eret
     .endm
 
@@ -208,12 +228,29 @@ kickos_armv8a_irq_entry:
 8:
     .endm
 
+/* An SError pending at entry is the thread's own and is taken from EL0, by returning to it: the
+   return takes it before the thread's next instruction (DDI 0487 M.b, D1.4.6.5 RRBZYL). That
+   return masks I and F, or an IRQ taken first loops through here, and unmasks A. */
+    .macro  SERROR_FROM_EL0_FIRST
+    dsb     sy
+    isb
+    mrs     x0, isr_el1
+    tbz     x0, #8, 7f                      /* ISR_EL1.A */
+    ldr     x0, [sp, #F_SPSR]
+    orr     x0, x0, #0xc0                   /* SPSR.I and SPSR.F */
+    bic     x0, x0, #0x100                  /* SPSR.A */
+    str     x0, [sp, #F_SPSR]
+    RESTORE_FRAME_AND_ERET 0
+7:
+    .endm
+
 /* Synchronous from EL0, faults included: the class is decoded before anything is treated as a
  * call, or a data abort dispatches as a syscall.
  */
     .global kickos_armv8a_el0_sync_entry
 kickos_armv8a_el0_sync_entry:
     ENTER_FROM_EL0
+    SERROR_FROM_EL0_FIRST
     mrs     x0, esr_el1
     lsr     x0, x0, #26                     /* ESR_EL1.EC */
     cmp     x0, #0x15                       /* SVC instruction executed in AArch64 state */
@@ -243,7 +280,7 @@ kickos_armv8a_el0_sync_entry:
     cbz     w0, .Lel0_fault_panic
     RESTORE_FRAME_AND_ERET
 .Lel0_fault_panic:
-    mov     x0, #8                          /* the vector slot, for the dump to name */
+    mov     x0, #KICKOS_ARMV8A_SLOT_EL0_SYNC
     ldr     x1, [sp, #F_X30]
     b       kickos_armv8a_exception
 
@@ -251,6 +288,7 @@ kickos_armv8a_el0_sync_entry:
     .global kickos_armv8a_el0_irq_entry
 kickos_armv8a_el0_irq_entry:
     ENTER_FROM_EL0
+    SERROR_FROM_EL0_FIRST
     bl      kickos_armv8a_irq
     PERCPU_CELL x0, PERCPU_SWITCH_TO
     ldr     x1, [x0]
@@ -266,6 +304,22 @@ kickos_armv8a_el0_irq_entry:
     SWITCH_UNLOCK
 .Lel0_irq_resume:
     RESTORE_FRAME_AND_ERET
+
+    .global kickos_armv8a_el0_serror_entry
+kickos_armv8a_el0_serror_entry:
+    ENTER_FROM_EL0
+    mrs     x0, esr_el1
+    lsr     x0, x0, #26                     /* ESR_EL1.EC */
+    cmp     x0, #KICKOS_ARMV8A_EC_SERROR
+    b.ne    .Lel0_serror_panic
+    mov     x0, sp
+    bl      kickos_fault_kill_thread
+    cbz     w0, .Lel0_serror_panic
+    RESTORE_FRAME_AND_ERET
+.Lel0_serror_panic:
+    mov     x0, #KICKOS_ARMV8A_SLOT_EL0_SERROR
+    ldr     x1, [sp, #F_X30]
+    b       kickos_armv8a_exception
 
     .section .text.switch, "ax"
 

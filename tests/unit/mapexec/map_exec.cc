@@ -15,6 +15,7 @@
 #include <string>
 
 #include "aspace_sysops_seam.h"
+#include "serror_armv8a.h"
 #include "uguard_armv8a.h"
 #include "vmsa.h"
 
@@ -692,6 +693,20 @@ TEST_F(MapExec, TheEmptyRootIsOneHandleThatNothingMapsInto)
     EXPECT_EQ(arch_aspace_acquire(empty, VA_DEEP, ARCH_ASPACE_READ, nullptr, nullptr), nullptr);
 }
 
+// The seam's TTBR1 maps the first GiB of physical memory and nothing past it, so a user leaf
+// over a frame past it has no kernel alias.
+TEST_F(MapExec, AFrameTheKernelHalfDoesNotMapHasNoAcquire)
+{
+    constexpr arch_phys_addr_t PAST_TTBR1 = 0x40000000;
+    seed(VA_DEEP, PAST_TTBR1, RIGHTS_DATA);
+    arch_phys_addr_t frame = 0;
+    EXPECT_EQ(arch_aspace_acquire(space, VA_DEEP, ARCH_ASPACE_READ, nullptr, &frame), nullptr);
+    EXPECT_EQ(frame, PAST_TTBR1);
+    seed(VA_OTHER, PA_A, RIGHTS_DATA);
+    EXPECT_EQ(arch_aspace_acquire(space, VA_OTHER, ARCH_ASPACE_READ, nullptr, nullptr),
+              frame_pointer(PA_A));
+}
+
 TEST_F(MapExec, TheEmptyRootRunsUnderTheTopIdentifierAndLeavingItSweepsNothing)
 {
     arch_aspace_activate(arch_aspace_boot());
@@ -813,4 +828,147 @@ TEST(UGuard, TheBootCoreChoosesAndALaterCoreMustAgree)
                  kickos::diag::kUguardMixed);
     EXPECT_STREQ(kickos::armv8a::uguard_refusal(UGuard::ROOT, UGuard::PAN),
                  kickos::diag::kUguardMixed);
+}
+
+// What the direct map reaches is what TTBR1 maps at PA + va_base as memory, writable where
+// its AP says so.
+namespace
+{
+    constexpr uint64_t KDESC_DEVICE = 1ull << 2; // AttrIndx 1
+    constexpr uint64_t KDESC_RO = 1ull << 7;     // AP[2]
+    constexpr size_t G = 0x1000;
+    constexpr arch_phys_addr_t FAR_PA = 0x30000000;
+    constexpr arch_phys_addr_t BLOCK_PA = 0x40000000;
+    constexpr arch_phys_addr_t BLOCK_BYTES = 0x200000;
+
+    class DirectMap : public MapExec
+    {
+      protected:
+        bool reaches(arch_phys_addr_t pa, enum arch_aspace_access access)
+        {
+            EXPECT_EQ(arch_aspace_map(space, VA_DEEP, pa, 1, RIGHTS_DATA, ARCH_MAP_NORMAL),
+                      ARCH_ASPACE_OK);
+            void* const p = arch_aspace_acquire(space, VA_DEEP, access, nullptr, nullptr);
+            arch_aspace_release(space, VA_DEEP);
+            EXPECT_EQ(arch_aspace_unmap(space, VA_DEEP, 1), ARCH_ASPACE_OK);
+            return p != nullptr;
+        }
+    };
+}
+
+TEST_F(DirectMap, AReadOnlyKernelPageAnswersAReadButNoWrite)
+{
+    ASSERT_TRUE(ttbr1_map(FAR_PA, FAR_PA, 1, KDESC_RO));
+    ttbr1_record();
+    EXPECT_TRUE(reaches(FAR_PA, ARCH_ASPACE_READ));
+    EXPECT_FALSE(reaches(FAR_PA, ARCH_ASPACE_WRITE));
+}
+
+TEST_F(DirectMap, ALeafOffTheDirectMapAddressReachesNothing)
+{
+    ASSERT_TRUE(ttbr1_map(FAR_PA, FAR_PA + G, 1, 0));
+    ttbr1_record();
+    EXPECT_FALSE(reaches(FAR_PA + G, ARCH_ASPACE_READ)) << "named at another frame's address";
+    EXPECT_FALSE(reaches(FAR_PA, ARCH_ASPACE_READ)) << "its address names another frame";
+}
+
+TEST_F(DirectMap, ADeviceKernelPageIsNotReached)
+{
+    ASSERT_TRUE(ttbr1_map(FAR_PA, FAR_PA, 1, KDESC_DEVICE));
+    ttbr1_record();
+    EXPECT_FALSE(reaches(FAR_PA, ARCH_ASPACE_READ));
+}
+
+TEST_F(DirectMap, ALevelTwoBlockIsReachedWhole)
+{
+    ASSERT_TRUE(ttbr1_block(BLOCK_PA, 2, 0));
+    ASSERT_TRUE(ttbr1_block(BLOCK_PA + BLOCK_BYTES, 2, KDESC_RO));
+    ttbr1_record();
+    EXPECT_TRUE(reaches(BLOCK_PA, ARCH_ASPACE_WRITE));
+    EXPECT_TRUE(reaches(BLOCK_PA + BLOCK_BYTES - G, ARCH_ASPACE_WRITE));
+    EXPECT_TRUE(reaches(BLOCK_PA + BLOCK_BYTES, ARCH_ASPACE_READ));
+    EXPECT_FALSE(reaches(BLOCK_PA + BLOCK_BYTES, ARCH_ASPACE_WRITE));
+    EXPECT_FALSE(reaches(BLOCK_PA + 2u * BLOCK_BYTES, ARCH_ASPACE_READ));
+}
+
+// Adjacent pages are one span however TTBR1 splits them; the record holds eight spans.
+TEST_F(DirectMap, AdjacentPagesMergeAndANinthSpanPanics)
+{
+    ttbr1_reset();
+    ASSERT_TRUE(ttbr1_map(FAR_PA, FAR_PA, 1, 0));
+    ASSERT_TRUE(ttbr1_map(FAR_PA + G, FAR_PA + G, 1, 0));
+    for (arch_phys_addr_t i = 1; i < 8; i++)
+    {
+        ASSERT_TRUE(ttbr1_map(FAR_PA + i * 4u * G, FAR_PA + i * 4u * G, 1, 0));
+    }
+    ttbr1_record();
+    EXPECT_TRUE(reaches(FAR_PA + G, ARCH_ASPACE_WRITE));
+    EXPECT_TRUE(reaches(FAR_PA + 28u * G, ARCH_ASPACE_WRITE));
+    EXPECT_FALSE(reaches(FAR_PA + 2u * G, ARCH_ASPACE_READ));
+    ASSERT_TRUE(ttbr1_map(FAR_PA + 40u * G, FAR_PA + 40u * G, 1, 0));
+    EXPECT_DEATH(ttbr1_record(), kickos::diag::kMmuDirectSpans);
+}
+
+TEST_F(DirectMap, ATtbr1MappingNoMemoryPanics)
+{
+    ttbr1_reset();
+    EXPECT_DEATH(ttbr1_record(), kickos::diag::kMmuDirectNone);
+}
+
+// The walk starts at level 1, which TCR_EL1.T1SZ decides as it decides the region's width.
+TEST_F(DirectMap, ATtbr1RegionTheWalkDoesNotStartAtLevelOnePanics)
+{
+    constexpr uint64_t T1SZ_MASK = 0x3Full << 16;
+    set_tcr((tcr_a53() & ~T1SZ_MASK) | (16ull << 16));
+    EXPECT_DEATH(ttbr1_record(), kickos::diag::kMmuTtbr1Width);
+    set_tcr(tcr_a53());
+}
+
+// ESR_EL1 for an SError (EC 0x2F) and its RAS fields: IDS, AET and DFSC.
+namespace
+{
+    constexpr uint64_t ESR_SERROR = 0x2Full << 26;
+    constexpr uint64_t ESR_DABT_LOWER = 0x24ull << 26;
+    constexpr uint64_t ESR_IDS = 1ull << 24;
+    constexpr uint64_t ESR_DFSC_ASYNC = 0x11u;
+    constexpr uint64_t PFR0_RAS = 1ull << 28;
+
+    uint64_t aet(uint64_t v)
+    {
+        return v << 10;
+    }
+}
+
+TEST(SErrorRule, OnlyAnSErrorIsContained)
+{
+    EXPECT_TRUE(kickos::armv8a::serror_containable(ESR_SERROR, 0));
+    EXPECT_FALSE(kickos::armv8a::serror_containable(ESR_DABT_LOWER, 0));
+    EXPECT_FALSE(kickos::armv8a::serror_containable(0, PFR0_RAS));
+}
+
+TEST(SErrorRule, AnUncontainableErrorRasReportsIsNotContained)
+{
+    EXPECT_FALSE(kickos::armv8a::serror_containable(ESR_SERROR | ESR_DFSC_ASYNC | aet(0), PFR0_RAS));
+    for (uint64_t const state : {1u, 2u, 3u, 6u})
+    {
+        EXPECT_TRUE(
+            kickos::armv8a::serror_containable(ESR_SERROR | ESR_DFSC_ASYNC | aet(state), PFR0_RAS))
+            << "AET " << state;
+    }
+    // Without FEAT_RAS AET means nothing.
+    EXPECT_TRUE(kickos::armv8a::serror_containable(ESR_SERROR | ESR_DFSC_ASYNC | aet(0), 0));
+}
+
+// Under FEAT_RAS a state the syndrome does not name is refused, not assumed contained.
+TEST(SErrorRule, AnErrorStateRasLeavesUnnamedIsNotContained)
+{
+    for (uint64_t const reserved : {4u, 5u, 7u})
+    {
+        EXPECT_FALSE(
+            kickos::armv8a::serror_containable(ESR_SERROR | ESR_DFSC_ASYNC | aet(reserved), PFR0_RAS))
+            << "AET " << reserved;
+    }
+    EXPECT_FALSE(
+        kickos::armv8a::serror_containable(ESR_SERROR | ESR_IDS | ESR_DFSC_ASYNC | aet(1), PFR0_RAS));
+    EXPECT_FALSE(kickos::armv8a::serror_containable(ESR_SERROR | aet(1), PFR0_RAS));
 }

@@ -763,7 +763,7 @@ namespace kickos
             reschedule(nullptr, lock);
         }
 
-        void detach_current(Held)
+        void detach_current(Thread* c, Held)
         {
             KICKOS_ASSERT_EXCLUSION_HELD();
             // Blocking is legal only from thread context: from an ISR the switch defers and
@@ -772,7 +772,9 @@ namespace kickos
             {
                 kpanic(diag::kBlockInIsr);
             }
-            policy_on_remove(current());
+            // A booked switch has moved `current` to the thread it lands on already.
+            KICKOS_ASSERT(c == sched::current());
+            policy_on_remove(c);
         }
 
         bool wake_no_resched(Thread* t, Held held)
@@ -967,6 +969,7 @@ namespace kickos
                     c->kstack_owned = false;
                 }
 #if KICKOS_KERNEL_CORES > 1
+                c->left_space = true;
                 aspace_install_boot();
 #endif
 #endif

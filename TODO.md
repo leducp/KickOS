@@ -339,6 +339,78 @@ milestone does not close while any of them still composes a system.
         rationale another box or a doc points at) moves to its proper home (docs/reference, a
         design note, STATE.md) and every reference to the box is fixed, since git history is not
         an archive a reader follows.
+      - M10.8.2, the kernel findings of the audit, each closed here:
+        - A dying member switched back in during its capability sweep was put back on its task's
+          root, which a sibling's last release could then free under that core (SMP x86_64,
+          rv64). Above one kernel core a thread past its exit's `task_release` now always runs on
+          the boot root; one core is unchanged. Arms: `tests/unit/deathspace`,
+          `LeaveSpace.a_dying_member_switched_back_in_after_its_release_runs_on_the_boot_root`,
+          `a_slain_member_switched_in_before_its_release_keeps_its_space`, and
+          `LeaveSpaceOneCore.a_dying_member_switched_back_in_keeps_its_space`.
+        - A task create whose window count passed the array had its plan walk the record past
+          `windows[]` and panic on a full span list. The plan now notes only a list it copied, up
+          to the count it copied, and the create answers `-KOS_ENOMEM`. Arm:
+          `SysPresync.a_create_whose_window_count_passes_the_array_answers_and_notes_nothing`.
+        - A driver create read its delegations' destinations from the caller twice, at admission
+          and at the spawn, so a sibling on another core could move one onto a declared line
+          slot between the reads and the line's install panicked. The create now reads them once
+          and spawns from that copy; a declared claim answers `-KOS_EINVAL` for a slot that is
+          taken or out of range, and `cap_install_at` says it panics on one. Arms:
+          `DriverCreate.the_destinations_admitted_are_the_ones_the_entry_thread_gets` and
+          `a_declared_claim_on_a_taken_or_absent_slot_is_refused`.
+        - A create read its delegation list from the caller at each use (the ready endpoint, the
+          lines' notification, the console publish, the spawn), so the capability its entry
+          thread received need not be the one admitted. Every create now copies the list and the
+          destinations once as it starts, and each of those reads that copy. Arm:
+          `DriverCreate.the_grants_admitted_are_the_ones_the_entry_thread_gets`.
+        - A thread's name reached fault and panic records with its control bytes, so a spawner
+          could print lines that read as kernel output. The name copy now applies the panic
+          message's rule, a control byte becoming `?`. Arm:
+          `SpawnBadge.a_spawned_thread_s_name_carries_no_control_byte`.
+        - `park_queueless` detached `current()` and not the thread it was handed, which differ
+          once a wake has booked a switch (no park site does that today). It now detaches its own
+          thread and panics if that is not `current()`. Arm:
+          `SchedWakeDeathTest.a_park_after_a_booked_switch_detaches_no_other_thread`.
+        - x86_64: the user range ended at the canonical boundary, so a user page could hold a RIP
+          whose `iretq` faults in ring 0 on the user GS base (no mapping is executable there
+          today). The page below the boundary is no longer user, and the windows' area is where
+          it was. Arm: `MapShoot.ThePageBelowTheCanonicalEdgeIsNotUser`.
+        - armv8a: `arch_aspace_acquire` answered a direct-map pointer for any memory leaf without
+          checking that TTBR1 maps its frame (unreachable today: the pool lies in the image's
+          DRAM). The boot core now records the memory spans TTBR1 maps at PA plus the direct-map
+          offset, in the region TCR_EL1.T1SZ sizes, and which of them are writable; acquire
+          answers null for a frame outside them, and a write acquire for a read-only one. The
+          record panics on a region its walk cannot start at level 1, on too many spans and on
+          none. Arms: `MapExec.AFrameTheKernelHalfDoesNotMapHasNoAcquire` and the `DirectMap`
+          suite.
+        - armv8a: an SError from EL0 panicked the system. The i.MX 8M Plus RM (Rev. 3) settles that
+          a store a granted driver makes can draw one: ENET "Non-32 bit accesses will terminate
+          with an error" (11.6.4, p. 3807), the UART's transfer error on a write to UTXD with the
+          transmitter disabled (17.2.9, p. 7353), and AIPSTZ's "terminated with an error response"
+          (4.7.8.2, p. 175); the A53 reports a write's error asynchronously (DDI 0500J 5.4.1). Every
+          EL0 entry now completes the thread's accesses and, with an SError pending, returns to
+          EL0 to take it there; an SError from EL0 takes the kill rule, under FEAT_RAS only when
+          its syndrome names a contained state (UEU, UEO, UER, CE), and its record prints the PC
+          as unverified. Every return to EL0 completes the accesses before it and, after the last
+          of them, panics on an SError pending there, so none the kernel raised reaches a thread.
+          FIQ from EL0 stays fatal. Arms: `SErrorRule` (the containment rule)
+          and `FaultRecordPc.an_asynchronous_error_prints_its_pc_as_unverified`; none for the
+          entry and return paths. QEMU reports a failed access as a synchronous external abort,
+          never an SError. Its `virtualization=on` hands over at EL2, where a hook could pend a
+          virtual SError through HCR_EL2.VSE and drive the EL0 slot and the return-path panic,
+          but this port refuses EL2 entry by name, and the entry check would still be out of
+          reach: a virtual SError pended while a thread runs at EL0 is taken there at once.
+          Residual, by construction: a write a bridge acknowledges early can still answer an
+          error after the drain, and it lands on whatever runs when it arrives: a panic if the
+          kernel, the death of another thread's task if that thread is at EL0.
+          Owed: the imx8mp witness (a selftest driver's 16-bit store into its ENET window must
+          end its task), and the entry and return cost on silicon `userbench`.
+        - Left open, no trigger: on a region backend the owner-death hand-over (`mutex_owner_exit`)
+          stores to the waiter's word with no re-check, `WordAccess` being the raw address there
+          and `word_reach_lost`/`word_windows_lost` existing only under translation. Nothing can
+          free that word under a parked waiter today (no RAM release, a parked waiter's stack
+          stays, `word_ref` refuses a word outside its reach). It needs a re-proof only once a
+          region backend can give memory back.
 - [ ] **M10.8.1: THE CORTEX-M TRAP ENTRY (the M10.8 audit, verified 2026-11-18).**
       **RULED (maintainer, 2026-11-18)** on the audit's findings:
       - Area 2 F2 (a K64F client's slow DSPI rate polled at a lent priority) is DROPPED: a granted
