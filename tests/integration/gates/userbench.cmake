@@ -6,8 +6,13 @@
 if(NOT TARGET userbench)
   return()
 endif()
+get_target_property(_userbench_flash_text userbench USERBENCH_FLASH_TEXT)
+set(_userbench_judge_args "")
+if(_userbench_flash_text)
+  set(_userbench_judge_args ARGS flash)
+endif()
 # Its run outlasts the default capture window on the slowest boards (f411disco).
-kickos_app_judge(userbench tests/integration/check_userbench.sh WINDOW 60)
+kickos_app_judge(userbench tests/integration/check_userbench.sh ${_userbench_judge_args} WINDOW 60)
 if(KICKOS_ARCH STREQUAL "sim")
   add_test(NAME sim_userbench
     COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_userbench.sh" "$<TARGET_FILE:userbench>")

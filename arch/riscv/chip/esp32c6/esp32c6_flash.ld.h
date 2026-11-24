@@ -3,15 +3,18 @@
  *
  * NOT a C header: where the ESP32-C6's script (esp32c6.ld) and its image template
  * (esp32c6.image.ld) link every image's code span, and the flash geometry the script maps it by.
- * An own-image AMP node keeps its code in HP SRAM: the LP CPU cannot reach external memory
- * (TRM 5.3.1), and node 0's partition is one ROM-loaded image.
+ * The LP node of an own-image AMP partition keeps its code in HP SRAM: the LP CPU cannot reach
+ * external memory (TRM 5.3.1).
  */
 #ifndef KICKOS_ARCH_RISCV_CHIP_ESP32C6_ESP32C6_FLASH_LD_H
 #define KICKOS_ARCH_RISCV_CHIP_ESP32C6_ESP32C6_FLASH_LD_H
 
-#if !KICKOS_AMP_OWN_IMAGE
+#if !KICKOS_AMP_OWN_IMAGE || KICKOS_AMP_NODE_ID == 0
+#define KICKOS_ESP32C6_FLASH_TEXT 1
 #define KICKOS_RV32_IMAGE_CODE_APART 1
 #define KICKOS_RV32_IMAGE_CODE_REGION FLASHTEXT
+#else
+#define KICKOS_ESP32C6_FLASH_TEXT 0
 #endif
 
 /* External memory through the cache (TRM 5.3.3.1), which the MMU's 256 entries cover. */

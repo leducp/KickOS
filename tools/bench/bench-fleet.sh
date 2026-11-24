@@ -421,10 +421,6 @@ ROWS
       continue
     fi
     if partition_first "$variant"; then
-      img="amp_partition ($variant)"
-      if [ "$variant" = "$AMP_VARIANT" ]; then
-        img=amp_partition
-      fi
       LERR=$(mktemp)
       AMP_IMAGES=$(images_for "$board" "$LERR" "$variant")
       if [ -z "$AMP_IMAGES" ]; then
@@ -435,14 +431,26 @@ ROWS
       fi
       rm -f "$LERR"
       note_shipped "$board" "$AMP_IMAGES"
-      wanted ampping_n0 || continue
-      judge=$(printf '%s\n' "$AMP_IMAGES" | awk -F '|' '$1 == "ampping_n0" { print $3; exit }')
-      if [ -z "$judge" ] || [ "$judge" = "-" ]; then
-        UNJUDGED="$UNJUDGED$board $img
+      # Each partition node 0's build assembles is captured as its node 0's image is judged: the
+      # ampping one, and the selftest one where the build ships a selftest.
+      for node0 in ampping_n0 selftest; do
+        wanted "$node0" || continue
+        judge=$(printf '%s\n' "$AMP_IMAGES" | awk -F '|' -v i="$node0" '$1 == i { print $3; exit }')
+        img=amp_partition
+        if [ "$node0" = selftest ]; then
+          [ -n "$judge" ] || continue
+          img=amp_partition_selftest
+        fi
+        if [ "$variant" != "$AMP_VARIANT" ]; then
+          img="$img ($variant)"
+        fi
+        if [ -z "$judge" ] || [ "$judge" = "-" ]; then
+          UNJUDGED="$UNJUDGED$board $img
 "
-      else
-        capture_image "$board" ampping_n0 "$img" "$judge" "$variant" 1
-      fi
+        else
+          capture_image "$board" "$node0" "$img" "$judge" "$variant" 1
+        fi
+      done
       continue
     fi
     LERR=$(mktemp)

@@ -211,7 +211,8 @@ The other judges are marks:
 `bench-fleet.sh` captures every judged image `LIST_IMAGES` names for each board, then every other
 variant the tree declares as a `<board>-<variant>` preset: of the flat build, every image only it
 ships (`c6txidle`, which drives the console's UART) and each image its `FLAT_ALSO` names for that board;
-of the `amp2-n0` build, the AMP partition; of any other variant (`smp`),
+of the `amp2-n0` build, the AMP partitions, `amp_partition` and, where that build ships a
+selftest, `amp_partition_selftest`; of any other variant (`smp`),
 every image, each labelled `(<variant>)`. It prints an "image coverage"
 table naming each image as `captured`, `captured, partly owed: <clauses>`, `NOT RUN`, `NO JUDGE`,
 `emulator-judged`, `emulator-judged, no emulator: owed`, `human-judged (<what>): owed` or
@@ -235,13 +236,24 @@ above merges them.
 either, so no line it prints is a witness.
 
     AMP_PARTITION=1 APP=ampping_n0 VARIANT=amp2-n0 tools/bench/bench.sh <board>
+    AMP_PARTITION=1 APP=selftest VARIANT=amp2-n0 tools/bench/bench.sh <board>
 
-builds the board's AMP partition, every node's image merged into one by the node 0 build's
-`amp_partition` target, flashes it, and judges the capture with the judge `ampping_n0`'s row
-names: `tests/integration/check_c6_amp_capture.sh` on `esp32c6-wroom`, which reads both node
-images' ROM load lines, the LP core's APM witness and the four rounds across, and
+each builds one of the board's AMP partitions, every node's image merged into one by the node 0
+build, flashes it, and logs the capture under the partition's target,
+`<session>/logs/<tag>-<board>-amp_partition.log` or `-amp_partition_selftest.log`, so it never
+shares a log with its node 0's image captured alone. `ampping_n0` is node 0 of the
+`amp_partition` target's `kickos-partition`, judged by its row's judge:
+`tests/integration/check_c6_amp_capture.sh` on `esp32c6-wroom`, which reads both node images' ROM
+load lines, the LP core's APM witness and the four rounds across, and
 `tests/integration/check_pizero_amp_gate.sh` on `pizero2350`, which reads the ACCESSCTRL readback,
 node 0's read of its UART0 and the four rounds across. No emulator runs either partition.
+`selftest` names the `amp_partition_selftest` target's `kickos-partition-selftest`: its node 0 is
+the selftest image on the kernel console that registers `amp_far_call` and the other arms needing
+a running peer (`selftest_p4` on `esp32c6-wroom`, `selftest` where the suite is one image), named
+in `<build>/kickos-partition-selftest.node0`, and node 1 is a peer that echoes. The capture judges
+that image's TAP stream against its manifest row less the peer arms the row lets the image skip
+alone, and `tests/integration/check_amp_peer_arms.sh` requires each of those to report `ok`, not
+skipped.
 
 The console route is derived from the image. Every system target defines
 `kickos_usb_device_console` (`<kickos/usb_console.h>`), 1 where its stdout driver is a USB device

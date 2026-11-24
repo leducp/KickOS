@@ -14,6 +14,7 @@
 #
 # The peer targets are given IN NODE ORDER starting at node 1. Node 0's own ELF is already
 # built: this runs inside node 0's build, which is the node that releases the others at boot.
+# <work>/nodes names every node's ELF the merge took, one per line, in node order.
 #
 # Each peer is configured from the SAME source and the SAME variant, differing only in
 # KICKOS_AMP_NODE_ID: the geometry and the port list are stated once in the shared defconfig,
@@ -196,6 +197,7 @@ $elf"
     node=$((node + 1))
 done
 
+printf '%s\n' "$ELF_LINES" > "$WORK/nodes"
 merge_nodes <<EOF
 $ELF_LINES
 EOF

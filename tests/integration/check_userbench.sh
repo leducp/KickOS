@@ -4,17 +4,22 @@
 #
 # userbench's rows against the posture it states: every row that posture owes printed a figure in
 # the shape its clock owes, nothing refused, the run reached its end in one boot. The figures
-# themselves are read, not judged.
+# themselves are read, not judged, but for the flash text row's miss, which must be four times its
+# hit at least. `flash` states that the image's task text runs from flash, so it owes that row.
 #
 #   check_userbench.sh <userbench image>
-#   KOS_CAPTURE=<log> check_userbench.sh <board-build> <kickos-source> <cmake>
+#   KOS_CAPTURE=<log> check_userbench.sh <board-build> <kickos-source> <cmake> [flash]
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
 : "${QEMU_TIMEOUT:=180}"
 : "${SIM_TIMEOUT:=180}"
 
+kflash=no
 if judging_capture; then
+    if [ "${4:-}" = flash ]; then
+        kflash=yes
+    fi
     judge_capture userbench
 else
     run_image "${1:?usage: check_userbench.sh <userbench image>}"
@@ -66,11 +71,7 @@ case $arch in
     *) kvector=no ;;
 esac
 [ "$vector" = "$kvector" ] || cfail posture "the bench stated vector $vector on $arch"
-kflash=no
-if [ "$arch" = lx6 ]; then
-    kflash=yes
-fi
-[ "$flash" = "$kflash" ] || cfail posture "the bench stated flash $flash on $arch"
+[ "$flash" = "$kflash" ] || cfail posture "the bench stated flash $flash, the build $kflash"
 has "^bench: done$" || cfail done "the bench did not finish"
 if has_e "^  [a-z0-9 /-]+: (FAIL|STALL)" || has_e "^bench: FAILED"; then
     cfail refused "$(printf '%s\n' "$OUT" | grep -E '^  [a-z0-9 /-]+: (FAIL|STALL)|^bench: FAILED' | head -n 1)"
@@ -138,6 +139,11 @@ if [ "$vector" = yes ]; then
 fi
 if [ "$flash" = yes ]; then
     need flash "^  flash text: hit $N ns, miss $N ns per call" "no flash text row"
+    hitmiss="$(printf '%s\n' "$OUT" | sed -n 's/^  flash text: hit \([0-9]*\) ns, miss \([0-9]*\) ns per call.*/\1 \2/p' | tail -n 1)"
+    set -- $hitmiss
+    if [ "$2" -le "$1" ] || [ "$2" -lt $(($1 * 4)) ]; then
+        cfail flash "the flash text row's miss of $2 ns is not four times its hit of $1 ns: the aliases did not miss"
+    fi
 fi
 need xtask "^  xtask ping-pong: $N ns/switch" "no xtask ping-pong row" "  xtask ping-pong:"
 need xtask "^  xtask call/reply: 16 B  $N ns/round-trip" "no xtask call/reply row" \

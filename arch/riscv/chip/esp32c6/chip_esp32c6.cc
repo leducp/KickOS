@@ -78,11 +78,9 @@ extern "C"
     // CPU_CLK, read off PCR before the constructors run (mtime_conv.h).
     uint32_t SystemCoreClock = 0;
 
-#if !KICKOS_AMP_OWN_IMAGE
     extern unsigned char __kickos_esp32_flash_text_start[];
     extern unsigned char __kickos_esp32_flash_text_end[];
     extern unsigned char __kickos_esp32_flash_text_load[];
-#endif
 }
 
 namespace
@@ -733,7 +731,6 @@ static __attribute__((noinline)) void apm_refuse(ApmRefusal refusal)
     c6_refuse_n(msg, at);
 }
 
-#if !KICKOS_AMP_OWN_IMAGE
 static void mmu_write(uint32_t entry, uint32_t value)
 {
     r32(reg::cache::MMU_ITEM_INDEX) = entry;
@@ -786,7 +783,6 @@ static void flash_text_map(void)
     r32(c::L1_CTRL) &= ~(c::SHUT_IBUS | c::SHUT_DBUS);
     __asm volatile("fence" ::: "memory");
 }
-#endif
 
 // MTIME counts CPU_CLK, so a CPU clock that is not 160 MHz >> n stops the boot.
 //
@@ -890,9 +886,7 @@ void Reset_Handler(void)
     arch_amp_shared_zero();
 #endif
     c6_early_mark('B'); // .data copied + .bss zeroed
-#if !KICKOS_AMP_OWN_IMAGE
     flash_text_map(); // every image's template is read from flash from here on
-#endif
     kickos_crt_images_data();
     c6_early_mark('C'); // every image's .data copied and the rest of its window zeroed
     kickos::esp32c6::clocktree::bring_up(arch_console_flush_sync);

@@ -197,6 +197,18 @@ if grep -q '^esp32c6-wroom amp2-n1 ' "$F/flashed"; then
     bad "a partition's node 1 preset was flashed as an image of its own"
 fi
 
+# A node 0 build shipping a selftest assembles its selftest partition, captured as a selftest.
+cp "$F/esp32c6-wroom-amp2-n0.images" "$F/amp.images"
+printf 'selftest|kernel|tests/integration/check_tap_stream.sh||-\n' >> "$F/esp32c6-wroom-amp2-n0.images"
+printf 'plan: 1..2\nruns: 1\nok: 2\nnot ok: 0\nskip: 0\npart: 0\n' > "$F/selftest-amp2-n0.out"
+fleet "$C6_BUS" esp32c6-wroom
+grep -qxF 'esp32c6-wroom amp2-n0 selftest 1 plantedamp2n0' "$F/flashed" \
+    || bad "the esp32c6-wroom selftest partition was not flashed under its partition's tag"
+grep -qE '^  esp32c6-wroom +amp_partition_selftest +captured$' "$TMP/fleet.out" \
+    || bad "the selftest partition is not captured in the table: $(grep amp_partition "$TMP/fleet.out")"
+mv "$F/amp.images" "$F/esp32c6-wroom-amp2-n0.images"
+rm -f "$F/selftest-amp2-n0.out"
+
 # A partition whose node 0 build cannot say what it ships is a refused configure, not an image
 # with no judge.
 mv "$F/esp32c6-wroom-amp2-n0.images" "$F/amp.images"
