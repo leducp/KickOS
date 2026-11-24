@@ -65,6 +65,16 @@ namespace kickos::rx::reg::icu
     constexpr int GROUPBL2_VECTOR = 107; // IER0D.IEN3, IPR107
     constexpr int GROUPAL0_VECTOR = 112; // IER0E.IEN0, IPR112
     constexpr int GROUPAL1_VECTOR = 113; // IER0E.IEN1, IPR113
+    constexpr int GROUPBE0_VECTOR = 106; // IER0D.IEN2, IPR106
+
+    // Level-detected from 32 up (UM Table 15.5 pp.521-526): USBR0 and DMAC74I, and IRQ0..IRQ15
+    // as each IRQCRi selects (sec.15.2.9 p.487).
+    constexpr int USBR0_VECTOR = 90;
+    constexpr int DMAC74I_VECTOR = 124;
+    constexpr int IRQ0_VECTOR = 64;
+    constexpr int IRQ15_VECTOR = 79;
+    constexpr uintptr_t IRQCR0 = mmap::ICU + 0x500; // 0008 7500h, IRQCRi one byte apart
+    constexpr uint8_t IRQCR_IRQMD_MASK = 0x0Cu;     // b3-b2, 00b = low level
 }
 
 #endif

@@ -475,9 +475,13 @@ class Decl(object):
         self.tables.append((f[2].lstrip('?'), first, prefix, f[2].startswith('?')))
 
     def _vector(self, where, f, reason):
-        """An assembly handler a table names: the level whose roots price it, or NONE."""
+        """An assembly handler a table names: the level whose roots price it, or NONE. A symbol
+        ending in `*` names every handler that starts with what precedes it."""
         if reason is None or len(f) != 4 or not (f[3] == 'NONE' or f[3].startswith('level=')):
-            die('%s: vector wants <arch> <symbol> level=<name>|NONE reason: ...' % where)
+            die('%s: vector wants <arch> <symbol>[*] level=<name>|NONE reason: ...' % where)
+        if '*' in f[2][:-1] or f[2] == '*':
+            die('%s: vector %s: a `*` may only end a symbol that names something before it'
+                % (where, f[2]))
         if f[2] in self.vectors:
             die('%s: vector %s declared twice' % (where, f[2]))
         level = None
@@ -1532,6 +1536,8 @@ def vector_refusals(decl, image, roots, priced_ctor):
                     n = n[len(prefix):]
                 names.add(n)
             if names & roots or names & set(decl.vectors):
+                continue
+            if any(n.startswith(v[:-1]) for n in names for v in decl.vectors if v.endswith('*')):
                 continue
             what = ', '.join(sorted(names)) or 'no symbol'
             out.append(((sym, slot, what),

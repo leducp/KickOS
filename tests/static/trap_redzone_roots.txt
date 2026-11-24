@@ -23,7 +23,7 @@
 #   root    <arch> <CLASS> NONE reason: <text to end of line>
 #   level   <arch> <CLASS> <name> reason: <text to end of line>
 #   table   <arch> [?]<symbol> [first=<n>] [prefix=<p>] reason: <text to end of line>
-#   vector  <arch> <handler> level=<name>|NONE reason: <text to end of line>
+#   vector  <arch> <handler>[*] level=<name>|NONE reason: <text to end of line>
 #   init    <arch> <start symbol> <end symbol> reason: <text to end of line>
 #   exclude <arch> <mangled-symbol> [class=<CLASS>[,<CLASS>]...] reason: <text to end of line>
 #   unsized <arch> <symbol> <bytes> [cores=1|cores>1] [calls=[?]<symbol>[,[?]<symbol>]...] \
@@ -39,6 +39,9 @@
 # An exclude with class= cuts the node from those classes' walks on whatever stack they spend:
 # it claims the node unreachable under what those classes measure. Without class= it applies to
 # every thread-stack class and to no other.
+#
+# A vector whose handler ends in `*` prices every table entry whose name starts with what precedes
+# it, for a table that gives each slot an entry of its own.
 #
 # A recurse record bounds a function's call to ITSELF: its frame is charged <activations> times
 # and the self-edge is not walked. A record whose node has no self-edge is refused as stale.
@@ -269,7 +272,7 @@ root    rxv3 ISP kickos_rx_clock_isr level=interrupt
 root    rxv3 ISP kickos_rx_console_txi_isr level=interrupt
 root    rxv3 ISP kickos_rx_swint2 level=interrupt
 root    rxv3 ISP kickos_rx_default_irq level=interrupt
-root    rxv3 ISP kickos_rx_sci6_rxi_isr level=interrupt
+root    rxv3 ISP kickos_rx_line_isr level=interrupt
 root    rxv3 ISP kickos_rx_bad_usp level=interrupt
 root    rxv3 ISP kickos_rx_no_kernel_stack level=interrupt
 root    rxv3 ISP kickos_switch_landed level=interrupt
@@ -289,7 +292,7 @@ vector  rxv3 kickos_rx_intb_default level=fault reason: switch.S, branches to ki
 vector  rxv3 kickos_rx_intb_swint2 level=fault reason: switch.S, branches to kickos_rx_swint2 or to kickos_rx_soft_trap
 vector  rxv3 kickos_rx_intb_timer level=fault reason: switch.S, branches to kickos_rx_timer_isr or to kickos_rx_soft_trap
 vector  rxv3 kickos_rx_intb_clock level=fault reason: switch.S, branches to kickos_rx_clock_isr or to kickos_rx_soft_trap
-vector  rxv3 kickos_rx_intb_sci6_rxi level=fault reason: switch.S, branches to kickos_rx_sci6_rxi_isr or to kickos_rx_soft_trap
+vector  rxv3 kickos_rx_intb_line_* level=fault reason: startup.S, one per device line, each banking R15 and branching to switch.S kickos_rx_intb_line, which branches to kickos_rx_line_isr or to kickos_rx_soft_trap
 vector  rxv3 kickos_rx_intb_console_txi level=fault reason: switch.S, branches to kickos_rx_console_txi_isr or to kickos_rx_soft_trap
 vector  rxv3 rx_ex_priv level=fault reason: startup.S, calls kickos_rx_fault_report
 vector  rxv3 rx_ex_access level=fault reason: startup.S, calls kickos_rx_fault_report

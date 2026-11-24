@@ -7,3 +7,5 @@
 if(KICKOS_HAVE_MPU)
   add_subdirectory(rxdrv)
 endif()
+
+add_subdirectory(rxirq)

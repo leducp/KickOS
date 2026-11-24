@@ -267,8 +267,8 @@ class Generated(unittest.TestCase):
         for name, lines, doorbell in (
                 ("sim", "", ""), ("mps2", "DUALTIMER_IRQ=10", ""), ("stm32f411", "TIM2_IRQ=28", ""),
                 ("sam3x8e", "TC0_IRQ=27", ""),
-                ("rx72m", "CMTW_CMWI0=30;CMTW_CMWI1=31;ICU_GROUPBL2=107;ICU_GROUPBL0=110;ICU_GROUPBL1=111;"
-                          "ICU_GROUPAL0=112;ICU_GROUPAL1=113", ""),
+                ("rx72m", "CMTW_CMWI0=30;CMTW_CMWI1=31;ICU_GROUPBE0=106;ICU_GROUPBL2=107;ICU_GROUPBL0=110;"
+                          "ICU_GROUPBL1=111;ICU_GROUPAL0=112;ICU_GROUPAL1=113", ""),
                 ("rp2350", "", "SIO_IRQ_BELL=26"), ("virt_arm64", "TIMER_EL1_PHYS=30", ""),
                 ("imx8mp", "MU1_A_TO_A53=120", "")):
             path = os.path.join(TREE, "platform", name, "chip.yaml")

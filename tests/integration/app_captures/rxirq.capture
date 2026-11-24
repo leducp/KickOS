@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+
+  ==============================================
+   KickOS 0.5.1  -  microkernel RTOS
+  ==============================================
+   board   rx72m
+   arch    rxv3
+   cpu     rxv3
+   mpu     enforce
+   sched   tickless
+
+[rxirq] pinmux P07 -> IRQ15 input rc 0 (want 0)
+[rxirq] claim line 79 rc 0 (want 0)
+[rxirq] cycle 1: pad 0/1, low woke rc 0 bits 0x1, high rc -110
+[rxirq] cycle 2: pad 0/1, low woke rc 0 bits 0x1, high rc -110
+[rxirq] cycle 3: pad 0/1, low woke rc 0 bits 0x1, high rc -110
+[rxirq] cycle 4: pad 0/1, low woke rc 0 bits 0x1, high rc -110
+[rxirq] cycle 5: pad 0/1, low woke rc 0 bits 0x1, high rc -110
+[rxirq] PASS (one wake per low drive, none while high)

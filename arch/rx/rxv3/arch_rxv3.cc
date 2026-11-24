@@ -40,10 +40,9 @@ namespace kickos::rxv3
     // wrong address or index makes the switch silently dead on the first arch_switch.
     constexpr uintptr_t ICU_IPR_SWINT = ICU_IPR_BASE + 3;
 
-    // SCI6, the board console: two DEDICATED edge vectors, each wired to its own INTB slot by
-    // the chip's startup.S; its TEI6/ERI6 are GROUPBL0 sources with no vector (UM Table 15.5
-    // p.523, Table 15.7 p.530). Their IPR index is the vector number (UM sec.15.2.3 p.482).
-    constexpr int SCI6_RXI_VECTOR = KICKOS_LAYOUT_LINE_SCI6_RXI;
+    // SCI6, the board console: TXI6's INTB slot is shared with the console drain (chip
+    // startup.S); its TEI6/ERI6 are GROUPBL0 sources with no vector (UM Table 15.5 p.523,
+    // Table 15.7 p.530).
     constexpr int SCI6_TXI_VECTOR = KICKOS_LAYOUT_LINE_SCI6_TXI;
 
     constexpr uintptr_t CMTW0_BASE = KICKOS_LAYOUT_CMTW_BASE;
@@ -250,6 +249,10 @@ extern "C"
     static_assert(sizeof(g_arch_current) == sizeof(struct arch_context*), "asm reads one word");
     static_assert(sizeof(g_arch_next) == sizeof(struct arch_context*), "asm reads one word");
     static_assert(alignof(decltype(g_arch_current)) == alignof(struct arch_context*), "asm reads it naturally aligned");
+
+    // The vector of the device line being accepted, stored by switch.S kickos_rx_intb_line.
+    kickos::Atomic<int, kickos::Order::RELAXED> g_rx_line_vector = -1;
+    static_assert(sizeof(g_rx_line_vector) == sizeof(int), "asm stores one word");
 
     extern uint32_t SystemCoreClock;
     uint64_t arch_cpu_clock_hz(void)
@@ -923,6 +926,8 @@ int arch_bitband_present(void)
 // vector mapping, and lazy vector arming; the core owns the logical line split.
 void kickos_rx_dev_dispatch(void);
 void kickos_rx_group_arm(int line, int on);
+// Nonzero for a vector whose detection is level now.
+int kickos_rx_line_level(int line);
 
 // Contract in rx_group.h: kickos_rx_group_arm arms a group's own VECTOR through here
 // rather than back through arch_irq_unmask, a route the trap red-zone measurement reads
@@ -1018,9 +1023,8 @@ void arch_irq_clear_pending(int line)
         // clear register to the edge groups IE0/BE0 alone, so the clear belongs to the
         // DRIVER's own peripheral write (RULE L1). The no-op is the answer.
     }
-    else
+    else if (kickos_rx_line_level(line) == 0)
     {
-        // Only an EDGE vector's IR may be written; see ICU_IR_BASE.
         r8(ICU_IR_BASE + static_cast<unsigned>(line)) = 0;
     }
     arch_irq_restore(s);
@@ -1055,8 +1059,7 @@ void arch_idle_wait(void)
 }
 
 // --- First-level ISRs (C via __attribute__((interrupt))) --------------------
-// GCC emits the full GPR save and RTE for these. The INTB table (chip startup) routes CMWI0
-// to the timer ISR and every other line to the default stub.
+// GCC emits the full GPR save and RTE for these.
 __attribute__((interrupt)) void kickos_rx_timer_isr(void)
 {
     rx_mpu_mark('T');
@@ -1111,9 +1114,8 @@ __attribute__((interrupt)) void kickos_rx_swint2(void)
     g_in_isr = g_in_isr - 1;
 }
 
-// The shared first-level ISR for every INTB device slot with no dedicated one. RXv3 leaves
-// the accepted vector unreadable from the handler, so the chip reads its OWN status
-// registers and posts what it finds.
+// The group vectors' first-level ISR. RXv3 leaves the accepted vector unreadable from the
+// handler, so the chip reads its OWN status registers and posts what it finds.
 __attribute__((interrupt)) void kickos_rx_default_irq(void)
 {
     g_in_isr = g_in_isr + 1;
@@ -1121,15 +1123,13 @@ __attribute__((interrupt)) void kickos_rx_default_irq(void)
     g_in_isr = g_in_isr - 1;
 }
 
-// SCI6 receive-data-full (RXI6, vector 86). A DEDICATED slot rather than the shared dispatch
-// above because an edge source cannot be discovered after the fact: the ICU clears IR086 on
-// acceptance (UM sec.15.2.1(1) p.480), so a dispatch finds the flag it must test already 0.
-// No flag is written here for the same reason: a write after the handler discards a request
-// latched while irq_event_isr had the line IER-masked, dropping a received byte.
-__attribute__((interrupt)) void kickos_rx_sci6_rxi_isr(void)
+// A device line's own INTB slot (chip startup.S), through switch.S kickos_rx_intb_line. No IR
+// write here: an edge source's was cleared on acceptance (UM sec.15.2.1(1) p.480), so a write
+// would discard a request latched while irq_event_isr had the line IER-masked.
+__attribute__((interrupt)) void kickos_rx_line_isr(void)
 {
     g_in_isr = g_in_isr + 1;
-    kickos_isr_irq(SCI6_RXI_VECTOR);
+    kickos_isr_irq(g_rx_line_vector);
     g_in_isr = g_in_isr - 1;
 }
 

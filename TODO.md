@@ -571,6 +571,21 @@ milestone does not close while any of them still composes a system.
         - OWED, silicon, run at M10.8's close with the picopi pass M10.8.1 owes: a pizero2350
           fleet pass, covering bring-up's Non-secure close (the read-back refusing the boot)
           and `faultsurvive_bxns`, `_blxns` and `_bxnsrom`.
+      - M10.8.7 (RX, the M10.8 audit's Area 8, verified 2026-11-18):
+        **RULED (maintainer, 2026-11-18), D3:** every RX72M INTB vector a line can claim gets an
+        entry of its own dispatching `kickos_isr_irq(n)`, not a refusal of the plain vectors.
+        **CLOSED here:**
+        - A claimed plain vector was armed but reached only the group demux, so it was never masked
+          or delivered and a level source starved the switcher. Every vector from 32 up that a line
+          can claim now has its own INTB entry; the group parents, BE0's included, are the
+          kernel's, and a level vector's IR is no longer written. Silicon-only (no RXv3 emulator):
+          `rxirq` claims IRQ15 on P07 and drives it from the pin's latch.
+        - The generic syscall trampoline returned R3 and R4 as the dispatch left them; it now
+          clears them. The selftest's `trap_scratch` on rxv3, silicon-only.
+        **OPEN, for the maintainer:** RX IRQ0..15 detection stays at the reset low-level setting:
+        IRQCRi lives in the kernel-owned ICU and no claim sets it, so no driver can choose edge
+        detection, and the claim flags are rearm policy only. A claim without `KOS_IRQ_LEVEL`
+        records `IRQ_EDGE` on what the pin detects as a level source.
 - [ ] **M10.8.1: THE CORTEX-M TRAP ENTRY (the M10.8 audit, verified 2026-11-18).**
       **RULED (maintainer, 2026-11-18)** on the audit's findings:
       - Area 2 F2 (a K64F client's slow DSPI rate polled at a lent priority) is DROPPED: a granted
@@ -2326,10 +2341,10 @@ never touched. What was FIXED is in the commit. What was found and NOT fixed:
       constant would assert an invariant the code does not have.
 ### Recorded -- reported by an angle, NOT verified by me
 
-- [ ] **RX72M is said to have lost plain-vector dispatch**, and **`kos_irq_discard` is said to be a
-      no-op on three backends**, and **RXv3 is said to write `IR` on a LEVEL line**. Each is
-      plausible and each is silicon-gated; none was reproduced this pass. Check them on the bench
-      before acting.
+- [ ] **`kos_irq_discard` is said to be a no-op on three backends.** Plausible and silicon-gated;
+      not reproduced this pass. Check it on the bench before acting. **CLOSED (M10.8.7):** the
+      RX72M plain-vector dispatch, which the source showed lost, and the IR write on a LEVEL
+      vector, both recorded here beside it.
 
 ## M4.6.2 USB CDC-ACM: WITNESSED on pizero2350 silicon (2026-08-01)
 

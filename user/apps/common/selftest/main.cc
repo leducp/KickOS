@@ -38,9 +38,10 @@ using namespace selftest;
 #define ST_MPU_OVERLAP (-1)
 #endif
 
-// st_trap_scratch(nr, sentinel, out): issues the generic syscall nr with r1 zero and every
-// scratch register that carries no result (r2, r3, r12) holding the sentinel, then stores what
-// each holds after the trap at out, in that order.
+// st_trap_scratch(nr, sentinel, out): issues the generic syscall nr with its first argument zero
+// and every scratch register that carries no result and no value of the thread's own holding the
+// sentinel (armv6m r2, r3, r12; rxv3 R3, R4), then stores what each holds after the trap at out,
+// in that order.
 #if defined(__ARM_ARCH_6M__)
 #define ST_TRAP_SCRATCH_REGS 3
 extern "C" void st_trap_scratch(uint32_t nr, uint32_t sentinel, uint32_t* out);
@@ -71,6 +72,30 @@ __asm__(".syntax unified\n"
         ".size st_trap_scratch, . - st_trap_scratch\n"
         ".popsection\n"
         ".syntax divided\n");
+#elif defined(__RXv3__)
+#define ST_TRAP_SCRATCH_REGS 2
+extern "C" void st_trap_scratch(uint32_t nr, uint32_t sentinel, uint32_t* out);
+// The trap reads a3 and a4 at [R0+4] and [R0+8], as arch_syscall's caller lays them.
+__asm__(".pushsection .text.st_trap_scratch,\"ax\",@progbits\n"
+        ".global _st_trap_scratch\n"
+        ".type _st_trap_scratch, @function\n"
+        "_st_trap_scratch:\n"
+        "    push.l r6\n"
+        "    mov.l r3, r6\n"
+        "    mov.l r2, r3\n"
+        "    mov.l r2, r4\n"
+        "    mov.l #0, r2\n"
+        "    sub #12, r0\n"
+        "    mov.l #0, 4[r0]\n"
+        "    mov.l #0, 8[r0]\n"
+        "    int #1\n"
+        "    add #12, r0\n"
+        "    mov.l r3, [r6]\n"
+        "    mov.l r4, 4[r6]\n"
+        "    pop r6\n"
+        "    rts\n"
+        ".size _st_trap_scratch, . - _st_trap_scratch\n"
+        ".popsection\n");
 #endif
 
 namespace
@@ -11817,7 +11842,7 @@ int main(int, char**)
 #define TAP_ADD(name, ...) TAP_ADD_ELIDED(name, __VA_ARGS__)
 #endif
     TAP_ADD("svc_roundtrip", t_svc);
-#if defined(__ARM_ARCH_6M__)
+#if defined(__ARM_ARCH_6M__) or defined(__RXv3__)
     TAP_ADD("trap_scratch", t_trap_scratch);
 #endif
     TAP_ADD("fifo_order", t_fifo);
