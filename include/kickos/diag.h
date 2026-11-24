@@ -82,6 +82,12 @@ namespace kickos
             "rv64imac: sstatus.SUM did not take the clear";
         inline constexpr char const kWordNoRecord[] =
             "unreachable: a word waiter found every record in use";
+        inline constexpr char const kNonSecureOpen[] =
+            "armv8m: Non-secure state did not take its closure";
+        inline constexpr char const kNonSecureNoMpu[] =
+            "armv8m: no Non-secure MPU to close Non-secure memory with";
+        inline constexpr char const kAccessctrlNonSecure[] =
+            "rp2350: an ACCESSCTRL port still admits a Non-secure master";
         inline constexpr char const kPmpCodeWindow[] =
             "rv32imac: the PMP did not take the user code window";
         inline constexpr char const kPmpStaleEntry[] =
@@ -143,7 +149,19 @@ namespace kickos
 #define KDIAG_F_FAULT_PC_STAT "  PC=%p %s=0x%llx\n"
 #define KDIAG_F_FAULT_NO_PC   "  PC unknown %s=0x%llx\n"
 #define KDIAG_F_FAULT_PC_UNVERIFIED "  PC=%p unverified %s=0x%llx\n"
+#define KDIAG_F_FAULT_NO_PC_BARE "  PC unknown\n"
 #define KDIAG_F_FAULT_ADDR    "  ADDR=%p\n"
+#define KDIAG_F_FAULT_ADDR_UNIT "  %s ISOLATION FAULT\n"
+#define KDIAG_F_FAULT_SVC_DROPPED "  SVCall dropped\n"
+// A contained wild-stack refusal (kernel/init/fault.cc): the arch's banner below, then the
+// thread and the stack pointer it chose; or, its record taken by a later fault, the name alone.
+#define KDIAG_F_FAULT_SP          "  thread '%s' %s=0x%llx\n"
+#define KDIAG_F_THREAD_CONTAINED  "\n=== THREAD CONTAINED === thread '%s' killed, wild stack\n"
+#define KDIAG_F_FAULT_SP_LOST     "  SP lost to a later fault\n"
+// An M-profile PSP refusal's leg, the guarded site, the bytes it needed and the stack's bounds.
+#define KDIAG_F_FAULT_WILD_PSP    "  %s, in %s need=%u stack=[0x%x,0x%x)\n"
+#define KDIAG_F_RX_CONTAINED      "\n=== RX CONTAINED (wild stack) ===\n"
+#define KDIAG_F_RV_CONTAINED      "\n=== RISC-V CONTAINED (wild stack) ===\n"
 // A kos_panic that ends only its caller's task (kernel/syscall/syscall.cc), on the same record
 // path and bound. Not a fault banner: the system runs on.
 #define KDIAG_F_TASK_PANIC     "\n=== TASK PANIC === thread '%s' ended its task\n"

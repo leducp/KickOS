@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+
+  ==============================================
+   KickOS 0.5.1  -  microkernel RTOS
+  ==============================================
+   board   frdmk64f
+   arch    armv7m
+   cpu     cortex-m4
+   mpu     enforce
+   sched   tickless
+
+[fs] spawning the faulter
+[fs] worker about to fault
+
+=== THREAD FAULT === thread 'faulter' killed, system continues
+  PC unknown CFSR=0x1400
+  ADDR=0x2002ff70
+  SYSMPU ISOLATION FAULT
+[fs] survivor ran after the fault

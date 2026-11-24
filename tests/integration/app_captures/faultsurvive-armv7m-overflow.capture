@@ -13,8 +13,7 @@
 [fs] spawning the faulter
 [fs] worker about to fault
 
-=== MPU FAULT ===
-  PC=0x30 LR=0x0 xPSR=0x2 (PSP)
-  R0=0x0 R1=0x8000351 R2=0x1 R3=0x2 R12=0x0
-  CFSR=0x92 HFSR=0x0
-  MMFAR=0x2000ff70
+=== THREAD FAULT === thread 'faulter' killed, system continues
+  PC unknown CFSR=0x92
+  ADDR=0x2000ff70
+[fs] survivor ran after the fault

@@ -518,6 +518,59 @@ milestone does not close while any of them still composes a system.
           `selftest_p4`, its plan run to the end with no failure and its peer arms run, not
           skipped.
         - `userbench` on `base` with sixteen aliases, its miss four times its hit at least.
+      - M10.8.6 (the Cortex-M fault path, the wild-SP ruling):
+        **RULED (maintainer, 2026-11-18):** a wild or overflowed unprivileged SP on ARM stops only
+        its task ("should only stop its task, why the whole system?"), on every ARM-M path where
+        the fault handler runs; the armv6m lockup on a fault during HardFault entry is a hardware
+        limit.
+        **CLOSED here:**
+        - armv7m (v8-M Mainline included) and armv6m kill on register state where the frame test
+          refuses the frame: thread mode on the PSP, `CONTROL.nPRIV` at entry, no PC recorded, the
+          exit built whole at the kernel block's top; armv7m also drops the faults the stacking
+          abort left pending. `check_faultsurvive.sh` overflow, offstack and unread move from
+          `terminated` to `killed`, red on qemu-m3, qemu, qemu-m7 and qemu-m33 before the fix.
+          armv6m has no emulator with a privilege ring. On frdmk64f the record names the unit that
+          latched the overflow's address (`SYSMPU ISOLATION FAULT`), which tells its STKERR from a
+          bare BusFault. Owed silicon runs: `faultsurvive_ovf` and `faultsurvive_off` on picopi and
+          f411disco, `faultsurvive_ovf` on frdmk64f. The limit is in
+          `fault-frame-untrusted-until-proved`. The handler drops a pending lazy FP save before its
+          C chain: `fpunread` (qemu, qemu-m7, qemu-m33) makes FP live first and goes red only with
+          both clears removed, nothing in the chain emitting FP.
+        - Every kill redirect, armv6m and armv7m, clears a pended SVCall, not only the STKOF one: a
+          SYSMPU write denial is a bus error the write buffer reports imprecisely, and BusFault
+          (priority 0) outranks SVCall (0xE0). QEMU takes the SVCall ahead of the derived fault, so
+          `faultpendsvc` (qemu-m3, qemu, qemu-m7, qemu-m33) pends it from the debugger where the
+          kill starts, red with the clear removed: the SVCall ran on the exit and its guard
+          contained the thread. `faultsurvive_wildsvc` (picopi, f411disco, xmc4800-relax, teensy41,
+          frdmk64f) pends it on every run and owes a silicon run on each. `faultsurvive_storesvc`
+          owes one on frdmk64f too, but where the denied store's bus error lands is the bus's
+          timing: one that lands before the `svc` fails as witnessing nothing, never as a pass. The
+          kill record names the SVCall it dropped, which every such arm requires and
+          `pspguard_svcstkof` shows on qemu-m33.
+        - An unprivileged `bxns` or `blxns` killed the thread on qemu-m33 but read a frame the core
+          never stacked there (the record named PC 0x0 and CFSR 0x0). A fault from Non-secure state
+          now kills on register state and records the SFSR, and bring-up closes Non-secure state
+          and reads every write back, refusing the boot on a mismatch: `CONTROL_NS.nPRIV`,
+          `AIRCR.SYSRESETREQS` with `BFHFNMINS` clear, `MPU_CTRL_NS` on with every region off where
+          memory is enforced, and on rp2350 no ACCESSCTRL port admitting NSP or NSU. Removing any
+          of the first three ends every qemu-m33 boot. The rp2350 bootrom leaves the SAU on with
+          its ROM Non-secure (datasheet 10.2), so there a `bxns` into ROM would have run Non-secure
+          code privileged. `faultsurvive_bxns` and `_blxns`, red on qemu-m33 before the fix (an505
+          has no Non-secure address, its SAU being off); pizero2350 owes them and
+          `faultsurvive_bxnsrom`, the only arm the Non-secure MPU itself decides.
+        - The wild-stack containment on rxv3 and rv32imac printed its refusal on the kill path with
+          `arch_in_isr()` 0, so the console marked the thread the pended switch booked and could
+          strand the chip-writer count. The refusal is now a fault record the slain thread's exit
+          prints, and a thread whose record a later fault took still announces itself by name.
+          `console_drain`'s two containment arms, red before the fix. rx72m owes silicon runs of
+          `faultsurvive_kwrite`, `_misalign` and `_wildspin` printing the record.
+        - The ARM PSP guard printed its contained refusal from the handler, on the kill path. It
+          now records the leg, the site, the PSP, the bytes needed and the stack's bounds, and the
+          slain thread's slay exit prints them, on the generic record rxv3 and rv32imac use.
+          `check_pspguard.sh` reads the record's shape.
+        - OWED, silicon, run at M10.8's close with the picopi pass M10.8.1 owes: a pizero2350
+          fleet pass, covering bring-up's Non-secure close (the read-back refusing the boot)
+          and `faultsurvive_bxns`, `_blxns` and `_bxnsrom`.
 - [ ] **M10.8.1: THE CORTEX-M TRAP ENTRY (the M10.8 audit, verified 2026-11-18).**
       **RULED (maintainer, 2026-11-18)** on the audit's findings:
       - Area 2 F2 (a K64F client's slow DSPI rate polled at a lent priority) is DROPPED: a granted

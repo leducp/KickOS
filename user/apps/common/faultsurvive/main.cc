@@ -8,14 +8,13 @@
 // KICKOS_FS_MODE (the peer takes it too, and the address a mode needs as its one argument)
 //   0  an unprivileged worker executes a trapping instruction; main must run AFTER it and end
 //      the system cleanly. The join is the ordering proof.
-//   1  the worker recurses off its own stack, producing no legitimate exception frame, so the
-//      fault must reach the PANIC dump and not the thread kill, except where the frame lies off
-//      the thread's stack (RX: the ISP). Needs a guarded stack.
+//   1  the worker recurses off its own stack, producing no legitimate exception frame, and its
+//      task alone dies. Needs a guarded stack.
 //   2  the worker points SP at a buffer OUTSIDE its stack and faults. The frame is written in
 //      full, at a writable address, by a thread that really is unprivileged in thread mode, so
-//      every register-derived clause of the rule says yes and only the stack-bounds test can
-//      refuse it. On RX the frame goes to the ISP instead and the worker dies alone. Above the
-//      stack where a stack limit refuses one below.
+//      only the stack-bounds test can refuse it, and the refusal costs the kill record its PC.
+//      On RX the frame goes to the ISP instead. Above the stack where a stack limit refuses one
+//      below.
 //   3  the worker points SP at a word of MAIN's data (its address is the peer's argument) and
 //      traps. A software trap prologue that stored the frame through the U-mode SP overwrites
 //      that word in privileged mode, where no protection applies; the bounds test refuses the SP
@@ -51,6 +50,18 @@
 //      spins until the faulter's wake preempts it. The switcher's guard must slay that thread
 //      before the save stores through that USP, and the faulter, which outlives it, says so;
 //      main reads the word back after the join.
+//  14  the worker points SP just above MAIN's word (as mode 3) and executes `svc`. The entry's
+//      stacking is refused, so the fault runs ahead of the SVCall, which stays pending; the
+//      worker's task must die by the fault alone, with no SVCall run in its place.
+//  15  the worker stores to MAIN's word and executes `svc` at once. Where the denied store comes
+//      back as an imprecise BusFault (the K64F SYSMPU) the fault meets the SVCall's entry, and
+//      the claim is mode 14's.
+//  16  the worker executes `bxns` to its own code, and 17 `blxns`: a branch to Non-secure state,
+//      which unprivileged Secure code may take. The worker's task alone must die.
+//  18  mode 6 with FP state live first, so the refused entry also leaves a lazy FP save pending
+//      at an address no memory answers.
+//  19  rp2350: `bxns` to the bootrom's Non-secure instruction range, which Non-secure state
+//      could run but for the Non-secure MPU bring-up enables with no region.
 
 #include <kickos/apps/peer_run.h>
 #include <kickos/kos.h>
@@ -66,7 +77,7 @@
 
 namespace
 {
-#if KICKOS_FS_MODE == 3 || KICKOS_FS_MODE == 13
+#if KICKOS_FS_MODE == 3 || KICKOS_FS_MODE == 13 || KICKOS_FS_MODE == 14 || KICKOS_FS_MODE == 15
     constexpr unsigned FS_KWORD_POISON = 0x5AFEBA5Eu;
     volatile unsigned g_fs_kword = FS_KWORD_POISON;
 #endif
@@ -109,7 +120,7 @@ int main(int, char**)
     void* block = nullptr;
     uint32_t block_size = 0;
     uintptr_t arg = 0;
-#if KICKOS_FS_MODE == 3 || KICKOS_FS_MODE == 13
+#if KICKOS_FS_MODE == 3 || KICKOS_FS_MODE == 13 || KICKOS_FS_MODE == 14 || KICKOS_FS_MODE == 15
     arg = reinterpret_cast<uintptr_t>(&g_fs_kword);
 #endif
 #if KICKOS_FS_MODE == 4
@@ -265,7 +276,7 @@ int main(int, char**)
         kos::print("[fs] [lowband] INTACT: the kernel wrote nothing below the parked sp\n");
     }
 #endif
-#if KICKOS_FS_MODE == 3 || KICKOS_FS_MODE == 13
+#if KICKOS_FS_MODE == 3 || KICKOS_FS_MODE == 13 || KICKOS_FS_MODE == 14 || KICKOS_FS_MODE == 15
     if (g_fs_kword != FS_KWORD_POISON)
     {
         kos::print("[fs] [kword] CORRUPTED: the kernel stored through the U-mode sp\n");

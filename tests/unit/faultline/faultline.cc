@@ -45,7 +45,7 @@ namespace
     }
 }
 
-// The five fixed-shape records, at arguments no target can exceed.
+// The fixed-shape records, at arguments no target can exceed.
 TEST(FaultLine, every_fixed_record_fits_the_bound)
 {
     expect_fits(width(KDIAG_F_FAULT_PC_LOST));
@@ -53,7 +53,22 @@ TEST(FaultLine, every_fixed_record_fits_the_bound)
     expect_fits(width(KDIAG_F_FAULT_PC_STAT, wild_ptr(), kStatus, ~0ull));
     expect_fits(width(KDIAG_F_FAULT_NO_PC, kStatus, ~0ull));
     expect_fits(width(KDIAG_F_FAULT_PC_UNVERIFIED, wild_ptr(), kStatus, ~0ull));
+    expect_fits(width(KDIAG_F_FAULT_NO_PC_BARE));
+    expect_fits(width(KDIAG_F_FAULT_SVC_DROPPED));
     expect_fits(width(KDIAG_F_FAULT_ADDR, wild_ptr()));
+    expect_fits(width(KDIAG_F_FAULT_ADDR_UNIT, kStatus));
+    expect_fits(width(KDIAG_F_FAULT_SP_LOST));
+}
+
+// A contained wild stack: every arch's banner, and the lines under it at the name bound.
+TEST(FaultLine, the_contained_wild_stack_record_fits_the_bound)
+{
+    std::string const name(38, 'n');
+    expect_fits(width("%s", KDIAG_F_RX_CONTAINED));
+    expect_fits(width("%s", KDIAG_F_RV_CONTAINED));
+    expect_fits(width(KDIAG_F_FAULT_SP, name.c_str(), kStatus, ~0ull));
+    expect_fits(width(KDIAG_F_THREAD_CONTAINED, name.c_str()));
+    expect_fits(width(KDIAG_F_FAULT_WILD_PSP, "frame crosses stack_hi", "handler", ~0u, ~0u, ~0u));
 }
 
 // The ARM dump's note on a frame at its stack's limit goes out through kprintf, whose bound is

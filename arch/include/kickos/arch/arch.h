@@ -906,8 +906,9 @@ void arch_diag_led_set(int on);
 void arch_fault_report_extra(void);
 
 // The address of a fault a bus-side unit latched outside the core's fault registers, read and
-// cleared, for a thread's fault record. False where nothing is latched. Defaults to false.
-bool arch_fault_chip_addr(uintptr_t* addr);
+// cleared, for a thread's fault record, and that unit's name, which the record prints. nullptr
+// where nothing is latched. Defaults to nullptr.
+char const* arch_fault_chip_addr(uintptr_t* addr);
 
 // Whether the fault occurred in unprivileged thread mode, using CPU privilege
 // at fault time. Syscall dispatch is privileged. Defaults to false (panic).
@@ -1026,11 +1027,15 @@ void kickos_fault_record(char const* status_name, uint64_t status,
 // not be the access that raised it.
 void kickos_fault_record_unverified_pc(char const* status_name, uint64_t status, uintptr_t pc);
 
-#if KICKOS_HAVE_STACK_LIMIT
-// The same, for a fault whose frame was never stacked, so no PC is known.
+// The same, for a fault whose frame cannot be trusted, so no PC is known.
 void kickos_fault_record_no_pc(char const* status_name, uint64_t status,
                                uintptr_t addr, int addr_valid);
-#endif
+
+// After either: `unit`, not the core, latched the record's address.
+void kickos_fault_record_addr_unit(char const* unit);
+
+// After either: the kill dropped an SVCall the thread left pending.
+void kickos_fault_record_svc_dropped(void);
 
 // Where arch_fault_redirect_to_exit points the faulting thread. Runs privileged, in thread
 // mode, on that thread's own stack.
@@ -1048,8 +1053,22 @@ void kickos_thread_fault_exit(void) __attribute__((noreturn));
 struct arch_context* kickos_thread_contain_wild_stack(struct arch_context* offender,
                                                       char const** slain_name);
 
+// kickos_thread_contain_wild_stack, printing nothing: the slain thread's own exit prints
+// `banner`, then its name and `sp_name`=`sp`.
+struct arch_context* kickos_fault_contain_wild_stack(struct arch_context* offender,
+                                                     char const* banner, char const* sp_name,
+                                                     uintptr_t sp);
+
+// kickos_fault_contain_wild_stack for an M-profile PSP guard, naming the PSP: the exit also
+// prints `why`, the guarded `site`, the bytes it needed and the stack's bounds.
+struct arch_context* kickos_fault_contain_wild_psp(struct arch_context* offender,
+                                                   char const* banner, char const* why,
+                                                   char const* site, uint32_t psp, uint32_t need,
+                                                   uint32_t lo, uint32_t hi);
+
 // Exit stub for arch_ctx_redirect: privileged thread mode at the stack top.
-// Prints nothing. arg is always null and matches the context entry signature.
+// Prints only the refusal of a thread kickos_fault_contain_wild_stack slew. arg is always null
+// and matches the context entry signature.
 void kickos_thread_slay_exit(void* arg) __attribute__((noreturn));
 
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY

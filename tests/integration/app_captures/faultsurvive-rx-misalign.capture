@@ -14,5 +14,5 @@
 [fs] worker about to fault
 
 === RX CONTAINED (wild stack) ===
-  USP=0x21ffa
+  thread 'faulter' USP=0x21ffa
 [fs] survivor ran after the fault

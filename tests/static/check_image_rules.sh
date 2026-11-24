@@ -155,14 +155,16 @@ ctl_rv64_wx() {
 rule_rv64_gp() {
     awk "$AWKLIB"'
         FNR == NR {
+            # The discarded input sections come first, each listed at address 0.
+            if (/^Linker script and memory map/) placed = 1
             at = ""
             if (want && $1 ~ /^0x/) { at = $1; size = $2 }
             want = 0
-            if ($1 ~ /^\.s?rodata/) {
+            if (placed && $1 ~ /^\.s?rodata/) {
                 if ($2 ~ /^0x/) { at = $2; size = $3 }
                 else want = 1
             }
-            if (at != "") { lo[nr] = hex(substr(at, 11)); hi[nr] = lo[nr] + hex(size); nr++ }
+            if (at != "") { r = nr++; lo[r] = hex(substr(at, 11)); hi[r] = lo[r] + hex(size) }
             next
         }
         /^Disassembly of section / { text = ($4 == ".text:"); next }

@@ -9,11 +9,9 @@ if(NOT TARGET faultsurvive)
   return()
 endif()
 
-set(_fs_outcome terminated)
+set(_fs_outcome killed)
 if(KICKOS_ARCH STREQUAL "rv32imac")
   set(_fs_outcome contained)
-elseif(KICKOS_ARCH STREQUAL "rxv3")
-  set(_fs_outcome killed)
 endif()
 # The arches the gate holds corroborating evidence for. The overflow needs a guard to fault it; the
 # off-stack, kwrite and misalign arms need an unprivileged worker, which the RX runs only where
@@ -65,7 +63,7 @@ if(_fs_judged)
     # reached through an SP aimed above the stack.
     if(TARGET faultsurvive_ovfmpu)
       kickos_app_judge(faultsurvive_ovfmpu tests/integration/check_faultsurvive.sh
-        ARGS overflow ${KICKOS_ARCH} terminated)
+        ARGS overflow ${KICKOS_ARCH} ${_fs_outcome})
     endif()
   elseif(_fs_guarded)
     kickos_app_judge(faultsurvive_ovf tests/integration/check_faultsurvive.sh
@@ -110,8 +108,18 @@ if(_fs_judged)
   endif()
   if(TARGET faultsurvive_unread)
     kickos_app_judge(faultsurvive_unread tests/integration/check_faultsurvive.sh
-      ARGS unread ${KICKOS_ARCH} terminated)
+      ARGS unread ${KICKOS_ARCH} ${_fs_outcome})
   endif()
+  if(TARGET faultsurvive_fpunread)
+    kickos_app_judge(faultsurvive_fpunread tests/integration/check_faultsurvive.sh
+      ARGS fpunread ${KICKOS_ARCH} ${_fs_outcome})
+  endif()
+  foreach(_fs_arm wildsvc storesvc bxns blxns bxnsrom)
+    if(TARGET faultsurvive_${_fs_arm})
+      kickos_app_judge(faultsurvive_${_fs_arm} tests/integration/check_faultsurvive.sh
+        ARGS ${_fs_arm} ${KICKOS_ARCH} killed)
+    endif()
+  endforeach()
   if(TARGET faultsurvive_div0)
     foreach(_fs_w div0 ldiv0)
       kickos_app_judge(faultsurvive_${_fs_w} tests/integration/check_faultsurvive.sh
@@ -169,7 +177,7 @@ if(_fs_stklim)
   if(TARGET faultsurvive_ovfmpu)
     kickos_add_qemu_test(NAME ${_tag}_faultoverflow_mpu TARGET faultsurvive_ovfmpu
       SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_faultsurvive.sh"
-      ARGS overflow ${KICKOS_ARCH} terminated)
+      ARGS overflow ${KICKOS_ARCH} ${_fs_outcome})
   endif()
 elseif(_fs_guarded)
   kickos_add_qemu_test(NAME ${_tag}_faultoverflow TARGET faultsurvive_ovf
@@ -192,7 +200,31 @@ endif()
 if(TARGET faultsurvive_unread)
   kickos_add_qemu_test(NAME ${_tag}_faultunread TARGET faultsurvive_unread
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_faultsurvive.sh"
-    ARGS unread ${KICKOS_ARCH} terminated)
+    ARGS unread ${KICKOS_ARCH} ${_fs_outcome})
+endif()
+if(TARGET faultsurvive_fpunread)
+  kickos_add_qemu_test(NAME ${_tag}_faultfpunread TARGET faultsurvive_fpunread
+    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_faultsurvive.sh"
+    ARGS fpunread ${KICKOS_ARCH} ${_fs_outcome})
+endif()
+foreach(_fs_arm bxns blxns)
+  if(TARGET faultsurvive_${_fs_arm})
+    kickos_add_qemu_test(NAME ${_tag}_fault${_fs_arm} TARGET faultsurvive_${_fs_arm}
+      SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_faultsurvive.sh"
+      ARGS ${_fs_arm} ${KICKOS_ARCH} killed)
+  endif()
+endforeach()
+# QEMU takes an SVC ahead of the fault that refuses its entry, so the debugger pends the SVCall
+# where the kill starts.
+if(KICKOS_ARCH STREQUAL "armv7m" AND KICKOS_FAULT_ISOLATION AND KICKOS_MEMORY_ENFORCED)
+  find_program(KICKOS_GDB NAMES gdb-multiarch)
+  set(_fs_gdb gdb-multiarch)
+  if(KICKOS_GDB)
+    set(_fs_gdb "${KICKOS_GDB}")
+  endif()
+  kickos_add_qemu_test(NAME ${_tag}_faultpendsvc TARGET faultsurvive
+    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_fault_pendsvc.sh"
+    ARGS "${_fs_gdb}" "${CMAKE_NM}")
 endif()
 if(_fs_judged AND TARGET faultsurvive_lowedge)
   kickos_add_qemu_test(NAME ${_tag}_faultlowedge TARGET faultsurvive_lowedge

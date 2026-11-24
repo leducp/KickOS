@@ -26,6 +26,17 @@ namespace kickos::rp2350::accessctrl
         TWICE,    // a register an earlier row names
     };
 
+    // A bus port's register with no Non-secure master admitted, the rest of it kept.
+    inline uint32_t closed_to_nonsecure(uint32_t was)
+    {
+        return gate::PASSWORD | (was & 0xFFu & ~(gate::NSP | gate::NSU));
+    }
+
+    inline bool admits_nonsecure(uint32_t now)
+    {
+        return (now & (gate::NSP | gate::NSU)) != 0u;
+    }
+
     // Every row is checked before any is written. `at` is the refused row.
     inline Refusal refusal_of(kickos_gate_row const* rows, uint16_t count, uint32_t const* node_core,
                               uint32_t node_count, uint16_t& at)

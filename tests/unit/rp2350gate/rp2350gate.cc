@@ -46,6 +46,24 @@ TEST(Rp2350Gate, ImageGivesTheNodesCoreAloneAndKeepsDma)
     EXPECT_EQ(accessctrl::image_of(UART0_RESET & ~gate::DMA, 0u), 0xACCE009Cu);
 }
 
+// Table 911's reset images of ROM (every bit) and UART0 (no Non-secure bit).
+TEST(Rp2350Gate, ClosingAPortDropsOnlyItsNonSecureBits)
+{
+    EXPECT_EQ(accessctrl::closed_to_nonsecure(0xFFu), 0xACCE00FCu);
+    EXPECT_EQ(accessctrl::closed_to_nonsecure(UART0_RESET), 0xACCE00FCu);
+    EXPECT_EQ(accessctrl::closed_to_nonsecure(0xACCE00FFu), 0xACCE00FCu);
+    EXPECT_FALSE(accessctrl::admits_nonsecure(accessctrl::closed_to_nonsecure(0xFFu)));
+    EXPECT_TRUE(accessctrl::admits_nonsecure(gate::NSP));
+    EXPECT_TRUE(accessctrl::admits_nonsecure(gate::NSU));
+}
+
+// A partition row's image admits only its node's core, Secure, so closing never reopens a port.
+TEST(Rp2350Gate, APartitionImageAdmitsNoNonSecureMaster)
+{
+    EXPECT_FALSE(accessctrl::admits_nonsecure(accessctrl::image_of(0xFFu, 0u)));
+    EXPECT_FALSE(accessctrl::admits_nonsecure(accessctrl::image_of(0xFFu, 1u)));
+}
+
 TEST(Rp2350Gate, RefusesARegisterNoNodeIsAssigned)
 {
     uint16_t const never[] = {0x14u, 0x18u, 0x1Cu, 0x2Cu, 0x40u, 0x44u, 0x64u, 0x68u, 0x70u, 0x98u,

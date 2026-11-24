@@ -602,31 +602,16 @@ void arch_fault_redirect_to_exit(void* frame)
 // --- Wild sp refused by the trap entry (switch.S .Ltrap_wild) -----------------
 // Returns the context to resume, or null to fall through to the generic dump.
 //
-// NOTHING MAY PANIC HERE. kpanic_enter masks IRQs irreversibly and belongs to .Lfault's
-// terminating path alone.
+// NOTHING MAY PRINT HERE: the trap runs with g_isr_depth 0, so the console would mark `current`,
+// the thread a pended switch booked. kpanic_enter belongs to .Lfault's terminating path alone.
 //
 // g_arch_current and NOT the scheduler's current: it tracks the PHYSICAL switch, so it names
 // the thread whose sp was refused even when a booked switch has already published another.
 struct arch_context* kickos_rv_contain_wild_sp(uint32_t sp)
 {
-    // The name is read here, on the trap stack, and never from the exit stub: a stack
-    // overflow reaches this refusal before the PMP-denial report, so it would die anonymously.
-    char const* who = "?";
-    struct arch_context* const next = kickos_thread_contain_wild_stack(g_arch_current, &who);
-    if (next == nullptr)
-    {
-        return nullptr;
-    }
     // tests/lib/panic.ere matches "=== RISC-V TRAP", so spelling this one that way would
     // make assert_no_panic blind to the difference.
-    ::kickos::kprintf("\n=== RISC-V CONTAINED (wild stack) ===\n");
-#if KICKOS_PANIC_DUMP
-    ::kickos::kprintf("  thread '%s' sp=0x%x\n", who, static_cast<unsigned>(sp));
-#else
-    (void)sp;
-    (void)who;
-#endif
-    return next;
+    return kickos_fault_contain_wild_stack(g_arch_current, KDIAG_F_RV_CONTAINED, "sp", sp);
 }
 
 // --- Unhandled trap (switch.S .Lfault) ----------------------------------------

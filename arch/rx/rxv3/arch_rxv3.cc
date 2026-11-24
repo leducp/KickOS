@@ -11,6 +11,7 @@
 #include "regs.h"
 #include "rx_mpu_encode.h"
 #include <kickos/console_tx.h>
+#include <kickos/diag.h>
 #include <kickos/arch/wrap_extend.h>
 #include <kickos/sys/atomic.h>
 #include <kickos/trace/record.h>
@@ -546,35 +547,26 @@ void arch_fault_redirect_to_exit(void* frame)
     }
 }
 
-// A USP outside both the thread's stack and its kernel block. Runs on the ISP. Containment
-// comes before kpanic_enter, whose mask is permanent. Reads g_arch_current, which names the
-// physical thread even after the scheduler has chosen its replacement. Returns the context
-// to resume; terminates if containment fails.
+// A USP outside both the thread's stack and its kernel block. Runs on the ISP with g_in_isr 0,
+// so nothing here may print before containment fails: the console would mark `current`, the
+// thread a pended switch booked. Reads g_arch_current, which names the physical thread even
+// after the scheduler has chosen its replacement. Returns the context to resume; terminates if
+// containment fails.
 struct arch_context* kickos_rx_bad_usp(uint32_t usp)
 {
-    struct arch_context* const next = kickos_thread_contain_wild_stack(g_arch_current, nullptr);
-    if (next == nullptr)
-    {
-        kpanic_enter();
-    }
     // THE NOUN IS THE DISCRIMINATOR. tests/lib/panic.ere matches "=== <ARCH> EXCEPTION", so a
     // contained refusal spelled that way is indistinguishable from one that ended the system
     // and assert_no_panic stops meaning anything on exactly the arms that now survive.
-    if (next == nullptr)
+    struct arch_context* const next = kickos_fault_contain_wild_stack(
+        g_arch_current, KDIAG_F_RX_CONTAINED, "USP", usp);
+    if (next != nullptr)
     {
-        ::kickos::kprintf("\n=== RX EXCEPTION (wild stack) ===\n  USP=0x%x\n",
-                          static_cast<unsigned>(usp));
+        return next;
     }
-    else
-    {
-        ::kickos::kprintf("\n=== RX CONTAINED (wild stack) ===\n  USP=0x%x\n",
-                          static_cast<unsigned>(usp));
-    }
-    if (next == nullptr)
-    {
-        kfault_terminate();
-    }
-    return next;
+    kpanic_enter();
+    ::kickos::kprintf("\n=== RX EXCEPTION (wild stack) ===\n  USP=0x%x\n",
+                      static_cast<unsigned>(usp));
+    kfault_terminate();
 }
 
 // From the syscall trap, when the calling thread has no kernel block seated. Runs supervisor

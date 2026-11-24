@@ -21,4 +21,5 @@ if(NOT EXISTS "${_v7f_header}")
   message(FATAL_ERROR "KickOS: ${_v7f_header} is gone, so v7m_fault_frame would witness nothing.")
 endif()
 kickos_add_unit_test(NAME v7m_fault_frame SOURCES frame_v7m.cc
-  DEFINITIONS "KICKOS_V7M_FAULT_FRAME_H=\"${_v7f_header}\"")
+  DEFINITIONS "KICKOS_V7M_FAULT_FRAME_H=\"${_v7f_header}\""
+              "KICKOS_ARM_EXC_RETURN_H=\"${PROJECT_SOURCE_DIR}/arch/arm/common/exc_return.h\"")

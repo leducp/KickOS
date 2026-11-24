@@ -552,9 +552,13 @@ void arch_fault_report_extra(void)
     } while (sysmpu_take_error(&port, &ear, &edr));
 }
 
-bool arch_fault_chip_addr(uintptr_t* addr)
+char const* arch_fault_chip_addr(uintptr_t* addr)
 {
-    return sysmpu_core_error_addr(addr);
+    if (not sysmpu_core_error_addr(addr))
+    {
+        return nullptr;
+    }
+    return "SYSMPU";
 }
 
 bool arch_console_write_sync(char const* buf, size_t n)

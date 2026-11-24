@@ -133,16 +133,17 @@
 
 /* The measured descent of the two stubs a dying thread runs PRIVILEGED on its own KERNEL
  * BLOCK, kickos_fault_stack_top answering with ctx.kernel_sp: kickos_thread_fault_exit and
- * kickos_thread_slay_exit. 416 on rx72m and rx72m-flat: the fault stub's record line descends
- * the timer rearm of the wake that ends its console write:
- *   kickos_thread_fault_exit[8] -> fault_record_print[56] -> kprintf_record[24]
+ * kickos_thread_slay_exit. 424 on rx72m, the slay stub's contained-stack record included: the
+ * fault stub's record line descends the priority settle of the wake that ends its console
+ * write:
+ *   kickos_thread_fault_exit[8] -> fault_record_print[64] -> kprintf_record[24]
  *   -> kvprintf_fault[108] -> console_emit[32] -> console_chip_writer_leave[8]
- *   -> console_dark_wake[24] -> wake[8]
- *   -> resched_after_wake[4] -> pick_and_seat[24] -> ktime_rearm[32] -> arch_timer_arm[24]
- *   -> arch_clock_now[32] -> __divdi3[32]
+ *   -> console_dark_wake[24] -> wake[8] -> wake_no_resched[8] -> watch_lend_settle[4]
+ *   -> pi_drain_deaths[40] -> pi_settle_from[24] -> notify_lend_owe[24]
+ *   -> start_watch_owe_into[36] -> task_decl_dying[8] -> task_ended[4]
  *
  * Rounded like a thread-stack figure because it never binds: 236 + 448 = 684 against 1052
- * usable, where SYSK asks 1040. 448 is enforced over the 416 measured. */
+ * usable, where SYSK asks 1040. 448 is enforced over the 424 measured. */
 #define KICKOS_RX_TRAP_KERNEL_DEPTH_EXITK 448
 
 /* What each guard enforces: room below the USP, in bytes.

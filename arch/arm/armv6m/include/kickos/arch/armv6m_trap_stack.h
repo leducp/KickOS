@@ -131,8 +131,9 @@
 
 /* The measured descent of the two stubs a dying thread runs PRIVILEGED on its own KERNEL
    BLOCK, kickos_fault_stack_top answering with ctx.kernel_sp: kickos_thread_fault_exit and
-   kickos_thread_slay_exit. 424 measured on every preset: the fault stub's record line ends in
-   the pick its console write's wake performs, with the 64-bit divide arch_timer_arm needs.
+   kickos_thread_slay_exit. 440 on microbit and picopi, the slay stub's contained-stack record
+   at 432: the fault stub's record line ends in the pick its console write's wake performs,
+   with the 64-bit divide arch_timer_arm needs.
 
    NO POSTURE LADDER: this arch has no telemetry variant, and ARCH_KERNEL_STACKS_MANDATORY
    leaves no kstacks=0 fallback class.

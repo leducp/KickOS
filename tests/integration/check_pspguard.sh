@@ -138,7 +138,7 @@ if [ "$mode" = 5 ]; then
 fi
 
 if [ "$outcome" = stkof ]; then
-    if has "(wild PSP:"; then
+    if has "(wild PSP"; then
         fail "mode=$mode: a software guard refused the PSP, so the stack limit did not, or an
     SVCall left pending by the violating entry ran in the dead thread's place"
     fi
@@ -158,14 +158,13 @@ if [ "$outcome" = stkof ]; then
     if [ $(( 0x$cfsr & 0x1818 )) -ne 0 ]; then
         fail "mode=$mode: CFSR=0x$cfsr carries a stacking abort, so a write below the limit reached the bus"
     fi
-    assert_no_panic "mode=$mode: the wild thread was killed AND the system panicked"
-else
-    # The noun is the outcome: CONTAINED is spelled so it does NOT match tests/lib/panic.ere.
-    _noun=CONTAINED
-    if [ "$outcome" = terminated ]; then
-        _noun=EXCEPTION
+    # The SVC's own entry violated the limit, so its SVCall was pending when the kill ran.
+    if [ "$mode" = 7 ] && ! printf '%s\n' "$OUT" | sed -n "$killed,\$p" | grep -qx "  SVCall dropped"; then
+        fail "mode=7: the kill record drops no SVCall, so the SVC entry was not what violated the limit"
     fi
-    if ! has "=== $banner $_noun (wild PSP: $why) ==="; then
+    assert_no_panic "mode=$mode: the wild thread was killed AND the system panicked"
+elif [ "$outcome" = terminated ]; then
+    if ! has "=== $banner EXCEPTION (wild PSP: $why) ==="; then
         fail "no $banner refusal classified '$why' reached the wire as $outcome: the PSP was accepted, another bound fired, or the outcome is not the declared one"
     fi
     if ! has "in $site PSP=" ; then
@@ -173,6 +172,19 @@ else
     fi
     if ! has "need=$need "; then
         fail "the refusal reported a byte count other than need=$need (wrong leg, or the FP block was not measured)"
+    fi
+else
+    # A contained refusal is the slain thread's record, printed by its own exit: the banner,
+    # the thread and its PSP, then the leg, the site and the byte count. CONTAINED is spelled so
+    # it does NOT match tests/lib/panic.ere.
+    if ! has "=== $banner CONTAINED (wild PSP) ==="; then
+        fail "no $banner contained refusal reached the wire: the PSP was accepted, or the refusal ended the system"
+    fi
+    if ! has_e "^  thread '[^']*' PSP=0x[0-9a-f]+$"; then
+        fail "the contained refusal names no thread and PSP"
+    fi
+    if ! has_f "  $why, in $site need=$need stack=["; then
+        fail "the contained refusal is not classified '$why' in $site with need=$need: another bound fired, the other guarded push fired, or the FP block was not measured"
     fi
 fi
 

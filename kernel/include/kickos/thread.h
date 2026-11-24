@@ -313,7 +313,7 @@ namespace kickos
         // One bitfield byte, and it has to stay one: the four bytes here are saturated against
         // `wait_obj`'s alignment, so a separate byte for a flag would cost every TCB four.
         // CallState spends two bits; the console's flags take spare ones without growing any TCB.
-        uint8_t call_state : 4 = CALL_NONE;
+        uint8_t call_state : 2 = CALL_NONE;
         // Set only by the trap-handler IPC fastpath, which parks a caller with no kernel
         // continuation: nothing reads wait_result on that thread's behalf, so the switch that
         // resumes it stores the result into the saved frame. Cleared there, by the one writer.
@@ -330,6 +330,9 @@ namespace kickos
         // (kconsole_slain): the record holds the console line ahead of every other thread's.
         // Written under IrqLock by the thread itself.
         uint8_t console_record : 1 = 0;
+        // Slain by kickos_fault_contain_wild_stack, so its slay exit announces it. Written once,
+        // under IrqLock, while the thread runs nowhere.
+        uint8_t wild_stack_contained : 1 = 0;
         WaitKind wait_kind = WAIT_NONE;
 #if KICKOS_AMP_NODE
         // The amp hold this thread must land or give back, biased by one so a fresh TCB holds

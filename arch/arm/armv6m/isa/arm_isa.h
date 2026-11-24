@@ -16,7 +16,6 @@
 #include <stdint.h>
 
 #define KICKOS_ARM_BANNER_WILD_PSP_WHY "\n=== ARMV6M EXCEPTION (wild PSP: %s) ===\n"
-#define KICKOS_ARM_BANNER_WILD_PSP_WHY_CONTAINED "\n=== ARMV6M CONTAINED (wild PSP: %s) ===\n"
 #define KICKOS_ARM_BANNER_WILD_PSP "\n=== ARMV6M EXCEPTION (wild PSP) ===\n"
 #define KICKOS_ARM_BANNER_WILD_PSP_CONTAINED "\n=== ARMV6M CONTAINED (wild PSP) ===\n"
 #define KICKOS_ARM_BANNER_NO_KERNEL_STACK "\n=== ARMV6M EXCEPTION (no kernel stack) ===\n"

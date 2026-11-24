@@ -62,6 +62,10 @@ namespace kickos
         constexpr uint32_t AIRCR_VECTKEY = 0x05FAu << 16;
         constexpr uint32_t AIRCR_LOW_HALF = 0xFFFFu;
         constexpr uint32_t AIRCR_SYSRESETREQ = 1u << 2;
+        // v8-M Security Extension: a reset request from Secure state only, and BusFault,
+        // HardFault and NMI kept Secure.
+        constexpr uint32_t AIRCR_SYSRESETREQS = 1u << 3;
+        constexpr uint32_t AIRCR_BFHFNMINS = 1u << 13;
 
 #if not KICKOS_ARM_REGS_FROM_SEAM
         // The rest of the low half-word is written back as read: PRIGROUP, and on v8-M the
@@ -118,6 +122,9 @@ namespace kickos
 
         // Without MEMFAULTENA an MPU violation escalates to HardFault.
         constexpr uintptr_t SCB_SHCSR = 0xE000ED24;
+        constexpr uint32_t SHCSR_USGFAULTPENDED = 1u << 12;
+        constexpr uint32_t SHCSR_MEMFAULTPENDED = 1u << 13;
+        constexpr uint32_t SHCSR_BUSFAULTPENDED = 1u << 14;
         constexpr uint32_t SHCSR_SVCALLPENDED = 1u << 15;
         constexpr uint32_t SHCSR_MEMFAULTENA = 1u << 16;
         constexpr uint32_t SHCSR_BUSFAULTENA = 1u << 17;
