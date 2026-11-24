@@ -211,6 +211,19 @@ tests/integration/check_rxdrv.sh|rxdrv.capture||killed|swap|thread 'rxpoke'|thre
 tests/integration/check_rxdrv.sh|rxdrv.capture||kill-address|swap|ADDR=0x8c199|ADDR=0x8c068
 tests/integration/check_rxdrv.sh|rxdrv.capture||error|after|poking UNGRANTED|[rxdrv] UNGRANTED ACCESS DID NOT FAULT (MPU not enforcing)
 tests/integration/check_rxdrv.sh|rxdrv.capture||panic|after|ADDR=0x8c199|KERNEL PANIC: planted
+tests/integration/check_rxirq.sh|rxirq.capture||mux|swap|input rc 0 (want 0)|input rc -16 (want 0)
+tests/integration/check_rxirq.sh|rxirq.capture||claim|swap|line 79 rc 0 (want 0)|line 79 rc -1 (want 0)
+tests/integration/check_rxirq.sh|rxirq.capture||claim|order|[rxirq] pinmux P07|[rxirq] claim line
+tests/integration/check_rxirq.sh|rxirq.capture||cycle|cut|[rxirq] cycle 3:|
+tests/integration/check_rxirq.sh|rxirq.capture||cycle|swap|cycle 4: pad 0/1,|cycle 4: pad 0/1;
+tests/integration/check_rxirq.sh|rxirq.capture||pad|swap|cycle 1: pad 0/1|cycle 1: pad 1/1
+tests/integration/check_rxirq.sh|rxirq.capture||wake|swap|cycle 2: pad 0/1, low woke rc 0|cycle 2: pad 0/1, low woke rc -110
+tests/integration/check_rxirq.sh|rxirq.capture||wake|swap|cycle 3: pad 0/1, low woke rc 0 bits 0x1|cycle 3: pad 0/1, low woke rc 0 bits 0x0
+tests/integration/check_rxirq.sh|rxirq.capture||quiet|swap|0x1, high rc -110|0x1, high rc 0
+tests/integration/check_rxirq.sh|rxirq.capture||pass|order|[rxirq] cycle 5:|[rxirq] PASS
+tests/integration/check_rxirq.sh|rxirq.capture||pass|drop|[rxirq] PASS|
+tests/integration/check_rxirq.sh|rxirq.capture||error|after|[rxirq] cycle 5:|[rxirq] FAIL
+tests/integration/check_rxirq.sh|rxirq.capture||panic|after|[rxirq] cycle 2:|KERNEL PANIC: planted
 tests/integration/check_c6blink.sh|c6blink.capture||holder|swap|holder rc -38 (want -38)|holder rc -1 (want -38)
 tests/integration/check_c6blink.sh|c6blink.capture||blink-start|drop|blinking GPIO10|
 tests/integration/check_c6blink.sh|c6blink.capture||blink|drop|PASS (pad tracked|

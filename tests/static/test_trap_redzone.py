@@ -508,6 +508,25 @@ class Ctors(unittest.TestCase):
         self.assertEqual(len(out), 1)
         self.assertIn('ctor_b', out[0][1])
 
+    def test_a_table_entry_a_vector_family_names_passes(self):
+        class T(self.D):
+            tables = [('vectors', 0, '', False)]
+            vectors = {'ctor_*': 'fault'}
+        path = os.path.join(self.tmp, 'image')
+        elf(path, False, [0x1000], table=True)
+        self.assertEqual(trap_redzone.vector_refusals(T(), path, set(),
+                                                      lambda names: 'ctor_a' in names), [])
+
+    def test_a_vector_family_prices_no_handler_outside_it(self):
+        class T(self.D):
+            tables = [('vectors', 0, '', False)]
+            vectors = {'ctor_b*': 'fault'}
+        path = os.path.join(self.tmp, 'image')
+        elf(path, False, [0x1000], table=True)
+        out = trap_redzone.vector_refusals(T(), path, set(), lambda names: 'ctor_a' in names)
+        self.assertEqual(len(out), 1)
+        self.assertIn('ctor_a', out[0][1])
+
     def test_the_elf_beside_a_converted_map_is_read(self):
         for name in ('a.efi.map', 'a.efi', 'a.efi.elf', 'b.map', 'b'):
             open(os.path.join(self.tmp, name), 'w').close()

@@ -212,8 +212,9 @@ namespace
                       and icu::GROUPBL1_VECTOR == irq::ICU_GROUPBL1
                       and icu::GROUPBL2_VECTOR == irq::ICU_GROUPBL2
                       and icu::GROUPAL0_VECTOR == irq::ICU_GROUPAL0
-                      and icu::GROUPAL1_VECTOR == irq::ICU_GROUPAL1,
-                  "a group vector the kernel arms is not the line the chip file gives the kernel");
+                      and icu::GROUPAL1_VECTOR == irq::ICU_GROUPAL1
+                      and icu::GROUPBE0_VECTOR == irq::ICU_GROUPBE0,
+                  "a group vector is not the line the chip file gives the kernel");
     static_assert(kickos::rxv3::GROUP_LINE_STRIDE == 32,
                   "a group register holds exactly 32 sources (ISj/ENj, j = 0..31)");
 }
@@ -255,6 +256,25 @@ void arch_init(void)
     r8(icu::IER03) |= icu::IER03_CMWI1;
 
     kickos_rxv3_init();
+}
+
+// A level source's IR follows the request and may not be written (UM sec.15.2.1 Note 1).
+int kickos_rx_line_level(int line)
+{
+    if (line >= icu::IRQ0_VECTOR and line <= icu::IRQ15_VECTOR)
+    {
+        uint8_t const irqcr = r8(icu::IRQCR0 + static_cast<unsigned>(line - icu::IRQ0_VECTOR));
+        if ((irqcr & icu::IRQCR_IRQMD_MASK) == 0u)
+        {
+            return 1;
+        }
+        return 0;
+    }
+    if (line == icu::USBR0_VECTOR or line == icu::DMAC74I_VECTOR)
+    {
+        return 1;
+    }
+    return 0;
 }
 
 // Arms or disarms ONE group source and, with the first or last one, the group vector.
@@ -299,8 +319,8 @@ void kickos_rx_group_arm(int line, int on)
     arch_irq_restore(s);
 }
 
-// The device demux, in ISR context. Only group vectors route here; every dedicated source
-// has its own INTB slot. One group assertion can carry several ISj bits (UM sec.15.5.4
+// The device demux, in ISR context. Only the level group vectors route here; every line from
+// 32 up has its own INTB slot. One group assertion can carry several ISj bits (UM sec.15.5.4
 // Fig.15.17 p.542).
 //
 // The status word must be SNAPSHOTTED before the first post: kickos_isr_irq runs

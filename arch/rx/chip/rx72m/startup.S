@@ -29,9 +29,30 @@
 /* 0..15 carry no peripheral source, so an entry there is always a software trap. Every   */
 /* device slot enters through a switch.S guard, INT #n reaching each slot as well. Slot   */
 /* 87 (TXI6) serves the console drain, or a userspace TX driver after the console         */
-/* handover. Every other device slot goes to the shared default entry, which asks the     */
-/* chip to demux: that serves the group vectors (106..113).                               */
+/* handover. Every vector from 32 up that a line can claim has its own entry: the      */
+/* handler cannot read the accepted vector.                                               */
 /* ------------------------------------------------------------------------- */
+
+    .macro INTB_LINE n
+    .pushsection .text, "ax"
+_kickos_rx_intb_line_\n:
+    push.l  r15
+    mov.l   #\n, r15
+    bra.a   _kickos_rx_intb_line
+    .popsection
+    .word   _kickos_rx_intb_line_\n
+    .endm
+
+    .macro INTB_LINES first, last
+    .set intb_line_n, \first
+    .rept \last - \first + 1
+    .altmacro
+    INTB_LINE %intb_line_n
+    .noaltmacro
+    .set intb_line_n, intb_line_n + 1
+    .endr
+    .endm
+
     .section .rvectors, "a"
     .balign 4
     .global _g_rvectors
@@ -51,15 +72,20 @@ _g_rvectors:
     .word _kickos_rx_intb_default     /* 29 */
     .word _kickos_rx_intb_timer       /* 30: CMTW0 compare match (CMWI0) */
     .word _kickos_rx_intb_clock       /* 31: CMTW1 compare match (CMWI1), the clock's wrap */
-    .rept (86 - 32)
-    .word _kickos_rx_intb_default     /* 32..85 */
-    .endr
-    .word _kickos_rx_intb_sci6_rxi    /* 86: SCI6 RXI6 -> tier-1 line 86 */
+    INTB_LINES 32, 86
     .word _kickos_rx_intb_console_txi /* 87: SCI6 TXI6 -> console drain, or line 87 */
-    .rept (KICKOS_RX_INTB_ENTRIES - 88)
-    .word _kickos_rx_intb_default     /* 88..255, incl. the group vectors 106..113 */
+    INTB_LINES 88, 105
+    .word _kickos_rx_intb_default     /* 106: GROUPBE0, kernel-owned, never armed */
+    .word _kickos_rx_intb_default     /* 107: GROUPBL2 */
+    INTB_LINES 108, 109
+    .rept 4
+    .word _kickos_rx_intb_default     /* 110..113: GROUPBL0, GROUPBL1, GROUPAL0, GROUPAL1 */
     .endr
+    INTB_LINES 114, (KICKOS_RX_INTB_ENTRIES - 1)
     .size _g_rvectors, . - _g_rvectors
+    .if (. - _g_rvectors) - KICKOS_RX_INTB_ENTRIES * 4
+    .error "the INTB table is not KICKOS_RX_INTB_ENTRIES slots"
+    .endif
 
 /* ------------------------------------------------------------------------- */
 /* Fixed exception vector table @ 0xFFFFFF80 (EXTB reset). Offsets from ISA UM sec.5.5.  */

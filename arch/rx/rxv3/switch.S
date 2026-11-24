@@ -206,8 +206,27 @@ _\entry:
     INTB_GUARD kickos_rx_intb_swint2, kickos_rx_swint2
     INTB_GUARD kickos_rx_intb_timer, kickos_rx_timer_isr
     INTB_GUARD kickos_rx_intb_clock, kickos_rx_clock_isr
-    INTB_GUARD kickos_rx_intb_sci6_rxi, kickos_rx_sci6_rxi_isr
     INTB_GUARD kickos_rx_intb_console_txi, kickos_rx_console_txi_isr
+
+/* The shared tail of every device line's own INTB slot (the chip's startup.S), entered with R15
+   banked on the ISP and holding the slot's vector, so [r0]=R15 4[r0]=PC 8[r0]=PSW. The vector
+   reaches kickos_rx_line_isr through g_rx_line_vector, PSW.I being 0 from here to its read. */
+    .global _kickos_rx_intb_line
+_kickos_rx_intb_line:
+    push.l  r14
+    mvfc    psw, r14
+    xor     12[r0].l, r14          /* [r0]=R14 4[r0]=R15 8[r0]=PC 12[r0]=PSW */
+    and     #IPL_FIELD, r14
+    beq     1f
+    mov.l   #_g_rx_line_vector, r14
+    mov.l   r15, [r14]
+    pop     r14
+    pop     r15
+    bra.a   _kickos_rx_line_isr
+1:
+    pop     r14
+    pop     r15
+    bra.a   _kickos_rx_soft_trap
 
 /* A software trap through an INTB slot, with [PC][PSW] at R0 on the ISP. Returns only when the
    trapping thread was redirected to its exit, which the RTE then lands in. */
@@ -666,6 +685,8 @@ _kickos_rx_syscall_trap:
     .global _svc_trampoline
 _svc_trampoline:
     bsr.a   _syscall_dispatch  /* (R1-R4, [SP+4]=a3, [SP+8]=a4) -> result in R1:R2 */
+    mov.l   #0, r3             /* no kernel value but R1:R2 returns to the thread */
+    mov.l   #0, r4
     clrpsw  i
     mov.l   8[r0], r14         /* userPC */
     mov.l   12[r0], r15        /* userPSW */

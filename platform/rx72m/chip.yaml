@@ -74,13 +74,15 @@ devices:
       cmwi1: { number: 31, ref: "Table 15.5 Interrupt Vector Table (1/6), p.521" }
   # Reaches SLIARn and SLIPRCR past the group registers: they route a source onto vectors 208
   # to 255.
-  # The level groups' parent vectors, armed by the kernel while any source of the group is.
+  # The level groups' parent vectors, armed by the kernel while any source of the group is, and
+  # the edge group BE0's, whose sources carry no line, so no claim binds a vector nothing demuxes.
   icu:
     window: [0x00087000, 0xA10]
     owner: kernel
     symbol: ICU
     ref: "Table 5.1 List of I/O Registers (Address Order), p.218"
     lines:
+      groupbe0: { number: 106, ref: "Table 15.5 Interrupt Vector Table (3/6), p.523" }
       groupbl2: { number: 107, ref: "Table 15.5 Interrupt Vector Table (3/6), p.523" }
       groupbl0: { number: 110, ref: "Table 15.5 Interrupt Vector Table (3/6), p.523" }
       groupbl1: { number: 111, ref: "Table 15.5 Interrupt Vector Table (3/6), p.523" }
