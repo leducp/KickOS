@@ -60,6 +60,9 @@ namespace kickos
     // reaches their ends: its open record is dropped, its chip-writer bracket left, and its
     // hand-off abandoned, the console then the kernel's, polled.
     void kconsole_slain(void);
+    // The wild-stack refusal kickos_fault_contain_wild_stack made of `t`, as its record; nothing
+    // for a thread it did not contain. Thread context, no lock held.
+    void fault_contained_print(Thread const* t);
 
     // Whether a live thread outside `t` holds the console's registers. Caller holds IrqLock.
     bool console_window_held_outside(Task const* t);

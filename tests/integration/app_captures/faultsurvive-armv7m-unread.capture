@@ -13,6 +13,6 @@
 [fs] spawning the faulter
 [fs] worker about to fault
 
-=== MPU FAULT ===
-  frame not read: its stacking or unstacking at 0xefffffe0 (PSP) faulted
-  CFSR=0x10010 HFSR=0x40000000
+=== THREAD FAULT === thread 'faulter' killed, system continues
+  PC unknown CFSR=0x10010
+[fs] survivor ran after the fault

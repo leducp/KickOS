@@ -84,6 +84,9 @@ namespace
 #error "KICKOS_FS_MODE 5 needs this ISA's spelling for moving SP; it must not be built here"
 #endif
 #endif
+#if KICKOS_FS_MODE == 18 && !defined(__ARM_FP)
+#error "KICKOS_FS_MODE 18 makes FP state live; it needs an FPU"
+#endif
 #if KICKOS_FS_MODE == 6 && !defined(__thumb__)
 #error "KICKOS_FS_MODE 6 spells its SP move for armv7m only"
 #endif
@@ -112,6 +115,13 @@ namespace
 
 #if (KICKOS_FS_MODE == 10 || KICKOS_FS_MODE == 11) && !defined(__RX__)
 #error "KICKOS_FS_MODE 10 and 11 spell RX traps and the RX PSW; they must not be built here"
+#endif
+#if (KICKOS_FS_MODE == 14 || KICKOS_FS_MODE == 15) && !defined(__thumb__)
+#error "KICKOS_FS_MODE 14 and 15 spell the M-profile svc; they must not be built here"
+#endif
+#if (KICKOS_FS_MODE == 16 || KICKOS_FS_MODE == 17 || KICKOS_FS_MODE == 19) \
+    && !defined(__ARM_ARCH_8M_MAIN__)
+#error "KICKOS_FS_MODE 16 and 17 branch to Non-secure state, which only v8-M Mainline has here"
 #endif
 #if KICKOS_FS_MODE == 13 && !defined(__RX__)
 #error "KICKOS_FS_MODE 13 parks the RX USP; it must not be built here"
@@ -597,6 +607,11 @@ namespace
 #endif
 #elif KICKOS_FS_MODE == 6
         __asm volatile("mov sp, %0\n\t" KOS_TRAP_ILLEGAL_INSN ::"r"(KICKOS_FS_NOWHERE) : "memory");
+#elif KICKOS_FS_MODE == 18
+        __asm volatile("vmov s0, %0\n\t"
+                       "mov sp, %1\n\t" KOS_TRAP_ILLEGAL_INSN ::"r"(0x3F800000u),
+                       "r"(KICKOS_FS_NOWHERE)
+                       : "s0", "memory");
 #elif KICKOS_FS_MODE == 10
         // The order is fs.h's: brk last.
         switch (g_fs_arg)
@@ -659,6 +674,37 @@ namespace
         static_assert(FS_SWTRAP_COUNT == 9, "the switch above names nine traps");
 #elif KICKOS_FS_MODE == 7
         __asm volatile("mov sp, %0\n\t" KOS_TRAP_ILLEGAL_INSN ::"r"(g_fs_arg) : "memory");
+#elif KICKOS_FS_MODE == 14
+        // The frame would land on main's word.
+        __asm volatile("mov sp, %0\n\t"
+                       "svc #0\n\t" ::"r"(g_fs_arg + 32u)
+                       : "memory");
+#elif KICKOS_FS_MODE == 15
+        // The svc directly behind the store. A syscall that does return exits to LR, so the
+        // worker goes on to its error line.
+        __asm volatile(".syntax unified\n\t"
+                       "movs   r0, #12\n\t" // KOS_SYS_MONOTONIC_NOW
+                       "adr    r1, 3f\n\t"
+                       "adds   r1, #1\n\t"
+                       "mov    lr, r1\n\t"
+                       "str    %[v], [%[w]]\n\t"
+                       "svc    #0\n\t"
+                       ".balign 4\n\t"
+                       "3:\n\t"
+                       :
+                       : [w] "r"(g_fs_arg), [v] "r"(0u)
+                       : "r0", "r1", "r2", "r3", "r12", "lr", "cc", "memory");
+#elif KICKOS_FS_MODE == 16 || KICKOS_FS_MODE == 17
+        // Bit 0 clear selects Non-secure state.
+        uintptr_t const target = reinterpret_cast<uintptr_t>(&faulter) & ~1u;
+#if KICKOS_FS_MODE == 16
+        __asm volatile("bxns %0" ::"r"(target) : "memory");
+#else
+        __asm volatile("blxns %0" ::"r"(target) : "lr", "memory");
+#endif
+#elif KICKOS_FS_MODE == 19
+        // RP2350 datasheet 10.2.2: 0x4300 starts the bootrom's Non-secure instruction-fetch range.
+        __asm volatile("bxns %0" ::"r"(0x00004300u) : "memory");
 #elif KICKOS_FS_MODE == 12
         forge();
 #elif KICKOS_FS_MODE == 13

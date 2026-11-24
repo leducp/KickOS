@@ -14,7 +14,7 @@
 [fs] worker about to fault
 
 === RX CONTAINED (wild stack) ===
-  USP=0x102b4
+  thread 'fs_wild' USP=0x102b4
 [fs] [wildspin] the spinner is gone, its task runs on
 [fs] survivor ran after the fault
 [fs] [kword] INTACT: nothing was stored through the refused sp

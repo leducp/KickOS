@@ -24,6 +24,13 @@ static inline bool armv7m_fault_frame_readable(uint32_t cfsr)
     return (cfsr & ARMV7M_CFSR_STACKING_ABORTS) == 0u;
 }
 
+// v8-M Security Extension (RP2350 datasheet, M33 SFSR and SFAR).
+constexpr uintptr_t ARMV8M_SFSR = 0xE000EDE4u;
+constexpr uintptr_t ARMV8M_SFAR = 0xE000EDE8u;
+constexpr uint32_t ARMV8M_SFSR_SFARVALID = 1u << 6;
+// The CFSR through the Non-secure alias of the PPB.
+constexpr uintptr_t ARMV8M_CFSR_NS = 0xE002ED28u;
+
 // CFSR fields (ARMv7-M ARM B3.2.15).
 constexpr uint32_t ARMV7M_CFSR_MMFSR = 0xFFu;
 constexpr uint32_t ARMV7M_CFSR_MMARVALID = 1u << 7;

@@ -20,6 +20,8 @@
 
 #include "board_pins.h"
 #include "irq.h"
+#include "accessctrl_rows.h"
+#include "regs/accessctrl.h"
 #include "regs/clocks.h"
 #include "regs/resets.h"
 #include "regs/sio.h"
@@ -38,6 +40,7 @@ using kickos::rp2xxx::wait_mask;
 namespace kickos
 {
     int kmain(int argc, char** argv);
+    void kpanic(char const* msg) __attribute__((noreturn));
 }
 
 extern "C"
@@ -79,6 +82,21 @@ namespace
         return true;
     }
 #pragma GCC diagnostic pop
+
+    // The bus ports' reset images admit Non-secure masters, a core or a DMA channel (10.6.2).
+    void accessctrl_close_nonsecure(void)
+    {
+        namespace gate = reg::accessctrl;
+        namespace accessctrl = kickos::rp2350::accessctrl;
+        for (uint32_t off = gate::FIRST_BUS_REG; off <= gate::LAST_BUS_REG; off += 4u)
+        {
+            r32(gate::BASE + off) = accessctrl::closed_to_nonsecure(r32(gate::BASE + off));
+            if (accessctrl::admits_nonsecure(r32(gate::BASE + off)))
+            {
+                kickos::kpanic(kickos::diag::kAccessctrlNonSecure);
+            }
+        }
+    }
 
 #if KICKOS_AMP_OWN_IMAGE
     // Published by the primary for peers, which run no clocks_init. RELAXED: the dsb in
@@ -206,6 +224,7 @@ void arch_init(void)
     else
 #endif
     {
+        accessctrl_close_nonsecure();
         unreset(reg::resets::IO_BANK0 | reg::resets::PADS_BANK0 | reg::resets::TIMER0);
         kickos::rp2xxx::clocks_init();
         unreset(reg::resets::UART1);

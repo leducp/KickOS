@@ -6,6 +6,9 @@
 #include <kickos/arch/arch.h>
 #include "ctx_redirect.h"
 #include "../common/fault_resume.h"
+#if defined(__ARM_ARCH_8M_MAIN__)
+#include "../common/regs_v8m.h"
+#endif
 #include <kickos/diag.h>
 #include <kickos/units.h>
 
@@ -311,6 +314,7 @@ arch_irq_state_t arch_irq_save(void)
 namespace kickos
 {
     void kprintf(char const* fmt, ...);
+    void kpanic(char const* msg) __attribute__((noreturn));
 }
 extern "C" void kpanic_enter(void);
 extern "C" void kfault_terminate(void) __attribute__((noreturn));
@@ -321,15 +325,31 @@ extern "C" void kickos_splim_plant_report(void);
 extern "C"
 {
 
+// Whether the frame the fault left may be read: stacked whole, inside the thread's own stack.
+static bool armv7m_user_frame_trusted(void const* frame, uint32_t cfsr)
+{
+#if KICKOS_ARMV7M_SPLIM
+    uint32_t psplim;
+    __asm volatile("mrs %0, psplim" : "=r"(psplim));
+    if (armv7m_stkof_frame_clamped(cfsr, reinterpret_cast<uintptr_t>(frame), psplim))
+    {
+        return false;
+    }
+#endif
+    // Neither test subsumes the other: the CFSR bits catch a stacking abort whose SP was still
+    // in range, the bounds a frame written in full at a wild SP, which sets no CFSR bit at all.
+    return armv7m_fault_frame_readable(cfsr)
+        and kickos_fault_frame_trusted(frame, ARMV7M_BASIC_FRAME_BYTES);
+}
+
 // CONTROL.nPRIV and NOT ctx.resting_npriv: syscall dispatch runs PRIVILEGED in thread mode
 // (switch.S svc_trampoline) on behalf of a user thread, so a fault there is a kernel bug.
 // Exception entry does not modify CONTROL, so reading it here gives the privilege at fault
-// time. Thread mode is the reporter's EXC_RETURN test, never the stacked IPSR: a task-mate
-// writes that word, and a return to thread mode it makes fail is the thread's fault.
+// time. Thread mode on the PSP is the reporter's EXC_RETURN test, never the stacked IPSR.
 //
-// The frame is always on the USER stack under either entry design: the hardware stacks it at
-// the PSP, and an accepted fault here is one taken with nPRIV set, which the dispatch never
-// is. So the test below is the thread-stack one, not its kernel-block twin.
+// The frame is never what decides: the exit is built whole at kickos_fault_stack_top. A null
+// frame is a fault taken from Non-secure state, whose frame went to a stack the thread's Secure
+// context does not name.
 bool arch_fault_is_user_thread(void* frame)
 {
     uint32_t control;
@@ -338,28 +358,8 @@ bool arch_fault_is_user_thread(void* frame)
     {
         return false;
     }
-#if KICKOS_ARMV7M_SPLIM
-    // A frame at the limit may be the thread's own data, so thread mode is the PSP being the
-    // stack the fault came from.
-    uint32_t psplim;
-    __asm volatile("mrs %0, psplim" : "=r"(psplim));
-    if (armv7m_stkof_frame_clamped(kickos::arm::reg32(SCB_CFSR),
-                                   reinterpret_cast<uintptr_t>(frame), psplim))
-    {
-        uint32_t psp;
-        __asm volatile("mrs %0, psp" : "=r"(psp));
-        return reinterpret_cast<uintptr_t>(frame) == psp
-            and kickos_fault_frame_trusted(frame, ARMV7M_BASIC_FRAME_BYTES);
-    }
-#endif
-    if (not armv7m_fault_frame_readable(kickos::arm::reg32(SCB_CFSR)))
-    {
-        return false;
-    }
-    // Neither test subsumes the other: the CFSR bits catch a stacking abort whose SP was
-    // still in range, this catches a frame written in full at a wild SP, which sets no
-    // CFSR bit at all.
-    return kickos_fault_frame_trusted(frame, ARMV7M_BASIC_FRAME_BYTES);
+    (void)frame;
+    return kickos_arm_fault_exit_top() != 0;
 }
 
 void arch_fault_redirect_to_exit(void* frame)
@@ -370,7 +370,8 @@ void arch_fault_redirect_to_exit(void* frame)
     int addr_valid = 0;
     // Taken whatever the core latched: a chip latch left set labels the NEXT thread's fault.
     uintptr_t chip_addr = 0;
-    bool const chip_latched = arch_fault_chip_addr(&chip_addr);
+    char const* const chip_unit = arch_fault_chip_addr(&chip_addr);
+    char const* addr_unit = nullptr;
     // MMFAR/BFAR hold a stale address unless the matching VALID bit is set.
     if (cfsr & ARMV7M_CFSR_MMARVALID)
     {
@@ -382,83 +383,110 @@ void arch_fault_redirect_to_exit(void* frame)
         addr = kickos::arm::reg32(SCB_BFAR);
         addr_valid = 1;
     }
-    else if (chip_latched and armv7m_chip_addr_explains(cfsr))
+    else if (chip_unit != nullptr and armv7m_chip_addr_explains(cfsr))
     {
         addr = chip_addr;
         addr_valid = 1;
+        addr_unit = chip_unit;
     }
     uint32_t* const f = static_cast<uint32_t*>(frame);
-#if KICKOS_ARMV7M_SPLIM
-    uint32_t psplim;
-    __asm volatile("mrs %0, psplim" : "=r"(psplim));
-    bool const clamped =
-        armv7m_stkof_frame_clamped(cfsr, reinterpret_cast<uintptr_t>(frame), psplim);
-    if (clamped)
+    if (frame == nullptr)
     {
-        kickos_fault_record_no_pc("CFSR", cfsr, addr, addr_valid);
+#if defined(__ARM_ARCH_8M_MAIN__)
+        // A Secure attribution refused it, or the Non-secure MPU, whose fault escalated here.
+        uint32_t const sfsr = kickos::arm::reg32(ARMV8M_SFSR);
+        uint32_t const cfsr_ns = kickos::arm::reg32(ARMV8M_CFSR_NS);
+        if (sfsr != 0u)
+        {
+            uintptr_t sfar = 0;
+            int sfar_valid = 0;
+            if ((sfsr & ARMV8M_SFSR_SFARVALID) != 0u)
+            {
+                sfar = kickos::arm::reg32(ARMV8M_SFAR);
+                sfar_valid = 1;
+            }
+            kickos_fault_record_no_pc("SFSR", sfsr, sfar, sfar_valid);
+        }
+        else
+        {
+            kickos_fault_record_no_pc("CFSR_NS", cfsr_ns, 0, 0);
+        }
+        kickos::arm::reg32(ARMV8M_CFSR_NS) = cfsr_ns;
+#endif
     }
-    else
+    else if (armv7m_user_frame_trusted(frame, cfsr))
     {
         kickos_fault_record("CFSR", cfsr, f[6], addr, addr_valid);
     }
-    // An SVC whose entry stacking violated the limit stays pending, and would tail-chain into
-    // the exit's place with this dying thread's frame.
-    if ((cfsr & ARMV7M_CFSR_STKOF) != 0u)
+    else
     {
-        kickos::arm::reg32(SCB_SHCSR) &= ~SHCSR_SVCALLPENDED;
+        kickos_fault_record_no_pc("CFSR", cfsr, addr, addr_valid);
     }
-#else
-    kickos_fault_record("CFSR", cfsr, f[6], addr, addr_valid);
-#endif
+    if (addr_unit != nullptr)
+    {
+        kickos_fault_record_addr_unit(addr_unit);
+    }
+    // A stacking abort leaves the derived fault or the original exception pending (ARMv7-M ARM
+    // B1.5.11, DerivedLateArrival), and an imprecise BusFault taken over an SVC's entry leaves the
+    // SVCall pending; either would be taken on the exit's frame, privileged. Every fault runs at
+    // priority 0 and only thread code executes SVC, so whatever is pending here is the dying
+    // thread's own.
+    uint32_t const shcsr = kickos::arm::reg32(SCB_SHCSR);
+    if ((shcsr & SHCSR_SVCALLPENDED) != 0u)
+    {
+        kickos_fault_record_svc_dropped();
+    }
+    kickos::arm::reg32(SCB_SHCSR) = shcsr & ~(SHCSR_USGFAULTPENDED | SHCSR_MEMFAULTPENDED
+                                              | SHCSR_BUSFAULTPENDED | SHCSR_SVCALLPENDED);
     // Write-1-to-clear and sticky: a bit left set mislabels the NEXT thread's fault.
     kickos::arm::reg32(SCB_CFSR) = cfsr;
     kickos::arm::reg32(SCB_HFSR) = hfsr;
+#if defined(__ARM_ARCH_8M_MAIN__)
+    if (security_extension_implemented())
+    {
+        kickos::arm::reg32(ARMV8M_SFSR) = kickos::arm::reg32(ARMV8M_SFSR);
+    }
+#endif
 
     uint32_t const top = kickos_arm_fault_exit_top();
-    if (top == 0)
-    {
-        kickos_arm_fault_frame_in_place(f);
-    }
-    else
-    {
 #if defined(__ARM_FP)
-        // The built frame is a basic one, so a lazy save this thread left pending at FPCAR
-        // would fire later through a pointer into its user stack.
-        kickos::arm::reg32(FPU_FPCCR) &= ~FPU_FPCCR_LSPACT;
-        __asm volatile("dsb\n\tisb" ::: "memory");
-        // The exit carries no FP state, so no switch away from it clears the dead thread's.
-        __asm volatile("mov r12, #0\n\t"
-                       "vmov s0, s1, r12, r12\n\t"
-                       "vmov s2, s3, r12, r12\n\t"
-                       "vmov s4, s5, r12, r12\n\t"
-                       "vmov s6, s7, r12, r12\n\t"
-                       "vmov s8, s9, r12, r12\n\t"
-                       "vmov s10, s11, r12, r12\n\t"
-                       "vmov s12, s13, r12, r12\n\t"
-                       "vmov s14, s15, r12, r12\n\t"
-                       "vmov s16, s17, r12, r12\n\t"
-                       "vmov s18, s19, r12, r12\n\t"
-                       "vmov s20, s21, r12, r12\n\t"
-                       "vmov s22, s23, r12, r12\n\t"
-                       "vmov s24, s25, r12, r12\n\t"
-                       "vmov s26, s27, r12, r12\n\t"
-                       "vmov s28, s29, r12, r12\n\t"
-                       "vmov s30, s31, r12, r12\n\t"
-                       "vmsr fpscr, r12\n\t"
-                       :
-                       :
-                       : "r12", "memory");
+    // The built frame is a basic one, so a lazy save this thread left pending at FPCAR
+    // would fire later through a pointer into its user stack.
+    kickos::arm::reg32(FPU_FPCCR) &= ~FPU_FPCCR_LSPACT;
+    __asm volatile("dsb\n\tisb" ::: "memory");
+    // The exit carries no FP state, so no switch away from it clears the dead thread's.
+    __asm volatile("mov r12, #0\n\t"
+                   "vmov s0, s1, r12, r12\n\t"
+                   "vmov s2, s3, r12, r12\n\t"
+                   "vmov s4, s5, r12, r12\n\t"
+                   "vmov s6, s7, r12, r12\n\t"
+                   "vmov s8, s9, r12, r12\n\t"
+                   "vmov s10, s11, r12, r12\n\t"
+                   "vmov s12, s13, r12, r12\n\t"
+                   "vmov s14, s15, r12, r12\n\t"
+                   "vmov s16, s17, r12, r12\n\t"
+                   "vmov s18, s19, r12, r12\n\t"
+                   "vmov s20, s21, r12, r12\n\t"
+                   "vmov s22, s23, r12, r12\n\t"
+                   "vmov s24, s25, r12, r12\n\t"
+                   "vmov s26, s27, r12, r12\n\t"
+                   "vmov s28, s29, r12, r12\n\t"
+                   "vmov s30, s31, r12, r12\n\t"
+                   "vmsr fpscr, r12\n\t"
+                   :
+                   :
+                   : "r12", "memory");
 #endif
 #if KICKOS_ARMV7M_SPLIM
-        uint32_t limit = psplim;
-        if (kickos_fault_frame_on_kernel_stack(reinterpret_cast<void const*>(top - 4u), 4u))
-        {
-            limit = top - KICKOS_KERNEL_STACK_SIZE + KICKOS_ARMV7M_SPLIM_ROOM;
-        }
-        __asm volatile("msr psplim, %0" ::"r"(limit) : "memory");
-#endif
-        kickos_arm_fault_frame_at(top);
+    uint32_t limit;
+    __asm volatile("mrs %0, psplim" : "=r"(limit));
+    if (kickos_fault_frame_on_kernel_stack(reinterpret_cast<void const*>(top - 4u), 4u))
+    {
+        limit = top - KICKOS_KERNEL_STACK_SIZE + KICKOS_ARMV7M_SPLIM_ROOM;
     }
+    __asm volatile("msr psplim, %0" ::"r"(limit) : "memory");
+#endif
+    kickos_arm_fault_frame_at(top);
     kickos_arm_fault_resume_privileged();
 }
 
@@ -475,14 +503,25 @@ uint32_t kickos_armv7m_fault_report(uint32_t* frame, uint32_t exc_return)
 {
     // Nothing may print above this: kpanic_enter's console reclaim is permanent and this fault
     // is survivable.
-    bool const frame_read = armv7m_fault_frame_readable(kickos::arm::reg32(SCB_CFSR));
+    // From Non-secure state the core stacked on a Non-secure stack, which `frame` does not name.
+    bool const frame_read = armv7m_fault_frame_readable(kickos::arm::reg32(SCB_CFSR))
+        and not kickos_arm_exc_return_from_nonsecure(exc_return);
 #if KICKOS_ARMV7M_SPLIM
     bool const unverified = armv7m_stkof_frame_clamped(kickos::arm::reg32(SCB_CFSR),
                                                        reinterpret_cast<uintptr_t>(frame), limit);
 #endif
-    if ((exc_return & KICKOS_ARM_EXC_RETURN_THREAD) != 0u and kickos_fault_kill_thread(frame))
+    if (kickos_arm_exc_return_from_nonsecure(exc_return))
     {
-        return kickos_arm_fault_exit_exc_return(exc_return);
+        // Only a thread's BXNS or BLXNS reaches Non-secure state, so the fault is the running
+        // thread's whatever mode or stack EXC_RETURN names.
+        if (kickos_fault_kill_thread(nullptr))
+        {
+            return KICKOS_ARM_FAULT_EXIT_EXC_RETURN;
+        }
+    }
+    else if (kickos_arm_exc_return_thread_psp(exc_return) and kickos_fault_kill_thread(frame))
+    {
+        return KICKOS_ARM_FAULT_EXIT_EXC_RETURN;
     }
     kickos_fault_report_begin();
     kpanic_enter();
@@ -553,12 +592,27 @@ uint32_t kickos_armv7m_fault_report(uint32_t* frame, uint32_t exc_return)
     kfault_terminate();
 }
 
+// A lazy FP save left pending at FPCAR fires on the first FP instruction the report chain
+// runs, through a frame the thread chose, inside this handler.
+#if defined(__ARM_FP)
+#define KICKOS_ARMV7M_LSPACT_CLEAR                                                                 \
+    "ldr r3, =0xE000EF34 \n"                                                                      \
+    "ldr r12, [r3]       \n"                                                                      \
+    "bic r12, r12, #1    \n"                                                                      \
+    "str r12, [r3]       \n"                                                                      \
+    "dsb                 \n"                                                                      \
+    "isb                 \n"
+#else
+#define KICKOS_ARMV7M_LSPACT_CLEAR ""
+#endif
+
 // Naked so no prologue perturbs SP before it is read. The chip vector tables point the fault
 // vectors all here.
 __attribute__((naked)) void HardFault_Handler(void)
 {
 #if KICKOS_ARMV7M_SPLIM
     __asm volatile(
+        KICKOS_ARMV7M_LSPACT_CLEAR
         "tst lr, #4          \n"
         "itete eq            \n"
         "mrseq r0, msp       \n"
@@ -574,6 +628,7 @@ __attribute__((naked)) void HardFault_Handler(void)
         "bx r0               \n");
 #else
     __asm volatile(
+        KICKOS_ARMV7M_LSPACT_CLEAR
         "tst lr, #4          \n"
         "ite eq              \n"
         "mrseq r0, msp       \n"
@@ -725,6 +780,24 @@ void kickos_armv7m_ccr_init(void)
 void kickos_armv7m_init(void)
 {
     reg32(SCB_SHCSR) |= SHCSR_USGFAULTENA | SHCSR_BUSFAULTENA;
+#if defined(__ARM_ARCH_8M_MAIN__)
+    // BXNS and BLXNS need no privilege, so Non-secure state is left with no privilege and no
+    // reset request; kickos_arm_pmsav8_init takes its memory.
+    if (security_extension_implemented())
+    {
+        __asm volatile("msr control_ns, %0" ::"r"(1u) : "memory");
+        reg32(SCB_AIRCR) = AIRCR_VECTKEY | (reg32(SCB_AIRCR) & AIRCR_LOW_HALF & ~AIRCR_BFHFNMINS)
+                         | AIRCR_SYSRESETREQS;
+        __asm volatile("dsb\n\tisb" ::: "memory");
+        uint32_t control_ns;
+        __asm volatile("mrs %0, control_ns" : "=r"(control_ns));
+        uint32_t const aircr = reg32(SCB_AIRCR) & (AIRCR_SYSRESETREQS | AIRCR_BFHFNMINS);
+        if ((control_ns & 1u) == 0u or aircr != AIRCR_SYSRESETREQS)
+        {
+            ::kickos::kpanic(::kickos::diag::kNonSecureOpen);
+        }
+    }
+#endif
 #if KICKOS_ARMV7M_SPLIM
     {
         extern char __kickos_ram_end[];

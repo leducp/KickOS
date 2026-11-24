@@ -13,6 +13,6 @@
 [fs] spawning the faulter
 [fs] worker about to fault
 
-=== HARD FAULT ===
-  PC=0x10000430 LR=0x10001601 xPSR=0x61000000 (PSP)
-  R0=0x1b R1=0x0 R2=0x0 R3=0x20008760 R12=0x0
+=== THREAD FAULT === thread 'faulter' killed, system continues
+  PC unknown
+[fs] survivor ran after the fault

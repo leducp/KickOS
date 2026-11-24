@@ -823,21 +823,117 @@ tests/integration/check_faultsurvive.sh;stkof;armv7m;contained|faultsurvive-armv
 tests/integration/check_faultsurvive.sh;stkof;armv7m;contained|faultsurvive-armv7m-stkof.capture||order|order|=== THREAD FAULT|[fs] survivor ran
 tests/integration/check_faultsurvive.sh;stkof;armv7m;contained|faultsurvive-armv7m-stkof.capture||order|order|[fs] worker about to fault|=== THREAD FAULT
 tests/integration/check_faultsurvive.sh;stkof;armv7m;contained|faultsurvive-armv7m-stkof.capture||panic|after|[fs] survivor ran|KERNEL PANIC: planted
-tests/integration/check_faultsurvive.sh;overflow;armv7m;terminated|faultsurvive-armv7m-overflow.capture||dump|drop|=== MPU FAULT|
-tests/integration/check_faultsurvive.sh;overflow;armv7m;terminated|faultsurvive-armv7m-overflow.capture||cause|swap|CFSR=0x92|CFSR=0x2
-tests/integration/check_faultsurvive.sh;overflow;armv7m;terminated|faultsurvive-armv7m-overflow.capture||order|order|[fs] worker about to fault|=== MPU FAULT
-tests/integration/check_faultsurvive.sh;offstack;armv7m;terminated|faultsurvive-armv7m-offstack.capture||dump|drop|=== HARD FAULT|
-tests/integration/check_faultsurvive.sh;offstack;armv7m;terminated|faultsurvive-armv7m-offstack.capture||cause|swap|CFSR=0x10000|CFSR=0x10010
-tests/integration/check_faultsurvive.sh;unread;armv7m;terminated|faultsurvive-armv7m-unread.capture||cause|swap|CFSR=0x10010|CFSR=0x10800
-tests/integration/check_faultsurvive.sh;unread;armv7m;terminated|faultsurvive-armv7m-unread.capture||frame|drop|frame not read|
-tests/integration/check_faultsurvive.sh;unread;armv7m;terminated|faultsurvive-armv7m-unread.capture||doubled|after|CFSR=0x10010|=== MPU FAULT ===
+tests/integration/check_faultsurvive.sh;overflow;armv7m;killed|faultsurvive-armv7m-overflow.capture||reached|drop|[fs] worker about to fault|
+tests/integration/check_faultsurvive.sh;overflow;armv7m;killed|faultsurvive-armv7m-overflow.capture||killed|drop|=== THREAD FAULT|
+tests/integration/check_faultsurvive.sh;overflow;armv7m;killed|faultsurvive-armv7m-overflow.capture||order|order|[fs] worker about to fault|=== THREAD FAULT
+tests/integration/check_faultsurvive.sh;overflow;armv7m;killed|faultsurvive-armv7m-overflow.capture||survived|drop|[fs] survivor ran|
+tests/integration/check_faultsurvive.sh;overflow;armv7m;killed|faultsurvive-armv7m-overflow.capture||order|order|=== THREAD FAULT|[fs] survivor ran
+tests/integration/check_faultsurvive.sh;overflow;armv7m;killed|faultsurvive-armv7m-overflow.capture||panic|after|[fs] survivor ran|KERNEL PANIC: planted
+tests/integration/check_faultsurvive.sh;overflow;armv7m;killed|faultsurvive-armv7m-overflow.capture||cause|swap|PC unknown CFSR=0x92|PC=0x30 CFSR=0x92
+tests/integration/check_faultsurvive.sh;overflow;armv7m;killed|faultsurvive-armv7m-overflow.capture||cause|swap|CFSR=0x92|CFSR=0x2
+tests/integration/check_faultsurvive.sh;overflow;armv7m;killed|faultsurvive-armv7m-overflow-k64.capture||cause|drop|  SYSMPU ISOLATION FAULT|
+tests/integration/check_faultsurvive.sh;overflow;armv7m;killed|faultsurvive-armv7m-overflow-k64.capture||cause|swap|CFSR=0x1400|CFSR=0x400
+tests/integration/check_faultsurvive.sh;overflow;armv7m;killed|faultsurvive-armv7m-overflow-k64.capture||killed|drop|=== THREAD FAULT|
+tests/integration/check_faultsurvive.sh;fpunread;armv7m;killed|faultsurvive-armv7m-fpunread.capture||reached|drop|[fs] worker about to fault|
+tests/integration/check_faultsurvive.sh;fpunread;armv7m;killed|faultsurvive-armv7m-fpunread.capture||killed|drop|=== THREAD FAULT|
+tests/integration/check_faultsurvive.sh;fpunread;armv7m;killed|faultsurvive-armv7m-fpunread.capture||survived|drop|[fs] survivor ran|
+tests/integration/check_faultsurvive.sh;fpunread;armv7m;killed|faultsurvive-armv7m-fpunread.capture||order|order|=== THREAD FAULT|[fs] survivor ran
+tests/integration/check_faultsurvive.sh;fpunread;armv7m;killed|faultsurvive-armv7m-fpunread.capture||panic|after|[fs] survivor ran|KERNEL PANIC: planted
+tests/integration/check_faultsurvive.sh;fpunread;armv7m;killed|faultsurvive-armv7m-fpunread.capture||cause|swap|PC unknown CFSR=0x10010|PC=0x5a98 CFSR=0x10010
+tests/integration/check_faultsurvive.sh;fpunread;armv7m;killed|faultsurvive-armv7m-fpunread.capture||cause|swap|CFSR=0x10010|CFSR=0x10000
+tests/integration/check_faultsurvive.sh;offstack;armv7m;killed|faultsurvive-armv7m-offstack.capture||reached|drop|[fs] worker about to fault|
+tests/integration/check_faultsurvive.sh;offstack;armv7m;killed|faultsurvive-armv7m-offstack.capture||killed|drop|=== THREAD FAULT|
+tests/integration/check_faultsurvive.sh;offstack;armv7m;killed|faultsurvive-armv7m-offstack.capture||order|order|[fs] worker about to fault|=== THREAD FAULT
+tests/integration/check_faultsurvive.sh;offstack;armv7m;killed|faultsurvive-armv7m-offstack.capture||survived|drop|[fs] survivor ran|
+tests/integration/check_faultsurvive.sh;offstack;armv7m;killed|faultsurvive-armv7m-offstack.capture||order|order|=== THREAD FAULT|[fs] survivor ran
+tests/integration/check_faultsurvive.sh;offstack;armv7m;killed|faultsurvive-armv7m-offstack.capture||panic|after|[fs] survivor ran|KERNEL PANIC: planted
+tests/integration/check_faultsurvive.sh;offstack;armv7m;killed|faultsurvive-armv7m-offstack.capture||cause|swap|PC unknown CFSR=0x10000|PC=0x8000360 CFSR=0x10000
+tests/integration/check_faultsurvive.sh;offstack;armv7m;killed|faultsurvive-armv7m-offstack.capture||cause|swap|CFSR=0x10000|CFSR=0x10010
+tests/integration/check_faultsurvive.sh;unread;armv7m;killed|faultsurvive-armv7m-unread.capture||reached|drop|[fs] worker about to fault|
+tests/integration/check_faultsurvive.sh;unread;armv7m;killed|faultsurvive-armv7m-unread.capture||killed|drop|=== THREAD FAULT|
+tests/integration/check_faultsurvive.sh;unread;armv7m;killed|faultsurvive-armv7m-unread.capture||order|order|[fs] worker about to fault|=== THREAD FAULT
+tests/integration/check_faultsurvive.sh;unread;armv7m;killed|faultsurvive-armv7m-unread.capture||survived|drop|[fs] survivor ran|
+tests/integration/check_faultsurvive.sh;unread;armv7m;killed|faultsurvive-armv7m-unread.capture||order|order|=== THREAD FAULT|[fs] survivor ran
+tests/integration/check_faultsurvive.sh;unread;armv7m;killed|faultsurvive-armv7m-unread.capture||panic|after|[fs] survivor ran|KERNEL PANIC: planted
+tests/integration/check_faultsurvive.sh;unread;armv7m;killed|faultsurvive-armv7m-unread.capture||cause|swap|PC unknown CFSR=0x10010|PC=0x5a98 CFSR=0x10010
+tests/integration/check_faultsurvive.sh;unread;armv7m;killed|faultsurvive-armv7m-unread.capture||cause|swap|CFSR=0x10010|CFSR=0x10000
+tests/integration/check_faultsurvive.sh;wildsvc;armv7m;killed|faultsurvive-armv7m-wildsvc.capture||reached|drop|[fs] worker about to fault|
+tests/integration/check_faultsurvive.sh;wildsvc;armv7m;killed|faultsurvive-armv7m-wildsvc.capture||killed|drop|=== THREAD FAULT|
+tests/integration/check_faultsurvive.sh;wildsvc;armv7m;killed|faultsurvive-armv7m-wildsvc.capture||order|order|[fs] worker about to fault|=== THREAD FAULT
+tests/integration/check_faultsurvive.sh;wildsvc;armv7m;killed|faultsurvive-armv7m-wildsvc.capture||survived|drop|[fs] survivor ran|
+tests/integration/check_faultsurvive.sh;wildsvc;armv7m;killed|faultsurvive-armv7m-wildsvc.capture||order|order|=== THREAD FAULT|[fs] survivor ran
+tests/integration/check_faultsurvive.sh;wildsvc;armv7m;killed|faultsurvive-armv7m-wildsvc.capture||panic|after|[fs] survivor ran|KERNEL PANIC: planted
+tests/integration/check_faultsurvive.sh;wildsvc;armv7m;killed|faultsurvive-armv7m-wildsvc.capture||svc|after|=== THREAD FAULT|=== ARMV7M CONTAINED (wild PSP) ===
+tests/integration/check_faultsurvive.sh;wildsvc;armv7m;killed|faultsurvive-armv7m-wildsvc.capture||kwrite|drop|[fs] [kword] INTACT|
+tests/integration/check_faultsurvive.sh;wildsvc;armv7m;killed|faultsurvive-armv7m-wildsvc.capture||svc|drop|  SVCall dropped|
+tests/integration/check_faultsurvive.sh;wildsvc;armv7m;killed|faultsurvive-armv7m-wildsvc.capture||kwrite|after|[fs] survivor ran|[fs] [kword] CORRUPTED: planted
+tests/integration/check_faultsurvive.sh;wildsvc;armv7m;killed|faultsurvive-armv7m-wildsvc.capture||cause|swap|PC unknown CFSR=0x10|PC=0x30 CFSR=0x10
+tests/integration/check_faultsurvive.sh;wildsvc;armv7m;killed|faultsurvive-armv7m-wildsvc.capture||cause|swap|CFSR=0x10|CFSR=0x2
+tests/integration/check_faultsurvive.sh;wildsvc;armv6m;killed|faultsurvive-armv6m-wildsvc.capture||reached|drop|[fs] worker about to fault|
+tests/integration/check_faultsurvive.sh;wildsvc;armv6m;killed|faultsurvive-armv6m-wildsvc.capture||killed|drop|=== THREAD FAULT|
+tests/integration/check_faultsurvive.sh;wildsvc;armv6m;killed|faultsurvive-armv6m-wildsvc.capture||order|order|[fs] worker about to fault|=== THREAD FAULT
+tests/integration/check_faultsurvive.sh;wildsvc;armv6m;killed|faultsurvive-armv6m-wildsvc.capture||survived|drop|[fs] survivor ran|
+tests/integration/check_faultsurvive.sh;wildsvc;armv6m;killed|faultsurvive-armv6m-wildsvc.capture||order|order|=== THREAD FAULT|[fs] survivor ran
+tests/integration/check_faultsurvive.sh;wildsvc;armv6m;killed|faultsurvive-armv6m-wildsvc.capture||panic|after|[fs] survivor ran|KERNEL PANIC: planted
+tests/integration/check_faultsurvive.sh;wildsvc;armv6m;killed|faultsurvive-armv6m-wildsvc.capture||svc|after|=== THREAD FAULT|=== ARMV7M CONTAINED (wild PSP) ===
+tests/integration/check_faultsurvive.sh;wildsvc;armv6m;killed|faultsurvive-armv6m-wildsvc.capture||kwrite|drop|[fs] [kword] INTACT|
+tests/integration/check_faultsurvive.sh;wildsvc;armv6m;killed|faultsurvive-armv6m-wildsvc.capture||svc|drop|  SVCall dropped|
+tests/integration/check_faultsurvive.sh;wildsvc;armv6m;killed|faultsurvive-armv6m-wildsvc.capture||kwrite|after|[fs] survivor ran|[fs] [kword] CORRUPTED: planted
+tests/integration/check_faultsurvive.sh;wildsvc;armv6m;killed|faultsurvive-armv6m-wildsvc.capture||cause|swap|  PC unknown|  PC=0x10000430
+tests/integration/check_faultsurvive.sh;wildsvc;armv6m;killed|faultsurvive-armv6m-wildsvc.capture||cause|after|  PC unknown|  CFSR=0x10 HFSR=0x0
+tests/integration/check_faultsurvive.sh;storesvc;armv7m;killed|faultsurvive-armv7m-storesvc.capture||reached|drop|[fs] worker about to fault|
+tests/integration/check_faultsurvive.sh;storesvc;armv7m;killed|faultsurvive-armv7m-storesvc.capture||killed|drop|=== THREAD FAULT|
+tests/integration/check_faultsurvive.sh;storesvc;armv7m;killed|faultsurvive-armv7m-storesvc.capture||order|order|[fs] worker about to fault|=== THREAD FAULT
+tests/integration/check_faultsurvive.sh;storesvc;armv7m;killed|faultsurvive-armv7m-storesvc.capture||survived|drop|[fs] survivor ran|
+tests/integration/check_faultsurvive.sh;storesvc;armv7m;killed|faultsurvive-armv7m-storesvc.capture||order|order|=== THREAD FAULT|[fs] survivor ran
+tests/integration/check_faultsurvive.sh;storesvc;armv7m;killed|faultsurvive-armv7m-storesvc.capture||panic|after|[fs] survivor ran|KERNEL PANIC: planted
+tests/integration/check_faultsurvive.sh;storesvc;armv7m;killed|faultsurvive-armv7m-storesvc.capture||svc|after|=== THREAD FAULT|=== ARMV7M CONTAINED (wild PSP) ===
+tests/integration/check_faultsurvive.sh;storesvc;armv7m;killed|faultsurvive-armv7m-storesvc.capture||kwrite|drop|[fs] [kword] INTACT|
+tests/integration/check_faultsurvive.sh;storesvc;armv7m;killed|faultsurvive-armv7m-storesvc.capture||svc|drop|  SVCall dropped|
+tests/integration/check_faultsurvive.sh;storesvc;armv7m;killed|faultsurvive-armv7m-storesvc.capture||kwrite|after|[fs] survivor ran|[fs] [kword] CORRUPTED: planted
+tests/integration/check_faultsurvive.sh;storesvc;armv7m;killed|faultsurvive-armv7m-storesvc.capture||cause|swap|CFSR=0x400|CFSR=0x8200
+tests/integration/check_faultsurvive.sh;storesvc;armv7m;killed|faultsurvive-armv7m-storesvc.capture||cause|drop|CFSR=0x400|
+tests/integration/check_faultsurvive.sh;bxnsrom;armv7m;killed|faultsurvive-armv7m-bxnsrom.capture||reached|drop|[fs] worker about to fault|
+tests/integration/check_faultsurvive.sh;bxnsrom;armv7m;killed|faultsurvive-armv7m-bxnsrom.capture||killed|drop|=== THREAD FAULT|
+tests/integration/check_faultsurvive.sh;bxnsrom;armv7m;killed|faultsurvive-armv7m-bxnsrom.capture||survived|drop|[fs] survivor ran|
+tests/integration/check_faultsurvive.sh;bxnsrom;armv7m;killed|faultsurvive-armv7m-bxnsrom.capture||order|order|=== THREAD FAULT|[fs] survivor ran
+tests/integration/check_faultsurvive.sh;bxnsrom;armv7m;killed|faultsurvive-armv7m-bxnsrom.capture||panic|after|[fs] survivor ran|KERNEL PANIC: planted
+tests/integration/check_faultsurvive.sh;bxnsrom;armv7m;killed|faultsurvive-armv7m-bxnsrom.capture||cause|swap|PC unknown CFSR_NS=0x1|PC unknown SFSR=0x1
+tests/integration/check_faultsurvive.sh;bxnsrom;armv7m;killed|faultsurvive-armv7m-bxnsrom.capture||cause|swap|CFSR_NS=0x1|CFSR_NS=0x2
+tests/integration/check_faultsurvive.sh;bxns;armv7m;killed|faultsurvive-armv7m-bxns.capture||reached|drop|[fs] worker about to fault|
+tests/integration/check_faultsurvive.sh;bxns;armv7m;killed|faultsurvive-armv7m-bxns.capture||killed|drop|=== THREAD FAULT|
+tests/integration/check_faultsurvive.sh;bxns;armv7m;killed|faultsurvive-armv7m-bxns.capture||order|order|[fs] worker about to fault|=== THREAD FAULT
+tests/integration/check_faultsurvive.sh;bxns;armv7m;killed|faultsurvive-armv7m-bxns.capture||survived|drop|[fs] survivor ran|
+tests/integration/check_faultsurvive.sh;bxns;armv7m;killed|faultsurvive-armv7m-bxns.capture||order|order|=== THREAD FAULT|[fs] survivor ran
+tests/integration/check_faultsurvive.sh;bxns;armv7m;killed|faultsurvive-armv7m-bxns.capture||panic|after|[fs] survivor ran|KERNEL PANIC: planted
+tests/integration/check_faultsurvive.sh;bxns;armv7m;killed|faultsurvive-armv7m-bxns.capture||cause|swap|PC unknown SFSR=0x49|PC=0x0 CFSR=0x0
+tests/integration/check_faultsurvive.sh;bxns;armv7m;killed|faultsurvive-armv7m-bxns.capture||cause|swap|SFSR=0x49|SFSR=0x48
+tests/integration/check_faultsurvive.sh;blxns;armv7m;killed|faultsurvive-armv7m-bxns.capture||reached|drop|[fs] worker about to fault|
+tests/integration/check_faultsurvive.sh;blxns;armv7m;killed|faultsurvive-armv7m-bxns.capture||killed|drop|=== THREAD FAULT|
+tests/integration/check_faultsurvive.sh;blxns;armv7m;killed|faultsurvive-armv7m-bxns.capture||order|order|[fs] worker about to fault|=== THREAD FAULT
+tests/integration/check_faultsurvive.sh;blxns;armv7m;killed|faultsurvive-armv7m-bxns.capture||survived|drop|[fs] survivor ran|
+tests/integration/check_faultsurvive.sh;blxns;armv7m;killed|faultsurvive-armv7m-bxns.capture||order|order|=== THREAD FAULT|[fs] survivor ran
+tests/integration/check_faultsurvive.sh;blxns;armv7m;killed|faultsurvive-armv7m-bxns.capture||panic|after|[fs] survivor ran|KERNEL PANIC: planted
+tests/integration/check_faultsurvive.sh;blxns;armv7m;killed|faultsurvive-armv7m-bxns.capture||cause|swap|PC unknown SFSR=0x49|PC=0x0 CFSR=0x0
+tests/integration/check_faultsurvive.sh;blxns;armv7m;killed|faultsurvive-armv7m-bxns.capture||cause|swap|SFSR=0x49|SFSR=0x48
 tests/integration/check_faultsurvive.sh;survive;armv6m;terminated|faultsurvive-armv6m.capture||killed|drop|=== THREAD FAULT|
 tests/integration/check_faultsurvive.sh;survive;armv6m;terminated|faultsurvive-armv6m.capture||survived|drop|[fs] survivor ran|
-tests/integration/check_faultsurvive.sh;overflow;armv6m;terminated|faultsurvive-armv6m-overflow.capture||dump|drop|=== HARD FAULT|
-tests/integration/check_faultsurvive.sh;overflow;armv6m;terminated|faultsurvive-armv6m-overflow.capture||cause|swap|(PSP)|(MSP)
-tests/integration/check_faultsurvive.sh;overflow;armv6m;terminated|faultsurvive-armv6m-overflow.capture||cause|after|R12=0x0|  CFSR=0x10 HFSR=0x0
-tests/integration/check_faultsurvive.sh;offstack;armv6m;terminated|faultsurvive-armv6m-offstack.capture||cause|swap|(PSP)|(MSP)
-tests/integration/check_faultsurvive.sh;offstack;armv6m;terminated|faultsurvive-armv6m-offstack.capture||dump|drop|=== HARD FAULT|
+tests/integration/check_faultsurvive.sh;overflow;armv6m;killed|faultsurvive-armv6m-overflow.capture||reached|drop|[fs] worker about to fault|
+tests/integration/check_faultsurvive.sh;overflow;armv6m;killed|faultsurvive-armv6m-overflow.capture||killed|drop|=== THREAD FAULT|
+tests/integration/check_faultsurvive.sh;overflow;armv6m;killed|faultsurvive-armv6m-overflow.capture||order|order|[fs] worker about to fault|=== THREAD FAULT
+tests/integration/check_faultsurvive.sh;overflow;armv6m;killed|faultsurvive-armv6m-overflow.capture||survived|drop|[fs] survivor ran|
+tests/integration/check_faultsurvive.sh;overflow;armv6m;killed|faultsurvive-armv6m-overflow.capture||order|order|=== THREAD FAULT|[fs] survivor ran
+tests/integration/check_faultsurvive.sh;overflow;armv6m;killed|faultsurvive-armv6m-overflow.capture||panic|after|[fs] survivor ran|KERNEL PANIC: planted
+tests/integration/check_faultsurvive.sh;overflow;armv6m;killed|faultsurvive-armv6m-overflow.capture||cause|swap|  PC unknown|  PC=0x10000430
+tests/integration/check_faultsurvive.sh;overflow;armv6m;killed|faultsurvive-armv6m-overflow.capture||cause|after|  PC unknown|  CFSR=0x10 HFSR=0x0
+tests/integration/check_faultsurvive.sh;offstack;armv6m;killed|faultsurvive-armv6m-offstack.capture||reached|drop|[fs] worker about to fault|
+tests/integration/check_faultsurvive.sh;offstack;armv6m;killed|faultsurvive-armv6m-offstack.capture||killed|drop|=== THREAD FAULT|
+tests/integration/check_faultsurvive.sh;offstack;armv6m;killed|faultsurvive-armv6m-offstack.capture||order|order|[fs] worker about to fault|=== THREAD FAULT
+tests/integration/check_faultsurvive.sh;offstack;armv6m;killed|faultsurvive-armv6m-offstack.capture||survived|drop|[fs] survivor ran|
+tests/integration/check_faultsurvive.sh;offstack;armv6m;killed|faultsurvive-armv6m-offstack.capture||order|order|=== THREAD FAULT|[fs] survivor ran
+tests/integration/check_faultsurvive.sh;offstack;armv6m;killed|faultsurvive-armv6m-offstack.capture||panic|after|[fs] survivor ran|KERNEL PANIC: planted
+tests/integration/check_faultsurvive.sh;offstack;armv6m;killed|faultsurvive-armv6m-offstack.capture||cause|swap|  PC unknown|  PC=0x10000430
+tests/integration/check_faultsurvive.sh;offstack;armv6m;killed|faultsurvive-armv6m-offstack.capture||cause|after|  PC unknown|  CFSR=0x10 HFSR=0x0
 tests/integration/check_faultsurvive.sh;div0;armv7m;killed|faultsurvive-div0-armv7m.capture||reached|drop|[fs] worker about to fault|
 tests/integration/check_faultsurvive.sh;div0;armv7m;killed|faultsurvive-div0-armv7m.capture||killed|drop|=== THREAD FAULT|
 tests/integration/check_faultsurvive.sh;div0;armv7m;killed|faultsurvive-div0-armv7m.capture||order|order|[fs] worker about to fault|=== THREAD FAULT
@@ -1040,13 +1136,20 @@ tests/integration/check_faultsurvive.sh;mppforge;rv32imac;killed|the system exit
 tests/integration/check_faultsurvive.sh;lowedge;rv32imac;terminated|the system exited 0 once main returned
 tests/integration/check_faultsurvive.sh;misalign;rv32imac;contained|the system exited 0 once main outlived the refusal
 tests/integration/check_faultsurvive.sh;misalign;rxv3;contained|the system exited 0 once main outlived the refusal
-tests/integration/check_faultsurvive.sh;offstack;armv6m;terminated|the escalation ended the system with exit 132
-tests/integration/check_faultsurvive.sh;offstack;armv7m;terminated|the escalation ended the system with exit 132
+tests/integration/check_faultsurvive.sh;offstack;armv6m;killed|the system exited 0 once main returned
+tests/integration/check_faultsurvive.sh;offstack;armv7m;killed|the system exited 0 once main returned
 tests/integration/check_faultsurvive.sh;offstack;rv32imac;contained|the system exited 0 once main outlived the refusal
 tests/integration/check_faultsurvive.sh;offstack;rxv3;killed|the system exited 0 once main returned
-tests/integration/check_faultsurvive.sh;overflow;armv6m;terminated|the escalation ended the system with exit 132
-tests/integration/check_faultsurvive.sh;overflow;armv7m;terminated|the escalation ended the system with exit 132
-tests/integration/check_faultsurvive.sh;unread;armv7m;terminated|the escalation ended the system with exit 132
+tests/integration/check_faultsurvive.sh;overflow;armv6m;killed|the system exited 0 once main returned
+tests/integration/check_faultsurvive.sh;overflow;armv7m;killed|the system exited 0 once main returned
+tests/integration/check_faultsurvive.sh;unread;armv7m;killed|the system exited 0 once main returned
+tests/integration/check_faultsurvive.sh;fpunread;armv7m;killed|the system exited 0 once main returned
+tests/integration/check_faultsurvive.sh;wildsvc;armv7m;killed|the system exited 0 once main returned
+tests/integration/check_faultsurvive.sh;wildsvc;armv6m;killed|the system exited 0 once main returned
+tests/integration/check_faultsurvive.sh;storesvc;armv7m;killed|the system exited 0 once main returned
+tests/integration/check_faultsurvive.sh;bxns;armv7m;killed|the system exited 0 once main returned
+tests/integration/check_faultsurvive.sh;blxns;armv7m;killed|the system exited 0 once main returned
+tests/integration/check_faultsurvive.sh;bxnsrom;armv7m;killed|the system exited 0 once main returned
 tests/integration/check_faultsurvive.sh;overflow;rv32imac;contained|the system exited 0 once main outlived the refusal
 tests/integration/check_faultsurvive.sh;overflow;rxv3;killed|the system exited 0 once main returned
 tests/integration/check_faultsurvive.sh;survive;armv6m;terminated|the system exited 0 once main returned

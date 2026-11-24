@@ -9,6 +9,8 @@
 #include <ucontext.h>
 #include <unistd.h>
 
+#include <cstdio>
+
 #include <string>
 
 #include <kickos/console_tx.h>
@@ -23,6 +25,9 @@
 #include "kseam_test.h"
 
 extern "C" void kickos_thread_slay_exit(void* arg);
+extern "C" struct arch_context* kickos_fault_contain_wild_stack(struct arch_context* offender,
+                                                                char const* banner,
+                                                                char const* sp_name, uintptr_t sp);
 
 using namespace kickos;
 using namespace kickos::testfix;
@@ -207,6 +212,71 @@ TEST_F(ConsoleDrain, a_writer_slain_inside_the_bracket_leaves_it_with_its_exit)
         EXPECT_EQ(g_parks, 0) << "the drain waited for a writer that was slain";
         EXPECT_EQ(darkseam::g_wire, "isr\n");
         expect_published();
+    });
+}
+
+// A wild stack refused under the switcher, where arch_in_isr() answers 0 and the thread the
+// pended switch booked is current inside its own bracket: the containment prints nothing, so that
+// bracket stays the thread's, and the slain thread's own exit prints the refusal.
+TEST_F(ConsoleDrain, a_contained_wild_stack_leaves_the_current_writers_bracket_alone)
+{
+    run_isolated([]() {
+        ASSERT_NO_FATAL_FAILURE(stage_writer_inside(stop_inside_the_bracket, &g_main_ctx));
+        Thread* const offender = seat_pool(1, PRIO_PUBLISHER);
+        snprintf(offender->name, sizeof(offender->name), "wild");
+        ASSERT_FALSE(g_in_isr);
+        ASSERT_NE(kickos_fault_contain_wild_stack(&offender->ctx,
+                                                  "\n=== T CONTAINED (wild stack) ===\n", "USP",
+                                                  0x102b4u),
+                  nullptr);
+        EXPECT_NE(g_writer->console_writing, 0) << "the containment ended the current thread's bracket";
+        EXPECT_EQ(console_chip_writers(), 1);
+        EXPECT_EQ(darkseam::g_wire, "") << "the containment printed";
+
+        swapcontext(&g_main_ctx, &g_writer_ctx);
+        ASSERT_TRUE(g_writer_done);
+        EXPECT_EQ(console_chip_writers(), 0);
+        {
+            IrqLock lock;
+            sched::reschedule(nullptr, lock);
+        }
+        ASSERT_EQ(sched::current(), offender);
+        run_noreturn([]() { kickos_thread_slay_exit(nullptr); });
+        EXPECT_EQ(darkseam::g_wire,
+                  "line\n\n=== T CONTAINED (wild stack) ===\n  thread 'wild' USP=0x102b4\n");
+        EXPECT_EQ(console_chip_writers(), 0);
+    });
+}
+
+// The record is per core, so a fault taken between the containment and the slain thread's exit
+// takes it: the slain thread still announces itself by name.
+TEST_F(ConsoleDrain, a_contained_thread_whose_record_was_taken_still_names_itself)
+{
+    run_isolated([]() {
+        darkseam::reset();
+        Thread* const bystander = seat_pool(0, PRIO_PUBLISHER);
+        Thread* const offender = seat_pool(1, PRIO_WRITER);
+        snprintf(offender->name, sizeof(offender->name), "wild");
+        {
+            IrqLock lock;
+            sched::reschedule(nullptr, lock);
+        }
+        ASSERT_EQ(sched::current(), bystander);
+        ASSERT_NE(kickos_fault_contain_wild_stack(&offender->ctx,
+                                                  "\n=== T CONTAINED (wild stack) ===\n", "USP",
+                                                  0x102b4u),
+                  nullptr);
+        kickos_fault_record("cause", 1u, 0x1234u, 0u, 0);
+        {
+            IrqLock lock;
+            sched::detach_current(sched::current(), lock);
+            sched::reschedule(nullptr, lock);
+        }
+        ASSERT_EQ(sched::current(), offender);
+        run_noreturn([]() { kickos_thread_slay_exit(nullptr); });
+        EXPECT_EQ(darkseam::g_wire,
+                  "\n=== THREAD CONTAINED === thread 'wild' killed, wild stack\n"
+                  "  SP lost to a later fault\n");
     });
 }
 

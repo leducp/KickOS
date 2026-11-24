@@ -195,9 +195,9 @@ uint32_t kickos_armv6m_fault_report(uint32_t* frame, uint32_t exc_return)
 {
     // Nothing may print above this: kpanic_enter's console reclaim is permanent and this fault
     // is survivable.
-    if ((exc_return & KICKOS_ARM_EXC_RETURN_THREAD) != 0u and kickos_fault_kill_thread(frame))
+    if (kickos_arm_exc_return_thread_psp(exc_return) and kickos_fault_kill_thread(frame))
     {
-        return kickos_arm_fault_exit_exc_return(exc_return);
+        return KICKOS_ARM_FAULT_EXIT_EXC_RETURN;
     }
     kickos_fault_report_begin();
     kpanic_enter();

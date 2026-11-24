@@ -160,9 +160,9 @@ void arch_shutdown(int status)
 }]])
 
 kickos_seam_default(arch_fault_chip_addr [[
-bool arch_fault_chip_addr(uintptr_t*)
+char const* arch_fault_chip_addr(uintptr_t*)
 {
-    return false;
+    return nullptr;
 }]])
 
 kickos_seam_default(arch_fault_report_extra [[

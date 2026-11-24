@@ -47,6 +47,18 @@ namespace kickos
         constexpr uint32_t MAIR_NORMAL_WBWA = 0xFFu;
         constexpr uint32_t MAIR_DEVICE_nGnRE = 0x04u;
         constexpr uint32_t MAIR_NORMAL_NC = 0x44u;
+
+        // Security Extension (RP2350 datasheet, M33 ID_PFR1; PPB_NONSEC_BASE 0xE0020000).
+        constexpr uintptr_t SCB_ID_PFR1 = 0xE000ED44;
+        constexpr uintptr_t MPU_TYPE_NS = 0xE002ED90;
+        constexpr uintptr_t MPU_CTRL_NS = 0xE002ED94;
+        constexpr uintptr_t MPU_RNR_NS = 0xE002ED98;
+        constexpr uintptr_t MPU_RLAR_NS = 0xE002EDA0;
+
+        inline bool security_extension_implemented(void)
+        {
+            return ((reg32(SCB_ID_PFR1) >> 4) & 0xFu) != 0u;
+        }
     }
 }
 

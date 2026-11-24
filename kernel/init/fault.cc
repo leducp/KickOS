@@ -13,6 +13,7 @@
 
 #include <kickos/arch/arch.h>
 #include <kickos/instance.h>
+#include <kickos/irqlock.h>
 #include <kickos/kernel.h>
 #include <kickos/sched.h>
 #include <kickos/thread.h>
@@ -45,16 +46,26 @@ namespace
     struct FaultRecord
     {
         ::kickos::Thread const* owner;
+        // Non-null only on a record the owner's slay exit prints.
+        char const* banner;
         char const* status_name;
         uint64_t status;
         uintptr_t pc;
         uintptr_t addr;
+        // Null where the core latched `addr`.
+        char const* addr_unit;
         bool addr_valid;
         bool valid;
         PcKind pc_kind;
+        bool svc_dropped;
+        // Null on every record but a contained M-profile PSP refusal's.
+        char const* why;
+        char const* site;
+        uint32_t need;
+        uint32_t lo;
+        uint32_t hi;
     };
 
-    // Indexed by arch_cpu_id().
     constinit ::kickos::InstanceLocal<FaultRecord[KICKOS_NUM_CORES]> g_fault_all = {};
 
     FaultRecord& fault_record()
@@ -69,13 +80,17 @@ extern "C" void kickos_fault_record(char const* status_name, uint64_t status,
     // Runs in the faulting thread's own context, so `current` IS the thread that faulted.
     FaultRecord& r = fault_record();
     r.owner = ::kickos::sched::current();
+    r.banner = nullptr;
     r.status_name = status_name;
     r.status = status;
     r.pc = pc;
     r.addr = addr;
+    r.addr_unit = nullptr;
     r.addr_valid = (addr_valid != 0);
     r.valid = true;
     r.pc_kind = PcKind::EXACT;
+    r.svc_dropped = false;
+    r.why = nullptr;
 }
 
 extern "C" void kickos_fault_record_unverified_pc(char const* status_name, uint64_t status,
@@ -85,14 +100,22 @@ extern "C" void kickos_fault_record_unverified_pc(char const* status_name, uint6
     fault_record().pc_kind = PcKind::UNVERIFIED;
 }
 
-#if KICKOS_HAVE_STACK_LIMIT
+extern "C" void kickos_fault_record_svc_dropped(void)
+{
+    fault_record().svc_dropped = true;
+}
+
 extern "C" void kickos_fault_record_no_pc(char const* status_name, uint64_t status,
                                           uintptr_t addr, int addr_valid)
 {
     kickos_fault_record(status_name, status, 0, addr, addr_valid);
     fault_record().pc_kind = PcKind::NONE;
 }
-#endif
+
+extern "C" void kickos_fault_record_addr_unit(char const* unit)
+{
+    fault_record().addr_unit = unit;
+}
 
 extern "C" bool kickos_fault_frame_trusted(void const* frame, size_t bytes)
 {
@@ -150,9 +173,9 @@ extern "C" bool kickos_fault_frame_on_kernel_stack(void const* frame, size_t byt
 // thread is dying and nothing resumes it, and it makes the block requirement the MAX of the
 // dispatch class and the exit class rather than their SUM, which no block on any arch holds.
 //
-// kernel_sp 0 falls back to the user stack: idle, which is outside the pool, and every thread
-// on the four armv7m presets where KICKOS_KERNEL_STACKS resolves 0. That fallback is measured
-// as the EXIT class of check_trap_redzone.sh against the spawn floor.
+// kernel_sp 0 falls back to the user stack: every thread on the four armv7m presets where
+// KICKOS_KERNEL_STACKS resolves 0. That fallback is measured as the EXIT class of
+// check_trap_redzone.sh against the spawn floor.
 extern "C" uintptr_t kickos_fault_stack_top(void)
 {
     ::kickos::Thread* const c = ::kickos::sched::current();
@@ -171,6 +194,90 @@ extern "C" uintptr_t kickos_fault_stack_top(void)
         return 0;
     }
     return reinterpret_cast<uintptr_t>(c->stack_base) + c->stack_size;
+}
+
+extern "C" struct arch_context* kickos_fault_contain_wild_stack(struct arch_context* offender,
+                                                                char const* banner,
+                                                                char const* sp_name, uintptr_t sp)
+{
+    ::kickos::IrqLock lock;
+    ::kickos::Thread* const slain = ::kickos::sched::context_owner(offender, lock);
+    struct arch_context* const next = kickos_thread_contain_wild_stack(offender, nullptr);
+    if (next == nullptr)
+    {
+        return nullptr;
+    }
+    slain->wild_stack_contained = 1;
+    // `current` is not the offender where a booked switch moved it, so the record names the
+    // slain thread itself.
+    FaultRecord& r = fault_record();
+    r.owner = slain;
+    r.banner = banner;
+    r.status_name = sp_name;
+    r.status = sp;
+    r.pc = 0;
+    r.addr = 0;
+    r.addr_valid = false;
+    r.valid = true;
+    r.pc_kind = PcKind::NONE;
+    r.why = nullptr;
+    return next;
+}
+
+extern "C" struct arch_context* kickos_fault_contain_wild_psp(struct arch_context* offender,
+                                                              char const* banner, char const* why,
+                                                              char const* site, uint32_t psp,
+                                                              uint32_t need, uint32_t lo,
+                                                              uint32_t hi)
+{
+    struct arch_context* const next = kickos_fault_contain_wild_stack(offender, banner, "PSP", psp);
+    if (next == nullptr)
+    {
+        return nullptr;
+    }
+    FaultRecord& r = fault_record();
+    r.why = why;
+    r.site = site;
+    r.need = need;
+    r.lo = lo;
+    r.hi = hi;
+    return next;
+}
+
+namespace kickos
+{
+    __attribute__((noinline)) void fault_contained_print(Thread const* t)
+    {
+        if (t->wild_stack_contained == 0)
+        {
+            return;
+        }
+        FaultRecord& r = fault_record();
+        if (r.valid and r.owner == t and r.banner != nullptr)
+        {
+            char const* const banner = r.banner;
+            char const* const sp_name = r.status_name;
+            unsigned long long const sp = static_cast<unsigned long long>(r.status);
+            char const* const why = r.why;
+            char const* const site = r.site;
+            unsigned const need = r.need;
+            unsigned const lo = r.lo;
+            unsigned const hi = r.hi;
+            r.valid = false;
+            kprintf_record("%s", banner);
+            kprintf_record(KDIAG_F_FAULT_SP, t->name, sp_name, sp);
+            if (why != nullptr)
+            {
+                kprintf_record(KDIAG_F_FAULT_WILD_PSP, why, site, need, lo, hi);
+            }
+        }
+        else
+        {
+            kprintf_record(KDIAG_F_THREAD_CONTAINED, t->name);
+            kprintf_record(KDIAG_F_FAULT_SP_LOST);
+        }
+        krecord_end();
+    }
 }
 
 extern "C" bool kickos_fault_kill_thread(void* frame)
@@ -219,8 +326,10 @@ namespace
         unsigned long long const status = static_cast<unsigned long long>(r.status);
         void* const pc = reinterpret_cast<void*>(r.pc);
         void* const addr = reinterpret_cast<void*>(r.addr);
+        char const* const addr_unit = r.addr_unit;
         bool const addr_valid = r.addr_valid;
         PcKind const pc_kind = r.pc_kind;
+        bool const svc_dropped = r.svc_dropped;
         if (owned)
         {
             // Consumed, so a later kill that somehow reaches here without a fresh capture
@@ -241,7 +350,12 @@ namespace
         {
             return;
         }
-        if (pc_kind == PcKind::NONE)
+        // status_name is null on v6-M, which latches no status.
+        if (pc_kind == PcKind::NONE and status_name == nullptr)
+        {
+            ::kickos::kprintf_record(KDIAG_F_FAULT_NO_PC_BARE);
+        }
+        else if (pc_kind == PcKind::NONE)
         {
             ::kickos::kprintf_record(KDIAG_F_FAULT_NO_PC, status_name, status);
         }
@@ -251,7 +365,6 @@ namespace
         }
         else if (status_name == nullptr)
         {
-            // status_name is null on v6-M, whose profile supplies the PC alone.
             ::kickos::kprintf_record(KDIAG_F_FAULT_PC, pc);
         }
         else
@@ -261,6 +374,14 @@ namespace
         if (addr_valid)
         {
             ::kickos::kprintf_record(KDIAG_F_FAULT_ADDR, addr);
+            if (addr_unit != nullptr)
+            {
+                ::kickos::kprintf_record(KDIAG_F_FAULT_ADDR_UNIT, addr_unit);
+            }
+        }
+        if (svc_dropped)
+        {
+            ::kickos::kprintf_record(KDIAG_F_FAULT_SVC_DROPPED);
         }
     }
 }

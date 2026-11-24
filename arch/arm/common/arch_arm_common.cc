@@ -60,11 +60,13 @@ extern "C"
 // linkage overrides the namespace, so an anonymous namespace nested in this block
 // emits an unmangled GLOBAL symbol.
 
+#if KICKOS_KERNEL_STACKS
 // A trap prologue refused the running thread's live SP. Contain the thread instead of ending
 // the system: the kernel slays it and hands back the context to run instead, which this seats
 // for the restore half the caller in switch.S branches to. Returns 1 when contained, 0 when
 // the caller must terminate.
-int kickos_arm_contain_wild_sp(void)
+static int kickos_arm_contain_wild_sp(char const* why, char const* site, uint32_t psp,
+                                      uint32_t need, uint32_t lo, uint32_t hi)
 {
     // Masked from the booking through the store: an interrupt taken in between books its own
     // switch into g_arch_next, which the store would then overwrite.
@@ -72,7 +74,8 @@ int kickos_arm_contain_wild_sp(void)
     // g_arch_current, not the scheduler's current: this one tracks the PHYSICAL switch, so it
     // names the thread whose pointer was refused even when a booked switch has already
     // published another one as current.
-    struct arch_context* const next = kickos_thread_contain_wild_stack(g_arch_current, nullptr);
+    struct arch_context* const next = kickos_fault_contain_wild_psp(
+        g_arch_current, KICKOS_ARM_BANNER_WILD_PSP_CONTAINED, why, site, psp, need, lo, hi);
     // g_arch_current is written by the restore half itself, so only the target is set here.
     if (next != nullptr)
     {
@@ -85,6 +88,7 @@ int kickos_arm_contain_wild_sp(void)
     }
     return 1;
 }
+#endif
 
 // --- Switch: always deferred to PendSV (the outgoing ctx is g_arch_current) --
 void arch_switch(struct arch_context* from, struct arch_context* to)
@@ -279,22 +283,7 @@ void kickos_arm_default_irq(void)
 // masks this core's IRQs and never restores them, so a system resumed after it has no timer.
 void kickos_arm_bad_psp(uint32_t psp, uint32_t need, uint32_t lo, uint32_t hi)
 {
-#if KICKOS_KERNEL_STACKS
-    int const contained = kickos_arm_contain_wild_sp();
-#else
-    // NO BLOCK TO REBUILD ON, so this board cannot contain: arch_ctx_redirect would fabricate
-    // the privileged exit frame on the thread's OWN USER STACK, the write the guard refuses.
-    int const contained = 0;
-#endif
-    if (contained == 0)
-    {
-        kpanic_enter();
-    }
-#if KICKOS_PANIC_DUMP
     // Re-derived rather than passed: one guard serves every leg.
-    // THE NOUN IS THE DISCRIMINATOR. tests/lib/panic.ere matches "=== <ARCH> EXCEPTION", so a
-    // contained refusal spelled that way is indistinguishable from one that ended the system
-    // and assert_no_panic stops meaning anything on exactly the arms that now survive.
     char const* why = "no room below";
     if (psp < lo)
     {
@@ -321,42 +310,32 @@ void kickos_arm_bad_psp(uint32_t psp, uint32_t need, uint32_t lo, uint32_t hi)
         site = "PendSV";
     }
 #if KICKOS_KERNEL_STACKS
-    if (contained == 0)
+    // Nothing prints before this: the slain thread's exit prints the refusal.
+    if (kickos_arm_contain_wild_sp(why, site, psp, need, lo, hi) != 0)
     {
-        ::kickos::kprintf(KICKOS_ARM_BANNER_WILD_PSP_WHY, why);
+        return;
     }
-    else
-    {
-        ::kickos::kprintf(KICKOS_ARM_BANNER_WILD_PSP_WHY_CONTAINED, why);
-    }
-#else
-    ::kickos::kprintf(KICKOS_ARM_BANNER_WILD_PSP_WHY, why);
 #endif
+    // NO BLOCK TO REBUILD ON without the blocks: arch_ctx_redirect would fabricate the
+    // privileged exit frame on the thread's OWN USER STACK, the write the guard refuses.
+    kpanic_enter();
+    // THE NOUN IS THE DISCRIMINATOR. tests/lib/panic.ere matches "=== <ARCH> EXCEPTION", so a
+    // contained refusal spelled that way is indistinguishable from one that ended the system.
+#if KICKOS_PANIC_DUMP
+    ::kickos::kprintf(KICKOS_ARM_BANNER_WILD_PSP_WHY, why);
     ::kickos::kprintf("  in %s PSP=0x%x need=%u stack=[0x%x,0x%x)\n", site,
                       static_cast<unsigned>(psp), static_cast<unsigned>(need),
                       static_cast<unsigned>(lo), static_cast<unsigned>(hi));
 #else
+    (void)why;
+    (void)site;
     (void)psp;
     (void)need;
     (void)lo;
     (void)hi;
-#if KICKOS_KERNEL_STACKS
-    if (contained == 0)
-    {
-        ::kickos::kprintf(KICKOS_ARM_BANNER_WILD_PSP);
-    }
-    else
-    {
-        ::kickos::kprintf(KICKOS_ARM_BANNER_WILD_PSP_CONTAINED);
-    }
-#else
     ::kickos::kprintf(KICKOS_ARM_BANNER_WILD_PSP);
 #endif
-#endif
-    if (contained == 0)
-    {
-        kfault_terminate();
-    }
+    kfault_terminate();
 }
 
 #if KICKOS_KERNEL_STACKS

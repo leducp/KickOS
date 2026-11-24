@@ -105,4 +105,28 @@ if(KICKOS_HAVE_STACK_LIMIT AND KICKOS_MEMORY_ENFORCED)
 endif()
 if(KICKOS_ARCH STREQUAL "armv7m" AND KICKOS_QEMU_MPS2 AND KICKOS_MEMORY_ENFORCED)
   faultsurvive_image(faultsurvive_unread 6 KICKOS_FS_NOWHERE=0xF0000000u)
+  string(FIND "${KICKOS_MCPU}" "mfpu" _fs_has_fpu)
+  if(_fs_has_fpu GREATER -1)
+    faultsurvive_image(faultsurvive_fpunread 18 KICKOS_FS_NOWHERE=0xF0000000u)
+  endif()
+endif()
+# An SVC whose entry stacking is refused needs an unprivileged worker and a guard on main's word,
+# and no stack limit, which refuses the SP move first. Silicon only: QEMU takes the SVCall ahead
+# of the derived MemManage, so the guard contains the thread before any fault runs.
+if(KICKOS_ARCH MATCHES "^armv[67]m$" AND KICKOS_FAULT_ISOLATION AND KICKOS_MEMORY_ENFORCED
+   AND NOT KICKOS_HAVE_STACK_LIMIT AND NOT KICKOS_QEMU_MPS2)
+  faultsurvive_image(faultsurvive_wildsvc 14)
+endif()
+# The two v8-M Mainline chips carry the Security Extension.
+if(KICKOS_CHIP MATCHES "^(an505|rp2350)$" AND KICKOS_FAULT_ISOLATION)
+  faultsurvive_image(faultsurvive_bxns 16)
+  faultsurvive_image(faultsurvive_blxns 17)
+endif()
+# The bootrom's Non-secure fetch range, which only the RP2350's IDAU and SAU give.
+if(KICKOS_CHIP STREQUAL "rp2350" AND KICKOS_FAULT_ISOLATION AND KICKOS_MEMORY_ENFORCED)
+  faultsurvive_image(faultsurvive_bxnsrom 19)
+endif()
+# The store comes back imprecise only through the K64F's bus-level SYSMPU.
+if(KICKOS_CHIP STREQUAL "mk64f" AND KICKOS_FAULT_ISOLATION AND KICKOS_MEMORY_ENFORCED)
+  faultsurvive_image(faultsurvive_storesvc 15)
 endif()

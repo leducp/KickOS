@@ -472,15 +472,7 @@ namespace kickos
             }
             // A context no slot owns is the boot context or a freed one, and neither is a
             // thread to contain.
-            Thread* bad = nullptr;
-            for (int s = 0; s < k.threads.next; s++)
-            {
-                if (&k.threads.slots()[s].ctx == offender)
-                {
-                    bad = &k.threads.slots()[s];
-                    break;
-                }
-            }
+            Thread* const bad = sched::context_owner(offender, lock);
             if (bad == nullptr)
             {
                 return nullptr;
@@ -598,6 +590,19 @@ namespace kickos
 
     namespace sched
     {
+
+        Thread* context_owner(struct arch_context const* ctx, Held)
+        {
+            Kernel& k = kernel();
+            for (int s = 0; s < k.threads.next; s++)
+            {
+                if (&k.threads.slots()[s].ctx == ctx)
+                {
+                    return &k.threads.slots()[s];
+                }
+            }
+            return nullptr;
+        }
 
         void init()
         {
@@ -1188,5 +1193,6 @@ extern "C" void kickos_thread_slay_exit(void* arg)
                   or kickos_fault_frame_on_kernel_stack(__builtin_stack_address(), 0));
 #endif
     ::kickos::kconsole_slain();
+    ::kickos::fault_contained_print(::kickos::sched::current());
     ::kickos::sched::exit_current(KOS_EXIT_CANCELLED, ::kickos::sched::EXIT_RETURN);
 }

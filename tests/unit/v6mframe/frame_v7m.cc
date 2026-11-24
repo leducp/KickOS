@@ -3,9 +3,10 @@
 //
 // The v7-M reporter reads the frame unless the CFSR names an aborted stacking or unstacking,
 // on whatever stack it sits. A chip-latched address labels only a bus fault the core holds no
-// address for.
+// address for. A fault from Non-secure state is told by EXC_RETURN alone.
 
 #include KICKOS_V7M_FAULT_FRAME_H
+#include KICKOS_ARM_EXC_RETURN_H
 
 #include <gtest/gtest.h>
 
@@ -83,5 +84,15 @@ namespace
             EXPECT_FALSE(armv7m_chip_addr_explains(usage | IMPRECISERR)) << usage;
         }
         EXPECT_FALSE(armv7m_chip_addr_explains(IACCVIOL | IMPRECISERR));
+    }
+
+    // Only a Secure handler entered from Non-secure state: S clear, ES set.
+    TEST(V7mFaultFrame, OnlyASecureEntryFromNonSecureStateReadsAsNonSecure)
+    {
+        EXPECT_TRUE(kickos_arm_exc_return_from_nonsecure(0xFFFFFFBDu));
+        EXPECT_TRUE(kickos_arm_exc_return_from_nonsecure(0xFFFFFFB9u));
+        EXPECT_FALSE(kickos_arm_exc_return_from_nonsecure(0xFFFFFFFDu));
+        EXPECT_FALSE(kickos_arm_exc_return_from_nonsecure(0xFFFFFFF1u));
+        EXPECT_FALSE(kickos_arm_exc_return_from_nonsecure(0xFFFFFFBCu));
     }
 }

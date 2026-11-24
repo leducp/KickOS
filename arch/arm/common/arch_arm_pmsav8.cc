@@ -103,6 +103,28 @@ void kickos_arm_pmsav8_init(void)
         MAIR_NORMAL_WBWA | (MAIR_DEVICE_nGnRE << 8) | (MAIR_NORMAL_NC << 16);
     reg32(MPU_MAIR1) = 0;
     reg32(SCB_SHCSR) |= SHCSR_MEMFAULTENA; // MPU violation -> MemManage, not escalated HardFault
+    // Non-secure state, which a thread's BXNS reaches, gets an MPU with no region: it reaches
+    // no memory. The commit programs only the Secure MPU.
+    if (security_extension_implemented())
+    {
+        uint32_t const ns_regions = (reg32(MPU_TYPE_NS) >> 8) & 0xFFu;
+        if (ns_regions == 0u)
+        {
+            ::kickos::kpanic(::kickos::diag::kNonSecureNoMpu);
+        }
+        reg32(MPU_CTRL_NS) = 0u;
+        for (uint32_t n = 0; n < ns_regions; n++)
+        {
+            reg32(MPU_RNR_NS) = n;
+            reg32(MPU_RLAR_NS) = 0u;
+        }
+        reg32(MPU_CTRL_NS) = MPU_CTRL_ENABLE;
+        __asm volatile("dsb\n\tisb" ::: "memory");
+        if (reg32(MPU_CTRL_NS) != MPU_CTRL_ENABLE)
+        {
+            ::kickos::kpanic(::kickos::diag::kNonSecureOpen);
+        }
+    }
     __asm volatile("dsb" ::: "memory");
     __asm volatile("isb" ::: "memory");
     // MPU left DISABLED here; the first context switch's commit enables it with

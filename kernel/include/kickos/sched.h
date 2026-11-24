@@ -146,6 +146,9 @@ namespace kickos
     {
         void init();
 
+        // The thread slot holding `ctx`, or nullptr where none does.
+        Thread* context_owner(struct arch_context const* ctx, Held held);
+
         // Register a fully-initialized thread as READY.
         void add(Thread* t, Held held);
 

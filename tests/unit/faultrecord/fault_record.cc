@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // What kickos_thread_fault_exit prints for the record its fault left: a PC line when the frame
-// was stacked, `PC unknown` when it was not.
+// was trusted, `PC unknown` when it was not.
 
 #include <kickos/arch/arch.h>
 #include <kickos/diag.h>
@@ -80,6 +80,54 @@ namespace kickos
                 run_noreturn(fault_exit);
                 EXPECT_TRUE(printed(KDIAG_F_FAULT_PC_UNVERIFIED));
                 EXPECT_FALSE(printed(KDIAG_F_FAULT_PC_STAT));
+            }
+
+            TEST_F(FaultRecordPc, a_fault_with_no_status_and_no_frame_prints_a_bare_no_pc)
+            {
+                seat_victim();
+                kickos_fault_record_no_pc(nullptr, 0, 0, 0);
+                run_noreturn(fault_exit);
+                EXPECT_TRUE(printed(KDIAG_F_FAULT_NO_PC_BARE));
+                EXPECT_FALSE(printed(KDIAG_F_FAULT_NO_PC));
+                EXPECT_FALSE(printed(KDIAG_F_FAULT_PC));
+            }
+
+            TEST_F(FaultRecordPc, a_dropped_svcall_is_named_in_its_record)
+            {
+                seat_victim();
+                kickos_fault_record("CFSR", 0x400u, 0x1234u, 0, 0);
+                kickos_fault_record_svc_dropped();
+                run_noreturn(fault_exit);
+                EXPECT_TRUE(printed(KDIAG_F_FAULT_SVC_DROPPED));
+            }
+
+            TEST_F(FaultRecordPc, a_fresh_record_drops_no_svcall)
+            {
+                seat_victim();
+                kickos_fault_record_svc_dropped();
+                kickos_fault_record("CFSR", 0x400u, 0x1234u, 0, 0);
+                run_noreturn(fault_exit);
+                EXPECT_FALSE(printed(KDIAG_F_FAULT_SVC_DROPPED));
+            }
+
+            TEST_F(FaultRecordPc, an_address_a_bus_unit_latched_names_that_unit)
+            {
+                seat_victim();
+                kickos_fault_record_no_pc("CFSR", 0x1400u, 0x2002ff70u, 1);
+                kickos_fault_record_addr_unit("SYSMPU");
+                run_noreturn(fault_exit);
+                EXPECT_TRUE(printed(KDIAG_F_FAULT_ADDR));
+                EXPECT_TRUE(printed(KDIAG_F_FAULT_ADDR_UNIT));
+            }
+
+            TEST_F(FaultRecordPc, a_fresh_record_names_no_unit)
+            {
+                seat_victim();
+                kickos_fault_record_addr_unit("SYSMPU");
+                kickos_fault_record("CFSR", 0x8200u, 0x1234u, 0x4002c000u, 1);
+                run_noreturn(fault_exit);
+                EXPECT_TRUE(printed(KDIAG_F_FAULT_ADDR));
+                EXPECT_FALSE(printed(KDIAG_F_FAULT_ADDR_UNIT));
             }
 
             TEST_F(FaultRecordPc, a_fault_with_a_frame_prints_its_pc)

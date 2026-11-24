@@ -202,12 +202,12 @@
 #define KICKOS_ARMV7M_TRAP_NEST_EXIT 204
 
 /* The measured descent of the two stubs a dying thread runs PRIVILEGED on its own stack:
- * kickos_thread_fault_exit and kickos_thread_slay_exit. The fault stub is the deeper at every
- * posture, reaching the console through kvprintf_fault, which formats
- * into KDIAG_FAULT_LINE_MAX bytes and not the 256 an ordinary kprintf gets.
+ * kickos_thread_fault_exit and kickos_thread_slay_exit, its contained-stack record included.
+ * The slay stub is never the deeper: both reach the console through kvprintf_fault, which
+ * formats into KDIAG_FAULT_LINE_MAX bytes and not the 256 an ordinary kprintf gets.
  *
  * The kstacks=0 fallback, with no posture ladder: its preset, due, has no telemetry variant
- * and measures 368. Where a block IS seated they are EXITK below. */
+ * and measures 388. Where a block IS seated they are EXITK below. */
 #define KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_EXIT 448
 
 /* THE SAME TWO STUBS ON THE KERNEL BLOCK. kickos_fault_stack_top answers with ctx.kernel_sp,
@@ -216,12 +216,12 @@
  * rather than their sum.
  *
  * It never binds: SVCK wins the block on every registered preset. Off telemetry it measures
- * 368 to 440 under an enforced 448; on telemetry 952 stands over 808, down arch_shutdown's
- * drain. */
+ * at most 452, on pizero2350-amp2, under an enforced 456; on telemetry 952 stands over 812,
+ * down arch_shutdown's drain. */
 #if KICKOS_TELEMETRY
 #define KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_EXITK 952
 #else
-#define KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_EXITK 448
+#define KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_EXITK 456
 #endif
 
 /* What each guarded site enforces: room below the live PSP, in bytes. Both are loaded with
