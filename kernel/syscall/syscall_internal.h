@@ -221,6 +221,8 @@ namespace kickos
     // An endpoint whose receiver runs in another node's kernel, seated at boot. Caller holds
     // IrqLock.
     int amp_endpoint_mint(Thread* c, uint32_t node, uint32_t port, uint8_t rights, uint32_t* out_cap);
+    // This node's threads waiting for a slot of lane `lane` of the call ring toward `node`.
+    uint32_t endpoint_far_send_waiting(uint32_t node, uint32_t lane);
 #endif
     int32_t endpoint_send(uint32_t cap, uintptr_t buf, size_t len, uint64_t deadline);
     // The deadline bounds BOTH call phases: the send-side park and the reply-side park.

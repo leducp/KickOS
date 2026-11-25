@@ -343,7 +343,6 @@ tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000;0x40878000|amppi
 tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000;0x40878000|ampping-c6-top.capture||memory|swap|to 0x40832ffc,|to 0x40833000,|swap|word at 0x40832ffc|word at 0x40833000
 tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000;0x40878000|ampping-c6.capture||call|drop|ampping: node 0 calls node 1 port 3|
 tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000;0x40878000|ampping-c6.capture||round|drop|  ping 3 -> pong 4|
-tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000;0x40878000|ampping-c6.capture||attempt|after|  ping 4 -> pong 5|  (node 1 answered on attempt 2)
 tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000;0x40878000|ampping-c6.capture||served|swap|its own record says 4|its own record says 3
 tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000;0x40878000|ampping-c6.capture||done|drop|ampping: node 0 done|
 tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000;0x40878000|ampping-c6.capture||panic|after|ampping: node 0 done|KERNEL PANIC: planted

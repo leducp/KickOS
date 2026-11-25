@@ -441,7 +441,7 @@ namespace kickos
             }
             EXPECT_EQ(g_console_noted, 1u);
             EXPECT_EQ(g_console_reclaimed, 1u);
-            EXPECT_EQ(sender->wait_result, -KOS_EAGAIN)
+            EXPECT_EQ(sender->wait_result, -KOS_ECONNREFUSED)
                 << "the sender parked on the console was not answered at the slot's return";
             EXPECT_NE(sender->state, ThreadState::BLOCKED);
         }
@@ -491,8 +491,6 @@ namespace kickos
 
             EXPECT_EQ(ep->vacated, 1u) << "the last receiver left";
             EXPECT_FALSE(endpoint_receiving(ep));
-            EXPECT_EQ(endpoint_unserved(ep, 0), -KOS_ECONNREFUSED)
-                << "no WAIT and no HANDOUT holder remains";
         }
 
         TEST_F(CapSweep, narrowing_wait_away_vacates_the_endpoint_and_a_receive_clears_it)
@@ -507,7 +505,7 @@ namespace kickos
                 EXPECT_EQ(cap_narrow(init, all, CAP_SIGNAL | CAP_TRANSFER | CAP_HANDOUT, lock), 0);
             }
             EXPECT_EQ(ep->vacated, 1u) << "the narrow dropped the last receiver";
-            EXPECT_EQ(endpoint_unserved(ep, 0), -KOS_EAGAIN) << "a HANDOUT holder remains";
+            EXPECT_FALSE(endpoint_receiving(ep)) << "a HANDOUT holder is no receiver";
 
             (void)hold_endpoint(server, ep, CAP_WAIT);
             EXPECT_FALSE(endpoint_receiving(ep)) << "a seated receiver counts once it waits";
@@ -516,8 +514,7 @@ namespace kickos
                 EXPECT_EQ(cap_narrow(init, all, CAP_SIGNAL, lock), 0);
             }
             EXPECT_EQ(ep->handout_holders, 0u) << "fixture: no HANDOUT holder remains";
-            EXPECT_EQ(endpoint_unserved(ep, 0), -KOS_EAGAIN)
-                << "the seated WAIT holder may still receive";
+            EXPECT_FALSE(endpoint_receiving(ep)) << "the seated WAIT holder has not waited yet";
 
             {
                 IrqLock lock;

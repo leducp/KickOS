@@ -128,7 +128,7 @@ TEST_P(SemWait, a_take_or_a_try_reads_no_clock_and_makes_no_wait)
 {
     g_sem.word = 1u;
     EXPECT_EQ(kos_sem_wait(&g_sem, kos_monotonic_t{DEADLINE_NS}), 0);
-    EXPECT_EQ(kos_sem_wait(&g_sem, KOS_POLL), -KOS_ETIMEDOUT);
+    EXPECT_EQ(kos_sem_wait(&g_sem, KOS_POLL), -KOS_EAGAIN);
 
     EXPECT_EQ(g_sem.word, 0u);
     EXPECT_EQ(g_waits, 0u);

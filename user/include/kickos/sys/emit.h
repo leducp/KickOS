@@ -7,14 +7,14 @@
 //
 // Sends through this thread's stdout cap at index 0 and falls back to the kernel debug
 // console for the unsent remainder only where no route serves the send: index 0 empty
-// (-KOS_EBADF), or nothing serving the published console (-KOS_EAGAIN, -KOS_ECONNREFUSED), a
-// driver's task that ended or its endpoint gone. Any other refusal ends the write. A receiver
-// taking fewer bytes than a chunk, none included, is offered the rest again on the endpoint.
-// The kernel console alone is not enough: console_emit drops every byte handed to it once the
-// UART is USER_OWNED (kernel/init/console.cc). It answers -KOS_EBUSY where a publish landed
+// (-KOS_EBADF), or nothing serving the published console (-KOS_ECONNREFUSED), a driver's task
+// that ended or its endpoint gone. Any other refusal ends the write. A receiver taking fewer
+// bytes than a chunk, none included, is offered the rest again on the endpoint. The kernel
+// console alone is not enough: console_emit drops every byte handed to it once the UART is
+// USER_OWNED (kernel/init/console.cc). It answers -KOS_EBUSY where a publish landed
 // between the two and index 0 takes the line again, and the remainder is sent there. A task
-// that set O_NONBLOCK (stdout_nonblock) is answered -KOS_ETIMEDOUT by either where it would
-// wait, and the write stops there.
+// that set O_NONBLOCK (stdout_nonblock) is answered where it would wait, -KOS_EAGAIN by the
+// endpoint and -KOS_ETIMEDOUT by the kernel console, and the write stops there.
 
 #ifndef KICKOS_SYS_EMIT_H
 #define KICKOS_SYS_EMIT_H
@@ -116,9 +116,10 @@ __attribute__((noinline)) inline int32_t stdout_send(char const* s, size_t n, bo
     return kos_send(0, s, n, until);
 }
 
-// The bytes of s taken, all of them where error is 0. Short with -KOS_ETIMEDOUT where this task
-// is non-blocking and the console would make it wait, else with the error that refused the rest:
-// bytes a refused buffer or a cancelled writer loses are not counted.
+// The bytes of s taken, all of them where error is 0. Short where this task is non-blocking and
+// the console would make it wait, with -KOS_EAGAIN where its endpoint would and -KOS_ETIMEDOUT
+// where the kernel console would, else with the error that refused the rest: bytes a refused
+// buffer or a cancelled writer loses are not counted.
 inline WriteResult stdout_write(char const* s, size_t total)
 {
     size_t sent = 0;
@@ -139,7 +140,7 @@ inline WriteResult stdout_write(char const* s, size_t total)
             sent += static_cast<size_t>(r);
             continue;
         }
-        if (r != -KOS_EBADF and r != -KOS_EAGAIN and r != -KOS_ECONNREFUSED)
+        if (r != -KOS_EBADF and r != -KOS_ECONNREFUSED)
         {
             return {sent, r};
         }
@@ -147,8 +148,8 @@ inline WriteResult stdout_write(char const* s, size_t total)
         // took.
         WriteResult const k = kconsole_offer(s + sent, total - sent);
         sent += k.sent;
-        // Never a spin on one state: each pass back needs the send to have found no receiver
-        // and the kernel console then to have found one.
+        // Never a spin on one state: each pass back needs the send to have found the console
+        // unserved and the kernel console then to have found it served.
         if (k.error != -KOS_EBUSY)
         {
             return {sent, k.error};

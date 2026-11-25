@@ -108,9 +108,14 @@ static inline __attribute__((always_inline)) kos_realtime_t kos_realtime_now(voi
 int kos_realtime_set(kos_realtime_t t);
 
 // Every wait below takes a deadline on the monotonic clock: KOS_NEVER for none, and one already
-// read, KOS_POLL included, is an immediate try that never parks. A limited wait never ends with
-// -KOS_ETIMEDOUT before kos_monotonic_now reads its deadline; it may end later by the counter's
-// resolution, the timer's minimum delta and scheduling.
+// read, KOS_POLL included, is an immediate try that never parks. A try under KOS_POLL that would
+// wait answers -KOS_EAGAIN for a semaphore, a notification wait, a send, a call and a receive,
+// and -KOS_EBUSY for a mutex and a join; one under any other passed deadline answers
+// -KOS_ETIMEDOUT. A plain word wait, and a condition wait through it, answers -KOS_ETIMEDOUT under
+// KOS_POLL too, as a futex does, its -KOS_EAGAIN meaning a word that did not hold `expected`. A
+// deadline before the clock's origin, one computed negative included, is KOS_POLL. A limited
+// wait never ends with -KOS_ETIMEDOUT before kos_monotonic_now reads its deadline; it may end
+// later by the counter's resolution, the timer's minimum delta and scheduling.
 
 // Counting semaphore: a kos_sem_t (abi.h) in memory every thread sharing it can write, statically
 // KOS_SEM_INIT(n), with no kernel object, capability or create call. An uncontended wait and post
@@ -123,10 +128,10 @@ int kos_realtime_set(kos_realtime_t t);
 // wait on the word meanwhile.
 int kos_sem_init(kos_sem_t* s, uint32_t initial);
 // 0 with a unit taken, waiting until `until` for one (a passed deadline: only a unit already
-// banked). -KOS_ETIMEDOUT when none came in time and -KOS_ECANCELED when the waiter is cancelled,
-// both holding no unit and leaving the count alone, so a post that lost the race to the deadline
-// is banked for the next wait. -KOS_EINVAL / -KOS_EFAULT for a word the kernel refuses
-// (kos_word_wait).
+// banked). -KOS_EAGAIN under KOS_POLL with none banked, -KOS_ETIMEDOUT when none came in time and
+// -KOS_ECANCELED when the waiter is cancelled, all holding no unit and leaving the count alone,
+// so a post that lost the race to the deadline is banked for the next wait. -KOS_EINVAL /
+// -KOS_EFAULT for a word the kernel refuses (kos_word_wait).
 int kos_sem_wait(kos_sem_t* s, kos_monotonic_t until);
 // 0, or -KOS_EOVERFLOW with no waiter and the count at KOS_SEM_COUNT_MAX, the unit not banked, or
 // -KOS_EINVAL / -KOS_EFAULT as above. Never a death point of a cancel.
@@ -156,7 +161,9 @@ int kos_word_wake(uint32_t* word, uint32_t n, uint32_t units);
 //                   the state may be torn: repair the invariant, then unlock as normal. The
 //                   first take after the death answers it, a waiter's or a later lock's or try's,
 //                   and only that one
-//   -KOS_ETIMEDOUT  the time ran out, or a try found it held, NOT acquired
+//   -KOS_EBUSY      KOS_POLL found it held, NOT acquired
+//   -KOS_ETIMEDOUT  the time ran out, or a try under any other passed deadline found it held,
+//                   NOT acquired
 //   -KOS_ECANCELED  the waiter was cancelled, NOT acquired
 //   -KOS_EDEADLK    a lock the caller holds, or one whose wait would close a cycle, NOT acquired
 //   -KOS_EINVAL     a misaligned word, one not in normal cacheable memory or in the AMP
@@ -235,17 +242,21 @@ int kos_endpoint_badge(kos_cap_t source_cap, uint32_t badge, kos_cap_t* out_cap)
 int kos_amp_count(uint32_t node, uint32_t which, uint32_t* out);
 #endif
 // Send `len` bytes, waiting for a receiver until `until`. The deadline bounds the PARK only: a
-// receiver already waiting rendezvouses regardless of it, and a passed one never parks. Returns
-// bytes
-// transferred or -KOS_E*: EINVAL for len > KOS_EP_MSG_MAX, EFAULT for an invalid buffer,
-// EBADF/EACCES for an invalid capability or missing SIGNAL right, EAGAIN for an endpoint with no
-// receiver while a holder of KOS_CAP_HANDOUT remains, or for a far endpoint whose peer ring is
-// full, ECONNREFUSED for an endpoint with no receiver and nothing left that could seat one, and
-// ETIMEDOUT for a deadline that passed with NO receiver: the send did NOT happen and no bytes
-// crossed. Both no-receiver answers arrive at once, or on waking when the last receiver leaves a
-// parked sender; nothing was sent. The published console is the exception while the task it was
-// published for lives: a send there parks, receiver or not, like a write to a pipe, and is
-// answered so only once that task has ended. A zero-length message is valid.
+// receiver already waiting rendezvouses regardless of it, and a passed one never parks. A far
+// endpoint's send waits the same way for a slot of its port's share of the peer's call ring while
+// that share is full, and with no deadline for as long as it stays full: two nodes' servers that
+// each hold a received call while sending to the other then wait until one is cancelled. Returns
+// bytes transferred or -KOS_E*: EINVAL for len > KOS_EP_MSG_MAX, EFAULT for an invalid buffer,
+// EBADF/EACCES for an invalid capability or missing SIGNAL right, ECONNREFUSED for an endpoint
+// with no receiver, whatever the deadline, EAGAIN for KOS_POLL wherever the send would wait, and
+// ETIMEDOUT for any other deadline that passed with NO receiver, or with no slot of a far
+// endpoint's ring freed: the send did NOT happen and no bytes crossed. ECONNREFUSED arrives at
+// once, or on waking when the last receiver leaves a parked sender; nothing was sent. The
+// published console is the exception while the task it was published for lives: a send there
+// parks, receiver or not, like a write to a pipe, and is answered so only once that task has
+// ended. A far send returns once its request is published: the serving node holds it for its
+// port's next receive, and drops it where that port has no receiver. A zero-length message is
+// valid.
 //
 // For all IPC copies, either buffer may become inaccessible after validation.
 // Both parties receive EFAULT; any bytes already copied remain changed. A receiver's info refused
@@ -257,16 +268,21 @@ int32_t kos_send(kos_cap_t ep, void const* buf, size_t len, kos_monotonic_t unti
 // Synchronous call/reply. Delivers `send_len` request bytes and blocks until the server
 // replies into the SAME buffer, in place, up to `recv_cap`; a one-shot reply cap is minted
 // in the server's recv info. The call gives up at `until`, and the deadline bounds the WHOLE
-// call, both phases: the wait for a server to take the request AND the wait for its reply.
-// -> reply bytes (>= 0), or a negative
-// -KOS_E*: EINVAL (request > KOS_EP_MSG_MAX), EFAULT (bad buffer), EBADF/EACCES (bad cap / no
-// SIGNAL), EAGAIN (no receiver while a holder of KOS_CAP_HANDOUT remains, or a far endpoint's
-// peer ring is full: nothing sent, try again), ECONNREFUSED (no receiver and nothing left that
-// could seat one), EPIPE (the server died holding the request), EMFILE (the SERVER's cap table is
+// call, both phases: the wait for a server to take the request AND the wait for its reply. A far
+// endpoint's call first waits, within that deadline, for a slot of its port's share of the peer's
+// call ring while that share is full, and with no deadline for as long as it stays full, as
+// kos_send does; its request is then held by the serving node until its port's next receive.
+// A far call's ECONNREFUSED is the serving node's answer: its port had no receiver when the
+// request arrived, or lost its last one while the request was held. A far call that gives up
+// before a receiver took its request withdraws it, as a local one does.
+// -> reply bytes (>= 0), or a negative -KOS_E*: EINVAL (request > KOS_EP_MSG_MAX), EFAULT (bad
+// buffer), EBADF/EACCES (bad cap / no SIGNAL), ECONNREFUSED (no receiver, whatever the deadline:
+// nothing sent), EPIPE (the server died holding the request), EMFILE (the SERVER's cap table is
 // full, so the reply cap cannot be minted), ENOTSUP (server took an info-less recv, so it hosts
-// no calls), ETIMEDOUT (the deadline passed and NO reply was received). A request already taken
-// by a server stays taken: its eventual kos_reply gets -KOS_ESRCH and the reply cap is consumed
-// there. Nothing is retried and no bytes land in the buffer after a timeout returns.
+// no calls), EAGAIN (KOS_POLL, which a call always waits under: nothing sent), ETIMEDOUT (any
+// other deadline passed and NO reply was received). A request already taken by a server stays
+// taken: its eventual kos_reply gets -KOS_ESRCH and the reply cap is consumed there. Nothing is
+// retried and no bytes land in the buffer after a timeout returns.
 int32_t kos_call(kos_cap_t ep, void* buf, size_t send_len, size_t recv_cap,
                  kos_monotonic_t until);
 // The same call, always through the buffer-carrying trap, never the register form: identical
@@ -283,7 +299,8 @@ int32_t kos_call_generic(kos_cap_t ep, void* buf, size_t send_len, size_t recv_c
 int kos_reply(kos_cap_t reply_cap, void const* buf, size_t len);
 // Reply and receive using one buffer. lens packs reply_len and recv_cap.
 // KOS_CAP_NONE skips the reply. Returns received bytes, -KOS_ENOTIFY for an
-// accepted IRQ without a message, or -KOS_E*. Reply errors EBADF and EFAULT
+// accepted IRQ without a message, or -KOS_E*: -KOS_EAGAIN under KOS_POLL with nothing to receive,
+// -KOS_ETIMEDOUT for any other deadline that passed with none. Reply errors EBADF and EFAULT
 // abort receiving; ESRCH allows it because that transaction has already ended.
 // A null `opts` is a reply with no receive, answered as kos_reply answers. On a received
 // message and on -KOS_ENOTIFY, `opts->notify` holds exactly the bits consumed, 0 for none; a
@@ -560,9 +577,9 @@ int kos_port_reg_write(uint16_t base, uint16_t offset, uint8_t value);
 int kos_task_slay(kos_task_t task);
 
 // Wait for a thread of the caller's task, or one the caller created, until `until`, for it to be
-// gone by any path: its slot and its
-// task's thread budget are free again on return. Returns 0 if exited, including before this
-// call, whoever asks. Returns -KOS_E*: ETIMEDOUT if still running, ECANCELED if the caller is
+// gone by any path: its slot and its task's thread budget are free again on return. Returns 0 if
+// exited, including before this call, whoever asks. Returns -KOS_E*: EBUSY if still running under
+// KOS_POLL, ETIMEDOUT if still running at any other deadline, ECANCELED if the caller is
 // cancelled, EBADF for an invalid/reused slot, EPERM for another task's running thread the caller
 // did not create, EDEADLK for self. Handles remain valid after exit until the slot is reused.
 int kos_thread_join(kos_thread_t thread, kos_monotonic_t until);
@@ -658,8 +675,8 @@ int kos_notify_unbind(kos_cap_t notify_cap);
 // not NULL. Every attached line whose badge is in `mask` is rearmed on entry, so a driver that
 // never acks still receives every later interrupt.
 // 0, or -KOS_E*: EINVAL (an empty mask), EPERM (the caller is bound to nothing, or its own core
-// mask is not exactly the core the attached lines were claimed on), ETIMEDOUT, ECANCELED.
-// *out_bits reads 0 on every error.
+// mask is not exactly the core the attached lines were claimed on), EAGAIN (KOS_POLL with no bit
+// of `mask` pending), ETIMEDOUT, ECANCELED. *out_bits reads 0 on every error.
 int kos_notify_wait(uint32_t mask, kos_monotonic_t until, uint32_t* out_bits);
 
 // Running core clock in Hz. 0 if the backend has no silicon core clock (host sim, QEMU virt).

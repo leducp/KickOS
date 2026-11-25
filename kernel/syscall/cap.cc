@@ -313,30 +313,22 @@ namespace kickos
             }
         }
 
-        // Answer every sender parked on `ep` with `answer`.
-        void answer_senders(Endpoint* ep, int32_t answer, Held held)
+        void refuse_senders(Endpoint* ep, Held held)
         {
             Thread* s;
             while ((s = wq_pop_highest(ep->send_waiters)) != nullptr)
             {
                 // A SEND_WAIT caller returns via kos_call's call_state clear.
-                s->wait_result = answer;
+                s->wait_result = -KOS_ECONNREFUSED;
                 sched::wake(s, held);
             }
         }
 
-        // Answer every sender parked on `ep` what a new one would be told.
-        void refuse_senders(Endpoint* ep, Held held)
-        {
-            answer_senders(ep, endpoint_unserved(ep, 0), held);
-        }
-
         // `dropped` leaves a cap naming endpoint `obj`, by a close, a teardown or a narrow.
         // Dropping the LAST WAIT-bearing cap leaves the endpoint with no receiver, so every
-        // parked sender is answered what a new caller would be: -KOS_EAGAIN while a holder of
-        // the handout right remains, -KOS_ECONNREFUSED once none does. Fired exactly once
-        // (recv_holders -> 0), on a voluntary close, an exit teardown and a narrow alike. The
-        // published console while its task lives is the exception: its senders stay parked.
+        // parked sender is refused -KOS_ECONNREFUSED. Fired exactly once (recv_holders -> 0), on
+        // a voluntary close, an exit teardown and a narrow alike. The published console while
+        // its task lives is the exception: its senders stay parked.
         void endpoint_rights_dropped(Thread* closer, int obj, uint8_t dropped, bool teardown,
                                      Held held)
         {
@@ -385,6 +377,9 @@ namespace kickos
             {
                 return;
             }
+#if KICKOS_AMP_NODE
+            endpoint_far_held_refuse(ep, held);
+#endif
             refuse_senders(ep, held);
         }
 
@@ -1734,6 +1729,8 @@ namespace kickos
                 amp::hold_release(c->far_hold - 1u);
                 c->far_hold = 0u;
             }
+            // A thread a far slot wake readied may die before it publishes into that slot.
+            endpoint_far_send_relay(lock);
 #endif
             // Release IRQ lines before the first teardown gap so supervisors can
             // claim them after an EPIPE wake. Keep this pass under one lock; both
@@ -1895,9 +1892,7 @@ namespace kickos
             if (stdout_target() != obj_handle)
             {
                 stdout_move(obj_handle, held);
-                // -KOS_EAGAIN and not the endpoint's own answer: -KOS_ECONNREFUSED makes
-                // stdout_write close the seat moved here.
-                answer_senders(old, -KOS_EAGAIN, held);
+                refuse_senders(old, held);
             }
         }
         if (stdout_target() != KCAP_STDOUT_NONE)

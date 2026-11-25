@@ -145,7 +145,7 @@ enum kos_drv_ep
     // is USER_OWNED and a kernel-console write from the driver's task is DROPPED.
     KOS_DRV_EP_HANDOVER = 0,
     // No publish. The init keeps SIGNAL, TRANSFER and HANDOUT on the endpoint and never
-    // receives, so a caller is answered -KOS_EAGAIN while no server receives. A failing driver
+    // receives, so a caller is refused -KOS_ECONNREFUSED while no server receives. A failing driver
     // thread under this posture traps, never exits.
     KOS_DRV_EP_RETAIN = 1
 };

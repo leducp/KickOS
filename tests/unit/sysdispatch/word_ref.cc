@@ -597,14 +597,14 @@ namespace kickos
                 uint32_t* const word = host<uint32_t>(blk + AT);
 
                 *word = main_->lock_id;
-                EXPECT_EQ(call_released(taker, KOS_SYS_MUTEX_LOCK, at, 0), -KOS_ETIMEDOUT)
+                EXPECT_EQ(call_released(taker, KOS_SYS_MUTEX_LOCK, at, 0), -KOS_EBUSY)
                     << "the holder's own reservation did not make it a live holder";
                 EXPECT_EQ(*word, main_->lock_id) << "a failed try wrote the word";
 
                 *word = main_->lock_id | KOS_WORD_WAITERS;
                 (void)park_on_word(main_, waiter, window_of(taker) + AT, blk + AT);
                 *word = main_->lock_id;
-                EXPECT_EQ(call_released(taker, KOS_SYS_MUTEX_LOCK, at, 0), -KOS_ETIMEDOUT);
+                EXPECT_EQ(call_released(taker, KOS_SYS_MUTEX_LOCK, at, 0), -KOS_EBUSY);
                 EXPECT_EQ(*word, main_->lock_id | KOS_WORD_WAITERS)
                     << "the record's bit was not set again";
             }

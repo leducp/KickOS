@@ -19,7 +19,7 @@ bounded payload between the two domains; the driver runs the transaction under i
 MMIO grant and `kos_reply`s the result. There are TWO status channels, and they are
 distinct:
 
-- **`kos_call`'s return** -- the kernel-level outcome (delivery, `EAGAIN`, `ECONNREFUSED`,
+- **`kos_call`'s return** -- the kernel-level outcome (delivery, `ECONNREFUSED`,
   `EPIPE`, `ENOMEM`, ...),
   per `ipc-call-reply.md`.
 - **`kos_bus_rsp.status`** -- the SERVICE-level outcome (the driver's own result), only

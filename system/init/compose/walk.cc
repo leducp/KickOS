@@ -276,8 +276,8 @@ namespace kickos::init
             check(kos_endpoint_create(&r.endpoint), "kos_endpoint_create", i);
             if (not driver_path::narrows_at_handover(*this, i))
             {
-                // The init never receives, so a caller answers -KOS_EAGAIN until a server does,
-                // and the endpoint outlives every instance of its server.
+                // The init never receives, so a caller is refused -KOS_ECONNREFUSED until a
+                // server does, and the endpoint outlives every instance of its server.
                 check(kos_cap_narrow(r.endpoint, KOS_CAP_SIGNAL | KOS_CAP_TRANSFER | KOS_CAP_HANDOUT),
                       "kos_cap_narrow", i);
             }

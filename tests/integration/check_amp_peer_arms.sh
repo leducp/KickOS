@@ -2,10 +2,10 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# Runs the arms that need a peer that is running against one: amp_far_call, amp_far_reply_empty,
-# amp_share_crossing, amp_far_reply_unmapped and amp_far_wall. Each decides at RUNTIME whether it
-# has one: an echo crossing answers by itself, a service crossing once the peer's own serviced
-# count moved.
+# Runs the arms that need a peer that is running against one: amp_far_call, amp_far_call_held,
+# amp_share_crossing, amp_far_reply_unmapped, amp_far_wall and amp_far_share. Each decides at
+# RUNTIME whether it has one: an echo crossing answers by itself, a service crossing once the
+# peer's own serviced count moved.
 #
 # Any `not ok` line in the capture fails the gate, listed arm or not, a `# TODO` failure being
 # the harness's permitted one. The named set adds what a `not ok` cannot show: that each of these
@@ -48,7 +48,7 @@ here="$(dirname "$0")"
 . "$here/../lib/gate.sh"
 : "${QEMU_TIMEOUT:=120}"
 
-ARMS="amp_far_call amp_far_reply_empty amp_share_crossing amp_far_reply_unmapped amp_far_wall"
+ARMS="amp_far_call amp_far_call_held amp_share_crossing amp_far_reply_unmapped amp_far_wall amp_far_share"
 
 # `ok N - <arm>` with no SKIP directive: a skipped arm reports `ok` too, so the directive is
 # what has to be excluded.
@@ -167,7 +167,7 @@ $_ctl_out"
     ctl 'a TODO arm not ok' pass "$(good; echo 'not ok 9 - amp_unlisted # TODO owed')"
     ctl 'every arm ok with CR line ends' pass "$(good | sed 's/$/\r/')"
     ctl 'a listed arm skipped' refuse "$(good skip amp_far_call)"
-    ctl 'a listed arm absent' refuse "$(good drop amp_far_reply_empty)"
+    ctl 'a listed arm absent' refuse "$(good drop amp_far_call_held)"
     ctl 'no peer answered' refuse "$(good | grep -v 'peer node(s) answered')"
     ctl 'one peer of two answered' refuse "$(good | sed 's/1 of 1 peer/1 of 2 peer/')"
     ctl 'no peer of one answered' refuse "$(good | sed 's/1 of 1 peer/0 of 1 peer/')"
@@ -175,9 +175,9 @@ $_ctl_out"
     # row: its skip set loses the peer arms, which this judge then requires to run.
     scratch_dir
     _cap="$here/app_captures/amp-partition-selftest-c6.capture"
-    _row=amp_far_call,amp_far_reply_empty,amp_share_crossing
+    _row=amp_far_call,amp_far_call_held,amp_share_crossing
     _split="$(split_skips --peer-arms "$_row,planted_other")"
-    [ "$_split" = "amp_far_call;amp_far_reply_empty;amp_share_crossing" ] \
+    [ "$_split" = "amp_far_call;amp_far_call_held;amp_share_crossing" ] \
         || fail "the peer arms of a skip set are not split out of it"
     [ "$(split_skips --other-skips "$_row,planted_other")" = planted_other ] \
         || fail "a skip set without its peer arms keeps another set"
@@ -186,7 +186,7 @@ $_ctl_out"
         EXPECT_SKIPS="$(split_skips --other-skips "$_row")" \
             EXPECT_PARTIALS=irq_kernel_line_reserved EXPECT_FAULTS=txtrap \
             sh "$here/check_tap_stream.sh" partition 27 < "$1" > "$TMP/route.out" 2>&1 || return 1
-        KOS_CAPTURE="$1" sh "$0" "$TMP" "$here/../.." cmake amp_far_call amp_far_reply_empty \
+        KOS_CAPTURE="$1" sh "$0" "$TMP" "$here/../.." cmake amp_far_call amp_far_call_held \
             amp_share_crossing >> "$TMP/route.out" 2>&1
     }
     route "$_cap" || fail "the selftest partition route refuses a capture whose peer arms ran:

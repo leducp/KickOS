@@ -17,8 +17,7 @@ enum kos_cap_rights
     KOS_CAP_SIGNAL = 1 << 1,   // endpoint send; notification signal; IRQ raise
     KOS_CAP_TRANSFER = 1 << 2, // may be delegated onward
     // Endpoint only: a delegation may grant KOS_CAP_WAIT from this cap although it holds no
-    // WAIT itself. Its holder is no receiver, and while one exists a call the endpoint has no
-    // receiver for answers -KOS_EAGAIN rather than -KOS_ECONNREFUSED.
+    // WAIT itself. Its holder is no receiver.
     KOS_CAP_HANDOUT = 1 << 3
 };
 

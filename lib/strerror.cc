@@ -30,7 +30,7 @@
     X(KOS_EOVERFLOW,  "a count is at its maximum and cannot take one more")                       \
     X(KOS_ENOTSUP,    "well formed, but this backend cannot express it")                          \
     X(KOS_ETIMEDOUT,  "the deadline passed and nothing happened")                                 \
-    X(KOS_ECONNREFUSED, "no receiver, and nothing left that could hand one out")                  \
+    X(KOS_ECONNREFUSED, "endpoint has no receiver")                                               \
     X(KOS_EALREADY,   "already in that state, so the call changed nothing")                       \
     X(KOS_ECANCELED,  "this thread was cancelled and is expected to exit")                        \
     X(KOS_EOWNERDEAD, "mutex ACQUIRED but the prior owner died holding it")

@@ -17,9 +17,9 @@
 //   1. kos::print() -> the published route, served by the driver, reaches the wire.
 //   2. the driver exits, which ends its task: that end notes the console death, and the
 //      reclaim runs once no thread of it holds the device.
-//   3. the init reports the death on /init/events, then closes the endpoint for good, so a
-//      send is refused -KOS_ECONNREFUSED. That is what PROVES the driver is gone rather than
-//      merely slow, with no timing assumption.
+//   3. the init reports the death on /init/events, and a send is refused -KOS_ECONNREFUSED.
+//      That is what PROVES the driver is gone rather than merely slow, with no timing
+//      assumption.
 //   4. the SAME raw write now has to reach the wire. Steps 0 and 4 together are the
 //      whole assertion.
 //
@@ -55,22 +55,6 @@ namespace
     }
 
     char const BLOCKED_LINE[] = "[drvdeath] blocked line, written once after the reclaim\n";
-
-    // A writer of a console whose driver is dead gets -KOS_EAGAIN while the init still holds
-    // the endpoint, and -KOS_ECONNREFUSED once it closed it: 1 ms steps, a second at most.
-    constexpr int REFUSED_TRIES = 1000;
-    constexpr uint64_t REFUSED_STEP_NS = 1000000ull;
-
-    int send_until_refused()
-    {
-        int rc = kos_send(KOS_CAP_STDOUT, "x", 1, KOS_NEVER);
-        for (int i = 0; i < REFUSED_TRIES and rc == -KOS_EAGAIN; i++)
-        {
-            kos_sleep_for(kos_ns(REFUSED_STEP_NS));
-            rc = kos_send(KOS_CAP_STDOUT, "x", 1, KOS_NEVER);
-        }
-        return rc;
-    }
 
     // Blocks until the init reports the driver's death: bit 0, simcon being the one task main
     // watches.
@@ -270,7 +254,7 @@ int main(int, char**)
         kos_print("[drvdeath] ERROR: the init never reported the driver's death\n");
         exit(2);
     }
-    if (send_until_refused() != -KOS_ECONNREFUSED)
+    if (kos_send(KOS_CAP_STDOUT, "x", 1, KOS_NEVER) != -KOS_ECONNREFUSED)
     {
         // A live receiver means nothing below tests the reclaim. Reported through BOTH
         // routes: which one works is exactly what is in doubt here.
@@ -280,7 +264,7 @@ int main(int, char**)
     }
 
 #if defined(KICKOS_SIMCON_WINDOW_THREAD) && KICKOS_SIMCON_WINDOW_THREAD
-    if (nowait_rc != -KOS_ETIMEDOUT or tried.sent != 0u or tried.error != -KOS_ETIMEDOUT)
+    if (nowait_rc != -KOS_EAGAIN or tried.sent != 0u or tried.error != -KOS_EAGAIN)
     {
         kos_print("[drvdeath] ERROR: a write of no wait was not refused at once by a live "
                   "driver with no receiver\n");

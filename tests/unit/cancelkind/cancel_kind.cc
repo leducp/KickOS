@@ -345,11 +345,14 @@ namespace kickos
             EXPECT_EQ(g_switches, 0u);
         }
 
-        TEST_F(NotifyWaitContract, a_passed_deadline_with_nothing_pending_times_out_at_once)
+        TEST_F(NotifyWaitContract, a_poll_with_nothing_pending_answers_eagain_at_once)
         {
             Thread* const waiter = seat_waiter_over_a_peer();
             claim_the_line(waiter);
-            EXPECT_EQ(notify_wait(waiter, LINE_BIT, KOS_POLL.ns), -KOS_ETIMEDOUT);
+            EXPECT_EQ(notify_wait(waiter, LINE_BIT, KOS_POLL.ns), -KOS_EAGAIN);
+            g_now_ns = 1000u;
+            EXPECT_EQ(notify_wait(waiter, LINE_BIT, g_now_ns), -KOS_ETIMEDOUT)
+                << "a passed deadline is not a poll";
             EXPECT_EQ(g_switches, 0u) << "a passed deadline parked";
             EXPECT_EQ(waiter->wait_kind, WAIT_NONE);
             EXPECT_FALSE(waiter->on_timer) << "a passed deadline armed a timer";

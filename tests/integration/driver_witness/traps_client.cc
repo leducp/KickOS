@@ -7,5 +7,5 @@
 
 int main(int, char**)
 {
-    driver_witness::call_until_refused("/svc/traps", "traps");
+    driver_witness::call_while_served("/svc/traps", "traps");
 }

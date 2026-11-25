@@ -16,10 +16,10 @@
 #            above one core, of one on another core, then on readings 1 to 4, 6 to 9 and 11 to
 #            14 in order, each instance's last read before health's report of its death with the
 #            fifth reading of the instance last in /shm/history, of its restart with one and then
-#            none left, and of its end for good, and before the app's `sensor: restarting`, which
-#            comes ahead of the next instance's first reading, or its `sensor: gone for good`.
-#            `sensor: restarting` is a call answered -KOS_EAGAIN while a restarted instance has
-#            not yet first received. Health's lines are ordered against the app's only where the
+#            none left, and of its end for good, and before the app's `sensor: not served`, which
+#            comes ahead of the next instance's first reading, or follows its end for good.
+#            `sensor: not served` is a call answered -KOS_ECONNREFUSED while no instance
+#            receives. Health's lines are ordered against the app's only where the
 #            death orders them, since above one core the two print at once. Fails on any task's
 #            `statics not its own`: a word of own.cc set at a task's start, or by another task.
 #            With `depth`, root's stack is filled and scanned while the init runs, and the run
@@ -41,9 +41,9 @@
 # Above one core user lines can reach the wire shuffled, so a positive is matched whole first
 # and then through wire_has across two adjacent lines (after, tests/lib/gate.sh). Every absence
 # checked below is also a positive above that its defect breaks: a panic or a fault stops the run
-# short of `sensor: gone for good`; a widened thread admitted is a refusal line missing; a reading
-# lost, frozen or died holding is a reading of 1 to 15 missing or out of order, or `last reading`
-# not the fifth of its instance; a missing history window is no reading at all.
+# short of the last `sensor: not served`; a widened thread admitted is a refusal line missing; a
+# reading lost, frozen or died holding is a reading of 1 to 15 missing or out of order, or `last
+# reading` not the fifth of its instance; a missing history window is no reading at all.
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
@@ -116,7 +116,9 @@ fi
 
 # The judge's last required lines, which above one core reach the wire in either order.
 END_HEALTH='health: sensor is down for good, running degraded'
-END_APP='sensor: gone for good'
+END_APP='sensor: not served'
+# The app's last reading, which only its END_APP line for the end follows.
+LAST_READING='sensor: 15 from /svc/sensor'
 
 set -- -DKICKOS_WITNESS=restart -DKICKOS_WITNESS_SYSTEM="$SYSTEM"
 if [ "$DEPTH" = depth ]; then
@@ -141,7 +143,11 @@ else
 
     echo "== running the restart witness =="
     restart_ended() { # <log>
-        log_holds "$1" "$END_HEALTH" "$END_APP"
+        log_holds "$1" "$END_HEALTH" || return 1
+        tr -d '\r' < "$1" | awk -v last="$LAST_READING" -v end="$END_APP" '
+            index($0, last) { seen = 1; next }
+            seen && index($0, end) { found = 1 }
+            END { exit !found }'
     }
     KOS_POLL_UNTIL=restart_ended
     poll_image "$IMAGE"
@@ -170,14 +176,14 @@ instance() { # <from> <first>
     after "$LAST" "health: sensor died, last reading $(($2 + 4)) in /shm/history" "death at reading $(($2 + 4))"
     DIED=$AT
 }
-# A restart: health's line after its report of the death, and the app's `sensor: restarting`
+# A restart: health's line after its report of the death, and the app's `sensor: not served`
 # after its last reading of the dead instance and before reading <first>, the first the restarted
-# instance serves. Sets NEXT, the line of `sensor: restarting`.
+# instance serves. Sets NEXT, the line of `sensor: not served`.
 restart() { # <deaths> <left> <first>
     after "$DIED" "health: sensor restarted ($1 deaths, $2 restarts left)" "restart after $1 death(s)"
-    after "$LAST" 'sensor: restarting' "'sensor: restarting' after restart $1"
+    after "$LAST" 'sensor: not served' "'sensor: not served' after restart $1"
     NEXT=$AT
-    after "$NEXT" "sensor: $3 from /svc/sensor" "reading $3 after 'sensor: restarting'"
+    after "$NEXT" "sensor: $3 from /svc/sensor" "reading $3 after 'sensor: not served'"
 }
 
 instance "$REFUSED" 1
@@ -202,7 +208,7 @@ for _line in '^=== THREAD FAULT ===' '^sensor: no reading' '^sensor: died holdin
     fi
 done
 echo "PASS: the sensor was refused its widened threads, died three times with its readings kept, \
-restarted twice with its caller told -KOS_EAGAIN until it received, and was then gone for good"
+restarted twice with its caller refused until it received, and was then gone for good"
 
 if [ "$DEPTH" = depth ]; then
     require_root_depth

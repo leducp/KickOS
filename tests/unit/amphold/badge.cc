@@ -37,6 +37,8 @@ namespace kickos
             constexpr uint32_t PEER = 1;
             constexpr uint32_t PORT_SERVED = 2;
             constexpr uint32_t PORT_FAR = 3;
+            constexpr amp::Lane SERVED = amp::lane_of(amp::Class::CALL, ME, PORT_SERVED);
+            constexpr amp::Lane OUTBOUND = amp::lane_of(amp::Class::CALL, PEER, PORT_FAR);
 
             constexpr uint8_t PRIO_SENDER = 20;
             constexpr uint8_t PRIO_RECEIVER = 10;
@@ -58,8 +60,11 @@ namespace kickos
                         for (uint32_t from = 0; from < amp::NODE_MAX; from++)
                         {
                             amp::Ring& r = amp::ring_for(static_cast<amp::Class>(cls), to, from);
-                            r.head.v.store(0u);
-                            r.tail.v.store(0u);
+                            for (uint32_t lane = 0; lane < amp::LANE_MAX; lane++)
+                            {
+                                r.head.v[lane].store(0u);
+                                r.tail.v[lane].store(0u);
+                            }
                             for (uint32_t i = 0; i < amp::RING_SLOTS; i++)
                             {
                                 r.slot[i].len.store(0u);
@@ -358,8 +363,8 @@ namespace kickos
             void far_call_arrives(Thread*)
             {
                 amp::Ring& r = amp::ring_for(amp::Class::CALL, ME, PEER);
-                uint32_t const head = r.head.v.load();
-                amp::Slot& s = r.slot[head % amp::RING_SLOTS];
+                uint32_t const head = r.head.v[SERVED.index].load();
+                amp::Slot& s = r.slot[SERVED.base + head % SERVED.slots];
                 s.port.store(PORT_SERVED);
                 s.tag = PEER_TAG;
                 s.badge = BADGE;
@@ -368,7 +373,7 @@ namespace kickos
                 {
                     s.payload[i] = static_cast<uint8_t>(0x40u + i);
                 }
-                r.head.v.store(head + 1u);
+                r.head.v[SERVED.index].store(head + 1u);
                 amp::node_service(kickos::IrqLock());
             }
         }
@@ -401,16 +406,18 @@ namespace kickos
             uint32_t badged = KCAP_INVALID;
             ASSERT_EQ(endpoint_badge(c, far, BADGE, &badged), 0);
             amp::Ring const& out = amp::ring_for(amp::Class::CALL, PEER, ME);
-            uint32_t const head = out.head.v.load();
+            uint32_t const head = out.head.v[OUTBOUND.index].load();
             ASSERT_EQ(endpoint_send(badged, reinterpret_cast<uintptr_t>(g_sbuf), MSG_LEN, 0u),
                       static_cast<int32_t>(MSG_LEN));
-            ASSERT_EQ(out.head.v.load(), head + 1u) << "nothing crossed to the peer";
-            EXPECT_EQ(out.slot[head % amp::RING_SLOTS].badge, BADGE)
+            ASSERT_EQ(out.head.v[OUTBOUND.index].load(), head + 1u)
+                << "nothing crossed to the peer";
+            EXPECT_EQ(out.slot[OUTBOUND.base + head % OUTBOUND.slots].badge, BADGE)
                 << "the far publication dropped the sender's badge";
 
             ASSERT_EQ(endpoint_send(far, reinterpret_cast<uintptr_t>(g_sbuf), MSG_LEN, 0u),
                       static_cast<int32_t>(MSG_LEN));
-            EXPECT_EQ(out.slot[(head + 1u) % amp::RING_SLOTS].badge, KOS_BADGE_NONE);
+            EXPECT_EQ(out.slot[OUTBOUND.base + (head + 1u) % OUTBOUND.slots].badge,
+                      KOS_BADGE_NONE);
         }
     }
 }

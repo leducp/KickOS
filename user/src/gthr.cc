@@ -123,6 +123,10 @@ namespace
             {
                 return ETIMEDOUT;
             }
+            case -KOS_EBUSY:
+            {
+                return EBUSY;
+            }
             case -KOS_EDEADLK:
             {
                 return EDEADLK;
@@ -231,7 +235,13 @@ namespace
         {
             return EINVAL;
         }
-        return errno_of(take_until(m, at, kind));
+        int const rc = take_until(m, at, kind);
+        // A deadline at or before the clock's epoch is a poll, answered -KOS_EBUSY.
+        if (rc == -KOS_EBUSY)
+        {
+            return ETIMEDOUT;
+        }
+        return errno_of(rc);
     }
 
     uint32_t holder_of(kos_mutex_t const* m)
@@ -412,7 +422,7 @@ int __kickos_gthr_mutex_lock(__gthread_mutex_t* m)
 int __kickos_gthr_mutex_trylock(__gthread_mutex_t* m)
 {
     int const rc = take_until(word_of(m), KOS_POLL.ns, KOS_LIMIT_MONOTONIC);
-    if (rc == -KOS_ETIMEDOUT or rc == -KOS_EDEADLK)
+    if (rc == -KOS_EDEADLK)
     {
         return EBUSY;
     }
@@ -447,12 +457,7 @@ int __kickos_gthr_recursive_mutex_lock(__gthread_recursive_mutex_t* m)
 
 int __kickos_gthr_recursive_mutex_trylock(__gthread_recursive_mutex_t* m)
 {
-    int const rc = recursive_take(m, CLOCK_REALTIME, nullptr, KOS_POLL);
-    if (rc == ETIMEDOUT)
-    {
-        return EBUSY;
-    }
-    return rc;
+    return recursive_take(m, CLOCK_REALTIME, nullptr, KOS_POLL);
 }
 
 int __kickos_gthr_recursive_mutex_timedlock(__gthread_recursive_mutex_t* m,

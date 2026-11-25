@@ -75,6 +75,7 @@ namespace kickos
                 // again after the sequence wraps. The far arm validates all 16 bits, so that is
                 // 65536 calls here where the local arm's masked 8 make it 256.
                 t->call_seq++;
+                endpoint_far_call_withdraw(t);
                 break;
             }
             case WAIT_MUTEX:
@@ -110,6 +111,11 @@ namespace kickos
                 // the whole unwind; it is also what makes exit_current's sweep miss a waiter
                 // that has given up. A raised bit remains pending in the OBJECT for the next
                 // wait if cancellation races delivery.
+                break;
+            }
+            case WAIT_EP_FAR_SEND:
+            {
+                endpoint_far_send_leave(t);
                 break;
             }
             default:

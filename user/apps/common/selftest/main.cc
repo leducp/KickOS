@@ -886,9 +886,9 @@ namespace
     // --- Sleep ordering (tickless timer) ---------------------------------------
     // main spawns the 40 ms sleeper FIRST, so the two deadlines land in the intended order
     // only while the second spawn costs less than the 30 ms the requests differ by, and
-    // nothing bounds a spawn. Each sleeper publishes the clock read taken just before its
-    // kos_sleep_for, and the arm judges the deadline order it can OBSERVE. The kernel exposes
-    // no armed deadline, so the read-to-syscall gap stays as a residue.
+    // nothing bounds a spawn. Each sleeper publishes the deadline it sleeps until. Both
+    // outrank main on its one core, so each has parked or ended when main runs again: a clock
+    // read then, short of the earlier deadline, says both were armed before either fell due.
     Atomic<uint32_t, Order::RELAXED> g_sleep_due_s{0};
     Atomic<uint32_t, Order::RELAXED> g_sleep_due_l{0};
     void sleeper(void* arg)
@@ -900,7 +900,8 @@ namespace
         {
             c = 'S';
         }
-        uint32_t const due = stamp_due(ns);
+        kos_monotonic_t const until = kos_after(kos_monotonic_now(), kos_ns(ns));
+        uint32_t const due = static_cast<uint32_t>(until.ns);
         if (c == 'S')
         {
             g_sleep_due_s = due;
@@ -909,7 +910,7 @@ namespace
         {
             g_sleep_due_l = due;
         }
-        kos_sleep_for(kos_ns(ns));
+        kos_sleep_until(until);
         log_put(c);
     }
     void t_sleep()
@@ -927,6 +928,7 @@ namespace
                                      nullptr, 0);
         s = kos::thread::create_caps(sleeper, reinterpret_cast<void*>(uintptr_t{10}), "sleepS", 10,
                                      nullptr, 0);
+        uint32_t const spawned = stamp_now();
         TAP_CHECK(l.valid() and s.valid());
         TAP_CHECK(hold.joined());
         uint32_t const due_s = g_sleep_due_s;
@@ -941,6 +943,13 @@ namespace
             TAP_SKIP_VACUOUS("the 10 ms sleeper asked %u us AFTER the 40 ms one, so its deadline "
                              "is not the earlier one and no wake order is owed",
                              static_cast<unsigned>((due_s - due_l) / 1000u));
+            return;
+        }
+        if (not stamp_before(spawned, due_s))
+        {
+            TAP_SKIP_VACUOUS("main ran again %u us past the 10 ms sleeper's deadline, so that "
+                             "sleep may have found it already passed",
+                             static_cast<unsigned>((spawned - due_s) / 1000u));
             return;
         }
         TAP_CHECK(log_eq("SL"));
@@ -1389,7 +1398,7 @@ namespace
         TAP_HOLD(hold.thread(&p));
         TAP_CHECK(kos_sem_init(s, 0) == 0);
         TAP_CHECK(kos_sem_init(s, static_cast<uint32_t>(KOS_SEM_COUNT_MAX) + 1u) == -KOS_EINVAL);
-        TAP_CHECK(kos_sem_wait(s, KOS_POLL) == -KOS_ETIMEDOUT);
+        TAP_CHECK(kos_sem_wait(s, KOS_POLL) == -KOS_EAGAIN);
         kos_monotonic_t const t0 = kos_monotonic_now();
         int const rc = kos_sem_wait(s, after_us(SEM_TIMEOUT_US));
         uint64_t const waited_us = kos_between(t0, kos_monotonic_now()).ns / 1000u;
@@ -1402,12 +1411,12 @@ namespace
         TAP_CHECK(kos_sem_post(s) == 0);
         TAP_CHECK(s->word == 1u);
         TAP_CHECK(kos_sem_wait(s, KOS_POLL) == 0);
-        TAP_CHECK(kos_sem_wait(s, KOS_POLL) == -KOS_ETIMEDOUT);
+        TAP_CHECK(kos_sem_wait(s, KOS_POLL) == -KOS_EAGAIN);
         p = irq_spawn(sem_timed_poster, nullptr, "stpost", TAP_PRIO_AFTER, nullptr, 0);
         TAP_CHECK(p.valid());
         TAP_CHECK(kos_sem_wait(s, after_us(STALL_TOLERANT_US)) == 0);
         TAP_CHECK(hold.joined());
-        TAP_CHECK(kos_sem_wait(s, KOS_POLL) == -KOS_ETIMEDOUT);
+        TAP_CHECK(kos_sem_wait(s, KOS_POLL) == -KOS_EAGAIN);
         // The count is bounded: a post at the ceiling with no waiter is refused, not banked.
         TAP_CHECK(kos_sem_init(s, static_cast<uint32_t>(KOS_SEM_COUNT_MAX)) == 0);
         TAP_CHECK(kos_sem_post(s) == -KOS_EOVERFLOW);
@@ -1768,7 +1777,7 @@ namespace
         b = kos::thread::create_caps(cyc_b, nullptr, "cycB", 10, nullptr, 0);
         TAP_CHECK(a.valid() and b.valid());
         TAP_CHECK(kos_sem_wait(&g_cyc_have1, after_us(STALL_TOLERANT_US)) == 0); // A owns M1
-        TAP_CHECK(kos_mutex_lock(m1, KOS_POLL) == -KOS_ETIMEDOUT);
+        TAP_CHECK(kos_mutex_lock(m1, KOS_POLL) == -KOS_EBUSY);
         TAP_CHECK(kos_mutex_lock(m1, after_us(MUTEX_EXPIRY_US)) == -KOS_ETIMEDOUT);
         TAP_CHECK(kos_sem_wait(&g_cyc_have2, after_us(STALL_TOLERANT_US)) == 0); // B owns M2
         kos_sem_post(&g_cyc_go_a);   // A tries M2 -> blocks (B owns it)
@@ -2190,10 +2199,10 @@ namespace
         TAP_CHECK(kos_notify_wait(0u, KOS_POLL, &bits) == -KOS_EINVAL and bits == 0u);
         TAP_CHECK(kos_notify_wait(NOTE_ALL, KOS_POLL, &bits) == 0 and bits == 1u);
         bits = NOTE_ALL;
-        TAP_CHECK(kos_notify_wait(NOTE_ALL, KOS_POLL, &bits) == -KOS_ETIMEDOUT and bits == 0u);
+        TAP_CHECK(kos_notify_wait(NOTE_ALL, KOS_POLL, &bits) == -KOS_EAGAIN and bits == 0u);
         TAP_CHECK(kos_notify(note) == 0);
         TAP_CHECK(kos_notify_wait(NOTE_ALL, KOS_POLL, nullptr) == 0);
-        TAP_CHECK(kos_notify_wait(NOTE_ALL, KOS_POLL, &bits) == -KOS_ETIMEDOUT);
+        TAP_CHECK(kos_notify_wait(NOTE_ALL, KOS_POLL, &bits) == -KOS_EAGAIN);
         TAP_CHECK(kos_notify_unbind(note) == 0);
     }
 
@@ -4716,13 +4725,13 @@ namespace
         TAP_CHECK(hold.close(&g_ep) == 0);
     }
 
-    // --- The handout right: an endpoint with no receiver answers by whether one may come --
+    // --- The handout right: an endpoint with no receiver refuses a send ------------------
     // Main narrows its creator cap to SIGNAL, TRANSFER and HANDOUT. No receiver remains, so a
-    // send answers -KOS_EAGAIN at once instead of parking, and main cannot receive through it.
-    // It still seats a receiver, granting WAIT it does not hold. Until that worker first
-    // waits on the endpoint a send answers -KOS_EAGAIN as well; once it waits, the worker
-    // takes the next send. With the worker gone a send answers -KOS_EAGAIN again; with the
-    // handout right dropped, -KOS_ECONNREFUSED, and a WAIT grant from the cap is refused.
+    // send answers -KOS_ECONNREFUSED at once instead of parking, and main cannot receive through
+    // it. It still seats a receiver, granting WAIT it does not hold. Until that worker first
+    // waits on the endpoint a send is refused as well; once it waits, the worker takes the next
+    // send. With the worker gone a send is refused again; with the handout right dropped too, a
+    // WAIT grant from the cap is refused.
     constexpr uint8_t EP_HANDOUT_ONLY = KOS_CAP_SIGNAL | KOS_CAP_TRANSFER | KOS_CAP_HANDOUT;
     // Bounds the send to a seated receiver that has not waited, which must not park at all.
     constexpr uint32_t HO_SEATED_TIMEOUT_US = 50000u;
@@ -4754,7 +4763,7 @@ namespace
         int32_t const mlen = static_cast<int32_t>(strlen(EP_MSG));
         TAP_CHECK(kos_cap_narrow(g_ep, EP_HANDOUT_ONLY) == 0);
         TAP_CHECK(kos_send(g_ep, EP_MSG, strlen(EP_MSG), after_us(STALL_TOLERANT_US))
-                  == -KOS_EAGAIN);
+                  == -KOS_ECONNREFUSED);
         char buf[sizeof(EP_MSG)];
         struct kos_reply_recv_opts o;
         kos_reply_recv_opts_init(&o, g_ep, KOS_RECV_NO_INFO, after_us(STALL_TOLERANT_US));
@@ -4764,13 +4773,13 @@ namespace
         TAP_CHECK(ho_seat(&w) == 0);
         kos_yield();
         TAP_CHECK(kos_send(g_ep, EP_MSG, strlen(EP_MSG), after_us(HO_SEATED_TIMEOUT_US))
-                  == -KOS_EAGAIN);
+                  == -KOS_ECONNREFUSED);
         kos_sem_post(&g_ho_gate);
         TAP_CHECK(kos_send(g_ep, EP_MSG, strlen(EP_MSG), after_us(STALL_TOLERANT_US)) == mlen);
         TAP_CHECK(thread_end(&w) == 0);
         TAP_CHECK(g_ho_rn.load() == mlen);
         TAP_CHECK(kos_send(g_ep, EP_MSG, strlen(EP_MSG), after_us(STALL_TOLERANT_US))
-                  == -KOS_EAGAIN);
+                  == -KOS_ECONNREFUSED);
         TAP_CHECK(kos_cap_narrow(g_ep, KOS_CAP_SIGNAL | KOS_CAP_TRANSFER) == 0);
         TAP_CHECK(kos_send(g_ep, EP_MSG, strlen(EP_MSG), after_us(STALL_TOLERANT_US))
                   == -KOS_ECONNREFUSED);
@@ -4781,8 +4790,8 @@ namespace
     // --- A parked sender woken by the last receiver leaving ----------------------------------
     // Main's creator cap is the only receiver; a worker parks sending. Main narrows WAIT away
     // while keeping the handout right: the narrow drops the last receiver as a close would, and
-    // the parked sender is answered what a new caller would be, -KOS_EAGAIN. Then main closes
-    // the cap, the handout right going with it, and the parked sender is refused.
+    // the parked sender is refused -KOS_ECONNREFUSED. Then main closes the cap, the handout right
+    // going with it, and the parked sender is refused as well.
     Atomic<int32_t, Order::RELAXED> g_hp_rc{-99};
     void hp_sender(void*) // caps: E(SIGNAL)@0
     {
@@ -4804,7 +4813,7 @@ namespace
         TAP_CHECK(kos_cap_narrow(g_ep, EP_HANDOUT_ONLY) == 0);
         TAP_CHECK(hold.joined());
         int32_t const hp_rc = g_hp_rc;
-        TAP_CHECK(hp_rc == -KOS_EAGAIN);
+        TAP_CHECK(hp_rc == -KOS_ECONNREFUSED);
         TAP_CHECK(hold.close(&g_ep) == 0);
 
         g_hp_rc = -99;
@@ -5227,13 +5236,23 @@ namespace
     // staging fails on the mark instead of duplicating the reply-wait arm.
     Atomic<int, Order::RELAXED> g_rpst_main_receiving{0};
     Atomic<int, Order::RELAXED> g_rpst_caller_saw{-1};
+    Atomic<int, Order::RELAXED> g_rpst_main_got{0};
     void ep_reply_stale_worker(void*) // caps: E(SIGNAL)@0
     {
         char buf[8] = {0};
         EpTimedSend r;
         g_rpst_caller_saw = g_rpst_main_receiving.load();
         kos_monotonic_t const t0 = kos_monotonic_now();
-        r.rc = kos_call(child_cap(0), buf, 4, sizeof(buf), after_us(EP_CALL_TIMEOUT_US));
+        while (true)
+        {
+            r.rc = kos_call(child_cap(0), buf, 4, sizeof(buf), after_us(EP_CALL_TIMEOUT_US));
+            // A deadline past at entry takes nothing; main outranks this thread, so it marks
+            // any receipt before the call returns here.
+            if (r.rc != -KOS_ETIMEDOUT or g_rpst_main_got.load() != 0)
+            {
+                break;
+            }
+        }
         r.waited_us = static_cast<uint32_t>(kos_between(t0, kos_monotonic_now()).ns / 1000ull);
         g_ep_timed_returned = 1;
         (void)kos_send(child_cap(0), &r, sizeof(r), KOS_NEVER);
@@ -5244,6 +5263,7 @@ namespace
         g_ep_timed_returned = 0;
         g_rpst_main_receiving = 0;
         g_rpst_caller_saw = -1;
+        g_rpst_main_got = 0;
         kos_cap_t reply_cap = KOS_CAP_NONE;
         kos::thread::Handle w;
         ArmHold hold;
@@ -5259,6 +5279,7 @@ namespace
         g_rpst_main_receiving = 1;
         int32_t const got =
             kos_reply_recv(KOS_CAP_NONE, req, kos_call_lens_pack(0, sizeof(req)), &opts);
+        g_rpst_main_got = 1;
         reply_cap = opts.info.reply_cap;
         TAP_CHECK(g_rpst_caller_saw.load() == 1);
         TAP_CHECK(got == 4 and reply_cap != KOS_CAP_NONE);
@@ -5299,13 +5320,24 @@ namespace
     // Main's mark before its first receive, and what the caller read of it before calling.
     Atomic<int, Order::RELAXED> g_sr_main_receiving{0};
     Atomic<int, Order::RELAXED> g_sr_caller_saw{-1};
+    Atomic<int, Order::RELAXED> g_sr_main_got{0};
     kos_sem_t g_sr_go = KOS_SEM_INIT(0);
     void sr_caller(void*) // caps: E1(SIGNAL)@0
     {
         char buf[8] = {0};
         g_sr_caller_saw = g_sr_main_receiving.load();
-        if (kos_call(child_cap(0), buf, 4, sizeof(buf),
-                     after_us(EP_CALL_TIMEOUT_US)) == -KOS_ETIMEDOUT)
+        int32_t first = 0;
+        while (true)
+        {
+            first = kos_call(child_cap(0), buf, 4, sizeof(buf), after_us(EP_CALL_TIMEOUT_US));
+            // A deadline past at entry takes nothing; main outranks this thread, so it marks
+            // any receipt before the call returns here.
+            if (first != -KOS_ETIMEDOUT or g_sr_main_got.load() != 0)
+            {
+                break;
+            }
+        }
+        if (first == -KOS_ETIMEDOUT)
         {
             log_put('T');
         }
@@ -5360,6 +5392,7 @@ namespace
         log_reset();
         g_sr_main_receiving = 0;
         g_sr_caller_saw = -1;
+        g_sr_main_got = 0;
         kos_cap_t ep2 = KOS_CAP_NONE;
         kos_cap_t abandoned = KOS_CAP_NONE;
         kos::thread::Handle cl;
@@ -5380,6 +5413,7 @@ namespace
         kos_reply_recv_opts_init(&opts, g_ep, 0, after_us(STALL_TOLERANT_US));
         g_sr_main_receiving = 1;
         int32_t const got = kos_reply_recv(KOS_CAP_NONE, req, kos_call_lens_pack(0, sizeof(req)), &opts); // first call
+        g_sr_main_got = 1;
         abandoned = opts.info.reply_cap;
         TAP_CHECK(g_sr_caller_saw.load() == 1);
         TAP_CHECK(got == 4 and abandoned != KOS_CAP_NONE);
@@ -8458,10 +8492,10 @@ namespace
         TwRun const r = g_tw;
         uint32_t const mask = 1u << TW_BIT;
         TAP_CHECK(r.setup == 0 and r.armed == 0 and r.closed == 0 and r.before == KOS_TASK_LIVE);
-        TAP_CHECK(r.quiet == -KOS_ETIMEDOUT and r.quiet_state == KOS_TASK_LIVE);
+        TAP_CHECK(r.quiet == -KOS_EAGAIN and r.quiet_state == KOS_TASK_LIVE);
         TAP_CHECK(r.ready == 0 and r.ready_bits == mask
                   and r.ready_state == (KOS_TASK_LIVE | KOS_TASK_READY));
-        TAP_CHECK(r.again == -KOS_ETIMEDOUT);
+        TAP_CHECK(r.again == -KOS_EAGAIN);
         TAP_CHECK(r.ended == 0 and r.ended_bits == mask and r.ended_state >= 0
                   and (r.ended_state & KOS_TASK_ENDED) != 0);
         TAP_CHECK(r.dead == 0 and r.dead_state == (KOS_TASK_DEAD | KOS_TASK_ENDED));
@@ -10223,7 +10257,7 @@ namespace
         TAP_CHECK(kos_thread_cancel(victim.id(), KOS_CANCEL_SLAY) == 0);
         // Below main, the victim has not run: a second cancel finds it not yet gone.
         TAP_CHECK(kos_thread_cancel(victim.id(), KOS_CANCEL_KILL) == 0);
-        TAP_CHECK(victim.join_for(std::chrono::microseconds{JOIN_GENEROUS_US}) == 0);
+        TAP_CHECK(victim.join_for(std::chrono::microseconds{STALL_TOLERANT_US}) == 0);
         TAP_CHECK(g_slay_window == 0);
         victim = kos::thread::Handle();
     }
@@ -10715,7 +10749,7 @@ namespace
         int slain = -1;
         if (announce == 0)
         {
-            slain = task_end(&task, JOIN_GENEROUS_US, announced);
+            slain = task_end(&task, STALL_TOLERANT_US, announced);
         }
         TAP_CHECK(main_back());
         TAP_CHECK(started == 0);
@@ -12182,8 +12216,11 @@ int main(int, char**)
 #endif
     // Each needs a peer that is running, and skips by name where none answers.
     TAP_ADD("amp_far_call", t_amp_far_call);
-    TAP_ADD("amp_far_reply_empty", t_amp_far_reply_empty);
+#if not KICKOS_AMP_OWN_IMAGE
+    TAP_ADD("amp_far_call_refused", t_amp_far_call_refused);
+#endif
 #if KICKOS_AMP_OWN_IMAGE
+    TAP_ADD("amp_far_call_held", t_amp_far_call_held);
     TAP_ADD("amp_share_crossing", t_amp_share_crossing);
 #if KICKOS_HAVE_ASPACE
     TAP_ADD("amp_far_reply_unmapped", t_amp_far_reply_unmapped);
@@ -12191,6 +12228,7 @@ int main(int, char**)
 #if KICKOS_AMP_CLOCK_SHARED
     TAP_ADD("amp_far_wall", t_amp_far_wall);
 #endif
+    TAP_ADD("amp_far_share", t_amp_far_share);
 #endif
     TAP_ADD("amp_crossing_task_local", t_amp_crossing_task_local, AG_RAM);
 #endif

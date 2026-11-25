@@ -588,9 +588,11 @@ is the form that waits. archived `M4_task_layer_record.md` is the record.
   mirrors POSIX magnitudes AND meanings -- `EPERM` `ENOENT` `ESRCH` `EIO` `EBADF` `EAGAIN` `ENOMEM` `EACCES`
   `EFAULT` `EBUSY` `EINVAL` `EMFILE` `EPIPE` `EDEADLK` `ENOSYS` `EOVERFLOW` `ENOTSUP` `ETIMEDOUT`
   `ECONNREFUSED`
-  `ECANCELED`: `EAGAIN` means a later try may succeed (I2C arbitration loss can follow partial
-  transfer), `EBUSY` a resource held
-  until something is done about it, `EACCES` a capability missing a right and `EPERM` missing
+  `ECANCELED`: `EAGAIN` means a later try may succeed, a `KOS_POLL` wait that would block among
+  them (I2C arbitration loss can follow partial transfer), `EBUSY` a resource held until
+  something is done about it, a mutex a `KOS_POLL` try found held and a thread a `KOS_POLL` join
+  found running among them, `ECONNREFUSED` an
+  endpoint with no receiver, `EACCES` a capability missing a right and `EPERM` missing
   authority or ownership -- plus
   **`EOWNERDEAD`**, the robust-mutex case: a mutex *acquired*
   while its prior owner died holding it, still returned negative (`-KOS_EOWNERDEAD`) for the
@@ -1500,7 +1502,7 @@ word naming a live thread of another task. A lock of that word boosts the named 
 waiter's priority, possibly above its own task's ceiling, for as long as the waiter waits; a forger
 that also holds a lock the named thread then takes closes a false cycle, so that take answers
 `-KOS_EDEADLK`, which the libc locks turn into a trap; and a try of the word tells the forger
-whether the thread lives (`-KOS_ETIMEDOUT`) or not (`-KOS_EOWNERDEAD`).
+whether the thread lives (`-KOS_EBUSY`) or not (`-KOS_EOWNERDEAD`).
 
 **Syscall-argument validation (the soundness floor).** Enforcement is only sound if the kernel
 never trusts a user pointer: copy-in user structs via a checked read, bound-check writable

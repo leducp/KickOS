@@ -127,11 +127,12 @@ namespace kickos
                     << "fixture: the kept token names the record's new occupant";
             }
             amp::Ring const& back = amp::ring_for(amp::Class::REPLY, PEER, 0u);
-            uint32_t const head = back.head.v.load();
+            uint32_t const head = back.head.v[0].load();
             uint8_t const answer[2] = {1u, 2u};
             EXPECT_EQ(endpoint_reply(kept, reinterpret_cast<uintptr_t>(answer), sizeof(answer)),
                       -KOS_ESRCH);
-            EXPECT_EQ(back.head.v.load(), head) << "the kept reply answered a stranger's far call";
+            EXPECT_EQ(back.head.v[0].load(), head)
+                << "the kept reply answered a stranger's far call";
             EXPECT_NE(amp::inbound_at(record), nullptr) << "the stranger's record was released";
         }
 
@@ -182,12 +183,12 @@ namespace kickos
                 amp::inbound_forget(record);
             }
             amp::Ring const& back = amp::ring_for(amp::Class::REPLY, PEER, 0u);
-            uint32_t const head = back.head.v.load();
+            uint32_t const head = back.head.v[0].load();
             uint8_t const answer[2] = {1u, 2u};
             EXPECT_EQ(endpoint_reply(kept, reinterpret_cast<uintptr_t>(answer), sizeof(answer)),
                       -KOS_ESRCH)
                 << "a reply to a dead record reported a delivery";
-            EXPECT_EQ(back.head.v.load(), head);
+            EXPECT_EQ(back.head.v[0].load(), head);
         }
     }
 }

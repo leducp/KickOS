@@ -110,7 +110,9 @@ namespace kickos
             EXPECT_EQ(target_->cancel_kind, CANCEL_KILL);
             EXPECT_EQ(joiner_->wait_kind, WAIT_NONE) << "the cancel parked its caller";
             EXPECT_NE(target_->state, ThreadState::EXITED) << "the cancel waited for the end";
-            EXPECT_EQ(join_as(joiner_, 0u), -KOS_ETIMEDOUT) << "a join before the end";
+            EXPECT_EQ(join_as(joiner_, 0u), -KOS_EBUSY) << "a polled join before the end";
+            g_now_ns = 1000u;
+            EXPECT_EQ(join_as(joiner_, 1000u), -KOS_ETIMEDOUT) << "a passed join before the end";
             exit_target();
             EXPECT_EQ(join_as(joiner_, 0u), 0) << "the join did not report the cancelled end";
         }

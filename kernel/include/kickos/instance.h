@@ -305,6 +305,9 @@ namespace kickos
         // than wrapping. recv_holders lives solely in the Endpoint struct, and shares that
         // ceiling because one obj_ref_inc moves both counters or neither.
         SlotPool<Endpoint, PoolStore<Endpoint, &KernelPools::endpoints, BudgetKind::ENDPOINTS>> endpoints;
+#if KICKOS_AMP_NODE
+        FarSendWaits far_send;
+#endif
         // How many domain slots past the immortal two were ever claimed (domain.cc); the charged
         // pools' slot the next holdings epoch clears (cap.cc).
         uint16_t domain_fresh = 0;

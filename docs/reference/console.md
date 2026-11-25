@@ -247,8 +247,8 @@ and, for a task that set O_NONBLOCK, stops where it would wait. `stdout_write` s
 0, and a receiver taking fewer bytes than a chunk, none included, is offered the rest again there:
 the rendezvous consumed the receive, so the next send parks until the driver receives again and
 the retry never spins. Only a send no route serves hands the remainder to the kernel console:
-`-KOS_EBADF` (capability 0 empty), `-KOS_EAGAIN` (no receiver serves the console) and
-`-KOS_ECONNREFUSED` (its driver gone for good). Capability 0 is the kernel's seat: no holder may
+`-KOS_EBADF` (capability 0 empty) and `-KOS_ECONNREFUSED` (no receiver serves the console, its
+driver gone for good included). Capability 0 is the kernel's seat: no holder may
 close or narrow it (`-KOS_EPERM`), and it names the published endpoint, a dead one included, until
 the next publish moves it, in every console state. `kconsole_write_all`, the entry for a writer that
 starts at the kernel console, hands it back to `stdout_write` on `-KOS_EBUSY`.
@@ -300,9 +300,10 @@ is no syscall and the kernel keeps no flag. A thread spawned naming no task and 
 own joins its spawner's task, so threads never placed in tasks share their spawner's flag.
 `kickos::stdout_write` reads the flag and asks the kernel not to wait:
 
-- Its send on the published console takes the timeout 0 in place of `KOS_NEVER`, so a
-  console whose task lives with no receiver taking a message now is answered `-KOS_ETIMEDOUT` at
-  once. A call, `kos_console_flush`'s included, and a send on any other endpoint are not touched.
+- Its send on the published console takes `KOS_POLL` in place of `KOS_NEVER`, so a
+  console whose task lives with no receiver taking a message now is answered `-KOS_EAGAIN` at
+  once, which ends the write; the kernel console is not asked.
+  A call, `kos_console_flush`'s included, and a send on any other endpoint are not touched.
 - Its kernel console write passes `KOS_KCONSOLE_NOWAIT`, and one that would wait or have to try
   again is answered `-KOS_ETIMEDOUT`: the dark window, a full ring, a peer node's claim on a
   shared UART, another thread's open line on the same node. Any other flag is refused
@@ -559,8 +560,8 @@ end it follows, which that end slays, so the reclaim always comes.
 
 **A publish onto another endpoint moves stdout with it.** Every thread's capability 0 naming the
 console it replaces is seated on the new endpoint, and a sender parked on the replaced one is
-answered `-KOS_EAGAIN`: `kickos::stdout_write` offers the line to the kernel console, which hands
-it to the new endpoint with `-KOS_EBUSY` once that one is served.
+refused `-KOS_ECONNREFUSED`: `kickos::stdout_write` offers the line to the kernel console, which
+hands it to the new endpoint with `-KOS_EBUSY` once that one is served.
 
 **From the task's end on, the console endpoint takes no send** (`EP_CONSOLE_ENDED`,
 `endpoint_takes_sends` in `kernel/include/kickos/endpoint.h`), though a receiver of it may still
@@ -686,13 +687,13 @@ client hangs for the life of the system. That is strictly WORSE than a dark cons
 the drop is a hard rule and not a tidiness convention.
 The init narrows it to SIGNAL, TRANSFER and HANDOUT (`KOS_DRV_HANDOVER_KEPT`), the rights
 the init's walk (`system/init/compose/walk.cc`) keeps of every endpoint it creates for a server.
-Its task's end then gives the kernel its console back, and with no receiver left a send answers
-`-KOS_EAGAIN` while the init's HANDOUT remains, until the endpoint next receives
-(`endpoint_unserved` in `kernel/include/kickos/endpoint.h`). The endpoint outlives the instances
+Its task's end then gives the kernel its console back, and with no receiver left a send is
+refused `-KOS_ECONNREFUSED` until the endpoint next receives (`endpoint_takes_sends` in
+`kernel/include/kickos/endpoint.h`). The endpoint outlives the instances
 of its driver: a restart's create publishes the SAME endpoint again through that HANDOUT, which
 seats the init's WAIT and hands the console over and the new driver on it, and the init narrows,
-as the first start did. A send answers `-KOS_ECONNREFUSED` only once the init drops the endpoint, its
-driver out of restarts; the seats still name it, so the next publish moves them. Neither drop tears
+as the first start did. The init drops the endpoint once its driver is out of restarts; the seats
+still name it, so the next publish moves them. Neither drop tears
 the endpoint down, because the kernel holds its own
 `g_stdout_target` reference.
 
@@ -710,8 +711,8 @@ still carries it) while no receiver exists yet, and a client `send` parks on `se
 
 The second, THE DARK WINDOW, runs from the driver's task ending to the reclaim, which waits for
 the thread still holding the device, or to a restart's publish. The kernel may not touch the
-device in it either. A send there is answered, `-KOS_EAGAIN` while the init's HANDOUT remains, and
-the writer offers the chunk to the kernel console, which WAITS, with no bound, on a console-state
+device in it either. A send there is refused `-KOS_ECONNREFUSED`, and the writer offers the
+chunk to the kernel console, which WAITS, with no bound, on a console-state
 wait that the reclaim and a publish both wake (`console_dark_wait`, `console_dark_wake`), then
 writes it: polled after the reclaim, or handed back on `-KOS_EBUSY` after a publish, which
 `kickos::stdout_write` (`<kickos/sys/emit.h>`) then sends to the endpoint. The wait ends otherwise

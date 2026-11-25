@@ -68,8 +68,8 @@ namespace kickos
 
     // What a parked thread waits for, and the object owning the list it is on. Set at every park
     // and cleared at every unpark: a cancel dispatches on it, and a mis-tagged park unwinds the
-    // wrong list. WAIT_JOIN and WAIT_CONSOLE are on no list at all, so the tag is the only thing
-    // that finds them.
+    // wrong list. WAIT_JOIN, WAIT_CONSOLE and WAIT_EP_FAR_SEND are on no list at all, so the tag
+    // is the only thing that finds them.
     enum WaitKind : uint8_t
     {
         WAIT_NONE = 0,
@@ -81,6 +81,9 @@ namespace kickos
         // wait_obj: the FAR Endpoint; queue-less on no list at all. No server thread exists
         // to name, the receiver being in another kernel.
         WAIT_EP_FAR_REPLY,
+        // wait_obj: none; queue-less on no list at all, waiting for a slot of lane ipc.far_lane of
+        // the call ring toward ipc.far_node. Nothing is published yet.
+        WAIT_EP_FAR_SEND,
         WAIT_SLEEP,     // wait_obj: none; on the timer delta list
         WAIT_JOIN,      // wait_obj: the TARGET thread; queue-less on no list at all
         WAIT_CONSOLE,    // wait_obj: none; queue-less, a user kernel console write waiting to offer again
@@ -290,16 +293,27 @@ namespace kickos
                                   // after wq_block returns. Timed wait shares it.
 
         // Valid ONLY while this thread is parked on an endpoint waitq (send_waiters /
-        // recv_waiters). The arriving peer reads it privileged under the lock to copy into or
-        // out of this thread's buffer, which was bound-checked at park entry.
+        // recv_waiters), or as WAIT_EP_FAR_SEND. The arriving peer reads it privileged under the
+        // lock to copy into or out of this thread's buffer, which was bound-checked at park entry.
+        // As WAIT_EP_FAR_REPLY it names the far call's slot and holds no buffer.
         struct IpcDesc
         {
-            uintptr_t buf;       // this thread's own message buffer (already bound-checked)
-            size_t    len;       // sender: bytes to send; receiver: buffer capacity
+            union
+            {
+                uintptr_t buf;        // this thread's own message buffer (already bound-checked)
+                uintptr_t far_ticket; // WAIT_EP_FAR_SEND: its place in the order of the parks
+                uintptr_t far_at;     // WAIT_EP_FAR_REPLY: the index its call was published at
+            };
+            union
+            {
+                size_t len;      // sender: bytes to send; receiver: buffer capacity
+                size_t far_node; // WAIT_EP_FAR_SEND and _REPLY: the node of that call ring
+            };
             union
             {
                 uintptr_t badge_out; // receiver: where to store the badge (0 => none)
                 uint32_t badge;      // sender: the badge of the capability it sends through
+                uint32_t far_lane;   // WAIT_EP_FAR_SEND and _REPLY: the lane of that ring
             };
         };
         IpcDesc ipc = {};

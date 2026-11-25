@@ -68,7 +68,7 @@ namespace
             rc = kickos_mutex_lock_entry(word_of(lock), kos_limit_word(until.ns),
                                          KOS_LIMIT_MONOTONIC);
         }
-        if (rc == -KOS_ETIMEDOUT and kos_limit_word(until.ns) == 0u)
+        if (rc == -KOS_EBUSY)
         {
             return false;
         }

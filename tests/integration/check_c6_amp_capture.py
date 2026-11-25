@@ -29,26 +29,6 @@ def one(token: str, pattern: str, log: str) -> tuple[str, ...]:
     return row if isinstance(row, tuple) else (row,)
 
 
-def attempts_per_round(log: str) -> dict[int, int]:
-    # ampping prints a retried round's attempt line BEFORE that round's ping line.
-    attempts: dict[int, int] = {}
-    pending = 1
-    for line in log.splitlines():
-        retry = re.fullmatch(r"  \(node 1 answered on attempt ([0-9]+)\)", line)
-        if retry:
-            require(pending == 1, "attempt", "two attempt lines with no ping line between them")
-            pending = int(retry.group(1))
-            require(pending >= 2, "attempt", f"attempt line names attempt {pending}")
-            continue
-        ping = re.fullmatch(r"  ping ([0-9]+) -> pong [0-9]+ from node 1 \(4 byte\(s\)\)", line)
-        if ping:
-            attempts[int(ping.group(1))] = pending
-            pending = 1
-    require(pending == 1, "attempt", "an attempt line is not followed by its round's ping line")
-    require(sorted(attempts) == [1, 2, 3, 4], "round", f"rounds seen {sorted(attempts)}, expected 1 to 4")
-    return attempts
-
-
 def main() -> None:
     require(len(sys.argv) == 5, "usage",
             "usage: check_c6_amp_capture.py <capture.log> <node 0 base> <node 1 base> <node 1 end>")
@@ -90,13 +70,6 @@ def main() -> None:
     one("call", r"^ampping: node 0 calls node 1 port 3$", log)
     for n in range(1, 5):
         one("round", rf"^  ping {n} -> pong {n + 1} from node 1 \(4 byte\(s\)\)$", log)
-    attempts = attempts_per_round(log)
-    print("rounds: " + ", ".join(f"{n} on attempt {attempts[n]}" for n in sorted(attempts)))
-    retried = [str(n) for n in sorted(attempts) if attempts[n] > 1]
-    if retried:
-        print("retried rounds: " + ", ".join(retried))
-    else:
-        print("retried rounds: none")
     served = int(one("served", r"^ampping: node 1 answered 4 round\(s\), its own record says ([0-9]+)$", log)[0])
     require(served >= 4, "served", f"LP served record has {served}, needs four")
     one("done", r"^ampping: node 0 done, 4 round\(s\) across the partition$", log)

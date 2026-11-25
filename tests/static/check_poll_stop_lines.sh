@@ -46,13 +46,13 @@ restart_capture() { # <cores> <health-last: 0|1>
         done
         printf 'health: sensor died, last reading %s in /shm/history\n' "$_rc_last"
         if [ -n "$_rc_end" ]; then
-            printf 'health: %s\nsensor: restarting\n' "$_rc_end"
+            printf 'health: %s\nsensor: not served\n' "$_rc_end"
         fi
     done
     if [ "$2" -eq 1 ]; then
-        printf 'sensor: gone for good\nhealth: sensor is down for good, running degraded\n'
+        printf 'sensor: not served\nhealth: sensor is down for good, running degraded\n'
     else
-        printf 'health: sensor is down for good, running degraded\nsensor: gone for good\n'
+        printf 'health: sensor is down for good, running degraded\nsensor: not served\n'
     fi
     printf 'root: stack high water 2304 of 8192, 4744 free above the thread-local block\n'
 }
@@ -68,6 +68,7 @@ driver_capture() {
         if [ "$_dc_i" -eq 1 ]; then
             printf 'watch: exits deaths 1 left 0 alive\nwatch: traps deaths 1 left 0 alive\n'
             printf 'watch: fails deaths 1 left 0 alive\n'
+            printf 'exits: refused\ntraps: refused\n'
         else
             printf 'watch: exits deaths 2 left 0 gone\nwatch: traps deaths 2 left 0 gone\n'
             printf 'watch: fails deaths 2 left 0 gone\nwatch: fails_client deaths 0 left 0 down\n'

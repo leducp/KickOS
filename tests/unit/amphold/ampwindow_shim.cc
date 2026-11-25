@@ -20,6 +20,7 @@ namespace kickos
             for (uint32_t me = 0; me < amp::NODE_MAX; me++)
             {
                 amp::g_minted[me] = 0u;
+                amp::g_lanes[me] = amp::Lanes{};
                 new (&amp::g_counts[me]) amp::Counts{};
                 for (uint32_t from = 0; from < amp::NODE_MAX; from++)
                 {
@@ -27,8 +28,11 @@ namespace kickos
                     amp::g_reply_gen[me][from] = 0u;
                     for (unsigned cls = 0; cls < static_cast<unsigned>(amp::Class::CLASS_MAX); cls++)
                     {
-                        amp::g_depth_strikes[cls][me][from] = 0u;
-                        amp::g_inbox[cls][me][from] = amp::Inbox{};
+                        for (uint32_t lane = 0; lane < amp::LANE_MAX; lane++)
+                        {
+                            amp::g_depth_strikes[cls][me][from][lane] = 0u;
+                            amp::g_inbox[cls][me][from][lane] = amp::Inbox{};
+                        }
                     }
                     for (uint32_t i = 0; i < amp::RING_SLOTS; i++)
                     {

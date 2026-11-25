@@ -205,8 +205,8 @@ namespace fake
     void refuse_if(char const* fn, int result, uint32_t times, std::function<bool(Call const&)> when);
 
     // One step per kos_notify_wait but a KOS_POLL one, run before it reads the bits: a wait with
-    // no bit raised runs the next step, or with a deadline times out after advancing the clock to
-    // it, or with none and no step left throws Idle.
+    // no bit raised answers -KOS_EAGAIN under KOS_POLL, else runs the next step, or with a deadline
+    // times out after advancing the clock to it, or with none and no step left throws Idle.
     void script(std::vector<std::function<void()>> steps);
     void advance(uint64_t ns);
     uint64_t now();

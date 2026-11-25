@@ -24,13 +24,13 @@ kickos_add_kseam(kickos_kseam_amp
           KICKOS_AMP_NODE=1
           KICKOS_AMP_HOLD_COPY_HOOK=1
           KICKOS_AMP_OWN_IMAGE=1
-          KICKOS_AMP_NODES=2
+          KICKOS_AMP_NODES=3
           KICKOS_AMP_NODE_ID=0
           KICKOS_AMP_SELF_NODE=0
-          KICKOS_AMP_PORT_COUNT=2
-          "KICKOS_AMP_PORT_NODE_LIST=0,1"
-          "KICKOS_AMP_PORT_PORT_LIST=2,3"
-          "KICKOS_AMP_NODE_CORE_LIST={0,1}")
+          KICKOS_AMP_PORT_COUNT=3
+          "KICKOS_AMP_PORT_NODE_LIST=0,1,2"
+          "KICKOS_AMP_PORT_PORT_LIST=2,3,4"
+          "KICKOS_AMP_NODE_CORE_LIST={0,1,2}")
 
 kickos_add_unit_test(NAME amp_hold SOURCES hold.cc
   LIBRARIES kickos_kseam_amp)
