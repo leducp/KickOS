@@ -665,6 +665,11 @@ namespace kickos
                     }
                 }
                 // Before any deadline: ktime_limit_arm would park a try until the floor.
+                if (limit.poll())
+                {
+                    *rc = -KOS_EBUSY;
+                    return Attempt::ANSWERED;
+                }
                 if (ktime_limit_passed(limit))
                 {
                     *rc = -KOS_ETIMEDOUT;

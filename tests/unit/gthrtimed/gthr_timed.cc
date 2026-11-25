@@ -115,8 +115,10 @@ namespace
 // model would clash with.
 extern "C"
 {
+    int __kickos_gthr_mutex_trylock(Mutex* m);
     int __kickos_gthr_mutex_timedlock(Mutex* m, timespec const* abs);
     int __kickos_gthr_mutex_clocklock(Mutex* m, clockid_t clock, timespec const* abs);
+    int __kickos_gthr_recursive_mutex_trylock(RecursiveMutex* m);
     int __kickos_gthr_recursive_mutex_timedlock(RecursiveMutex* m, timespec const* abs);
     int __kickos_gthr_recursive_mutex_clocklock(RecursiveMutex* m, clockid_t clock,
                                                 timespec const* abs);
@@ -392,7 +394,13 @@ TEST_P(GthrTimed, a_deadline_is_handed_to_the_nanosecond)
 
 TEST_P(GthrTimed, a_deadline_before_the_epoch_is_handed_as_passed)
 {
-    g_script.push_back({-KOS_ETIMEDOUT, false, 0});
+    // A limit before the epoch is the poll's, which a lock answers -KOS_EBUSY.
+    int polled = -KOS_EBUSY;
+    if (is_cond())
+    {
+        polled = -KOS_ETIMEDOUT;
+    }
+    g_script.push_back({polled, false, 0});
 
     EXPECT_EQ(wait_until({-1, 0}), ETIMEDOUT);
     EXPECT_EQ(g_calls, 1u);
@@ -515,6 +523,20 @@ TEST(GthrTimedLock, a_wait_a_kill_cancels_asks_again_at_the_kernel_entry)
     EXPECT_EQ(g_handed_kind, static_cast<uint32_t>(KOS_LIMIT_REALTIME))
         << "the second ask left the realtime clock";
     EXPECT_EQ(g_handed_ns, 101000000000);
+}
+
+TEST(GthrTryLock, a_held_mutex_answers_ebusy)
+{
+    reset();
+    g_script.push_back({-KOS_EBUSY, false, 0});
+    g_script.push_back({-KOS_EBUSY, false, 0});
+    Mutex m = {};
+    RecursiveMutex r = {};
+
+    EXPECT_EQ(__kickos_gthr_mutex_trylock(&m), EBUSY);
+    EXPECT_EQ(__kickos_gthr_recursive_mutex_trylock(&r), EBUSY);
+    EXPECT_EQ(g_calls, 2u);
+    EXPECT_EQ(g_handed_ns, KOS_POLL.ns);
 }
 
 TEST(GthrSelf, root_has_a_thread_id_and_others_their_handle)

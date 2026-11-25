@@ -14,8 +14,8 @@
  * two classes, the interrupt nested at its deepest byte with the switch cut, and the switch
  * with nothing below it.
  *
- * Each figure is the deepest reading over every armv8a preset, and each class is reserved at a
- * round figure above it.
+ * Each figure is the deepest reading over every armv8a preset, and each class is reserved at or
+ * above it.
  */
 
 #ifndef KICKOS_ARCH_ARMV8A_TRAP_STACK_H
@@ -42,24 +42,27 @@
 #define KICKOS_ARMV8A_TRAP_ENTRY_FRAME 0
 #define KICKOS_ARMV8A_TRAP_NEED_USER 0
 
-/* IRQ and IRQK. 736 on qemu-arm64-gicv3 and smp12, 720 amp, 624 smp, smp2, smpiso and a710,
- * 592 amp3-n1, 576 amp3-n0 and amp3-n2, 560 amp2, qemu-arm64 and imx8mp-evk. Above one core it
- * is the console drain's wake, whose switch spins on the kernel lock and services a route ask
- * that GICv3 refuses:
+/* IRQ and IRQK. 848 on qemu-arm64-amp, 736 qemu-arm64-gicv3 and smp12, 688 amp2-n0 and amp3,
+ * 672 amp2-n1, 656 smp, smp2, smpiso and a710, 576 qemu-arm64 and imx8mp-evk. On the others
+ * above one core it is the console drain's wake, whose switch spins on the kernel lock and
+ * services a route ask that GICv3 refuses:
  *   kickos_armv8a_irq[32] -> kickos_armv8a_gic_dispatch[48] -> kickos_isr_irq[48]
  *   -> console_tx_isr[64] -> console_tx_room_freed[32] -> console_dark_wake[48] -> sched::wake
  *   -> pick_and_seat[96] -> klock_attach[48] -> arch_kernel_lock -> kickos_doorbell_poll
  *   -> kickos_doorbell_service -> kickos_irq_route_service[48] -> arch_irq_mask[48]
  *   -> wait_gicd_rwp[48] -> kpanic_refuse_unlocked[32]
- * On one kernel core the AMP doorbell's payload drain wins:
+ * On qemu-arm64-amp the AMP doorbell's payload drain wins, a ring's resynchronisation answering
+ * its held calls:
  *   kickos_armv8a_irq[32] -> kickos_armv8a_gic_dispatch[32] -> kickos_doorbell_service[32]
- *   -> amp::node_service[144] -> amp::take_reply[128] -> amp::depth_ok[96] -> amp::send[112]
- *   -> kickos_armv8a_gic_doorbell_send[80] */
-#define KICKOS_ARMV8A_TRAP_DEPTH_IRQ 832
+ *   -> kickos_amp_node_service[32] -> amp::node_service[176] -> amp::take_reply[160]
+ *   -> amp::depth_ok[144] -> amp::send[128] -> arch_ipi_send[32]
+ *   -> kickos_armv8a_gic_doorbell_send[80]
+ * Reserved at that reading. */
+#define KICKOS_ARMV8A_TRAP_DEPTH_IRQ 848
 
 /* An interrupt's whole extent below the sp it interrupts, FRAME + DEPTH_IRQ, which
  * arch_armv8a.cc asserts: the frame term of every class an interrupt can land under. */
-#define KICKOS_ARMV8A_TRAP_NEST 1632
+#define KICKOS_ARMV8A_TRAP_NEST 1648
 
 /* The EL0 synchronous entry on the block, the syscall and the fault it contains. 2016 on
  * qemu-arm64-gicv3 and smp12 under the KickOS toolchain's GCC 16.2, a task create seeding the
@@ -75,12 +78,12 @@
 /* An interrupt nested below arch_irq_window, the one place a system call opens interrupts on the
  * block: the EL0 synchronous entry's frame and an interrupt's whole extent, FRAME + NEST, which
  * arch_armv8a.cc asserts. */
-#define KICKOS_ARMV8A_TRAP_WINDOW 2432
+#define KICKOS_ARMV8A_TRAP_WINDOW 2448
 
 /* The system call's descent to arch_irq_window, above SYSWIN's frame. 352 on every armv8a
  * preset:
  *   syscall_dispatch[176] -> frame_create_call[96] -> presync_run[80] -> arch_irq_window[0]
- * WINDOW + 1024 = 3456 against 4092 above the canary. */
+ * WINDOW + 1024 = 3472 against 4092 above the canary. */
 #define KICKOS_ARMV8A_TRAP_DEPTH_SYSWIN 1024
 
 /* The fault and slay stubs on the block with an interrupt nested below. 1232 on
@@ -90,7 +93,7 @@
  *   -> console_dark_wake[48] -> ...
  *   -> klock_attach[48] -> arch_kernel_lock -> ... -> wait_gicd_rwp[48]
  *   -> kpanic_refuse_unlocked[32]
- * NEST + 2048 = 3680 is the block's deepest need, against 4092 above the canary. */
+ * NEST + 2048 = 3696 is the block's deepest need, against 4092 above the canary. */
 #define KICKOS_ARMV8A_TRAP_DEPTH_EXITK 2048
 
 /* The same stubs through the switch. 1856 on qemu-arm64-gicv3 and smp12, 1808 on

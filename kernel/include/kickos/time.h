@@ -62,6 +62,12 @@ namespace kickos
         {
             return word == KOS_LIMIT_NONE;
         }
+
+        // KOS_POLL, or any deadline before the clock's origin: a request that may not wait.
+        constexpr bool poll() const
+        {
+            return word == 0u;
+        }
     };
 
     // Whether a wait takes a limit of `kind`: RELATIVE is a sleep's alone.

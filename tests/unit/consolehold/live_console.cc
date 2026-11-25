@@ -111,7 +111,7 @@ TEST_F(ConsoleLive, a_send_of_no_deadline_never_parks)
 {
     ASSERT_NO_FATAL_FAILURE(stage(&g_live, true));
     uint32_t const parked = g_parked;
-    EXPECT_EQ(send(g_live, 0u), -KOS_ETIMEDOUT);
+    EXPECT_EQ(send(g_live, 0u), -KOS_EAGAIN);
     EXPECT_EQ(g_parked, parked);
 }
 
@@ -205,7 +205,7 @@ TEST_F(ConsoleLive, no_line_is_handed_to_a_receiver_once_the_task_ended)
         IrqLock lock;
         task_end(g_live.served, 0, true, lock);
     }
-    EXPECT_EQ(send(g_live, KOS_LIMIT_NONE), -KOS_EAGAIN);
+    EXPECT_EQ(send(g_live, KOS_LIMIT_NONE), -KOS_ECONNREFUSED);
     EXPECT_EQ(g_receiver->wait_kind, WAIT_EP_RECV) << "the line was handed to the receiver";
     EXPECT_EQ(g_receiver_buf[0], 0);
     IrqLock lock;
@@ -226,7 +226,7 @@ TEST_F(ConsoleLive, a_send_with_a_passed_deadline_never_parks_on_the_console)
 {
     ASSERT_NO_FATAL_FAILURE(stage(&g_live, true));
     uint32_t const parked = g_parked;
-    EXPECT_EQ(send(g_live, 0u), -KOS_ETIMEDOUT);
+    EXPECT_EQ(send(g_live, 0u), -KOS_EAGAIN);
     EXPECT_EQ(g_parked, parked);
 }
 
@@ -250,7 +250,7 @@ namespace
 }
 
 // The console published again onto another endpoint: a writer parked on the old one is answered
-// -KOS_EAGAIN, and its stdout names the new one, where it offers its line again.
+// -KOS_ECONNREFUSED, and its stdout names the new one, where it offers its line again.
 TEST_F(ConsoleLive, a_writer_parked_on_a_replaced_console_is_answered_and_follows_it)
 {
     ASSERT_NO_FATAL_FAILURE(stage(&g_live, true));
@@ -269,7 +269,7 @@ TEST_F(ConsoleLive, a_writer_parked_on_a_replaced_console_is_answered_and_follow
     int32_t const rc = endpoint_send(KOS_CAP_STDOUT, reinterpret_cast<uintptr_t>(g_live.buf),
                                      sizeof(g_live.buf), KOS_LIMIT_NONE);
     EXPECT_TRUE(g_parked_on_send);
-    EXPECT_EQ(rc, -KOS_EAGAIN) << "the writer was not answered, or told the seat is gone";
+    EXPECT_EQ(rc, -KOS_ECONNREFUSED) << "the writer was not answered";
     EXPECT_EQ(cap_slot(g_live.writer->caps, KOS_CAP_STDOUT)->obj, g_next_console)
         << "the writer's stdout still names the replaced console";
     IrqLock lock;

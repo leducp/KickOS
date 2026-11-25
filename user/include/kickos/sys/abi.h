@@ -289,8 +289,9 @@ enum kos_syscall_nr
                                 //   half with the consumed bits in the high half of the 64-bit
                                 //   result, or -KOS_E*: EINVAL (an empty mask), EPERM (the
                                 //   caller is bound to no notification, or above one core not
-                                //   pinned exactly to its lines' claim core), ETIMEDOUT,
-                                //   ECANCELED. Waits on the notification the caller is bound to
+                                //   pinned exactly to its lines' claim core), EAGAIN (KOS_POLL
+                                //   with no bit pending), ETIMEDOUT, ECANCELED. Waits on the
+                                //   notification the caller is bound to
     KOS_SYS_IRQ_ACK = 16,       // (irq_cap) -> 0, or -KOS_EBADF / -KOS_EACCES (cap lacks WAIT)
                                 //   / -KOS_EINVAL (the line signals no notification)
     KOS_SYS_DIAG_LED_SET = 19,  // (on)                  -> 0 (kernel diagnostic LED)
@@ -299,7 +300,8 @@ enum kos_syscall_nr
                                 //   clock and kos_monotonic_now scale by
     KOS_SYS_MUTEX_LOCK = 24,    // (kos_mutex_t*, limit lo, limit hi, enum kos_limit_kind) -> 0 held;
                                 //   -KOS_EOWNERDEAD held, its holder having died;
-                                //   -KOS_ETIMEDOUT (the time ran out, or a try found it held) /
+                                //   -KOS_EBUSY (KOS_POLL found it held) / -KOS_ETIMEDOUT (any
+                                //   other deadline ran out, or a passed one found it held) /
                                 //   -KOS_EDEADLK / -KOS_ECANCELED / -KOS_EINVAL (misaligned, not
                                 //   normal memory, the AMP share, a word disagreeing with the
                                 //   waiters the kernel holds, a word threads wait on with
@@ -365,19 +367,19 @@ enum kos_syscall_nr
     KOS_SYS_CALL = 46,         // (ep_cap, buf, kos_call_lens_pack(send_len, recv_cap),
                                //   deadline lo, deadline hi) -> reply bytes (>= 0), or -KOS_E*
                                //   (EINVAL/EFAULT/
-                               //   EBADF/EACCES/ENOTSUP, EAGAIN no receiver while a
-                               //   KOS_CAP_HANDOUT holder remains, or a far endpoint's peer ring
-                               //   is full, and nothing was sent, ECONNREFUSED no receiver and no
-                               //   such holder, EPIPE the server died holding the request, EMFILE
-                               //   the SERVER's cap table has no slot for the reply cap,
-                               //   ETIMEDOUT no reply came in time). KOS_LIMIT_NONE waits
-                               //   forever
+                               //   EBADF/EACCES/ENOTSUP, ECONNREFUSED no receiver, and
+                               //   nothing was sent, EPIPE the
+                               //   server died holding the request, EMFILE the SERVER's cap
+                               //   table has no slot for the reply cap, EAGAIN KOS_POLL and
+                               //   nothing was sent, ETIMEDOUT no reply came in time).
+                               //   KOS_LIMIT_NONE waits forever
     KOS_SYS_NOTIFY_UNBIND = 47, // (notify_cap) -> 0, or -KOS_E*: EBADF, EACCES (cap lacks
                                //   WAIT), EPERM (the caller is not the bound thread). Unconsumed
                                //   bits are LEFT pending for the next server.
     KOS_SYS_THREAD_JOIN = 48,  // (kos_thread_t, deadline lo, deadline hi) -> 0 (the target is gone,
                                //   INCLUDING a target that had already exited),
-                               //   -KOS_ETIMEDOUT, -KOS_ECANCELED (the CALLER was cancelled
+                               //   -KOS_EBUSY (KOS_POLL, still running), -KOS_ETIMEDOUT,
+                               //   -KOS_ECANCELED (the CALLER was cancelled
                                //   while waiting), -KOS_EBADF (never allocated / reclaimed
                                //   under this handle), -KOS_EPERM (another task's thread
                                //   the caller did not spawn), -KOS_EDEADLK (naming yourself).
@@ -385,12 +387,12 @@ enum kos_syscall_nr
                                //   or -KOS_E*:
                                //   EINVAL (len above KOS_EP_MSG_MAX, rejected and never
                                //   clamped), EFAULT (bad buffer), EBADF/EACCES (bad cap / no
-                               //   SIGNAL right), EAGAIN (no receiver while a KOS_CAP_HANDOUT
-                               //   holder remains, or a far endpoint's peer ring is full),
-                               //   ECONNREFUSED (no receiver and no such holder), either at
-                               //   once or on waking when the last receiver leaves; nothing
-                               //   sent. ETIMEDOUT where the deadline passed with no receiver,
-                               //   at once for a passed one, which never parks.
+                               //   SIGNAL right), ECONNREFUSED (no receiver, at once or on
+                               //   waking when the last receiver leaves), EAGAIN (KOS_POLL
+                               //   wherever the send would wait); nothing sent. ETIMEDOUT
+                               //   where any other deadline passed with no receiver or no slot
+                               //   of a far endpoint's full peer ring, at once for a passed
+                               //   one, which never parks.
                                //   KOS_LIMIT_NONE parks indefinitely, and on the published
                                //   console while its task lives, receiver or not.
                                //   EFAULT also answers a
@@ -460,6 +462,7 @@ enum kos_syscall_nr
                                //   -KOS_ENOTIFY (a notification and no message), -KOS_EINVAL,
                                //   -KOS_EFAULT, -KOS_EPERM, -KOS_EACCES, -KOS_EBADF,
                                //   -KOS_ESRCH, -KOS_EMFILE, -KOS_ENOTSUP, -KOS_EPIPE,
+                               //   -KOS_EAGAIN (KOS_POLL with nothing to receive),
                                //   -KOS_ETIMEDOUT, -KOS_ECANCELED. A null opts replies and
                                //   receives nothing: 0, or -KOS_EBADF (bad / non-reply cap),
                                //   -KOS_ESRCH (stale caller), -KOS_EFAULT (bad buffer)

@@ -107,26 +107,12 @@ int main(void)
         msg[1] = 0xA1u;
         msg[2] = 0xA2u;
         msg[3] = 0xA3u;
-        int32_t n = kos_call(ep, msg, sizeof(msg), sizeof(msg),
-                             kos_after(kos_monotonic_now(), kos_us(AMPPING_CALL_US)));
-        // The peer parks in its own time, so the first call can find no receiver (N6e). Zero is
-        // the empty reply of a refusal past the take, not an answer.
-        int tries = 1;
-        while (n <= 0 and tries < AMPPING_TRIES)
+        int32_t const n = kos_call(ep, msg, sizeof(msg), sizeof(msg),
+                                   kos_after(kos_monotonic_now(), kos_us(AMPPING_CALL_US)));
+        if (n < 0)
         {
-            kos_sleep_for(kos_ns(AMPPING_SETTLE_NS));
-            n = kos_call(ep, msg, sizeof(msg), sizeof(msg),
-                         kos_after(kos_monotonic_now(), kos_us(AMPPING_CALL_US)));
-            tries++;
-        }
-        if (n <= 0)
-        {
-            printf("ampping: round %d refused after %d attempt(s), rc %ld\n", round, tries, (long)n);
+            printf("ampping: round %d refused, rc %ld\n", round, (long)n);
             exit(1);
-        }
-        if (tries > 1)
-        {
-            printf("  (node %u answered on attempt %d)\n", (unsigned)peer, tries);
         }
         if ((size_t)n != sizeof(msg))
         {

@@ -325,6 +325,8 @@ milestone does not close while any of them still composes a system.
         - `docs/journey/04-mutex.md:123`: `seat_reent` in `kernel/sched/sched.cc` is gone;
         - `docs/journey/04-mutex.md:145`: `reent_seat` runs where the switch lands;
         - `docs/journey/04-mutex.md:163`: the `reent_seat` breakpoint shows another signature.
+      - The far-send and poll-code work: `docs/journey/04-mutex.md`, `05-call-and-reply.md`,
+        `11-multicore.md` and `18-a-real-system.md`, and the Book's priority-inheritance pages.
       - The boot banner (maintainer, 2026-11-03): its version (the project's 0.5.1) and its text
         are out of date.
       - Every guarantee states its limits beside it (maintainer, 2026-11-05). KickOS provides a
@@ -586,6 +588,36 @@ milestone does not close while any of them still composes a system.
         IRQCRi lives in the kernel-owned ICU and no claim sets it, so no driver can choose edge
         detection, and the claim flags are rearm policy only. A claim without `KOS_IRQ_LEVEL`
         records `IRQ_EDGE` on what the pin detects as a level source.
+      - M10.8.8 (cross-node blocking IPC; maintainer rulings 2026-11-22: a far send finding no
+        parked receiver is held until its port's next receive, a blocking send or call to an
+        endpoint nobody serves answers ECONNREFUSED, and "AMP is not different, the user doesn't
+        care and should NOT care"):
+        **CLOSED here:**
+        - A far call that found no receiver parked was answered empty, a 0-byte success, and a
+          call to a port nobody serves read as success too. It is now held for its port's next
+          receive, as a far send is, and taken as a call; a port bound to nothing or with no
+          receiver, or one whose last receiver leaves while the call is held, answers the caller
+          `-KOS_ECONNREFUSED`, which a reply's badge word carries. Every other empty reply still
+          means "no answer". `amp_hold` and `amp_window` arms for the three cases, red with the
+          fix reverted; `amp_far_call_held` (qemu-arm64-amp2, amp3) stages a call while the echo
+          is off its receive, red on the base tree; `amp_far_call_refused` (qemu-arm64-amp) calls
+          a port of a node that runs no kernel. ampping and the selftest no longer retry a call
+          answered empty.
+        - A held far call outlived its caller and was still served. A caller that leaves now
+          withdraws it: its park unwind marks the slot it still holds and rings, and the serving
+          node gives the slot back unanswered. A call is never taken onto a slot whose record
+          still stands, so a served port is never refused for want of a record, and a deferred
+          refusal is published as one. `amp_hold` and `amp_window` arms, red with each reverted;
+          `amp_far_call_held` (qemu-arm64-amp2, amp3) gives a call up while the echo is off its
+          receive, and the echo's next receive does not see it.
+        **OPEN, for the maintainer:**
+        - A far send to a port nobody serves still returns its byte count: the sender is answered
+          at publication, and the serving node drops it.
+        - A composed node never refuses a far port: root keeps `CAP_WAIT` on every port it seats,
+          so a port whose server died holds calls until their deadline where a local endpoint
+          whose server died refuses them.
+        Still owed: the selftest partition (`amp_far_call_held`) and ampping on esp32c6-wroom and
+        pizero2350 silicon.
 - [ ] **M10.8.1: THE CORTEX-M TRAP ENTRY (the M10.8 audit, verified 2026-11-18).**
       **RULED (maintainer, 2026-11-18)** on the audit's findings:
       - Area 2 F2 (a K64F client's slow DSPI rate polled at a lent priority) is DROPPED: a granted
@@ -2146,33 +2178,11 @@ not by arrival, so "who parked first" never decides who is served; and in the sl
 that remain, the highest-priority sleeper always holds the earliest deadline, so coalescing
 reproduces the intended order.
 
-**CORRECTED 2026-09-17: `sleep_order` is NOT cleared, and the argument that cleared it answered
-only half the question.** This entry used to say the two-sleeper arms with equal priorities were
-saved by the ready list being FIFO and the sleep queue deadline-sorted. That is true and it
-covers exactly one failure mode, the coalesced-drain inversion above. It says nothing about
-whether the two deadlines are in the intended order in the first place, and in this arm they
-need not be.
-
-`t_sleep` (`user/apps/common/selftest/main.cc`) spawns the 40 ms sleeper FIRST and the 10 ms
-one second, so `log_eq("SL")` at `user/apps/common/selftest/main.cc:447` needs the interval
-between the two sleepers reaching `kos_sleep_for` to stay under 30 ms. That interval is the
-second spawn's own cost and not a scheduling artefact: root runs at `KICKOS_PRIO_MIN + 1` and
-both sleepers at 10, so each create preempts root at the create itself and the sleeper arms its
-deadline before root returns to spawn the next one. A spawn is not free on a slow or loaded
-box, and nothing in the arm bounds it. Measured on this branch: `sleep_order` went red 1 time
-in 19 solo runs in the slow duration band and 6 times in 17 contended ones.
-
-**NOT REPAIRED HERE, and the reason is a missing observable rather than a missing fix.** A
-zero-margin expression of the claim needs the arm to know the deadline the kernel actually
-armed for each sleeper, which is kernel-side and does not exist today; adding one is a
-different piece of work. Two repairs ARE available without it, both leaving a residual margin
-rather than removing it, and the choice between them is open:
-
-- Each sleeper publishes its own pre-syscall clock read, and the arm asserts on the OBSERVED
-  deadline order (`read + requested`) instead of on the intended one. The residue is the gap
-  between the read and the syscall.
-- Both sleepers are staged on a rendezvous and released together, so the gap is a post plus a
-  switch instead of a whole spawn. The residue is that post and switch.
+**REPAIRED: `sleep_order`.** Each sleeper sleeps until the deadline it publishes
+(`kos_sleep_until`), so the deadline the arm judges is the one the kernel armed. Main reads the
+clock once both sleepers have parked or ended; when that read is not before the 10 ms sleeper's
+deadline, that sleep may have found its deadline already passed, which yields instead of parking,
+and the arm reports vacuous instead of judging the order.
 
 ## More arms a duration can decide, beyond the ones named above (2026-09-17)
 
@@ -2184,9 +2194,9 @@ section above already states what a repair has to look like, and a repair that o
 margin is not one. Each was read against its own body before being filed.
 
 `call_timeout_reply`, `cap_reply_release_close`, `cap_reply_slot_reuse`, `dev_window_exclusive`,
-`thread_join`, `slice_preempts_every_core`, `threads_reach_every_core`, `migrate_running`, and
-`sleep_order`, corrected above. Four AMP arms listed here were deleted in M10.6.4, their claims
-held by the `amp_hold` suite.
+`thread_join`, `slice_preempts_every_core`, `threads_reach_every_core` and `migrate_running`.
+`sleep_order`, once listed here, is repaired above. Four AMP arms listed here were deleted in
+M10.6.4, their claims held by the `amp_hold` suite.
 
 ## Named by a commit that fixed something else, and never filed anywhere
 
@@ -3998,8 +4008,10 @@ follows is what survived that.
       limit on M10.6.12 and M10.7 alike (measured 2026-11-18).
 - [ ] **M10.8: The `qemu-arm64` expected faults `was` and `wro` never fault.** The gate accepts
       the absence.
-- [ ] **M10.8: A far call answers empty where a local call waits.** The two paths of one call
-      differ, an asymmetry of the ABI.
+- [x] **M10.8: A far call answers empty where a local call waits.** The two paths of one call
+      differ, an asymmetry of the ABI. **CLOSED (M10.8.8).**
+- [ ] **M10.8: The echo port takes a lane of every call ring.** A node serving one real port gives
+      it half its ring, two slots of four: a measured cost to revisit.
 - [ ] **M10.8: `errnoprobe` arm F no longer guards a switch-in.** The guard it exercised is gone.
 - [ ] **M10.8: Whether the selftest's converted worker cells needed atomics is unanswered.** The
       cells main reads only after joining their worker say so and stay plain; the others were made

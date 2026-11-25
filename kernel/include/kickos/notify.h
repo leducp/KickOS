@@ -121,7 +121,8 @@ namespace kickos
     // their signallers owing a rearm at the next wait, and answered in the high half:
     // notify_wait_bits. Else -KOS_E*: EINVAL (an empty mask, which could only ever block
     // forever), EPERM (`c` is bound to nothing, or above one kernel core its own mask is not
-    // exactly its lines' claim core), ETIMEDOUT, ECANCELED.
+    // exactly its lines' claim core), EAGAIN (KOS_POLL with no bit of `mask` pending),
+    // ETIMEDOUT, ECANCELED.
     int64_t notify_wait(Thread* c, uint32_t mask, uint64_t deadline);
     // The answer of a wait that took `bits`: 0 in the low half, the bits in the high one.
     constexpr int64_t notify_wait_bits(uint32_t bits)

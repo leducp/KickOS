@@ -276,7 +276,7 @@ extern "C"
     // the deadline a SERVICE enforces is the service's own policy, and the caller's argument
     // bounds only its local work. A caller parked in kos_call has no timeout of its own
     // either; what saves it is the endpoint losing its last receiver, which wakes it with
-    // -KOS_EAGAIN or -KOS_ECONNREFUSED.
+    // -KOS_ECONNREFUSED.
 
 #ifdef __cplusplus
 }

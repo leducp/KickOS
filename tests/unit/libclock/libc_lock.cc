@@ -4,7 +4,7 @@
 // newlib's locks, each a mutex word and a depth in its own struct __lock, a named static one or
 // one a FILE holds, taken through the real user/src/mutex.cc over a host compare-and-swap. The
 // kernel here answers the two contended entries as the kernel does: a dead holder's word is
-// stolen with -KOS_EOWNERDEAD, a try on a word another thread holds -KOS_ETIMEDOUT, a wait parks
+// stolen with -KOS_EOWNERDEAD, a try on a word another thread holds -KOS_EBUSY, a wait parks
 // until an unlock hands the word over, a non-holder unlocking -KOS_EPERM. Each host thread is a
 // KickOS thread of its own.
 
@@ -262,7 +262,7 @@ namespace
             if (limit == 0)
             {
                 bump(g_tries_refused);
-                return -KOS_ETIMEDOUT;
+                return -KOS_EBUSY;
             }
             EXPECT_EQ(limit, KOS_LIMIT_NONE) << "a libc lock waited with a deadline";
             if (__real_kickos_user_cas(word, v, v | KOS_WORD_WAITERS) != v)

@@ -59,10 +59,19 @@ if [ -z "${KOS_POLL_REPLAY:-}" ]; then
         || fail "the driver witness's system does not link the init's driver path alone"
 fi
 
-# A driver's second-death line may follow its client's refusal.
+# A driver's second-death line may follow its client's refusal, and the client is refused once
+# between the two instances as well: only a refusal after the restarted instance's fifth answer
+# ends the run.
+refused_for_good() { # <log> <who>
+    tr -d '\r' < "$1" | awk -v fifth="$2: served 5 by /svc/$2" -v end="$2: refused" '
+        index($0, fifth) { n++; next }
+        n >= 2 && index($0, end) { found = 1 }
+        END { exit !found }'
+}
 all_ended() { # <log>
-    log_holds "$1" 'exits: refused' 'traps: refused' 'watch: exits deaths 2 left 0 gone' \
-        'watch: traps deaths 2 left 0 gone' 'watch: fails_client deaths 0 left 0 down'
+    log_holds "$1" 'watch: exits deaths 2 left 0 gone' 'watch: traps deaths 2 left 0 gone' \
+        'watch: fails_client deaths 0 left 0 down' || return 1
+    refused_for_good "$1" exits && refused_for_good "$1" traps
 }
 KOS_POLL_UNTIL=all_ended
 echo "== running the driver witness =="

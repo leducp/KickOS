@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
-# Recorded on esp32c6-wroom.
+# Recorded on esp32c6-wroom; the amp_far_call_held lines written by hand.
 ESP-ROM:esp32c6-20220919
 Build:Sep 19 2022
 rst:0x1 (POWERON),boot:0xc (SPI_FAST_FLASH_BOOT)
@@ -50,8 +50,8 @@ ok 14 - amp_port_unnamed
 # amp far call: 1 of 1 peer node(s) answered
 # send to node 1: 16, sent 1->2, refused 0->0
 ok 15 - amp_far_call
-# far reply empty: node 1 answered a refused call with 0 byte(s)
-ok 16 - amp_far_reply_empty
+# far call held: node 1, busy call 16, given up -110, took 3->6, held call 16, echo saw 1 call(s)
+ok 16 - amp_far_call_held
 # share: node 1's word through this node's window: 0x53480001
 ok 17 - amp_share_crossing
 # main's crossing 1: -9 from another task, -13 from main

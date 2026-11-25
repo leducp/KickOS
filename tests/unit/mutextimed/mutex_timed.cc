@@ -214,7 +214,10 @@ namespace kickos
         {
             seat_waiter_over_holder();
 
-            EXPECT_EQ(mutex_lock(va(&g_word), 0), -KOS_ETIMEDOUT);
+            EXPECT_EQ(mutex_lock(va(&g_word), 0), -KOS_EBUSY);
+            g_now_ns = WAIT_NS;
+            EXPECT_EQ(mutex_lock(va(&g_word), WAIT_NS), -KOS_ETIMEDOUT)
+                << "a passed deadline is not a poll";
             EXPECT_EQ(g_word, g_holder->lock_id);
             EXPECT_EQ(g_holder->prio, PRIO_HOLDER) << "a failed try boosted the holder";
             EXPECT_EQ(kernel().word_active, nullptr) << "a failed try queued itself";
@@ -225,7 +228,7 @@ namespace kickos
             donor_waits_on(m, PRIO_PARTIAL);
             Thread* const donor = thread_of(m->waiters.head);
 
-            EXPECT_EQ(mutex_lock(va(&g_word), 0), -KOS_ETIMEDOUT) << "a try with a waiter parked";
+            EXPECT_EQ(mutex_lock(va(&g_word), 0), -KOS_EBUSY) << "a try with a waiter parked";
             EXPECT_EQ(g_holder->prio, PRIO_PARTIAL)
                 << "a failed try lent the holder more than the parked waiter gave it";
             EXPECT_EQ(m->waiters.head, m->waiters.tail) << "a failed try queued itself";
@@ -283,7 +286,7 @@ namespace kickos
             donor_waits_on(m, PRIO_PARTIAL);
 
             g_word = g_holder->lock_id;
-            EXPECT_EQ(mutex_lock(va(&g_word), 0), -KOS_ETIMEDOUT);
+            EXPECT_EQ(mutex_lock(va(&g_word), 0), -KOS_EBUSY);
             EXPECT_EQ(g_word, g_holder->lock_id | KOS_WORD_WAITERS);
             EXPECT_EQ(m->waiters.head, m->waiters.tail) << "a failed try queued itself";
         }

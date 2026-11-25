@@ -44,7 +44,7 @@ rc=0
 # The fields a take spends. The tag is NOT here: it is two words, cannot be one atomic, and no
 # arm of the window spends it, so a torn one is handed back torn and refused at the calling
 # node's own clause.
-FIELDS="len port"
+FIELDS="len port badge"
 TAKES="take_reply take_call"
 
 # BLANKED AND THEN DE-INDENTED, line for line. fn_body.awk asks that a definition either open

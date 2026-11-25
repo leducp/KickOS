@@ -304,16 +304,6 @@ namespace fake
             return receivers(object) != 0u and not g_objects[object].vacated;
         }
 
-        // The refusal of a send to an endpoint not receiving (endpoint_unserved).
-        int unserved(size_t object)
-        {
-            if (receivers(object) != 0u or handout(object))
-            {
-                return -KOS_EAGAIN;
-            }
-            return -KOS_ECONNREFUSED;
-        }
-
         uint32_t live(Kind kind)
         {
             uint32_t n = 0;
@@ -1320,6 +1310,10 @@ int kos_notify_wait(uint32_t mask, kos_monotonic_t until, uint32_t* out_bits)
                 *out_bits = raised;
             }
             return finish(call, 0);
+        }
+        if (poll)
+        {
+            return finish(call, -KOS_EAGAIN);
         }
         if (until.ns != KOS_NEVER.ns)
         {
@@ -2351,15 +2345,19 @@ int32_t kos_send(kos_cap_t ep, void const* buf, size_t len, kos_monotonic_t unti
     if (receiving(object))
     {
         // A receiver seated and not vacated parks a send until its deadline, never for a
-        // passed one (kernel/syscall/syscall_ipc.cc).
+        // passed one, and refuses KOS_POLL (kernel/syscall/syscall_ipc.cc).
         if (until.ns == KOS_NEVER.ns)
         {
             throw Panic{"fake: a send parked on a console nothing receives"};
         }
+        if (kos_limit_word(until.ns) == 0u)
+        {
+            return finish(call, -KOS_EAGAIN);
+        }
         wait_out(until);
         return finish(call, -KOS_ETIMEDOUT);
     }
-    return finish(call, unserved(object));
+    return finish(call, -KOS_ECONNREFUSED);
 }
 
 // Only the published console's KOS_UART_DRAIN, answered as a console driver answers it.
@@ -2388,6 +2386,10 @@ int32_t kos_call(kos_cap_t ep, void* buf, size_t send_len, size_t recv_cap, kos_
     size_t const object = static_cast<size_t>(g_stdout);
     settle();
     // A passed deadline answers before any receiver is taken (kernel/syscall/syscall_ipc.cc).
+    if (kos_limit_word(until.ns) == 0u)
+    {
+        return finish(call, -KOS_EAGAIN);
+    }
     if (passed(until))
     {
         return finish(call, -KOS_ETIMEDOUT);
@@ -2408,7 +2410,7 @@ int32_t kos_call(kos_cap_t ep, void* buf, size_t send_len, size_t recv_cap, kos_
         wait_out(until);
         return finish(call, -KOS_ETIMEDOUT);
     }
-    return finish(call, unserved(object));
+    return finish(call, -KOS_ECONNREFUSED);
 }
 
 static void publish(kos_cap_t ep, int64_t served_by)

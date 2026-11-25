@@ -9,7 +9,8 @@
 #include <kickos/arch/arch.h> // KICKOS_AMP_NODE
 #include <kickos/config.h>
 #include <kickos/list.h>
-#include <kickos/sys/errno.h> // KOS_EAGAIN, KOS_ECONNREFUSED
+#include <kickos/sys/abi.h>   // KOS_AMP_RING_SLOTS
+#include <kickos/sys/errno.h>
 #include <kickos/held.h>
 
 namespace kickos
@@ -116,13 +117,53 @@ namespace kickos
     bool endpoint_far_call_deliver(uint32_t from, uint32_t port, amp::ReplyTag const& tag,
                                    uint32_t badge, uint32_t len, uint32_t slot, Held held);
 
+    // Keep one far send or call that found no receiver parked on the endpoint its port is bound
+    // to, in the slot it arrived in, until a receive of that endpoint takes it. False where the
+    // endpoint has no receiver left or nothing can hold it, and dispatch_call refuses it.
+    bool endpoint_far_hold(uint32_t from, uint32_t port, amp::ReplyTag const& tag,
+                           uint32_t badge, uint32_t len, uint32_t slot, Held held);
+
+    // Refuse and give back every far send and call held for `e`, whose last receiver has left.
+    void endpoint_far_held_refuse(Endpoint const* e, Held held);
+
+    // Give back every far call held on this node whose caller withdrew it. Run by the doorbell
+    // service.
+    void endpoint_far_held_withdrawn(Held held);
+
     // Hand one far reply to whatever local thread `tag` names, and answer whether one took it.
     // `tag` is another node's writing: nothing in it may be spent before this validates it.
     // `from` is the RING the reply arrived on, which the validation tests the caller's own
     // far node against. True hands the caller `hold`, the reply's slot, which it lands and
-    // releases in its own call (endpoint_call); nothing is copied here.
+    // releases in its own call (endpoint_call); nothing is copied here. A `refused` reply
+    // answers the call -KOS_ECONNREFUSED.
     bool endpoint_far_reply_deliver(uint32_t from, amp::ReplyTag const& tag, uint32_t hold,
-                                    uint32_t len, Held held);
+                                    uint32_t len, bool refused, Held held);
+
+    // This node's threads waiting in a blocking far send or call for a slot of a full lane of a
+    // call ring, per node that ring leads to and per lane, and that lane's far tail at the last
+    // park or wake pass, which every slot of it given back since has moved.
+    struct FarSendWaits
+    {
+        uint16_t waiting[KICKOS_AMP_NODES][KOS_AMP_RING_SLOTS] = {};
+        uint32_t seen[KICKOS_AMP_NODES][KOS_AMP_RING_SLOTS] = {};
+        uint32_t ticket = 0;
+    };
+
+    // Wake this node's threads waiting in a blocking far send or call for a slot of a lane that
+    // slots have come back to since the last pass: per lane, no more than it gave back or has
+    // free, the highest priority first and in park order among equals. Each publishes again in
+    // its own syscall. Run by the doorbell service.
+    void endpoint_far_send_wake(Held held);
+    // The same pass, waking at least one waiter of every lane with a free slot: run where a woken
+    // waiter has left without taking the slot it was woken for.
+    void endpoint_far_send_relay(Held held);
+    // Count `t`, parked queue-less as WAIT_EP_FAR_SEND, among the waiters for a slot of lane
+    // `lane` of the call ring toward `node`, which was full at far tail `tail`.
+    void endpoint_far_send_seat(Thread* t, uint32_t node, uint32_t lane, uint32_t tail);
+    // Take `t` out of that count, on any unpark.
+    void endpoint_far_send_leave(Thread const* t);
+    // Withdraw the far call `t` published, as `t` leaves its WAIT_EP_FAR_REPLY park.
+    void endpoint_far_call_withdraw(Thread const* t);
 
     // Create a LOCAL endpoint, bind `port` to it and install a capability in `c`. Caller holds
     // IrqLock.
@@ -141,6 +182,14 @@ namespace kickos
     inline uint32_t endpoint_far_node(Endpoint const*)
     {
         return 0;
+    }
+
+    inline void endpoint_far_send_leave(Thread const*)
+    {
+    }
+
+    inline void endpoint_far_call_withdraw(Thread const*)
+    {
     }
 
 #endif
@@ -167,18 +216,6 @@ namespace kickos
             return e->console == EP_CONSOLE_SERVED;
         }
         return endpoint_receiving(e);
-    }
-
-    // What a caller finding no receiver is answered, a vacated endpoint included:
-    // -KOS_EAGAIN while a WAIT holder beyond the `leaving` ones already on their way out, or a
-    // HANDOUT holder, remains, since a receiver may come; -KOS_ECONNREFUSED once neither does.
-    inline int32_t endpoint_unserved(Endpoint const* e, unsigned leaving)
-    {
-        if (e->recv_holders > leaving or e->handout_holders > 0)
-        {
-            return -KOS_EAGAIN;
-        }
-        return -KOS_ECONNREFUSED;
     }
 
     // The span the narrow fields take ahead of `server`: one pointer on a 64-bit build, two

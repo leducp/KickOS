@@ -74,36 +74,13 @@ namespace selftest
     // The kernel seats the partition's ports in root from CONFIG_KICKOS_AMP_PORTS, and the init
     // delegates main the crossings its composition names; nothing below mints or binds.
     //
-    // The window layer answers the echo port with no thread; a service port needs a receiver
-    // parked in a far kernel, which a peer core under one image does not run.
+    // The window layer answers the echo port with no thread; a service port needs a receiver in
+    // a far kernel, which a peer core under one image does not run.
     constexpr size_t AMP_FAR_LEN = 16;
-    constexpr uint64_t AMP_REPARK_POLL_NS = 100000ull;
 
-    // A far call finding no receiver parked on its port is answered empty on the spot, and a
-    // receiver parks again only after its last answer: a non-empty request is retried until the
-    // peer answers it with bytes, all within one STALL_TOLERANT_US.
     int32_t amp_echo_call(kos_cap_t ep, void* buf, size_t len)
     {
-        if (len == 0)
-        {
-            return -KOS_EINVAL;
-        }
-        kos_monotonic_t const deadline = after_us(STALL_TOLERANT_US);
-        int32_t got = -KOS_ETIMEDOUT;
-        while (true)
-        {
-            if (kos_monotonic_now().ns >= deadline.ns)
-            {
-                return got;
-            }
-            got = kos_call(ep, buf, len, len, deadline);
-            // Empty: the peer is between its answer and its next wait, which node 0 cannot see.
-            if (got != 0)
-            {
-                return got;
-            }
-            kos_sleep_for(kos_ns(AMP_REPARK_POLL_NS));
-        }
+        return kos_call(ep, buf, len, len, after_us(STALL_TOLERANT_US));
     }
 
     // The capability main holds for `port` of `node`, or KOS_CAP_NONE where its composition
@@ -237,7 +214,7 @@ namespace selftest
         return KOS_CAP_NONE;
     }
 
-    // A far entry no receiver serves. With an echo crossing that is any service port; without
+    // A far entry no receiver answers. With an echo crossing that is any service port; without
     // one it is the second, the first being the served one.
     kos_cap_t amp_far_unanswered_at(uint32_t* out_node)
     {
@@ -299,8 +276,6 @@ namespace selftest
         TAP_CHECK(kos_reply_recv(KOS_CAP_NONE, rbuf, kos_call_lens_pack(0, sizeof(rbuf)), &fo)
                   == -KOS_EACCES);
 
-        // The calls before the send: a far call finding nothing parked is refused on the spot,
-        // and a one-thread peer answering the send is not parked.
         unsigned echoed = 0;
         for (uint32_t n = 0; n < static_cast<uint32_t>(KICKOS_AMP_NODES); n++)
         {
@@ -332,70 +307,37 @@ namespace selftest
         }
         tap::diag("amp far call: %u of %u peer node(s) answered", echoed, named);
         TAP_CHECK(echoed == named);
-
-        // To a port nobody serves, so no late reply lands in a later arm. The count each outcome
-        // moves is this node's own: one publication, or one refusal of a full ring.
-        uint32_t node = 0;
-        kos_cap_t const quiet = amp_far_unanswered_at(&node);
-        if (quiet != KOS_CAP_NONE)
-        {
-            char sbuf[AMP_FAR_LEN];
-            for (size_t i = 0; i < sizeof(sbuf); i++)
-            {
-                sbuf[i] = static_cast<char>(0x40u + i);
-            }
-            int64_t const sent0 = amp_count(AMP_SELF_ROW, KOS_AMP_COUNT_SENT);
-            int64_t const refused0 = amp_count(AMP_SELF_ROW, KOS_AMP_COUNT_SEND_REFUSED);
-            int32_t const rc = kos_send(quiet, sbuf, sizeof(sbuf), KOS_NEVER);
-            int64_t const sent1 = amp_count(AMP_SELF_ROW, KOS_AMP_COUNT_SENT);
-            int64_t const refused1 = amp_count(AMP_SELF_ROW, KOS_AMP_COUNT_SEND_REFUSED);
-            tap::diag("send to node %u: %ld, sent %ld->%ld, refused %ld->%ld",
-                      static_cast<unsigned>(node), static_cast<long>(rc),
-                      static_cast<long>(sent0), static_cast<long>(sent1),
-                      static_cast<long>(refused0), static_cast<long>(refused1));
-            TAP_CHECK(sent0 >= 0 and refused0 >= 0);
-            // At least, since the kernel's own answers to a peer's calls publish on this row too.
-            if (rc == static_cast<int32_t>(sizeof(sbuf)))
-            {
-                TAP_CHECK(sent1 >= sent0 + 1 and refused1 == refused0);
-            }
-            else
-            {
-                TAP_CHECK(rc == -KOS_EAGAIN);
-                TAP_CHECK(refused1 >= refused0 + 1);
-            }
-        }
     }
 
-    // A refused far call still answers its caller: the peer's kernel publishes a zero-length
-    // reply for a call to a port bound with no receiver, which a caller with no deadline
-    // has nothing else to wake it.
-    void t_amp_far_reply_empty()
+#if not KICKOS_AMP_OWN_IMAGE
+    // A far call to a port nobody serves is refused, as a local call is: a peer that runs no
+    // kernel binds none of its ports, so its window layer refuses every call but an echo.
+    void t_amp_far_call_refused()
     {
+        uint32_t echo_node = 0;
+        uint32_t echo_port = 0;
+        kos_cap_t const echo = amp_far_first(&echo_node, &echo_port, true, 0);
         uint32_t node = 0;
         kos_cap_t const ep = amp_far_unanswered_at(&node);
-        if (ep == KOS_CAP_NONE)
-        {
-            tap::skip("the partition names no far port whose call goes unserved");
-            return;
-        }
-        if (not amp_peer_kernel_live(node))
-        {
-            tap::skip("the node serving that port runs no kernel to answer it");
-            return;
-        }
+        TAP_SKIP_UNLESS(echo != KOS_CAP_NONE and ep != KOS_CAP_NONE and echo_node == node,
+                        "the partition names no echo and service port of one peer");
+        char ebuf[AMP_FAR_LEN];
         char cbuf[AMP_FAR_LEN];
-        for (size_t i = 0; i < sizeof(cbuf); i++)
+        for (size_t i = 0; i < AMP_FAR_LEN; i++)
         {
-            cbuf[i] = static_cast<char>(0x30u + i);
+            ebuf[i] = static_cast<char>(0x30u + i);
+            cbuf[i] = static_cast<char>(0x40u + i);
         }
-        int32_t const n =
-            kos_call(ep, cbuf, sizeof(cbuf), sizeof(cbuf), after_us(STALL_TOLERANT_US));
-        tap::diag("far reply empty: node %u answered a refused call with %ld byte(s)",
-                  static_cast<unsigned>(node), static_cast<long>(n));
-        // Exactly zero: a caller nobody answered reads -KOS_ETIMEDOUT.
-        TAP_CHECK(n == 0);
+        // The control: the peer's window layer answers.
+        int32_t const echoed = amp_echo_call(echo, ebuf, sizeof(ebuf));
+        int32_t const n = amp_echo_call(ep, cbuf, sizeof(cbuf));
+        tap::diag("far call refused: node %u echoed %ld, refused %ld",
+                  static_cast<unsigned>(node), static_cast<long>(echoed), static_cast<long>(n));
+        TAP_CHECK(echoed == static_cast<int32_t>(sizeof(ebuf)));
+        TAP_CHECK(n == -KOS_ECONNREFUSED);
+        TAP_CHECK(cbuf[0] == 0x40);
     }
+#endif
 
     // --- What the partition delegated, and where ---------------------------------------------
     // Each crossing main's composition names is a capability the init delegated at its spawn.
@@ -722,13 +664,115 @@ namespace selftest
         TAP_CHECK(word == amp_share_mark(far_node));
     }
 
+    // --- A far call finding no receiver parked waits for the port's next receive -------------
+    // As a local call waits for a receiver, and one whose caller gave up is withdrawn. The echo
+    // peer holds a call marked AMP_HOLD_MARK until node 0 stores the call's sequence at
+    // AMP_HOLD_WORD of its own line, or answers one marked AMP_BUSY_MARK and then stays off its
+    // receive until that store (user/apps/common/ampping/main_echo.c).
+    constexpr uint8_t AMP_HOLD_MARK = 0xD0u;
+    constexpr uint8_t AMP_BUSY_MARK = 0xD2u;
+    constexpr uintptr_t AMP_HOLD_WORD = 8u;
+    // The calls an echo peer has received, at this word of its own line.
+    constexpr uintptr_t AMP_SEEN_WORD = 4u;
+    constexpr uint64_t AMP_TOOK_POLL_NS = 100000ull;
+    // Far below the echo's own hold bound, so the call gives up while the echo is off its receive.
+    constexpr uint32_t AMP_WITHDRAW_US = 200u * 1000u;
+
+    // The peer's own took count moves once per call its service takes, held or delivered, and
+    // nothing but this node calls it.
+    bool amp_took_reaches(uint32_t node, int64_t want)
+    {
+        kos_monotonic_t const deadline = after_us(STALL_TOLERANT_US);
+        while (amp_count(node, KOS_AMP_COUNT_TOOK) < want)
+        {
+            if (kos_monotonic_now().ns >= deadline.ns)
+            {
+                return false;
+            }
+            kos_sleep_for(kos_ns(AMP_TOOK_POLL_NS));
+        }
+        return true;
+    }
+
+    uint32_t g_ach_node = 0;
+    int64_t g_ach_want = 0;
+    Atomic<uint32_t, Order::RELAXED> g_ach_took{0};
+
+    // Stores nothing into the share: on a region board only main's thread holds that window.
+    void amp_held_watcher(void*)
+    {
+        g_ach_took = static_cast<uint32_t>(amp_took_reaches(g_ach_node, g_ach_want));
+    }
+
+    void t_amp_far_call_held()
+    {
+        uint32_t far_node = 0;
+        kos_cap_t const far = amp_far_answered(&far_node);
+        TAP_SKIP_UNLESS(far != KOS_CAP_NONE and amp_peer_kernel_live(far_node),
+                        "no peer kernel answers a far call on this partition");
+        size_t size = 0;
+        uintptr_t const view = amp_share_view(&size);
+        TAP_CHECK(view != 0 and size >= AMP_SHARE_LINE);
+        TAP_ASK(.workers = 1);
+        auto* const release =
+            reinterpret_cast<Atomic<uint32_t, Order::RELEASE>*>(view + AMP_HOLD_WORD);
+        uint32_t const seq = 0x5Au;
+        release->store(seq ^ 0xFFu);
+        int64_t const took0 = amp_count(far_node, KOS_AMP_COUNT_TOOK);
+        unsigned char busy[AMP_FAR_LEN] = {};
+        busy[0] = AMP_BUSY_MARK;
+        busy[1] = static_cast<unsigned char>(seq);
+        int32_t const answered = amp_echo_call(far, busy, sizeof(busy));
+        auto const* const seen =
+            reinterpret_cast<Atomic<uint32_t, Order::ACQUIRE> const*>(
+                view + far_node * AMP_SHARE_LINE + AMP_SEEN_WORD);
+        uint32_t const seen0 = seen->load();
+        // A caller that gives up withdraws its call: the echo's next receive must not see it.
+        unsigned char gone[AMP_FAR_LEN] = {};
+        gone[0] = 0x57u;
+        int32_t const gave_up = kos_call(far, gone, sizeof(gone), sizeof(gone),
+                                         after_us(AMP_WITHDRAW_US));
+        g_ach_node = far_node;
+        g_ach_want = took0 + 3;
+        g_ach_took = 0;
+        kos::thread::Handle w;
+        ArmHold hold;
+        TAP_HOLD(hold.thread(&w));
+        w = kos::thread::create(amp_held_watcher, nullptr, "ampheld", TAP_PRIO_PARKS,
+                                KOS_POLICY_FIFO, 0ns, nullptr, 0, nullptr, 0, nullptr, 0, 0,
+                                nullptr, TAP_PIN_CORE);
+        TAP_CHECK(w.valid());
+        unsigned char cbuf[AMP_FAR_LEN];
+        for (size_t i = 0; i < sizeof(cbuf); i++)
+        {
+            cbuf[i] = static_cast<unsigned char>(0x68u + i);
+        }
+        int32_t const got = amp_echo_call(far, cbuf, sizeof(cbuf));
+        // Released whatever happened, so a failure here leaves the peer echoing.
+        release->store(seq);
+        bool const joined = hold.joined();
+        bool same = (got == static_cast<int32_t>(sizeof(cbuf)));
+        for (size_t i = 0; same and i < sizeof(cbuf); i++)
+        {
+            same = cbuf[i] == static_cast<unsigned char>(0x68u + i);
+        }
+        int64_t const took1 = amp_count(far_node, KOS_AMP_COUNT_TOOK);
+        uint32_t const seen1 = seen->load();
+        tap::diag("far call held: node %u, busy call %ld, given up %ld, took %ld->%ld, held "
+                  "call %ld, echo saw %lu call(s)",
+                  static_cast<unsigned>(far_node), static_cast<long>(answered),
+                  static_cast<long>(gave_up), static_cast<long>(took0), static_cast<long>(took1),
+                  static_cast<long>(got), static_cast<unsigned long>(seen1 - seen0));
+        TAP_CHECK(answered == static_cast<int32_t>(sizeof(busy)));
+        TAP_CHECK(gave_up == -KOS_ETIMEDOUT);
+        TAP_CHECK(took0 >= 0 and joined and g_ach_took.load() == 1u);
+        TAP_CHECK(same);
+        TAP_CHECK(seen1 - seen0 == 1u);
+    }
+
 #if KICKOS_HAVE_ASPACE
     // --- A far reply into a page unmapped under its parked caller ---------------------------
-    // The echo peer holds a call marked AMP_HOLD_MARK until node 0 stores the call's sequence at
-    // AMP_HOLD_WORD of its own line (user/apps/common/ampping/main_echo.c), so the unmap below
-    // lands between the request's copy and the reply's.
-    constexpr uint8_t AMP_HOLD_MARK = 0xD0u;
-    constexpr uintptr_t AMP_HOLD_WORD = 8u;
+    // The unmap below lands between the request's copy and the reply's, the echo holding it.
     constexpr kos_cap_t CH_ARU_FRAME = KOS_SPAWN_DELEGATED_CAP0;
     constexpr kos_cap_t CH_ARU_SPACE = KOS_SPAWN_DELEGATED_CAP0 + 1;
     uintptr_t g_aru_va = 0;
@@ -807,11 +851,6 @@ namespace selftest
                   static_cast<long>(g_aru_unmap.load()), static_cast<long>(got),
                   static_cast<long>(fault0), static_cast<long>(fault1), static_cast<long>(again));
         TAP_CHECK(joined and g_aru_unmap.load() == 0);
-        // Not retried: the unmapper has run by the time an empty answer lands. An empty answer
-        // moves no fault count, so a refused landing answering 0 still fails below; one that
-        // also dropped its count could not be told from this skip.
-        TAP_SKIP_UNLESS(got != 0 or fault1 != fault0,
-                        "the peer had not parked again for the held call");
         TAP_SKIP_UNLESS(unmapped_first or got != static_cast<int32_t>(AMP_FAR_LEN),
                         "the peer's hold lapsed before the unmap");
         // The landing's code, not the deadline's: 0 would be a valid empty answer.
@@ -900,6 +939,62 @@ namespace selftest
         TAP_CHECK(g_awall_ended > called and g_awall_ended - called < AMP_WALL_ENDED_MAX_NS);
         // The peer saw the waiter end inside its hold, before its reply rang this node.
         TAP_CHECK(req[3] == 1);
+    }
+#endif
+
+#if KICKOS_AMP_OWN_IMAGE
+    // A port whose task never receives keeps its own share of the call ring toward its node:
+    // sends to it are held until that share is full, a call to it then waits for a slot, and a
+    // call to another port of the same node still crosses. The sends stay held for good, so
+    // this runs after every other arm calling that port.
+    void t_amp_far_share()
+    {
+        uint32_t far_node = 0;
+        kos_cap_t const far = amp_far_answered(&far_node);
+        TAP_SKIP_UNLESS(far != KOS_CAP_NONE and amp_peer_kernel_live(far_node),
+                        "no peer kernel answers a far call on this partition");
+        uint32_t quiet_node = 0;
+        kos_cap_t const quiet = amp_far_unanswered_at(&quiet_node);
+        TAP_SKIP_UNLESS(quiet != KOS_CAP_NONE and quiet_node == far_node,
+                        "the partition names no unanswered port beside the answered one");
+        char sbuf[AMP_FAR_LEN];
+        for (size_t i = 0; i < sizeof(sbuf); i++)
+        {
+            sbuf[i] = static_cast<char>(0x48u + i);
+        }
+        int64_t const sent0 = amp_count(AMP_SELF_ROW, KOS_AMP_COUNT_SENT);
+        int32_t const first = kos_send(quiet, sbuf, sizeof(sbuf), after_us(STALL_TOLERANT_US));
+        int64_t const sent1 = amp_count(AMP_SELF_ROW, KOS_AMP_COUNT_SENT);
+        unsigned held = 0;
+        int32_t rc = 0;
+        while (held <= KOS_AMP_RING_SLOTS)
+        {
+            rc = kos_send(quiet, sbuf, sizeof(sbuf), KOS_POLL);
+            if (rc != static_cast<int32_t>(sizeof(sbuf)))
+            {
+                break;
+            }
+            held++;
+        }
+        char qbuf[AMP_FAR_LEN] = {};
+        int32_t const waited =
+            kos_call(quiet, qbuf, sizeof(qbuf), sizeof(qbuf), after_us(AMP_SEAT_PROBE_US));
+        char cbuf[AMP_FAR_LEN];
+        for (size_t i = 0; i < sizeof(cbuf); i++)
+        {
+            cbuf[i] = static_cast<char>(0x58u + i);
+        }
+        int32_t const got = amp_echo_call(far, cbuf, sizeof(cbuf));
+        tap::diag("far share: node %u held %ld then %u more send(s), then %ld; the call to it "
+                  "%ld, to its neighbour %ld",
+                  static_cast<unsigned>(far_node), static_cast<long>(first), held,
+                  static_cast<long>(rc), static_cast<long>(waited), static_cast<long>(got));
+        TAP_CHECK(first == static_cast<int32_t>(sizeof(sbuf)));
+        // At least, since the kernel's own answers to a peer's calls publish on this row too.
+        TAP_CHECK(sent0 >= 0 and sent1 >= sent0 + 1);
+        TAP_CHECK(rc == -KOS_EAGAIN);
+        TAP_CHECK(waited == -KOS_ETIMEDOUT);
+        TAP_CHECK(got == static_cast<int32_t>(sizeof(cbuf)));
     }
 #endif
 

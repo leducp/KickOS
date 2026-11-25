@@ -78,6 +78,9 @@ namespace kickos
             [[no_unique_address]] Held const held_;
         };
 
+        // A send or call attempt's answer where it parked: no byte count or -KOS_E* is this.
+        constexpr int32_t PARKED = INT32_MIN;
+
 #if KICKOS_AMP_NODE
         // Copy from a held ring slot into private storage while interrupts are open. A reset
         // returns the slot to the producer and then bumps the generation, both inside one masked
@@ -142,15 +145,223 @@ namespace kickos
             {
                 return static_cast<int32_t>(len);
             }
-            if (rc == amp::Sent::FULL)
-            {
-                return -KOS_EAGAIN;
-            }
-            if (rc == amp::Sent::DEPTH)
+            // FULL past the room check is a far tail that moved back since that check read it.
+            if (rc == amp::Sent::FULL or rc == amp::Sent::DEPTH)
             {
                 return -KOS_EPIPE;
             }
             return -KOS_EINVAL;
+        }
+
+        // A far send or call its port's receiver has not taken yet. Its record holds the call
+        // slot, and `ep1` is the bound endpoint's slot index plus one, 0 for a free entry.
+        struct FarHeld
+        {
+            uint32_t record;
+            uint32_t len;
+            uint32_t seq;
+            uint16_t ep1;
+        };
+        constexpr uint32_t FAR_HELD_MAX = amp::NODE_MAX * amp::RING_SLOTS;
+        FarHeld g_far_held[amp::NODE_MAX][FAR_HELD_MAX];
+        uint32_t g_far_held_seq[amp::NODE_MAX];
+        // The entries of g_far_held with `ep1` set, dead records included.
+        uint32_t g_far_held_count[amp::NODE_MAX];
+
+        void far_held_clear(FarHeld& h)
+        {
+            h.ep1 = 0u;
+            g_far_held_count[amp::self()]--;
+        }
+
+        // The oldest send or call held for endpoint slot `ep`, or nullptr. Caller holds IrqLock.
+        FarHeld* far_held_oldest(int ep)
+        {
+            FarHeld* oldest = nullptr;
+            for (FarHeld& h : g_far_held[amp::self()])
+            {
+                if (h.ep1 == 0u or static_cast<int>(h.ep1) - 1 != ep)
+                {
+                    continue;
+                }
+                if (oldest == nullptr or static_cast<int32_t>(h.seq - oldest->seq) < 0)
+                {
+                    oldest = &h;
+                }
+            }
+            return oldest;
+        }
+
+        // Hands `c` the oldest send or call held for `e`, as a delivery would: the length it
+        // lands, with Thread::far_hold naming the record. -1 where none is held. Caller holds
+        // IrqLock.
+        int32_t far_held_take(Thread* c, Endpoint const* e, size_t cap_len)
+        {
+            if (g_far_held_count[amp::self()] == 0u)
+            {
+                return -1;
+            }
+            int const ep = kernel().endpoints.index_of(e);
+            while (true)
+            {
+                FarHeld* const h = far_held_oldest(ep);
+                if (h == nullptr)
+                {
+                    return -1;
+                }
+                uint32_t const record = h->record;
+                uint32_t const len = h->len;
+                far_held_clear(*h);
+                // A resynchronisation answered the record and took its slot back.
+                if (not amp::hold_live(record))
+                {
+                    continue;
+                }
+                if (amp::call_withdrawn(record))
+                {
+                    amp::inbound_withdraw(record);
+                    continue;
+                }
+                c->far_hold = record + 1u;
+                return static_cast<int32_t>(ipc_len_min(len, cap_len));
+            }
+        }
+
+        static_assert(amp::LANE_MAX == KOS_AMP_RING_SLOTS,
+                      "FarSendWaits holds one row per lane a call ring can have");
+
+        // The waiter for a slot of lane `lane` of the ring toward `node` that goes first: the
+        // highest priority, the earliest park among equals.
+        Thread* far_slot_first(uint32_t node, uint32_t lane)
+        {
+            Kernel& k = kernel();
+            Thread* first = nullptr;
+            for (int s = 0; s < k.threads.next; s++)
+            {
+                Thread* const t = &k.threads.slots()[s];
+                if (t->wait_kind != WAIT_EP_FAR_SEND or t->ipc.far_node != node
+                    or t->ipc.far_lane != lane)
+                {
+                    continue;
+                }
+                if (first == nullptr or t->prio > first->prio)
+                {
+                    first = t;
+                    continue;
+                }
+                uint32_t const ahead =
+                    static_cast<uint32_t>(t->ipc.far_ticket - first->ipc.far_ticket);
+                if (t->prio == first->prio and static_cast<int32_t>(ahead) < 0)
+                {
+                    first = t;
+                }
+            }
+            return first;
+        }
+
+        void far_slot_wake(uint32_t least, Held held)
+        {
+            FarSendWaits& w = kernel().far_send;
+            for (uint32_t to = 0; to < amp::NODE_MAX; to++)
+            {
+                for (uint32_t lane = 0; lane < amp::LANE_MAX; lane++)
+                {
+                    if (w.waiting[to][lane] == 0u)
+                    {
+                        continue;
+                    }
+                    uint32_t tail = 0;
+                    uint32_t const room = amp::call_ring_room(to, lane, &tail);
+                    uint32_t n = tail - w.seen[to][lane];
+                    w.seen[to][lane] = tail;
+                    if (n < least)
+                    {
+                        n = least;
+                    }
+                    if (room == amp::ROOM_REFUSED)
+                    {
+                        n = w.waiting[to][lane];
+                    }
+                    else if (n > room)
+                    {
+                        n = room;
+                    }
+                    while (n != 0u and w.waiting[to][lane] != 0u)
+                    {
+                        Thread* const t = far_slot_first(to, lane);
+                        KICKOS_ASSERT(t != nullptr);
+                        endpoint_far_send_leave(t);
+                        t->clear_wait_edge();
+                        t->wait_result = 0;
+                        sched::wake(t, held);
+                        n--;
+                    }
+                }
+            }
+        }
+
+        // Armed for an attempt a far slot wake readied: one that neither publishes nor parks
+        // again hands the slot it was woken for to the next waiter.
+        class FarSlotRelay
+        {
+        public:
+            FarSlotRelay(bool armed, Held held) : armed_(armed), held_(held)
+            {
+            }
+            FarSlotRelay(FarSlotRelay const&) = delete;
+            FarSlotRelay& operator=(FarSlotRelay const&) = delete;
+
+            ~FarSlotRelay()
+            {
+                if (armed_)
+                {
+                    far_slot_wake(1u, held_);
+                }
+            }
+
+            void settled()
+            {
+                armed_ = false;
+            }
+
+        private:
+            bool armed_;
+            [[no_unique_address]] Held const held_;
+        };
+
+        // Publish to the far endpoint `e`, or where its port's lane of the peer's call ring is full
+        // and the request may wait, park `c` for a slot of that lane and answer PARKED, the epoch
+        // in `*out_epoch`. A full lane answers KOS_POLL -KOS_EAGAIN, and any other deadline
+        // already passed -KOS_ETIMEDOUT.
+        int32_t far_send_or_park(Thread* c, Endpoint const* e, uintptr_t buf, size_t len,
+                                 amp::ReplyTag const& tag, uint32_t badge, WaitLimit const& limit,
+                                 ParkToken const& ask, uint32_t* out_epoch, Held held)
+        {
+            uint32_t const node = endpoint_far_node(e);
+            amp::Lane const ln = amp::lane_for(amp::Class::CALL, node, e->far_port);
+            // The mint refuses a port the peer carries no lane for.
+            KICKOS_ASSERT(ln.slots != 0u);
+            uint32_t const lane = ln.index;
+            uint32_t tail = 0;
+            if (amp::call_ring_room(node, lane, &tail) != 0u)
+            {
+                return far_publish(c, e, buf, len, tag, badge);
+            }
+            if (limit.poll())
+            {
+                amp::count_send_refused();
+                return -KOS_EAGAIN;
+            }
+            if (ktime_limit_passed(limit))
+            {
+                return -KOS_ETIMEDOUT;
+            }
+            *out_epoch = park_queueless(ask)(c, WAIT_EP_FAR_SEND, nullptr, held);
+            endpoint_far_send_seat(c, node, lane, tail);
+            ktime_limit_arm(c, limit, held);
+            // No wake schedules this park; request a switch explicitly.
+            sched::reschedule(nullptr, held);
+            return PARKED;
         }
 
         // The receiver's half of a far call: `n` bytes out of the slot its record holds, with
@@ -359,23 +570,14 @@ namespace kickos
     }
 #endif
 
-    // Return bytes sent or -KOS_E*. The deadline bounds only the parked wait, and a passed one
-    // never parks: it answers -KOS_ETIMEDOUT instead, as does the published console to a
-    // non-blocking task's send of no limit.
-    // Endpoint death, timeout and cancellation send no data.
-    // Far endpoints never park; a full peer ring returns -KOS_EAGAIN.
-    int32_t endpoint_send(uint32_t cap, uintptr_t buf, size_t len, uint64_t deadline)
+    namespace
     {
-        if (len > KOS_EP_MSG_MAX)
-        {
-            return -KOS_EINVAL;
-        }
-        if (not user_readable_ok(buf, len))
-        {
-            return -KOS_EFAULT; // Validate in caller context.
-        }
-        Thread* c = sched::current();
-        uint32_t epoch = 0;
+        // One attempt of endpoint_send, under the lock: its answer, or PARKED with the park's
+        // epoch in `*out_epoch`, and `*out_far_slot` set where the park waits for a slot of a lane
+        // of a far call ring. `slot_woken` is an attempt such a park's wake readied.
+        int32_t send_once(Thread* c, uint32_t cap, uintptr_t buf, size_t len,
+                          WaitLimit const& limit, [[maybe_unused]] bool slot_woken,
+                          uint32_t* out_epoch, [[maybe_unused]] bool* out_far_slot)
         {
             IrqLock lock;
             ParkToken const ask = park_cancel_pending(c);
@@ -383,6 +585,9 @@ namespace kickos
             {
                 sched::exit_current(KOS_EXIT_CANCELLED, sched::EXIT_RETURN, &lock);
             }
+#if KICKOS_AMP_NODE
+            FarSlotRelay relay(slot_woken, lock);
+#endif
             int err = 0;
             Endpoint* e = static_cast<Endpoint*>(
                 cap_resolve_e(c, cap, CapType::CAP_ENDPOINT, CAP_SIGNAL, &err));
@@ -395,12 +600,22 @@ namespace kickos
             // Handle far endpoints before checking recv_holders: they have no local receiver.
             if (endpoint_is_far(e))
             {
-                return far_publish(c, e, buf, len, amp::REPLY_TAG_NONE, badge);
+                int32_t const rc = far_send_or_park(c, e, buf, len, amp::REPLY_TAG_NONE, badge,
+                                                    limit, ask, out_epoch, lock);
+                if (rc == PARKED)
+                {
+                    *out_far_slot = true;
+                }
+                if (rc >= 0 or rc == PARKED)
+                {
+                    relay.settled();
+                }
+                return rc;
             }
 #endif
             if (not endpoint_takes_sends(e))
             {
-                return endpoint_unserved(e, 0);
+                return -KOS_ECONNREFUSED;
             }
             // Consumed even when it takes no byte: a writer offering the rest again then parks
             // until the receiver receives again, rather than spinning on it.
@@ -422,7 +637,11 @@ namespace kickos
                 sched::wake(w, lock);
                 return static_cast<int>(n); // did not block: no resume barrier
             }
-            if (ktime_limit_passed(WaitLimit(deadline)))
+            if (limit.poll())
+            {
+                return -KOS_EAGAIN;
+            }
+            if (ktime_limit_passed(limit))
             {
                 return -KOS_ETIMEDOUT;
             }
@@ -430,14 +649,50 @@ namespace kickos
             c->ipc.len = len;
             c->ipc.badge = badge;
             c->call_state = CALL_NONE;
-            ktime_limit_arm(c, WaitLimit(deadline), lock);
-            epoch = wq_block(ask)(e->send_waiters, WAIT_EP_SEND, e, nullptr, lock);
+            ktime_limit_arm(c, limit, lock);
+            *out_epoch = wq_block(ask)(e->send_waiters, WAIT_EP_SEND, e, nullptr, lock);
+            return PARKED;
         }
-        wq_confirm_resume(c, epoch);
-        // n (>= 0), -KOS_EAGAIN or -KOS_ECONNREFUSED (the last receiver left, as
-        // endpoint_unserved answers), -KOS_ETIMEDOUT (ktime_on_timer), or
-        // -KOS_ECANCELED (this parked caller was cancelled)
-        return static_cast<int32_t>(c->wait_result);
+    }
+
+    // Return bytes sent or -KOS_E*. An endpoint nobody serves refuses it -KOS_ECONNREFUSED at
+    // once, whatever the deadline. The deadline bounds only the parked wait, and a passed one
+    // never parks: KOS_POLL is refused -KOS_EAGAIN and any other -KOS_ETIMEDOUT, the published
+    // console's included. A far endpoint whose port's lane of the peer's call ring is full parks
+    // until a slot of that lane frees, as a local send parks for a receiver.
+    // Endpoint death, timeout and cancellation send no data.
+    int32_t endpoint_send(uint32_t cap, uintptr_t buf, size_t len, uint64_t deadline)
+    {
+        if (len > KOS_EP_MSG_MAX)
+        {
+            return -KOS_EINVAL;
+        }
+        if (not user_readable_ok(buf, len))
+        {
+            return -KOS_EFAULT; // Validate in caller context.
+        }
+        Thread* c = sched::current();
+        bool slot_woken = false;
+        while (true)
+        {
+            uint32_t epoch = 0;
+            bool far_slot = false;
+            int32_t const rc =
+                send_once(c, cap, buf, len, WaitLimit(deadline), slot_woken, &epoch, &far_slot);
+            if (rc != PARKED)
+            {
+                return rc;
+            }
+            wq_confirm_resume(c, epoch);
+            // n (>= 0), -KOS_ECONNREFUSED (the last receiver left), -KOS_ETIMEDOUT
+            // (ktime_on_timer), or -KOS_ECANCELED (this parked caller was cancelled). A far slot
+            // wait the slot's wake ended reads 0 and publishes again.
+            if (not far_slot or c->wait_result != 0)
+            {
+                return static_cast<int32_t>(c->wait_result);
+            }
+            slot_woken = true;
+        }
     }
 
     namespace
@@ -636,6 +891,19 @@ namespace kickos
             }
             return static_cast<int>(n);
         }
+#if KICKOS_AMP_NODE
+        {
+            int32_t const far = far_held_take(c, e, cap_len);
+            if (far >= 0)
+            {
+                return far;
+            }
+        }
+#endif
+        if (limit.poll())
+        {
+            return -KOS_EAGAIN;
+        }
         if (ktime_limit_passed(limit))
         {
             return -KOS_ETIMEDOUT;
@@ -656,30 +924,12 @@ namespace kickos
         return 0;
     }
 
-    // Send a request and receive its reply in one buffer. Returns reply bytes
-    // or -KOS_E*: EINVAL for length, EFAULT for buffers, EBADF/EACCES for capability
-    // access, EPIPE for endpoint/server death, EMFILE for server reply-cap capacity,
-    // ENOTSUP for a receiver without metadata, ETIMEDOUT, or ECANCELED.
-    // One deadline covers both send and reply waits, and a passed one takes nothing: it answers
-    // ETIMEDOUT before a receiver is taken, the reply being a park. Far calls wait only for a
-    // reply and return EAGAIN without side effects if the peer ring is full.
-    int32_t endpoint_call(uint32_t cap, uintptr_t buf, size_t send_len, size_t recv_cap,
-                          uint64_t deadline)
+    namespace
     {
-        WaitLimit const limit(deadline);
-        if (send_len > KOS_EP_MSG_MAX)
-        {
-            return -KOS_EINVAL;
-        }
-        recv_cap = ipc_len_min(recv_cap, KOS_EP_MSG_MAX);
-        // The one buffer is read (request) then written (reply): validate both here,
-        // in caller context, once.
-        if (not user_readable_and_writable_ok(buf, send_len, recv_cap))
-        {
-            return -KOS_EFAULT;
-        }
-        Thread* c = sched::current();
-        uint32_t epoch = 0;
+        // One attempt of endpoint_call, under the lock, answering as send_once does.
+        int32_t call_once(Thread* c, uint32_t cap, uintptr_t buf, size_t send_len, size_t recv_cap,
+                          WaitLimit const& limit, [[maybe_unused]] bool slot_woken,
+                          uint32_t* out_epoch, [[maybe_unused]] bool* out_far_slot)
         {
             IrqLock lock;
             // Check cancellation before removing a receiver or creating reply state.
@@ -689,6 +939,9 @@ namespace kickos
             {
                 sched::exit_current(KOS_EXIT_CANCELLED, sched::EXIT_RETURN, &lock);
             }
+#if KICKOS_AMP_NODE
+            FarSlotRelay relay(slot_woken, lock);
+#endif
             int err = 0;
             Endpoint* e = static_cast<Endpoint*>(
                 cap_resolve_e(c, cap, CapType::CAP_ENDPOINT, CAP_SIGNAL, &err));
@@ -701,13 +954,16 @@ namespace kickos
             bool const far = endpoint_is_far(e);
             if (not far and not endpoint_takes_sends(e))
             {
-                return endpoint_unserved(e, 0);
+                return -KOS_ECONNREFUSED;
+            }
+            if (limit.poll())
+            {
+                return -KOS_EAGAIN;
             }
             if (ktime_limit_passed(limit))
             {
                 return -KOS_ETIMEDOUT;
             }
-            Thread* w = wq_peek_highest(e->recv_waiters);
 #if KICKOS_AMP_NODE
             if (far)
             {
@@ -717,21 +973,41 @@ namespace kickos
                 uint16_t const seq = static_cast<uint16_t>(c->call_seq + 1u);
                 amp::ReplyTag const tag = {kernel().threads.handle_for(idx),
                                            amp::reply_seq(seq)};
-                int32_t const sent = far_publish(c, e, buf, send_len, tag, badge);
+                int32_t const sent =
+                    far_send_or_park(c, e, buf, send_len, tag, badge, limit, ask, out_epoch, lock);
+                if (sent == PARKED)
+                {
+                    relay.settled();
+                    *out_far_slot = true;
+                    return PARKED;
+                }
                 if (sent < 0)
                 {
                     return sent;
                 }
+                relay.settled();
                 c->call_seq = seq;
                 reply_wait_seat(c, buf, recv_cap);
+                uint32_t const node = endpoint_far_node(e);
+                uint32_t const lane = amp::lane_for(amp::Class::CALL, node, e->far_port).index;
+                // After reply_wait_seat, whose fields these share: the far reply reads none.
+                c->ipc.far_node = node;
+                c->ipc.far_lane = lane;
+                c->ipc.far_at = amp::call_head(node, lane) - 1u;
                 // Cross-node calls do not donate priority to the peer scheduler.
-                epoch = park_queueless(ask)(c, WAIT_EP_FAR_REPLY, e, lock);
+                *out_epoch = park_queueless(ask)(c, WAIT_EP_FAR_REPLY, e, lock);
                 ktime_limit_arm(c, limit, lock);
                 // No wake schedules this park; request a switch explicitly.
                 sched::reschedule(nullptr, lock);
+                return PARKED;
             }
-            else
 #endif
+            Thread* w = wq_peek_highest(e->recv_waiters);
+            // A dying receiver takes no call, but another holder of the wait right may.
+            if (w != nullptr and w->dying and e->recv_holders > 1u)
+            {
+                w = nullptr;
+            }
             if (w != nullptr)
             {
                 // Probe before removing the receiver so a refusal cannot strand it.
@@ -743,9 +1019,8 @@ namespace kickos
                 {
                     // Do not mint into a table being destroyed. Its cleanup may already have
                     // passed the slot, and cleanup releases IrqLock between chunks. The
-                    // request was never taken, so this is the no-receiver answer, the dying
-                    // receiver counted as gone.
-                    return endpoint_unserved(e, 1);
+                    // request was never taken.
+                    return -KOS_ECONNREFUSED;
                 }
                 if (not cap_can_take_reply(w))
                 {
@@ -784,7 +1059,7 @@ namespace kickos
                 {
                     sched::set_prio(w, c->prio, lock);
                 }
-                epoch = park_queueless(ask)(c, WAIT_EP_REPLY, w, lock);
+                *out_epoch = park_queueless(ask)(c, WAIT_EP_REPLY, w, lock);
                 reply_donor_park(w, c); // Off the ready queue; link can be reused.
                 // Arm the reply deadline before the switch.
                 ktime_limit_arm(c, limit, lock);
@@ -809,7 +1084,7 @@ namespace kickos
                 c->call_state = CALL_SEND_WAIT;
                 // Same wait kind as a plain sender; call_state is what separates the two. On
                 // send_waiters before the donation, whose recomputes count it there.
-                epoch = wq_park(ask)(e->send_waiters, WAIT_EP_SEND, e, lock);
+                *out_epoch = wq_park(ask)(e->send_waiters, WAIT_EP_SEND, e, lock);
                 if (e->server != nullptr and c->prio > e->server->prio)
                 {
                     pi_raise(e->server, c->prio, lock);
@@ -819,8 +1094,53 @@ namespace kickos
                 ktime_limit_arm(c, limit, lock);
                 sched::reschedule(nullptr, lock);
             }
+            return PARKED;
         }
-        wq_confirm_resume(c, epoch);
+    }
+
+    // Send a request and receive its reply in one buffer. Returns reply bytes
+    // or -KOS_E*: EINVAL for length, EFAULT for buffers, EBADF/EACCES for capability
+    // access, EPIPE for endpoint/server death, EMFILE for server reply-cap capacity,
+    // ENOTSUP for a receiver without metadata, ECONNREFUSED, EAGAIN, ETIMEDOUT, or ECANCELED.
+    // One deadline covers both send and reply waits, and a passed one takes nothing: KOS_POLL
+    // answers EAGAIN and any other ETIMEDOUT before a receiver is taken or a far ring is read,
+    // the reply being a park. A far call whose port's lane of the peer ring is full parks until a
+    // slot of it frees, publishing nothing and spending no sequence before then.
+    int32_t endpoint_call(uint32_t cap, uintptr_t buf, size_t send_len, size_t recv_cap,
+                          uint64_t deadline)
+    {
+        WaitLimit const limit(deadline);
+        if (send_len > KOS_EP_MSG_MAX)
+        {
+            return -KOS_EINVAL;
+        }
+        recv_cap = ipc_len_min(recv_cap, KOS_EP_MSG_MAX);
+        // The one buffer is read (request) then written (reply): validate both here,
+        // in caller context, once.
+        if (not user_readable_and_writable_ok(buf, send_len, recv_cap))
+        {
+            return -KOS_EFAULT;
+        }
+        Thread* c = sched::current();
+        bool slot_woken = false;
+        while (true)
+        {
+            uint32_t epoch = 0;
+            bool far_slot = false;
+            int32_t const rc =
+                call_once(c, cap, buf, send_len, recv_cap, limit, slot_woken, &epoch, &far_slot);
+            if (rc != PARKED)
+            {
+                return rc;
+            }
+            wq_confirm_resume(c, epoch);
+            // A far slot wait the slot's wake ended reads 0 and publishes again.
+            if (not far_slot or c->wait_result != 0)
+            {
+                break;
+            }
+            slot_woken = true;
+        }
         c->call_state = CALL_NONE;
 #if KICKOS_AMP_NODE
         if (c->far_hold != 0u)
@@ -872,6 +1192,11 @@ namespace kickos
         // The vacate overwrites `obj`, so the caller is resolved first.
         Thread* caller = cap_reply_caller(*e);
         cap_slot_vacate(c, reply_cap & KCAP_INDEX_MASK, e);
+        // A far caller's ipc names its call's slot, not a buffer to copy into.
+        if (caller != nullptr and caller->wait_kind == WAIT_EP_FAR_REPLY)
+        {
+            caller = nullptr;
+        }
         // Unlink the donor before recomputing priority. A caller now waiting on another
         // server no longer belongs to this reply.
         if (caller != nullptr and not reply_donor_unpark(c, caller))
@@ -1046,6 +1371,12 @@ namespace kickos
                 }
             }
         }
+#if KICKOS_AMP_NODE
+        if (not parked and c->far_hold != 0u)
+        {
+            rc = far_call_land(c, buf, badge_out, rc);
+        }
+#endif
         if (parked)
         {
             wq_confirm_resume(c, epoch);
@@ -1074,7 +1405,7 @@ namespace kickos
 #if KICKOS_AMP_NODE
     // Called from the doorbell handler with local interrupts masked.
     bool endpoint_far_reply_deliver(uint32_t from, amp::ReplyTag const& tag, uint32_t hold,
-                                    uint32_t len, Held held)
+                                    uint32_t len, bool refused, Held held)
     {
         Thread* caller =
             cap_reply_thread(tag.thread, amp::reply_seq(tag.seq), amp::REPLY_SEQ_MASK);
@@ -1087,24 +1418,67 @@ namespace kickos
         {
             return false;
         }
-        size_t const n = ipc_len_min(len, caller->call_rx_cap);
+        intptr_t result = -KOS_ECONNREFUSED;
+        if (not refused)
+        {
+            result = static_cast<intptr_t>(ipc_len_min(len, caller->call_rx_cap));
+        }
         caller->far_hold = hold + 1u;
-        caller->wait_result = static_cast<intptr_t>(n);
+        caller->wait_result = result;
         caller->call_state = CALL_NONE;
         caller->clear_wait_edge();
         sched::wake(caller, held);
         return true;
     }
 
+    void endpoint_far_send_wake(Held held)
+    {
+        far_slot_wake(0u, held);
+    }
+
+    void endpoint_far_send_relay(Held held)
+    {
+        far_slot_wake(1u, held);
+    }
+
+    void endpoint_far_send_seat(Thread* t, uint32_t node, uint32_t lane, uint32_t tail)
+    {
+        FarSendWaits& w = kernel().far_send;
+        t->ipc.far_node = node;
+        t->ipc.far_lane = lane;
+        t->ipc.far_ticket = w.ticket;
+        w.ticket = w.ticket + 1u;
+        w.waiting[node][lane] = static_cast<uint16_t>(w.waiting[node][lane] + 1u);
+        w.seen[node][lane] = tail;
+    }
+
+    void endpoint_far_send_leave(Thread const* t)
+    {
+        uint16_t& waiting = kernel().far_send.waiting[t->ipc.far_node][t->ipc.far_lane];
+        KICKOS_ASSERT(waiting != 0u);
+        waiting = static_cast<uint16_t>(waiting - 1u);
+    }
+
+    void endpoint_far_call_withdraw(Thread const* t)
+    {
+        amp::call_withdraw(static_cast<uint32_t>(t->ipc.far_node), t->ipc.far_lane,
+                           static_cast<uint32_t>(t->ipc.far_at));
+    }
+
+    uint32_t endpoint_far_send_waiting(uint32_t node, uint32_t lane)
+    {
+        return kernel().far_send.waiting[node][lane];
+    }
+
     // Runs in the doorbell handler with local interrupts masked; takes no lock and copies
-    // nothing. False refuses before any receiver is popped, and dispatch_call answers it.
+    // nothing. False pops no receiver, and dispatch_call holds or refuses the call.
     bool endpoint_far_call_deliver(uint32_t from, uint32_t port, amp::ReplyTag const& tag,
                                    uint32_t badge, uint32_t len, uint32_t slot, Held held)
     {
         uint16_t const bound = amp::port_endpoint(port);
         // The binding holds the endpoint slot alive, so lookup uses its index.
         Endpoint* const e = kernel().endpoints.at(static_cast<int>(bound));
-        if (e == nullptr or not endpoint_receiving(e))
+        if (e == nullptr or not endpoint_takes_sends(e))
         {
             return false;
         }
@@ -1125,6 +1499,82 @@ namespace kickos
         w->wait_result = static_cast<intptr_t>(n);
         sched::wake(w, held);
         return true;
+    }
+
+    bool endpoint_far_hold(uint32_t from, uint32_t port, amp::ReplyTag const& tag,
+                           uint32_t badge, uint32_t len, uint32_t slot, Held)
+    {
+        uint16_t const bound = amp::port_endpoint(port);
+        Endpoint const* const e = kernel().endpoints.at(static_cast<int>(bound));
+        if (e == nullptr or not endpoint_takes_sends(e))
+        {
+            return false;
+        }
+        for (FarHeld& h : g_far_held[amp::self()])
+        {
+            if (h.ep1 != 0u and amp::hold_live(h.record))
+            {
+                continue;
+            }
+            uint32_t const record = amp::inbound_seat(from, slot, tag, badge);
+            // take_call leaves a call unread where its slot's record still stands.
+            KICKOS_ASSERT(record != amp::FAR_RECORD_NONE);
+            if (record == amp::FAR_RECORD_NONE)
+            {
+                return false;
+            }
+            if (h.ep1 == 0u)
+            {
+                g_far_held_count[amp::self()]++;
+            }
+            uint32_t& seq = g_far_held_seq[amp::self()];
+            h.record = record;
+            h.len = len;
+            h.seq = seq;
+            h.ep1 = static_cast<uint16_t>(bound + 1u);
+            seq = seq + 1u;
+            return true;
+        }
+        // Every live entry holds a live record, of which this node has FAR_HELD_MAX at most.
+        KICKOS_ASSERT(false);
+        return false;
+    }
+
+    void endpoint_far_held_withdrawn(Held)
+    {
+        if (g_far_held_count[amp::self()] == 0u)
+        {
+            return;
+        }
+        for (FarHeld& h : g_far_held[amp::self()])
+        {
+            if (h.ep1 != 0u and amp::call_withdrawn(h.record))
+            {
+                far_held_clear(h);
+                amp::inbound_withdraw(h.record);
+            }
+        }
+    }
+
+    void endpoint_far_held_refuse(Endpoint const* e, Held)
+    {
+        if (g_far_held_count[amp::self()] == 0u)
+        {
+            return;
+        }
+        int const ep = kernel().endpoints.index_of(e);
+        for (FarHeld& h : g_far_held[amp::self()])
+        {
+            if (h.ep1 == 0u or static_cast<int>(h.ep1) - 1 != ep)
+            {
+                continue;
+            }
+            far_held_clear(h);
+            if (amp::hold_live(h.record))
+            {
+                amp::inbound_refuse(h.record);
+            }
+        }
     }
 
     // Kernel initialization only, with IrqLock held. The static configuration already
@@ -1161,6 +1611,14 @@ namespace kickos
         }
         ep->recv_holders = 1;
         amp::port_bind(port, static_cast<uint16_t>(i));
+        for (FarHeld& h : g_far_held[amp::self()])
+        {
+            if (h.ep1 != 0u and static_cast<int>(h.ep1) - 1 == i)
+            {
+                KICKOS_ASSERT(not amp::hold_live(h.record));
+                far_held_clear(h);
+            }
+        }
         return 0;
     }
 

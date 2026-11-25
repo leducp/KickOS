@@ -130,7 +130,8 @@ namespace
     }
 
     // A zero-length send, which only a receive takes, bounded as a console handover's probe is.
-    // The endpoint answers -KOS_EAGAIN until its server has first received, so that is retried.
+    // The endpoint answers -KOS_ECONNREFUSED until its server has first received, so that is
+    // retried.
     int32_t probe(kos_cap_t ep)
     {
         kos_monotonic_t const until = kos::after(kickos::driver::KOS_DRV_HANDOVER_PROBE
@@ -142,7 +143,7 @@ namespace
                 return -KOS_ETIMEDOUT;
             }
             int32_t const rc = kos_send(ep, "", 0, until);
-            if (rc != -KOS_EAGAIN)
+            if (rc != -KOS_ECONNREFUSED)
             {
                 return rc;
             }

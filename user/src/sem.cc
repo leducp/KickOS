@@ -64,11 +64,10 @@ int kos_sem_wait(kos_sem_t* s, kos_monotonic_t until)
             v = seen;
             continue;
         }
-        // A try, a passed deadline included, leaves the word as it found it, with no waiters bit
-        // for a post to enter for.
+        // A poll leaves the word as it found it, with no waiters bit for a post to enter for.
         if (kos_limit_word(until.ns) == 0u)
         {
-            return -KOS_ETIMEDOUT;
+            return -KOS_EAGAIN;
         }
         uint32_t const want = v | KOS_WORD_WAITERS;
         if (want != v)

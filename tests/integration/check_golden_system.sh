@@ -56,8 +56,8 @@ fi
 
 # Over the whole capture, once the run has ended.
 assert_no_panic "a panic in the golden system"
-for _line in '^=== THREAD FAULT ===' '^sensor: no reading' '^sensor: restarting' '^sensor: died' \
-             '^sensor: gone for good' '^sensor: measurement frozen' '^health:'; do
+for _line in '^=== THREAD FAULT ===' '^sensor: no reading' '^sensor: not served' '^sensor: died' \
+             '^sensor: measurement frozen' '^health:'; do
   if has "$_line"; then
     fail "the capture holds a '$_line' line"
   fi

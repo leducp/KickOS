@@ -1069,7 +1069,7 @@ namespace selftest
                 done++;
                 g_tc_done[me] = done;
             }
-            else if (rc != -KOS_ETIMEDOUT)
+            else if (rc != -KOS_EAGAIN)
             {
                 g_tc_refused[me] = 1;
                 break;
@@ -1150,7 +1150,7 @@ namespace selftest
         TAP_CHECK(posted == 2u * TC_ROUNDS + 1u);
         TAP_CHECK(taken == 2u * TC_ROUNDS);
         TAP_CHECK(refused == 0u);
-        TAP_CHECK(left == 0u and after == -KOS_ETIMEDOUT);
+        TAP_CHECK(left == 0u and after == -KOS_EAGAIN);
     }
 
     // --- A condition variable across cores ------------------------------------------------

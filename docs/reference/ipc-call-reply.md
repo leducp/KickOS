@@ -106,12 +106,12 @@ the reply is safe. A client wanting split tx/rx copies locally.
 | `-KOS_EBADF` | bad endpoint cap |
 | `-KOS_EACCES` | missing `CAP_SIGNAL` |
 | `-KOS_EPERM` | no caller context |
-| `-KOS_EAGAIN` | no receiver while a holder of `CAP_WAIT` or `KOS_CAP_HANDOUT` remains, so a receiver may come and a retry may meet it. No receiver: none holds `CAP_WAIT` (`recv_holders == 0`), or the endpoint is vacated (`Endpoint::vacated`): its last receiver left and none has waited on it since, as a server a handout seated has not yet first received |
-| `-KOS_ECONNREFUSED` | no receiver and no holder of `CAP_WAIT` or `KOS_CAP_HANDOUT`: nothing can serve the endpoint again |
+| `-KOS_ECONNREFUSED` | no receiver, whatever the deadline, and nothing was sent. No receiver: none holds `CAP_WAIT` (`recv_holders == 0`), or the endpoint is vacated (`Endpoint::vacated`): its last receiver left and none has waited on it since, as a server a handout seated has not yet first received. A holder of `KOS_CAP_HANDOUT` may still seat one, so a later call may be served. A far call's is the serving node's answer (the far-call section) |
 | `-KOS_EPIPE` | the server died holding the request, mid-transaction |
 | `-KOS_EMFILE` | the server's handle table is full (no free slot to mint the reply cap) |
 | `-KOS_ENOTSUP` | the receiver took an info-less recv and cannot host a call |
-| `-KOS_ETIMEDOUT` | the deadline passed; no reply was received and none can arrive later |
+| `-KOS_EAGAIN` | `KOS_POLL`, under which a call, always waiting for its reply, is refused; nothing was sent |
+| `-KOS_ETIMEDOUT` | any other deadline passed; no reply was received and none can arrive later |
 
 Both buffer bound-checks run up front, in caller context, once. Two paths:
 
@@ -124,7 +124,7 @@ Both buffer bound-checks run up front, in caller context, once. Two paths:
 - **Slowpath** (a receiver, none parked in recv): park on `send_waiters` in `CALL_SEND_WAIT`; the mint
   + transfer + donation happen later in server context inside `endpoint_recv_locked`. Boost the
   conventional server now (D2) if this caller outranks it.
-- **No receiver**: answered at once with `-KOS_EAGAIN` or `-KOS_ECONNREFUSED`, parking nowhere.
+- **No receiver**: refused at once with `-KOS_ECONNREFUSED`, parking nowhere.
 
 **The deadline.** `timeout_us` is RELATIVE microseconds, and `KOS_NEVER` is no deadline.
 
@@ -253,7 +253,8 @@ Receive-half returns, the whole set a receive can answer:
 | `-KOS_EINVAL` | `opts` misaligned, or an undefined `flags` bit. NOT a length: both halves of `lens` clamp |
 | `-KOS_EFAULT` | `opts` or `buf` not accessible, or a copy was refused |
 | `-KOS_EBADF` / `-KOS_EACCES` / `-KOS_EPERM` | bad endpoint cap, missing `CAP_WAIT`, or no caller context |
-| `-KOS_ETIMEDOUT` | `opts->timeout_us` passed |
+| `-KOS_EAGAIN` | `KOS_POLL`, and nothing to receive |
+| `-KOS_ETIMEDOUT` | any other deadline, `opts->until`, passed |
 | `-KOS_ECANCELED` | the caller was cancelled before or during the park |
 
 **`opts->notify` READS WHAT THE CALL CONSUMED ON EVERY EXIT.** IN is the mask the caller
@@ -344,6 +345,8 @@ no line attached is a complete notification.
 - **`kos_notify_wait` refuses `-KOS_EPERM` from a thread that does not hold the bind**, there
   being no wait edge for the object to deliver along. A pending cancel still answers
   `-KOS_ECANCELED` first: a killed thread is owed that code from every later wait.
+- **A `kos_notify_wait` under `KOS_POLL` with no bit of its mask pending answers
+  `-KOS_EAGAIN`**; any other deadline already passed answers `-KOS_ETIMEDOUT`.
 - **Which waits ACCEPT a notification**: `KOS_SYS_NOTIFY_WAIT`, for the bits its mask names, and
   `KOS_SYS_REPLY_RECV`, for the bits its `notify` mask names. Nothing else. A bit set on a
   thread parked in a mutex, a plain word wait or a call's reply wait is NOT a wake: those parks
@@ -617,10 +620,12 @@ being incomplete the moment a field is added.
 **Placement is load-bearing.** In both `endpoint_send` and `endpoint_call` the
 locality decision is taken immediately after the capability resolve and AHEAD of the
 no-receiver test. A far endpoint carries no local receiver: its capability is minted with
-neither `CAP_WAIT` nor `KOS_CAP_HANDOUT`, so it has no holder of either, and the no-receiver
-test taken first would answer `-KOS_ECONNREFUSED` to every far send and every far call. Past the
-resolve, `far_publish` answers a far send `-KOS_EFAULT` for a buffer it cannot read, and maps the
-window's refusals: `-KOS_EAGAIN` for a full peer ring, `-KOS_EPIPE` for a far index this node
+neither `CAP_WAIT` nor `KOS_CAP_HANDOUT`, and the no-receiver test taken first would answer
+`-KOS_ECONNREFUSED` to every far send and every far call. Past the resolve, the endpoint's port's
+lane of the peer ring is read before anything is published: a full one parks a blocking caller
+until a slot of it frees, refuses a send under `KOS_POLL` `-KOS_EAGAIN` and answers any other
+passed deadline `-KOS_ETIMEDOUT` (below). `far_publish` answers a far send `-KOS_EFAULT` for a
+buffer it cannot read, and maps the window's refusals: `-KOS_EPIPE` for a far index this node
 cannot believe, and `-KOS_EINVAL`.
 
 **The reply token.** `amp::ReplyTag` is two words carried across the shared window and
@@ -633,13 +638,14 @@ which is the whole of why an unvalidated one may cross.
   ONE conversion to the wire width (`amp::REPLY_SEQ_MASK`). The same late-reply ABA guard as the
   local arm's, over the whole field rather than a byte of it, so no retry count aliases a live
   call: the sequence comes round only once the caller has wrapped its own field.
-- `amp::REPLY_TAG_NONE` -- the route of a sender that does not park. It is NOT the zero
+- `amp::REPLY_TAG_NONE` -- the route of a sender that waits for no reply. It is NOT the zero
   tag: zero is index 0 at generation 0, which a live slot can be, so it carries
   `KOS_THREAD_NONE`, whose all-ones index the thread pool reserves and never seats.
 
-`endpoint_send` publishes `REPLY_TAG_NONE` and never parks. `endpoint_call` decides
+`endpoint_send` publishes `REPLY_TAG_NONE` and parks for nothing but a slot. `endpoint_call` decides
 `call_seq + 1`, builds the tag from it, publishes, and COMMITS the sequence only once the
-publication is taken, so a refused call leaves the caller exactly as it found it.
+publication is taken, so a refused call, and a call still waiting for a slot, leaves the caller
+exactly as it found it.
 
 **Delivering it (`endpoint_far_reply_deliver`).** The window's `PORT_REPLY` route runs it
 from inside the doorbell service body, so this core's interrupts are masked and that mask
@@ -661,7 +667,8 @@ is the exclusion; no `IrqLock` is taken. FIVE clauses, and any failure counts
   node 0 made to node 1.
 
 On success NOTHING IS COPIED: the caller is handed the reply's slot as a hold
-(`Thread::far_hold`), the length clamped into `call_rx_cap` as its `wait_result`, then
+(`Thread::far_hold`), the length clamped into `call_rx_cap` as its `wait_result`, or
+`-KOS_ECONNREFUSED` where the reply's badge word is `amp::REPLY_REFUSED`, then
 `call_state = CALL_NONE`, `clear_wait_edge()` and `sched::wake`. The slot is TAKEN AND NOT
 RELEASED. The caller snapshots the reply in its own `kos_call` (`far_reply_land`), out of the slot it
 holds, with interrupts open, checks the hold before and after that snapshot, and copies from the
@@ -685,20 +692,46 @@ resynchronisation, and never by the take, which moves nothing.
 own park, which has none, parks only a local caller, so clause 5 refuses any far reply naming it.
 
 **The park.** `WAIT_EP_FAR_REPLY`, `wait_obj` the far `Endpoint`, queue-less on no list at
-all. `thread_abort_park` unwinds it with no donor list to unlink and no server to deflate,
+all, `ipc.far_node`, `ipc.far_lane` and `ipc.far_at` naming the slot its call took.
+`thread_abort_park` unwinds it with no donor list to unlink and no server to deflate, withdraws
+the call (the serving-side step 2 below),
 and it MUST bump `call_seq` for the same reason the local `WAIT_EP_REPLY` arm does: a reply
 still in flight names the call by its sequence alone, so a sequence left standing resolves to
 this thread again once the caller's `call_seq` has come round -- after exactly 65536 further
 calls on this arm, which carries the field whole, and after exactly 256 on the local
 `CAP_REPLY`, whose spare bitfields carry 8 bits of it.
 
-**What DIVERGES from a local call is back-pressure, and it acts in BOTH directions.** A local
-caller parks on `send_waiters` until a receiver takes its request; a far caller cannot, the ring
-being finite and the far scheduler not this kernel's. So a full peer ring answers
-`-KOS_EAGAIN` immediately, with nothing mutated. Per `../design-multicore.md` N6e that
-refusal IS the contract: named, counted, spending no time, with no queue and no retry
-inside the kernel, because how stale a dropped record may be is the workload's property and
-not the kernel's; whether to try again is the caller's. The rest of the window's refusals map to `-KOS_EPIPE` (a far index this node
+**A call ring is split into one lane per port of its receiving node, and each port fills its own
+lane alone.** The ports are every one the receiving node mints but `PORT_REPLY`, the echo port
+included (`amp::call_ports`); each owns an equal run of `amp::lane_slots` slots, the largest power
+of two that fits `KOS_AMP_RING_SLOTS` once per port, with a head and a tail of its own, and the
+build refuses a node serving more ports than the ring has slots. Reclamation stays in order WITHIN
+a lane, so a port whose receiver holds every slot of its lane, a send held for a task that never
+receives or a call a slow server has not answered, stops that port alone: every other port to the
+same node publishes into its own lane. A call to a port whose lane is full of held sends waits
+for a slot of that lane as any blocking send does. A slot published on a lane its port does not
+own is dropped and counted as a `PORT` refusal. The reply ring stays one lane of every slot.
+
+**Back-pressure acts in BOTH directions, and toward the caller it is a wait, as it is locally.** A
+local caller parks on `send_waiters` until a receiver takes its request; a far caller whose port's
+lane is full parks until a slot of it frees (`WAIT_EP_FAR_SEND`, queue-less on no list,
+`ipc.far_node` and `ipc.far_lane` naming the lane and no `wait_obj`: nothing pins the far
+`Endpoint` while it waits,
+and the woken caller resolves its capability again), then publishes again, with nothing published
+and no sequence committed while it waits. A deadline bounds that wait: one already passed
+answers before the lane is read, as a local call does, `KOS_POLL` `-KOS_EAGAIN` and any other
+`-KOS_ETIMEDOUT`, and one that passes during the wait `-KOS_ETIMEDOUT`. A far send waits the same
+way, except that `KOS_POLL` is refused only at a full lane, and counted in `send_refused`. With
+no deadline the wait lasts for as long as the lane stays full (`../design-multicore.md` N6e).
+Every release of a call slot that moves its lane's tail rings the node that published it, once per
+service pass or answer however many slots it gives back, and that node's doorbell service wakes,
+for each lane whose tail moved, no more of that lane's waiters than the slots given back and still
+free, the highest priority first and in park order among equals (`endpoint_far_send_wake`); a
+doorbell that moved no waited lane's tail scans no thread. A woken sender that leaves without
+publishing, refused, cancelled or slain, hands its slot to the next waiter
+(`endpoint_far_send_relay`). No timer and no count bound the retry: a woken sender that finds the
+slot taken again waits for the next release. A cancel, a slay or a deadline unwinds the wait with
+nothing to give back. The rest of the window's refusals map to `-KOS_EPIPE` (a far index this node
 cannot believe) and `-KOS_EINVAL`.
 
 **Back-pressure also exists on the RECEIVING side, and it is not an errno and not a loss.**  A
@@ -734,7 +767,8 @@ the only signal outside the kernel that an answer was lost, which is why the cou
 land together: the exceptional loss would otherwise be invisible exactly where it would be
 diagnosed.
 The OBLIGATION is not: the record is left pending with its call slot still held, and a later
-service pass publishes an empty `PORT_REPLY` carrying its tag once that ring is believable again
+service pass publishes an empty `PORT_REPLY` carrying its tag, or the refusal where that was the
+answer, once that ring is believable again
 (`amp::inbound_reply` defers, `amp::node_service` discharges, between the reply drain and the call
 drain). **THE SLOT IS HELD BACK ON PURPOSE, AND THAT COSTS A BOUNDED DELAY OF THE RUN BEHIND IT
 RATHER THAN A DEAD CALL RING**: what it buys is that no later call lands on a slot whose caller is
@@ -786,29 +820,26 @@ strand a caller already parked on that publication, and nothing on this node cou
 The recovery a regressed call-ring tail needs is a coordinated restart, which is a mechanism this
 layer does not have.
 
-**A ZERO-LENGTH `PORT_REPLY` CARRIES SEVERAL MEANINGS AND CARRIES NO REASON, AND THAT IS
-RULED RATHER THAN INHERITED.** On the wire it is a genuine empty answer, a call refused after its
-slot was taken, a caller whose route the resynchronisation stopped believing, and a deferred answer
-whose bytes were lost. A receiver cannot tell them apart, which the contract already said of the
-first two, and the two added here do not change what a caller may do about any of them.
+**A REPLY CARRIES ONE REASON, THE REFUSAL, AND A ZERO-LENGTH ANSWER CARRIES NONE.** A reply's
+`amp::Slot::badge` word is `KOS_BADGE_NONE` for an answer and `amp::REPLY_REFUSED` where the call's
+port had no receiver: bound to nothing, its endpoint not receiving, or its last receiver gone while
+the call was held. The caller reads the refusal as `-KOS_ECONNREFUSED`, as a local call to an
+endpoint nobody serves does, and every other word as an answer. A zero-length answer is still a
+genuine empty answer, a call refused past its take, a caller whose route a resynchronisation
+stopped believing, or a deferred answer whose bytes were lost, and a caller cannot tell those apart.
 
-*Why no reason code rides it.* Not for want of a bit: `ReplyTag::seq` is a 32-bit field carrying a
-16-bit `Thread::call_seq`, so half of it is structurally spare. It is refused because writing it
-would make the SERVING node an author of the CALLING node's own route word, and the whole of why an
-unvalidated tag may cross is that the serving node spends neither field and hands both back exactly
-as they arrived (`../design-multicore.md` N6f). A reason composed there is a reason a malformed peer
-can compose too, so the calling node would owe it validation, on the reply path, for a value no
-caller can act on differently: none of these outcomes is retryable from inside the kernel, and
-whether to retry, drop or escalate is the workload's (N6e). And a partial distinction would be worse
-than none, since a genuine zero-length answer would stay folded in with the refusals whatever code
-were added, so a receiver told "refused" would over-trust a signal silent on the one case it most
-needs to see.
+*Why the reason rides the badge word and not the tag.* `ReplyTag::seq` has a spare half, and it
+stays spare: writing it would make the SERVING node an author of the CALLING node's own route word,
+and the whole of why an unvalidated tag may cross is that the serving node spends neither field and
+hands both back exactly as they arrived (`../design-multicore.md` N6f). The badge word of a reply
+was always the serving node's own writing, and the calling node spends it through one comparison: a
+malformed peer can forge a refusal there as it can forge an empty answer, which costs its own caller
+nothing more.
 
-*Where the distinction does live.* At the node that caused it, as a count, which is what makes it
-diagnosable at all: the resynchronisation's answers and the deferred ones each count
-`amp::Counts::reply_unsent` (`KOS_AMP_COUNT_REPLY_UNSENT`, read with `kos_amp_count`), where a call refused past its take counts
-nothing of the kind, and the producer's recovery counts `amp::Counts::tail_reset`. So the added
-meanings are one wire shape with a per-node name, not an extra unnamed one.
+*Where the other distinctions live.* At the node that caused them, as a count: the
+resynchronisation's answers and the deferred ones each count `amp::Counts::reply_unsent`
+(`KOS_AMP_COUNT_REPLY_UNSENT`, read with `kos_amp_count`), where a call refused past its take counts
+nothing of the kind, and the producer's recovery counts `amp::Counts::tail_reset`.
 
 *And a payload copy this kernel refuses is NOT one of them, because it does not need the wire.*
 A far reply's landing (`far_reply_land`) runs in the caller's own `kos_call` and answers a refused
@@ -862,16 +893,32 @@ until the reply is published, which is what bounds outstanding inbound calls fro
 `KOS_AMP_RING_SLOTS` (`../design-multicore.md` N6f). **The reply slot is reserved UP FRONT**: the
 take is admitted only where the reply ring toward that sender has room for the answer, and the
 answer consumes that reserve whether the receiver SERVED the call or the take was refused past it
--- an empty reply is a reply. So `-KOS_EAGAIN` at the caller and `RESERVE` at the taker are the two
-ends of ONE bound and not two unrelated refusals: the caller meets a full call ring toward the
-serving node, and the taker declines because the reply ring back toward that caller is full. Then,
+-- an empty reply is a reply. So a caller waiting for a slot and `RESERVE` at the taker are the two
+ends of ONE bound and not two unrelated refusals: the caller meets a full lane toward the serving
+node, and the taker declines because the reply ring back toward that caller is full. Then,
 in order:
 
 1. the port's bound endpoint is resolved BY INDEX (`amp::port_endpoint`), the bind itself holding
    a second endpoint reference so the slot cannot be freed under a `g_port_ep1` entry that still
    names it. A port bound to nothing, or an endpoint with no `recv_holders`, refuses here.
-2. a call finding no receiver parked is refused ON THE SPOT rather than held for a service that
-   may arrive.
+2. a send or a call finding no receiver parked is held, as a local one waits for a receiver: its
+   record is seated and keeps the slot (`endpoint_far_hold`), the endpoint's next receive takes
+   the oldest held one without parking and lands it as below, a call as a call, and the
+   endpoint's last receiver leaving refuses and gives back every one held for it
+   (`endpoint_far_held_refuse`, `amp::inbound_refuse`), after which a send or call to that port
+   is refused on the spot; a receiver leaving while another remains gives back nothing.
+   A held call whose caller leaves (deadline, cancel, slay) is withdrawn, as a local caller
+   leaving `send_waiters` withdraws its request: the caller's park unwind marks its still
+   outstanding slot (`amp::call_withdraw`, `amp::Slot::withdrawn`) and rings the serving node,
+   whose doorbell (`endpoint_far_held_withdrawn`), next receive or take gives the slot back
+   unanswered. A call already handed to a receiver stays taken, as a local one does.
+   A call is never taken onto a slot whose record still stands (a resynchronisation's
+   `PENDING_GONE`): it is left unread until that record dies, holding up that port's lane alone
+   (`amp::Verdict::STANDING`), so a hold cannot fail for want of a record and a served port is
+   never refused for it. "Served" is the local send's own test, `endpoint_takes_sends`.
+   A full lane makes the sender wait for a slot, so a busy receiver, or one not receiving yet,
+   loses nothing; a port whose serving task never receives holds the sends and calls made to it,
+   and its lane's slots, for good, and no other port's.
 3. a record is seated for the held slot (`amp::inbound_seat`) BEFORE any receiver is popped, so a
    seat that fails refuses the call on the spot and leaves the receiver parked. Every popped
    receiver's call is therefore a record, whatever the receiver asked for.
@@ -907,16 +954,14 @@ The receiver then answers with an ordinary `kos_reply`. The record routes it to
 releases the held call slot, and frees the record. Reclamation of the call ring is by a released
 mask, so replies may complete OUT OF ORDER while the tail still advances in order.
 
-**EVERY REFUSAL PAST THE TAKE PUBLISHES AN EMPTY `PORT_REPLY` CARRYING THE TAG, and that is the
-wire's only refusal shape.** No refusal message and no errno crosses the window: a far caller
-under `KOS_NEVER` has no deadline, so a refusal that answered nothing would leave that
-thread parked for the life of the image. Two sites answer, one on each side of the pop, and never
-one per arm: every refusal before it reaches the one bool whose single caller publishes the answer
-and releases the slot (`dispatch_call`, `kernel/amp/ampwindow.cc`), and every refusal after it is an
-answer to the record (`amp::inbound_reply`), whoever holds it. An answer written per arm would be a
-new leak for each arm added. A caller cannot distinguish a refusal from an empty answer, and
-`amp::PORT_ECHO` is the one port the window layer answers with the payload rather than with
-nothing, copying it slot to slot inside the service, no thread receiving it.
+**EVERY REFUSAL PAST THE TAKE PUBLISHES A `PORT_REPLY` CARRYING THE TAG**: a far caller under
+`KOS_NEVER` has no deadline, so a refusal that answered nothing would leave that thread parked for
+the life of the image. Two sites answer, one on each side of the pop, and never one per arm: a call
+nothing delivered or held reaches the one bool whose single caller publishes `amp::REPLY_REFUSED`
+and releases the slot (`dispatch_call`, `kernel/amp/ampwindow.cc`), and every refusal after the pop
+is an answer to the record (`amp::inbound_reply`, empty), whoever holds it. An answer written per
+arm would be a new leak for each arm added. `amp::PORT_ECHO` is the one port the window layer
+answers with the payload, copying it slot to slot inside the service, no thread receiving it.
 
 **The register fastpath refuses a far endpoint** as a fall-through returning null, never an
 errno, so `endpoint_call` produces the answer and parks the caller with the continuation its
@@ -937,7 +982,7 @@ The cap is consumed exactly once per unpark:
 | second `kos_reply` / bad handle | resolve fails at lookup | unaffected |
 | server `handle_close`s the reply cap | `CAP_REPLY` close arm: EPIPE-wake caller, consume | woken, `-KOS_EPIPE` |
 | server dies mid-transaction (fault -> exit) | `cap_teardown` hits the same close arm | woken, `-KOS_EPIPE` |
-| server dies while caller still in `CALL_SEND_WAIT` | `recv_holders` -> 0 drains `send_waiters` | woken, `-KOS_EAGAIN` while a handout holder remains, else `-KOS_ECONNREFUSED` |
+| server dies while caller still in `CALL_SEND_WAIT` | `recv_holders` -> 0 drains `send_waiters` | woken, `-KOS_ECONNREFUSED` |
 | endpoint destroyed while a reply is outstanding | nothing -- the cap names the CALLER, not the endpoint | server can still reply; woken normally |
 | mint fails, fastpath | fail the call `-KOS_EMFILE` BEFORE any side effect | error return, no state change |
 | mint fails, slowpath (pop at recv) | wake the popped caller `-KOS_EMFILE`, recv retries | woken, `-KOS_EMFILE` |

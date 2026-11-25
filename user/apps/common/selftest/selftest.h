@@ -910,18 +910,22 @@ namespace selftest
     inline constexpr RamAsk ASW_RAM = {ST_GRANULES(1)};
     KICKOS_SELFTEST_LOCAL void t_amp_count_reads();
     KICKOS_SELFTEST_LOCAL void t_amp_far_call();
-    KICKOS_SELFTEST_LOCAL void t_amp_far_reply_empty();
+#if not KICKOS_AMP_OWN_IMAGE
+    KICKOS_SELFTEST_LOCAL void t_amp_far_call_refused();
+#endif
     KICKOS_SELFTEST_LOCAL void t_amp_port_seating();
     KICKOS_SELFTEST_LOCAL void t_amp_port_unnamed();
     KICKOS_SELFTEST_LOCAL void t_amp_crossing_task_local();
 #if KICKOS_AMP_OWN_IMAGE
     KICKOS_SELFTEST_LOCAL void t_amp_share_crossing();
+    KICKOS_SELFTEST_LOCAL void t_amp_far_call_held();
 #if KICKOS_HAVE_ASPACE
     KICKOS_SELFTEST_LOCAL void t_amp_far_reply_unmapped();
 #endif
 #if KICKOS_AMP_CLOCK_SHARED
     KICKOS_SELFTEST_LOCAL void t_amp_far_wall();
 #endif
+    KICKOS_SELFTEST_LOCAL void t_amp_far_share();
 #if KICKOS_MEMORY_ENFORCED && KICKOS_AMP_USER_SHARE_SIZE != 0
     KICKOS_SELFTEST_LOCAL void t_amp_share_window();
 #endif

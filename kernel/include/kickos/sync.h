@@ -166,10 +166,10 @@ namespace kickos
     // called under one: a retry drops it, and mutex_lock runs the resume barrier and the
     // wait_result read outside it (see wq_confirm_resume).
     //
-    // No limit waits forever, and a passed deadline is a try. Returns 0
-    // when locked; -KOS_EOWNERDEAD when locked from a dead holder, where the lock is held and
-    // this is not a failed acquire; -KOS_ETIMEDOUT when held elsewhere past the deadline, or at
-    // once for a try, which lends no priority; -KOS_ECANCELED when cancelled waiting;
+    // No limit waits forever, and a passed deadline is a try. Returns 0 when locked;
+    // -KOS_EOWNERDEAD when locked from a dead holder, where the lock is held and this is not a
+    // failed acquire; -KOS_EBUSY at once for KOS_POLL when held elsewhere, and -KOS_ETIMEDOUT
+    // past any other deadline, a try lending no priority; -KOS_ECANCELED when cancelled waiting;
     // -KOS_EDEADLK for a word the caller holds or a wait that would close a cycle, refused
     // without parking or a boost; -KOS_EINVAL or -KOS_EFAULT for a word the caller may not name
     // (word_ref); -KOS_EINVAL for a word that disagrees with the record of its waiters, or whose

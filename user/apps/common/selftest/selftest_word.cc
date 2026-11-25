@@ -485,9 +485,9 @@ namespace selftest
     // A stack the kernel allocated is mapped task-wide and never granted. Its owner holds a word
     // on it while main waits, then waits on it while main holds it.
     kos_mutex_t* volatile g_wst_word = nullptr;
-    Atomic<int32_t, Order::RELAXED> g_wst_main_in{0};
     Atomic<int32_t, Order::RELAXED> g_wst_released{0};
     Atomic<int32_t, Order::RELAXED> g_wst_rc{WORD_UNSET};
+    Atomic<int32_t, Order::RELAXED> g_wst_main_out{0};
     constexpr uint64_t WST_POLL_NS = 1000000ull;
     void wst_owner(void*)
     {
@@ -497,12 +497,10 @@ namespace selftest
             return;
         }
         g_wst_word = &on_stack;
-        while (g_wst_main_in == 0)
+        while ((__atomic_load_n(&on_stack.word, __ATOMIC_RELAXED) & KOS_WORD_WAITERS) == 0)
         {
             kos_sleep_for(kos_ns(WST_POLL_NS));
         }
-        // main sets the flag just before it asks, so it is waiting by now.
-        kos_sleep_for(kos_ns(4u * WST_POLL_NS));
         g_wst_released = 1;
         (void)kos_mutex_unlock(&on_stack);
         // Handed to main, which runs below this thread: this waits on main.
@@ -512,15 +510,20 @@ namespace selftest
         {
             (void)kos_mutex_unlock(&on_stack);
         }
+        // main still reaches the word: this frame must outlive it.
+        while (g_wst_main_out == 0)
+        {
+            kos_sleep_for(kos_ns(WST_POLL_NS));
+        }
         g_wst_word = nullptr;
     }
     void t_mutex_stack_word()
     {
         TAP_ASK(.workers = 3);
         g_wst_word = nullptr;
-        g_wst_main_in = 0;
         g_wst_released = 0;
         g_wst_rc = WORD_UNSET;
+        g_wst_main_out = 0;
         kos::thread::Handle w;
         ArmHold hold;
         TAP_HOLD(hold.thread(&w));
@@ -528,12 +531,12 @@ namespace selftest
         TAP_CHECK(w.valid() and word_parked());
         kos_mutex_t* const m = g_wst_word;
         TAP_CHECK(m != nullptr);
-        g_wst_main_in = 1;
         int const took = kos_mutex_lock(m, after_us(STALL_TOLERANT_US));
         int32_t const released = g_wst_released;
         bool const owner_waits = word_parked();
         int32_t const before = g_wst_rc;
         int const gave = kos_mutex_unlock(m);
+        g_wst_main_out = 1;
         TAP_CHECK(hold.joined());
         TAP_CHECK(took == 0 and released == 1); // main waited on the owner's stack word
         TAP_CHECK(owner_waits and before == WORD_UNSET and gave == 0);

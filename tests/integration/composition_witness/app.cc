@@ -37,18 +37,14 @@ int main(int, char**)
         int32_t const n =
             kos_call(sensor, &s, 0u, sizeof(s), kos_after(kos_monotonic_now(), kos_ms(CALL_WAIT_MS)));
         // No answer is ever a park: each code says what became of the request. A motor
-        // controller would brake on all three.
+        // controller would brake on both.
         if (n == -KOS_EPIPE)
         {
             printf("sensor: died holding the request\n");
         }
-        else if (n == -KOS_EAGAIN)
-        {
-            printf("sensor: restarting\n");
-        }
         else if (n == -KOS_ECONNREFUSED)
         {
-            printf("sensor: gone for good\n");
+            printf("sensor: not served\n");
         }
         else if (n != static_cast<int32_t>(sizeof(s)))
         {

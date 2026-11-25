@@ -2409,6 +2409,10 @@ namespace kickos
             {
                 return -KOS_EPERM;
             }
+            if (limit.poll())
+            {
+                return -KOS_EBUSY;
+            }
             if (ktime_limit_passed(limit))
             {
                 return -KOS_ETIMEDOUT;

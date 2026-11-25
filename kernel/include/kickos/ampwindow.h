@@ -157,7 +157,8 @@ namespace kickos
             LENGTH,    // the far length exceeds one slot
             PORT,      // the far port names nothing this node minted
             CLASS,     // a message of the other class: a reply on the call ring, or the reverse
-            RESERVE    // no slot is free in the reply ring this call's reply would have to use
+            RESERVE,   // no slot is free in the reply ring this call's reply would have to use
+            STANDING   // the slot's previous record still stands, so none could be seated for it
         };
 
         enum class Sent : uint8_t
@@ -167,7 +168,7 @@ namespace kickos
             DEPTH,  // the far tail names more outstanding slots than the ring holds
             LENGTH, // the caller's own length exceeds one slot
             NODE,   // the target names no node this image drives
-            PORT    // the target port is outside the mint width
+            PORT    // the target port is outside the mint width, or no lane of the ring
         };
 
         // A caller's reply route, carried across and handed straight back. Neither field is
@@ -219,15 +220,112 @@ namespace kickos
             Atomic<uint32_t, Order::RELAXED> len;  // far: payload bytes, bounded before any copy
             Atomic<uint32_t, Order::RELAXED> port; // far: bounded against this node's own mint
             ReplyTag tag; // far: handed back to the taker, spent by nothing in this file
-            // far: the badge of the sender's capability, delivered to the receiver as it stands
-            // and spent by nothing in this file. KOS_BADGE_NONE on a reply.
-            uint32_t badge;
+            // far: on a call, the badge of the sender's capability, delivered to the receiver as
+            // it stands; on a reply, KOS_BADGE_NONE for an answer or REPLY_REFUSED.
+            Atomic<uint32_t, Order::RELAXED> badge;
+            // far: set by the producer on a call slot still outstanding whose caller left, and
+            // cleared by its publication. RELAXED: the doorbell request raised after the set,
+            // and the head index after the clear, are what publish it.
+            Atomic<uint32_t, Order::RELAXED> withdrawn;
             uint8_t payload[SLOT_BYTES];
         };
 
+        // A reply's badge where the call's port has no receiver: its caller is answered
+        // -KOS_ECONNREFUSED. Any other word reads as an answer.
+        constexpr uint32_t REPLY_REFUSED = 1u;
+        static_assert(REPLY_REFUSED != KOS_BADGE_NONE, "a refusal is not an answer");
+
+        // A CALL ring is split into LANES, one per port its receiving node mints but the reply
+        // port, each owning an equal power-of-two run of the ring's slots with a head and a tail
+        // of its own. Reclamation is in order within a lane only, so a port whose receiver keeps
+        // every slot of its lane holds no other port's. A REPLY ring is one lane of every slot.
+        constexpr uint32_t LANE_MAX = RING_SLOTS;
+
+        // The ports a call ring toward `node` carries, bit n for port n.
+        constexpr uint32_t call_ports(uint32_t node)
+        {
+            uint32_t mask = 1u << PORT_ECHO;
+            for (uint32_t i = 0; i < PORT_COUNT; i++)
+            {
+                if (PORT_NODE[i] == node and PORT_PORT[i] < PORT_MAX)
+                {
+                    mask = mask | (1u << PORT_PORT[i]);
+                }
+            }
+            return mask & ~(1u << PORT_REPLY);
+        }
+
+        constexpr uint32_t lane_count(uint32_t node)
+        {
+            uint32_t n = 0;
+            for (uint32_t bits = call_ports(node); bits != 0u; bits = bits & (bits - 1u))
+            {
+                n++;
+            }
+            return n;
+        }
+
+        // The slots of each lane of the call ring toward `node`.
+        constexpr uint32_t lane_slots(uint32_t node)
+        {
+            uint32_t slots = 1u;
+            while (slots * 2u <= RING_SLOTS / lane_count(node))
+            {
+                slots = slots * 2u;
+            }
+            return slots;
+        }
+
+        constexpr bool lanes_fit()
+        {
+            for (uint32_t node = 0; node < NODE_MAX; node++)
+            {
+                if (lane_count(node) > LANE_MAX)
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+        static_assert(lanes_fit(), "a node of the partition serves more ports than its call "
+                                   "ring has slots: one slot per port is the least share");
+
+        // One lane of a ring: which of its head and tail words, its first slot and its width.
+        // `slots` is 0 for a port the ring carries no lane for.
+        struct Lane
+        {
+            uint32_t index;
+            uint32_t base;
+            uint32_t slots;
+        };
+
+        // The lane of the `cls` ring toward `to` that `port` publishes on.
+        constexpr Lane lane_of(Class cls, uint32_t to, uint32_t port)
+        {
+            if (cls == Class::REPLY)
+            {
+                return Lane{0u, 0u, RING_SLOTS};
+            }
+            if (to >= NODE_MAX or port >= PORT_MAX or (call_ports(to) & (1u << port)) == 0u)
+            {
+                return Lane{0u, 0u, 0u};
+            }
+            uint32_t index = 0;
+            for (uint32_t below = call_ports(to) & ((1u << port) - 1u); below != 0u;
+                 below = below & (below - 1u))
+            {
+                index++;
+            }
+            return Lane{index, index * lane_slots(to), lane_slots(to)};
+        }
+
+        // lane_of read from the per-node table window_init seats, for a node and port known only
+        // at run time.
+        Lane lane_for(Class cls, uint32_t to, uint32_t port);
+
         struct alignas(LINE_BYTES) Index
         {
-            Atomic<uint32_t, Order::ACQUIRE | Order::RELEASE> v;
+            Atomic<uint32_t, Order::ACQUIRE | Order::RELEASE> v[LANE_MAX]; // one per lane
         };
 
         // ONE ring per ORDERED PAIR of nodes: one inbox shared by every sender would put
@@ -278,7 +376,8 @@ namespace kickos
         // core-indexed backend refuses, so no caller owes a range check beside this one.
         uint32_t core_of(uint32_t node);
 
-        // Publish `len` bytes into `to`'s inbox from THIS node and ring its doorbell.
+        // Publish `len` bytes into `to`'s inbox from THIS node, on the lane `port` names, and
+        // ring its doorbell.
         //
         // THE LOCAL NODE IS REFUSED: node_service skips its own self-ring, so a self-send
         // fills four slots nothing will ever take.
@@ -287,11 +386,12 @@ namespace kickos
 
         // Take one REPLY out of the ring `from` writes to THIS node and HOLD its slot; the local
         // node reads EMPTY, its self-ring being the one no service drains. On TOOK `*out_len`,
-        // `*out_port`, `*out_tag` and `*out_slot` (masked to the ring) are the snapshot and none
-        // is touched on any other verdict. The slot is TAKEN AND NOT RELEASED: the caller the tag
-        // names lands the payload out of it and releases it, and the service releases it where
-        // the tag names no caller (release_reply). The tail advances over released slots from
-        // the oldest, so landings may complete OUT OF ORDER while reclamation stays in order.
+        // `*out_port`, `*out_tag`, `*out_badge` and `*out_slot` (masked to the ring) are the
+        // snapshot and none is touched on any other verdict. The slot is TAKEN AND NOT RELEASED:
+        // the caller the tag names lands the payload out of it and releases it, and the service
+        // releases it where the tag names no caller (release_reply). The tail advances over
+        // released slots from the oldest, so landings may complete OUT OF ORDER while
+        // reclamation stays in order.
         //
         // THE WHOLE SLOT HEADER IS HANDED BACK RATHER THAN LEFT TO BE RE-READ: a producer with a
         // stale tail may rewrite a held slot, so a length re-read after it was bounded is a
@@ -306,25 +406,27 @@ namespace kickos
         // pending to ring it. Nothing rescans for it either: the reservation is read inside
         // take_call, which runs from the doorbell alone.
         Verdict take_reply(uint32_t from, uint32_t* out_len, uint32_t* out_port,
-                           ReplyTag* out_tag, uint32_t* out_slot);
+                           ReplyTag* out_tag, uint32_t* out_badge, uint32_t* out_slot);
 
         // Release a held reply slot, with the raise its advance owes `from`.
         void release_reply(uint32_t from, uint32_t slot);
 
-        // Take one CALL and HOLD its slot: on TOOK the slot is this node's record of the caller
-        // until release_call frees it, so outstanding inbound calls from one peer are RING_SLOTS
-        // by construction. `*out_slot` names the held slot, masked to the ring, and is what
-        // release_call takes back. The header is copied OUT rather than re-read from the held
-        // slot, which a malformed producer may have touched. The PAYLOAD is not copied: it is
-        // read out of the held slot by whoever the call is handed to.
+        // Take one CALL off lane `lane` of the ring `from` writes to THIS node and HOLD its slot:
+        // on TOOK the slot is this node's record of the caller until release_call frees it, so
+        // outstanding inbound calls from one peer are RING_SLOTS by construction. `*out_slot`
+        // names the held slot, masked to the ring, and is what release_call takes back. The
+        // header is copied OUT rather than re-read from the held slot, which a malformed
+        // producer may have touched. The PAYLOAD is not copied: it is read out of the held slot
+        // by whoever the call is handed to.
         //
         // A CALL IS ADMITTED ONLY WHERE ITS REPLY ALREADY HAS A SLOT: the reply ring toward
         // `from` must hold room for one more than the replies this node still owes it, or the
         // slot is left unread and the verdict is RESERVE. Without it a peer with more callers
         // than RING_SLOTS gets a reply refused at publish, which no path can retry. THE RESERVE
         // IS OWED BY A TOOK ALONE: a malformed slot owes no reply, so it is dropped and the tail
-        // advances whatever the reply ring holds.
-        Verdict take_call(uint32_t from, uint32_t* out_len, uint32_t* out_port,
+        // advances whatever the reply ring holds. A slot whose record still owes an answer is left
+        // unread the same way, the verdict STANDING, which holds up that lane alone.
+        Verdict take_call(uint32_t from, uint32_t lane, uint32_t* out_len, uint32_t* out_port,
                           ReplyTag* out_tag, uint32_t* out_badge, uint32_t* out_slot);
 
         // A held call's record: the origin node and the reply token, stored verbatim and never
@@ -351,9 +453,9 @@ namespace kickos
             // The held run that named this record's slot was abandoned by a resynchronisation.
             static constexpr uint8_t PENDING_GONE = 2u;
             // A pending record keeps its call slot from going back to the peer and keeps a later
-            // call off its masked slot only while the held run still covers that slot: a
-            // resynchronisation has already set taken = tail = head, so a call landing there
-            // afterwards is taken and then refused at inbound_seat. A PENDING_GONE record's `slot`
+            // call off its masked slot: the held run covers that slot, or, once a
+            // resynchronisation has set taken = tail = head, take_call leaves a call landing there
+            // unread until the record dies. A PENDING_GONE record's `slot`
             // may not be spent as a release and no length of run accounts for what it owes; the
             // masked index cannot say either, an abandoned record and a later wrap's call
             // sharing one.
@@ -361,6 +463,8 @@ namespace kickos
             // Service passes this obligation has been carried over, against DEFER_PASSES.
             // Meaningless unless pending, and record_defer is the one writer that arms it.
             uint8_t defers;
+            // The deferred answer is REPLY_REFUSED rather than empty. Meaningless unless pending.
+            uint8_t refused;
         };
 
         // Seat a record for a held call and answer a TOKEN for it, or FAR_RECORD_NONE where the
@@ -391,21 +495,47 @@ namespace kickos
         // A REFUSED PUBLICATION IS COUNTED IN reply_unsent AND ITS CALLER IS STILL ANSWERED.
         // The answer's BYTES cannot be remade from here, the reply capability being spent, so
         // what outlives the refusal is the obligation alone: the record is left pending with
-        // its call slot held, and node_service publishes the wire's own refusal shape for it
-        // once that ring is believable again. The payload is NOT retained: that would make the
-        // kernel the keeper of an answer's staleness, which is the workload's property
+        // its call slot held, and node_service publishes an empty answer for it once that ring
+        // is believable again. The payload is NOT retained: that would make the kernel the
+        // keeper of an answer's staleness, which is the workload's property
         // (docs/design-multicore.md N6e).
         //
         // The obligation is itself bounded, at DEFER_PASSES: nothing this node owns can make a
         // peer read a ring it has stopped reading.
         void inbound_reply(uint32_t token, void const* payload, uint32_t len);
 
+        void inbound_refuse(uint32_t token);
+
+        // Free the record `token` names and release its call slot, answering nobody: its caller
+        // withdrew the call. Total over a token naming nothing.
+        void inbound_withdraw(uint32_t token);
+
+        // True where the caller of the call the record `token` holds has withdrawn it.
+        bool call_withdrawn(uint32_t token);
+
+        // THIS node's head of lane `lane` of the call ring toward `to`: the index its next call
+        // publication takes. 0 for a node or lane the ring has none of.
+        uint32_t call_head(uint32_t to, uint32_t lane);
+
+        // Withdraw the call this node published at index `at` of lane `lane` toward `to`, whose
+        // caller left, and ring `to`. Nothing where `to` has already given that slot back.
+        void call_withdraw(uint32_t to, uint32_t lane, uint32_t at);
+
         // Release a held call slot. The tail advances over released slots from the oldest, so
         // replies may complete OUT OF ORDER while reclamation stays in order. `slot` is the
         // index take_call handed out, masked to the ring; a resynchronisation between the take
         // and the release makes that index name a later wrap's slot, which the record
-        // generation above keeps out of here.
+        // generation above keeps out of here. A release that moves the tail rings `from`, whose
+        // blocking senders may be waiting for that slot.
         void release_call(uint32_t from, uint32_t slot);
+
+        // The free slots of lane `lane` of the call ring toward `to`, and in `*out_tail` the far
+        // tail they were counted from, which moves once per slot of that lane `to` gives back. 0
+        // where a publication would be refused FULL; ROOM_REFUSED where it would be refused
+        // anything else, `to` naming no peer or no such lane, or the far tail more outstanding
+        // slots than the lane holds.
+        constexpr uint32_t ROOM_REFUSED = UINT32_MAX;
+        uint32_t call_ring_room(uint32_t to, uint32_t lane, uint32_t* out_tail);
 
         // A HOLD: a held slot a local thread still has to read, in its own context and out of
         // the masked service. A call's hold is its record's token, owned by the receiver until
@@ -458,8 +588,9 @@ namespace kickos
             Atomic<uint32_t, Order::RELAXED> sent;
             Atomic<uint32_t, Order::RELAXED> send_refused;
             // Calls left unread because the reply ring toward that sender had no slot to
-            // reserve. APART FROM send_refused: this is the consumer declining to take, and the
-            // producer's arithmetic that send_refused reports is untouched.
+            // reserve, or their slot's previous record still stood. APART FROM send_refused: this
+            // is the consumer declining to take, and the producer's arithmetic that send_refused
+            // reports is untouched.
             Atomic<uint32_t, Order::RELAXED> reply_reserve;
             Atomic<uint32_t, Order::RELAXED> serviced; // times its doorbell drained its inboxes
             // Replies taken and then refused by the endpoint layer's validation of the tag.
@@ -494,16 +625,20 @@ namespace kickos
         // Count one Counts::deliver_fault on THIS node, under its lock: one writer per row is
         // why a row may sit where a peer reads it.
         void count_deliver_fault(void);
-
+        // Count one Counts::send_refused on THIS node, under its lock: a full lane of a call ring
+        // refused to a sender that may not wait, which send never sees.
+        void count_send_refused(void);
 
         // Drain every inbox of THIS node, routing a PORT_REPLY to whatever local caller its tag
         // names and answering every taken CALL on the sender's PORT_REPLY: a PORT_ECHO with its
-        // own payload, and anything the endpoint layer did not take as a record with a
-        // ZERO-LENGTH reply carrying the same tag.
+        // own payload, and anything the endpoint layer neither delivered nor held with a
+        // REPLY_REFUSED reply carrying the same tag.
         //
         // AND DISCHARGE EVERY ANSWER A REFUSED PUBLICATION DEFERRED, between the two drains:
         // after the replies, whose drain makes the deferred answer sendable, and before the
         // calls, which the slots it frees admit. One carried DEFER_PASSES times is abandoned.
+        //
+        // The doorbells a pass owes go out once per peer, at its end.
         //
         // Reached from the backend's doorbell service, so it runs with this core's interrupts
         // masked.

@@ -487,6 +487,10 @@ namespace kickos
             {
                 return notify_wait_bits(take_pending(n, mask));
             }
+            if (limit.poll())
+            {
+                return -KOS_EAGAIN;
+            }
             if (ktime_limit_passed(limit))
             {
                 return -KOS_ETIMEDOUT;

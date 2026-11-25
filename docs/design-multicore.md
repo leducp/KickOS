@@ -552,9 +552,9 @@ Each node's peripherals are granted by its own image, which is the partitioning 
 model rather than being imposed on it -- and on a part failing requirement 6 it is also why the
 missing per-line targeting stops mattering, each core masking what it does not own. The shared
 store is reached as a SERVICE per N6d: the owning node publishes a port, the other holds a far
-endpoint. The logging path is a SEND under N6e, because a control loop may not wait on the other
-node's scheduler, and the record's size against the ring's depth is what decides how many ticks a
-transfer spans.
+endpoint. The logging path is a non-blocking SEND under N6e, because a control loop may not wait
+on the other node's scheduler, and the record's size against the ring's depth is what decides how
+many ticks a transfer spans.
 
 ### N6c. THE DERIVATION OF `KICKOS_AMP_NODE` CONTRADICTS N6b AND IS A DEFECT
 
@@ -682,6 +682,27 @@ immediate refusal, named and counted, spending no time -- and supplies no queue,
 deadline of its own behind it. A loop can then treat a publication as a budgeted attempt. **A
 kernel that buffered on the caller's behalf would be choosing the staleness policy for every
 workload at once**, which is the same error as a kernel-side driver, one layer out.
+
+**RULED 2026-11-22: BLOCKING IS BLOCKING, AND THE IMMEDIATE REFUSAL IS THE NON-BLOCKING FORM.** A
+blocking far send or call that meets a full ring waits for a slot, as a blocking local send waits
+for a receiver; a send or a call under `KOS_POLL` is refused `-KOS_EAGAIN` as above, which is
+POSIX's answer to a full pipe, a call always waiting for its reply. Any other deadline that
+passes, before the wait or during it, answers `-KOS_ETIMEDOUT`. The request's form decides the
+code, never the timing, and the rule is the local one (N7). The kernel still buffers nothing and
+chooses no staleness: what waits is the caller, under its own deadline, and a release of a call
+slot rings the node that published into it so the wait ends.
+
+**A FAR SEND OR CALL OF NO DEADLINE WAITS FOR AS LONG AS THE PEER'S RING STAYS FULL.** A server
+holding a received call while it sends or calls far is therefore a hold-and-wait across nodes:
+two such servers, each serving the other's calls, wait until one is cancelled. The deadline is
+the caller's bound on it, and the kernel adds none.
+
+**RULED 2026-11-22: A PORT FILLS ITS OWN SHARE OF THE CALL RING, NEVER THE WHOLE RING.** The call
+ring of an ordered pair is split into one lane per port of the receiving node, the echo port
+included, each an equal power-of-two run of the ring's slots with its own head and tail, derived
+at build time from the partition's port list. A port whose task never receives, or receives
+slowly, fills its lane, and its senders and callers wait as for a full ring, a send under
+`KOS_POLL` refused `-KOS_EAGAIN`, while every other port to that node publishes into its own.
 
 **RING DEPTH IS THEREFORE A PARTITION-SIZING INPUT rather than an internal constant.** A ring
 holds a fixed number of slots at the local message bound, so a producer offering more than that
@@ -899,28 +920,27 @@ earlier.** The clause above abandons a sender's whole held run, and the record g
 that memory-safe; what it does not do by itself is discharge what those records were FOR. Every
 live one names a far caller parked on an answer, and under KOS_NEVER that caller has no
 deadline, so a record dropped in silence is a thread parked for the life of the image. Each is
-published the wire's only refusal shape, an empty PORT_REPLY carrying its own tag, taken out of the
-record while it can still be named: nothing else on this node knows those routes once the records
+published an empty PORT_REPLY carrying its own tag, taken out of the record while it can still be
+named: nothing else on this node knows those routes once the records
 are gone. The answers' own bytes are lost either way and are counted as such. **The two items were
 one question and are answered as one**: what a node owes a caller whose route it has stopped
 believing is an answer, and making the route believable again is what lets it give one.
 
-**THE EMPTY REPLY CARRIES NO REASON, AND ADDING MEANINGS TO IT DOES NOT EARN ONE.** The zero-length
-PORT_REPLY is now a genuine empty answer, a call refused past its take, a caller whose route was
-abandoned, and a deferred answer. There is a spare half-word on the wire to distinguish them with,
-ReplyTag::seq being 32 bits around a 16-bit sequence, and it is refused: writing it would make the
-serving node an author of the calling node's own route word, and spending neither field is the whole
-of why an unvalidated tag may cross at all. A reason the serving node can compose is one a malformed
-peer can compose, so the calling node would owe it validation for a value no caller can act on
-differently, every one of these being unretryable from inside the kernel and the policy being the
-workload's by the clause above. A partial distinction is also worse than none here: a genuine empty
-answer stays folded in whatever code is added, so a receiver told "refused" over-trusts a signal
-silent on the case it most needs. **The distinction belongs at the node that caused it, as a count**,
-which is where the resynchronisation's answers and the deferred ones now sit, apart from a refusal
-past a take, which counts nothing of the kind. A payload copy the CALLING node refuses is not on
-this wire at all: it reaches its own parked thread through wait_result, so a code can be delivered
-there without the window learning anything, and that is a decision on the delivery arm rather than
-on the transport.
+**A REPLY CARRIES ONE REASON, THE REFUSAL OF A PORT NOBODY SERVES, AND THE EMPTY REPLY STILL
+CARRIES NONE.** The user-visible contract is the local one (N7; ruled 2026-11-22): a call to an
+endpoint nobody serves answers ECONNREFUSED. A reply's badge word, the serving node's own writing and never
+the caller's route, carries the refusal; the caller spends it through one comparison, so a malformed
+peer can forge a refusal exactly as it can forge an empty answer, and nothing else. The tag's spare
+half stays spare: writing it would make the serving node an author of the calling node's own route
+word, and spending neither field is the whole of why an unvalidated tag may cross at all. The
+zero-length PORT_REPLY is still a genuine empty answer, a call refused past its take, a caller
+whose route was abandoned, and a deferred answer, and adding a code to those earns nothing: each is
+unretryable from inside the kernel and the policy is the workload's by the clause above. **That
+distinction belongs at the node that caused it, as a count**, which is where the
+resynchronisation's answers and the deferred ones sit, apart from a refusal past a take, which
+counts nothing of the kind. A payload copy the CALLING node refuses is not on this wire at all: it
+reaches its own parked thread through wait_result, so a code can be delivered there without the
+window learning anything, and that is a decision on the delivery arm rather than on the transport.
 
 **WHAT IS RETAINED ACROSS A REFUSED ANSWER IS THE OBLIGATION AND NEVER THE PAYLOAD, AND THAT IS
 WHERE N6e BINDS.** N6e refuses a kernel-side queue because retry, drop and buffer are the
@@ -964,14 +984,17 @@ waiting on one nobody can send. A receiver that exits without landing gives the 
 same way.
 
 **AND THAT ANSWER IS PUBLISHED AT TWO SITES, ONE EITHER SIDE OF THE POP, AND NEVER PER ARM.** Every
-refusal before the pop reaches one bool whose single caller publishes the empty reply, and every
+refusal before the pop reaches one bool whose single caller publishes the refusal, and every
 refusal after it is an answer to the record, because a far caller under KOS_NEVER has no
 deadline: an answer written into each refusing arm is one more thread leaked for the life of the
 image every time an arm is added.
 
-**NOTHING PARKED ON THE PORT IS REFUSED ON THE SPOT rather than held for a service that may
-arrive.** Holding a slot for an absence fills the ring behind it, and a ring full of calls
-nobody will ever take is the same wedge a malformed peer would have made.
+**A SEND OR A CALL FINDING NOTHING PARKED ON THE PORT IS HELD FOR THE PORT'S NEXT RECEIVE**, as a
+local one waits for a receiver. A held one keeps its slot until a receiver of the port takes it, a
+call as a call, or the port's last receiver leaves and refuses it, and it fills that port's lane
+alone (N6e). A port bound to nothing or with no receiver refuses on the spot. A held call whose
+caller leaves is withdrawn, as a local request is: the caller marks the slot it still holds and
+rings, and the serving node gives the slot back unanswered.
 
 **AND THE MEASUREMENT RULE THAT FOLLOWS FROM IT: AN ARM COUNTING A QUANTITY THE WHOLE PARTITION
 CONTRIBUTES TO MUST OWN THE WHOLE WINDOW.** A far SEND to a port a peer THREAD serves is answered
@@ -981,9 +1004,10 @@ counts somebody else's traffic unless nothing of its own is still in flight. The
 where a counter is fed by every node, an arm reading a DELTA of it owes an empty partition for
 the length of that delta, and the way to get one is to leave nothing outstanding rather than to
 widen the tolerance. The contributor set widened once every post-take refusal began publishing an
-answer: a far SEND parks nobody and carries the no-route tag, so the answer its service publishes
-lands at the SENDER as a dropped reply, and a node now feeds that counter with the consequences of
-its own sends as well as with a peer thread's replies.
+answer: a far SEND parks nobody and carries the no-route tag, so the answer published for it, by
+the receive that lands it or by its port's last receiver leaving, lands at the SENDER as a dropped
+reply, and a node now feeds that counter with the consequences of its own sends as well as with a
+peer thread's replies.
 
 **AND THE SECOND WAY TO OWN A WINDOW, which the rule above does not name: read the delta INSIDE
 the critical section that produced it.** A forge that publishes, takes and dispatches under one
@@ -996,7 +1020,7 @@ sequence could separate those: a window SUM is not an attribution, however narro
 
 **A PEER THAT IS A WINDOW LAYER IS A WEAKER ENVIRONMENT THAN A PEER THAT IS A THREAD, and that
 is the half worth writing down.** It is weaker in what it HOLDS and not in whether it answers: the
-window layer answers the echo port with the payload and every other taken call with a zero-length
+window layer answers the echo port with the payload and refuses every other taken call with a
 reply carrying the tag, so it is a stray source of its own. What it does not do is occupy a
 receiver, keep state between calls, or choose the moment it answers. So the conclusion stands and
 its reason narrows: an arm that will one day face a thread is not validated by passing against a
@@ -1250,6 +1274,12 @@ knowledge a caller might need already arrived with the delegation.
 Two API surfaces would be a second truth, two answers to "how do I call a service", with every
 consumer branching on something it has no business knowing. The driver framework and the KickCAT
 reality check are exactly the consumers that would carry that branch.
+
+**The errno contract is one rule for both, decided by the request and never by timing:** a send
+or a call under `KOS_POLL` that would wait, for a receiver, for a slot of a full peer ring or
+for its reply, is refused `-KOS_EAGAIN`; any other deadline that passes answers
+`-KOS_ETIMEDOUT`; a blocking request is never answered `-KOS_EAGAIN` for having had to wait
+(N6e).
 
 **One measurement makes it affordable and is recorded so the decision can be rechecked:**
 `KOS_EP_MSG_MAX` is 256, so a ring slot at full message size is 256 bytes and a message that fits
