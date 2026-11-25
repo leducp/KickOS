@@ -8,7 +8,7 @@ from ruamel.yaml.nodes import MappingNode, ScalarNode
 from .descriptions import PART, check_board, cluster_views, reaches, unit_views
 from .manifest import CORES, read_manifest
 from .region import ram_size
-from .supply import check_drivers, check_priorities, check_scheduling, check_supply
+from .supply import FarStdout, check_drivers, check_priorities, check_scheduling, check_supply
 from .subset import FILE_NAME, IDENTIFIER, PROGRAM_NAME, File, Report, index_below, line_of, read_utf8
 
 COMPOSITION_VERSIONS = (1,)
@@ -170,7 +170,7 @@ class Admitted:
         self.root = root
         self.tasks = tasks
         self.shared = shared
-        # `stdout`: "kernel", or the task serving it.
+        # `stdout`: "kernel", the task serving it, or a FarStdout.
         self.stdout = stdout
         # The node of `ends`, read only once the composition is admitted.
         self.ends = ends
@@ -280,11 +280,11 @@ def admit_composition(path, text, platform, report, cache, manifest, partition=F
     # A driver inside a task is no task to watch or end on.
     named = {name: task for name, task in name_tasks(f, tasks).items() if task.hosted is None}
     served = serve_endpoints(f, tasks)
-    stdout = check_order(f, top, tasks, named, served, shared)
+    stdout = check_order(f, top, tasks, named, served, shared, manifest)
     check_slot_owners(f, tasks)
     check_restart(f, top, named)
     if chip is not None:
-        check_ownership(f, tasks, chip, cluster, board, stdout)
+        check_ownership(f, tasks, chip, cluster, board, stdout, manifest)
     if chip is not None and manifest is not None:
         check_window_rule(f, top.get("board", root), chip, cluster, manifest)
         check_encoding(f, tasks, chip, cluster, manifest)
@@ -1165,8 +1165,8 @@ def serve_endpoints(f, tasks):
     return served
 
 
-def check_order(f, top, tasks, named, served, shared):
-    """References point backward. Returns `stdout`: "kernel", its server, or None when unknown."""
+def check_order(f, top, tasks, named, served, shared, manifest):
+    """References point backward. Returns `stdout`: "kernel", its server, a FarStdout, or None when unknown."""
     for task in tasks:
         for path, node in task.uses:
             if amp_port(path) is not None:
@@ -1206,13 +1206,41 @@ def check_order(f, top, tasks, named, served, shared):
     text = f.string(top["stdout"], "`stdout`")
     if text is None or text == "kernel":
         return text
-    path = declared_path(f, top["stdout"], "`stdout`", "svc")
+    path = declared_path(f, top["stdout"], "`stdout`", "svc", crossing=True)
     if path is None:
         return None
+    port = amp_port(path)
+    if port is not None:
+        return far_stdout(f, top["stdout"], path, port, manifest)
     if path not in served:
         f.refuse(top["stdout"], "order.undeclared", "`stdout: %s` names an endpoint no task serves" % path)
         return None
     return served[path]
+
+
+def far_stdout(f, node, path, port, manifest):
+    """The FarStdout of `stdout: /amp/<port>`, or None once refused: a port another node serves."""
+    if manifest is None:
+        return FarStdout(path, port, node)
+    nodes = [n for n, p in manifest.amp_list if p == port]
+    reason = None
+    if not manifest.amp_list:
+        reason = "and this composition is no node of an AMP partition"
+    elif port == AMP_PORT_REPLY:
+        reason = "port %d, which the window layer keeps for replies" % AMP_PORT_REPLY
+    elif not nodes:
+        reason = "a port the kernel build's partition list does not name; it names %s" % port_ranges(
+            dict.fromkeys(p for n, p in manifest.amp_list))
+    elif len(nodes) > 1:
+        reason = "a port the partition list names for nodes %s, so no one node serves it" % (
+            ", ".join(str(n) for n in nodes))
+    elif nodes[0] == manifest.amp_node:
+        reason = "which this composition's own node %s serves, and a node's stdout is a port another node serves" % (
+            manifest.amp_node)
+    if reason is not None:
+        f.refuse(node, "partition.port", "`stdout: %s` is %s" % (path, reason))
+        return None
+    return FarStdout(path, port, node)
 
 
 def check_ports(f, tasks, manifest):
@@ -1312,7 +1340,7 @@ def check_restart(f, top, named):
                  "%s starts on request, and `ends` names a task the init starts" % ending.label())
 
 
-def check_ownership(f, tasks, chip, cluster, board, stdout):
+def check_ownership(f, tasks, chip, cluster, board, stdout, manifest):
     task_views = cluster_views(chip, cluster)
     grants = [grant for task in tasks for grant in task.grants]
     for i, later in enumerate(grants):
@@ -1355,16 +1383,38 @@ def check_ownership(f, tasks, chip, cluster, board, stdout):
                             line_of(earlier.node)))
                 break
 
-    if board is None or board.console is None or stdout is None:
+    console = None
+    whose = "the board's"
+    if board is not None:
+        console = board.console
+    consoles = []
+    own = None
+    if manifest is not None:
+        consoles = manifest.amp_consoles
+        own = manifest.amp_node
+    for grant in grants:
+        for node, device in enumerate(consoles):
+            if grant.path == device and node != own:
+                f.refuse(grant.node, "ownership.console",
+                         "%s holds `%s`, which the partition gives node %d's kernel as its console"
+                         % (grant.task.label(), grant.path, node))
+    if consoles:
+        console = None
+        whose = "this node's"
+        if own is not None and own < len(consoles) and consoles[own] != "none":
+            console = consoles[own]
+    if console is None or stdout is None:
         return
     for grant in grants:
-        if grant.path != board.console or grant.task is stdout:
+        if grant.path != console or grant.task is stdout:
             continue
         holder = "`stdout: kernel` leaves it to the kernel"
-        if stdout != "kernel":
+        if isinstance(stdout, FarStdout):
+            holder = "`stdout: %s` leaves it to no local task" % stdout.path
+        elif stdout != "kernel":
             holder = "it belongs to %s, which serves `stdout`" % stdout.label()
         f.refuse(grant.node, "ownership.console",
-                 "%s holds `%s`, the board's console device, and %s" % (grant.task.label(), grant.path, holder))
+                 "%s holds `%s`, %s console device, and %s" % (grant.task.label(), grant.path, whose, holder))
 
 
 def gate_unit(chip, task_views, a, b):

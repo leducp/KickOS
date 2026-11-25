@@ -138,6 +138,16 @@ scratch_dir() { # [<template>]
     kos_trap
 }
 
+# An own-image partition whose second node drives the emulator's second UART: run_image then writes
+# serial 1 to $TMP/serial1 (scratch_dir first), and serial1_out reads it.
+serial1_capture() {
+    QEMU_EXTRA="${QEMU_EXTRA:-} -serial mon:stdio -serial file:$TMP/serial1"
+}
+
+serial1_out() {
+    tr -d '\r' < "$TMP/serial1" 2>/dev/null
+}
+
 # A tool that produced nothing leaves every grep below it vacuously satisfied.
 require_nonempty() {
     if [ ! -s "$1" ]; then

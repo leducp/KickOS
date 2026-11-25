@@ -18,8 +18,8 @@ from kickos_compose.manifest import read_manifest
 from kickos_compose.subset import File, Report
 from kickos_compose.__main__ import REFUSED
 from test_arms import (
-    ARM64_AMP, ARM64_PAIR, C6_AMP, C6_PAIR, IMX_MANIFEST, IMX_SYSTEM, LOCAL, MANIFESTS, ON_REQUEST_SERVING, PLATFORM,
-    REGION_POOLS, RIGHT_BITS, RIGHTS_HEADER, RP_AMP, RP_PAIR, SLOT_BITS, SYSTEMS, TREE, VIRTIO, XMC_PROTECTION,
+    ARM64_AMP, ARM64_PAIR, C6_AMP, C6_PAIR, FAR_STDOUT, IMX_MANIFEST, IMX_SYSTEM, LOCAL, MANIFESTS, ON_REQUEST_SERVING,
+    PLATFORM, REGION_POOLS, RIGHT_BITS, RIGHTS_HEADER, RP_AMP, RP_PAIR, SLOT_BITS, SYSTEMS, TREE, VIRTIO, XMC_PROTECTION,
     manifest_of, mutate, read, write,
 )
 
@@ -577,6 +577,17 @@ class Partitioned(unittest.TestCase):
         self.assertIn(".offset = 0x0u, .flags = KOS_MEM_NOCACHE | KOS_TABLE_REGION_PARTITION", source)
         self.assertIn("set(KICKOS_COMPOSE_GATE 1)", texts[2])
         self.assertIn("kickos_gate_row_count = 0;", texts[3])
+
+    def test_a_far_stdout_is_a_port_in_the_fragment(self):
+        paths = self.nodes(ARM64_PAIR, ARM64_AMP, FAR_STDOUT)
+        report, texts = emit.emit_system(None, self.manifest, "table.c", paths)
+        self.assertEqual([str(r) for r in report.refusals], [])
+        self.assertIn("set(KICKOS_COMPOSE_STDOUT \"kernel\")\n", texts[2])
+        self.assertIn("set(KICKOS_COMPOSE_STDOUT_PORT 255)\n", texts[2])
+        write(self.manifest, mutate(ARM64_AMP, [("    node: 0\n", "    node: 1\n")])[0])
+        report, texts = emit.emit_system(None, self.manifest, "table.c", paths)
+        self.assertEqual([str(r) for r in report.refusals], [])
+        self.assertIn("set(KICKOS_COMPOSE_STDOUT_PORT 2)\n", texts[2])
 
     # A partition region of a granule and one byte, declared first on node 0 and last on node 1.
     LOG = {0: [("  - name: /shm/book\n", "  - name: /shm/log\n    size: 0x1001\n    cache: uncached\n"

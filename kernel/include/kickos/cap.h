@@ -516,9 +516,10 @@ namespace kickos
     // Carve the slab and thread the free list. Call once, before any thread exists.
     void cap_slab_init();
 
-    // Forget the published stdout target, so no cap_install_defaults seat and no note-site
-    // comparison can match a handle from a previous life. It drops the NAME and not the kernel's
-    // reference on that endpoint, so it is sound ONLY as part of resetting the endpoint pool.
+    // Forget the published stdout target and the far one, so no cap_install_defaults seat and no
+    // note-site comparison can match a handle from a previous life. It drops the NAME and not the
+    // kernel's reference on that endpoint, so it is sound ONLY as part of resetting the endpoint
+    // pool.
     void cap_console_reset();
 
     // The one resolve chokepoint: validate a per-thread cap handle and return the named
@@ -652,9 +653,20 @@ namespace kickos
     // False = nothing seated and any prior seat left exactly as it was.
     bool cap_seat_stdout(Thread* t, int target, Held held);
 
+    // Seat `root`'s slot 0, and every later child's, on far endpoint `obj`, the composition's
+    // `stdout: /amp/N`, with a ref of the kernel's own. Touches no console state. Boot only.
+    bool cap_stdout_far_seat(Thread* root, int obj, Held held);
+
+    // The reference a child of `t` seats its far standard output with, taken: false where it is
+    // at its ceiling, and the spawn is then refused. True having taken nothing for a local seat.
+    bool cap_stdout_reserve(Task const* t);
+    // Gives back what cap_stdout_reserve took, for a spawn refused after it.
+    void cap_stdout_unreserve(Task const* t);
+
     // The privileged default cap set for a freshly spawned child. Pre-publish it installs
     // NOTHING (index 0 empty; write() falls back to kconsole_write). Post-publish it seats
-    // a send-only (CAP_SIGNAL) copy of the console endpoint at index 0. See D4.
+    // a send-only (CAP_SIGNAL) copy of the console endpoint at index 0. See D4. A far standard
+    // output is seated on the reference cap_stdout_reserve took for the child.
     void cap_install_defaults(Thread* child, Held held);
 
     // Move the kernel's stdout-target ref to `obj_handle` AND seat `publisher`'s own slot 0 on

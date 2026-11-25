@@ -379,9 +379,18 @@ class Sizing:
         return [self.pools.get(name, 0) for name in POOL_ORDER]
 
 
+class FarStdout:
+    """A `stdout` that is a crossing port another node of the partition serves."""
+
+    def __init__(self, path, port, node):
+        self.path = path
+        self.port = port
+        self.node = node
+
+
 def consoles_of(tasks, stdout):
     """The tasks that may serve the console: the one `stdout` names, and each console driver started on
-    request."""
+    request. A far `stdout` is listed itself: no task serves it, so every task holds its seat."""
     consoles = [task for task in tasks if task.on_request and task.catalogue is not None
                 and task.catalogue.console]
     if stdout is not None and stdout != "kernel":
@@ -792,7 +801,7 @@ def check_scheduling(f, top, tasks, stdout, manifest):
                      "%s takes a line on a build of %d kernel cores, so it declares the one `core` its "
                      "line is claimed and waited on" % (task.label(), kernel))
     console = None
-    if stdout is not None and stdout != "kernel":
+    if stdout is not None and stdout != "kernel" and not isinstance(stdout, FarStdout):
         console = stdout
         if console.catalogue is None or not console.catalogue.console:
             f.refuse(top["stdout"], "scheduling.console-driver",
@@ -818,7 +827,11 @@ def check_scheduling(f, top, tasks, stdout, manifest):
                      % (task.label(), task.driver))
     requested = [task for task in tasks if task.on_request and task.catalogue is not None
                  and task.catalogue.console]
-    if requested and stdout is not None and stdout != "kernel":
+    if requested and isinstance(stdout, FarStdout):
+        f.refuse(requested[0].nodes["driver"], "scheduling.console-driver",
+                 "%s runs driver `%s` on request, which takes the console, and `stdout: %s` sends standard "
+                 "output to another node" % (requested[0].label(), requested[0].driver, stdout.path))
+    elif requested and stdout is not None and stdout != "kernel":
         f.refuse(requested[0].nodes["driver"], "scheduling.console-driver",
                  "%s runs driver `%s` on request, and the console is %s's from the start: one task holds the "
                  "console at a time" % (requested[0].label(), requested[0].driver, stdout.label()))

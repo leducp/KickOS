@@ -10,6 +10,10 @@
 
 #if KICKOS_RV32_LP
 
+#if defined(KICKOS_AMP_CONSOLE_UART)
+#error "KICKOS_AMP_CONSOLES gives the ESP32-C6 LP node a UART, and it drives none: name it none"
+#endif
+
 #include <kickos/sys/atomic.h>
 
 #include <stdint.h>

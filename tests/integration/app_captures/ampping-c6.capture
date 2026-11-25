@@ -23,10 +23,12 @@ entry 0x40800000
 
 # c6amp: LP RTC 149388 Hz
 # ampdiag: peer node=1 vectors=0x40833901 tag=0 clk=20000000 self clk=160000000
+ampping: node 1 serves port 3
 ampping: 2 of 2 node app(s) alive on the port the partition names, own row 1
 ampping: gate: node 0 read 0x2206072 from its timg0, node 1 read 0x2206072 from its timg1 and 0x0 from node 0's timg0
 ampping: gate: node 1 stored 0xbadc0de5 to 0x408163b8, node 0's word at 0x408163b8, and loaded 0x0; node 0 reads 0x600df00d there
 ampping: node 0 calls node 1 port 3
+  serve 1 -> 2
   ping 1 -> pong 2 from node 1 (4 byte(s))
   ping 2 -> pong 3 from node 1 (4 byte(s))
   ping 3 -> pong 4 from node 1 (4 byte(s))

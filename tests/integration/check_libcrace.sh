@@ -109,7 +109,7 @@ fi
 verdict="$(printf '%s\n' "$OUT" | awk -v shape="$shape" '
     function found(what) { out = what; exit }
     BEGIN { split(shape, s, " "); workers = s[1]; rounds = s[2] }
-    /^libcrace w/ {
+    /libcrace w/ {
         if (match($0, /^libcrace w[0-9]+ i[0-9]+ [a-z]+$/)) {
             w = substr($2, 2) + 0; i = substr($3, 2) + 0
             want = sprintf("%c", 97 + (w * 7 + i) % 26)

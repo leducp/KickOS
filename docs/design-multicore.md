@@ -1229,21 +1229,20 @@ which a node-dependent object or an input the fingerprint does not hash would mo
 holds over the partition and not over a pair, its width being a knob and two its smallest useful
 value (N6c).
 
-**PEER CONSOLE LINES ARE GATED WHOLE, AND THE CLAIM, NOT TIMING, KEEPS THEM WHOLE.** This holds
-wherever own-image nodes share one UART, which is the RP2350 and QEMU ARM64 partitions. One
-private TX ring per node cannot arbitrate one UART: a peer's announcement shreds under another
-node's banner about one run in ten. The shared UART therefore carries a bounded partition claim,
-held across the chunks of one line; a kernel line whose claim cannot be acquired, or passes to a
-peer, drops the rest of its line, and a user write reports the short count instead. The
-partition gate checks each peer's complete app announcement, and still witnesses peer liveness
-through a counter the *other* node reads: a debug line may be dropped under a bounded wait even
-when the app ran. The app-alive sweep checks the app's causal order only.
+**NO UART IS SHARED BETWEEN KERNELS (RULED 2026-11-22).** One private TX ring per node cannot
+arbitrate one UART, so none is shared: the partition gives each node's kernel a UART of its own or
+none (`CONFIG_KICKOS_AMP_CONSOLES`), and a node's tasks reach another node's console as an ordinary
+cross-node service, its composition's `stdout: /amp/N` naming a port the owner node's relay serves
+(`reference/console.md`, "An AMP node's console"). The partition gate checks each peer's complete
+app announcement on whichever console carries it, and still witnesses peer liveness through a
+counter the *other* node reads.
 
-The ESP32-C6 pair shares no UART and takes no claim. The part has an LP UART, but this port
+The ESP32-C6 pair shares no UART. The part has an LP UART, but this port
 wires none: HP owns UART0, and LP writes boot and served-call records to the shared window;
 HP reports those records. Its partition capture checks LP's
 vector in its HP SRAM slice, both app-alive records, far replies, and both doorbell counts.
-The LP's own console writes are a sink, so this gate does not claim to preserve LP debug text.
+The LP's kernel has no console; its tasks write through the HP node's relay, and the capture
+checks the LP app's announcement there.
 One ROM flash carries both nodes' LOAD segments, while HP copies the LP reset stub into LP SRAM
 and wakes it. The silicon record (archived `M9.9_amp.md`) states the precise witness.
 The LP has no PMP or per-thread privilege split, but its REE2 bus master is

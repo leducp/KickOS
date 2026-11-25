@@ -154,7 +154,7 @@ TEST_F(ConsoleRoom, a_non_blocking_writer_the_ring_refuses_is_answered_at_once)
             g_writer_parked = true;
             console_tx_isr();
         });
-        EXPECT_EQ(kconsole_write_user(kLine.data(), kLine.size(), false), -KOS_ETIMEDOUT);
+        EXPECT_EQ(kconsole_write_user(kLine.data(), kLine.size(), false), -KOS_EAGAIN);
         EXPECT_FALSE(g_writer_parked) << "a non-blocking writer waited";
     });
 }

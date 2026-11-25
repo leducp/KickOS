@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+
+version: 1
+board: qemu-arm64
+stdout: /amp/6
+ends: never
+heap: 16384
+
+tasks:
+  - name: main
+    program: main
+    stack: 8192
+    priority: 5
+    ceiling: 10
+    budgets: { threads: 6 }

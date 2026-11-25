@@ -2,12 +2,13 @@
 # Copyright (c) 2026 Philippe Leduc
 #
 # ampecho on node 0: the peer the suite calls, echoing on the first port the partition names
-# this node, the others served by a task that never receives.
+# this node, the others served by a task that answers nothing.
 
 version: 1
 stdout: kernel
 ends: never
-heap: 0
+# The least heap that holds newlib's stdout buffer, so a printed line leaves in one write.
+heap: 1032
 
 shared:
   - name: /shm/share
@@ -23,3 +24,11 @@ tasks:
     ceiling: 5
     serves: /amp/2
     maps: { /shm/share: rw }
+
+  # Node 1's standard output, each message written whole on this node's console.
+  - name: relay
+    program: amprelay
+    priority: 5
+    ceiling: 5
+    serves: /amp/6
+    budgets: { threads: 1 }

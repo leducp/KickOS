@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// QEMU `virt` for AArch64 (Cortex-A53, EL1 bare metal): PL011 UART at 0x0900_0000, GICv2 or
-// GICv3, and the architected generic timer as the timebase. Run with `-cpu cortex-a53`.
+// QEMU `virt` for AArch64 (Cortex-A53, EL1 bare metal): PL011 UART at 0x0900_0000 (or the
+// second at 0x0904_0000 on an own-image node given /dev/uart1), GICv2 or GICv3, and the
+// architected generic timer as the timebase. Run with `-cpu cortex-a53`.
 
 #include <kickos/arch/arch.h>
 #include <arch_reboot_tail.h>
 #include <kickos/diag.h>
 #include <kickos/arch/console_poll.h>
 #include "crt_tail.h"
-#include <kickos/arch/console_retry.h>
 #include <kickos/console_tx.h>
 
 #include <kickos/arch/amp_shared.h>
@@ -28,10 +28,16 @@
 #else
 #include "gicv2.h"
 #endif
-#include "console_claim.h"
 #include "smp_bringup.h"
 
 #include <stdint.h>
+
+// An own-image node given no console touches no UART on any path.
+#if KICKOS_AMP_OWN_IMAGE && !KICKOS_CONSOLE_CHIP
+#define VIRT_ARM64_CONSOLE 0
+#else
+#define VIRT_ARM64_CONSOLE 1
+#endif
 
 // The EL refusal path is linked into the identity-mapped boot span (virt_arm64.ld) and runs
 // with SCTLR_EL1.M clear: it names the PL011 by its physical base rather than through dev_va
@@ -68,9 +74,19 @@ namespace
 {
     using kickos::arm64::r32p;
 
-    using kickos::virt_arm64::mmap::UART0_BASE;
-    constexpr uintptr_t UART_DR = UART0_BASE + 0x00;
-    constexpr uintptr_t UART_FR = UART0_BASE + 0x18;
+#if defined(KICKOS_AMP_CONSOLE_UART)
+#if KICKOS_AMP_CONSOLE_UART == 0
+    constexpr uintptr_t UART_BASE = kickos::virt_arm64::mmap::UART0_BASE;
+#elif KICKOS_AMP_CONSOLE_UART == 1
+    constexpr uintptr_t UART_BASE = kickos::virt_arm64::mmap::UART1_BASE;
+#else
+#error "KICKOS_AMP_CONSOLES names a UART qemu-arm64 does not have: it has /dev/uart0 and /dev/uart1"
+#endif
+#else
+    constexpr uintptr_t UART_BASE = kickos::virt_arm64::mmap::UART0_BASE;
+#endif
+    constexpr uintptr_t UART_DR = UART_BASE + 0x00;
+    constexpr uintptr_t UART_FR = UART_BASE + 0x18;
     constexpr uint32_t UART_FR_TXFF = 1u << 5;
     constexpr uint32_t UART_FR_BUSY = 1u << 3;
 
@@ -78,7 +94,7 @@ namespace
     // where a wedged UART must cost a dropped tail rather than a hang.
     constexpr uint32_t UART_POLL_BOUND = 100000;
 
-#if !KICKOS_AMP_OWN_IMAGE
+#if VIRT_ARM64_CONSOLE
     int pl011_tx_slot_free(void) { return (*r32p(UART_FR) & UART_FR_TXFF) == 0; }
     void pl011_tx_push(uint8_t b) { *r32p(UART_DR) = static_cast<uint32_t>(b); }
     void pl011_tx_irq_enable(void) {}
@@ -87,81 +103,11 @@ namespace
     console_tx_backend const pl011_console_backend = {
         pl011_tx_slot_free, pl011_tx_push, pl011_tx_irq_enable, pl011_tx_irq_disable,
         &kickos_console_tx_storage};
-#else
-    // Private rings cannot arbitrate one UART, so an own-image node writes polled.
-    //
-    // A granule of its own: a peer's store to a neighbouring shared word would clear this
-    // node's exclusive monitor.
-    KICKOS_AMP_SHARED("chip") alignas(64) uint64_t g_console_claim = 0;
-    KICKOS_AMP_SHARED("chip") alignas(64) kickos::Atomic<uint32_t, kickos::Order::RELAXED>
-        g_console_waiting[KICKOS_AMP_NODES] = {};
-    constexpr uint32_t CONSOLE_HOLD_MS = 50u; // 512 bytes at 115200 8N1 take 44.4 ms
-    kickos::virt_arm64::console::Claim g_claim{KICKOS_AMP_NODE_ID + 1u, KICKOS_AMP_NODES};
-
-    uint32_t console_hold_ticks(void)
-    {
-        uint64_t freq = 0;
-        __asm volatile("mrs %0, cntfrq_el0" : "=r"(freq));
-        // The bad-CNTFRQ reporter runs before peers are released and still needs a finite
-        // hold when firmware left the frequency unset.
-        if (freq == 0)
-        {
-            return 1000000u;
-        }
-        return static_cast<uint32_t>(freq / (1000u / CONSOLE_HOLD_MS));
-    }
-
-    // A kernel line waits out a peer's grant with interrupts open between attempts: the
-    // transmission masks, and a peer may hold the UART for a whole hold. A user writer makes one
-    // attempt and parks in the kernel instead.
-    bool console_claim_open(bool spin)
-    {
-        uint32_t const budget = console_hold_ticks();
-        uint32_t const start = kickos::virt_arm64::console::ticks();
-        for (uint32_t i = 0; i < KICKOS_POLL_SPIN_MAX; i++)
-        {
-            arch_irq_state_t const irq = arch_irq_save();
-            bool const held = g_claim.open(budget);
-            arch_irq_restore(irq);
-            if (held)
-            {
-                return true;
-            }
-            if (not spin
-                or static_cast<uint32_t>(kickos::virt_arm64::console::ticks() - start) >= budget)
-            {
-                return false;
-            }
-        }
-        return false;
-    }
-
-    // The writer masks each byte, not the line: the kernel keeps this node's other contexts out
-    // of a line until it ends.
-    template<class Write>
-    int console_write_claimed(size_t n, bool spin, Write write)
-    {
-        if (n == 0 or not console_claim_open(spin))
-        {
-            return 0;
-        }
-        return static_cast<int>(write(console_hold_ticks()));
-    }
-
-    uint32_t ticks_to_us(uint32_t ticks)
-    {
-        uint64_t freq = 0;
-        __asm volatile("mrs %0, cntfrq_el0" : "=r"(freq));
-        if (freq == 0)
-        {
-            return ticks;
-        }
-        return static_cast<uint32_t>((uint64_t(ticks) * 1000000u + freq - 1u) / freq);
-    }
 #endif
 
     KICKOS_BOOT_TEXT void boot_console_write(char const* buf, size_t n)
     {
+#if VIRT_ARM64_CONSOLE
         volatile uint32_t* fr = reinterpret_cast<volatile uint32_t*>(UART_FR);
         volatile uint32_t* dr = reinterpret_cast<volatile uint32_t*>(UART_DR);
         for (size_t i = 0; i < n; i++)
@@ -173,6 +119,10 @@ namespace
             }
             *dr = static_cast<uint32_t>(static_cast<unsigned char>(buf[i]));
         }
+#else
+        (void)buf;
+        (void)n;
+#endif
     }
 
     // File scope: as locals the compiler may stage them on the stack through memcpy, and this
@@ -362,83 +312,6 @@ namespace
 #endif
 }
 
-#if KICKOS_AMP_OWN_IMAGE
-namespace kickos::virt_arm64::console
-{
-    // The physical counter is common to the partition; CNTVCT may carry a per-core offset and
-    // would make one node's deadline meaningless to another.
-    uint32_t ticks(void)
-    {
-        uint64_t count = 0;
-        __asm volatile("isb; mrs %0, cntpct_el0" : "=r"(count));
-        return static_cast<uint32_t>(count);
-    }
-
-    uint64_t load(void)
-    {
-        uint64_t value = 0;
-        __asm volatile("ldar %0, [%1]" : "=r"(value) : "r"(&g_console_claim) : "memory");
-        return value;
-    }
-
-    bool compare_exchange(uint64_t& expected, uint64_t desired)
-    {
-        uint64_t observed = 0;
-        uint32_t failed = 0;
-        // Inline, so libgcc's outline-atomic helper stays out of the kernel image's low
-        // user-address window.
-        __asm volatile("ldaxr %0, [%2]\n"
-                       "cmp %0, %3\n"
-                       "b.ne 1f\n"
-                       "stlxr %w1, %4, [%2]\n"
-                       "b 2f\n"
-                       "1: clrex\n"
-                       "mov %w1, #1\n"
-                       "2:"
-                       : "=&r"(observed), "=&r"(failed)
-                       : "r"(&g_console_claim), "r"(expected), "r"(desired)
-                       : "cc", "memory");
-        expected = observed;
-        return failed == 0;
-    }
-
-    bool wait_room(void)
-    {
-        uint32_t spin = 0;
-        while ((*r32p(UART_FR) & UART_FR_TXFF) != 0 and spin < UART_POLL_BOUND)
-        {
-            spin++;
-        }
-        return spin != UART_POLL_BOUND;
-    }
-
-    void store(char c)
-    {
-        *r32p(UART_DR) = static_cast<uint32_t>(static_cast<unsigned char>(c));
-    }
-
-    uint32_t waiting(uint32_t node)
-    {
-        return g_console_waiting[node];
-    }
-
-    void set_waiting(uint32_t node, uint32_t value)
-    {
-        g_console_waiting[node] = value;
-    }
-
-    void fence(void)
-    {
-        arch_ipi_fence();
-    }
-
-    void ring(uint32_t node)
-    {
-        arch_ipi_send(1u << kickos_amp_node_core(node));
-    }
-}
-#endif
-
 static_assert(KICKOS_LAYOUT_LINE_TIMER_EL1_PHYS == kickos::arm64::PPI_EL1_PHYS_TIMER,
               "the timer the GIC dispatch takes is not the line the chip file gives the kernel");
 
@@ -522,48 +395,25 @@ void arch_init(void)
     // PSTATE.I stays SET: interrupts first reach the core through the initial thread's SPSR.
 }
 
-#if KICKOS_AMP_OWN_IMAGE
-int arch_console_write_retry(char const* buf, size_t n, bool* cr_pending)
-{
-    if (cr_pending == nullptr)
-    {
-        return console_write_claimed(
-            n, true, [buf, n](uint32_t budget) { return g_claim.kernel_write(buf, n, budget); });
-    }
-    return console_write_claimed(n, false, [buf, n, cr_pending](uint32_t budget) {
-        return g_claim.user_write(buf, n, cr_pending, budget);
-    });
-}
-
-uint32_t arch_console_claim_wait(void)
-{
-    return ticks_to_us(g_claim.wait(console_hold_ticks()));
-}
-
-uint32_t arch_console_claim_left(void)
-{
-    return ticks_to_us(g_claim.left_ticks(console_hold_ticks()));
-}
-#endif
-
 // The PL011 comes out of QEMU's reset enabled: the polled path needs no bring-up.
 bool arch_console_write_sync(char const* buf, size_t n)
 {
-#if KICKOS_AMP_OWN_IMAGE
-    return g_claim.polled_write(buf, n, console_hold_ticks());
-#else
+#if VIRT_ARM64_CONSOLE
     return kickos::console_poll::write<pl011_tx_slot_free, pl011_tx_push>(buf, n);
+#else
+    (void)buf;
+    (void)n;
+    return false;
 #endif
 }
 
 console_tx_backend const* arch_console_tx_backend(int* irq_line)
 {
-#if KICKOS_AMP_OWN_IMAGE
     *irq_line = -1;
-    return nullptr;
-#else
-    *irq_line = -1;
+#if VIRT_ARM64_CONSOLE
     return &pl011_console_backend;
+#else
+    return nullptr;
 #endif
 }
 
@@ -572,11 +422,13 @@ console_tx_backend const* arch_console_tx_backend(int* irq_line)
 // The wait stays because the real FIFO and shifter can outrun a shutdown.
 void arch_console_flush_sync(void)
 {
+#if VIRT_ARM64_CONSOLE
     uint32_t spin = 0;
     while ((*r32p(UART_FR) & UART_FR_BUSY) != 0 and spin < UART_POLL_BOUND)
     {
         spin++;
     }
+#endif
 }
 
 // Runs before .data and .bss, in the boot span: it reaches neither the console nor

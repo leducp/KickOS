@@ -18,6 +18,14 @@
 
 #include "bringup_values.h"
 
+// An own-image node KICKOS_AMP_CONSOLES gives none touches the console UART on no path, its
+// bring-up included.
+#if KICKOS_AMP_OWN_IMAGE && !KICKOS_CONSOLE_CHIP
+#define KICKOS_RP2XXX_CONSOLE 0
+#else
+#define KICKOS_RP2XXX_CONSOLE 1
+#endif
+
 // A bootrom routine and its four arguments; fn carries the Thumb bit the ROM table gives it.
 struct kickos_rp_rom_args
 {
@@ -48,13 +56,7 @@ namespace kickos::rp2xxx
     // IO_BANK0 funcsel and the pad side of `func`, packed as bringup_values.h states.
     void pin_function(uint32_t pin, uint32_t func);
 
-#if KICKOS_AMP_OWN_IMAGE
-    // Defined by the chip (chip_rp2350.cc): serialises the polled console writer against the
-    // peer kernel sharing the UART.
-    bool console_claim(void);
-    bool console_claim_open(bool spin);
-    void console_drop(bool ended_line);
-#else
+#if KICKOS_RP2XXX_CONSOLE
     // The console UART's TX edge, behind the chip's own interrupt line.
     extern console_tx_backend const console_backend;
 #endif

@@ -31,8 +31,10 @@
 #
 # This clause looks for a call EDGE, and an edge only exists where the compiler kept the call:
 # on the region-model boards the whole cap_console_deliver family folds away. The top-level
-# CMakeLists registers the clause on every TRANSLATING preset (KICKOS_HAVE_ASPACE), so a
-# translating board added without a preset and floor record here fails until it is declared.
+# CMakeLists registers the clause on every TRANSLATING preset (KICKOS_HAVE_ASPACE) whose kernel
+# writes a chip console, so a translating board added without a preset and floor record here fails
+# until it is declared. A preset whose kernel has no chip console, such as an own-image node
+# KICKOS_AMP_CONSOLES gives none, keeps its records and runs no clause: it has no route to walk.
 
 preset  armv8a   imx8mp-evk
 preset  armv8a   qemu-arm64

@@ -8,16 +8,11 @@
    arch    armv7m
    cpu     rp2350
 # accessctrl: 0xa0 = 0x9c
-
-  ==============================================
-   KickOS 0.5.1  -  microkernel RTOS
-  ==============================================
-   board   pizero2350
-   arch    armv7m
-   cpu     rp2350
+ampping: node 1 serves port 3
 ampping: 2 of 2 node app(s) alive on the port the partition names, own row 1
 ampping: gate: node 0 read 0x11 from its uart0
 ampping: node 0 calls node 1 port 3
+  serve 1 -> 2
   ping 1 -> pong 2 from node 1 (4 byte(s))
   ping 2 -> pong 3 from node 1 (4 byte(s))
   ping 3 -> pong 4 from node 1 (4 byte(s))

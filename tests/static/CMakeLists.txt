@@ -29,7 +29,7 @@ endfunction()
 cmake_language(DEFER CALL _kickos_static_workdirs)
 
 # Every preset of an arch with a trap-stack header measures its trap descent, and a translating
-# one walks the fault-record console route as a clause of it.
+# one whose kernel writes a chip console walks the fault-record console route as a clause of it.
 file(GLOB _trap_stack_header
      "${PROJECT_SOURCE_DIR}/arch/*/${KICKOS_ARCH}/include/kickos/arch/*_trap_stack.h")
 if(_trap_stack_header)
@@ -37,7 +37,7 @@ if(_trap_stack_header)
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/check_trap_redzone.sh" "${PROJECT_SOURCE_DIR}"
                     "${CMAKE_COMMAND}" "${_fs_preset_key}" "${KICKOS_ARCH}")
   kickos_host_gate(trap_redzone TIMEOUT 1800)
-  if(KICKOS_HAVE_ASPACE)
+  if(KICKOS_HAVE_ASPACE AND _con_chip)
     set_property(TEST trap_redzone APPEND PROPERTY ENVIRONMENT "KICKOS_CONSOLE_REACH=1")
   endif()
 endif()

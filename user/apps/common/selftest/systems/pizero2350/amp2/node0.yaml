@@ -28,6 +28,14 @@ tasks:
     budgets: { ram_blocks: 48, endpoints: 8, notifications: 7, irq_bindings: 7 }
     caps: { width: 16 }
 
+  # Node 1's standard output, each message written whole on this node's console.
+  - name: relay
+    program: amprelay
+    priority: 5
+    ceiling: 5
+    serves: /amp/6
+    budgets: { threads: 1 }
+
   # Started by the arms, never by the init: each runs the role its argv names.
   - name: peer0
     program: stpeer

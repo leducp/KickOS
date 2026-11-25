@@ -1077,9 +1077,8 @@ tests, tools and apps, with no ratio (maintainer, 2026-10-09); no gate is writte
               the boot device reached after a panic, and both -amp2 nodes booting.
         - [ ] On -flat: the PMSAv8 regions rounded by the chip file's granule.
         - [ ] On -amp2: the doorbell on the shared protocol, both nodes booting, payload
-              and console traffic both ways, the claim's release waking a waiting writer; the peer
-              launch, ACCESSCTRL and clock handoff as before; the AMP window cleared by the
-              primary alone.
+              and console traffic both ways; the peer launch, ACCESSCTRL and clock handoff as
+              before; the AMP window cleared by the primary alone.
         - [ ] On -amp2: the node that does not own the chip's reset is refused one.
       - **esp32-wroom:**
         - [ ] Timers, sleeps and trace timestamps keep time on the TIMG clock. `wallclock` passed in

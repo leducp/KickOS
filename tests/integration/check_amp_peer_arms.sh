@@ -74,17 +74,7 @@ skipped() { # <arm>
 
 # The verdict over $OUT.
 judge() {
-    # The peer is witnessed through node 0's own reading and not through the peer's banner:
-    # both nodes write one console with no lock across the two kernels, interleaved at byte
-    # granularity by ruling, so a single line from the quieter node can be cut in half by the
-    # other's traffic.
-    #
-    # AND NODE 0'S OWN LINE IS SAFE HERE BECAUSE THE PEERS STOP WRITING EARLY, not because it is
-    # node 0's. A peer of this artefact writes its kernel banner and one line naming the port it
-    # echoes on, then nothing for the rest of the run, and every arm read below reports far past
-    # that. Give a peer a print in its serving loop, or move one of these arms to the front of
-    # the selftest order, and its line is back among the banners where it is cut in half on a
-    # draw.
+    # The peer is witnessed through node 0's own reading and not through the peer's banner.
     # Every peer named, not one of them: a peer that never answered is the failure.
     printf '%s\n' "$OUT" | grep -E 'amp far call: [0-9]+ of [0-9]+ peer node\(s\) answered' \
         | sed 's/.*amp far call: \([0-9]*\) of \([0-9]*\) peer.*/\1 \2/' \
@@ -92,7 +82,7 @@ judge() {
         || fail "not every peer answered node 0's far call: the arms below would skip or mean
   nothing. This is node 0's own line, not one the peer printed."
 
-    # Anywhere on a line, since a peer's byte may land ahead of node 0's.
+    # Anywhere on a line.
     _failing="$(printf '%s\n' "$OUT" | grep -E 'not ok [0-9]+' | grep -v ' # TODO ')"
     if [ -n "$_failing" ]; then
         printf '%s\n' "$_failing"
@@ -232,7 +222,12 @@ echo "== building the selftest partition artefact =="
     || fail "the amp_partition_selftest target did not build"
 [ -f "$ART" ] || fail "no artefact at $ART"
 
+scratch_dir
+serial1_capture
 run_image "$ART"
 judge
+if printf '%s\n' "$(serial1_out)" | grep -qE "$KOS_PANIC_RE"; then
+    fail "a peer on serial 1, its own UART, panicked"
+fi
 
 echo "PASS: no arm reported not ok, and $n_arms arm(s) that needed a running peer ran against one and none of them skipped"

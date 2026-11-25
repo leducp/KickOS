@@ -1356,6 +1356,7 @@ MANIFEST_ARMS = [
     (None, [("  kernel_cores: 1\n  isolated_cores: 0x0\n", "  kernel_cores: 2\n  isolated_cores: 0x2\n"), (MANIFEST_AMP, "")],
      False),
     ("manifest.amp", [("    node: 0\n", "    node: 2\n")], False),
+    ("manifest.amp", [("    node: 0\n", "    node: 0\n    consoles: [/dev/uart0]\n")], False),
     ("manifest.amp", [("    node: 0\n", "    node: 0\n    reset_owner: 2\n")], False),
     ("manifest.amp", [("[[0, 2], [1, 3]]", "[[0, 2], [2, 3]]")], False),
     ("manifest.amp", [("    share_cache: uncached\n", "    share_cache: uncached\n    slices: [[0x20000000, 0x40000]]\n")],
@@ -2109,6 +2110,8 @@ tasks:
 IMX_PAIR = (PING % ("imx8mp-evk", "cluster: a53\naccepts: [no_protection]\n", "cached", 8192),
             PONG % ("imx8mp-evk", "cluster: m7\naccepts: [no_protection]\n", "cached", 8192))
 IMX_ACCEPT = ("accepts: [no_protection]", "accepts: [no_protection, cached_incoherent]")
+FAR_STDOUT = {0: [("    uses: [/amp/3]\n", "    uses: [/amp/3]\n    serves: /amp/2\n")],
+              1: [("stdout: kernel", "stdout: /amp/2")]}
 SPARE = ("    maps: { /shm/book: rw }\n", "    maps: { /shm/book: rw }\n  - name: spare\n    program: spare_main\n"
          "    stack: 8192\n    priority: 8\n    ceiling: 8\n    serves:  /amp/3\n")
 C6_HP_SMALL = [("regions: { value: 16,", "regions: { value: 2,")]
@@ -2130,6 +2133,18 @@ ARM64_AMP3 = mutate(ARM64_AMP, [("    nodes: 2\n", "    nodes: 3\n"),
                                 ("[[0x40000000, 0x4000000], [0x44000000, 0x4000000]]",
                                  "[[0x40000000, 0x4000000], [0x44000000, 0x4000000], [0x48000000, 0x4000000]]"),
                                 ("[0x48000000, 0x400000]", "[0x4C000000, 0x400000]")])[0]
+# Node 0's console driver holding the node's console UART and serving its stdout.
+OWN_CONSOLE = [("stdout: kernel", "stdout: /svc/console"),
+               ("tasks:\n", "tasks:\n  - name: con\n    driver: xmcuartirq\n    devices: [/dev/uart0]\n"
+                "    lines: { irq: /dev/uart0/global }\n    serves: /svc/console\n    priority: 12\n")]
+ARM64_CONSOLES = mutate(ARM64_AMP, [("    nodes: 2\n", "    nodes: 2\n    consoles: [/dev/uart0, /dev/uart1]\n")])[0]
+ARM64_NONE1 = ARM64_CONSOLES.replace("[/dev/uart0, /dev/uart1]", "[/dev/uart0, none]")
+ARM64_NONE0 = ARM64_CONSOLES.replace("[/dev/uart0, /dev/uart1]", "[none, /dev/uart1]")
+# Node 0's standard output through node 1's `serve`, and node 1's through node 0's port 2.
+STDOUT_LOOP = {0: [("stdout: kernel", "stdout: /amp/3")] + FAR_STDOUT[0], 1: FAR_STDOUT[1]}
+# Node 2's standard output through node 1's `serve`, node 1's through node 0's port 2.
+STDOUT_CHAIN = {0: FAR_STDOUT[0], 1: FAR_STDOUT[1], 2: [("stdout: kernel", "stdout: /amp/3")]}
+ARM64_CHAIN = mutate(ARM64_AMP3, [("    nodes: 3\n", "    nodes: 3\n    consoles: [/dev/uart0, none, none]\n")])[0]
 ARM64_SHARED = mutate(ARM64_AMP, [("    share_cache: uncached\n", "    share_cache: uncached\n    image: shared\n")])[0]
 ARM64_AMP_OWNER1 = mutate(ARM64_AMP, [("    nodes: 2\n", "    nodes: 2\n    reset_owner: 1\n")])[0]
 BOOTLOADER = ("    maps: { /shm/book: rw }\n", "    maps: { /shm/book: rw }\n    authority: [system, bootloader]\n")
@@ -2402,6 +2417,21 @@ SCENARIOS = [
     ("ownership.device", diagnostic_app("pvprobe", U0C1, [("    devices: ", "ownership.device")])),
     ("ownership.device", diagnostic_app("inprstorm", U0C1, [("    devices: ", "ownership.device")])),
     (None, partitioned("arm64", ARM64_PAIR, {}, [], ARM64_AMP)),
+    # A node's console UART is refused to every other node's tasks; on its own node the single-board
+    # rule holds, so only the task serving `stdout` takes it.
+    ("ownership.console", partitioned("arm64", ARM64_PAIR,
+                                      {0: [("    uses: [/amp/3]\n", "    uses: [/amp/3]\n    devices: [/dev/uart1]\n")]},
+                                      [(0, "    devices: ", "ownership.console")], ARM64_CONSOLES)),
+    ("ownership.console", partitioned("arm64", ARM64_PAIR,
+                                      {1: [("    serves: /amp/3\n", "    serves: /amp/3\n    devices: [/dev/uart0]\n")]},
+                                      [(1, "    devices: ", "ownership.console")], ARM64_CONSOLES)),
+    (None, partitioned("arm64", ARM64_PAIR,
+                       {0: [("    uses: [/amp/3]\n", "    uses: [/amp/3]\n    serves: /amp/2\n    devices: [/dev/uart1]\n")],
+                        1: FAR_STDOUT[1]}, [], ARM64_NONE1)),
+    (None, partitioned("arm64", ARM64_PAIR, {0: OWN_CONSOLE}, [], ARM64_CONSOLES)),
+    ("ownership.console", partitioned("arm64", ARM64_PAIR,
+                                      {0: [("    uses: [/amp/3]\n", "    uses: [/amp/3]\n    devices: [/dev/uart0]\n")]},
+                                      [(0, "    devices: ", "ownership.console")], ARM64_CONSOLES)),
     ("partition.device", partitioned("arm64", ARM64_PAIR,
                                      {0: [("    uses: [/amp/3]\n", "    uses: [/amp/3]\n    devices: [/dev/rtc]\n")],
                                       1: [("    serves: /amp/3\n", "    serves: /amp/3\n    devices: [/dev/rtc]\n")]},
@@ -2416,6 +2446,47 @@ SCENARIOS = [
                                    [(1, "    serves: ", "partition.port")], ARM64_AMP)),
     ("partition.port", partitioned("arm64", ARM64_PAIR, {1: [SPARE]}, [(1, "    serves:  /amp/3", "partition.port")],
                                    ARM64_AMP)),
+    (None, partitioned("arm64", ARM64_PAIR, FAR_STDOUT, [], ARM64_AMP)),
+    ("partition.port", partitioned("arm64", ARM64_PAIR, {1: [("stdout: kernel", "stdout: /amp/9")]},
+                                   [(1, "stdout: ", "partition.port")], ARM64_AMP)),
+    ("partition.port", partitioned("arm64", ARM64_PAIR, {1: [("stdout: kernel", "stdout: /amp/1")]},
+                                   [(1, "stdout: ", "partition.port")], ARM64_AMP)),
+    ("partition.port", partitioned("arm64", ARM64_PAIR, {1: [("stdout: kernel", "stdout: /amp/3")]},
+                                   [(1, "stdout: ", "partition.port")], ARM64_AMP)),
+    ("partition.port", partitioned("arm64", ARM64_PAIR, {1: [("stdout: kernel", "stdout: /amp/3")]},
+                                   [(0, "    uses: ", "partition.port"), (1, "stdout: ", "partition.port"),
+                                    (1, "    serves: ", "partition.port")],
+                                   ARM64_AMP.replace("[[0, 2], [1, 3], [1, 4]]", "[[0, 3], [1, 3]]"))),
+    ("scheduling.console-driver",
+     partitioned("arm64", ARM64_PAIR,
+                 {0: FAR_STDOUT[0], 1: FAR_STDOUT[1] + [("    maps: { /shm/book: rw }\n",
+                                                          "    maps: { /shm/book: rw }\n\n  - name: sink\n"
+                                                          "    driver: plain\n    serves: /svc/sink\n"
+                                                          "    priority: 11\n    start: on_request\n")]},
+                 [(1, "    driver: plain", "scheduling.console-driver")],
+                 mutate(ARM64_AMP, [PLAIN_DRIVER, CONSOLE_DRIVER])[0])),
+    ("partition.unserved", partitioned("arm64", ARM64_PAIR, {1: FAR_STDOUT[1]},
+                                       [(1, "stdout: ", "partition.unserved")], ARM64_AMP)),
+    # Every node's standard output reaches a console: its UART, or a console driver, through a chain
+    # of relays that ends there and does not loop.
+    (None, partitioned("arm64", ARM64_PAIR, FAR_STDOUT, [], ARM64_NONE1)),
+    (None, partitioned("arm64", ARM64_PAIR + ARM64_PAIR[:1], STDOUT_CHAIN, [], ARM64_CHAIN)),
+    (None, partitioned("arm64", ARM64_PAIR, {0: OWN_CONSOLE + FAR_STDOUT[0], 1: FAR_STDOUT[1]}, [],
+                       ARM64_CONSOLES.replace("[/dev/uart0, /dev/uart1]", "[none, none]"))),
+    ("partition.stdout", partitioned("arm64", ARM64_PAIR, {}, [(1, "stdout: ", "partition.stdout")], ARM64_NONE1)),
+    ("partition.stdout", partitioned("arm64", ARM64_PAIR, FAR_STDOUT,
+                                     [(0, "stdout: ", "partition.stdout"), (1, "stdout: ", "partition.stdout")],
+                                     ARM64_NONE0)),
+    ("partition.stdout", partitioned("arm64", ARM64_PAIR + ARM64_PAIR[:1], STDOUT_CHAIN,
+                                     [(0, "stdout: ", "partition.stdout"), (1, "stdout: ", "partition.stdout"),
+                                      (2, "stdout: ", "partition.stdout")],
+                                     ARM64_CHAIN.replace("[/dev/uart0, none, none]", "[none, none, /dev/uart1]"))),
+    ("partition.stdout", partitioned("arm64", ARM64_PAIR, STDOUT_LOOP,
+                                     [(0, "stdout: ", "partition.stdout"), (1, "stdout: ", "partition.stdout")],
+                                     ARM64_CONSOLES)),
+    ("partition.port", composed("qemu-arm64.yaml", read(os.path.join(SYSTEMS, "qemu-arm64.yaml")),
+                                [("stdout: kernel", "stdout: /amp/3")], [("stdout: ", "partition.port")],
+                                manifest=MANIFESTS["qemu-arm64.yaml"])),
     # `bootloader` is the reset owner's alone: node 0 by default, node 1 where the manifest says.
     (None, partitioned("arm64", ARM64_PAIR, {0: [BOOTLOADER]}, [], ARM64_AMP)),
     ("partition.bootloader", partitioned("arm64", ARM64_PAIR, {1: [BOOTLOADER]},

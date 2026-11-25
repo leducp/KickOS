@@ -50,6 +50,9 @@ namespace kickos
         inline constexpr char const kBootAmpPort[] =
             "kmain: a port CONFIG_KICKOS_AMP_PORTS names could not be seated \n"
             "       into root; this node could not serve or reach it";
+        inline constexpr char const kBootAmpStdout[] =
+            "kmain: the composition's stdout names a port no other node \n"
+            "       of CONFIG_KICKOS_AMP_PORTS serves";
         inline constexpr char const kBootAmpSlot[] =
             "kmain: a partition port landed off its derived capability slot \n"
             "       (a dynamic install into root ran before the partition's)";

@@ -124,12 +124,19 @@ namespace kickos
             return g_stdout_target.get();
         }
 
-        // The console endpoint a spawn into `t` seats as its standard output, or KCAP_STDOUT_NONE.
+        // The far endpoint every spawn seats as its standard output where no console is published.
+        constinit InstanceLocal<int> g_stdout_far = {KCAP_STDOUT_NONE};
+
+        // The endpoint a spawn into `t` seats as its standard output, or KCAP_STDOUT_NONE.
         int stdout_seat_for(Task const* t)
         {
-            if (stdout_target() == KCAP_STDOUT_NONE or task_serves_console(t))
+            if (task_serves_console(t))
             {
                 return KCAP_STDOUT_NONE;
+            }
+            if (stdout_target() == KCAP_STDOUT_NONE)
+            {
+                return g_stdout_far.get();
             }
             return stdout_target();
         }
@@ -1338,6 +1345,7 @@ namespace kickos
             ep->console = EP_CONSOLE_NONE;
         }
         stdout_target() = KCAP_STDOUT_NONE;
+        g_stdout_far.get() = KCAP_STDOUT_NONE;
     }
 
     CapEntry** cap_directory(int slot)
@@ -1789,8 +1797,41 @@ namespace kickos
         cap_state().teardown_depth--;
     }
 
+    namespace
+    {
+        // Slot 0 of `t`, which has one, on `target`, the CAP_SIGNAL reference already taken.
+        // Written DIRECTLY, since cap_install_at rejects index 0.
+        void stdout_seat_taken(Thread* t, int target, Held held)
+        {
+            CapEntry& e = *cap_slot(t->caps, KOS_CAP_STDOUT);
+            bool const had_prior = (e.type != static_cast<uint8_t>(CapType::CAP_EMPTY));
+            CapEntry const prior = e;
+            e.obj = target;
+            e.obj_gen = cap_obj_generation(CapType::CAP_ENDPOINT, target);
+            e.type = static_cast<uint8_t>(CapType::CAP_ENDPOINT);
+            e.rights = CAP_SIGNAL;
+            cap_badge_seat(&e, KOS_RIGHT_WRITE); // never inherited
+            cap_reply_seq_seat(&e, 0u);
+            if (had_prior)
+            {
+                obj_ref_drop(prior, /*teardown=*/false, held);
+            }
+        }
+
+        // The far endpoint a spawn into `t` seats as its standard output, or KCAP_STDOUT_NONE.
+        int stdout_far_seat_for(Task const* t)
+        {
+            int const seat = stdout_seat_for(t);
+            if (seat == KCAP_STDOUT_NONE or seat != g_stdout_far.get())
+            {
+                return KCAP_STDOUT_NONE;
+            }
+            return seat;
+        }
+    }
+
     // CAP_SIGNAL bumps endpoint_refs but NOT recv_holders, so a client does not hold the
-    // dead-endpoint gate open. Written DIRECTLY, since cap_install_at rejects index 0.
+    // dead-endpoint gate open.
     bool cap_seat_stdout(Thread* t, int target, Held held)
     {
         // Slot 0 is written with no bound test below. Ordered before the ref so a runless `t`
@@ -1803,19 +1844,22 @@ namespace kickos
         {
             return false; // at the ceiling: seat nothing, leave any prior seat alone
         }
-        CapEntry& e = *cap_slot(t->caps, KOS_CAP_STDOUT);
-        bool const had_prior = (e.type != static_cast<uint8_t>(CapType::CAP_EMPTY));
-        CapEntry const prior = e;
-        e.obj = target;
-        e.obj_gen = cap_obj_generation(CapType::CAP_ENDPOINT, target);
-        e.type = static_cast<uint8_t>(CapType::CAP_ENDPOINT);
-        e.rights = CAP_SIGNAL;
-        cap_badge_seat(&e, KOS_RIGHT_WRITE); // never inherited
-        cap_reply_seq_seat(&e, 0u);
-        if (had_prior)
+        stdout_seat_taken(t, target, held);
+        return true;
+    }
+
+    bool cap_stdout_far_seat(Thread* root, int obj, Held held)
+    {
+        if (not obj_ref_inc(CapType::CAP_ENDPOINT, obj, 0))
         {
-            obj_ref_drop(prior, /*teardown=*/false, held);
+            return false;
         }
+        if (not cap_seat_stdout(root, obj, held))
+        {
+            obj_ref_undo(CapType::CAP_ENDPOINT, obj, 0);
+            return false;
+        }
+        g_stdout_far.get() = obj;
         return true;
     }
 
@@ -1829,9 +1873,33 @@ namespace kickos
         {
             return;
         }
+        if (seat == stdout_far_seat_for(child->task))
+        {
+            stdout_seat_taken(child, seat, held);
+            return;
+        }
         // A ceiling refusal leaves slot 0 empty, which is the state the child already handles
         // pre-publish, so the spawn is NOT failed over it.
         (void)cap_seat_stdout(child, seat, held);
+    }
+
+    bool cap_stdout_reserve(Task const* t)
+    {
+        int const seat = stdout_far_seat_for(t);
+        if (seat == KCAP_STDOUT_NONE)
+        {
+            return true;
+        }
+        return obj_ref_inc(CapType::CAP_ENDPOINT, seat, CAP_SIGNAL);
+    }
+
+    void cap_stdout_unreserve(Task const* t)
+    {
+        int const seat = stdout_far_seat_for(t);
+        if (seat != KCAP_STDOUT_NONE)
+        {
+            obj_ref_undo(CapType::CAP_ENDPOINT, seat, CAP_SIGNAL);
+        }
     }
 
     namespace

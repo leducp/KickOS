@@ -52,15 +52,6 @@ kickos_add_unit_test(NAME console_publish_handoff
   INCLUDES "${PROJECT_SOURCE_DIR}/tests/unit/consoleseam" "${PROJECT_SOURCE_DIR}/tests/unit/common"
   KERNEL)
 
-# kernel/init/console.cc at an own-image AMP node's posture, where a user writer carries a
-# half-sent CR between offers.
-kickos_add_unit_test(NAME console_cr_pending
-  SOURCES console_cr_pending.cc ${_console_alone}
-          "${PROJECT_SOURCE_DIR}/kernel/init/console.cc"
-          "${PROJECT_SOURCE_DIR}/lib/rtt.cc"
-  INCLUDES "${PROJECT_SOURCE_DIR}/tests/unit/common"
-  POSTURE KICKOS_AMP_OWN_IMAGE=1 KICKOS_AMP_CONSOLE_CLAIM=1)
-
 # kernel/init/console.cc's polled line writer at a CRLF console's posture.
 # terminal_paths.cc: which of kernel/init/console.cc's ends takes the terminal outcome.
 kickos_add_unit_test(NAME console_line_sync

@@ -88,11 +88,13 @@ namespace
     {
         switch (error)
         {
-            // The kernel's answers to a non-blocking task where it would wait.
             case -KOS_EAGAIN:
-            case -KOS_ETIMEDOUT:
             {
                 return EAGAIN;
+            }
+            case -KOS_ETIMEDOUT:
+            {
+                return ETIMEDOUT;
             }
             case -KOS_EFAULT:
             {

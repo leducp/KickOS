@@ -20,12 +20,11 @@ namespace kickos
     // The completed input bytes, n or fewer. A kernel caller may ignore it. The SYSCALL may
     // not, or a dropped middle chunk leaves a hole in a line whose later chunks were taken.
     int kconsole_write(char const* buf, size_t n);
-    // A syscall writer keeps a half-sent AMP CRLF across short writes in its own TCB.
     // -KOS_EBUSY where the console is published and the caller's own stdout send would be
-    // taken now: nothing was written. Where `wait` holds it waits for room in a full ring, for a
-    // peer node's claim on a shared UART, and in the dark window (console_dark) for the reclaim
-    // or a publish, and writes then; where it does not, it answers -KOS_ETIMEDOUT wherever it
-    // would wait. -KOS_ECANCELED where the writer is cancelled.
+    // taken now: nothing was written. Where `wait` holds it waits for room in a full ring and in
+    // the dark window (console_dark) for the reclaim or a publish, and writes then; where it does
+    // not, it answers -KOS_EAGAIN wherever it would wait. -KOS_ECANCELED where the writer is
+    // cancelled.
     int kconsole_write_user(char const* buf, size_t n, bool wait);
 
     void kputs(char const* s);
@@ -50,7 +49,7 @@ namespace kickos
     void kprintf_record(char const* fmt, ...) __attribute__((format(printf, 1, 2)));
     uint32_t kprintf_fault(char const* fmt, ...) __attribute__((format(printf, 1, 2)));
     // Waits, interrupts open, until a refused record line of `need` ring bytes may be offered
-    // again: for ring room, a peer node's claim, or another context to end its line. False
+    // again: for ring room or another context to end its line. False
     // where the line is to be dropped: the caller was cancelled, its own task holds the
     // console's registers or the line, or a stall window passed with nothing leaving the ring.
     // Thread context, no lock held.

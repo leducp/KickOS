@@ -15,6 +15,10 @@
 
 #if !KICKOS_C6_LP_NODE
 
+#if KICKOS_AMP_OWN_IMAGE && (!defined(KICKOS_AMP_CONSOLE_UART) || KICKOS_AMP_CONSOLE_UART != 0)
+#error "KICKOS_AMP_CONSOLES must give the ESP32-C6 HP node /dev/uart0, the console this backend drives"
+#endif
+
 #include <kickos/arch/arch.h>
 #include <arch_reboot_tail.h>
 #include <kickos/diag.h>

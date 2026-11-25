@@ -14,6 +14,7 @@ from .composition import (
 from .descriptions import cluster_views
 from .manifest import read_manifest
 from .subset import File, Report, line_of
+from .supply import FarStdout
 
 # The port the window layer answers itself, which needs no serving task.
 AMP_PORT_ECHO = 0
@@ -82,6 +83,7 @@ def admit_partition(paths, manifest_path, node):
     check_devices(files, admitted)
     check_reset_owner(files, admitted, manifest)
     check_unserved(files, admitted, manifest)
+    check_stdout(files, admitted, manifest)
     place_regions(files, admitted, manifest)
     check_cached(files, admitted)
     partition.rows = partition_gate(files, admitted, manifest)
@@ -144,6 +146,13 @@ def check_unserved(files, admitted, manifest):
     for made in admitted:
         served.append(set(task.serves[0] for task in made.tasks if task.serves is not None))
     for k, made in enumerate(admitted):
+        if isinstance(made.stdout, FarStdout) and len(servers.get(made.stdout.port, [])) == 1:
+            server = servers[made.stdout.port][0]
+            if made.stdout.path not in served[server]:
+                files[k].refuse(made.stdout.node, "partition.unserved",
+                                "`stdout: %s` names a port node %d serves in the partition list, and no task of "
+                                "node %d's composition, %s, serves it"
+                                % (made.stdout.path, server, server, files[server].filename))
         for task in made.tasks:
             for path, node in task.uses:
                 port = amp_port(path)
@@ -155,6 +164,51 @@ def check_unserved(files, admitted, manifest):
                                     "%s uses `%s`, which node %d serves in the partition list, and no task of "
                                     "node %d's composition, %s, serves it"
                                     % (task.label(), path, server, server, files[server].filename))
+
+
+def stdout_node(made):
+    """The node of a composition's `stdout`."""
+    for key, value in made.root.value:
+        if key.value == "stdout":
+            return value
+    return made.root
+
+
+def check_stdout(files, admitted, manifest):
+    """partition.stdout: a node's standard output that reaches no console. Each `stdout: /amp/N` is
+    followed to the node serving N, whose own standard output its relay writes, until a node whose
+    stdout is its kernel console or a console driver; that kernel console is none where the
+    partition's `consoles` says so, and a chain that comes back to a node it passed is a loop."""
+    servers = {}
+    for node, port in manifest.amp_list:
+        servers.setdefault(port, []).append(node)
+    consoles = manifest.amp_consoles
+    for k, made in enumerate(admitted):
+        chain = [k]
+        while isinstance(admitted[chain[-1]].stdout, FarStdout):
+            owners = servers.get(admitted[chain[-1]].stdout.port, [])
+            if len(owners) != 1 or owners[0] in chain:
+                break
+            chain.append(owners[0])
+        end = chain[-1]
+        if isinstance(admitted[end].stdout, FarStdout):
+            owners = servers.get(admitted[end].stdout.port, [])
+            if len(owners) == 1:
+                files[k].refuse(stdout_node(made), "partition.stdout",
+                                "`stdout: %s` goes through node(s) %s and back to node %d, so it reaches no console"
+                                % (made.stdout.path, ", ".join(str(n) for n in chain[1:]), owners[0]))
+            continue
+        if admitted[end].stdout != "kernel" or end >= len(consoles) or consoles[end] != "none":
+            continue
+        if end == k:
+            files[k].refuse(stdout_node(made), "partition.stdout",
+                            "`stdout: kernel` on node %d, whose kernel the partition's `consoles` gives none"
+                            % k)
+            continue
+        files[k].refuse(stdout_node(made), "partition.stdout",
+                        "`stdout: %s` ends at node %d's `stdout: kernel` through node(s) %s, and the partition's "
+                        "`consoles` gives node %d's kernel none" % (made.stdout.path, end,
+                                                                    ", ".join(str(n) for n in chain[1:]), end))
 
 
 def is_partition_region(made, path):

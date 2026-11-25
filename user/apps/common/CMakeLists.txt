@@ -256,6 +256,13 @@ if(KICKOS_AMP_NODE AND KICKOS_AMP_OWN_IMAGE)
   add_subdirectory(ampping)
 endif()
 
+# The user's console contract, on one kernel and through another node's relay.
+if((KICKOS_ARCH STREQUAL "armv8a" AND NOT KICKOS_AMP_NODE)
+   OR (KICKOS_AMP_OWN_IMAGE
+       AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/ampcon/systems/${KICKOS_BOARD}/${KICKOS_CONFIG_VARIANT}"))
+  add_subdirectory(ampcon)
+endif()
+
 # --- Full-C++ opt-in smoke test -----------------------------------------------------------
 # The toolchain's libstdc++ over newlib, so not the sim, whose runtime and terminate handler are
 # the host's; and where the board's heap holds cxxtest's high-water, 6,136 B

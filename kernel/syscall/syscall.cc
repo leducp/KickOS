@@ -87,7 +87,7 @@ namespace kickos
         // noinline keeps the chunk buffer off syscall_dispatch's frame. The write(2) shape:
         // the bytes that went out, or with none, -KOS_EBUSY where the caller's stdout is served
         // again, -KOS_EFAULT where the buffer went away and -KOS_ECANCELED where the writer was
-        // cancelled waiting. With KOS_KCONSOLE_NOWAIT it answers -KOS_ETIMEDOUT where it would wait.
+        // cancelled waiting. With KOS_KCONSOLE_NOWAIT it answers -KOS_EAGAIN where it would wait.
         __attribute__((noinline)) int32_t console_write_user(uintptr_t buf, size_t len, bool wait)
         {
             char chunk[CONSOLE_CHUNK];

@@ -47,11 +47,6 @@
 #define KICKOS_AMP_OWN_IMAGE 0
 #endif
 
-// Whether this own-image node writes a console UART it shares with its peers under a claim.
-#ifndef KICKOS_AMP_CONSOLE_CLAIM
-#define KICKOS_AMP_CONSOLE_CLAIM 0
-#endif
-
 // Several AMP nodes share one image; the core register identifies each node.
 #define KICKOS_AMP_SHARED_IMAGE (KICKOS_AMP_NODE && !KICKOS_AMP_OWN_IMAGE)
 
@@ -867,25 +862,9 @@ int arch_irq_line_core(int line);
 bool arch_irq_line_kernel_owned(int line);
 
 // Console output. The kernel queues its lines in the console ring (console_tx.h).
-#if KICKOS_AMP_CONSOLE_CLAIM
-// An AMP node sharing its console UART under a claim: its line writer, in place of the ring:
-// how many bytes of buf went out or were queued. A UART shared between images is written polled
-// and stops at the first byte the node's claim no longer covers, so the count can be short. A CR
-// may already have gone out for an uncounted newline: cr_pending carries it until the LF lands. A
-// null cr_pending is a kernel line, which on ARM64 renews a claim no peer took. Each wire byte is
-// its own masked span; the caller keeps the node's other contexts out of the line.
-int arch_console_write_retry(char const* buf, size_t n, bool* cr_pending);
-// A user writer the claim refused, called masked from the park: marks this node waiting and
-// offers once more. 0 once this node holds the claim, else the microseconds to park for at most:
-// the release of the grant that refused it rings this node's doorbell.
-uint32_t arch_console_claim_wait(void);
-// The microseconds left on this node's own live grant, 0 where it holds none. Caller masked.
-uint32_t arch_console_claim_left(void);
-#endif
 // Bounded, polled output for panic, faults and startup, safe without scheduling or IRQs. It
 // answers false once the channel stalled, so more bytes would stall too, having dropped what it
-// could not send. A line an own-image AMP node lost to a peer's claim is dropped and answers
-// true.
+// could not send.
 bool arch_console_write_sync(char const* buf, size_t n);
 
 // Restore the console UART for panic output after user access. Handover

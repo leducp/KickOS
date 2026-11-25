@@ -62,7 +62,7 @@ RULES = (
     "manifest.bound", "manifest.console", "manifest.block-cache",
     "manifest.target", "manifest.receiver", "manifest.right",
     "partition.device", "partition.port", "partition.unserved", "partition.region", "partition.cached-incoherent",
-    "partition.gate-budget", "partition.lone", "partition.bootloader",
+    "partition.gate-budget", "partition.lone", "partition.bootloader", "partition.stdout",
 )
 
 HEX = re.compile(r"0x[0-9A-Fa-f]+")

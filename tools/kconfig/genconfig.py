@@ -242,6 +242,36 @@ def amp_cores(kconf, nodes):
     return cores, None
 
 
+def amp_consoles(kconf, nodes):
+    """(uarts, refusal) of an own-image partition: the UART index each node's kernel drives, in node
+    order, -1 for a node with no console."""
+    stated = sym_str(kconf, "KICKOS_AMP_CONSOLES")
+    what = "KICKOS_AMP_CONSOLES='" + stated + "'"
+    entries = []
+    if stated != "":
+        entries = stated.split(",")
+    if len(entries) != nodes:
+        return None, (what + ": it names " + str(len(entries)) + " console(s) for a partition of "
+                      + str(nodes) + " node(s). No kernel of a partition owns a UART unless this list "
+                      "gives it one: state, per node and in node order, /dev/uartN or none.")
+    uarts = []
+    for node, entry in enumerate(entries):
+        if entry == "none":
+            uarts.append(-1)
+            continue
+        match = re.fullmatch(r"/dev/uart([0-9]+)", entry)
+        if match is None:
+            return None, (what + ": entry '" + entry + "' of node " + str(node) + " is neither "
+                          "/dev/uartN nor none.")
+        uart = int(match.group(1))
+        if uart in uarts:
+            return None, (what + ": /dev/uart" + str(uart) + " is named for two nodes, and no UART "
+                          "is shared between kernels. Give the second node a UART of its own, or "
+                          "none and a composition whose stdout names another node's service.")
+        uarts.append(uart)
+    return uarts, None
+
+
 def amp_ports(kconf, nodes, self_node):
     """([(node, port)], refusal) of KICKOS_AMP_PORTS, in list order: an entry's position is its
     capability index."""
@@ -309,6 +339,10 @@ def amp_partition(kconf):
         cores, refusal = amp_cores(kconf, nodes)
         if refusal is not None:
             return None, refusal
+        uarts, refusal = amp_consoles(kconf, nodes)
+        if refusal is not None:
+            return None, refusal
+        facts.append(("KICKOS_AMP_CONSOLE_UART", uarts[self_node]))
         facts.extend([("KICKOS_AMP_SELF_CORE", int(cores[self_node])),
                       ("KICKOS_AMP_SLICE_LIST", ",".join(str(size) for size in sizes)),
                       ("KICKOS_AMP_IMAGE_OFFSET", sum(sizes[:self_node])),

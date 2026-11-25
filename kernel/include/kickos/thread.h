@@ -332,11 +332,6 @@ namespace kickos
         // continuation: nothing reads wait_result on that thread's behalf, so the switch that
         // resumes it stores the result into the saved frame. Cleared there, by the one writer.
         uint8_t call_frame_parked : 1 = 0;
-#if KICKOS_AMP_CONSOLE_CLAIM
-        // The syscall's newline emitted CR but lost the UART claim before LF. Its next offer
-        // must send LF alone, even if another thread used the shared UART meanwhile.
-        uint8_t console_cr_pending : 1 = 0;
-#endif
         // Inside the kernel console's chip-writer bracket in thread context, which a slay can end
         // before its leave (kconsole_slain). Written under IrqLock by the thread itself.
         uint8_t console_writing : 1 = 0;

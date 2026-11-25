@@ -141,17 +141,6 @@ config KICKOS_ARCH_FAULT_ISOLATION
 	default 1 if ARCH_HAS_FAULT_ISOLATION
 	default 0
 
-config CHIP_AMP_CONSOLE_CLAIM
-	bool
-	help
-	  The chip's own-image AMP nodes write one console UART polled, each under a
-	  partition-shared claim, and arm no ring.
-
-config KICKOS_AMP_CONSOLE_CLAIM
-	int
-	default 1 if CHIP_AMP_CONSOLE_CLAIM && KICKOS_AMP_POSTURE_OWN_IMAGE
-	default 0
-
 config ARCH_ARMV6M
 	bool
 	select ARCH_HAS_FAULT_ISOLATION
@@ -361,7 +350,6 @@ config CHIP_RP2350
 	bool
 	select ARCH_ARMV7M
 	select HAS_MPU
-	select CHIP_AMP_CONSOLE_CLAIM
 	select KICKOS_BOOTLOADER_ENTRY
 
 config CHIP_SAM3X8E
@@ -431,7 +419,6 @@ config CHIP_VIRT_ARM64
 	select CHIP_SMP_INTERRUPT
 	select CHIP_SMP_SYMMETRIC
 	select CHIP_SMP_TARGETING
-	select CHIP_AMP_CONSOLE_CLAIM
 
 # Interrupt: a CLINT msip word per hart, raising a MACHINE software interrupt with mideleg
 # read-only zero, so the receive side runs through this chip's machine-mode trampoline

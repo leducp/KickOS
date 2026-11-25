@@ -333,6 +333,8 @@ tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000;0x40878000|amppi
 tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000;0x40878000|ampping-c6.capture||vectors|swap|self clk=160000000|self clk=80000000
 tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000;0x40878000|ampping-c6.capture||vectors|swap|self clk=160000000|self clk=1600000000
 tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000;0x40878000|ampping-c6.capture||alive|swap|2 of 2 node app(s)|1 of 2 node app(s)
+tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000;0x40878000|ampping-c6.capture||relay|drop|ampping: node 1 serves port 3|
+tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000;0x40878000|ampping-c6.capture||relay|swap|ampping: node 1 serves|ampping: nodampping: node 1 serves
 tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000;0x40878000|ampping-c6.capture||gate|swap|and 0x0 from node 0's timg0|and 0x5a3c from node 0's timg0
 tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000;0x40878000|ampping-c6.capture||memory|drop|ampping: gate: node 1 stored|
 tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000;0x40878000|ampping-c6.capture||memory|swap|and loaded 0x0;|and loaded 0xbadc0de5;
@@ -352,6 +354,8 @@ tests/integration/check_pizero_amp_gate.sh|ampping-pizero.capture||readback|drop
 tests/integration/check_pizero_amp_gate.sh|ampping-pizero.capture||readback|swap|# accessctrl: 0xa0 = 0x9c|# accessctrl: 0xa0 = 0xbc
 tests/integration/check_pizero_amp_gate.sh|ampping-pizero.capture||banners|after|# accessctrl: 0xa0|   KickOS 0.5.1  -  microkernel RTOS
 tests/integration/check_pizero_amp_gate.sh|ampping-pizero.capture||gate|drop|ampping: gate: node 0 read 0x11|
+tests/integration/check_pizero_amp_gate.sh|ampping-pizero.capture||relay|drop|ampping: node 1 serves port 3|
+tests/integration/check_pizero_amp_gate.sh|ampping-pizero.capture||relay|swap|ampping: node 1 serves|ampping: nodampping: node 1 serves
 tests/integration/check_pizero_amp_gate.sh|ampping-pizero.capture||gate|swap|read 0x11 from its uart0|read 0x11 from its uart0, node 1's kernel's read of it took a fault
 tests/integration/check_pizero_amp_gate.sh|ampping-pizero.capture||fault|after|ampping: node 0 done|=== THREAD FAULT === thread 'ampping' killed, system continues
 tests/integration/check_pizero_amp_gate.sh|ampping-pizero.capture||alive|swap|2 of 2 node app(s)|1 of 2 node app(s)
@@ -502,6 +506,7 @@ tests/integration/check_libcrace.sh|libcrace.capture||exit-handler|swap|an exit 
 tests/integration/check_libcrace.sh|libcrace.capture||heap-end|swap|ran out at its end|ran out 120 B short of its 4096 B
 tests/integration/check_libcrace.sh|libcrace.capture||torn|swap|w1 i1 iiii|w1 i1 iiij
 tests/integration/check_libcrace.sh|libcrace.capture||torn|swap|w2 i0 o|w2 i0libcrace w1 i0 o
+tests/integration/check_libcrace.sh|libcrace.capture||torn|swap|libcrace w2 i0 o|libclibcrace w2 i0 o
 tests/integration/check_libcrace.sh|libcrace.capture||duplicated|after|libcrace w0 i1 |libcrace w0 i1 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 tests/integration/check_libcrace.sh|libcrace.capture||lost|drop|libcrace w3 i1 |
 tests/integration/check_libcrace.sh|libcrace.capture||lost|drop|libcrace w2 done|

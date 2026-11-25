@@ -238,11 +238,10 @@ enum kos_syscall_nr
                                 //   (bad buffer), -KOS_EBUSY (the caller's stdout takes it
                                 //   now), -KOS_ECANCELED (cancelled while waiting), -KOS_EINVAL
                                 //   (a flag other than KOS_KCONSOLE_NOWAIT) or, with
-                                //   KOS_KCONSOLE_NOWAIT, -KOS_ETIMEDOUT where it would have
+                                //   KOS_KCONSOLE_NOWAIT, -KOS_EAGAIN where it would have
                                 //   to wait. Waits, with no
-                                //   bound, for room in the console, for a peer node's claim
-                                //   on a shared UART, and while a dead console driver's task
-                                //   awaits its reclaim
+                                //   bound, for room in the console and while a dead console
+                                //   driver's task awaits its reclaim
     KOS_SYS_YIELD = 2,          // ()                    -> 0
     KOS_SYS_SLEEP = 3,          // (limit lo, limit hi, enum kos_limit_kind) -> 0, or -KOS_EINVAL
                                 //   (an unknown kind). Yields for a passed deadline or a
@@ -616,7 +615,7 @@ enum kos_shutdown_outcome
     KOS_SHUTDOWN_BOOTLOADER = 2
 };
 
-// KOS_SYS_KCONSOLE_WRITE's flags: the write never waits for room, and is answered -KOS_ETIMEDOUT
+// KOS_SYS_KCONSOLE_WRITE's flags: the write never waits for room, and is answered -KOS_EAGAIN
 // where it would.
 #define KOS_KCONSOLE_NOWAIT 1u
 

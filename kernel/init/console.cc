@@ -140,19 +140,13 @@ namespace
     constexpr uint64_t LINE_RETRY_NS = 1000000u;
 
 #if KICKOS_CONSOLE_CHIP
-    // Who speaks on a console written outside the ring: the context inside a polled or claimed
-    // write, and on an own-image AMP node the thread whose last write left its line open under a
-    // live grant. A line is one context's until it ends, so no other context writes inside it,
-    // a fault record excepted: from its first line to its end it goes ahead of every thread's
-    // line, which resumes after it. Under IrqLock.
+    // Who speaks on a console written outside the ring: the context inside a polled write. A
+    // line is one context's until it ends, so no other context writes inside it, a fault record
+    // excepted: from its first line to its end it goes ahead of every thread's line, which
+    // resumes after it. Under IrqLock.
     struct LineState
     {
         void const* writer = nullptr;
-        bool writer_wakes = false; // the writer's end wakes the writers it refused
-#if KICKOS_AMP_CONSOLE_CLAIM
-        bool writer_user = false; // a syscall's write, whose bytes give way to a record
-        kickos::Thread const* open = nullptr;
-#endif
         bool waiting = false;
         // The record whose line is on the wire, and the threads inside a record.
         kickos::Thread const* record = nullptr;
@@ -199,17 +193,13 @@ namespace
     // Whether the line's writer is one whose bytes wait while a record speaks.
     bool writer_gives_way(void)
     {
-#if KICKOS_AMP_CONSOLE_CLAIM
-        return line().writer_user;
-#else
         return line().writer != &g_line_isr;
-#endif
     }
 
     // Whether a context other than `key` speaks now. An ISR is kept off by any write in
-    // progress, its own interrupted one included. A record waits out an interrupt's line,
-    // another record's and, on a claimed UART, a kernel line. Caller holds IrqLock.
-    bool line_taken(void const* key, kickos::Held held)
+    // progress, its own interrupted one included. A record waits out an interrupt's line and
+    // another record's. Caller holds IrqLock.
+    bool line_taken(void const* key)
     {
         if (in_record(key))
         {
@@ -224,20 +214,6 @@ namespace
         {
             return true;
         }
-#if KICKOS_AMP_CONSOLE_CLAIM
-        if (line().open == nullptr or line().open == key)
-        {
-            return false;
-        }
-        if (arch_console_claim_left() != 0)
-        {
-            return true;
-        }
-        line().open = nullptr;
-        line_wake(held);
-#else
-        (void)held;
-#endif
         return false;
     }
 
@@ -297,76 +273,6 @@ namespace
         }
     }
 
-#if KICKOS_AMP_CONSOLE_CLAIM
-    // A refused write answers 0: a kernel line is lost to it, and a user or record writer
-    // waits (console_claim_wait). Each wire byte is its own masked span. noinline: inlined, its
-    // frame joins console_emit's under the exit red zone check_trap_redzone.sh measures.
-    __attribute__((noinline)) int line_write(char const* buf, size_t n, bool* cr_pending)
-    {
-        void const* const key = line_key();
-        bool const record = in_record(key);
-        bool const user = not record and key != &g_line_isr and cr_pending != nullptr;
-        {
-            kickos::IrqLock lock;
-            if (line_taken(key, lock))
-            {
-                return 0;
-            }
-            if (record)
-            {
-                line().record = static_cast<kickos::Thread const*>(key);
-            }
-            else
-            {
-                line().writer = key;
-                line().writer_wakes = true;
-                line().writer_user = user;
-            }
-        }
-        int took = 0;
-        if (user)
-        {
-            while (static_cast<size_t>(took) < n)
-            {
-                int const one = give_way(
-                    [&]() { return arch_console_write_retry(buf + took, 1, cr_pending); });
-                if (one <= 0)
-                {
-                    break;
-                }
-                took = took + one;
-            }
-        }
-        else
-        {
-            if (record)
-            {
-                record_line_open();
-            }
-            took = arch_console_write_retry(buf, n, cr_pending);
-        }
-        kickos::IrqLock lock;
-        if (record)
-        {
-            line().record = nullptr;
-            line_wake(lock);
-            return took;
-        }
-        line().writer = nullptr;
-        if (key != &g_line_isr and arch_console_claim_left() != 0)
-        {
-            line().open = static_cast<kickos::Thread const*>(key);
-        }
-        else if (line().open == key)
-        {
-            line().open = nullptr;
-        }
-        // A writer parked on this write offers again: on a line still open it parks again for
-        // that line's grant.
-        line_wake(lock);
-        return took;
-    }
-#endif
 #endif
 
 #if KICKOS_CONSOLE_CHIP
@@ -639,7 +545,7 @@ extern "C" int console_write_line_owned(char const* buf, size_t n)
     bool const record = in_record(key);
     {
         kickos::IrqLock lock;
-        if (line_taken(key, lock))
+        if (line_taken(key))
         {
             return 0;
         }
@@ -650,7 +556,6 @@ extern "C" int console_write_line_owned(char const* buf, size_t n)
         else
         {
             line().writer = key;
-            line().writer_wakes = false;
         }
     }
     if (record or key == &g_line_isr)
@@ -660,11 +565,11 @@ extern "C" int console_write_line_owned(char const* buf, size_t n)
             record_line_open();
         }
         (void)kickos::console_retry::write_masked(
-            buf, n, nullptr, [](char c) { return line_owned_put(c); });
+            buf, n, [](char c) { return line_owned_put(c); });
     }
     else
     {
-        (void)kickos::console_retry::write(buf, n, nullptr, [](char c) {
+        (void)kickos::console_retry::write(buf, n, [](char c) {
             return give_way([c]() { return arch_console_write_sync(&c, 1); });
         });
     }
@@ -693,47 +598,26 @@ namespace kickos
     // either drains this writer or the writer never reaches the device. RECLAIMED needs the
     // bracket as much as KERNEL_OWNED does: a console published again after a reclaim flips
     // straight out of it.
-    static int console_emit(char const* buf, size_t n, bool* cr_pending, uint8_t flags)
+    static int console_emit(char const* buf, size_t n, uint8_t flags)
     {
         // A panic's lines take no lock: a core may hold it bare and never release it. Lines of
         // two failing cores can then interleave byte by byte.
         if (g_console_state == ConsoleState::PANICKED)
         {
-            if (cr_pending != nullptr)
-            {
-                *cr_pending = false;
-            }
             write_line_polled(buf, n);
             return static_cast<int>(n);
         }
         ChipEntry const entry = chip_writer_enter(buf, n, flags);
-        // The dark window: the writer waits it out and offers the same bytes here again, so a
-        // CR already on the wire stays owed.
+        // The dark window: the writer waits it out and offers the same bytes here again.
         if (entry == ChipEntry::OWED)
         {
             return CONSOLE_DARK;
-        }
-        if (cr_pending != nullptr and entry != ChipEntry::KERNEL_OWNED)
-        {
-            *cr_pending = false;
         }
         if (entry == ChipEntry::KERNEL_OWNED or entry == ChipEntry::RECLAIMED)
         {
             // A line the ring refuses does not go out. A reclaimed console's ring is disarmed, so
             // its line is written polled (console_write_line_owned).
-#if KICKOS_AMP_CONSOLE_CLAIM
-            int took = 0;
-            if (entry == ChipEntry::KERNEL_OWNED)
-            {
-                took = line_write(buf, n, cr_pending);
-            }
-            else
-            {
-                took = console_tx_insert_line(buf, n, KICKOS_CONSOLE_CRLF);
-            }
-#else
             int const took = console_tx_insert_line(buf, n, KICKOS_CONSOLE_CRLF);
-#endif
             console_chip_writer_leave();
             return took;
         }
@@ -774,10 +658,8 @@ namespace kickos
     //
     // An offered line goes to RTT only as far as the chip took it: offers repeat. A record line
     // offered again went to RTT on its first offer.
-    static int kconsole_write_impl(char const* buf, size_t n, bool* cr_pending = nullptr,
-                                   uint8_t flags = 0)
+    static int kconsole_write_impl(char const* buf, size_t n, uint8_t flags = 0)
     {
-        (void)cr_pending;
         (void)flags;
 #if !KICKOS_CONSOLE_CHIP && !KICKOS_CONSOLE_RTT
         // KICKOS_CONSOLE=none: the writer is a sink. Panic, fault and boot still run their
@@ -794,7 +676,7 @@ namespace kickos
 #if KICKOS_CONSOLE_CHIP
         // RAW: the '\n' lowering happens at the device end of the path, where one line stays
         // one emit. RTT stays raw either way, its viewer cooking.
-        int const took = console_emit(buf, n, cr_pending, flags);
+        int const took = console_emit(buf, n, flags);
 #else
         int const took = static_cast<int>(n);
 #endif
@@ -808,9 +690,8 @@ namespace kickos
     }
 
     // The bytes of buf that went out or were queued. A ring takes a line whole or refuses it,
-    // and a refused line does not go out at all; an AMP chip sharing its UART stops at the
-    // first byte its claim no longer covers. Do not grow a retry here: a caller that can afford
-    // to wait offers the line again itself (kprintf_record).
+    // and a refused line does not go out at all. Do not grow a retry here: a caller that can
+    // afford to wait offers the line again itself (kprintf_record).
     int kconsole_write(char const* buf, size_t n)
     {
         return kconsole_write_impl(buf, n);
@@ -821,20 +702,14 @@ namespace kickos
         Thread* const t = sched::current();
         while (true)
         {
-#if KICKOS_AMP_CONSOLE_CLAIM && KICKOS_CONSOLE_CHIP
-            bool pending = t->console_cr_pending != 0;
-            int const took = kconsole_write_impl(buf, n, &pending, WRITE_USER | WRITE_OFFERED);
-            t->console_cr_pending = pending;
-#else
-            int const took = kconsole_write_impl(buf, n, nullptr, WRITE_USER | WRITE_OFFERED);
-#endif
+            int const took = kconsole_write_impl(buf, n, WRITE_USER | WRITE_OFFERED);
             if (took != CONSOLE_DARK and (took != 0 or n == 0))
             {
                 return took;
             }
             if (not wait)
             {
-                return -KOS_ETIMEDOUT;
+                return -KOS_EAGAIN;
             }
             int woke = 0;
             if (took == CONSOLE_DARK)
@@ -848,12 +723,8 @@ namespace kickos
                 {
                     return static_cast<int>(n);
                 }
-#if KICKOS_AMP_CONSOLE_CLAIM
-                woke = console_claim_wait();
-#else
                 woke = console_room_wait(console_tx_line_needed(buf, n, KICKOS_CONSOLE_CRLF),
                                          KOS_LIMIT_NONE);
-#endif
             }
             if (woke < 0)
             {
@@ -875,7 +746,7 @@ namespace kickos
         void kvprintf_route(char* buf, size_t cap, char const* fmt, va_list ap, uint8_t flags)
         {
             kfmt_vsnprintf(buf, cap, fmt, ap);
-            (void)kconsole_write_impl(buf, kstrlen(buf), nullptr, flags);
+            (void)kconsole_write_impl(buf, kstrlen(buf), flags);
         }
 
         // Opens the current thread's fault record at its first line. noinline: inlined, its
@@ -917,15 +788,11 @@ namespace kickos
             {
                 flags = WRITE_RECORD | WRITE_AGAIN;
             }
-            if (n == 0 or kconsole_write_impl(buf, n, nullptr, flags) != 0)
+            if (n == 0 or kconsole_write_impl(buf, n, flags) != 0)
             {
                 return 0;
             }
-#if KICKOS_AMP_CONSOLE_CLAIM
-            return static_cast<uint32_t>(n);
-#else
             return console_tx_line_needed(buf, n, KICKOS_CONSOLE_CRLF);
-#endif
         }
 
         // A record goes ahead of another thread's line wherever that line stands.
@@ -996,7 +863,7 @@ namespace kickos
 #if KICKOS_CONSOLE_CHIP
         {
             IrqLock lock;
-            if (line_taken(t, lock) and t->task != nullptr)
+            if (line_taken(t) and t->task != nullptr)
             {
                 Thread const* const speaker = line_speaker();
                 if (speaker != nullptr and speaker->task == t->task)
@@ -1006,18 +873,13 @@ namespace kickos
             }
         }
 #endif
-#if KICKOS_AMP_CONSOLE_CLAIM
-        (void)need;
-        return console_claim_wait() == 0;
-#else
         return console_room_wait(need, RECORD_STALL_NS) == 0;
-#endif
     }
 
 #if KICKOS_CONSOLE_CHIP
-    uint64_t console_line_wait(Thread const* t, Held held)
+    uint64_t console_line_wait(Thread const* t, Held)
     {
-        if (not line_taken(t, held))
+        if (not line_taken(t))
         {
             return 0;
         }
@@ -1031,17 +893,7 @@ namespace kickos
         {
             return KOS_LIMIT_NONE;
         }
-#if KICKOS_AMP_CONSOLE_CLAIM
-        if (line().writer == nullptr)
-        {
-            return static_cast<uint64_t>(arch_console_claim_left()) * 1000u;
-        }
-#endif
-        if (not line().writer_wakes)
-        {
-            return LINE_RETRY_NS;
-        }
-        return KOS_LIMIT_NONE;
+        return LINE_RETRY_NS;
     }
 #else
     uint64_t console_line_wait(Thread const*, Held)
@@ -1076,13 +928,6 @@ namespace kickos
         if (line().writer == t)
         {
             line().writer = nullptr;
-            line_wake(lock);
-        }
-#endif
-#if KICKOS_AMP_CONSOLE_CLAIM && KICKOS_CONSOLE_CHIP
-        if (line().open == t)
-        {
-            line().open = nullptr;
             line_wake(lock);
         }
 #endif
