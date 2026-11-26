@@ -1147,45 +1147,21 @@ into its buffer. Its `kos_call` returns and the console prints
 [Reference: IPC call and reply](../reference/ipc-call-reply.md),
 [design-multicore.md N6d, N6e and N7](../design-multicore.md)
 
-### Stop 18: sharing one console
-**Where:** `arch/arm64/chip/virt_arm64/chip_virt_arm64.cc`, `g_console_claim`, `g_console_waiting`, `arch_console_write_retry`, `arch_console_claim_wait`; `arch/arm64/chip/virt_arm64/console_claim.h`, `Claim`; `kernel/include/kickos/sync.h`, `console_claim_wait`, `console_claim_rung`
+### Stop 18: a console per node, or another node's
+**Where:** `boards/qemu-arm64/configs/amp3/defconfig`, `CONFIG_KICKOS_AMP_CONSOLES`; `system/service/amprelay/amprelay.c`; `kernel/syscall/cap.cc`, `cap_stdout_far_seat`
 
 Under SMP, the console is easy: there is one kernel, so all cores put their lines into one ring
-and one drain sends them to the UART. Two AMP kernels each have their own ring, and two rings
-cannot arbitrate one UART. So an own-image node writes the PL011 *polled*, and only while it
-holds a **claim**: one 64-bit word in the shared region, `g_console_claim`, whose low half is the
-owner (node index + 1) and whose high half is a deadline on the common counter.
+and one drain sends them to the UART. Two AMP kernels share no UART. The partition gives each
+node's kernel a UART of its own, or none: amp3 gives node 0 the first PL011 and node 2 the second,
+and node 1 none. Node 1's tasks still print, as clients of a service: node 0 runs `amprelay`
+serving port 6, node 1's composition says `stdout: /amp/6`, and node 1's kernel seats every
+thread's capability 0 on that far endpoint at boot. Each write is one far send, and the relay
+writes each message it receives whole on node 0's console.
 
-`Claim::try_acquire` takes a free or expired claim with a compare-and-exchange (`ldaxr`/`stlxr`
-in `compare_exchange`). The holder keeps the claim through a whole line, up to its newline, so two
-nodes' lines never interleave mid-line. The claim is bounded: if a holder stalls, another node may
-take it once the deadline has passed. A user thread whose write is refused does not spin. It marks
-its node waiting in `g_console_waiting`, parks in `console_claim_wait`, and the holder's release
-rings that node's doorbell; `kickos_amp_node_service` then calls `console_claim_rung`, which wakes
-the parked writers. It is the same doorbell as the window's: each service drains the rings and
-then checks for parked console writers.
+**Try it:** boot the ampcon partition (`ctest -R amp_console` in a `qemu-arm64-amp3-n0` build).
+Node 1's lines arrive on serial 0 among node 0's, each one whole, and node 2's on serial 1.
 
-**Try it:** with both images loaded as in Stop 14, `break kickos::virt_arm64::console::compare_exchange`,
-`continue`. The first claim is node 0's, for its own banner, before node 1 is even released:
-
-```
-Thread 1 hit Breakpoint 1.1, kickos::virt_arm64::console::compare_exchange (expected=expected@entry=@0xffffff8043fffe58: 0, desired=15469883789672449) at .../chip_virt_arm64.cc
-  2    Thread 1.2 (CPU#1 [halted ]) _start () at .../startup.S
-(gdb) p/x desired
-$1 = 0x36f5c700000001
-(gdb) bt 3
-#0  kickos::virt_arm64::console::compare_exchange (...)
-#1  kickos::virt_arm64::console::Claim::try_acquire (this=... <(anonymous namespace)::g_claim>, budget=budget@entry=3125000) at .../console_claim.h
-#2  kickos::virt_arm64::console::Claim::open (this=... <(anonymous namespace)::g_claim>, budget=budget@entry=3125000) at .../console_claim.h
-```
-
-The word was free (`expected` is 0). The new value's low half is `1`, node 0 plus one; its high
-half, `0x36f5c7`, is the deadline on the counter. `budget` is the 50 ms hold in counter ticks.
-Then `delete`, `break kickos::console_claim_rung`, `continue`: it fires on CPU#1, called from
-`kickos_amp_node_service` in node 1's doorbell interrupt. Without gdb, the two banners on the
-console arrive whole, one after the other.
-
-**Why, and the contract:** [Reference: console ("Across cores, the speaker is the device owner")](../reference/console.md)
+**Why, and the contract:** [Reference: console ("An AMP node's console")](../reference/console.md)
 
 ## Where to next
 

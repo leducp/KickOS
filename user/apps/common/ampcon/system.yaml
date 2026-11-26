@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+
+version: 1
+stdout: kernel
+ends: main
+
+tasks:
+  - name: main
+    program: main
+    priority: 5
+    ceiling: 10
+    budgets: { threads: 6 }

@@ -68,6 +68,8 @@ class Manifest:
         self.amp_nodes = None
         # The node whose kernel may reset the chip.
         self.amp_reset_owner = 0
+        # The device each node's kernel drives as its console, `none` for none, in node order.
+        self.amp_consoles = []
         self.amp_list = []
         # The partition's node slices as (base, size) in node order, and its shared window as
         # (base, size).
@@ -332,7 +334,7 @@ def check_target(f, node, manifest):
 def check_amp(f, node, manifest):
     values = f.fields(node, "`target` amp",
                       ("node", "nodes", "ports", "share", "share_cache", "slices", "window", "image",
-                       "reset_owner"),
+                       "reset_owner", "consoles"),
                       ("node", "nodes", "ports", "share", "share_cache"))
     if values is None:
         return
@@ -365,6 +367,15 @@ def check_amp(f, node, manifest):
         if own is not None and nodes is not None and own >= nodes:
             f.refuse(values["node"], "manifest.amp",
                      "`target` amp node %d is not one of the partition's %d" % (own, nodes))
+    if "consoles" in values:
+        items = f.sequence(values["consoles"], "`target` amp consoles")
+        if items is not None and nodes is not None and len(items) != nodes:
+            f.refuse(values["consoles"], "manifest.amp", "`target` amp consoles names %d console(s) for the "
+                     "partition's %d node(s)" % (len(items), nodes))
+        elif items is not None:
+            consoles = [f.string(item, "`target` amp console") for item in items]
+            if None not in consoles:
+                manifest.amp_consoles = consoles
     if "reset_owner" in values:
         owner = f.integer(values["reset_owner"], "`target` amp reset_owner", 8)
         if owner is not None and nodes is not None and owner >= nodes:

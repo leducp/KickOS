@@ -73,8 +73,8 @@ kickos_add_unit_test(NAME console_room SOURCES room_wait.cc
 kickos_add_unit_test(NAME console_drain SOURCES publish_drain.cc
   LIBRARIES kickos_kseam_console)
 
-# console_room_amp: the same cases at an own-image AMP node's posture with no console claim, the
-# ESP32-C6 nodes': a writer its ring refuses waits for room there.
+# console_room_amp: the same cases at an own-image AMP node's posture: a writer its ring refuses
+# waits for room there.
 kickos_add_kseam(kickos_kseam_console_amp
   EXTRA "${PROJECT_SOURCE_DIR}/tests/unit/fusedwake/ipc_seam.cc"
         dark_seam.cc "${_cs}/console_leaves.cc" "${PROJECT_SOURCE_DIR}/lib/libc/fmt.cc"
@@ -87,23 +87,6 @@ kickos_add_kseam(kickos_kseam_console_amp
 
 kickos_add_unit_test(NAME console_room_amp SOURCES room_wait.cc TEST_PREFIX amp_
   LIBRARIES kickos_kseam_console_amp)
-
-# console_claim: an own-image AMP node's writer a peer's claim refuses, parked until the release
-# rings its node, and one another thread's open line on the node refuses, parked until that line
-# ends, over the same seam at that posture and the real virt_arm64 claim.
-kickos_add_kseam(kickos_kseam_console_claim
-  EXTRA "${PROJECT_SOURCE_DIR}/tests/unit/fusedwake/ipc_seam.cc"
-        dark_seam.cc "${_cs}/console_leaves.cc" "${PROJECT_SOURCE_DIR}/lib/libc/fmt.cc"
-        "${PROJECT_SOURCE_DIR}/kernel/syscall/syscall_ipc.cc"
-        "${PROJECT_SOURCE_DIR}/kernel/init/console.cc"
-        "${PROJECT_SOURCE_DIR}/kernel/init/console_tx.cc"
-  INCLUDES "${PROJECT_SOURCE_DIR}/tests/unit/fusedwake" "${PROJECT_SOURCE_DIR}/kernel/syscall"
-           "${PROJECT_SOURCE_DIR}/tests/unit/common"
-  POSTURE KSEAM_REAL_CONSOLE=1 KICKOS_AMP_OWN_IMAGE=1 KICKOS_AMP_CONSOLE_CLAIM=1)
-
-kickos_add_unit_test(NAME console_claim SOURCES claim_wait.cc
-  INCLUDES "${PROJECT_SOURCE_DIR}"
-  LIBRARIES kickos_kseam_console_claim)
 
 # console_panic_unlocked: a refusal on a core holding the kernel lock outside an IrqLock, over the
 # same seam at two kernel cores.

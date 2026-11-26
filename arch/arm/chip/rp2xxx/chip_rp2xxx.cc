@@ -7,7 +7,6 @@
 #include <kickos/arch/arch.h>
 #include <kickos/arch/bounded_wait.h>
 #include <kickos/arch/console_poll.h>
-#include <kickos/arch/console_retry.h>
 #include <kickos/console_tx.h>
 #include <kickos/sys/abi.h>
 
@@ -34,32 +33,7 @@ extern "C" uint32_t SystemCoreClock;
 
 namespace reg = kickos::rp2xxx::reg;
 
-#if KICKOS_AMP_OWN_IMAGE
-namespace
-{
-    using kickos::console_retry::Put;
-
-    static_assert(KICKOS_KERNEL_CORES == 1, "one polled writer state serves every caller");
-    kickos::console_retry::PolledLine g_polled;
-
-    // One byte under the partition claim, checked after the FIFO wait: the grant can end
-    // while a byte waits for room.
-    Put console_put(char c)
-    {
-        if (not kickos::arch::wait_clear(r32(reg::uart::FR), reg::uart::FR_TXFF))
-        {
-            kickos::rp2xxx::console_drop(true); // a wedged channel keeps no claim
-            return Put::WEDGED;
-        }
-        if (not kickos::rp2xxx::console_claim())
-        {
-            return Put::LOST;
-        }
-        r32(reg::uart::DR) = static_cast<uint8_t>(c);
-        return Put::STORED;
-    }
-}
-#else
+#if KICKOS_RP2XXX_CONSOLE
 namespace
 {
     // Relies on the FIFO being off (LCR_H_8N1). The idle->busy prime assumes TXIM fires whether
@@ -217,48 +191,29 @@ namespace kickos::rp2xxx
 extern "C"
 {
 
-#if KICKOS_AMP_OWN_IMAGE
-int arch_console_write_retry(char const* buf, size_t n, bool* cr_pending)
-{
-    if (n == 0 or not kickos::rp2xxx::console_claim_open(cr_pending == nullptr))
-    {
-        return 0;
-    }
-    // Stops at the first byte the claim no longer covers: the count is what went out, and the
-    // rest is the caller's to offer again under a fresh claim. Each byte is its own masked span:
-    // the kernel keeps this node's other contexts out of a line until it ends.
-    bool const had_pending_cr = cr_pending != nullptr and *cr_pending;
-    size_t const landed = kickos::console_retry::write_masked(
-        buf, n, cr_pending, [](char c) { return console_put(c) == Put::STORED; });
-    bool const ended_line = (landed != 0 and buf[landed - 1] == '\n') or
-                            (had_pending_cr and cr_pending != nullptr and not *cr_pending and
-                             landed == 0);
-    arch_irq_state_t const irq = arch_irq_save();
-    kickos::rp2xxx::console_drop(ended_line);
-    arch_irq_restore(irq);
-    return static_cast<int>(landed);
-}
-#endif
-
 bool arch_console_write_sync(char const* buf, size_t n)
 {
     if (n == 0)
     {
         return true;
     }
-#if KICKOS_AMP_OWN_IMAGE
-    bool const sent = g_polled.write(buf, n, console_put);
-    kickos::rp2xxx::console_drop(buf[n - 1] == '\n');
-    return sent;
-#else
+#if KICKOS_RP2XXX_CONSOLE
     return kickos::console_poll::write<tx_slot_free, tx_push>(buf, n);
+#else
+    (void)buf;
+    return false;
 #endif
 }
 
 void arch_console_reclaim_window(uintptr_t* base, size_t* size)
 {
+#if KICKOS_RP2XXX_CONSOLE
     *base = CONSOLE_WIN_BASE;
     *size = CONSOLE_WIN_SIZE;
+#else
+    *base = 0;
+    *size = 0;
+#endif
 }
 
 // Panic-path reclaim after a userspace driver may have garbled every writable register in the
@@ -270,6 +225,7 @@ void arch_console_reclaim_window(uintptr_t* base, size_t* size)
 // the console pins); RESETS and CLOCKS are reserved blocks.
 void arch_console_reclaim(void)
 {
+#if KICKOS_RP2XXX_CONSOLE
     // Silence first: a stale TXIM storms the console IRQ through the dump. Absolute store, not
     // the CLR alias rp_tx_irq_disable uses, which would leave every other source as found.
     r32(reg::uart::IMSC) = 0;
@@ -287,13 +243,16 @@ void arch_console_reclaim(void)
     // LAST, and absolute: CTSEN gates every byte on a CTS this board does not wire, LBE feeds
     // UARTTXD back into UARTRXD, SIREN turns the pin into IrDA pulses.
     r32(reg::uart::CR) = reg::uart::CR_ENABLE;
+#endif
 }
 
 // Blocks until the console UART is transmission-complete: FR.TXFF clear only means the holding
 // register took the byte, FR.BUSY waits for the last stop bit (DS 4.2.8 / 12.1.8).
 void arch_console_flush_sync(void)
 {
+#if KICKOS_RP2XXX_CONSOLE
     (void)kickos::arch::wait_clear(r32(reg::uart::FR), reg::uart::FR_BUSY);
+#endif
 }
 
 // Monotonic clock from the 64-bit system timer. The non-latching RAW halves are read hi/lo/hi to

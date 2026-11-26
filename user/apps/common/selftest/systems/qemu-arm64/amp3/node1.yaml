@@ -5,7 +5,7 @@
 # names another node.
 
 version: 1
-stdout: kernel
+stdout: /amp/6
 ends: main
 heap: 0
 

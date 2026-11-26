@@ -318,7 +318,7 @@ namespace
             g_window_free = false;
             console_on_driver_death(kickos::IrqLock());
             g_serves = false;
-            EXPECT_EQ(kickos::kconsole_write_user("line 6\n", 7, false), -KOS_ETIMEDOUT);
+            EXPECT_EQ(kickos::kconsole_write_user("line 6\n", 7, false), -KOS_EAGAIN);
             EXPECT_EQ(g_dark_waits, 0) << "a non-blocking writer waited";
             EXPECT_EQ(g_pokes, 0);
             EXPECT_EQ(console_chip_writers(), 0);

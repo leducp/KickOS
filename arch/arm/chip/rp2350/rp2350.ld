@@ -104,7 +104,7 @@ ASSERT(kickos_rp_rom_stack + 1024 == _ebss,
 KICKOS_AMP_SHARED_ASSERT(ADDR(.amp_shared))
 KICKOS_AMP_SHARED_FILLED_ASSERT()
 ASSERT(__kickos_amp_chip_end > __kickos_amp_chip_start,
-       "KickOS: .amp_shared.chip is empty: this chip's clock figure and console-claim owner are not placed in the shared region, so each node would read its own and the two would neither agree on the core clock nor serialise a line against each other")
+       "KickOS: .amp_shared.chip is empty: this chip's clock figure is not placed in the shared region, so each node would read its own and the two would not agree on the core clock")
 
 /* A node's text and its data are sliced out of different apertures with different strides,
    so neither span implies the other. */

@@ -582,6 +582,7 @@ class Generated(unittest.TestCase):
             ("virt_arm64", "armv8a"): ["#define KICKOS_MAX_IRQ 288", "#define KICKOS_IRQ_FREE_BASE 200",
                                        "GICD_BASE = 0x8000000u",
                                        "GICR_BASE = 0x80A0000u", "UART0_BASE = 0x9000000u",
+                                       "UART1_BASE = 0x9040000u",
                                        "#define KICKOS_LAYOUT_DRAM_BASE 0x40000000"],
             ("virt_rv64", "rv64imac"): ["#define KICKOS_MAX_IRQ 32",
                                         "#define KICKOS_CHIP_TIMEBASE_HZ 10000000",

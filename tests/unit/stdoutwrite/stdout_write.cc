@@ -5,8 +5,8 @@
 // console write takes the next answer of its own script; an answer that accepts bytes records
 // them on that route.
 // The short-accept arms run the endpoint's rendezvous instead of a send script. A non-blocking
-// task's send answers -KOS_EAGAIN where a blocking one would wait, and its kernel console write
-// -KOS_ETIMEDOUT. libc's _write is the
+// task's send and kernel console write answer -KOS_EAGAIN where a blocking one would wait. libc's
+// _write is the
 // stubs' own body, compiled in under the shim's names.
 // The stubs' fstat: newlib reads st_mode to decide line buffering, so a field left as the
 // caller's stack bytes makes stdout's buffering vary.
@@ -323,6 +323,10 @@ namespace
         EXPECT_EQ(g_kconsole_writes, 0);
         EXPECT_EQ(g_waiting_sends, 0);
         EXPECT_EQ(g_waiting_kconsole, 0);
+        reset_nonblocking({-KOS_EAGAIN}, {});
+        errno = 0;
+        EXPECT_EQ(_write(1, "line\n", 5), -1);
+        EXPECT_EQ(errno, EAGAIN);
     }
 
     // A receiver taking part of a message, then none being there for the rest: the short count.
@@ -339,19 +343,47 @@ namespace
     // console answers that it would wait. Nothing is written and nothing retried.
     TEST(StdoutNonblocking, TheDarkWindowTakesNothing)
     {
-        reset_nonblocking({-KOS_ECONNREFUSED}, {-KOS_ETIMEDOUT});
-        expect_result(kickos::stdout_write("line\n", 5), 0u, -KOS_ETIMEDOUT);
+        reset_nonblocking({-KOS_ECONNREFUSED}, {-KOS_EAGAIN});
+        expect_result(kickos::stdout_write("line\n", 5), 0u, -KOS_EAGAIN);
         EXPECT_EQ(g_kconsole_writes, 1);
         EXPECT_EQ(g_waiting_sends, 0);
         EXPECT_EQ(g_waiting_kconsole, 0);
     }
 
+    // A far stdout's full lane is answered try-again: nothing is written, the kernel console is
+    // never asked, nothing is retried.
+    TEST(StdoutNonblocking, ASendThatWouldWaitTakesNothingAndNeverFallsBack)
+    {
+        reset_nonblocking({-KOS_EAGAIN}, {TAKE_ALL});
+        expect_result(kickos::stdout_write("line\n", 5), 0u, -KOS_EAGAIN);
+        EXPECT_EQ(g_kconsole_writes, 0);
+        EXPECT_EQ(g_kconsole, "");
+        EXPECT_EQ(g_waiting_sends, 0);
+        reset_nonblocking({-KOS_EAGAIN}, {TAKE_ALL});
+        errno = 0;
+        EXPECT_EQ(_write(1, "line\n", 5), -1);
+        EXPECT_EQ(errno, EAGAIN);
+    }
+
+    // Chunks after the first that would wait: the short count, nothing on the kernel console.
+    TEST(StdoutNonblocking, AFarStdoutFullAfterAChunkIsTheShortCount)
+    {
+        std::string const line(KOS_EP_MSG_MAX + 4u, 'x');
+        reset_nonblocking({TAKE_ALL, -KOS_EAGAIN}, {TAKE_ALL});
+        expect_result(kickos::stdout_write(line.data(), line.size()), KOS_EP_MSG_MAX, -KOS_EAGAIN);
+        EXPECT_EQ(g_kconsole_writes, 0);
+    }
+
     // A console nobody published takes what fits on the kernel console, and the rest would wait.
     TEST(StdoutNonblocking, TheKernelConsoleTakesWhatFits)
     {
-        reset_nonblocking({-KOS_EBADF}, {3, -KOS_ETIMEDOUT});
-        expect_result(kickos::stdout_write("line\n", 5), 3u, -KOS_ETIMEDOUT);
+        reset_nonblocking({-KOS_EBADF}, {3, -KOS_EAGAIN});
+        expect_result(kickos::stdout_write("line\n", 5), 3u, -KOS_EAGAIN);
         EXPECT_EQ(g_kconsole, "lin");
+        reset_nonblocking({-KOS_EBADF}, {-KOS_EAGAIN});
+        errno = 0;
+        EXPECT_EQ(_write(1, "line\n", 5), -1);
+        EXPECT_EQ(errno, EAGAIN);
     }
 
     // A publish landing between the two sends the line to the endpoint after all.
@@ -445,9 +477,6 @@ namespace
         errno = 0;
         EXPECT_EQ(_write(1, "line\n", 5), 2);
         EXPECT_EQ(errno, 0);
-        reset({-KOS_ETIMEDOUT}, {});
-        EXPECT_EQ(_write(1, "line\n", 5), -1);
-        EXPECT_EQ(errno, EAGAIN);
         reset_nonblocking({-KOS_EAGAIN}, {});
         errno = 0;
         EXPECT_EQ(_write(1, "line\n", 5), -1);
@@ -486,7 +515,7 @@ namespace
     // A non-blocking task stops at the first byte that would make it wait.
     TEST(KosPrint, ANonBlockingTaskStopsWhereItWouldWait)
     {
-        reset_nonblocking({-KOS_EBADF}, {2, -KOS_ETIMEDOUT});
+        reset_nonblocking({-KOS_EBADF}, {2, -KOS_EAGAIN});
         kos_print("line\n");
         EXPECT_EQ(g_kconsole, "li");
         EXPECT_EQ(g_waiting_kconsole, 0);

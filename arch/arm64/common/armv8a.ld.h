@@ -379,8 +379,6 @@ ASSERT(_start == ORIGIN(BOOT),
        "KickOS: this node's entry is not at its own image base, so a peer started at the address the partition derives would fetch something other than _start")
 
 KICKOS_AMP_SHARED_FILLED_ASSERT()
-ASSERT(__kickos_amp_chip_end > __kickos_amp_chip_start,
-       "KickOS: .amp_shared.chip is empty: the console claim must be shared by every node")
 #endif
 
 KICKOS_APP_CODE_WINDOW_NONE()

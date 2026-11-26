@@ -394,6 +394,20 @@ config KICKOS_AMP_PORTS
 	  PORT 0 IS NOT REFUSED: it is the window layer's echo, answered with no thread
 	  involved, so naming it for a PEER is legal and an in-tree partition does it.
 
+config KICKOS_AMP_CONSOLES
+	string "The UART each node's kernel drives, one per node: /dev/uartN or none"
+	depends on KICKOS_AMP_POSTURE_OWN_IMAGE
+	default ""
+	help
+	  ONE list for the whole partition, in node order, read identically by every
+	  node's image. An entry /dev/uartN gives that node's kernel the UART for its
+	  console: its banner, fault records and panic go there, and its tasks write
+	  standard output there unless their composition names another node's
+	  service. An entry `none` gives the node's kernel no console at all; its
+	  tasks reach another node's console through a composition's
+	  `stdout: /amp/N`. genconfig.py refuses a list of the wrong length, a
+	  malformed entry and a UART named twice: no UART is shared.
+
 config KICKOS_DOORBELL_CORES
 	int
 	default KICKOS_AMP_PARTITION_CORES if KICKOS_AMP_POSTURE_OWN_IMAGE

@@ -28,7 +28,8 @@
 #                 tools/compose/tests/drivers/<board>/<driver>.yaml, the board's default with that
 #                 driver added, and each is admitted against that build's manifest; a composition of
 #                 a driver the catalogue does not list is not admitted; the rule is run again with
-#                 one composition dropped, and must refuse it
+#                 one composition dropped, and must refuse it. On an AMP node, a composition granting
+#                 another node's console is skipped, and each skip is printed with its reason
 #   installed     the tool an installed package carries, run from <tool-dir> on the manifest the
 #                 package installs and, when given, the default composition installed beside it
 #   tables        tools/compose/tests/round_trip.py: each golden's table emitted twice, compiled
@@ -175,6 +176,56 @@ catalogued_compositions() { # <catalogue> <paths> <board>
     done < "$2"
 }
 
+# The partition's consoles a manifest names, `<node> <device>` per line in node order; nothing for
+# a single-kernel build.
+amp_consoles() { # <manifest>
+    sed -n '/^  amp:$/,/^  [^ ]/s/^    consoles: \[\(.*\)\]$/\1/p' "$1" | tr ',' '\n' \
+        | sed 's/^ *//; s/ *$//; s/^"\(.*\)"$/\1/' | awk '{ print NR - 1, $0 }'
+}
+
+# The devices a composition grants, one per line. Only the flow form is read, so a composition
+# naming them otherwise is refused rather than read as granting none.
+granted_devices() { # <composition>
+    if grep -q '^ *devices:' "$1" && grep '^ *devices:' "$1" | grep -qv '^ *devices: *\['; then
+        fail "$1 lists its devices in a form this check does not read; write them as \`devices: [...]\`"
+    fi
+    sed -n 's/^ *devices: *\[\(.*\)\].*$/\1/p' "$1" | tr ',' '\n' | sed 's/^ *//; s/ *$//; s/^"\(.*\)"$/\1/'
+}
+
+# Of a list of driver compositions, the ones this manifest's node can be granted the devices of,
+# one per line into <admitted>, and one reason per line into <skipped> for each composition holding
+# another node's console.
+node_compositions() { # <compositions> <manifest> <admitted> <skipped>
+    _nc_node="$(sed -n '/^  amp:$/,/^  [^ ]/s/^    node: \([0-9][0-9]*\)$/\1/p' "$2")"
+    amp_consoles "$2" > "$TMP/nc_consoles"
+    : > "$3"
+    : > "$4"
+    while IFS= read -r _nc_path; do
+        granted_devices "$_nc_path" > "$TMP/nc_devices"
+        _nc_reason=""
+        while read -r _nc_k _nc_device; do
+            if [ "$_nc_device" = none ] || [ "$_nc_k" = "$_nc_node" ]; then
+                continue
+            fi
+            if grep -qxF "$_nc_device" "$TMP/nc_devices"; then
+                _nc_reason="$_nc_device is node $_nc_k's console"
+                break
+            fi
+        done < "$TMP/nc_consoles"
+        if [ -n "$_nc_reason" ]; then
+            echo "skipped on node $_nc_node: $_nc_path: $_nc_reason" >> "$4"
+        else
+            echo "$_nc_path" >> "$3"
+        fi
+    done < "$1"
+}
+
+# The drivers check's closing lines: its counts, then each skip with its reason.
+drivers_summary() { # <catalogue drivers> <admitted> <skipped>
+    echo "   $1 catalogue driver(s), $2 composition(s) admitted, $(wc -l < "$3") skipped"
+    sed 's/^/   /' "$3"
+}
+
 if [ "$MODE" = drivers ]; then
     MANIFEST="$3"
     BOARD="$4"
@@ -187,7 +238,26 @@ if [ "$MODE" = drivers ]; then
         sed "s|^|FAIL: no tools/compose/tests/drivers/$BOARD/|; s|$|.yaml for a driver of the catalogue|" "$TMP/missing" >&2
         fail "a packaged driver of the catalogue has no composition, see above"
     fi
-    catalogued_compositions "$TMP/catalogue" "$TMP/tracked" "$BOARD" > "$TMP/files"
+    catalogued_compositions "$TMP/catalogue" "$TMP/tracked" "$BOARD" > "$TMP/catalogued"
+    node_compositions "$TMP/catalogued" "$MANIFEST" "$TMP/files" "$TMP/skipped"
+    # The skip run on a partition of two nodes whose node 0 drives /dev/uart0 as its console.
+    _nd_c6="tools/compose/tests/drivers/esp32c6-wroom/c6uart.yaml"
+    grep -qxF "    devices: [/dev/uart0]" "$_nd_c6" \
+        || fail "$_nd_c6 no longer holds /dev/uart0, which the skip arms rest on"
+    echo "$_nd_c6" > "$TMP/arm_list"
+    for _nd_node in 0 1; do
+        printf 'target:\n  amp:\n    node: %d\n    nodes: 2\n    consoles: ["/dev/uart0", none]\nprotection:\n' \
+            "$_nd_node" > "$TMP/arm_manifest$_nd_node"
+    done
+    node_compositions "$TMP/arm_list" "$TMP/arm_manifest0" "$TMP/arm_admitted" "$TMP/arm_skipped"
+    grep -qxF "$_nd_c6" "$TMP/arm_admitted" && [ ! -s "$TMP/arm_skipped" ] \
+        || fail "the skip rule does not admit $_nd_c6 on node 0, whose console it drives"
+    node_compositions "$TMP/arm_list" "$TMP/arm_manifest1" "$TMP/arm_admitted" "$TMP/arm_skipped"
+    [ ! -s "$TMP/arm_admitted" ] || fail "the skip rule admits $_nd_c6 on node 1, which holds node 0's console"
+    drivers_summary 1 0 "$TMP/arm_skipped" > "$TMP/arm_summary"
+    grep -qxF "   1 catalogue driver(s), 0 composition(s) admitted, 1 skipped" "$TMP/arm_summary" \
+        && grep -qxF "   skipped on node 1: $_nd_c6: /dev/uart0 is node 0's console" "$TMP/arm_summary" \
+        || fail "a node whose only driver composition is skipped does not print the counts and why"
     if [ -s "$TMP/catalogue" ]; then
         read -r first < "$TMP/catalogue"
         grep -vxF "tools/compose/tests/drivers/$BOARD/$first.yaml" "$TMP/tracked" > "$TMP/arm_files"
@@ -258,7 +328,11 @@ elif [ "$MODE" = drivers ]; then
         compose_python -m kickos_compose admit "$@" --manifest "$MANIFEST"
         rc=$?
     fi
-    [ "$rc" -ne 0 ] || echo "   $(wc -l < "$TMP/catalogue") catalogue driver(s), $# composition(s) admitted"
+    if [ "$rc" -eq 0 ]; then
+        drivers_summary "$(wc -l < "$TMP/catalogue")" "$#" "$TMP/skipped"
+    else
+        sed 's/^/   /' "$TMP/skipped"
+    fi
 elif [ "$MODE" = installed ]; then
     compose_python -m kickos_compose manifest "$MANIFEST"
     rc=$?

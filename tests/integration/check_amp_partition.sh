@@ -12,13 +12,12 @@
 # The counts are keyed on the width, the round-trip clauses are not: node 0's app calls the
 # FIRST peer the partition names and no other.
 #
-# The peer's app announcement is also a console-contract witness: a normal claimant must
-# deliver one intact line even while other images print their own banners. The partition region
-# every node's task maps, `/shm/ampbook`, remains the authority for app liveness and crossings;
-# the console can drop a line if its bounded claim fails, so its contents cannot prove a peer ran.
+# Each node writes its own UART, or another node's through that node's relay, so each peer's app
+# announcement arrives as one whole line on serial 0 or serial 1. The partition region every
+# node's task maps, `/shm/ampbook`, remains the authority for app liveness and crossings.
 #
-# The order in which kernels reach the UART changes each run, so a change to this gate or its
-# image owes ten green runs:
+# The order in which nodes print changes each run, so a change to this gate or its image owes ten
+# green runs:
 #
 #   for i in $(seq 1 10); do ctest --test-dir <build> -R 'amp_partition|amp_peer_arms' || break; done
 #
@@ -55,13 +54,14 @@ echo "== building the partition artefact =="
     || fail "the amp_partition target did not build"
 [ -f "$ART" ] || fail "no artefact at $ART after building amp_partition"
 
+scratch_dir
+serial1_capture
 run_image "$ART"
+OUT1="$(serial1_out)"
 
-# Each peer holds the shared UART through its line, so its announcement must arrive whole
-# beside node 0's banner on the actual device.
 peer=1
 while [ "$peer" -lt "$NODES" ]; do
-    printf '%s\n' "$OUT" | grep -qE "^ampping: node $peer serves (port [0-9]+|no port)$" \
+    printf '%s\n%s\n' "$OUT" "$OUT1" | grep -qE "^ampping: node $peer serves (port [0-9]+|no port)$" \
         || fail "node $peer's console announcement is absent or torn"
     peer=$((peer + 1))
 done

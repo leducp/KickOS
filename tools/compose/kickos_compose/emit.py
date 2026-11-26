@@ -13,7 +13,7 @@ from .manifest import read_manifest
 from .partition import admit_partition, derive_gate, place_regions
 from .subset import File, Report, line_of, read_utf8
 from .region import ram_align, ram_size
-from .supply import arena_blocks, ring_block, status_block
+from .supply import FarStdout, arena_blocks, ring_block, status_block
 
 # The most entries of one kind, whose last index is then 0xFFFE.
 COUNT_LIMIT = 0xFFFF
@@ -302,7 +302,7 @@ def build(admitted):
     if admitted.ends.value != "never":
         table.ends_task = index[admitted.ends.value]
     table.init_priority = admitted.init_priority
-    if admitted.stdout != "kernel":
+    if admitted.stdout != "kernel" and not isinstance(admitted.stdout, FarStdout):
         table.usb_device_console = admitted.stdout.catalogue.usb_device
     runs = {}
     tasks = admitted.tasks
@@ -1052,7 +1052,10 @@ def render_fragment(admitted, table, source, gate=False):
     drivers = []
     clients = []
     stdout = "kernel"
-    if admitted.stdout != "kernel":
+    stdout_port = 255
+    if isinstance(admitted.stdout, FarStdout):
+        stdout_port = admitted.stdout.port
+    elif admitted.stdout != "kernel":
         stdout = admitted.stdout.driver
     for task in admitted.tasks:
         if task.driver is not None and task.driver not in drivers:
@@ -1072,6 +1075,7 @@ def render_fragment(admitted, table, source, gate=False):
         "set(KICKOS_COMPOSE_DRIVERS \"%s\")" % ";".join(drivers),
         "set(KICKOS_COMPOSE_CLIENTS \"%s\")" % ";".join(clients),
         "set(KICKOS_COMPOSE_STDOUT \"%s\")" % stdout,
+        "set(KICKOS_COMPOSE_STDOUT_PORT %d)" % stdout_port,
         "set(KICKOS_COMPOSE_HEAP %d)" % admitted.heap,
         "set(KICKOS_COMPOSE_GATE %d)" % int(gate),
         "set(KICKOS_COMPOSE_USB_DEVICE_CONSOLE %d)" % int(table.usb_device_console),

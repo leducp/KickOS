@@ -7,6 +7,7 @@
 #include "amp_hold_seam.h"
 
 #include <kickos/arch/arch.h>
+#include <kickos/stdout_port.h>
 
 namespace kickos
 {
@@ -31,6 +32,9 @@ namespace kickos
 
 extern "C"
 {
+    // The composition's `stdout: /amp/3`, the port the peer serves.
+    unsigned char const kickos_stdout_port = 3u;
+
     void arch_ipi_send(uint32_t cores)
     {
         kickos::amphold::g_raises++;

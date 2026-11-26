@@ -1431,9 +1431,6 @@ extern "C" void kickos_amp_node_service(void)
         ::kickos::endpoint_far_held_withdrawn(lock);
         ::kickos::amp::ring_flush(me);
     }
-#if KICKOS_AMP_CONSOLE_CLAIM
-    ::kickos::console_claim_rung(lock);
-#endif
 }
 
 #endif

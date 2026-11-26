@@ -193,17 +193,9 @@ namespace kickos
 
     namespace
     {
-#if KICKOS_AMP_CONSOLE_CLAIM
-        // Whether a writer parked on a claim since the last ring.
-        bool g_claim_waiting = false;
-#endif
-
         // What holds a console writer parked, asked under the same lock as the park.
         enum ConsoleHold
         {
-#if KICKOS_AMP_CONSOLE_CLAIM
-            HOLD_CLAIM,
-#endif
             HOLD_LINE,
             HOLD_DARK,
             HOLD_ROOM,
@@ -239,23 +231,6 @@ namespace kickos
                         return UNHELD;
                     }
                 }
-#if KICKOS_AMP_CONSOLE_CLAIM
-                // Masked from the mark to the park: a release in between rings a doorbell that
-                // is taken once this thread is parked.
-                if (hold == HOLD_CLAIM)
-                {
-                    uint32_t const left_us = arch_console_claim_wait();
-                    if (left_us == 0)
-                    {
-                        // The take cleared this node's mark, which a release already reading the
-                        // marks may now miss: a writer still parked here offers again instead.
-                        console_claim_rung(lock);
-                        return UNHELD;
-                    }
-                    g_claim_waiting = true;
-                    wait_ns = static_cast<uint64_t>(left_us) * 1000u;
-                }
-#endif
                 epoch = park_queueless(ask)(c, WAIT_CONSOLE, nullptr, lock);
                 uint64_t deadline = KOS_LIMIT_NONE;
                 if (wait_ns != KOS_LIMIT_NONE)
@@ -286,8 +261,8 @@ namespace kickos
 
     namespace
     {
-        // Another context mid-line: UNHELD where none is, else the park's answer, the end of
-        // that line's grant read as 0.
+        // Another context mid-line: UNHELD where none is, else the park's answer, a retry's
+        // deadline read as 0.
         int console_line_park(void)
         {
             int const rc = console_park(HOLD_LINE, 0, 0);
@@ -318,40 +293,6 @@ namespace kickos
         }
         return rc;
     }
-
-#if KICKOS_AMP_CONSOLE_CLAIM
-    int console_claim_wait(void)
-    {
-        int const line = console_line_park();
-        if (line != UNHELD)
-        {
-            return line;
-        }
-        int const rc = held_or_zero(console_park(HOLD_CLAIM, 0, 0));
-        if (rc != -KOS_ETIMEDOUT)
-        {
-            return rc;
-        }
-        // At the deadline one masked offer more, never a second park: it takes the ended grant and
-        // clears this node's mark.
-        IrqLock lock;
-        if (arch_console_claim_wait() == 0)
-        {
-            console_claim_rung(lock);
-        }
-        return 0;
-    }
-
-    void console_claim_rung(Held held)
-    {
-        if (not g_claim_waiting)
-        {
-            return;
-        }
-        g_claim_waiting = false;
-        console_dark_wake(held);
-    }
-#endif
 
     void console_publish_drain(void)
     {

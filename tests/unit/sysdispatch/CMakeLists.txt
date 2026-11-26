@@ -97,7 +97,7 @@ kickos_add_kseam(kickos_kseam_sysdispatch_region
   INCLUDES "${_k}/syscall" "${CMAKE_CURRENT_SOURCE_DIR}")
 kickos_add_unit_test(NAME sys_ram_clear SOURCES ram_clear.cc
   LIBRARIES kickos_kseam_sysdispatch_region)
-kickos_add_unit_test(NAME spawn_unwind SOURCES spawn_unwind.cc task_stop.cc spawn_badge.cc program_create.cc
+kickos_add_unit_test(NAME spawn_unwind SOURCES spawn_unwind.cc task_stop.cc spawn_badge.cc spawn_stdout.cc program_create.cc
   driver_create.cc
   LIBRARIES kickos_kseam_sysdispatch_region)
 # The region posture with the partition's user share in the arena, which the gate's link places

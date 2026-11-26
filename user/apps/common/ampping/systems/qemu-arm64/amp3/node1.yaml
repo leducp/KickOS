@@ -3,7 +3,7 @@
 
 version: 1
 board: qemu-arm64
-stdout: kernel
+stdout: /amp/6
 ends: never
 heap: 16384
 

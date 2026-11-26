@@ -5,7 +5,8 @@ version: 1
 board: esp32c6-wroom
 stdout: kernel
 ends: main
-heap: 0
+# The least heap that holds newlib's stdout buffer, so a printed line leaves in one write.
+heap: 1032
 accepts: [no_protection, no_privilege_split]
 
 shared:
@@ -24,3 +25,12 @@ tasks:
     devices: [/dev/timg0]
     uses: [/amp/3]
     maps: { /shm/ampbook: rw }
+
+  # Node 1's standard output, each message written whole on this node's console.
+  - name: relay
+    program: amprelay
+    stack: 8192
+    priority: 5
+    ceiling: 5
+    serves: /amp/6
+    budgets: { threads: 1 }

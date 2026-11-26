@@ -18,6 +18,7 @@
 #include <kickos/ampwindow.h>
 #include <kickos/arch/arch.h>
 #include <kickos/cap.h>
+#include <kickos/diag.h>
 #include <kickos/endpoint.h>
 #include <kickos/instance.h>
 #include <kickos/irqlock.h>
@@ -2536,6 +2537,77 @@ namespace kickos
             EXPECT_EQ(c->call_state, CALL_REPLY_WAIT);
             EXPECT_EQ(amp::counts(ME).reply_drop.load(), drops + 1u);
             EXPECT_EQ(reply_ring().tail.v[0].load(), tail_before + 1u);
+        }
+
+        // `stdout: /amp/3`: root's slot 0, and a child's, name the far endpoint of the peer's port,
+        // and a send there is published on the peer's ring.
+        TEST_F(AmpHold, a_far_stdout_is_seated_on_root_and_on_every_child)
+        {
+            Thread* const root = seat_pool(0, PRIO_RECEIVER);
+            attach_caps(root, KICKOS_SEAM_CAP_WIDTH);
+            amp_ports_seat(root);
+            CapEntry const* const out = cap_lookup(root, KOS_CAP_STDOUT);
+            ASSERT_NE(out, nullptr);
+            ASSERT_EQ(out->type, static_cast<uint8_t>(CapType::CAP_ENDPOINT));
+            Endpoint const* const far = kernel().endpoints.resolve(cap_obj(*out));
+            ASSERT_TRUE(endpoint_is_far(far));
+            EXPECT_EQ(endpoint_far_node(far), PEER);
+            EXPECT_EQ(far->far_port, 3u);
+            EXPECT_EQ(out->rights, CAP_SIGNAL);
+
+            Thread* const child = seat_pool(1, PRIO_BELOW);
+            attach_caps(child, KICKOS_SEAM_CAP_WIDTH);
+            {
+                IrqLock lock;
+                ASSERT_TRUE(cap_stdout_reserve(child->task));
+                cap_install_defaults(child, lock);
+            }
+            CapEntry const* const seated = cap_lookup(child, KOS_CAP_STDOUT);
+            ASSERT_NE(seated, nullptr);
+            EXPECT_EQ(cap_obj(*seated), cap_obj(*out));
+
+            {
+                IrqLock lock;
+                sched::reschedule(nullptr, lock);
+            }
+            ASSERT_EQ(sched::current(), root);
+            amp::Ring& peer_ring = amp::ring_for(amp::Class::CALL, PEER, ME);
+            uint32_t const head = peer_ring.head.v[OUTBOUND.index].load();
+            uint8_t const line[5] = {'l', 'i', 'n', 'e', '\n'};
+            EXPECT_EQ(endpoint_send(KOS_CAP_STDOUT, reinterpret_cast<uintptr_t>(line), sizeof(line),
+                                    KOS_LIMIT_NONE),
+                      static_cast<int32_t>(sizeof(line)));
+            EXPECT_EQ(peer_ring.head.v[OUTBOUND.index].load(), head + 1u);
+        }
+
+        // A far stdout send takes one console chunk and leaves the rest to be offered again, so
+        // the owner writes each message it receives as one chunk of its console.
+        TEST_F(AmpHold, a_far_stdout_send_takes_one_console_chunk)
+        {
+            Thread* const root = seat_pool(0, PRIO_RECEIVER);
+            attach_caps(root, KICKOS_SEAM_CAP_WIDTH);
+            amp_ports_seat(root);
+            {
+                IrqLock lock;
+                sched::reschedule(nullptr, lock);
+            }
+            ASSERT_EQ(sched::current(), root);
+            amp::Ring& peer_ring = amp::ring_for(amp::Class::CALL, PEER, ME);
+            uint32_t const head = peer_ring.head.v[OUTBOUND.index].load();
+            uint8_t line[200];
+            memset(line, 'x', sizeof(line));
+            ASSERT_EQ(endpoint_send(KOS_CAP_STDOUT, reinterpret_cast<uintptr_t>(line), sizeof(line),
+                                    KOS_LIMIT_NONE),
+                      static_cast<int32_t>(KICKOS_KCONSOLE_CHUNK));
+            EXPECT_EQ(peer_ring.slot[OUTBOUND.base + head % OUTBOUND.slots].len.load(),
+                      KICKOS_KCONSOLE_CHUNK);
+            size_t const rest = sizeof(line) - KICKOS_KCONSOLE_CHUNK;
+            ASSERT_EQ(endpoint_send(KOS_CAP_STDOUT,
+                                    reinterpret_cast<uintptr_t>(line + KICKOS_KCONSOLE_CHUNK), rest,
+                                    KOS_LIMIT_NONE),
+                      static_cast<int32_t>(rest));
+            EXPECT_EQ(peer_ring.slot[OUTBOUND.base + (head + 1u) % OUTBOUND.slots].len.load(), rest);
+            EXPECT_EQ(peer_ring.head.v[OUTBOUND.index].load(), head + 2u);
         }
 
         // A local port's binding names its endpoint by slot index, so closing the capability

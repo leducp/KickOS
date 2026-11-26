@@ -16,6 +16,9 @@ target_include_directories(kickos_system INTERFACE
 # libs that build unprivileged but are system board support.
 add_subdirectory(driver)
 
+# The stock services a composition runs as programs, chip-agnostic.
+add_subdirectory(service)
+
 # A system target's init (docs/design-m10-target.md, sections 1 and 5): the walk over the emitted
 # table and kickos_init_entry. Objects rather than an archive, so the link always takes them. No
 # image links it here: a system target carries it as KickOS::init.

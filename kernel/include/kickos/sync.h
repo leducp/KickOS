@@ -141,17 +141,6 @@ namespace kickos
     // nanoseconds to wait before offering again. Caller holds IrqLock.
     uint64_t console_line_wait(Thread const* t, Held held);
 
-#if KICKOS_AMP_CONSOLE_CLAIM
-    // Park the calling writer while a node's claim on a shared UART refuses its line, until that
-    // claim's release rings this node (console_claim_rung) or the grant's deadline, or while
-    // another thread of this node speaks, until its line ends or its grant does. 0 to offer the
-    // line again, or -KOS_ECANCELED where the caller is cancelled, before or during it. Caller
-    // holds no lock.
-    int console_claim_wait(void);
-    // The doorbell service's half: wakes the writers console_claim_wait parked.
-    void console_claim_rung(Held held);
-#endif
-
     // After blocking, release IrqLock and call wq_confirm_resume before reading
     // waker-written state such as wait_result:
     //   { IrqLock lock; epoch = wq_block(ask)(q, kind, obj, nullptr); }

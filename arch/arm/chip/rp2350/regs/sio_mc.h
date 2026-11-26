@@ -27,8 +27,7 @@ namespace kickos::rp2350::reg::sio
     // deasserts only once every IN bit is clear.
     //
     // RP2350-E2: spinlock writes are mirrored 0x80 up, so a write at and above +0x180
-    // releases the spinlock 0x80 below it. These four free SPINLOCK0-3. The AMP console
-    // claim is SPINLOCK31, whose mirror at +0x1FC nothing in this tree writes.
+    // releases the spinlock 0x80 below it. These four free SPINLOCK0-3.
     constexpr uintptr_t DOORBELL_OUT_SET = BASE + 0x180u;
     constexpr uintptr_t DOORBELL_OUT_CLR = BASE + 0x184u;
     constexpr uintptr_t DOORBELL_IN_SET = BASE + 0x188u;

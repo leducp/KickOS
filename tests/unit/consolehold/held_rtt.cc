@@ -69,7 +69,7 @@ TEST(ConsoleHeldRtt, ARefusedUserLineIsNotOnRtt)
         {
         }
         g_rtt.clear();
-        EXPECT_EQ(kickos::kconsole_write_user("line\n", 5, false), -KOS_ETIMEDOUT);
+        EXPECT_EQ(kickos::kconsole_write_user("line\n", 5, false), -KOS_EAGAIN);
         EXPECT_EQ(g_rtt, "") << "a line the console refused reached RTT";
     });
 }

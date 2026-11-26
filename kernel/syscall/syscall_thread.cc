@@ -1266,11 +1266,19 @@ namespace kickos
             spawn_unwind(k, attr, tk, stack, stack_size, i);
             return -KOS_EOVERFLOW; // an object refcount is at its ceiling
         }
+        if (not cap_stdout_reserve(tk))
+        {
+            spawn_refs_undo(deleg_kind, deleg_obj, ncaps);
+            cap_slab_detach(attr.cap_dir, &attr.cap_free_head, &attr.cap_width);
+            spawn_unwind(k, attr, tk, stack, stack_size, i);
+            return -KOS_EOVERFLOW;
+        }
         if (into == nullptr)
         {
             kos_thread_t const named = k.threads.handle_for(i);
             if (not kaccess_to_user(user_space_of(spawner), out, &named, sizeof(named)))
             {
+                cap_stdout_unreserve(tk);
                 spawn_refs_undo(deleg_kind, deleg_obj, ncaps);
                 cap_slab_detach(attr.cap_dir, &attr.cap_free_head, &attr.cap_width);
                 spawn_unwind(k, attr, tk, stack, stack_size, i);

@@ -22,3 +22,12 @@ tasks:
     authority: [system]
     uses: [/amp/3, /amp/5]
     maps: { /shm/ampbook: rw }
+
+  # Node 1's standard output, each message written whole on this node's console.
+  - name: relay
+    program: amprelay
+    stack: 8192
+    priority: 5
+    ceiling: 5
+    serves: /amp/6
+    budgets: { threads: 1 }

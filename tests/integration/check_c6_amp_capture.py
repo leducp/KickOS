@@ -50,6 +50,7 @@ def main() -> None:
             f"HP clock {self_clk} Hz is not the 160 MHz the boot's PLL bring-up selects")
     require(node1 <= (vector & ~3) < node1_end and (vector & 3) == 1, "vectors",
             f"LP mtvec {vector:#x} is outside its HP-SRAM image or not vectored")
+    one("relay", r"^ampping: node 1 serves port 3$", log)
     one("alive", r"^ampping: 2 of 2 node app\(s\) alive on the port the partition names, own row 1$", log)
     own, held, foreign = (int(v, 16) for v in one(
         "gate", r"^ampping: gate: node 0 read 0x([0-9a-f]+) from its timg0, "
@@ -77,7 +78,8 @@ def main() -> None:
     require(not panics, "panic", f"a panic or fault banner in the capture: {panics[0] if panics else ''}")
     require("=== THREAD FAULT ===" not in log, "fault", "a thread fault in the capture, where none is expected")
     print(f"PASS: ESP32-C6 HP/LP AMP, four far replies, LP served record {served}, "
-          f"LP timg1 {held:#x}, node 0's timg0 and node 0's word at {word:#x} denied")
+          f"LP timg1 {held:#x}, node 0's timg0 and node 0's word at {word:#x} denied, "
+          f"the LP's announcement whole through the HP relay")
 
 
 if __name__ == "__main__":

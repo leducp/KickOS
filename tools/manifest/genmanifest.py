@@ -134,6 +134,9 @@ def manifest(facts, knobs):
         }
         if knob(knobs, "KICKOS_AMP_OWN_IMAGE", 0):
             target["amp"]["image"] = "own"
+            consoles = string_knob(knobs, "KICKOS_AMP_CONSOLES")
+            if consoles:
+                target["amp"]["consoles"] = consoles.split(",")
         if knobs.get("KICKOS_AMP_PARTITION_BASE") and facts["amp"].get("slices") \
                 and knobs.get("KICKOS_AMP_SHARED_SIZE"):
             at = knob(knobs, "KICKOS_AMP_PARTITION_BASE")

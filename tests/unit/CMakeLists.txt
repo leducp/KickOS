@@ -42,8 +42,8 @@ if(KICKOS_BUILD_UNIT_TESTS)
 
   # Independent targets; consumers of shared fixture libraries follow their providers.
   foreach(_unit IN ITEMS
-      ampconsole amphold ampreset ampshare ampwindow atomiccas c6apm ccrbringup clockbringup consolebaud consoleline consoleown
-      consolering consoletxsmp ctxredirect dcacheplan
+      amphold amprelay ampreset ampshare ampwindow atomiccas c6apm ccrbringup clockbringup consolebaud consoleline
+      consoleown consolering consoletxsmp ctxredirect dcacheplan
       deathspace doorbell drvbringup fastrefuse faultline flashmmu frame fusedwake gthrtimed grantaperture grantlookup
       grantnocache
       heapbreak imagecheck imagecrt0 imxrtgate initwalk irqquiesce isrresume kstring

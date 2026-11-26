@@ -13,6 +13,7 @@
 #include <kickos/kernel.h>
 #include <kickos/kruntime.h>
 #include <kickos/sched.h>
+#include <kickos/stdout_port.h>
 #include <kickos/sync.h>
 #include <kickos/task.h>
 #include <kickos/thread.h>
@@ -600,6 +601,11 @@ namespace kickos
             // Handle far endpoints before checking recv_holders: they have no local receiver.
             if (endpoint_is_far(e))
             {
+                // The owner writes each message as one write, so a far stdout send is one chunk.
+                if ((cap & KCAP_INDEX_MASK) == KOS_CAP_STDOUT and len > KICKOS_KCONSOLE_CHUNK)
+                {
+                    len = KICKOS_KCONSOLE_CHUNK;
+                }
                 int32_t const rc = far_send_or_park(c, e, buf, len, amp::REPLY_TAG_NONE, badge,
                                                     limit, ask, out_epoch, lock);
                 if (rc == PARKED)
@@ -1656,6 +1662,23 @@ namespace kickos
                 kpanic(diag::kBootAmpSlot);
             }
         }
+        if (kickos_stdout_port == KICKOS_STDOUT_PORT_NONE)
+        {
+            return;
+        }
+        for (uint32_t i = 0; i < amp::PORT_COUNT; i++)
+        {
+            if (amp::PORT_PORT[i] != kickos_stdout_port or amp::PORT_NODE[i] == amp::SELF_NODE)
+            {
+                continue;
+            }
+            CapEntry const* const e = cap_lookup(root, KICKOS_CAP_FIRST_DYNAMIC + i);
+            if (e != nullptr and cap_stdout_far_seat(root, cap_obj(*e), lock))
+            {
+                return;
+            }
+        }
+        kpanic(diag::kBootAmpStdout);
     }
 #endif
 }

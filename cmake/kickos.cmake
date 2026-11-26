@@ -631,7 +631,8 @@ endfunction()
 #   -smp is what makes a multi-core build's cores exist, and under one image per node the
 #   machine's cores and memory are the PARTITION's: sized from KICKOS_NUM_CORES instead, a PSCI
 #   CPU_ON would fail on the one CPU the machine has and its DRAM would end below the region
-#   every node writes.
+#   every node writes. A peer node's image runs only as node 0 starts it, so out_machine is empty
+#   on a peer node's build.
 # ---------------------------------------------------------------------------
 function(kickos_qemu_machine board out_env out_machine)
   if(NOT board STREQUAL KICKOS_BOARD)
@@ -647,7 +648,8 @@ function(kickos_qemu_machine board out_env out_machine)
   if(ARGC GREATER 3)
     set(${ARGV3} ${_cpus} PARENT_SCOPE)
   endif()
-  if("${KICKOS_QEMU_MACHINE}" STREQUAL "")
+  if("${KICKOS_QEMU_MACHINE}" STREQUAL ""
+     OR (KICKOS_AMP_NODE AND KICKOS_AMP_OWN_IMAGE AND NOT KICKOS_AMP_NODE_ID EQUAL 0))
     set(${out_env} "" PARENT_SCOPE)
     set(${out_machine} "" PARENT_SCOPE)
     return()

@@ -337,9 +337,9 @@ namespace
     }
 
     // A count the console legally answers for a line of n bytes shorter than one syscall
-    // chunk: a published console hands a served thread's line back to its stdout, a
-    // partition's claim can end inside it, and anything else takes it whole. A hand-back is
-    // checked against the endpoint, whose zero-length send is taken only where it serves.
+    // chunk: a published console hands a served thread's line back to its stdout, and anything
+    // else takes it whole. A hand-back is checked against the endpoint, whose zero-length send is
+    // taken only where it serves.
     bool console_count_ok(int32_t took, size_t n)
     {
         if (took == -KOS_EBUSY)
@@ -350,11 +350,7 @@ namespace
             return false;
 #endif
         }
-#if KICKOS_AMP_OWN_IMAGE && KICKOS_CONSOLE_CHIP
-        return took > 0 and static_cast<size_t>(took) <= n;
-#else
         return took == static_cast<int32_t>(n);
-#endif
     }
 
 #if defined(ST_TRAP_SCRATCH_REGS)

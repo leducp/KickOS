@@ -3,9 +3,10 @@
 
 version: 1
 board: esp32c6-wroom
-stdout: kernel
+stdout: /amp/6
 ends: never
-heap: 0
+# The least heap that holds newlib's stdout buffer, so a printed line leaves in one write.
+heap: 1032
 accepts: [no_protection, no_privilege_split]
 
 shared:

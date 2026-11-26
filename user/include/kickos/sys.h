@@ -27,14 +27,12 @@ extern "C"
 // returns bytes written (a len-0 write is a legitimate 0), or with none completed -KOS_EBUSY (a
 // driver owns the console and this thread's stdout send would be taken now; send there instead),
 // -KOS_EFAULT for a buffer the caller cannot read, or -KOS_ECANCELED for a writer cancelled while
-// it waited. A full transmit ring or a peer node holding a shared UART makes it WAIT, with no
-// bound, as a pipe's writer waits, and so does the DARK WINDOW, a console driver's task dead and
-// the kernel's reclaim of the device not landed yet, until the reclaim or a publish. THE COUNT CAN
-// BE SHORT: the walk stops at the first byte the console cannot take. On an AMP UART, CR can
-// precede an uncounted newline; retrying from the reported count sends its LF without repeating
-// CR. A page unmapped mid-write stops it too, the chunks spanning no lock. With
-// KOS_KCONSOLE_NOWAIT in `flags` it never waits: it is answered -KOS_ETIMEDOUT instead, and any
-// other flag is refused -KOS_EINVAL.
+// it waited. A full transmit ring makes it WAIT, with no bound, as a pipe's writer waits, and so
+// does the DARK WINDOW, a console driver's task dead and the kernel's reclaim of the device not
+// landed yet, until the reclaim or a publish. THE COUNT CAN BE SHORT: the walk stops at the first
+// byte the console cannot take. A page unmapped mid-write stops it too, the chunks spanning no
+// lock. With KOS_KCONSOLE_NOWAIT in `flags` it never waits: it is answered -KOS_EAGAIN instead,
+// and any other flag is refused -KOS_EINVAL.
 // It is the raw call: a line no route carries to the wire, a driver owning the UART or the
 // caller's own task holding it, is reported taken and dropped.
 int32_t kos_kconsole_write(void const* buf, size_t len, uint32_t flags);

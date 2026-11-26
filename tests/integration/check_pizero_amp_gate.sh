@@ -11,9 +11,9 @@
 # A finding is `FAIL: <token>: <prose>`, the token a planted row of
 # tests/static/check_app_judges.sh names.
 #
-# Only a capture is judged: no emulator runs this partition. Both kernels print a banner per
-# boot, so the boot judged opens at the last banner ahead of the last readback line, which
-# node 0 prints before it launches node 1.
+# Only a capture is judged: no emulator runs this partition. Node 0's kernel alone has a console,
+# and node 1's tasks write through node 0's relay, so the boot judged opens at the last banner
+# ahead of the last readback line, which node 0 prints before it launches node 1.
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
@@ -51,8 +51,8 @@ one() { # <ere> <token> <what>
 }
 
 _banners="$(printf '%s\n' "$OUT" | grep -cE "$BANNER_RE")"
-if [ "$_banners" -gt 2 ]; then
-  bad "banners: $_banners banners in the judged boot, which two kernels print two of"
+if [ "$_banners" -gt 1 ]; then
+  bad "banners: $_banners banners in the judged boot, where node 1's kernel has no console"
 fi
 
 # Node 0 granted UART0, which runs on core 0: DBG, CORE0, SP and SU set; CORE1, NSP and NSU
@@ -67,6 +67,7 @@ if one "$READBACK_RE" readback "UART0's ACCESSCTRL readback"; then
 fi
 
 one "^ampping: gate: node 0 read 0x11 from its uart0$" gate "node 0's read of its uart0"
+one '^ampping: node 1 serves port 3$' relay "node 1's announcement through node 0's relay"
 
 _faults="$(printf '%s\n' "$OUT" | grep -c '=== THREAD FAULT ===')"
 if [ "$_faults" -ne 0 ]; then
@@ -95,4 +96,4 @@ fi
 if [ "$rc" -ne 0 ]; then
   exit 1
 fi
-echo "PASS: ACCESSCTRL reads back UART0 as node 0's core's alone; node 0 read 0x11; four rounds across"
+echo "PASS: ACCESSCTRL reads back UART0 as node 0's core's alone; node 0 read 0x11; node 1's announcement came whole through node 0's relay; four rounds across"

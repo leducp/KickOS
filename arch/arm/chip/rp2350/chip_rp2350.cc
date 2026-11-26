@@ -27,11 +27,22 @@
 #include "regs/sio.h"
 #include "regs/timer.h"
 #include "../rp2xxx/rp2xxx.h"
-#include "console_claim.h"
 #include "regs.h"
 
 namespace reg = kickos::rp2350::reg;
 namespace irq = kickos::rp2350::irq;
+
+#if defined(KICKOS_AMP_CONSOLE_UART)
+#if KICKOS_AMP_CONSOLE_UART == 0
+static_assert(KICKOS_BOARD_CONSOLE_BASE == kickos::rp2350::mmap::UART0_BASE,
+              "KICKOS_AMP_CONSOLES gives this node /dev/uart0, which is not the board's console");
+#elif KICKOS_AMP_CONSOLE_UART == 1
+static_assert(KICKOS_BOARD_CONSOLE_BASE == kickos::rp2350::mmap::UART1_BASE,
+              "KICKOS_AMP_CONSOLES gives this node /dev/uart1, which is not the board's console");
+#else
+#error "KICKOS_AMP_CONSOLES names a UART the RP2350 does not have: it has /dev/uart0 and /dev/uart1"
+#endif
+#endif
 
 using kickos::rp2xxx::ATOMIC_CLR;
 using kickos::rp2xxx::unreset;
@@ -106,97 +117,6 @@ namespace
 #endif
 }
 
-#if KICKOS_AMP_OWN_IMAGE
-namespace
-{
-    // Read by a peer whose own claim failed, so they live where both nodes look. Zeroed by the
-    // primary before any peer runs. SPINLOCK31 serialises the owner's and deadline's writers and
-    // the fences carry the ordering, so the fields carry none.
-    KICKOS_AMP_SHARED("chip") kickos::rp2350::console::Word g_console_owner = 0;
-    KICKOS_AMP_SHARED("chip") kickos::rp2350::console::Word g_console_deadline = 0;
-    KICKOS_AMP_SHARED("chip")
-    kickos::rp2350::console::Word g_console_waiting[KICKOS_AMP_NODES] = {};
-
-    kickos::rp2350::console::Claim g_claim{KICKOS_AMP_NODE_ID + 1u, g_console_owner,
-                                           g_console_deadline, g_console_waiting,
-                                           KICKOS_AMP_NODES};
-}
-
-namespace kickos::rp2350::console
-{
-    uint32_t now(void)
-    {
-        return r32(reg::timer::TIMERAWL);
-    }
-
-    bool lock_take(void)
-    {
-        return r32(reg::sio::SPINLOCK31) != 0;
-    }
-
-    void lock_free(void)
-    {
-        r32(reg::sio::SPINLOCK31) = 1u;
-    }
-
-    void fence(void)
-    {
-        __asm volatile("dsb" ::: "memory");
-    }
-
-    void ring(uint32_t node)
-    {
-        arch_ipi_send(1u << kickos_amp_node_core(node));
-    }
-}
-
-namespace kickos::rp2xxx
-{
-    bool console_claim(void)
-    {
-        return g_claim.claim();
-    }
-
-    // A kernel line keeps interrupts open between attempts: a peer may hold the UART for a
-    // whole hold. A user writer makes one attempt and parks in the kernel instead.
-    bool console_claim_open(bool spin)
-    {
-        using kickos::rp2350::console::HOLD_MAX_US;
-        uint32_t const waited_from = r32(reg::timer::TIMERAWL);
-        for (uint32_t i = 0; i < KICKOS_POLL_SPIN_MAX; i++)
-        {
-            arch_irq_state_t const irq = arch_irq_save();
-            bool const held = g_claim.try_open();
-            arch_irq_restore(irq);
-            if (held)
-            {
-                return true;
-            }
-            if (not spin or (r32(reg::timer::TIMERAWL) - waited_from) >= HOLD_MAX_US)
-            {
-                return false;
-            }
-        }
-        return false;
-    }
-
-    void console_drop(bool ended_line)
-    {
-        g_claim.drop(ended_line);
-    }
-}
-
-extern "C" uint32_t arch_console_claim_wait(void)
-{
-    return g_claim.wait();
-}
-
-extern "C" uint32_t arch_console_claim_left(void)
-{
-    return g_claim.left_us();
-}
-#endif
-
 extern "C"
 {
 
@@ -206,9 +126,8 @@ void arch_init(void)
     // running clock. IO_BANK0/PADS_BANK0/TIMER0 run off clk_sys/clk_ref, live off the ROSC at
     // reset; UART1 runs off clk_peri, OFF until clocks_init, so releasing it BEFORE that hangs the
     // boot.
-    // The clock tree, the resets and the console UART are partition-wide, so only the PRIMARY
-    // brings them up: a peer re-entering clocks_init stops clk_sys under a primary executing off
-    // those PLLs, an unrecoverable lock-up, and resets UART1 mid-transmission.
+    // The clock tree is partition-wide, so only the PRIMARY brings it up: a peer re-entering
+    // clocks_init stops clk_sys under a primary executing off those PLLs, an unrecoverable lock-up.
     //
     // A peer still owes its own SystemCoreClock, installed from the primary's resolved answer and
     // never re-derived.
@@ -227,16 +146,22 @@ void arch_init(void)
         accessctrl_close_nonsecure();
         unreset(reg::resets::IO_BANK0 | reg::resets::PADS_BANK0 | reg::resets::TIMER0);
         kickos::rp2xxx::clocks_init();
-        unreset(reg::resets::UART1);
-        kickos::rp2xxx::console_uart_init();
+    }
+    // UART1 is brought up by the node whose console it is, its clk_peri by the primary alone.
+#if KICKOS_RP2XXX_CONSOLE
+    unreset(reg::resets::UART1);
+    kickos::rp2xxx::console_uart_init();
+#endif
+#if KICKOS_AMP_OWN_IMAGE
+    if (KICKOS_AMP_NODE_ID == 0)
+#endif
+    {
         if (kickos_usb_device_console != 0)
         {
             kickos::rp2xxx::usb_clock_init();
         }
 #if KICKOS_AMP_OWN_IMAGE
         g_amp_clk_sys_hz = SystemCoreClock;
-        // Before any peer exists, so the release cannot land on a claim in progress.
-        r32(reg::sio::SPINLOCK31) = 1u;
 #endif
     }
 #if KICKOS_HAVE_MPU
@@ -253,15 +178,12 @@ void arch_init(void)
 
 console_tx_backend const* arch_console_tx_backend(int* irq_line)
 {
-#if KICKOS_AMP_OWN_IMAGE
-    // No buffered path on a partition: "TX IRQ enabled whenever the ring is non-empty" holds of
-    // ONE ring, and IMSC.TXIM is one bit over two rings. UART1_IRQ reaches both cores' controllers
-    // (3.2), so whichever node's drain empties first clears the bit the other's bytes wait on.
-    (void)irq_line;
-    return nullptr;
-#else
+#if KICKOS_RP2XXX_CONSOLE
     *irq_line = irq::UART1_IRQ;
     return &kickos::rp2xxx::console_backend;
+#else
+    (void)irq_line;
+    return nullptr;
 #endif
 }
 
