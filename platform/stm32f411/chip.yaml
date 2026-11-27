@@ -28,10 +28,18 @@ devices:
   iwdg: { window: [0x40003000, 0x400], ref: "Table 1, p.39" }
   # Windows are the minimal PMSAv7 cover of the registers a driver uses, not the device's
   # whole 1 KiB bus slot.
+  usart1:
+    window: [0x40011000, 0x20]
+    ref: "Table 1, p.39"
+    lines: { global: { number: 37, symbol: USART1_IRQ, ref: "Table 37 Vector table, p.204" } }
   usart2:
     window: [0x40004400, 0x20]
     ref: "Table 1, p.39"
     lines: { global: { number: 38, symbol: USART2_IRQ, ref: "Table 37 Vector table, p.204" } }
+  usart6:
+    window: [0x40011400, 0x20]
+    ref: "Table 1, p.39"
+    lines: { global: { number: 71, symbol: USART6_IRQ, ref: "Table 37 Vector table, p.205" } }
   spi1: { window: [0x40013000, 0x20], lines: { global: 35 }, ref: "Table 1, p.39" }
   # The bus matrix's masters but the core (2.1 System architecture, p.36).
   dma1: { window: [0x40026000, 0x400], bus_master: true, ref: "Table 1, p.38" }

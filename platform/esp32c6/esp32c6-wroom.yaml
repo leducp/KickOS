@@ -14,7 +14,7 @@ console:
 
 leds:
   # LED2, a WS2812B on GPIO8, which is a strapping pin too.
-  led2: { pin: GPIO8, kind: addressable, owner: kernel }
+  led2: { pin: GPIO8, kind: addressable, diagnostic: true }
 
 # Pins the board has already spent, which no composition may mux.
 reserved_pins:

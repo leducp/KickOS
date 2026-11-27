@@ -4,21 +4,13 @@
 // A program's task entry, apart from kickos_task_entry so that only a program's image links
 // exit() and what it runs.
 
-#include <kickos/sys/init.h>
 #include <kickos/sys/task_enter.h>
 
 #include <stdlib.h>
 
 extern "C" void kickos_program_run(kos_table_task const* t, kos_task_args* a)
 {
-    int argc = static_cast<int>(a->argc);
-    char** argv = a->argv;
-    if (argc == 0)
-    {
-        argc = kickos_init_args.argc;
-        argv = kickos_init_args.argv;
-    }
-    exit(t->entry.program(argc, argv));
+    exit(t->entry.program(static_cast<int>(a->argc), a->argv));
 }
 
 extern "C" void kickos_program_entry(void* args)

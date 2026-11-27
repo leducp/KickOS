@@ -62,7 +62,8 @@ property of the toolchain, not the chip:
   are compact read-only data in the code region; there is no FDE registry and no writable
   registration state. The writable tax is just `eh_globals` + the emergency pool.
 - **SjLj (RX: RX72M)** -- the read-only `.gcc_except_table` (LSDA) in ROM, plus a writable
-  SjLj context chain in the app window. No `.eh_frame`, no registry.
+  SjLj context chain per thread, in that thread's own runtime state. No `.eh_frame`, no
+  registry.
 - **DWARF (RISC-V, Xtensa: ESP32-C6)** -- the heaviest on the *code* side. `.eh_frame` is
   folded **into the code region** and it is bulky: on ESP32-C6 that folding is exactly why
   [`../../arch/riscv/chip/esp32c6/esp32c6.ld`](../../arch/riscv/chip/esp32c6/esp32c6.ld)

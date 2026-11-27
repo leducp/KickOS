@@ -30,11 +30,20 @@ namespace kickos::esp32c6::reg::gpio
     constexpr uintptr_t ENABLE_W1TS = mmap::GPIO_BASE + ENABLE_W1TS_OFFSET;
     constexpr uintptr_t FUNC_OUT_SEL_CFG_BASE = mmap::GPIO_BASE + FUNC_OUT_SEL_CFG_BASE_OFFSET;
 
-    // Per-pin output-function select register (FUNCn_OUT_SEL_CFG).
+    // Per-pin output-function select register (FUNCn_OUT_SEL_CFG). Its output enable is the
+    // peripheral's while OEN_SEL is 0 (Register 7.16, p.280).
     inline constexpr uintptr_t func_out_sel_cfg(uint32_t pin)
     {
         return FUNC_OUT_SEL_CFG_BASE + 0x4u * pin;
     }
+
+    // Per-signal input select (FUNCn_IN_SEL_CFG): the pad IN_SEL names reaches the signal once
+    // SIG_IN_SEL routes it through the matrix (Register 7.15, p.279).
+    inline constexpr uintptr_t func_in_sel_cfg(uint32_t signal)
+    {
+        return mmap::GPIO_BASE + 0x154u + 0x4u * signal;
+    }
+    constexpr uint32_t SIG_IN_SEL = 1u << 7;
 
     constexpr uint32_t OUT_SEL_SIMPLE = 128u;    // out-sel value: bit n of GPIO_OUT drives the pad
     constexpr uint32_t RMT_SIG_OUT0_IDX = 71u;   // GPIO matrix signal index: RMT ch-0 TX

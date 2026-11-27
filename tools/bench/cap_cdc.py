@@ -4,10 +4,8 @@
 #
 # Copy a USB CDC console to stdout until the device leaves. Usage: cap_cdc.py <tty>
 #
-# A KickOS console holds its output from the open until the host sends a line coding
-# (kickos/sys/usb_cdc_service.h), and cdc_acm sends one only when the speed differs from the
-# last it sent. Raw is set at two speeds so that one of them always does, and the device then
-# speaks only to a tty already raw: no byte is turned from CR to LF or echoed back to it.
+# A KickOS console sends as soon as the host configures it (kickos/sys/usb_cdc_service.h), so
+# what arrives before the tty is raw may be turned from CR to LF or echoed back to it.
 import os
 import sys
 import termios
@@ -29,7 +27,6 @@ def raw(fd, speed):
 
 def main():
     fd = os.open(sys.argv[1], os.O_RDONLY | os.O_NOCTTY)
-    raw(fd, termios.B57600)
     raw(fd, termios.B115200)
     while True:
         try:

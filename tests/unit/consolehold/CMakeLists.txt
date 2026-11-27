@@ -34,22 +34,22 @@ kickos_add_unit_test(NAME console_held_rtt
 # console_held_recv: the real receive and hand-off of kernel/syscall/syscall_ipc.cc over the
 # K-seam, whose held store the arms seed. Needs kickos_kseam_ipc_smp (tests/unit/fusedwake).
 kickos_add_unit_test(NAME console_held_recv SOURCES held_recv.cc
-  INCLUDES "${PROJECT_SOURCE_DIR}/kernel/syscall"
+  INCLUDES "${PROJECT_SOURCE_DIR}/kernel/syscall" "${PROJECT_SOURCE_DIR}/tests/unit/fusedwake"
   LIBRARIES kickos_kseam_ipc_smp)
 
 # console_live: a published console dies with its task, over the real syscall_ipc.cc, cap.cc,
 # task.cc and park.cc of the K-seam: sends park while the task lives, a send of no deadline never
-# parks, and a writer waits out the dark window until a wake or its own cancellation.
+# parks, and a publish onto another endpoint moves the stdout seats naming the console.
 kickos_add_unit_test(NAME console_live SOURCES live_console.cc
-  INCLUDES "${PROJECT_SOURCE_DIR}/kernel/syscall"
+  INCLUDES "${PROJECT_SOURCE_DIR}/kernel/syscall" "${PROJECT_SOURCE_DIR}/tests/unit/fusedwake"
   LIBRARIES kickos_kseam_ipc_smp)
 
-# console_dark: the dark window end to end, the real console.cc, console_tx.cc and park.cc over a
-# K-seam whose console stubs are compiled out (KSEAM_REAL_CONSOLE), dark_seam.cc answering the
-# device.
+# console_refused: a user write refused once the console is published, end to end, the real
+# console.cc, console_tx.cc and park.cc over a K-seam whose console stubs are compiled out
+# (KSEAM_REAL_CONSOLE), device_seam.cc answering the device.
 kickos_add_kseam(kickos_kseam_console
   EXTRA "${PROJECT_SOURCE_DIR}/tests/unit/fusedwake/ipc_seam.cc"
-        dark_seam.cc "${_cs}/console_leaves.cc" "${PROJECT_SOURCE_DIR}/lib/libc/fmt.cc"
+        device_seam.cc "${_cs}/console_leaves.cc" "${PROJECT_SOURCE_DIR}/lib/libc/fmt.cc"
         "${PROJECT_SOURCE_DIR}/kernel/syscall/syscall_ipc.cc"
         "${PROJECT_SOURCE_DIR}/kernel/init/console.cc"
         "${PROJECT_SOURCE_DIR}/kernel/init/console_tx.cc"
@@ -57,7 +57,7 @@ kickos_add_kseam(kickos_kseam_console
            "${PROJECT_SOURCE_DIR}/tests/unit/common"
   POSTURE KSEAM_REAL_CONSOLE=1)
 
-kickos_add_unit_test(NAME console_dark SOURCES dark_e2e.cc
+kickos_add_unit_test(NAME console_refused SOURCES refused_e2e.cc
   LIBRARIES kickos_kseam_console)
 
 # console_own_task: a thread of the console's own task holds no stdout, over the same seam.
@@ -77,7 +77,7 @@ kickos_add_unit_test(NAME console_drain SOURCES publish_drain.cc
 # waits for room there.
 kickos_add_kseam(kickos_kseam_console_amp
   EXTRA "${PROJECT_SOURCE_DIR}/tests/unit/fusedwake/ipc_seam.cc"
-        dark_seam.cc "${_cs}/console_leaves.cc" "${PROJECT_SOURCE_DIR}/lib/libc/fmt.cc"
+        device_seam.cc "${_cs}/console_leaves.cc" "${PROJECT_SOURCE_DIR}/lib/libc/fmt.cc"
         "${PROJECT_SOURCE_DIR}/kernel/syscall/syscall_ipc.cc"
         "${PROJECT_SOURCE_DIR}/kernel/init/console.cc"
         "${PROJECT_SOURCE_DIR}/kernel/init/console_tx.cc"
@@ -92,7 +92,7 @@ kickos_add_unit_test(NAME console_room_amp SOURCES room_wait.cc TEST_PREFIX amp_
 # same seam at two kernel cores.
 kickos_add_kseam(kickos_kseam_console_smp
   EXTRA "${PROJECT_SOURCE_DIR}/tests/unit/fusedwake/ipc_seam.cc"
-        dark_seam.cc "${_cs}/console_leaves.cc" "${PROJECT_SOURCE_DIR}/lib/libc/fmt.cc"
+        device_seam.cc "${_cs}/console_leaves.cc" "${PROJECT_SOURCE_DIR}/lib/libc/fmt.cc"
         "${PROJECT_SOURCE_DIR}/kernel/syscall/syscall_ipc.cc"
         "${PROJECT_SOURCE_DIR}/kernel/init/console.cc"
         "${PROJECT_SOURCE_DIR}/kernel/init/console_tx.cc"

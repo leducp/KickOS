@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// STM32F411 USART2 buffered IRQ-driven userspace UART driver. An IRQ thread owns the granted
-// USART2 register window and drains a TX ring / fills an RX ring from the USART2 global
-// interrupt (NVIC position 38, RM0383 sec.10.1.3 Table 37); a service thread owns the
-// request endpoint and never touches a register.
+// STM32F411 USART buffered IRQ-driven userspace UART driver. An IRQ thread owns the granted
+// USART register window and drains a TX ring / fills an RX ring from the USART's global
+// interrupt (RM0383 sec.10.1.3 Table 37); a service thread owns the request endpoint and never
+// touches a register.
 //
 // The endpoint serves TWO client shapes on one object, discriminated by whether the client
 // sent or called:

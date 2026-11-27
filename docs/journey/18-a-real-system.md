@@ -411,7 +411,7 @@ After printing `[k64dspi] SPI service up (DSPI0, polled FIFO, GPIO CS)`, the dri
 enters `serve_loop` and never leaves it while the system runs:
 
 ```cpp
-    kos_reply_recv_opts_init(&opts, KOS_SPI_CAP_EP, 0u, KOS_TIMEOUT_NONE);
+    kos_reply_recv_opts_init(&opts, KOS_SPI_CAP_EP, 0u, KOS_NEVER);
     // Send this reply when receiving the next request.
     kos_cap_t reply_cap = KOS_CAP_NONE;
     size_t reply_len = 0;
@@ -537,7 +537,7 @@ The proxy's transfer:
              static_cast<size_t>(nseg) * sizeof(struct kos_bus_seg));
     mem_copy(msg + framing, buf, len);
 
-    int32_t const rc = kos_call(b->ep, msg, framing + len, sizeof(msg), KOS_TIMEOUT_NONE);
+    int32_t const rc = kos_call(b->ep, msg, framing + len, sizeof(msg), KOS_NEVER);
 ```
 
 The message is `kos_bus_req` (12 bytes), two `kos_bus_seg` (4 bytes each), then the 7 payload
@@ -711,8 +711,8 @@ parks the driver ([05, Stop 8](05-call-and-reply.md)).
 
 Every path through `serve_one` returns a length, the error paths included (`reply_error` builds a
 header with a negative status and no payload). That is the service's half of the call contract:
-a reply capability the loop forgot to answer would leave its client parked forever, since
-`kos_call` has no deadline.
+a reply capability the loop forgot to answer would leave its client parked forever, since the
+proxy calls with no deadline (`KOS_NEVER`).
 
 The client now holds two answers, and they mean different things:
 
@@ -737,7 +737,7 @@ The client now holds two answers, and they mean different things:
 
 - **`kos_call`'s return** is the kernel's answer: did the call reach a receiver and come back.
   Here it is 11, the reply's length. A negative value means the transport failed (Stop 12 shows
-  `-KOS_EPIPE`, `-KOS_EAGAIN`, `-KOS_ECONNREFUSED`), and then there is no reply to read.
+  `-KOS_EPIPE` and `-KOS_ECONNREFUSED`), and then there is no reply to read.
 - **`kos_bus_rsp.status`** is the service's answer: did the transaction succeed. It means
   something only when the call itself succeeded.
 
@@ -908,7 +908,7 @@ are not symmetric)](../reference/ipc-call-reply.md), [09](09-fault-and-kill.md)
 ### Stop 12: when the driver dies
 **Where:** `system/driver/mk64f/k64dspi/k64dspi.cc`, `bus_thread`; `user/src/driver_service.cc`,
 `trap`; `kernel/syscall/cap.cc`, `obj_close_protocol` (the `CAP_REPLY` arm), `endpoint_rights_dropped`,
-`refuse_senders`; `kernel/include/kickos/endpoint.h`, `endpoint_unserved`;
+`refuse_senders`; `kernel/include/kickos/endpoint.h`, `endpoint_receiving`, `endpoint_takes_sends`;
 `system/init/compose/walk.cc`, `Walk::wake`, `Walk::death`, `Walk::drop`, `Walk::propagate`
 
 A driver thread that cannot go on does not return or `exit`: it calls `drv::trap`, which executes
@@ -927,14 +927,15 @@ The kernel's teardown of the dying driver closes every capability it held ([09, 
 2. **The endpoint capability with `WAIT`.** It was the only receive-bearing capability (Stop 3:
    the init narrowed its own away). `endpoint_rights_dropped` takes the receiver count to zero,
    marks the endpoint vacated and calls `refuse_senders`: every caller parked waiting for the
-   driver is answered at once with what a new caller would get. `endpoint_unserved` decides what
-   that is. The init still holds `KOS_CAP_HANDOUT`, so a receiver may come back: `-KOS_EAGAIN`.
+   driver is answered `-KOS_ECONNREFUSED` at once. From then on a new call gets the same answer
+   at once, whatever its deadline: the endpoint is not receiving (`endpoint_receiving`) until a
+   receiver waits on it again. The `KOS_CAP_HANDOUT` the init still holds does not change that.
 
 Then the init wakes. `Walk::wake` sees `KOS_TASK_DEAD`, kills the task to reclaim it, and calls
 `Walk::death`. This composition sets no `restart:` on the driver, so its `restart_max` is 0: the
 task goes to the `GONE` phase, and `Walk::drop` closes the init's own capability on the endpoint.
-That was the last `HANDOUT`. From now on every call answers `-KOS_ECONNREFUSED`: nothing can
-serve this endpoint again. `Walk::propagate` would mark a task still waiting to start on this
+That was the last `HANDOUT`, so no receiver can ever be seated on this endpoint again, and every
+call keeps answering `-KOS_ECONNREFUSED`. `Walk::propagate` would mark a task still waiting to start on this
 service as `DOWN`; the client is already running, so it learns from its calls instead.
 
 What the client sees, through the class, is the kernel's code unchanged: `reply_payload` returns
@@ -943,18 +944,20 @@ flight, and `-111` (`-KOS_ECONNREFUSED`) afterwards. `read_byte_test` passes it 
 prints `[k64dspi] BYTE_TEST attempt N: (xfer ERR rc=-32)`, then
 `[k64dspi] LAN9252 BYTE_TEST FAIL: a transfer failed`, and exits 1, which ends the system.
 
-With `restart: { max: 2 }` on the driver task, `Walk::death` puts it in `PENDING` instead, the
-init keeps the endpoint, and the next `Walk::scan` calls `k64dspi_spi_start` again with the same
-endpoint. Between the death and the new receive, callers get `-KOS_EAGAIN`, which tells them a
-retry may work. The new start muxes the pins again and the new driver thread reopens the
+With `restart: { max: 2 }` on the driver task, `Walk::death` puts it back in the `WAITING`
+phase instead, the init keeps the endpoint, and the next `Walk::scan` calls `k64dspi_spi_start`
+again with the same endpoint. Between the death and the new driver's first receive, callers get
+`-KOS_ECONNREFUSED` at once: a receiver seated after the last one left counts only once it has
+waited on the endpoint. The new start muxes the pins again and the new driver thread reopens the
 controller; the old thread's window went back to the kernel when it died. What does not survive
 is the service's state: the new thread's `SlotTable` is empty, so the client's next transfer on
 its old device handle is answered `-KOS_EINVAL` (no device handle for this slot) until it opens
 the device again. A restart keeps the endpoint, not what the service knew.
 
-Note one hazard the class header states plainly: `kos_call` has no deadline. A driver that stops
-replying *without dying* (a wedged pump loop, say) leaves its client parked forever. The two wake
-paths above both need the driver's capabilities to be closed, which only its death does.
+Note one hazard the class header states plainly: the proxy's `kos_call` has no deadline. A driver
+that stops replying *without dying* (a wedged pump loop, say) leaves its client parked forever.
+The two wake paths above both need the driver's capabilities to be closed, which only its death
+does.
 
 **Try it:** on a board, start the system, `break k64dspi_transfer`, `continue` to the first
 BYTE_TEST, then make the driver fault in place with `set $pc = kickos::driver::trap` and

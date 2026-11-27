@@ -48,7 +48,9 @@ namespace kickos
         void arm_mid_edit(void (*fn)());
 
         uint32_t frames_allocated();
+        // Through kickos_frame_free, which takes tables only, and through kickos_leaf_free.
         uint32_t frames_freed();
+        uint32_t leaves_freed();
         // The allocations the pool can still answer: neither run out nor over budget.
         size_t frames_left();
 

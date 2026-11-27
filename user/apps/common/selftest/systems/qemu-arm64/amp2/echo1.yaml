@@ -2,7 +2,7 @@
 # Copyright (c) 2026 Philippe Leduc
 #
 # ampecho on node 1: the peer the suite calls, echoing on the first port the partition names
-# this node, the others served by a task that answers nothing.
+# this node; port 4 is served by a task that answers nothing, and port 7 by one an arm ends.
 
 version: 1
 stdout: kernel
@@ -30,3 +30,11 @@ tasks:
     priority: 4
     ceiling: 4
     serves: /amp/4
+
+  - name: mortal
+    program: ampecho_mortal
+    priority: 5
+    ceiling: 5
+    serves: /amp/7
+    maps: { /shm/share: rw }
+    restart: { max: 1 }

@@ -9,12 +9,14 @@
 #include "regs.h"
 #include <kickos/chip_mmap.h>
 #include "board_pins.h"
+#include "chip_tables.h"
 #include "regs/ccu4.h"
 #include "regs/flash.h"
 #include "regs/port.h"
 #include "regs/scu.h"
 #include "regs/usic.h"
 #include "clock_bringup.h"
+#include "usic.h"
 
 #include <kickos/arch/arch.h>
 #include <kickos/arch/bounded_wait.h>
@@ -33,12 +35,6 @@ namespace ccu4 = kickos::xmc::reg::ccu4;
 namespace flash = kickos::xmc::reg::flash;
 namespace rp = kickos::xmc::reg::port;
 namespace clocktree = kickos::xmc::clocktree;
-
-namespace
-{
-    constexpr uintptr_t USIC_CHANNEL_STRIDE = mmap::USIC0_CH1_BASE - mmap::USIC0_CH0_BASE;
-    constexpr uintptr_t USIC_MODULE_SPAN = 2u * USIC_CHANNEL_STRIDE;
-}
 
 namespace kickos
 {
@@ -145,8 +141,9 @@ namespace
     // FDR, BRG and CCR are Write = PV with no U (RM Table 18-20): an unprivileged store inside a
     // granted channel window is discarded with no fault (measured, pvprobe).
     //
-    // U0C0 carries a CCR entry ONLY (the console driver's TBIEN): the kernel owns that channel's
-    // baud (usic_uart.cc), which cpu_clock_set's retune veto assumes. An absent entry is a refusal.
+    // The board's console channel carries a CCR entry ONLY (the console driver's TBIEN): the kernel
+    // owns that channel's baud (usic_uart.cc), which cpu_clock_set's retune veto assumes. An
+    // absent entry is a refusal.
     struct PrivWriteReg
     {
         uintptr_t base;
@@ -155,9 +152,6 @@ namespace
     };
 
     namespace ru = kickos::xmc::reg::usic;
-
-    static_assert(ru::U0C1_BASE == mmap::USIC0_CH0_BASE + USIC_CHANNEL_STRIDE,
-                  "U0C1 is USIC0's second channel");
 
     // Per-entry value masks. The store is one whole 32-bit word, so without a mask an entry hands
     // back every bit of a register the bus withholds entirely. A value with a bit outside its
@@ -182,12 +176,74 @@ namespace
     static_assert(FDR_GRANT == 0x0000C3FFu, "FDR grant is STEP[9:0]|DM[15:14]");
     static_assert(BRG_GRANT == 0xF3FF7FDBu, "BRG grant is every writable BRG field");
 
-    constexpr PrivWriteReg PRIV_WRITE_REGS[] = {
-        { ru::U0C1_BASE, ru::off::FDR, FDR_GRANT },
-        { ru::U0C1_BASE, ru::off::BRG, BRG_GRANT },
-        { ru::U0C1_BASE, ru::off::CCR, CCR_GRANT },
-        { ru::U0C0_BASE, ru::off::CCR, CCR_CONSOLE_GRANT },
+    // The grant of one privileged register of the chip file's, 0 for none.
+    constexpr uint32_t priv_grant(uintptr_t base, uintptr_t offset)
+    {
+        if (base == KICKOS_BOARD_CONSOLE_BASE)
+        {
+            if (offset == ru::off::CCR)
+            {
+                return CCR_CONSOLE_GRANT;
+            }
+            return 0;
+        }
+        if (offset == ru::off::FDR)
+        {
+            return FDR_GRANT;
+        }
+        if (offset == ru::off::BRG)
+        {
+            return BRG_GRANT;
+        }
+        if (offset == ru::off::CCR)
+        {
+            return CCR_GRANT;
+        }
+        return 0;
+    }
+
+    constexpr size_t PRIV_REGISTER_COUNT =
+        sizeof(kickos::chip::priv_registers) / sizeof(kickos::chip::priv_registers[0]);
+
+    struct PrivWriteTable
+    {
+        PrivWriteReg rows[PRIV_REGISTER_COUNT];
+        size_t count;
     };
+
+    constexpr PrivWriteTable priv_write_table()
+    {
+        PrivWriteTable table{};
+        for (uintptr_t const(&reg)[2] : kickos::chip::priv_registers)
+        {
+            uint32_t const mask = priv_grant(reg[0], reg[1]);
+            if (mask != 0u)
+            {
+                table.rows[table.count] = {reg[0], reg[1], mask};
+                table.count = table.count + 1u;
+            }
+        }
+        return table;
+    }
+
+    constexpr PrivWriteTable PRIV_WRITE_REGS = priv_write_table();
+
+    constexpr bool every_priv_register_granted()
+    {
+        for (uintptr_t const(&reg)[2] : kickos::chip::priv_registers)
+        {
+            if (reg[0] != KICKOS_BOARD_CONSOLE_BASE and priv_grant(reg[0], reg[1]) == 0u)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // A privileged register the chip file adds needs its grant here.
+    static_assert(every_priv_register_granted(), "a privileged register of the chip file has no grant");
+    static_assert(PRIV_WRITE_REGS.count == PRIV_REGISTER_COUNT - 2u,
+                  "the console channel keeps its CCR alone");
 
     constexpr uint32_t led_omr(bool level)
     {
@@ -284,22 +340,27 @@ uint64_t arch_cpu_clock_set(uint32_t target)
     return want_hz;
 }
 
-// A USIC's fPERIPH; any other block returns 0.
+// A USIC channel's fPERIPH; any other block returns 0.
 uint32_t arch_periph_clock_hz(uintptr_t base)
 {
-    bool in_usic = base >= mmap::USIC0_CH0_BASE and base < mmap::USIC0_CH0_BASE + USIC_MODULE_SPAN;
-    if (base >= mmap::USIC1_CH0_BASE and base < mmap::USIC1_CH0_BASE + USIC_MODULE_SPAN)
-    {
-        in_usic = true;
-    }
-    if (base >= mmap::USIC2_CH0_BASE and base < mmap::USIC2_CH0_BASE + USIC_MODULE_SPAN)
-    {
-        in_usic = true;
-    }
-    if (in_usic)
+    if (kickos::xmc::usic::module_of(base).bit != 0u)
     {
         return clocktree::fperiph_hz(SystemCoreClock);
     }
+    return 0;
+}
+
+// Releases the module gate and reset of a USIC channel the caller holds, the console's refused.
+// A sibling of the console shares its module, already released at boot, and the release repeats
+// harmlessly. Must stay in this TU, for the reason arch_periph_reg_write gives.
+int arch_periph_enable(uintptr_t base)
+{
+    kickos::xmc::usic::Module const m = kickos::xmc::usic::module_of(base);
+    if (m.bit == 0u or base == KICKOS_BOARD_CONSOLE_BASE)
+    {
+        return -KOS_EINVAL;
+    }
+    kickos::xmc::usic::module_clock_enable(m.cgatclr, m.prclr, m.bit);
     return 0;
 }
 
@@ -313,8 +374,9 @@ uint32_t arch_periph_clock_hz(uintptr_t base)
 // seam_defaults gate (leg 2) catches that.
 int arch_periph_reg_write(uintptr_t base, uintptr_t offset, uint32_t value)
 {
-    for (PrivWriteReg const& e : PRIV_WRITE_REGS)
+    for (size_t i = 0; i < PRIV_WRITE_REGS.count; i++)
     {
+        PrivWriteReg const& e = PRIV_WRITE_REGS.rows[i];
         if (e.base == base and e.offset == offset)
         {
             if ((value & ~e.mask) != 0)
@@ -333,10 +395,18 @@ bool arch_console_write_sync(char const* buf, size_t n)
     return kickos_xmc_usic_write(buf, n);
 }
 
+// The port has no per-pin alias for HWSEL or IOCR: both are read-modify-writes, safe only because
+// this runs on the one core with interrupts masked.
 void arch_diag_led_init(void)
 {
+    uintptr_t const hwsel = KICKOS_BOARD_LED_PORT_BASE + rp::off::HWSEL;
+    r32(hwsel) = r32(hwsel) & ~(0x3u << (KICKOS_BOARD_LED_BIT * 2u));
     uintptr_t const iocr = KICKOS_BOARD_LED_PORT_BASE + rp::iocr_off(KICKOS_BOARD_LED_BIT);
-    r32(iocr) = rp::PC_OUTPUT_PP_GP << rp::pc_shift(KICKOS_BOARD_LED_BIT);
+    uint32_t const shift = rp::pc_shift(KICKOS_BOARD_LED_BIT);
+    uint32_t v = r32(iocr);
+    v &= ~(rp::PC_FIELD_MASK << shift);
+    v |= rp::PC_OUTPUT_PP_GP << shift;
+    r32(iocr) = v;
 }
 
 void arch_diag_led_set(int on)

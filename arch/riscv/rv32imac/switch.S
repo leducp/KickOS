@@ -251,7 +251,7 @@ trap_entry:
     li      t1, KICKOS_RV_INJECT_DOORBELL_CPU_INT
     beq     t0, t1, .Lext           /* the C6 external inject doorbell (rv_trap_ids.h) */
     li      t1, KICKOS_RV_DEV_CPU_INT
-    beq     t0, t1, .Lextdev        /* a real device external IRQ (C6: UART0 TX ring) */
+    beq     t0, t1, .Lextdev        /* a real device external IRQ (C6: the UARTs) */
 #if KICKOS_AMP_OWN_IMAGE
     li      t1, KICKOS_RV_AMP_DOORBELL_CPU_INT
     beq     t0, t1, .Lextamp
@@ -310,8 +310,7 @@ trap_entry:
     sw      t1, 0(t0)
     j       .Lrestore
 
-/* --- Real device external IRQ (C6: UART0 TX-empty, on KICKOS_RV_DEV_CPU_INT).
-   kickos_rv_ext_dispatch_dev acks the LEVEL source before running the ISR. */
+/* --- Real device external IRQ (C6: every UART, on KICKOS_RV_DEV_CPU_INT). */
 .Lextdev:
     la      t0, g_isr_depth
     lw      t1, 0(t0)

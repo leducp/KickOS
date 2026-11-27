@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// ESP32 (Xtensa LX6) UART0 buffered userspace UART driver.
+// ESP32 (Xtensa LX6) buffered userspace console UART driver.
 //
 // The console line cannot be claimed while the kernel's own TX ring holds it, so the publish
 // MUST precede the claim: that ordering is KOS_DRV_EP_HANDOVER's.
@@ -28,9 +28,9 @@ namespace
     };
 }
 
-// No kos_periph_enable and no DPORT clock ungate: the ROM ran its boot log through UART0, so
-// the block is already clocked out of reset.
+// No kos_periph_enable and no DPORT clock ungate: the console UART is the one the kernel ran its
+// boot log through, so the block is already clocked out of reset.
 //
-// The baud 0 below keeps the divisor the ROM left, and the frame is Register 19.9's reset
+// The baud 0 below keeps the divisor the kernel left, and the frame is Register 19.9's reset
 // framing, so the backend has nothing to reprogram.
 KICKOS_UART_CONSOLE_SERVICE(lx6uart, k_uart, /*fallback_baud=*/0u);

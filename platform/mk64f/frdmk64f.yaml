@@ -15,7 +15,7 @@ console:
 
 leds:
   blue: { pin: PTB21, active: low }
-  red: { pin: PTB22, active: low, owner: kernel } # the kernel's diagnostic LED
+  red: { pin: PTB22, active: low, diagnostic: true }
 
 # The SPI bus as this board wires it for the KickCAT slave: DSPI0 with a GPIO chip select.
 buses:

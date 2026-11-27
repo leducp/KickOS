@@ -27,10 +27,9 @@
 /* ------------------------------------------------------------------------- */
 /* Relocatable interrupt vector table (INTB). Slot n -> handler for INT/IRQ n. Slots     */
 /* 0..15 carry no peripheral source, so an entry there is always a software trap. Every   */
-/* device slot enters through a switch.S guard, INT #n reaching each slot as well. Slot   */
-/* 87 (TXI6) serves the console drain, or a userspace TX driver after the console         */
-/* handover. Every vector from 32 up that a line can claim has its own entry: the      */
-/* handler cannot read the accepted vector.                                               */
+/* device slot enters through a switch.S guard, INT #n reaching each slot as well. Every  */
+/* vector from 32 up that a line can claim has its own entry: the handler cannot read the */
+/* accepted vector.                                                                       */
 /* ------------------------------------------------------------------------- */
 
     .macro INTB_LINE n
@@ -72,9 +71,7 @@ _g_rvectors:
     .word _kickos_rx_intb_default     /* 29 */
     .word _kickos_rx_intb_timer       /* 30: CMTW0 compare match (CMWI0) */
     .word _kickos_rx_intb_clock       /* 31: CMTW1 compare match (CMWI1), the clock's wrap */
-    INTB_LINES 32, 86
-    .word _kickos_rx_intb_console_txi /* 87: SCI6 TXI6 -> console drain, or line 87 */
-    INTB_LINES 88, 105
+    INTB_LINES 32, 105
     .word _kickos_rx_intb_default     /* 106: GROUPBE0, kernel-owned, never armed */
     .word _kickos_rx_intb_default     /* 107: GROUPBL2 */
     INTB_LINES 108, 109

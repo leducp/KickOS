@@ -9,7 +9,6 @@
 
 #include "../common/aeabi_div0.h"
 #include "../common/fault_resume.h"
-#include "../common/regs.h"
 
 extern "C"
 {
@@ -51,15 +50,9 @@ void arch_fault_redirect_to_exit(void* frame)
     {
         kickos_fault_record(nullptr, 0, f[6], 0, 0);
     }
-    // An SVC whose entry stacking faulted is still pending, and would be taken on the exit's
-    // frame, privileged. SHCSR exists only with the Debug Extension (ARMv6-M ARM C1.6.1), which
-    // every v6-M part with a privilege ring here carries (RP2040).
-    uint32_t const shcsr = kickos::arm::reg32(kickos::arm::SCB_SHCSR);
-    if ((shcsr & kickos::arm::SHCSR_SVCALLPENDED) != 0u)
-    {
-        kickos_fault_record_svc_dropped();
-    }
-    kickos::arm::reg32(kickos::arm::SCB_SHCSR) = shcsr & ~kickos::arm::SHCSR_SVCALLPENDED;
+    // An SVC whose entry stacking faulted is taken on the exit's frame as this handler returns,
+    // and SHCSR cannot drop it here: on the RP2040 it reads 0 and ignores a write from software.
+    // SVC_Handler drops it instead (switch.S, .Lpsp_wild_svc).
     kickos_arm_fault_frame_at(kickos_arm_fault_exit_top());
     kickos_arm_fault_resume_privileged();
 }

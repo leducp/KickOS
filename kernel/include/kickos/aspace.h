@@ -9,6 +9,7 @@
 
 #include <kickos/arch/arch.h>
 #include <kickos/budget.h>
+#include <kickos/held.h>
 #include <kickos/presync.h>
 #include <kickos/vrange.h>
 
@@ -223,6 +224,38 @@ namespace kickos
     void presync_release(bool succeeded);
     // The calling thread is leaving inside a call: drop its record and free its stage.
     void presync_exit();
+    // One locked pass taking back the frame map the calling thread holds in flight, ending the
+    // waits on the words it unmapped: false once none is left.
+    bool presync_map_unwind_pass(Held held);
+    // The completed frame map the calling thread still holds in flight becomes one its
+    // presync_map_unwind_pass takes back: false, forgetting it, when the range is no longer
+    // the one it mapped. Caller holds IrqLock.
+    bool presync_map_retract();
+    // One pass of at most ASPACE_TABLE_PASS_FRAMES table frames toward `n` for the calling
+    // thread's later passes, charged to `payer`'s PAGES, so no later pass of its call can be
+    // refused a table: 0 once it holds `n`, 1 while short, -KOS_EAGAIN where `payer` cannot take
+    // them, -KOS_ENOMEM where the pool cannot. What it took stays held, for the release passes.
+    // Caller holds IrqLock.
+    int presync_tables_take_pass(Task const* payer, size_t n);
+    // The reserve hands its frames out from now on, `n` of them charged to `payer`: 0, or the
+    // refusal of a reserve short of `n`. Leftovers stay held for the release passes. O(1).
+    int presync_tables_arm(Task const* payer, size_t n);
+    // Whether the calling thread holds an armed reserve.
+    bool presync_tables_held();
+    // One pass giving back at most ASPACE_TABLE_PASS_FRAMES of the calling thread's reserved
+    // table frames: false once none is left. Caller holds IrqLock.
+    bool presync_tables_release_pass();
+}
+
+extern "C"
+{
+    // One of the calling thread's reserved table frames, or 0: kickos_frame_alloc's first
+    // source. Caller holds IrqLock.
+    arch_phys_addr_t kickos_presync_table_take(void);
+}
+
+namespace kickos
+{
     // `t` is a slot's new occupant: its record is a new one.
     void presync_fresh(Thread const* t);
     // What `t`'s members hold staged, which no range names yet, of `kind`: the PAGES of a
@@ -254,14 +287,39 @@ namespace kickos
 #endif
 #endif
 
-    // The self-grant: map a range the caller reserved, at the address it reserved.
+    // The most pages one locked pass maps or unmaps of a run whose size a caller chose.
+    constexpr size_t ASPACE_MAP_PASS_PAGES = 32u;
+    // The most table frames one locked pass takes into, or gives back from, a reserve.
+    constexpr size_t ASPACE_TABLE_PASS_FRAMES = 32u;
+
+    // What one locked pass mapped or unmapped, and whether the edit is complete.
+    struct MapPass
+    {
+        uintptr_t base = 0;
+        size_t bytes = 0;
+        bool done = false;
+    };
+
+    // One locked pass of the self-grant: map at most ASPACE_MAP_PASS_PAGES more pages of the
+    // range the caller reserved, at the address it reserved. Until a pass maps its last page the
+    // range is pending (VirtualRange::pending): it keeps its state and type for every other
+    // reader, another mapping of its frames with another type is refused -KOS_EBUSY, a
+    // self-grant of it with another type is refused -KOS_EBUSY, one with its type resumes it,
+    // and a teardown frees each of its frames once. A refused pass maps nothing and leaves it
+    // pending.
     // -KOS_EPERM for an address this space never reserved, a cross-task self-grant included;
     // -KOS_EBUSY when another mapping of its frames carries another memory type; -KOS_EAGAIN
-    // when `payer` cannot take the tables; 0 when the range is already mapped with these
-    // attributes.
+    // when `payer` cannot take the tables; 0 with `done` when the range is already mapped with
+    // these attributes.
     int aspace_self_grant(Task const* payer, struct arch_aspace* space, VirtualRanges* ranges,
                           uintptr_t base, size_t size, uint32_t rights,
-                          enum arch_map_memtype type);
+                          enum arch_map_memtype type, MapPass* pass);
+
+    // One locked pass of a teardown that every member of the space's task is past: unmap, and
+    // free where the space owns them, at most ASPACE_MAP_PASS_PAGES pages of its frame runs,
+    // handoff and reservations, leaving the destroy walk the image and the stacks. False once
+    // none is left.
+    bool aspace_trim_pass(struct arch_aspace* space, VirtualRanges* ranges);
 
     // Image `image`'s spans as its tasks reach them: its read-only image, its writable one, and
     // its thread-local template.
@@ -271,32 +329,74 @@ namespace kickos
     // Return null outside that image.
     void* aspace_image_alias(size_t image, void const* app_ptr);
 
-    // Map a capability-owned frame run at *at, or at the run's own address where *at is 0,
-    // and record it as borrowed; on 0, *at is where it was mapped. The capability retains
-    // frame ownership. Return -KOS_ENOMEM for unavailable space, -KOS_EINVAL for an invalid
-    // range, -KOS_EBUSY where another mapping of the run carries another memory type, or
-    // -KOS_EAGAIN where `payer`, the space's, cannot take the tables.
+    // One locked pass of a capability-owned frame run's map at *at, or at the run's own address
+    // where *at is 0, recorded as borrowed: at most ASPACE_MAP_PASS_PAGES more of its pages. On
+    // 0 with `done`, *at is where it was mapped. The capability retains frame ownership. Until a
+    // pass maps its last page the mapping is pending, as a self-grant's range is: a map of the
+    // same run at the same address and type resumes it, and with another type is refused
+    // -KOS_EBUSY. A mapping it starts is `holder`'s (a thread slot index plus one), and a
+    // refused first pass leaves nothing; a later one leaves it pending for its holder to take
+    // back (aspace_cap_map_unwind). Where `resuming`, a pass of a map whose earlier passes
+    // mapped something, the same mapping found complete is done. Return -KOS_ENOMEM for
+    // unavailable space, -KOS_EINVAL for an invalid range, -KOS_EBUSY where another mapping of
+    // the run carries another memory type, or -KOS_EAGAIN where `payer`, the space's, cannot
+    // take the tables.
     int aspace_cap_map(Task const* payer, struct arch_aspace* space, VirtualRanges* ranges,
                        uintptr_t* at, int run_obj, arch_phys_addr_t base, uint32_t pages,
-                       uint32_t rights, enum arch_map_memtype type);
+                       uint32_t rights, enum arch_map_memtype type, MapPass* pass,
+                       uint16_t holder = 0, bool resuming = false);
 
-    // Unmap a capability mapping and release its reference. Return -KOS_EPERM
-    // unless both the mapping kind and run_obj match; VR_BORROWED alone is insufficient.
+    // One locked pass taking back the pending map `holder` started at `va`: at most
+    // ASPACE_MAP_PASS_PAGES of its mapped prefix unmapped from the top, and at the last the
+    // range released with its reference. `done` once nothing of it is left, at once where no
+    // such map is there.
+    void aspace_cap_map_unwind(struct arch_aspace* space, VirtualRanges* ranges, uintptr_t va,
+                               uint16_t holder, MapPass* pass);
+
+    // One locked pass of a capability mapping's unmap: at most ASPACE_MAP_PASS_PAGES of its top
+    // pages, the mapping left that much shorter; the last pass releases its reference. Return
+    // -KOS_EPERM unless both the mapping kind and run_obj match (VR_BORROWED alone is
+    // insufficient), or -KOS_EBUSY while its map is pending.
     int aspace_cap_unmap(struct arch_aspace* space, VirtualRanges* ranges, uintptr_t va,
-                         int run_obj);
+                         int run_obj, MapPass* pass);
 
     // Map a spawn window's `bytes` at `pa` where the backend's window area has room, recorded as
     // a VR_WINDOW range held by `holder` (a thread slot index plus one) at `place` in its spawn
     // list. A memory window names the `donor` domain whose reservation it maps and holds a
-    // reference on it until unmapped; a device window names none. -KOS_ENOMEM when the area,
-    // the list or the tables are full, -KOS_EAGAIN when `payer` cannot take the tables.
+    // reference on it until unmapped; a device window names none. Maps what `budget` has left,
+    // one page at least, and takes it off `budget`; the rest stays pending for
+    // aspace_create_pass. -KOS_ENOMEM when the area, the list or the tables are full,
+    // -KOS_EAGAIN when `payer` cannot take the tables.
     int aspace_window_map(Task const* payer, struct arch_aspace* space, VirtualRanges* ranges,
                           arch_phys_addr_t pa, size_t bytes, uint32_t rights,
                           enum arch_map_memtype type, uint16_t holder, uint32_t place,
-                          Domain* donor);
+                          Domain* donor, size_t* budget);
 
-    // Unmap every window `holder` holds, completing the backend's shootdown, and release their
-    // donors. A holder with none is a no-op.
+    // Whether a handoff of `ranges`, or a window `holder` holds there, is pending.
+    bool aspace_create_pending(VirtualRanges const* ranges, uint16_t holder);
+
+    // The table frames the rest of the create's pending maps for `holder` can need.
+    size_t aspace_create_tables(VirtualRanges const* ranges, uint16_t holder);
+
+    // One locked pass of a create's maps: at most ASPACE_MAP_PASS_PAGES more pages of a pending
+    // handoff of the space, or of a pending window `holder` holds there. 1 when it mapped some,
+    // 0 when none is pending, -KOS_EAGAIN when `payer` cannot take the tables, -KOS_ENOMEM.
+    int aspace_create_pass(Task const* payer, struct arch_aspace* space, VirtualRanges* ranges,
+                           uint16_t holder, MapPass* pass);
+
+    // One locked pass of the unmap of the windows `holder` holds: at most ASPACE_MAP_PASS_PAGES
+    // off the top of one, completing the backend's shootdown, the window left that much shorter
+    // and released at its last page. A memory window released names in *lender the domain whose
+    // reservation at *lent it mapped, which the caller then unlends and releases; null for
+    // none. False once `holder` holds none.
+    bool aspace_window_unmap_pass(struct arch_aspace* space, VirtualRanges* ranges,
+                                  uint16_t holder, MapPass* pass, Domain** lender,
+                                  uintptr_t* lent);
+
+    // Whether `holder` holds a window in `ranges`. Null-safe: false.
+    bool aspace_window_held(VirtualRanges const* ranges, uint16_t holder);
+
+    // Every pass of aspace_window_unmap_pass in one go. A holder with none is a no-op.
     void aspace_window_unmap_holder(struct arch_aspace* space, VirtualRanges* ranges,
                                     uint16_t holder);
 
@@ -304,11 +404,11 @@ namespace kickos
     // [base, base + size) is not one whole reservation `donor` may name.
     int aspace_handoff_admit(VirtualRanges const* donor, uintptr_t base, size_t size);
 
-    // Map the donor's complete reservation at the same VA without taking ownership.
-    // Require its exact base and rounded page count. Return -KOS_EPERM for a
-    // missing reservation, -KOS_EBUSY where the frames are mapped with another memory type,
-    // -KOS_EAGAIN where `payer` cannot take the tables, or -KOS_ENOMEM if the destination
-    // cannot accept it.
+    // Map the donor's complete reservation at the same VA without taking ownership, one pass of
+    // it, the rest pending for aspace_create_pass. Require its exact base and rounded page
+    // count. Return -KOS_EPERM for a missing reservation, -KOS_EBUSY where the frames are mapped
+    // with another memory type, -KOS_EAGAIN where `payer` cannot take the tables, or
+    // -KOS_ENOMEM if the destination cannot accept it.
     int aspace_handoff(Task const* payer, VirtualRanges const* donor, struct arch_aspace* space,
                        VirtualRanges* ranges, uintptr_t base, size_t size,
                        enum arch_map_memtype type);

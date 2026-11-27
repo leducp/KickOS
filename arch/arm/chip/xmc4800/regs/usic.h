@@ -14,7 +14,6 @@
 namespace kickos::xmc::reg::usic
 {
     constexpr uintptr_t U0C0_BASE = mmap::USIC0_CH0_BASE;
-    constexpr uintptr_t U0C1_BASE = mmap::USIC0_CH1_BASE;
 
     // Per-channel register offsets from the channel base (RM Table 18-20).
     namespace off

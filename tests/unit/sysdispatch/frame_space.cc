@@ -619,8 +619,11 @@ namespace kickos
                 Domain* const d = thread_domain(main_);
                 {
                     IrqLock lock;
-                    EXPECT_EQ(aspace_cap_unmap(domain_space(d), domain_ranges_mut(d), RUN_VA, obj),
+                    MapPass pass;
+                    EXPECT_EQ(aspace_cap_unmap(domain_space(d), domain_ranges_mut(d), RUN_VA, obj,
+                                               &pass),
                               0);
+                    EXPECT_TRUE(pass.done);
                 }
                 EXPECT_EQ(arch_aspace_frame_at(domain_space(d), RUN_VA), 0u)
                     << "the unmap left its leaves";
@@ -703,8 +706,7 @@ namespace kickos
                 EXPECT_EQ(domain_ranges(thread_domain(main_))->at_base(RUN_VA), nullptr);
             }
 
-            // No call reaches this arm: no range holds these rights, which are refused after the
-            // leaves went in.
+            // No call reaches this arm: no range holds these rights.
             TEST_F(FrameRunRefs, a_map_refused_at_its_grant_gives_its_reference_back)
             {
                 constexpr uint32_t RIGHT_NO_RANGE_HOLDS = 0x100u;
@@ -715,9 +717,10 @@ namespace kickos
                     IrqLock lock;
                     (void)presync_begin();
                     uintptr_t va = RUN_VA;
+                    MapPass pass;
                     EXPECT_EQ(aspace_cap_map(domain_payer(d), domain_space(d),
                                              domain_ranges_mut(d), &va, run.obj, run.base, 1,
-                                             RIGHT_NO_RANGE_HOLDS, ARCH_MAP_NORMAL),
+                                             RIGHT_NO_RANGE_HOLDS, ARCH_MAP_NORMAL, &pass),
                               -KOS_ENOMEM);
                     (void)presync_end();
                 }
@@ -992,6 +995,54 @@ namespace kickos
                 VirtualRanges const* const ranges = domain_ranges(thread_domain(main_));
                 EXPECT_EQ(count(KOS_MEM_RANGES_FREE),
                           VirtualRanges::capacity() - ranges->count());
+                EXPECT_EQ(count(KOS_MEM_TABLES_HELD), frame_pool_tables());
+            }
+
+            class MemCountTables : public MemCount
+            {
+              protected:
+                void SetUp() override
+                {
+                    host_aspace_tables_from_pool(true);
+                    MemCount::SetUp();
+                }
+
+                void TearDown() override
+                {
+                    MemCount::TearDown();
+                    host_aspace_tables_from_pool(false);
+                }
+            };
+
+            TEST_F(MemCountTables, rise_by_the_tables_a_map_builds_and_fall_at_its_space_s_end)
+            {
+                uint32_t const tables0 = count(KOS_MEM_TABLES_HELD);
+                uint32_t const free0 = count(KOS_MEM_FRAMES_FREE);
+                kos_task_t const t = new_task(main_, 0, 0, 0);
+                ASSERT_NE(t, KOS_TASK_NONE);
+                Domain* d = nullptr;
+                {
+                    IrqLock lock;
+                    d = task_domain(task_resolve(t));
+                }
+                ASSERT_NE(d, nullptr);
+                uint32_t const acap = space_cap(main_, d);
+                ASSERT_NE(acap, KCAP_INVALID);
+                uint32_t fcap = KCAP_INVALID;
+                ASSERT_EQ(create(G, &fcap), 0);
+                uint32_t const tables1 = count(KOS_MEM_TABLES_HELD);
+                uint32_t const free1 = count(KOS_MEM_FRAMES_FREE);
+                size_t const held = arch_aspace_table_pages(domain_space(d));
+                ASSERT_EQ(call_as(main_, KOS_SYS_FRAME_MAP, fcap, acap, va_word(RUN_VA), 0), 0u);
+                size_t const built = arch_aspace_table_pages(domain_space(d)) - held;
+                ASSERT_GT(built, 0u) << "fixture: the map built no table";
+                EXPECT_EQ(count(KOS_MEM_TABLES_HELD), tables1 + built);
+                EXPECT_EQ(count(KOS_MEM_FRAMES_FREE), free1 - built);
+                ASSERT_EQ(close(main_, fcap), 0);
+                exit_as(entry_of(t));
+                ASSERT_EQ(call_as(main_, KOS_SYS_TASK_SLAY, t), 0u);
+                EXPECT_EQ(count(KOS_MEM_TABLES_HELD), tables0) << "a table outlived its space";
+                EXPECT_EQ(count(KOS_MEM_FRAMES_FREE), free0);
             }
 
             TEST_F(MemCount, frames_free_falls_by_a_mint_and_returns_at_its_last_holder)
@@ -1040,7 +1091,7 @@ namespace kickos
             TEST_F(MemCount, an_unknown_id_is_einval)
             {
                 uint32_t out = 0;
-                EXPECT_EQ(count(KOS_MEM_RANGES_FREE + 1u, &out), -KOS_EINVAL);
+                EXPECT_EQ(count(KOS_MEM_TABLES_HELD + 1u, &out), -KOS_EINVAL);
                 EXPECT_EQ(out, 0xDEADu);
             }
         }

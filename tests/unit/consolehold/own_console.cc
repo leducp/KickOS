@@ -3,7 +3,7 @@
 //
 // A thread of the task serving the published console holds no stdout: the REAL kernel/syscall/
 // cap.cc seats none at its spawn and empties one a publish finds, and the REAL
-// kernel/init/console.cc then drops its line at once instead of waiting.
+// kernel/init/console.cc then refuses its line at once instead of waiting.
 
 #include <string.h>
 
@@ -21,7 +21,7 @@
 
 #include <kickos/sys/errno.h>
 
-#include "dark_seam.h"
+#include "device_seam.h"
 #include "isolated_arm.h"
 #include "kseam_test.h"
 #include "syscall_internal.h"
@@ -48,12 +48,11 @@ namespace
 
 // The driver's thread is spawned after the publish, as every bring-up spawns it: its stdout stays
 // empty, while a client spawned at the same point gets the console. Its print then finds no
-// endpoint and the kernel console drops the line without waiting, as a driver-owned UART takes
-// nothing from the kernel.
-TEST_F(ConsoleOwnTask, a_driver_thread_spawned_after_the_publish_has_no_stdout_and_its_print_returns)
+// endpoint, and the kernel console, published, refuses the line without waiting.
+TEST_F(ConsoleOwnTask, a_driver_thread_spawned_after_the_publish_has_no_stdout_and_its_print_is_refused)
 {
     run_isolated([]() {
-        darkseam::reset();
+        deviceseam::reset();
         Thread* const member = seat_pool(0, PRIO_MEMBER);
         attach_caps(member, KICKOS_SEAM_CAP_WIDTH);
         Thread* const client = seat_pool(1, PRIO_OTHER);
@@ -67,10 +66,12 @@ TEST_F(ConsoleOwnTask, a_driver_thread_spawned_after_the_publish_has_no_stdout_a
             sched::reschedule(nullptr, lock);
         }
         ASSERT_EQ(sched::current(), member);
-        ASSERT_TRUE(darkseam::publish(publisher, endpoint(), served));
+        ASSERT_TRUE(deviceseam::publish(publisher, endpoint(), served));
         {
             IrqLock lock;
+            ASSERT_TRUE(cap_stdout_reserve(member->task));
             cap_install_defaults(member, lock);
+            ASSERT_TRUE(cap_stdout_reserve(client->task));
             cap_install_defaults(client, lock);
         }
         EXPECT_EQ(stdout_type(client), static_cast<uint8_t>(CapType::CAP_ENDPOINT))
@@ -83,9 +84,9 @@ TEST_F(ConsoleOwnTask, a_driver_thread_spawned_after_the_publish_has_no_stdout_a
                   -KOS_EBADF);
         g_member_parked = false;
         wake_next_park([](Thread*) { g_member_parked = true; });
-        EXPECT_EQ(kconsole_write_user(line, 5, true), 5);
+        EXPECT_EQ(kconsole_write_user(line, 5, true), -KOS_EBUSY);
         EXPECT_FALSE(g_member_parked) << "the print waited on a console its own task owns";
-        EXPECT_EQ(darkseam::g_wire, "") << "the kernel wrote at a UART the driver owns";
+        EXPECT_EQ(deviceseam::g_wire, "") << "the kernel wrote at a UART the driver owns";
     });
 }
 
@@ -94,7 +95,7 @@ TEST_F(ConsoleOwnTask, a_driver_thread_spawned_after_the_publish_has_no_stdout_a
 TEST_F(ConsoleOwnTask, a_publish_for_the_callers_own_task_leaves_its_stdout_empty)
 {
     run_isolated([]() {
-        darkseam::reset();
+        deviceseam::reset();
         Thread* const publisher = seat_pool(0, PRIO_MEMBER);
         attach_caps(publisher, KICKOS_SEAM_CAP_WIDTH);
         Task* const served = task(0);
@@ -102,7 +103,7 @@ TEST_F(ConsoleOwnTask, a_publish_for_the_callers_own_task_leaves_its_stdout_empt
         Endpoint* const ep = endpoint();
         int const idx = kernel().endpoints.index_of(ep);
         uint32_t const refs_before = kernel().endpoints.refs()[idx];
-        ASSERT_TRUE(darkseam::publish(publisher, ep, served));
+        ASSERT_TRUE(deviceseam::publish(publisher, ep, served));
         EXPECT_EQ(stdout_type(publisher), static_cast<uint8_t>(CapType::CAP_EMPTY))
             << "the publisher's stdout names the console its own task serves";
         EXPECT_EQ(kernel().endpoints.refs()[idx], refs_before + 1u)

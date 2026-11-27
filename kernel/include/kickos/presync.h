@@ -26,8 +26,15 @@ struct arch_aspace;
 #error "a kernel view that owes a mapping's frames a sync syncs them outside the lock"
 #endif
 
+// The aspace call sites reach presync_yield and presync_record under KICKOS_HAVE_ASPACE alone.
+static_assert(not KICKOS_HAVE_ASPACE or KICKOS_ARCH_IRQ_WINDOW,
+              "a translating backend opens an interrupt window between its passes");
+
 namespace kickos
 {
+    struct Domain;
+    struct Task;
+
 #if not KICKOS_PRESYNC
     inline void presync_commit() {}
 #endif
@@ -84,6 +91,9 @@ namespace kickos
         uint16_t window_count = 0;
         kos_thread_params params = {};
         kos_window windows[KICKOS_MAX_THREAD_WINDOWS] = {};
+        // The thread a thread create built and has yet to make runnable, as its handle plus
+        // one, or 0: its slot may be freed and seated again across a window.
+        uint32_t building = 0;
         // A task create's, read the same way.
         bool has_task_params = false;
         kos_task_params task_params = {};
@@ -93,6 +103,20 @@ namespace kickos
         // The locked pass met a span it owed a sync and this record did not cover, or an image
         // to copy with no full stage for it.
         bool refused = false;
+        // Where a frame map this thread holds is in flight: taken back at a refusal, a lost
+        // capability or the thread's death.
+        Domain* map_into = nullptr;
+        uintptr_t map_at = 0;
+        // Table frames taken up front for the passes of the call under way, chained through
+        // their first word, and the task they are reserved for and its generation.
+        arch_phys_addr_t tables = 0;
+        uint32_t table_count = 0;
+        Task const* table_payer = nullptr;
+        uint16_t table_payer_gen = 0;
+        // Only an armed reserve hands frames out: a create's build takes its own from the pool.
+        bool tables_armed = false;
+        // What stopped the reserve short of its need, answered by the build that arms it.
+        int16_t table_refusal = 0;
     };
 
     // False, noting nothing, when the spans are full or the span is empty or too wide.

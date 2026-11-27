@@ -24,3 +24,10 @@ kickos_add_unit_test(NAME c6apm
   SOURCES c6apm.cc "${_mmap}"
   INCLUDES "${PROJECT_SOURCE_DIR}" "${PROJECT_SOURCE_DIR}/user/include")
 target_compile_options(c6apm PRIVATE -include "${_mmap}")
+# The addressable diagnostic LED's RMT driver (arch/riscv/chip/esp32c6/led_rmt.h) and the RMT's
+# PCR gates (rmt_clock.h), over a fake register file that seam/'s r32 reaches.
+kickos_add_unit_test(NAME c6ledrmt
+  SOURCES led_rmt.cc "${_mmap}"
+  INCLUDES "${PROJECT_SOURCE_DIR}" "${PROJECT_SOURCE_DIR}/user/include")
+target_compile_options(c6ledrmt PRIVATE -include "${_mmap}")
+target_include_directories(c6ledrmt BEFORE PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/seam")

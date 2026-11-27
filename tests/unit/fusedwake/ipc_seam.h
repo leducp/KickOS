@@ -13,8 +13,11 @@ namespace kickos::testfix
     // KSeam reset does not clear this state.
     extern uintptr_t g_ipc_seam_refuse_rw;    // user_readable_and_writable_ok
     extern uintptr_t g_ipc_seam_refuse_write; // kaccess_to_user, by destination
+    extern uintptr_t g_ipc_seam_refuse_read;  // kaccess_from_user, by source
     // Becomes g_ipc_seam_refuse_write at the next ep_copy: a word that turns unwritable mid-call.
     extern uintptr_t g_ipc_seam_refuse_write_from_copy;
+    // kstore_admitted, by base: a buffer the map loaded now does not hold writable.
+    extern uintptr_t g_ipc_seam_refuse_store;
 }
 
 #endif

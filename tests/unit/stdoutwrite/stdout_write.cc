@@ -193,40 +193,33 @@ extern "C"
 
 namespace
 {
-    // The send finds the endpoint vacated, and the restart's publish lands before the kernel
-    // console is asked: the line goes back to the endpoint, once.
-    TEST(StdoutWrite, ALineRefusedAcrossARestartIsSentAgain)
+    // A console whose driver is gone refuses the line, which ends the write: the kernel console
+    // is not asked, the line is not offered again, and write(2) answers ECONNREFUSED.
+    TEST(StdoutWrite, AConsoleWhoseDriverIsGoneRefusesTheLine)
     {
-        reset({-KOS_ECONNREFUSED, TAKE_ALL}, {-KOS_EBUSY});
-        kickos::emit("conwit: line 6 out\n");
-        EXPECT_EQ(g_endpoint, "conwit: line 6 out\n");
-        EXPECT_EQ(g_kconsole, "");
-        EXPECT_EQ(g_sends, 2);
-        EXPECT_EQ(g_kconsole_writes, 1);
-        EXPECT_TRUE(g_send_script.empty());
-    }
-
-    // Anti-vacuity for the arm above: with no publish in between, the kernel console carries
-    // the line and the endpoint is not asked again.
-    TEST(StdoutWrite, ALineRefusedBeforeAnyRestartGoesToTheKernelConsole)
-    {
-        reset({-KOS_ECONNREFUSED}, {TAKE_ALL});
-        kickos::emit("conwit: line 6 out\n");
-        EXPECT_EQ(g_kconsole, "conwit: line 6 out\n");
-        EXPECT_EQ(g_endpoint, "");
+        reset({-KOS_ECONNREFUSED}, {});
+        expect_result(kickos::stdout_write("line\n", 5), 0u, -KOS_ECONNREFUSED);
         EXPECT_EQ(g_sends, 1);
+        EXPECT_EQ(g_kconsole_writes, 0);
+        EXPECT_EQ(g_kconsole, "");
+        reset({-KOS_ECONNREFUSED}, {});
+        errno = 0;
+        EXPECT_EQ(_write(1, "line\n", 5), -1);
+        EXPECT_EQ(errno, ECONNREFUSED);
     }
 
-    // Only the remainder travels again, and a chunk the endpoint took is never repeated.
-    TEST(StdoutWrite, OnlyTheRemainderIsSentAgain)
+    // An empty stdout once a console is published: the kernel console refuses the line, which
+    // ends the write with nothing taken and nothing sent again.
+    TEST(StdoutWrite, AnEmptyStdoutOnAPublishedConsoleIsRefused)
     {
-        std::string line(KOS_EP_MSG_MAX + 10u, 'x');
-        line.back() = '\n';
-        reset({TAKE_ALL, -KOS_ECONNREFUSED, TAKE_ALL}, {-KOS_EBUSY});
-        kickos::stdout_write(line.data(), line.size());
-        EXPECT_EQ(g_endpoint, line);
-        EXPECT_EQ(g_kconsole, "");
-        EXPECT_EQ(g_sends, 3);
+        reset({-KOS_EBADF}, {-KOS_EBUSY});
+        expect_result(kickos::stdout_write("line\n", 5), 0u, -KOS_EBUSY);
+        EXPECT_EQ(g_sends, 1);
+        EXPECT_EQ(g_kconsole_writes, 1);
+        reset({-KOS_EBADF}, {-KOS_EBUSY});
+        errno = 0;
+        EXPECT_EQ(_write(1, "line\n", 5), -1);
+        EXPECT_EQ(errno, EBUSY);
     }
 
     // A receiver that accepts fewer bytes than offered, none included, leaves the rest to be
@@ -283,13 +276,12 @@ namespace
     }
 
     // A driver that cannot come back leaves the stdout seat naming its endpoint until the next
-    // publish moves it, the seat being the kernel's: the writer falls back and closes nothing.
-    TEST(StdoutWrite, ARefusedConnectionFallsBackWithoutAClose)
+    // publish moves it, the seat being the kernel's: the writer closes nothing.
+    TEST(StdoutWrite, ARefusedConnectionClosesNothing)
     {
-        reset({-KOS_ECONNREFUSED}, {TAKE_ALL});
+        reset({-KOS_ECONNREFUSED}, {});
         kickos::emit("line\n");
         EXPECT_EQ(g_closes, 0);
-        EXPECT_EQ(g_kconsole, "line\n");
     }
 
     // The kernel console waits for room itself, so a writer never offers a line it refused with
@@ -339,17 +331,6 @@ namespace
         EXPECT_EQ(g_kconsole_writes, 0);
     }
 
-    // The dark window: the send finds the dead driver's endpoint unserved, and the kernel
-    // console answers that it would wait. Nothing is written and nothing retried.
-    TEST(StdoutNonblocking, TheDarkWindowTakesNothing)
-    {
-        reset_nonblocking({-KOS_ECONNREFUSED}, {-KOS_EAGAIN});
-        expect_result(kickos::stdout_write("line\n", 5), 0u, -KOS_EAGAIN);
-        EXPECT_EQ(g_kconsole_writes, 1);
-        EXPECT_EQ(g_waiting_sends, 0);
-        EXPECT_EQ(g_waiting_kconsole, 0);
-    }
-
     // A far stdout's full lane is answered try-again: nothing is written, the kernel console is
     // never asked, nothing is retried.
     TEST(StdoutNonblocking, ASendThatWouldWaitTakesNothingAndNeverFallsBack)
@@ -386,32 +367,17 @@ namespace
         EXPECT_EQ(errno, EAGAIN);
     }
 
-    // A publish landing between the two sends the line to the endpoint after all.
-    TEST(StdoutNonblocking, ARepublishSendsTheLineToTheEndpoint)
+    // An empty stdout is the kernel console's, whose answer is the write's: its refusal of the
+    // buffer included, with nothing counted taken.
+    TEST(StdoutRoute, AnEmptyStdoutWritesTheKernelConsole)
     {
-        reset_nonblocking({-KOS_ECONNREFUSED, TAKE_ALL}, {-KOS_EBUSY});
-        expect_result(kickos::stdout_write("line\n", 5), 5u, 0);
-        EXPECT_EQ(g_endpoint, "line\n");
-    }
-
-    // A send no route serves falls back to the kernel console, whose answer is the write's: its
-    // refusal of the buffer included, with nothing counted taken.
-    class StdoutRoute : public ::testing::TestWithParam<int32_t>
-    {
-    };
-
-    TEST_P(StdoutRoute, FallsBackToTheKernelConsole)
-    {
-        reset({GetParam()}, {-KOS_EFAULT});
+        reset({-KOS_EBADF}, {-KOS_EFAULT});
         expect_result(kickos::stdout_write("line\n", 5), 0u, -KOS_EFAULT);
         EXPECT_EQ(g_kconsole_writes, 1);
-        reset({GetParam()}, {TAKE_ALL});
+        reset({-KOS_EBADF}, {TAKE_ALL});
         expect_result(kickos::stdout_write("line\n", 5), 5u, 0);
         EXPECT_EQ(g_kconsole, "line\n");
     }
-
-    INSTANTIATE_TEST_SUITE_P(NoServer, StdoutRoute,
-                             ::testing::Values(-KOS_EBADF, -KOS_ECONNREFUSED));
 
     // Any other refusal of the send ends the write where it stands: the kernel console is not
     // asked, and the bytes not sent are not counted.
@@ -429,7 +395,8 @@ namespace
 
     INSTANTIATE_TEST_SUITE_P(Refused, StdoutRefusal,
                              ::testing::Values(-KOS_EFAULT, -KOS_ECANCELED, -KOS_EACCES,
-                                               -KOS_EINVAL, -KOS_EAGAIN));
+                                               -KOS_EINVAL, -KOS_EAGAIN, -KOS_ECONNREFUSED,
+                                               -KOS_EPIPE));
 
     // The kernel console's own refusal ends the write too, with what it took counted.
     class KconsoleRefusal : public ::testing::TestWithParam<int32_t>
@@ -461,9 +428,9 @@ namespace
     // A writer cancelled waiting on the kernel console has its lost bytes refused, not taken.
     TEST(StdoutWrite, ACancelledWriterCountsNothingLost)
     {
-        reset({-KOS_ECONNREFUSED}, {-KOS_ECANCELED});
+        reset({-KOS_EBADF}, {-KOS_ECANCELED});
         expect_result(kickos::stdout_write("line\n", 5), 0u, -KOS_ECANCELED);
-        reset({-KOS_ECONNREFUSED}, {-KOS_ECANCELED});
+        reset({-KOS_EBADF}, {-KOS_ECANCELED});
         errno = 0;
         EXPECT_EQ(_write(1, "line\n", 5), -1);
         EXPECT_EQ(errno, ECANCELED);
@@ -503,13 +470,13 @@ namespace
         EXPECT_EQ(g_kconsole_writes, 0);
     }
 
-    // The publish lands between the send and the kernel console, which refuses the line to it.
-    TEST(KosPrint, APublishLandingBetweenSendsTheLineToStdout)
+    // A console whose driver is gone refuses the line: the kernel console is never asked.
+    TEST(KosPrint, AConsoleWhoseDriverIsGoneTakesNothing)
     {
-        reset({-KOS_EBADF, TAKE_ALL}, {-KOS_EBUSY});
+        reset({-KOS_ECONNREFUSED}, {});
         kos_print("line\n");
-        EXPECT_EQ(g_endpoint, "line\n");
-        EXPECT_EQ(g_kconsole, "");
+        EXPECT_EQ(g_sends, 1);
+        EXPECT_EQ(g_kconsole_writes, 0);
     }
 
     // A non-blocking task stops at the first byte that would make it wait.

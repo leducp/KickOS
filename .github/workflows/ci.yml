@@ -186,6 +186,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: ./.github/actions/kconfiglib
       - uses: ./.github/actions/build-tools
         with:
@@ -209,6 +211,8 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: ./.github/actions/kconfiglib
       - uses: ./.github/actions/build-tools
         with:
@@ -245,6 +249,8 @@ jobs:
       CXXFLAGS: "-fsanitize=undefined -fno-sanitize-recover=all"
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: ./.github/actions/kconfiglib
       - uses: ./.github/actions/build-tools
         with:
@@ -275,6 +281,8 @@ jobs:
       POLLED: "hello|fp_switch|mpu_fault|reclaimwit_park"
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: ./.github/actions/kconfiglib
       - uses: ./.github/actions/build-tools
         with:
@@ -433,6 +441,8 @@ jobs:
       QEMU_TIMEOUT: "180"
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: ./.github/actions/kconfiglib
       - uses: ./.github/actions/build-tools
         with:
@@ -484,6 +494,8 @@ jobs:
       QEMU_TIMEOUT: "180"
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: ./.github/actions/kconfiglib
       - uses: ./.github/actions/build-tools
         with:
@@ -535,6 +547,8 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: ./.github/actions/kconfiglib
       - uses: ./.github/actions/build-tools
         with:
@@ -562,6 +576,8 @@ jobs:
       QEMU_TIMEOUT: "180"
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: ./.github/actions/kconfiglib
       - uses: ./.github/actions/build-tools
         with:
@@ -601,6 +617,8 @@ jobs:
       QEMU_TIMEOUT: "180"
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: ./.github/actions/kconfiglib
       - uses: ./.github/actions/build-tools
         with:
@@ -645,6 +663,8 @@ jobs:
       QEMU_TIMEOUT: "180"
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: ./.github/actions/kconfiglib
       - uses: ./.github/actions/build-tools
         with:
@@ -725,6 +745,8 @@ jobs:
       QEMU_TIMEOUT: "180"
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: ./.github/actions/kconfiglib
       - uses: ./.github/actions/build-tools
         with:
@@ -817,6 +839,8 @@ jobs:
       QEMU_TIMEOUT: "180"
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: ./.github/actions/kconfiglib
       - uses: ./.github/actions/build-tools
         with:
@@ -854,6 +878,8 @@ jobs:
       QEMU_TIMEOUT: "180"
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: ./.github/actions/kconfiglib
       - uses: ./.github/actions/build-tools
         with:
@@ -918,6 +944,8 @@ jobs:
       QEMU_TIMEOUT: "180"
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: ./.github/actions/kconfiglib
       - uses: ./.github/actions/build-tools
         with:
@@ -977,6 +1005,8 @@ jobs:
       QEMU_TIMEOUT: "180"
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: ./.github/actions/kconfiglib
       - uses: ./.github/actions/build-tools
         with:
@@ -1020,6 +1050,8 @@ jobs:
       QEMU_TIMEOUT: "180"
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: ./.github/actions/kconfiglib
       - uses: ./.github/actions/build-tools
         with:
@@ -1050,6 +1082,8 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: ./.github/actions/kconfiglib
       - uses: ./.github/actions/build-tools
         with:
@@ -1096,6 +1130,8 @@ jobs:
         preset: [rx72m, rx72m-flat]
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: ./.github/actions/kconfiglib
       - uses: ./.github/actions/build-tools
         with:
@@ -1133,6 +1169,8 @@ jobs:
             emulator: qemu-system-arm
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: ./.github/actions/kconfiglib
       - uses: ./.github/actions/build-tools
         with:
@@ -1192,6 +1230,8 @@ jobs:
                  xmc4800-relax, picopi]
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: ./.github/actions/kconfiglib
       - uses: ./.github/actions/build-tools
         with:
@@ -1234,6 +1274,8 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: ./.github/actions/kconfiglib
       - uses: ./.github/actions/build-tools
         with:

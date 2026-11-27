@@ -17,15 +17,13 @@
 
 namespace
 {
-    // The managed range is real memory, the bitmap living inside it. Over-aligned so a test
+    // The managed range is real memory, the record living inside it. Over-aligned so a test
     // can use any granule up to this without the base failing the alignment check.
     constexpr size_t ARENA_BYTES = 256u * 1024u;
     alignas(64u * 1024u) unsigned char g_arena[ARENA_BYTES];
 
     uintptr_t arena_base() { return reinterpret_cast<uintptr_t>(g_arena); }
 
-    // The scan reads the bitmap a size_t at a time, so the frames that share a word with a
-    // boundary, and the frames of the last partial word, are the ones a scan gets wrong.
     // Written from sizeof rather than 64 so the arms below name the same frames on a 32-bit
     // host as on this one.
     constexpr size_t WORD_FRAMES = 8u * sizeof(size_t);
@@ -39,19 +37,6 @@ namespace
     {
         while (f.alloc() != 0)
         {
-        }
-    }
-
-    // Zeroes the whole arena before init(). A zero bit reads as free, so every byte the
-    // bitmap does not cover, and every bit of its last byte past the last frame, is left
-    // saying "available". A scan that reads one of them hands out a frame outside the range
-    // the caller gave; with residue from an earlier arm in there instead, the same defect
-    // reads as a pass.
-    void poison_free(size_t bytes)
-    {
-        for (size_t i = 0; i < bytes; i++)
-        {
-            g_arena[i] = 0;
         }
     }
 
@@ -70,22 +55,23 @@ TEST(Frame, init_rejects_what_it_cannot_describe)
     EXPECT_FALSE(f.init(0, ARENA_BYTES, 4096)) << "a zero base is not a range";
     EXPECT_FALSE(f.init(arena_base(), ARENA_BYTES, 0)) << "a zero granule";
     EXPECT_FALSE(f.init(arena_base(), ARENA_BYTES, 3000)) << "a granule that is not a power of two";
+    EXPECT_FALSE(f.init(arena_base(), ARENA_BYTES, sizeof(size_t))) << "too small for the links";
     EXPECT_FALSE(f.init(arena_base() + 1, ARENA_BYTES, 4096)) << "an unaligned base";
     EXPECT_FALSE(f.init(arena_base(), 0, 4096)) << "an empty range";
-    // One frame is all bitmap and leaves nothing usable. Refused, not reported as capacity
+    // One frame is all record and leaves nothing usable. Refused, not reported as capacity
     // 0: a caller cannot tell capacity 0 from ordinary exhaustion.
     EXPECT_FALSE(f.init(arena_base(), 4096, 4096)) << "a range with no usable frame";
 }
 
-TEST(Frame, the_bitmap_costs_frames_and_says_so)
+TEST(Frame, the_record_costs_frames_and_says_so)
 {
     kickos::FrameAllocator f;
     ASSERT_TRUE(f.init(arena_base(), ARENA_BYTES, 4096));
     size_t const frames = ARENA_BYTES / 4096;
-    EXPECT_LT(f.frames_total(), frames) << "the bitmap has to live somewhere in the range";
+    EXPECT_LT(f.frames_total(), frames) << "the record has to live somewhere in the range";
     EXPECT_EQ(f.frames_free(), f.frames_total()) << "a fresh range is entirely free";
-    // The bitmap's own frames read as allocated, which is what stops alloc handing them out.
-    EXPECT_TRUE(f.is_allocated(arena_base())) << "frame 0 holds the bitmap";
+    // The record's own frames read as allocated, which is what stops alloc handing them out.
+    EXPECT_TRUE(f.is_allocated(arena_base() + (frames - 1u) * 4096u)) << "the last frame holds it";
 }
 
 TEST(Frame, every_allocation_is_distinct_aligned_and_inside_the_range)
@@ -166,7 +152,7 @@ TEST(Frame, release_refuses_what_it_never_handed_out)
     kickos::FrameAllocator f;
     constexpr size_t granule = 4096;
     ASSERT_TRUE(f.init(arena_base(), ARENA_BYTES, granule));
-    EXPECT_FALSE(f.release(arena_base())) << "the bitmap's own frame";
+    EXPECT_FALSE(f.release(arena_base() + ARENA_BYTES - granule)) << "the record's own frame";
     EXPECT_FALSE(f.release(arena_base() - granule)) << "below the range";
     EXPECT_FALSE(f.release(arena_base() + ARENA_BYTES)) << "one past the range";
     EXPECT_FALSE(f.release(arena_base() + granule + 8)) << "unaligned";
@@ -211,7 +197,7 @@ TEST(Frame, a_run_longer_than_the_range_is_refused)
     EXPECT_EQ(f.alloc_run(0), 0u) << "an empty run is not a request";
     EXPECT_EQ(f.alloc_run(total + 1u), 0u) << "longer than the range holds";
     EXPECT_EQ(f.frames_free(), total) << "a refused run takes nothing";
-    // The whole usable range as one run, which the bitmap's own frames must not break.
+    // The whole usable range as one run, which the record's own frames must not break.
     uintptr_t const all = f.alloc_run(total);
     ASSERT_NE(all, 0u);
     EXPECT_EQ(f.frames_free(), 0u);
@@ -219,8 +205,7 @@ TEST(Frame, a_run_longer_than_the_range_is_refused)
 
 TEST(Frame, a_run_is_refused_by_FRAGMENTATION_and_not_by_the_free_count)
 {
-    // The count says a run fits and the layout says it does not, which is why alloc_run may
-    // not start from the single-allocation hint.
+    // The count says a run fits and the layout says it does not.
     kickos::FrameAllocator f;
     ASSERT_TRUE(f.init(arena_base(), ARENA_BYTES, 4096));
     std::vector<uintptr_t> all;
@@ -272,53 +257,10 @@ TEST_P(FrameGranule, allocates_the_whole_range_at_any_granule)
     EXPECT_EQ(again, f.frames_total());
 }
 
-// --- the frames a word-wise scan gets wrong ----------------------------------------------
-
-TEST(Frame, a_run_straddles_a_word_boundary)
-{
-    constexpr size_t granule = 1024;
-    kickos::FrameAllocator f;
-    ASSERT_TRUE(f.init(arena_base(), 256u * granule, granule));
-    fill(f);
-    // Five frames across the first word boundary, and two more far above so the refusal
-    // below is the layout's and not the free count's.
-    release_span(f, WORD_FRAMES - 2u, 5u, granule);
-    release_span(f, 2u * WORD_FRAMES + 10u, 2u, granule);
-    ASSERT_EQ(f.frames_free(), 7u);
-    EXPECT_EQ(f.alloc_run(6), 0u) << "no six adjacent frames, though seven are free";
-    uintptr_t const run = f.alloc_run(5);
-    ASSERT_NE(run, 0u);
-    EXPECT_EQ(frame_of(run, granule), WORD_FRAMES - 2u);
-    for (size_t i = 0; i < 5u; i++)
-    {
-        EXPECT_TRUE(f.is_allocated(run + i * granule)) << "frame " << i << " of the run";
-    }
-}
-
-TEST(Frame, a_run_straddles_two_word_boundaries)
-{
-    constexpr size_t granule = 1024;
-    kickos::FrameAllocator f;
-    ASSERT_TRUE(f.init(arena_base(), 256u * granule, granule));
-    fill(f);
-    size_t const first = WORD_FRAMES - 1u;
-    size_t const len = WORD_FRAMES + 3u; // reaches into the third word
-    release_span(f, first, len, granule);
-    release_span(f, 3u * WORD_FRAMES + 20u, 2u, granule);
-    ASSERT_EQ(f.frames_free(), len + 2u);
-    EXPECT_EQ(f.alloc_run(len + 2u), 0u);
-    EXPECT_EQ(f.alloc_run(len + 1u), 0u) << "one frame longer than the only gap";
-    uintptr_t const run = f.alloc_run(len);
-    ASSERT_NE(run, 0u);
-    EXPECT_EQ(frame_of(run, granule), first);
-    EXPECT_EQ(f.frames_free(), 2u);
-}
-
 TEST(Frame, a_whole_free_word_is_not_one_frame_longer_than_it_is)
 {
-    // The gap is a word wide and word-aligned, with the frames either side of it taken. A
-    // scan that skipped the free word without stopping at its end would answer a request one
-    // frame too long, and the free count allows that request.
+    // The gap is a word wide and word-aligned, with the frames either side of it taken, and
+    // the free count allows a request one frame longer.
     constexpr size_t granule = 1024;
     kickos::FrameAllocator f;
     ASSERT_TRUE(f.init(arena_base(), 256u * granule, granule));
@@ -334,11 +276,11 @@ TEST(Frame, a_whole_free_word_is_not_one_frame_longer_than_it_is)
     EXPECT_EQ(frame_of(run, granule), WORD_FRAMES);
 }
 
-TEST(Frame, the_last_frame_of_a_word_and_the_first_of_the_next_are_both_reachable)
+TEST(Frame, a_lone_free_frame_anywhere_is_found_again)
 {
     constexpr size_t granule = 1024;
-    size_t const singles[] = {WORD_FRAMES - 1u, WORD_FRAMES, WORD_FRAMES + 1u,
-                              2u * WORD_FRAMES - 1u, 2u * WORD_FRAMES};
+    size_t const singles[] = {0u, 1u, WORD_FRAMES - 1u, WORD_FRAMES, WORD_FRAMES + 1u,
+                              2u * WORD_FRAMES - 1u, 2u * WORD_FRAMES, 254u};
     for (size_t idx : singles)
     {
         kickos::FrameAllocator f;
@@ -350,22 +292,22 @@ TEST(Frame, the_last_frame_of_a_word_and_the_first_of_the_next_are_both_reachabl
         EXPECT_EQ(frame_of(a, granule), idx);
         EXPECT_EQ(f.frames_free(), 0u);
     }
-    // Both sides of one boundary free at once: the lower one has to come out first, or the
-    // scan is not first-fit.
     kickos::FrameAllocator f;
     ASSERT_TRUE(f.init(arena_base(), 256u * granule, granule));
     fill(f);
     release_span(f, WORD_FRAMES - 1u, 2u, granule);
-    EXPECT_EQ(frame_of(f.alloc(), granule), WORD_FRAMES - 1u);
-    EXPECT_EQ(frame_of(f.alloc(), granule), WORD_FRAMES);
+    std::set<size_t> back;
+    back.insert(frame_of(f.alloc(), granule));
+    back.insert(frame_of(f.alloc(), granule));
+    EXPECT_EQ(back, (std::set<size_t>{WORD_FRAMES - 1u, WORD_FRAMES}));
+    EXPECT_EQ(f.alloc(), 0u);
 }
 
-TEST(Frame, a_frame_count_that_is_not_a_word_multiple_hands_out_no_frame_past_the_end)
+TEST(Frame, a_frame_count_that_is_not_a_power_of_two_hands_out_no_frame_past_the_end)
 {
-    // The bitmap is rounded up to whole bytes, so bits past the last frame exist and are
-    // zero. A word-wise scan sees them, and handing one out would return an address outside
-    // the range the caller gave.
-    size_t const granules[] = {1024u, 4096u, 8u};
+    // The record takes the last frames, so a frame past the usable ones is the record's and
+    // one past the range is not memory the caller gave.
+    size_t const granules[] = {1024u, 4096u, 16u};
     size_t const counts[] = {65u, 66u, 67u, 70u, 71u, 127u, 129u, 130u, 200u};
     for (size_t granule : granules)
     {
@@ -375,123 +317,38 @@ TEST(Frame, a_frame_count_that_is_not_a_word_multiple_hands_out_no_frame_past_th
             {
                 continue;
             }
-            poison_free(count * granule);
             kickos::FrameAllocator f;
             ASSERT_TRUE(f.init(arena_base(), count * granule, granule))
                 << "granule " << granule << " count " << count;
-            size_t const reserved = count - f.frames_total();
+            size_t const usable = f.frames_total();
+            ASSERT_LT(usable, count);
             size_t handed = 0;
             size_t top = 0;
             for (uintptr_t a = f.alloc(); a != 0; a = f.alloc())
             {
                 size_t const i = frame_of(a, granule);
-                ASSERT_LT(i, count) << "granule " << granule << " count " << count
-                                    << ": frame past the last one the range holds";
-                ASSERT_GE(i, reserved);
+                ASSERT_LT(i, usable) << "granule " << granule << " count " << count
+                                     << ": a frame of the record or past the range";
                 if (i > top)
                 {
                     top = i;
                 }
                 handed++;
             }
-            EXPECT_EQ(handed, f.frames_total()) << "granule " << granule << " count " << count;
-            EXPECT_EQ(top, count - 1u) << "the last frame of the range was never handed out";
+            EXPECT_EQ(handed, usable) << "granule " << granule << " count " << count;
+            EXPECT_EQ(top, usable - 1u) << "the last usable frame was never handed out";
             EXPECT_EQ(f.alloc(), 0u);
             EXPECT_EQ(f.alloc_run(1), 0u);
-            // And the last frame comes back, from inside the partial word.
-            release_span(f, count - 1u, 1u, granule);
-            EXPECT_EQ(frame_of(f.alloc(), granule), count - 1u);
+            EXPECT_TRUE(f.is_allocated(arena_base() + (count - 1u) * granule)) << "the record";
+            release_span(f, usable - 1u, 1u, granule);
+            EXPECT_EQ(frame_of(f.alloc(), granule), usable - 1u);
         }
-    }
-}
-
-TEST(Frame, a_run_ending_in_the_last_partial_word_is_found_and_not_overrun)
-{
-    // 67 frames is neither a word nor a byte multiple, so the run below sits in a word that
-    // is part frames, part byte rounding, part nothing at all.
-    constexpr size_t granule = 1024;
-    constexpr size_t count = 67;
-    poison_free(count * granule);
-    kickos::FrameAllocator f;
-    ASSERT_TRUE(f.init(arena_base(), count * granule, granule));
-    fill(f);
-    release_span(f, count - 3u, 3u, granule);
-    // Two more free frames, isolated, far below: without them the free count refuses the
-    // run of four before any scan runs, and the scan is what is on trial here.
-    release_span(f, 10u, 1u, granule);
-    release_span(f, 12u, 1u, granule);
-    ASSERT_EQ(f.frames_free(), 5u);
-    EXPECT_EQ(f.alloc_run(4), 0u) << "a fourth frame would be past the end of the range";
-    EXPECT_EQ(f.frames_free(), 5u) << "a refused run took frames anyway";
-    uintptr_t const run = f.alloc_run(3);
-    ASSERT_NE(run, 0u);
-    EXPECT_EQ(frame_of(run, granule), count - 3u);
-    EXPECT_EQ(f.frames_free(), 2u);
-}
-
-TEST(Frame, alloc_wraps_to_a_free_frame_below_the_hint)
-{
-    // alloc_run raises the hint over a lower free frame, which is the only way the hint can
-    // sit above one: release() only ever moves it down. The second pass is what finds it,
-    // and both the frame and the hint are chosen so the pass boundaries fall inside a word.
-    constexpr size_t granule = 1024;
-    size_t const lows[] = {1u, 2u, WORD_FRAMES - 1u, WORD_FRAMES, WORD_FRAMES + 1u,
-                           2u * WORD_FRAMES - 1u};
-    for (size_t low : lows)
-    {
-        kickos::FrameAllocator f;
-        ASSERT_TRUE(f.init(arena_base(), 256u * granule, granule));
-        size_t const reserved = 256u - f.frames_total();
-        if (low < reserved)
-        {
-            continue;
-        }
-        fill(f);
-        release_span(f, low, 1u, granule);
-        release_span(f, 130u, 11u, granule); // the run the hint follows, ending mid-word
-        ASSERT_EQ(f.frames_free(), 12u);
-        uintptr_t const run = f.alloc_run(11);
-        ASSERT_NE(run, 0u);
-        ASSERT_EQ(frame_of(run, granule), 130u) << "the single free frame is not a run of 11";
-        // Everything at or above the hint is taken, so only the wrap pass can answer.
-        uintptr_t const a = f.alloc();
-        ASSERT_NE(a, 0u) << "the free frame below the hint was lost, low = " << low;
-        EXPECT_EQ(frame_of(a, granule), low);
-        EXPECT_EQ(f.frames_free(), 0u);
-        EXPECT_EQ(f.alloc(), 0u);
-    }
-}
-
-TEST(Frame, a_run_whose_fit_begins_below_the_hint_is_still_found)
-{
-    // The property the sweep's start at the bitmap's own frames protects: the hint chases
-    // single allocations and says nothing about where a run fits.
-    constexpr size_t granule = 1024;
-    size_t const gaps[] = {10u, WORD_FRAMES - 2u, WORD_FRAMES, 2u * WORD_FRAMES - 3u};
-    for (size_t gap : gaps)
-    {
-        kickos::FrameAllocator f;
-        ASSERT_TRUE(f.init(arena_base(), 256u * granule, granule));
-        fill(f);
-        release_span(f, gap, 4u, granule);
-        release_span(f, 200u, 8u, granule);
-        uintptr_t const high = f.alloc_run(8);
-        ASSERT_NE(high, 0u);
-        ASSERT_EQ(frame_of(high, granule), 200u) << "the four-frame gap is not a run of eight";
-        // The hint is now above 207 and the only remaining fit is at `gap`.
-        uintptr_t const run = f.alloc_run(4);
-        ASSERT_NE(run, 0u) << "a run below the hint was refused, gap at " << gap;
-        EXPECT_EQ(frame_of(run, granule), gap);
-        EXPECT_EQ(f.frames_free(), 0u);
     }
 }
 
 TEST(Frame, a_run_does_not_span_a_wholly_allocated_word)
 {
-    // A free frame at the top of one word and another at the bottom of the word after next,
-    // with a whole allocated word between them. A scan that skips the allocated word without
-    // dropping what it had counted joins the two into a run of two, and the frame it would
-    // return is allocated.
+    // Free frames on either side of a whole allocated word are not one run.
     constexpr size_t granule = 1024;
     kickos::FrameAllocator f;
     ASSERT_TRUE(f.init(arena_base(), 256u * granule, granule));
@@ -503,88 +360,253 @@ TEST(Frame, a_run_does_not_span_a_wholly_allocated_word)
     EXPECT_EQ(f.frames_free(), 2u) << "a refused run took frames anyway";
     EXPECT_TRUE(f.is_allocated(arena_base() + (WORD_FRAMES - 2u) * granule))
         << "the frame below the free one was handed out";
-    EXPECT_EQ(frame_of(f.alloc(), granule), WORD_FRAMES - 1u);
-    EXPECT_EQ(frame_of(f.alloc(), granule), 2u * WORD_FRAMES);
-    // And the same shape with the free frames wide enough to be a run on each side.
     kickos::FrameAllocator g;
     ASSERT_TRUE(g.init(arena_base(), 256u * granule, granule));
     fill(g);
-    release_span(g, WORD_FRAMES - 3u, 3u, granule);
-    release_span(g, 2u * WORD_FRAMES, 3u, granule);
-    EXPECT_EQ(g.alloc_run(4), 0u) << "three plus three across an allocated word is not four";
-    EXPECT_EQ(frame_of(g.alloc_run(3), granule), WORD_FRAMES - 3u);
-}
-
-TEST(Frame, the_wrap_pass_does_not_return_a_frame_the_first_pass_walked_past)
-{
-    // Two free frames, both below the hint, one of them in the hint's own word. The first
-    // pass starts inside that word and must ignore everything below the hint, or it answers
-    // with the higher frame and first-fit is gone.
-    constexpr size_t granule = 1024;
-    kickos::FrameAllocator f;
-    ASSERT_TRUE(f.init(arena_base(), 256u * granule, granule));
-    fill(f);
-    release_span(f, 10u, 1u, granule);
-    release_span(f, 2u * WORD_FRAMES + 7u, 1u, granule);
-    release_span(f, 2u * WORD_FRAMES + 13u, 11u, granule);
-    uintptr_t const run = f.alloc_run(11);
+    release_span(g, WORD_FRAMES - 4u, 4u, granule);
+    release_span(g, 2u * WORD_FRAMES, 4u, granule);
+    EXPECT_EQ(g.alloc_run(5), 0u) << "four plus four across an allocated word is not five";
+    EXPECT_EQ(g.frames_free(), 8u);
+    uintptr_t const run = g.alloc_run(4);
     ASSERT_NE(run, 0u);
-    ASSERT_EQ(frame_of(run, granule), 2u * WORD_FRAMES + 13u);
-    // The hint now sits in the same word as the free frame at 2 * WORD_FRAMES + 7, above it.
-    uintptr_t const a = f.alloc();
-    ASSERT_NE(a, 0u);
-    EXPECT_EQ(frame_of(a, granule), 10u) << "the lowest free frame is the first fit";
-    EXPECT_EQ(frame_of(f.alloc(), granule), 2u * WORD_FRAMES + 7u);
+    size_t const lo = frame_of(run, granule);
+    EXPECT_TRUE(lo == WORD_FRAMES - 4u or lo == 2u * WORD_FRAMES) << "run at " << lo;
 }
 
-TEST(Frame, taking_a_run_below_the_hint_leaves_the_hint_where_it_was)
+// --- the buddy system ----------------------------------------------------------------------
+
+namespace
 {
-    // The hint is a floor for single allocations, and a run taken from below it must not drag
-    // it down: the next alloc() would then re-walk frames the hint had already accounted for
-    // and answer with a lower frame than first-fit-from-the-hint gives.
-    constexpr size_t granule = 1024;
-    kickos::FrameAllocator f;
-    ASSERT_TRUE(f.init(arena_base(), 256u * granule, granule));
-    fill(f);
-    release_span(f, 10u, 4u, granule);
-    release_span(f, 50u, 1u, granule);
-    release_span(f, 250u, 1u, granule);
-    release_span(f, 200u, 8u, granule);
-    ASSERT_EQ(f.alloc_run(8), arena_base() + 200u * granule);
-    ASSERT_EQ(f.alloc_run(4), arena_base() + 10u * granule) << "the fit below the hint";
-    uintptr_t const a = f.alloc();
-    ASSERT_NE(a, 0u);
-    EXPECT_EQ(frame_of(a, granule), 250u) << "the hint was dragged below the run it took";
-    EXPECT_EQ(frame_of(f.alloc(), granule), 50u) << "and the wrap pass takes the rest";
+    // 256 frames of 1 KiB: the record takes frame 255, and the free frames below it are one
+    // block of each order from 7 at frame 0 down to 0 at frame 254.
+    constexpr size_t G = 1024u;
+    constexpr size_t COUNT = 256u;
+    constexpr size_t USABLE = 255u;
+
+    uintptr_t at(size_t i)
+    {
+        return arena_base() + i * G;
+    }
+
+    void init_shape(kickos::FrameAllocator& f)
+    {
+        ASSERT_TRUE(f.init(arena_base(), COUNT * G, G));
+        ASSERT_EQ(f.frames_total(), USABLE) << "fixture: one frame of record";
+    }
+
+    // Every frame alloc() still hands out.
+    std::set<size_t> drain(kickos::FrameAllocator& f)
+    {
+        std::set<size_t> got;
+        for (uintptr_t a = f.alloc(); a != 0; a = f.alloc())
+        {
+            got.insert(frame_of(a, G));
+        }
+        return got;
+    }
 }
 
-TEST(Frame, a_hint_at_the_end_of_the_range_names_no_frame)
+TEST(Buddy, a_run_takes_the_smallest_block_that_holds_it_and_gives_the_tail_back)
 {
-    // alloc_run can leave the hint one past the last frame while a frame below is still free.
-    // The byte rounding puts readable, zero, not-a-frame bits exactly there, so anything that
-    // tests the bit the hint names has to bound it first.
-    constexpr size_t granule = 1024;
-    constexpr size_t count = 67; // not a byte multiple, so the rounding bits exist
-    poison_free(count * granule);
     kickos::FrameAllocator f;
-    ASSERT_TRUE(f.init(arena_base(), count * granule, granule));
+    init_shape(f);
+    uintptr_t const run = f.alloc_run(5);
+    ASSERT_NE(run, 0u);
+    EXPECT_EQ(frame_of(run, G), 240u) << "the block of eight, not a larger one";
+    for (size_t i = 0; i < 5u; i++)
+    {
+        EXPECT_TRUE(f.is_allocated(run + i * G)) << "frame " << i << " of the run";
+    }
+    for (size_t i = 5u; i < 8u; i++)
+    {
+        EXPECT_FALSE(f.is_allocated(run + i * G)) << "frame " << i << " of the block's tail";
+    }
+    EXPECT_EQ(f.frames_free(), USABLE - 5u);
+    std::set<size_t> const got = drain(f);
+    EXPECT_EQ(got.size(), USABLE - 5u) << "a frame the count promises is not reachable";
+    EXPECT_EQ(got.count(245u) + got.count(246u) + got.count(247u), 3u) << "the tail was lost";
+}
+
+TEST(Buddy, a_run_that_is_not_a_power_of_two_takes_exactly_its_pages)
+{
+    kickos::FrameAllocator f;
+    init_shape(f);
     fill(f);
-    release_span(f, 10u, 1u, granule);
-    release_span(f, count - 3u, 3u, granule);
-    ASSERT_EQ(frame_of(f.alloc_run(3), granule), count - 3u) << "the run at the top of the range";
-    ASSERT_EQ(f.frames_free(), 1u);
-    uintptr_t const a = f.alloc();
-    ASSERT_NE(a, 0u);
-    EXPECT_EQ(frame_of(a, granule), 10u) << "a frame past the last one was handed out";
+    // An aligned block of eight and one of four: a run of five fits only the eight.
+    release_span(f, 16u, 8u, G);
+    release_span(f, 32u, 4u, G);
+    uintptr_t const run = f.alloc_run(5);
+    ASSERT_NE(run, 0u);
+    EXPECT_EQ(frame_of(run, G), 16u);
+    EXPECT_EQ(f.frames_free(), 7u);
+    for (size_t i = 21u; i < 24u; i++)
+    {
+        EXPECT_FALSE(f.is_allocated(at(i))) << "frame " << i;
+    }
+    EXPECT_EQ(f.alloc_run(3), at(32u)) << "the block of four";
+    EXPECT_EQ(f.alloc_run(2), at(22u)) << "the tail of the eight";
+    EXPECT_EQ(f.frames_free(), 2u);
+    EXPECT_EQ(drain(f), (std::set<size_t>{21u, 35u}));
+}
+
+TEST(Buddy, a_released_block_merges_with_its_free_buddy)
+{
+    kickos::FrameAllocator f;
+    init_shape(f);
+    fill(f);
+    // The 64 frames of one block, back one at a time in an order that leaves each merge
+    // to the last of its pair.
+    for (size_t k = 0; k < 64u; k++)
+    {
+        size_t const i = (k * 37u) % 64u;
+        ASSERT_TRUE(f.release(at(i))) << "frame " << i;
+    }
+    EXPECT_EQ(f.alloc_run(64), at(0)) << "64 free frames that are not one block";
+    EXPECT_EQ(f.frames_free(), 0u);
+    ASSERT_EQ(f.release_run(at(0), 64), 64u);
+    ASSERT_EQ(f.release_run(at(64), 64), 64u);
+    EXPECT_EQ(f.alloc_run(128), at(0)) << "two released runs of 64 that are not one block";
+}
+
+TEST(Buddy, a_run_longer_than_any_free_block_starts_at_the_first_frame_and_stops_at_the_record)
+{
+    kickos::FrameAllocator f;
+    init_shape(f);
+    uintptr_t const all = f.alloc_run(USABLE);
+    ASSERT_EQ(all, at(0)) << "the whole usable range, longer than its largest block";
+    EXPECT_EQ(f.frames_free(), 0u);
+    EXPECT_EQ(f.release_run(all, COUNT), 0u) << "a release reaching the record";
+    EXPECT_FALSE(f.release(at(USABLE))) << "the record's frame";
+    EXPECT_TRUE(f.is_allocated(at(USABLE)));
+    EXPECT_EQ(f.release_run(all, USABLE), USABLE);
+    EXPECT_EQ(f.frames_free(), USABLE);
+    // With frame 0 taken a run that long is refused, though the 254 frames above are free.
+    ASSERT_EQ(f.alloc_run(USABLE), at(0));
+    ASSERT_EQ(f.release_run(at(1), USABLE - 1u), USABLE - 1u);
+    EXPECT_EQ(f.alloc_run(USABLE - 1u), 0u) << "the run is only ever tried at frame 0";
+    EXPECT_EQ(f.frames_free(), USABLE - 1u) << "a refused run took frames anyway";
+}
+
+TEST(Buddy, a_run_in_the_blocks_the_record_cuts_short_ends_at_the_last_usable_frame)
+{
+    // 67 frames: one block of 64, one of two, then the record, whose buddy is past the range.
+    kickos::FrameAllocator f;
+    ASSERT_TRUE(f.init(arena_base(), 67u * G, G));
+    ASSERT_EQ(f.frames_total(), 66u) << "fixture: one frame of record";
+    uintptr_t const end = f.alloc_run(2);
+    EXPECT_EQ(end, at(64u)) << "the block of two at the top";
+    EXPECT_TRUE(f.is_allocated(at(66u))) << "the record";
+    EXPECT_EQ(f.release_run(end, 3), 0u) << "a release reaching the record";
+    EXPECT_EQ(f.release_run(end, 2), 2u);
+    EXPECT_EQ(f.alloc_run(66), at(0)) << "the whole usable range, ending at frame 65";
+    EXPECT_EQ(f.release_run(at(0), 66), 66u);
+    EXPECT_EQ(f.frames_free(), 66u);
+}
+
+TEST(Buddy, a_block_ending_at_the_range_s_end_never_merges_past_it)
+{
+    // 24 frames, 8 * 3: the allocated block [16, 24) has the buddy index 24, which names the
+    // byte right after the tags, the low byte of the order-0 list's head. That head is made
+    // frame 4, whose low byte is the tag of an allocated block of order 3.
+    kickos::FrameAllocator f;
+    ASSERT_TRUE(f.init(arena_base(), 24u * G, G));
+    ASSERT_EQ(f.frames_total(), 23u) << "fixture: one frame of record";
+    fill(f);
+    ASSERT_TRUE(f.release(at(18u)));
+    ASSERT_TRUE(f.release(at(19u)));
+    ASSERT_TRUE(f.release(at(4u)));
+    EXPECT_EQ(f.alloc_run(2), at(18u)) << "fixture: the block of two closing the tail";
+    EXPECT_EQ(f.alloc(), at(4u)) << "the order-0 list lost its head";
     EXPECT_EQ(f.alloc(), 0u);
+    EXPECT_EQ(f.release_run(at(16u), 8u), 0u) << "a release reaching the record";
+    EXPECT_EQ(f.release_run(at(16u), 7u), 7u);
+    EXPECT_EQ(f.frames_free(), 7u);
+}
+
+TEST(Buddy, a_release_reaching_a_free_frame_is_refused_whole)
+{
+    kickos::FrameAllocator f;
+    init_shape(f);
+    uintptr_t const run = f.alloc_run(5);
+    ASSERT_NE(run, 0u);
+    size_t const free_before = f.frames_free();
+    ASSERT_TRUE(f.release(run + 2u * G));
+    EXPECT_EQ(f.release_run(run, 5), 0u) << "a run holding a free frame";
+    EXPECT_EQ(f.frames_free(), free_before + 1u) << "a refused release still moved the count";
+    for (size_t i : {0u, 1u, 3u, 4u})
+    {
+        EXPECT_TRUE(f.is_allocated(run + i * G)) << "frame " << i << " freed by a refusal";
+    }
+    EXPECT_FALSE(f.release(run + 2u * G)) << "a double release";
+    EXPECT_EQ(f.release_run(run + 3u * G, 2), 2u);
+    EXPECT_EQ(f.release_run(run, 2), 2u);
+    EXPECT_EQ(f.release_run(run, 2), 0u) << "a second release of a run";
+    EXPECT_EQ(f.frames_free(), USABLE);
+    EXPECT_EQ(drain(f).size(), USABLE) << "a refused release corrupted the free lists";
+}
+
+TEST(Buddy, exhaustion_and_fragmentation_refuse_without_taking_anything)
+{
+    kickos::FrameAllocator f;
+    init_shape(f);
+    fill(f);
+    EXPECT_EQ(f.alloc(), 0u);
+    EXPECT_EQ(f.alloc_run(1), 0u);
+    EXPECT_EQ(f.alloc_run(USABLE), 0u);
+    EXPECT_EQ(f.frames_free(), 0u);
+    for (size_t i = 0; i < USABLE; i += 2u)
+    {
+        ASSERT_TRUE(f.release(at(i)));
+    }
+    size_t const freed = f.frames_free();
+    EXPECT_EQ(f.alloc_run(2), 0u) << "no two adjacent frames, though the count allows a run";
+    EXPECT_EQ(f.alloc_run(freed), 0u);
+    EXPECT_EQ(f.frames_free(), freed) << "a refused run took frames anyway";
+    for (size_t i = 0; i < USABLE; i++)
+    {
+        EXPECT_EQ(f.is_allocated(at(i)), i % 2u == 1u) << "frame " << i;
+    }
+    std::set<size_t> const got = drain(f);
+    EXPECT_EQ(got.size(), freed);
+    EXPECT_EQ(*got.rbegin(), 254u);
+}
+
+TEST(Buddy, a_table_reserve_taken_and_given_back_leaves_the_pool_as_it_was)
+{
+    // The presync reserve's pattern: single frames chained through their first word, then
+    // released down the chain.
+    kickos::FrameAllocator f;
+    init_shape(f);
+    for (int round = 0; round < 3; round++)
+    {
+        uintptr_t chain = 0;
+        for (size_t k = 0; k < 32u; k++)
+        {
+            uintptr_t const a = f.alloc();
+            ASSERT_NE(a, 0u);
+            *reinterpret_cast<uintptr_t*>(a) = chain;
+            chain = a;
+        }
+        EXPECT_EQ(f.frames_free(), USABLE - 32u);
+        while (chain != 0)
+        {
+            uintptr_t const next = *reinterpret_cast<uintptr_t*>(chain);
+            ASSERT_TRUE(f.release(chain));
+            chain = next;
+        }
+        EXPECT_EQ(f.frames_free(), USABLE) << "round " << round;
+        uintptr_t const all = f.alloc_run(USABLE);
+        ASSERT_EQ(all, at(0)) << "the reserve left the pool cut up, round " << round;
+        ASSERT_EQ(f.release_run(all, USABLE), USABLE);
+    }
 }
 
 TEST(Frame, an_interleaved_sequence_hands_no_frame_out_twice)
 {
-    // A shadow of the bitmap kept beside the allocator, checked after every call: over a
-    // long mixed sequence the allocator must never hand out a frame it already gave away,
-    // never refuse a run the layout allows, and never return a run that is not the first one
-    // long enough.
+    // A shadow of every frame's state kept beside the allocator, checked after every call:
+    // over a long mixed sequence the allocator must never hand out a frame it already gave
+    // away, never refuse a run a free aligned block of its power of two holds, and agree with
+    // the shadow on every frame.
     size_t const granules[] = {1024u, 4096u};
     size_t const counts[] = {67u, 200u, 64u};
     for (size_t granule : granules)
@@ -595,15 +617,24 @@ TEST(Frame, an_interleaved_sequence_hands_no_frame_out_twice)
             {
                 continue;
             }
-            poison_free(count * granule);
             kickos::FrameAllocator f;
             ASSERT_TRUE(f.init(arena_base(), count * granule, granule));
-            size_t const reserved = count - f.frames_total();
+            size_t const usable = f.frames_total();
             std::vector<bool> taken(count, false);
-            for (size_t i = 0; i < reserved; i++)
+            for (size_t i = usable; i < count; i++)
             {
                 taken[i] = true;
             }
+            auto all_free = [&](size_t lo, size_t n) {
+                for (size_t i = lo; i < lo + n; i++)
+                {
+                    if (i >= count or taken[i])
+                    {
+                        return false;
+                    }
+                }
+                return true;
+            };
             uint64_t seed = 0x9E3779B97F4A7C15ull;
             for (size_t step = 0; step < 8000u; step++)
             {
@@ -612,56 +643,73 @@ TEST(Frame, an_interleaved_sequence_hands_no_frame_out_twice)
                 seed ^= seed << 17;
                 size_t const pick = static_cast<size_t>(seed % 100u);
                 size_t const arg = static_cast<size_t>((seed >> 8) % (count + 2u));
-                if (pick < 45u)
+                size_t const pages = 1u + static_cast<size_t>((seed >> 24) % 12u);
+                if (pick < 40u)
                 {
                     uintptr_t const a = f.alloc();
                     if (a == 0u)
                     {
+                        for (size_t i = 0; i < count; i++)
+                        {
+                            ASSERT_TRUE(taken[i]) << "frame " << i << " free, alloc refused";
+                        }
                         continue;
                     }
                     size_t const i = frame_of(a, granule);
-                    ASSERT_LT(i, count) << "step " << step;
-                    ASSERT_GE(i, reserved) << "step " << step;
+                    ASSERT_LT(i, usable) << "step " << step;
                     ASSERT_FALSE(taken[i]) << "frame " << i << " handed out twice, step " << step;
                     taken[i] = true;
                 }
-                else if (pick < 65u)
+                else if (pick < 60u)
                 {
-                    size_t pages = 1u + static_cast<size_t>((seed >> 24) % 12u);
-                    // The first run of `pages` free frames, which is the answer alloc_run owes.
-                    size_t want = count;
-                    size_t run = 0;
-                    for (size_t i = reserved; i < count; i++)
+                    size_t order = 0;
+                    while ((size_t(1) << order) < pages)
                     {
-                        if (taken[i])
-                        {
-                            run = 0;
-                            continue;
-                        }
-                        run++;
-                        if (run == pages)
-                        {
-                            want = i + 1u - pages;
-                            break;
-                        }
+                        order++;
+                    }
+                    size_t const block = size_t(1) << order;
+                    bool fits = all_free(0, pages);
+                    for (size_t w = 0; w + block <= count; w += block)
+                    {
+                        fits = fits or all_free(w, block);
                     }
                     uintptr_t const a = f.alloc_run(pages);
-                    if (want == count)
+                    if (a == 0u)
                     {
-                        ASSERT_EQ(a, 0u) << "a run of " << pages << " was invented, step " << step;
+                        ASSERT_FALSE(fits) << "a run of " << pages << " refused, step " << step;
                         continue;
                     }
-                    ASSERT_NE(a, 0u) << "a run of " << pages << " fits at " << want
-                                     << " and was refused, step " << step;
-                    ASSERT_EQ(frame_of(a, granule), want) << "not the first fit, step " << step;
+                    size_t const lo = frame_of(a, granule);
+                    ASSERT_EQ(lo % block, 0u) << "a run off its alignment, step " << step;
+                    ASSERT_TRUE(all_free(lo, pages)) << "a run over taken frames, step " << step;
                     for (size_t k = 0; k < pages; k++)
                     {
-                        taken[want + k] = true;
+                        taken[lo + k] = true;
+                    }
+                }
+                else if (pick < 75u)
+                {
+                    size_t const n = pages;
+                    bool expect = arg + n <= usable;
+                    for (size_t i = arg; expect and i < arg + n; i++)
+                    {
+                        expect = taken[i];
+                    }
+                    size_t want = 0;
+                    if (expect)
+                    {
+                        want = n;
+                    }
+                    ASSERT_EQ(f.release_run(arena_base() + arg * granule, n), want)
+                        << "release_run(" << arg << ", " << n << ") verdict, step " << step;
+                    for (size_t i = arg; expect and i < arg + n; i++)
+                    {
+                        taken[i] = false;
                     }
                 }
                 else
                 {
-                    bool expect = arg < count and arg >= reserved and taken[arg];
+                    bool const expect = arg < usable and taken[arg];
                     ASSERT_EQ(f.release(arena_base() + arg * granule), expect)
                         << "release(" << arg << ") verdict, step " << step;
                     if (expect)
@@ -676,6 +724,8 @@ TEST(Frame, an_interleaved_sequence_hands_no_frame_out_twice)
                     {
                         free_now++;
                     }
+                    ASSERT_EQ(f.is_allocated(arena_base() + i * granule), taken[i])
+                        << "frame " << i << ", step " << step;
                 }
                 ASSERT_EQ(f.frames_free(), free_now) << "the free count drifted, step " << step;
             }

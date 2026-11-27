@@ -2,8 +2,8 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // NXP i.MX RT1062 IOMUXC pin-mux register map (RM ch.11): the SW_MUX_CTL_PAD_* mux
-// selects, and the *_SELECT_INPUT daisy-chain registers that pick which pad drives a
-// peripheral input (RM 11.3).
+// selects, the SW_PAD_CTL_PAD_* pad controls, and the *_SELECT_INPUT daisy-chain registers
+// that pick which pad drives a peripheral input (RM 11.3).
 
 #ifndef KICKOS_ARCH_ARM_CHIP_IMXRT1062_REGS_IOMUXC_H
 #define KICKOS_ARCH_ARM_CHIP_IMXRT1062_REGS_IOMUXC_H
@@ -30,8 +30,32 @@ namespace kickos::imxrt1062::reg::iomuxc
         return SW_MUX_B0_00 + bit * 4u;
     }
 
-    // Daisy-chain input select: which pad feeds LPUART6_RX (RM 11.6.336, p.855).
+    // SW_PAD_CTL_PAD registers, laid out as the mux ones: GPIO_AD_B0_00 at 0x2AC and GPIO_B0_00 at
+    // 0x32C (RM 11.6.167, 11.6.199).
+    constexpr uintptr_t SW_PAD_AD_B0_00 = mmap::IOMUXC_BASE + 0x2ACu;
+    constexpr uintptr_t SW_PAD_B0_00 = mmap::IOMUXC_BASE + 0x32Cu;
+
+    constexpr uintptr_t sw_pad(uint32_t bank, uint32_t bit)
+    {
+        if (bank == 1u)
+        {
+            return SW_PAD_AD_B0_00 + bit * 4u;
+        }
+        return SW_PAD_B0_00 + bit * 4u;
+    }
+
+    // The pads' reset value: push-pull, drive R0/6, keeper enabled (RM 11.6.199).
+    constexpr uint32_t PAD_CTL_RESET = 0x10B0u;
+
+    // Daisy-chain input selects: which pad feeds an LPUART's RX (RM 11.6.327 to 11.6.340,
+    // pp.848-858). LPUART1's RX has one pad and no select.
+    constexpr uintptr_t LPUART2_RX_SELECT_INPUT = mmap::IOMUXC_BASE + 0x52Cu;
+    constexpr uintptr_t LPUART3_RX_SELECT_INPUT = mmap::IOMUXC_BASE + 0x538u;
+    constexpr uintptr_t LPUART4_RX_SELECT_INPUT = mmap::IOMUXC_BASE + 0x540u;
+    constexpr uintptr_t LPUART5_RX_SELECT_INPUT = mmap::IOMUXC_BASE + 0x548u;
     constexpr uintptr_t LPUART6_RX_SELECT_INPUT = mmap::IOMUXC_BASE + 0x550u;
+    constexpr uintptr_t LPUART7_RX_SELECT_INPUT = mmap::IOMUXC_BASE + 0x558u;
+    constexpr uintptr_t LPUART8_RX_SELECT_INPUT = mmap::IOMUXC_BASE + 0x560u;
 
     // GPR27 (RM 11.3.28), in the SEPARATE IOMUXC_GPR block. Bit n picks which instance owns
     // pad n of the shared GPIO2/GPIO7 pair: 0 = GPIO2, 1 = GPIO7. Resets to 0.

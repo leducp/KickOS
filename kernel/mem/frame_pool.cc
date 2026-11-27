@@ -2,12 +2,14 @@
 // Copyright (c) 2026 Philippe Leduc
 
 #include <kickos/frame_pool.h>
+#include <kickos/aspace.h>
 
 #include "frame_pool_unwritten.h"
 
 #if KICKOS_HAVE_ASPACE
 
 #include <kickos/frame.h>
+#include <kickos/kernel.h>
 #include <kickos/irqlock.h>
 #include <kickos/kruntime.h>
 #include <kickos/arch/arch.h>
@@ -25,6 +27,7 @@ namespace kickos
     namespace
     {
         FrameAllocator g_frames;
+        size_t g_tables = 0;
         uintptr_t g_base = 0;
         uintptr_t g_top = 0;
 
@@ -63,6 +66,12 @@ namespace kickos
         return g_frames.frames_free();
     }
 
+    size_t frame_pool_tables()
+    {
+        IrqLock lock;
+        return g_tables;
+    }
+
     arch_phys_addr_t UnwrittenFrames::alloc_run(size_t pages)
     {
         IrqLock lock;
@@ -88,7 +97,7 @@ namespace kickos
             void* const p = frame_pool_ptr(run + static_cast<arch_phys_addr_t>(i * g));
             if (p == nullptr)
             {
-                frame_pool_free_run(run, pages, g);
+                frame_pool_free_run(run, pages);
                 return 0;
             }
             kmemset(p, 0, g);
@@ -96,12 +105,12 @@ namespace kickos
         return run;
     }
 
-    void frame_pool_free_run(arch_phys_addr_t run, size_t pages, size_t granule)
+    void frame_pool_free_run(arch_phys_addr_t run, size_t pages)
     {
-        for (size_t i = 0; i < pages; i++)
-        {
-            kickos_frame_free(run + static_cast<arch_phys_addr_t>(i * granule));
-        }
+        IrqLock lock;
+        uintptr_t const at = static_cast<uintptr_t>(run) + pool_delta();
+        size_t const released = g_frames.release_run(at, pages);
+        KICKOS_ASSERT(released == pages);
     }
 
     void* frame_pool_alias(arch_phys_addr_t frame)
@@ -127,15 +136,32 @@ extern "C"
 arch_phys_addr_t kickos_frame_alloc(void)
 {
     kickos::IrqLock lock;
+#if KICKOS_PRESYNC
+    arch_phys_addr_t const reserved = kickos_presync_table_take();
+    if (reserved != 0)
+    {
+        return reserved;
+    }
+#endif
     uintptr_t const p = kickos::g_frames.alloc();
     if (p == 0)
     {
         return 0;
     }
+    kickos::g_tables++;
     return static_cast<arch_phys_addr_t>(p - kickos::pool_delta());
 }
 
 void kickos_frame_free(arch_phys_addr_t frame)
+{
+    kickos::IrqLock lock;
+    if (kickos::g_frames.release(static_cast<uintptr_t>(frame) + kickos::pool_delta()))
+    {
+        kickos::g_tables--;
+    }
+}
+
+void kickos_leaf_free(arch_phys_addr_t frame)
 {
     kickos::IrqLock lock;
     (void)kickos::g_frames.release(static_cast<uintptr_t>(frame) + kickos::pool_delta());

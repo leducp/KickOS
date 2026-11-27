@@ -50,10 +50,36 @@ devices:
     lines:
       rxtx: { number: 31, symbol: UART0_RXTX_IRQ, ref: "Table 3-5 Interrupt vector assignments, p.74" }
       err: { number: 32, symbol: UART0_ERR_IRQ, ref: "Table 3-5 Interrupt vector assignments, p.74" }
-  uart1: { window: [0x4006B000, 0x20], ref: "Table 4-2 Peripheral bridge 0 slot assignments, p.178" }
-  uart2: { window: [0x4006C000, 0x20], ref: "Table 4-2 Peripheral bridge 0 slot assignments, p.178" }
-  uart3: { window: [0x4006D000, 0x20], ref: "Table 4-2 Peripheral bridge 0 slot assignments, p.178" }
-  uart4: { window: [0x400EA000, 0x20], ref: "Table 4-3 Peripheral bridge 1 slot assignments, p.181" }
+  uart1:
+    window: [0x4006B000, 0x20]
+    ref: "Table 4-2 Peripheral bridge 0 slot assignments, p.178"
+    lines:
+      rxtx: { number: 33, symbol: UART1_RXTX_IRQ, ref: "Table 3-5 Interrupt vector assignments, p.74" }
+      err: { number: 34, symbol: UART1_ERR_IRQ, ref: "Table 3-5 Interrupt vector assignments, p.74" }
+  uart2:
+    window: [0x4006C000, 0x20]
+    ref: "Table 4-2 Peripheral bridge 0 slot assignments, p.178"
+    lines:
+      rxtx: { number: 35, symbol: UART2_RXTX_IRQ, ref: "Table 3-5 Interrupt vector assignments, p.74" }
+      err: { number: 36, symbol: UART2_ERR_IRQ, ref: "Table 3-5 Interrupt vector assignments, p.75" }
+  uart3:
+    window: [0x4006D000, 0x20]
+    ref: "Table 4-2 Peripheral bridge 0 slot assignments, p.178"
+    lines:
+      rxtx: { number: 37, symbol: UART3_RXTX_IRQ, ref: "Table 3-5 Interrupt vector assignments, p.75" }
+      err: { number: 38, symbol: UART3_ERR_IRQ, ref: "Table 3-5 Interrupt vector assignments, p.75" }
+  uart4:
+    window: [0x400EA000, 0x20]
+    ref: "Table 4-3 Peripheral bridge 1 slot assignments, p.181"
+    lines:
+      rxtx: { number: 66, symbol: UART4_RXTX_IRQ, ref: "Table 3-5 Interrupt vector assignments, p.75" }
+      err: { number: 67, symbol: UART4_ERR_IRQ, ref: "Table 3-5 Interrupt vector assignments, p.75" }
+  uart5:
+    window: [0x400EB000, 0x20]
+    ref: "Table 4-3 Peripheral bridge 1 slot assignments, p.181"
+    lines:
+      rxtx: { number: 68, symbol: UART5_RXTX_IRQ, ref: "Table 3-5 Interrupt vector assignments, p.76" }
+      err: { number: 69, symbol: UART5_ERR_IRQ, ref: "Table 3-5 Interrupt vector assignments, p.76" }
   dspi0: { window: [0x4002C000, 0x40], ref: "Table 4-2 Peripheral bridge 0 slot assignments, p.176" } # its service polls, so no line is taken
   # Alone in its slot, clocked by SCGC5 bit 0.
   lptmr0:

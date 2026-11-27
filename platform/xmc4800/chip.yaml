@@ -52,19 +52,35 @@ devices:
     privileged_registers: { fdr: 0x010, brg: 0x014, ccr: 0x040 }
   usic1:
     module_gate: true
+    lines:
+      sr0: { number: 90, ref: "Table 4-3 Interrupt Node assignment, p.4-7" }
+      sr1: 91
+      sr2: 92
+      sr3: 93
+      sr4: 94
+      sr5: 95
     ref: "Table 18-21, p.18-157"
     channels:
       ch0: { window: [0x48020000, 0x200] }
       ch1: { window: [0x48020200, 0x200] }
+    privileged_registers: { fdr: 0x010, brg: 0x014, ccr: 0x040 }
   usic2:
     module_gate: true
+    lines:
+      sr0: { number: 96, ref: "Table 4-3 Interrupt Node assignment, p.4-7" }
+      sr1: 97
+      sr2: 98
+      sr3: 99
+      sr4: 100
+      sr5: 101
     ref: "Table 18-21, p.18-157"
     channels:
       ch0: { window: [0x48024000, 0x200] }
       ch1: { window: [0x48024200, 0x200] }
+    privileged_registers: { fdr: 0x010, brg: 0x014, ccr: 0x040 }
 
   # A port's window holds its pins' IOCR mux too, so a grant of it reaches the kernel's
-  # console and LED pins in that port.
+  # console pins in that port.
   port: { window: [0x48028000, 0x100], count: 10, stride: 0x100, ref: "Table 26-2, p.26-11" } # P0 to P9
   port14: { window: [0x48028E00, 0x100], ref: "Table 26-2, p.26-12" } # P14 and P15 are inputs only
   port15: { window: [0x48028F00, 0x100], ref: "Table 26-2, p.26-12" }

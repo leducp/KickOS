@@ -138,7 +138,7 @@
  * write:
  *   kickos_thread_fault_exit[8] -> fault_record_print[64] -> kprintf_record[24]
  *   -> kvprintf_fault[108] -> console_emit[32] -> console_chip_writer_leave[8]
- *   -> console_dark_wake[24] -> wake[8] -> wake_no_resched[8] -> watch_lend_settle[4]
+ *   -> console_wake[24] -> wake[8] -> wake_no_resched[8] -> watch_lend_settle[4]
  *   -> pi_drain_deaths[40] -> pi_settle_from[24] -> notify_lend_owe[24]
  *   -> start_watch_owe_into[36] -> task_decl_dying[8] -> task_ended[4]
  *

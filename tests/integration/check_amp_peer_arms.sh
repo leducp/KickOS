@@ -2,10 +2,9 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# Runs the arms that need a peer that is running against one: amp_far_call, amp_far_call_held,
-# amp_share_crossing, amp_far_reply_unmapped, amp_far_wall and amp_far_share. Each decides at
-# RUNTIME whether it has one: an echo crossing answers by itself, a service crossing once the
-# peer's own serviced count moved.
+# Runs the arms that need a peer that is running against one, those ARMS names below. Each
+# decides at RUNTIME whether it has one: a service crossing once the peer's own serviced count
+# moved.
 #
 # Any `not ok` line in the capture fails the gate, listed arm or not, a `# TODO` failure being
 # the harness's permitted one. The named set adds what a `not ok` cannot show: that each of these
@@ -48,7 +47,7 @@ here="$(dirname "$0")"
 . "$here/../lib/gate.sh"
 : "${QEMU_TIMEOUT:=120}"
 
-ARMS="amp_far_call amp_far_call_held amp_share_crossing amp_far_reply_unmapped amp_far_wall amp_far_share"
+ARMS="amp_far_call amp_far_call_held amp_far_send_held amp_share_crossing amp_far_reply_unmapped amp_far_wall amp_far_share amp_far_server_gone"
 
 # `ok N - <arm>` with no SKIP directive: a skipped arm reports `ok` too, so the directive is
 # what has to be excluded.
@@ -175,7 +174,7 @@ $_ctl_out"
     route() {
         EXPECT_SKIPS="$(split_skips --other-skips "$_row")" \
             EXPECT_PARTIALS=irq_kernel_line_reserved EXPECT_FAULTS=txtrap \
-            sh "$here/check_tap_stream.sh" partition 27 < "$1" > "$TMP/route.out" 2>&1 || return 1
+            sh "$here/check_tap_stream.sh" partition 28 < "$1" > "$TMP/route.out" 2>&1 || return 1
         KOS_CAPTURE="$1" sh "$0" "$TMP" "$here/../.." cmake amp_far_call amp_far_call_held \
             amp_share_crossing >> "$TMP/route.out" 2>&1
     }

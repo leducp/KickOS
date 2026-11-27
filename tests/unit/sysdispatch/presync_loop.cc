@@ -17,6 +17,7 @@
 #include <setjmp.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <tuple>
 
 #include "stub_seam.h"
 #include "sys_fixture.h"
@@ -118,6 +119,7 @@ namespace kickos
             {
                 CAP_MAP,
                 SELF_GRANT,
+                SELF_GRANT_CACHED,
                 WINDOW,
                 HANDOFF,
                 FAULTED_OUT,
@@ -186,6 +188,13 @@ namespace kickos
                         {
                             g_seen.rc = err(call_as(g_editor, KOS_SYS_MEM_SELF_GRANT, blk_,
                                                     bytes_, KOS_MEM_NOCACHE));
+                            g_seen.live_after = main_record.live;
+                            break;
+                        }
+                        case Edit::SELF_GRANT_CACHED:
+                        {
+                            g_seen.rc = err(call_as(g_editor, KOS_SYS_MEM_SELF_GRANT, blk_,
+                                                    bytes_, 0));
                             g_seen.live_after = main_record.live;
                             break;
                         }
@@ -343,6 +352,42 @@ namespace kickos
                     return member;
                 }
 
+                // A member of main's task holding AUTH_MEMORY, running.
+                Thread* spawn_member()
+                {
+                    uintptr_t const p = spawn_params(EDIT_PARAMS, 0, 0, 0);
+                    params(p)->authority = KOS_AUTH_MEMORY | KOS_AUTH_TASKS;
+                    kos_thread_t child = KOS_THREAD_NONE;
+                    if (spawn(g_main, p, EDIT_OUT, &child) != 0)
+                    {
+                        return nullptr;
+                    }
+                    Thread* const t = kernel().threads.resolve(child);
+                    sched::yield();
+                    if (running() != t)
+                    {
+                        return nullptr;
+                    }
+                    return t;
+                }
+
+              public:
+                RunCaps share_to(Thread* t, RunCaps const& run)
+                {
+                    return share(t, run);
+                }
+
+                static uint32_t space_cap_to(Thread* holder, Domain* d)
+                {
+                    return space_cap(holder, d);
+                }
+
+                static int close_cap(Thread* t, uint32_t cap)
+                {
+                    return close(t, cap);
+                }
+
+              protected:
                 static SysPresync* g_case;
                 static Seen g_seen;
 
@@ -509,24 +554,6 @@ namespace kickos
             class SysPresyncSlain : public SysPresync,
                                     public ::testing::WithParamInterface<Slain>
             {
-              protected:
-                Thread* spawn_member()
-                {
-                    uintptr_t const p = spawn_params(EDIT_PARAMS, 0, 0, 0);
-                    params(p)->authority = KOS_AUTH_MEMORY | KOS_AUTH_TASKS;
-                    kos_thread_t child = KOS_THREAD_NONE;
-                    if (spawn(g_main, p, EDIT_OUT, &child) != 0)
-                    {
-                        return nullptr;
-                    }
-                    Thread* const t = kernel().threads.resolve(child);
-                    sched::yield();
-                    if (running() != t)
-                    {
-                        return nullptr;
-                    }
-                    return t;
-                }
             };
 
             TEST_P(SysPresyncSlain, a_thread_slain_in_its_window_leaves_no_record_and_no_stage)
@@ -570,6 +597,1816 @@ namespace kickos
                 EXPECT_EQ(r.staged, 0u);
                 EXPECT_EQ(kernel().presync_live, live0);
                 EXPECT_EQ(host_pool_used(), before) << "the slain call's frames came back";
+            }
+
+            // Longer than two passes of a self-grant, with a short third.
+            constexpr uint32_t LONG_PAGES = 2u * ASPACE_MAP_PASS_PAGES + 3u;
+
+            uint32_t mapped_pages(Thread const* t, uintptr_t blk, uint32_t pages)
+            {
+                struct arch_aspace* const space = domain_space(thread_domain(t));
+                uint32_t n = 0;
+                for (uint32_t i = 0; i < pages; i++)
+                {
+                    if (arch_aspace_frame_at(space, blk + i * G) != 0)
+                    {
+                        n++;
+                    }
+                }
+                return n;
+            }
+
+            VirtualRange const* range_of(Thread const* t, uintptr_t blk)
+            {
+                return domain_ranges(thread_domain(t))->at_base(blk);
+            }
+
+            uintptr_t g_pass_blk = 0;
+            uint32_t g_pass_last = 0;
+            uint32_t g_pass_most = 0;
+            uint32_t g_pass_windows = 0;
+
+            void pass_hook(uint32_t)
+            {
+                if (running() != g_main)
+                {
+                    return;
+                }
+                uint32_t const now = mapped_pages(g_main, g_pass_blk, LONG_PAGES);
+                if (now - g_pass_last > g_pass_most)
+                {
+                    g_pass_most = now - g_pass_last;
+                }
+                g_pass_last = now;
+                g_pass_windows++;
+            }
+
+            TEST_F(SysPresync, a_long_self_grant_maps_at_most_one_pass_between_two_windows)
+            {
+                g_pass_blk = reserve_only(LONG_PAGES * G);
+                ASSERT_NE(g_pass_blk, 0u);
+                sys_seam_reset();
+                g_pass_last = 0;
+                g_pass_most = 0;
+                g_pass_windows = 0;
+                on_window(pass_hook);
+                EXPECT_EQ(call_as(g_main, KOS_SYS_MEM_SELF_GRANT, g_pass_blk, LONG_PAGES * G, 0),
+                          0u);
+                on_window(nullptr);
+                EXPECT_EQ(g_pass_windows, 2u) << "a window between each two passes";
+                EXPECT_EQ(g_pass_most, ASPACE_MAP_PASS_PAGES);
+                EXPECT_EQ(mapped_pages(g_main, g_pass_blk, LONG_PAGES), LONG_PAGES);
+                VirtualRange const* const e = range_of(g_main, g_pass_blk);
+                ASSERT_NE(e, nullptr);
+                EXPECT_EQ(e->state, VirtualState::Granted);
+                EXPECT_FALSE(vr_pending(e));
+            }
+
+            class SysPendingGrant : public SysPresync,
+                                    public ::testing::WithParamInterface<Edit>
+            {
+            };
+
+            TEST_P(SysPendingGrant, keeps_its_frames_from_another_type)
+            {
+                uintptr_t const blk = reserve_only(LONG_PAGES * G);
+                ASSERT_NE(blk, 0u);
+                arm(GetParam(), blk, LONG_PAGES * G);
+                EXPECT_EQ(call_as(g_main, KOS_SYS_MEM_SELF_GRANT, blk, LONG_PAGES * G, 0), 0u);
+                EXPECT_TRUE(g_seen.ran);
+                EXPECT_EQ(g_seen.rc, -KOS_EBUSY) << "a non-cacheable mapping of a pending grant";
+                EXPECT_EQ(range_of(g_main, blk)->memtype, static_cast<uint8_t>(ARCH_MAP_NORMAL));
+            }
+
+            INSTANTIATE_TEST_SUITE_P(Mappings, SysPendingGrant,
+                                     ::testing::Values(Edit::SELF_GRANT, Edit::HANDOFF));
+
+            TEST_F(SysPresync, a_pending_self_grant_is_finished_by_a_grant_of_its_type)
+            {
+                uintptr_t const blk = reserve_only(LONG_PAGES * G);
+                ASSERT_NE(blk, 0u);
+                arm(Edit::SELF_GRANT_CACHED, blk, LONG_PAGES * G);
+                EXPECT_EQ(call_as(g_main, KOS_SYS_MEM_SELF_GRANT, blk, LONG_PAGES * G, 0), 0u);
+                EXPECT_TRUE(g_seen.ran);
+                EXPECT_EQ(g_seen.rc, 0);
+                EXPECT_EQ(mapped_pages(g_main, blk, LONG_PAGES), LONG_PAGES);
+                EXPECT_EQ(range_of(g_main, blk)->state, VirtualState::Granted);
+            }
+
+            TEST_F(SysPresync, a_granter_slain_mid_grant_leaves_it_pending_and_whole)
+            {
+                uintptr_t const blk = reserve_only(LONG_PAGES * G);
+                ASSERT_NE(blk, 0u);
+                g_victim = spawn_member();
+                ASSERT_NE(g_victim, nullptr);
+                sys_seam_reset();
+                on_window(slay_hook);
+                if (setjmp(g_slain) == 0)
+                {
+                    (void)call_as(g_victim, KOS_SYS_MEM_SELF_GRANT, blk, LONG_PAGES * G, 0);
+                    FAIL() << "the grant opened no window";
+                }
+                on_window(nullptr);
+                running() = g_victim;
+                run_exit(KOS_EXIT_CANCELLED);
+                running() = g_main;
+                VirtualRange const* const e = range_of(g_main, blk);
+                ASSERT_NE(e, nullptr);
+                EXPECT_EQ(e->state, VirtualState::Reserved) << "a pending grant is no grant";
+                EXPECT_TRUE(vr_pending(e));
+                EXPECT_EQ(e->pending_pages, ASPACE_MAP_PASS_PAGES);
+                EXPECT_EQ(mapped_pages(g_main, blk, LONG_PAGES), ASPACE_MAP_PASS_PAGES);
+                EXPECT_EQ(err(call_as(g_main, KOS_SYS_MEM_SELF_GRANT, blk, LONG_PAGES * G,
+                                      KOS_MEM_NOCACHE)),
+                          -KOS_EBUSY);
+                EXPECT_EQ(call_as(g_main, KOS_SYS_MEM_SELF_GRANT, blk, LONG_PAGES * G, 0), 0u);
+                EXPECT_EQ(mapped_pages(g_main, blk, LONG_PAGES), LONG_PAGES);
+                EXPECT_EQ(e->state, VirtualState::Granted);
+            }
+
+            TEST_F(SysPresync, a_teardown_frees_each_frame_of_a_pending_grant_once)
+            {
+                uintptr_t const blk = reserve_only(LONG_PAGES * G);
+                ASSERT_NE(blk, 0u);
+                g_victim = spawn_member();
+                ASSERT_NE(g_victim, nullptr);
+                sys_seam_reset();
+                on_window(slay_hook);
+                if (setjmp(g_slain) == 0)
+                {
+                    (void)call_as(g_victim, KOS_SYS_MEM_SELF_GRANT, blk, LONG_PAGES * G, 0);
+                    FAIL() << "the grant opened no window";
+                }
+                on_window(nullptr);
+                running() = g_victim;
+                run_exit(KOS_EXIT_CANCELLED);
+                running() = g_main;
+                size_t const doubles = host_pool_double_frees();
+                Domain* const d = thread_domain(g_main);
+                {
+                    IrqLock lock;
+                    aspace_release(d->space, &d->ranges, false);
+                    d->space = nullptr;
+                }
+                EXPECT_EQ(host_pool_double_frees(), doubles);
+                for (uint32_t i = 0; i < LONG_PAGES; i++)
+                {
+                    EXPECT_FALSE(frame_taken(aspace_frame_of(blk) + i * G)) << "page " << i;
+                }
+            }
+
+            // The pages `d`'s space maps over LONG_PAGES granules from `va`; none once it has no
+            // space.
+            uint32_t space_mapped(Domain const* d, uintptr_t va)
+            {
+                struct arch_aspace* const space = domain_space(d);
+                uint32_t n = 0;
+                for (uint32_t i = 0; space != nullptr and i < LONG_PAGES; i++)
+                {
+                    if (arch_aspace_frame_at(space, va + i * G) != 0)
+                    {
+                        n++;
+                    }
+                }
+                return n;
+            }
+
+            // The span one thread's call maps or unmaps, and the most pages it moved between two
+            // of that thread's windows.
+            struct Span
+            {
+                Thread const* t = nullptr;
+                Domain const* d = nullptr;
+                uintptr_t va = 0;
+                uint32_t last = 0;
+                uint32_t most = 0;
+                uint32_t windows = 0;
+            };
+            Span g_span;
+
+            void span_hook(uint32_t)
+            {
+                if (running() != g_span.t)
+                {
+                    return;
+                }
+                uint32_t const now = space_mapped(g_span.d, g_span.va);
+                uint32_t moved = now - g_span.last;
+                if (now < g_span.last)
+                {
+                    moved = g_span.last - now;
+                }
+                if (moved > g_span.most)
+                {
+                    g_span.most = moved;
+                }
+                g_span.last = now;
+                g_span.windows++;
+            }
+
+            void watch_span(Thread const* t, Domain const* d, uintptr_t va)
+            {
+                sys_seam_reset();
+                g_span = Span{t, d, va, space_mapped(d, va), 0, 0};
+                on_window(span_hook);
+            }
+
+            TEST_F(SysPresync, a_long_frame_map_maps_at_most_one_pass_between_two_windows)
+            {
+                RunCaps const run = mint(LONG_PAGES);
+                ASSERT_NE(run.obj, FRAME_RUN_NONE);
+                Domain const* const d = thread_domain(g_main);
+                watch_span(g_main, d, RUN_VA);
+                EXPECT_EQ(call_as(g_main, KOS_SYS_FRAME_MAP, run.fcap, run.acap, va_word(RUN_VA), 0),
+                          0u);
+                on_window(nullptr);
+                EXPECT_EQ(g_span.windows, 2u) << "a window between each two passes";
+                EXPECT_EQ(g_span.most, ASPACE_MAP_PASS_PAGES);
+                EXPECT_EQ(space_mapped(d, RUN_VA), LONG_PAGES);
+                VirtualRange const* const e = domain_ranges(d)->at_base(RUN_VA);
+                ASSERT_NE(e, nullptr);
+                EXPECT_EQ(e->state, VirtualState::Granted);
+                EXPECT_FALSE(vr_pending(e));
+            }
+
+            TEST_F(SysPresync, a_long_frame_unmap_unmaps_at_most_one_pass_between_two_windows)
+            {
+                RunCaps const run = mint(LONG_PAGES);
+                ASSERT_NE(run.obj, FRAME_RUN_NONE);
+                uint8_t const refs = run_refs(run.obj);
+                ASSERT_EQ(call_as(g_main, KOS_SYS_FRAME_MAP, run.fcap, run.acap, va_word(RUN_VA), 0),
+                          0u);
+                Domain const* const d = thread_domain(g_main);
+                watch_span(g_main, d, RUN_VA);
+                EXPECT_EQ(call_as(g_main, KOS_SYS_FRAME_UNMAP, run.fcap, run.acap, RUN_VA), 0u);
+                on_window(nullptr);
+                EXPECT_EQ(g_span.windows, 2u) << "a window between each two passes";
+                EXPECT_EQ(g_span.most, ASPACE_MAP_PASS_PAGES);
+                EXPECT_EQ(space_mapped(d, RUN_VA), 0u);
+                EXPECT_EQ(domain_ranges(d)->at_base(RUN_VA), nullptr);
+                EXPECT_EQ(run_refs(run.obj), refs) << "the unmap kept the mapping's reference";
+            }
+
+            uint32_t g_slay_at = 1;
+            uint32_t g_victim_windows = 0;
+
+            // slay_hook at the victim's g_slay_at-th window.
+            void slay_nth_hook(uint32_t at)
+            {
+                if (running() == g_victim and ++g_victim_windows == g_slay_at)
+                {
+                    slay_hook(at);
+                }
+            }
+
+            // A member of main's task slain at its frame map's `at`-th window, the run's
+            // capability and `into`'s space (main's where null) delegated to it; its exit run
+            // where `die`.
+            Thread* slay_mid_frame_map(SysPresync* fx, RunCaps const& run, Domain* into = nullptr,
+                                       uint32_t at = 1, bool die = true)
+            {
+                RunCaps own = fx->share_to(g_victim, run);
+                if (into != nullptr)
+                {
+                    own.acap = SysPresync::space_cap_to(g_victim, into);
+                }
+                if (own.obj == FRAME_RUN_NONE or own.acap == KCAP_INVALID)
+                {
+                    return nullptr;
+                }
+                sys_seam_reset();
+                g_slay_at = at;
+                g_victim_windows = 0;
+                on_window(slay_nth_hook);
+                if (setjmp(g_slain) == 0)
+                {
+                    (void)call_as(g_victim, KOS_SYS_FRAME_MAP, own.fcap, own.acap,
+                                  va_word(RUN_VA, EDIT_OUT), 0);
+                    return nullptr;
+                }
+                on_window(nullptr);
+                running() = g_main;
+                if (die)
+                {
+                    running() = g_victim;
+                    run_exit(KOS_EXIT_CANCELLED);
+                    running() = g_main;
+                }
+                return g_victim;
+            }
+
+            TEST_F(SysPresync, a_mapper_at_its_window_leaves_its_map_pending_for_a_map_of_its_type)
+            {
+                RunCaps const run = mint(LONG_PAGES);
+                ASSERT_NE(run.obj, FRAME_RUN_NONE);
+                uint8_t const refs = run_refs(run.obj);
+                g_victim = spawn_member();
+                ASSERT_NE(g_victim, nullptr);
+                ASSERT_NE(slay_mid_frame_map(this, run, nullptr, 1, false), nullptr)
+                    << "the map opened no window";
+                Domain const* const d = thread_domain(g_main);
+                VirtualRange const* const e = domain_ranges(d)->at_base(RUN_VA);
+                ASSERT_NE(e, nullptr);
+                EXPECT_EQ(e->state, VirtualState::Reserved) << "a pending map is no mapping";
+                EXPECT_TRUE(vr_pending(e));
+                EXPECT_EQ(space_mapped(d, RUN_VA), ASPACE_MAP_PASS_PAGES);
+                EXPECT_EQ(err(call_as(g_main, KOS_SYS_FRAME_UNMAP, run.fcap, run.acap, RUN_VA)),
+                          -KOS_EBUSY);
+                EXPECT_EQ(err(call_as(g_main, KOS_SYS_FRAME_MAP, run.fcap, run.acap,
+                                      va_word(RUN_VA), KOS_MEM_NOCACHE)),
+                          -KOS_EBUSY);
+                EXPECT_EQ(call_as(g_main, KOS_SYS_FRAME_MAP, run.fcap, run.acap, va_word(RUN_VA), 0),
+                          0u);
+                EXPECT_EQ(space_mapped(d, RUN_VA), LONG_PAGES);
+                EXPECT_EQ(e->state, VirtualState::Granted);
+                // The victim's own capability is the third holder.
+                EXPECT_EQ(run_refs(run.obj), refs + 2u) << "a resumed map took a second reference";
+                running() = g_victim;
+                run_exit(KOS_EXIT_CANCELLED);
+                running() = g_main;
+                EXPECT_EQ(space_mapped(d, RUN_VA), LONG_PAGES) << "the death took back a mapping "
+                                                                  "another map completed";
+                EXPECT_EQ(call_as(g_main, KOS_SYS_FRAME_UNMAP, run.fcap, run.acap, RUN_VA), 0u);
+                EXPECT_EQ(run_refs(run.obj), refs);
+            }
+
+            TEST_F(SysPresync, a_mapper_slain_mid_map_into_another_space_leaves_nothing)
+            {
+                g_victim = spawn_member();
+                ASSERT_NE(g_victim, nullptr);
+                running() = g_main;
+                kos_task_t const h = new_task(g_main, 0, 0, 0);
+                ASSERT_NE(h, KOS_TASK_NONE);
+                Thread* const entry = entry_of(h);
+                ASSERT_NE(entry, nullptr);
+                Domain* const d = thread_domain(entry);
+                RunCaps const run = mint(LONG_PAGES);
+                ASSERT_NE(run.obj, FRAME_RUN_NONE);
+                uint8_t const refs = run_refs(run.obj);
+                running() = g_main;
+                ASSERT_NE(slay_mid_frame_map(this, run, d, 2, false), nullptr)
+                    << "the map opened no window";
+                EXPECT_TRUE(vr_pending(domain_ranges(d)->at_base(RUN_VA)));
+                EXPECT_EQ(space_mapped(d, RUN_VA), 2u * ASPACE_MAP_PASS_PAGES);
+                watch_span(g_victim, d, RUN_VA);
+                running() = g_victim;
+                run_exit(KOS_EXIT_CANCELLED);
+                running() = g_main;
+                on_window(nullptr);
+                EXPECT_EQ(g_span.windows, 2u) << "a window after each pass";
+                EXPECT_EQ(g_span.most, ASPACE_MAP_PASS_PAGES);
+                EXPECT_EQ(space_mapped(d, RUN_VA), 0u);
+                EXPECT_EQ(domain_ranges(d)->at_base(RUN_VA), nullptr) << "the map stayed pending";
+                EXPECT_EQ(run_refs(run.obj), refs) << "the map kept its reference";
+            }
+
+            TEST_F(SysPresync, a_mapper_slain_taking_back_a_map_it_could_not_deliver_leaves_nothing)
+            {
+                g_victim = spawn_member();
+                ASSERT_NE(g_victim, nullptr);
+                running() = g_main;
+                kos_task_t const h = new_task(g_main, 0, 0, 0);
+                ASSERT_NE(h, KOS_TASK_NONE);
+                Thread* const entry = entry_of(h);
+                ASSERT_NE(entry, nullptr);
+                Domain* const d = thread_domain(entry);
+                RunCaps const run = mint(LONG_PAGES);
+                ASSERT_NE(run.obj, FRAME_RUN_NONE);
+                uint8_t const refs = run_refs(run.obj);
+                RunCaps own = share_to(g_victim, run);
+                own.acap = space_cap_to(g_victim, d);
+                ASSERT_NE(own.obj, FRAME_RUN_NONE);
+                ASSERT_NE(own.acap, KCAP_INVALID);
+                running() = g_main;
+                sys_seam_reset();
+                uintptr_t const word = va_word(RUN_VA, EDIT_OUT);
+                refuse_acquire(word, 1, 1);
+                g_slay_at = 3;
+                g_victim_windows = 0;
+                on_window(slay_nth_hook);
+                if (setjmp(g_slain) == 0)
+                {
+                    int32_t const rc =
+                        err(call_as(g_victim, KOS_SYS_FRAME_MAP, own.fcap, own.acap, word, 0));
+                    FAIL() << "the map took nothing back in passes: " << rc;
+                }
+                on_window(nullptr);
+                running() = g_main;
+                EXPECT_NE(space_mapped(d, RUN_VA), 0u) << "fixture: nothing left to take back";
+                EXPECT_LT(space_mapped(d, RUN_VA), LONG_PAGES) << "fixture: slain before it began";
+                running() = g_victim;
+                run_exit(KOS_EXIT_CANCELLED);
+                running() = g_main;
+                EXPECT_EQ(space_mapped(d, RUN_VA), 0u) << "the undelivered map outlived its mapper";
+                EXPECT_EQ(domain_ranges(d)->at_base(RUN_VA), nullptr);
+                EXPECT_EQ(run_refs(run.obj), refs) << "the map kept its reference";
+            }
+
+            uint32_t g_refuse_at = 0;
+            uint32_t g_close_cap = KCAP_INVALID;
+
+            // span_hook, the map refused, or its space capability closed, at the g_refuse_at-th
+            // window.
+            void refuse_span_hook(uint32_t at)
+            {
+                span_hook(at);
+                if (running() != g_span.t or g_span.windows != g_refuse_at)
+                {
+                    return;
+                }
+                if (g_close_cap != KCAP_INVALID)
+                {
+                    (void)SysPresync::close_cap(g_main, g_close_cap);
+                    return;
+                }
+                refuse_map(true);
+            }
+
+            class SysMapLost : public SysPresync, public ::testing::WithParamInterface<bool>
+            {
+            };
+
+            TEST_P(SysMapLost, a_frame_map_refused_or_cut_off_past_its_first_pass_leaves_nothing)
+            {
+                bool const closed = GetParam();
+                kos_task_t const h = new_task(g_main, 0, 0, 0);
+                ASSERT_NE(h, KOS_TASK_NONE);
+                Thread* const entry = entry_of(h);
+                ASSERT_NE(entry, nullptr);
+                Domain* const d = thread_domain(entry);
+                RunCaps const run = mint(LONG_PAGES);
+                ASSERT_NE(run.obj, FRAME_RUN_NONE);
+                uint8_t const refs = run_refs(run.obj);
+                uint32_t const acap = space_cap(g_main, d);
+                ASSERT_NE(acap, KCAP_INVALID);
+                running() = g_main;
+                watch_span(g_main, d, RUN_VA);
+                g_refuse_at = 2;
+                g_close_cap = KCAP_INVALID;
+                if (closed)
+                {
+                    g_close_cap = acap;
+                }
+                on_window(refuse_span_hook);
+                int32_t const rc = err(call_as(g_main, KOS_SYS_FRAME_MAP, run.fcap, acap,
+                                               va_word(RUN_VA), 0));
+                on_window(nullptr);
+                refuse_map(false);
+                if (closed)
+                {
+                    EXPECT_EQ(rc, -KOS_EBADF);
+                }
+                else
+                {
+                    EXPECT_EQ(rc, -KOS_ENOMEM);
+                }
+                EXPECT_EQ(g_span.windows, 4u) << "a window after each pass, the unwind's too";
+                EXPECT_EQ(g_span.most, ASPACE_MAP_PASS_PAGES);
+                EXPECT_EQ(space_mapped(d, RUN_VA), 0u);
+                EXPECT_EQ(domain_ranges(d)->at_base(RUN_VA), nullptr) << "the map stayed pending";
+                EXPECT_EQ(run_refs(run.obj), refs) << "the map kept its reference";
+            }
+
+            INSTANTIATE_TEST_SUITE_P(Cut, SysMapLost, ::testing::Values(false, true));
+
+            // The map refused at the first window that finds pages of it mapped.
+            void refuse_once_mapped_hook(uint32_t)
+            {
+                if (running() != g_span.t)
+                {
+                    return;
+                }
+                uint32_t const now = space_mapped(g_span.d, g_span.va);
+                if (now > g_span.most)
+                {
+                    g_span.most = now;
+                }
+                if (now != 0)
+                {
+                    refuse_map(true);
+                }
+            }
+
+            TEST_F(SysPresync, an_uncached_frame_map_refused_mid_passes_leaves_the_next_cacheable_a_sync)
+            {
+                RunCaps const run = mint(LONG_PAGES);
+                ASSERT_NE(run.obj, FRAME_RUN_NONE);
+                running() = g_main;
+                Domain* const d = thread_domain(g_main);
+                sys_seam_reset();
+                g_span = Span{g_main, d, RUN_VA, 0, 0, 0};
+                on_window(refuse_once_mapped_hook);
+                int32_t const rc = err(call_as(g_main, KOS_SYS_FRAME_MAP, run.fcap, run.acap,
+                                               va_word(RUN_VA), KOS_MEM_NOCACHE));
+                on_window(nullptr);
+                refuse_map(false);
+                EXPECT_EQ(rc, -KOS_ENOMEM);
+                EXPECT_GE(g_span.most, ASPACE_MAP_PASS_PAGES) << "fixture: refused before a pass";
+                EXPECT_EQ(space_mapped(d, RUN_VA), 0u);
+                EXPECT_TRUE(frame_run_sync_owed(run.obj)) << "uncached pages went unrecorded";
+                sys_seam_reset();
+                EXPECT_EQ(err(call_as(g_main, KOS_SYS_FRAME_MAP, run.fcap, run.acap,
+                                      va_word(RUN_VA), 0)),
+                          0);
+                EXPECT_EQ(g_syncs, LONG_PAGES) << "the cacheable map after it";
+            }
+
+            RunCaps g_finisher_run;
+            Thread* g_finisher = nullptr;
+            int32_t g_finisher_rc = 1;
+
+            // Another holder of the run maps it at the same address and type, finishing the map.
+            void finish_hook(uint32_t)
+            {
+                if (running() != g_main or g_finisher_rc != 1)
+                {
+                    return;
+                }
+                g_finisher_rc = err(call_as(g_finisher, KOS_SYS_FRAME_MAP, g_finisher_run.fcap,
+                                            g_finisher_run.acap, va_word(RUN_VA, EDIT_OUT), 0));
+                running() = g_main;
+            }
+
+            TEST_F(SysPresync, a_teardown_unmaps_a_pending_frame_map_and_gives_its_reference_back)
+            {
+                RunCaps const run = mint(LONG_PAGES);
+                ASSERT_NE(run.obj, FRAME_RUN_NONE);
+                uint8_t const refs = run_refs(run.obj);
+                g_victim = spawn_member();
+                ASSERT_NE(g_victim, nullptr);
+                ASSERT_NE(slay_mid_frame_map(this, run, nullptr, 1, false), nullptr)
+                    << "the map opened no window";
+                size_t const doubles = host_pool_double_frees();
+                Domain* const d = thread_domain(g_main);
+                {
+                    IrqLock lock;
+                    aspace_release(d->space, &d->ranges, false);
+                    d->space = nullptr;
+                }
+                running() = g_victim;
+                run_exit(KOS_EXIT_CANCELLED);
+                running() = g_main;
+                EXPECT_EQ(host_pool_double_frees(), doubles);
+                EXPECT_EQ(run_refs(run.obj), refs);
+                for (uint32_t i = 0; i < LONG_PAGES; i++)
+                {
+                    EXPECT_TRUE(frame_taken(run.base + i * G)) << "the run's page " << i;
+                }
+            }
+
+            TEST_F(SysPresync, an_unmapper_slain_mid_unmap_leaves_a_shorter_mapping_to_unmap)
+            {
+                RunCaps const run = mint(LONG_PAGES);
+                ASSERT_NE(run.obj, FRAME_RUN_NONE);
+                uint8_t const refs = run_refs(run.obj);
+                ASSERT_EQ(call_as(g_main, KOS_SYS_FRAME_MAP, run.fcap, run.acap, va_word(RUN_VA), 0),
+                          0u);
+                g_victim = spawn_member();
+                ASSERT_NE(g_victim, nullptr);
+                RunCaps const own = share_to(g_victim, run);
+                ASSERT_NE(own.obj, FRAME_RUN_NONE);
+                sys_seam_reset();
+                on_window(slay_hook);
+                if (setjmp(g_slain) == 0)
+                {
+                    (void)call_as(g_victim, KOS_SYS_FRAME_UNMAP, own.fcap, own.acap, RUN_VA);
+                    FAIL() << "the unmap opened no window";
+                }
+                on_window(nullptr);
+                running() = g_victim;
+                run_exit(KOS_EXIT_CANCELLED);
+                running() = g_main;
+                Domain const* const d = thread_domain(g_main);
+                VirtualRange const* const e = domain_ranges(d)->at_base(RUN_VA);
+                ASSERT_NE(e, nullptr);
+                EXPECT_EQ(e->state, VirtualState::Granted);
+                EXPECT_EQ(e->pages, LONG_PAGES - ASPACE_MAP_PASS_PAGES);
+                EXPECT_EQ(space_mapped(d, RUN_VA), LONG_PAGES - ASPACE_MAP_PASS_PAGES);
+                EXPECT_EQ(call_as(g_main, KOS_SYS_FRAME_UNMAP, run.fcap, run.acap, RUN_VA), 0u);
+                EXPECT_EQ(space_mapped(d, RUN_VA), 0u);
+                EXPECT_EQ(run_refs(run.obj), refs);
+            }
+
+            TEST_F(SysPresync, an_exit_unmaps_a_long_window_at_most_one_pass_between_two_windows)
+            {
+                uintptr_t const blk = reserve_only(LONG_PAGES * G);
+                ASSERT_NE(blk, 0u);
+                kos_thread_t h = KOS_THREAD_NONE;
+                ASSERT_EQ(spawn(g_main, spawn_params(EDIT_PARAMS, blk, LONG_PAGES * G, 0), EDIT_OUT,
+                                &h),
+                          0);
+                Thread* const child = kernel().threads.resolve(h);
+                ASSERT_NE(child, nullptr);
+                Domain* const d = thread_domain(g_main);
+                uint16_t const holder = static_cast<uint16_t>(kernel().threads.index_of(child) + 1);
+                uintptr_t wva = 0;
+                for (size_t i = 0; i < VirtualRanges::capacity(); i++)
+                {
+                    VirtualRange const* const e = d->ranges.at(i);
+                    if (e != nullptr and (e->flags & VR_WINDOW) != 0 and e->holder == holder)
+                    {
+                        wva = e->base;
+                    }
+                }
+                ASSERT_NE(wva, 0u) << "fixture: the spawn mapped no window";
+                ASSERT_EQ(space_mapped(d, wva), LONG_PAGES);
+                watch_span(child, d, wva);
+                exit_as(child);
+                on_window(nullptr);
+                EXPECT_EQ(g_span.windows, 3u) << "a window after each pass";
+                EXPECT_EQ(g_span.most, ASPACE_MAP_PASS_PAGES);
+                EXPECT_EQ(space_mapped(d, wva), 0u);
+                EXPECT_EQ(d->ranges.at_base(wva), nullptr);
+                EXPECT_EQ(d->ranges.at_base(blk)->lends, 0u) << "the window kept its lend";
+            }
+
+            // What the last member's exit leaves its space to trim: a reservation of its own, its
+            // creator's block handed over, and a run its creator mapped.
+            enum class Trim
+            {
+                OWNED,
+                HANDOFF,
+                RUN
+            };
+
+            class SysTrim : public SysPresync, public ::testing::WithParamInterface<Trim>
+            {
+            };
+
+            TEST_P(SysTrim, the_last_member_s_exit_trims_at_most_one_pass_between_two_windows)
+            {
+                uintptr_t blk = 0;
+                if (GetParam() == Trim::HANDOFF)
+                {
+                    blk = reserve_only(LONG_PAGES * G);
+                    ASSERT_NE(blk, 0u);
+                }
+                kos_task_t const h = new_task(g_main, blk, LONG_PAGES * G, 0);
+                ASSERT_NE(h, KOS_TASK_NONE);
+                Thread* const entry = entry_of(h);
+                ASSERT_NE(entry, nullptr);
+                Domain* const d = thread_domain(entry);
+                RunCaps run;
+                uint8_t refs = 0;
+                if (GetParam() == Trim::OWNED)
+                {
+                    {
+                        IrqLock lock;
+                        cap_seat_authority(entry, AUTH_MEMORY);
+                    }
+                    blk = call_as(entry, KOS_SYS_RAM_ALLOC, LONG_PAGES * G);
+                    ASSERT_NE(blk, 0u);
+                    ASSERT_EQ(call_as(entry, KOS_SYS_MEM_SELF_GRANT, blk, LONG_PAGES * G, 0), 0u);
+                }
+                if (GetParam() == Trim::RUN)
+                {
+                    run = mint(LONG_PAGES);
+                    ASSERT_NE(run.obj, FRAME_RUN_NONE);
+                    refs = run_refs(run.obj);
+                    uint32_t const acap = space_cap(g_main, d);
+                    ASSERT_EQ(call_as(g_main, KOS_SYS_FRAME_MAP, run.fcap, acap, va_word(RUN_VA),
+                                      0),
+                              0u);
+                    blk = RUN_VA;
+                }
+                running() = g_main;
+                ASSERT_EQ(space_mapped(d, blk), LONG_PAGES);
+                watch_span(entry, d, blk);
+                exit_as(entry);
+                on_window(nullptr);
+                EXPECT_EQ(g_span.windows, 3u) << "a window after each pass";
+                EXPECT_EQ(g_span.most, ASPACE_MAP_PASS_PAGES);
+                ASSERT_NE(domain_space(d), nullptr) << "fixture: the creator hold kept no space";
+                EXPECT_EQ(space_mapped(d, blk), 0u);
+                for (uint32_t i = 0; GetParam() == Trim::OWNED and i < LONG_PAGES; i++)
+                {
+                    EXPECT_FALSE(frame_taken(aspace_frame_of(blk) + i * G)) << "page " << i;
+                }
+                if (GetParam() == Trim::RUN)
+                {
+                    EXPECT_EQ(run_refs(run.obj), refs) << "the mapping kept its reference";
+                }
+                size_t const doubles = host_pool_double_frees();
+                ASSERT_EQ(call_as(g_main, KOS_SYS_TASK_SLAY, h), 0u);
+                EXPECT_EQ(domain_space(d), nullptr);
+                EXPECT_EQ(host_pool_double_frees(), doubles);
+                for (uint32_t i = 0; GetParam() == Trim::HANDOFF and i < LONG_PAGES; i++)
+                {
+                    EXPECT_TRUE(frame_taken(aspace_frame_of(blk) + i * G)) << "page " << i;
+                }
+            }
+
+            INSTANTIATE_TEST_SUITE_P(Spans, SysTrim,
+                                     ::testing::Values(Trim::OWNED, Trim::HANDOFF, Trim::RUN));
+
+            // The thread a create built, not yet runnable, whose window or handoff over `blk`
+            // its pending maps reach, and the domain they are in; null where none is.
+            Thread* building_over(uintptr_t blk, Domain** in)
+            {
+                for (Domain& d : kernel().domains())
+                {
+                    if (domain_space(&d) == nullptr)
+                    {
+                        continue;
+                    }
+                    for (size_t i = 0; i < VirtualRanges::capacity(); i++)
+                    {
+                        VirtualRange const* const e = d.ranges.at(i);
+                        if (e == nullptr or (e->flags & VR_BORROWED) == 0
+                            or (e->flags & VR_FRAMECAP) != 0)
+                        {
+                            continue;
+                        }
+                        uintptr_t const at = aspace_user_va(arch_aspace_frame_at(d.space, e->base));
+                        if (at != blk)
+                        {
+                            continue;
+                        }
+                        *in = &d;
+                        if ((e->flags & VR_WINDOW) != 0)
+                        {
+                            return &kernel().threads.slots()[e->holder - 1u];
+                        }
+                        for (Thread& th : kernel().threads.all())
+                        {
+                            if (thread_domain(&th) == &d and th.task_role == TASK_ROLE_ENTRY)
+                            {
+                                return &th;
+                            }
+                        }
+                    }
+                }
+                return nullptr;
+            }
+
+            // The pages a create's maps hold of `blk`'s frames, wherever they are mapped.
+            uint32_t create_mapped(uintptr_t blk)
+            {
+                Domain* d = nullptr;
+                if (building_over(blk, &d) == nullptr)
+                {
+                    return 0;
+                }
+                for (size_t i = 0; i < VirtualRanges::capacity(); i++)
+                {
+                    VirtualRange const* const e = d->ranges.at(i);
+                    if (e != nullptr and (e->flags & VR_BORROWED) != 0
+                        and aspace_user_va(arch_aspace_frame_at(d->space, e->base)) == blk)
+                    {
+                        return vr_mapped(e);
+                    }
+                }
+                return 0;
+            }
+
+            // What a create's pass windows saw: the most pages mapped between two, and whether
+            // at each the child was not runnable and its creator's word still named nothing.
+            struct CreateSeen
+            {
+                uintptr_t blk = 0;
+                uintptr_t word = 0;
+                uint32_t last = 0;
+                uint32_t most = 0;
+                uint32_t windows = 0;
+                bool hidden = true;
+                bool refuse_at_first = false;
+            };
+            CreateSeen g_create;
+
+            void create_hook(uint32_t)
+            {
+                Domain* d = nullptr;
+                Thread* const child = building_over(g_create.blk, &d);
+                if (child == nullptr or running() == child)
+                {
+                    return;
+                }
+                uint32_t const now = create_mapped(g_create.blk);
+                if (now - g_create.last > g_create.most)
+                {
+                    g_create.most = now - g_create.last;
+                }
+                g_create.last = now;
+                g_create.windows++;
+                uint32_t const named = *host<uint32_t>(g_create.word);
+                if (child->state != ThreadState::INACTIVE
+                    or (named != KOS_THREAD_NONE and named != KOS_TASK_NONE))
+                {
+                    g_create.hidden = false;
+                }
+                if (g_create.refuse_at_first)
+                {
+                    refuse_map(true);
+                    g_create.refuse_at_first = false;
+                }
+            }
+
+            void watch_create(uintptr_t blk, uintptr_t word, bool refuse)
+            {
+                sys_seam_reset();
+                g_create = CreateSeen{};
+                g_create.blk = blk;
+                g_create.word = word;
+                g_create.last = ASPACE_MAP_PASS_PAGES;
+                g_create.refuse_at_first = refuse;
+                on_window(create_hook);
+            }
+
+            // What a create left of `blk`'s frames once the thread it built ran its death: no
+            // mapping, no lend, each frame freed at most once.
+            void expect_create_gone(Thread* child, uintptr_t blk, size_t doubles)
+            {
+                running() = child;
+                run_exit(KOS_EXIT_CANCELLED);
+                running() = g_main;
+                Domain* d = nullptr;
+                EXPECT_EQ(building_over(blk, &d), nullptr) << "a mapping of the create stayed";
+                EXPECT_EQ(domain_ranges(thread_domain(g_main))->at_base(blk)->lends, 0u);
+                EXPECT_EQ(host_pool_double_frees(), doubles);
+            }
+
+            TEST_F(SysPresync, a_long_window_spawn_names_and_starts_its_child_after_its_passes)
+            {
+                uintptr_t const blk = reserve_only(LONG_PAGES * G);
+                ASSERT_NE(blk, 0u);
+                watch_create(blk, uva(MAIN_OUT), false);
+                kos_thread_t h = KOS_THREAD_NONE;
+                EXPECT_EQ(spawn(g_main, spawn_params(EDIT_PARAMS, blk, LONG_PAGES * G, 0), MAIN_OUT,
+                                &h),
+                          0);
+                on_window(nullptr);
+                EXPECT_EQ(g_create.windows, 2u) << "a window after each pass";
+                EXPECT_EQ(g_create.most, ASPACE_MAP_PASS_PAGES);
+                EXPECT_TRUE(g_create.hidden) << "the child ran or was named before its maps";
+                Thread* const child = kernel().threads.resolve(h);
+                ASSERT_NE(child, nullptr);
+                EXPECT_NE(child->state, ThreadState::INACTIVE);
+                EXPECT_EQ(create_mapped(blk), LONG_PAGES);
+                EXPECT_EQ(record_of(g_main).building, 0u);
+            }
+
+            TEST_F(SysPresync, a_long_handoff_create_names_and_starts_its_task_after_its_passes)
+            {
+                uintptr_t const blk = reserve_only(LONG_PAGES * G);
+                ASSERT_NE(blk, 0u);
+                watch_create(blk, uva(MAIN_OUT), false);
+                kos_task_t t = KOS_TASK_NONE;
+                EXPECT_EQ(create_task(g_main, blk, LONG_PAGES * G, 0, &t), 0);
+                on_window(nullptr);
+                EXPECT_EQ(g_create.windows, 2u) << "a window after each pass";
+                EXPECT_EQ(g_create.most, ASPACE_MAP_PASS_PAGES);
+                EXPECT_TRUE(g_create.hidden) << "the entry ran or the task was named before its maps";
+                ASSERT_NE(t, KOS_TASK_NONE);
+                Thread* const entry = entry_of(t);
+                ASSERT_NE(entry, nullptr);
+                EXPECT_NE(entry->state, ThreadState::INACTIVE);
+                EXPECT_EQ(create_mapped(blk), LONG_PAGES);
+            }
+
+            TEST_F(SysPresync, a_window_spawn_refused_mid_passes_fails_unnamed_and_leaves_nothing)
+            {
+                uintptr_t const blk = reserve_only(LONG_PAGES * G);
+                ASSERT_NE(blk, 0u);
+                watch_create(blk, uva(MAIN_OUT), true);
+                kos_thread_t h = KOS_THREAD_NONE;
+                EXPECT_EQ(spawn(g_main, spawn_params(EDIT_PARAMS, blk, LONG_PAGES * G, 0), MAIN_OUT,
+                                &h),
+                          -KOS_ENOMEM);
+                refuse_map(false);
+                on_window(nullptr);
+                EXPECT_EQ(h, KOS_THREAD_NONE) << "a refused create named its child";
+                Domain* d = nullptr;
+                Thread* const child = building_over(blk, &d);
+                ASSERT_NE(child, nullptr);
+                EXPECT_EQ(child->cancel_kind, CANCEL_SLAY) << "the child was left runnable";
+                EXPECT_EQ(child->task_role, TASK_ROLE_MEMBER);
+                EXPECT_EQ(record_of(g_main).building, 0u);
+                expect_create_gone(child, blk, host_pool_double_frees());
+            }
+
+            TEST_F(SysPresync, a_handoff_create_refused_mid_passes_fails_unnamed_and_leaves_nothing)
+            {
+                uintptr_t const blk = reserve_only(LONG_PAGES * G);
+                ASSERT_NE(blk, 0u);
+                int const tasks = created_tasks();
+                watch_create(blk, uva(MAIN_OUT), true);
+                kos_task_t t = KOS_TASK_NONE;
+                EXPECT_EQ(create_task(g_main, blk, LONG_PAGES * G, 0, &t), -KOS_ENOMEM);
+                refuse_map(false);
+                on_window(nullptr);
+                EXPECT_EQ(t, KOS_TASK_NONE) << "a refused create named its task";
+                EXPECT_EQ(created_tasks(), tasks) << "the refused create kept its creator hold";
+                Domain* d = nullptr;
+                Thread* const entry = building_over(blk, &d);
+                ASSERT_NE(entry, nullptr);
+                EXPECT_EQ(entry->cancel_kind, CANCEL_SLAY) << "the entry was left runnable";
+                expect_create_gone(entry, blk, host_pool_double_frees());
+            }
+
+            uintptr_t g_slay_blk = 0;
+
+            // slay_hook, once the create has built what its passes map over g_slay_blk.
+            void slay_built_hook(uint32_t at)
+            {
+                Domain* d = nullptr;
+                if (building_over(g_slay_blk, &d) != nullptr)
+                {
+                    slay_hook(at);
+                }
+            }
+
+            TEST_F(SysPresync, a_spawner_slain_mid_passes_leaves_its_child_to_die_unrun)
+            {
+                uintptr_t const blk = reserve_only(LONG_PAGES * G);
+                ASSERT_NE(blk, 0u);
+                g_victim = spawn_member();
+                ASSERT_NE(g_victim, nullptr);
+                sys_seam_reset();
+                g_slay_blk = blk;
+                on_window(slay_built_hook);
+                if (setjmp(g_slain) == 0)
+                {
+                    (void)call_as(g_victim, KOS_SYS_THREAD_CREATE,
+                                  spawn_params(EDIT_PARAMS, blk, LONG_PAGES * G, 0),
+                                  uva(EDIT_OUT));
+                    FAIL() << "the spawn opened no window";
+                }
+                on_window(nullptr);
+                Domain* d = nullptr;
+                Thread* const child = building_over(blk, &d);
+                ASSERT_NE(child, nullptr);
+                EXPECT_EQ(child->state, ThreadState::INACTIVE);
+                size_t const doubles = host_pool_double_frees();
+                running() = g_victim;
+                run_exit(KOS_EXIT_CANCELLED);
+                running() = g_main;
+                EXPECT_EQ(child->cancel_kind, CANCEL_SLAY) << "the spawner's death left its child";
+                EXPECT_NE(child->state, ThreadState::INACTIVE);
+                expect_create_gone(child, blk, doubles);
+            }
+
+            kos_task_t g_stop_handle = KOS_TASK_NONE;
+
+            // The create's own task slain at its first window past the bracket, its creator
+            // then dying there.
+            void stop_built_hook(uint32_t at)
+            {
+                Domain* d = nullptr;
+                if (running() != g_victim or building_over(g_slay_blk, &d) == nullptr)
+                {
+                    return;
+                }
+                // Slain by main, its creator, through the handle main already holds.
+                EXPECT_EQ(call_as(g_main, KOS_SYS_TASK_SLAY, g_stop_handle), 0u);
+                running() = g_victim;
+                slay_hook(at);
+            }
+
+            TEST_F(SysPresync, a_spawn_whose_task_is_slain_mid_passes_leaves_its_child_once)
+            {
+                // Main's user pages handed to the creator, whose calls read and write them.
+                kos_task_t const h = new_task(g_main, user_, USER_PAGES * G, 0);
+                ASSERT_NE(h, KOS_TASK_NONE);
+                g_victim = entry_of(h);
+                ASSERT_NE(g_victim, nullptr);
+                {
+                    IrqLock lock;
+                    cap_seat_authority(g_victim, AUTH_MEMORY | AUTH_TASKS);
+                }
+                g_stop_handle = h;
+                uintptr_t const blk = call_as(g_victim, KOS_SYS_RAM_ALLOC, LONG_PAGES * G);
+                ASSERT_NE(blk, 0u);
+                running() = g_main;
+                sys_seam_reset();
+                g_slay_blk = blk;
+                on_window(stop_built_hook);
+                if (setjmp(g_slain) == 0)
+                {
+                    (void)call_as(g_victim, KOS_SYS_THREAD_CREATE,
+                                  spawn_params(EDIT_PARAMS, blk, LONG_PAGES * G, 0),
+                                  uva(EDIT_OUT));
+                    FAIL() << "the spawn opened no window";
+                }
+                on_window(nullptr);
+                Domain* d = nullptr;
+                Thread* const child = building_over(blk, &d);
+                ASSERT_NE(child, nullptr);
+                EXPECT_EQ(child->state, ThreadState::READY) << "the slay left the child unadded";
+                EXPECT_EQ(child->cancel_kind, CANCEL_SLAY);
+                running() = g_victim;
+                run_exit(KOS_EXIT_CANCELLED);
+                running() = g_main;
+                size_t const doubles = host_pool_double_frees();
+                running() = child;
+                run_exit(KOS_EXIT_CANCELLED);
+                running() = g_main;
+                EXPECT_EQ(building_over(blk, &d), nullptr) << "a mapping of the create stayed";
+                EXPECT_EQ(host_pool_double_frees(), doubles);
+            }
+
+            Task* g_gap_task = nullptr;
+            uint32_t g_built_windows = 0;
+
+            // Another core's slay of the task a create builds, in the gap past its last pass.
+            void slay_at_gap()
+            {
+                IrqLock lock;
+                task_stop_for_slay(g_gap_task, lock);
+            }
+
+            void slay_past_last_pass_hook(uint32_t)
+            {
+                Domain* d = nullptr;
+                Thread* const entry = building_over(g_slay_blk, &d);
+                if (entry == nullptr)
+                {
+                    return;
+                }
+                g_built_windows++;
+                if (g_built_windows == 2)
+                {
+                    g_gap_task = entry->task;
+                    run_in_chunk_gap(slay_at_gap, 1);
+                }
+            }
+
+            TEST_F(SysPresync, a_create_whose_task_is_slain_past_its_last_pass_starts_it_once)
+            {
+                uintptr_t const blk = reserve_only(LONG_PAGES * G);
+                ASSERT_NE(blk, 0u);
+                sys_seam_reset();
+                g_slay_blk = blk;
+                g_gap_task = nullptr;
+                g_built_windows = 0;
+                on_window(slay_past_last_pass_hook);
+                kos_task_t t = KOS_TASK_NONE;
+                EXPECT_EQ(create_task(g_main, blk, LONG_PAGES * G, 0, &t), -KOS_ECANCELED);
+                on_window(nullptr);
+                ASSERT_NE(g_gap_task, nullptr) << "fixture: no gap past the last pass";
+                EXPECT_EQ(t, KOS_TASK_NONE) << "a cancelled create named its task";
+                Domain* d = nullptr;
+                Thread* const entry = building_over(blk, &d);
+                ASSERT_NE(entry, nullptr);
+                EXPECT_EQ(entry->cancel_kind, CANCEL_SLAY);
+                expect_create_gone(entry, blk, host_pool_double_frees());
+            }
+
+            // The create's entry, started slain at its first window and dead, its slot then
+            // seated again by another create left at its own first window.
+            struct Recycled
+            {
+                uintptr_t blk = 0;
+                uintptr_t other_blk = 0;
+                uintptr_t plain = 0;
+                uintptr_t other_params = 0;
+                uintptr_t out = 0;
+                Thread* other = nullptr;
+                int slot = -1;
+                Thread* seated = nullptr;
+            };
+            Recycled g_recycle;
+            constexpr uint32_t SHORT_PAGES = ASPACE_MAP_PASS_PAGES + 3u;
+
+            void other_slain_hook(uint32_t)
+            {
+                if (running() == g_recycle.other)
+                {
+                    longjmp(g_slain, 1);
+                }
+            }
+
+            void recycle_hook(uint32_t)
+            {
+                Domain* d = nullptr;
+                Thread* const entry = building_over(g_recycle.blk, &d);
+                if (g_recycle.slot >= 0 or entry == nullptr or running() != g_main)
+                {
+                    return;
+                }
+                g_recycle.slot = kernel().threads.index_of(entry);
+                {
+                    IrqLock lock;
+                    task_stop_for_slay(entry->task, lock);
+                }
+                running() = entry;
+                run_exit(KOS_EXIT_CANCELLED);
+                // Every other free slot claimed, so the next claim is the entry's. Not by main,
+                // whose record holds the create under way.
+                uint32_t* const out = host<uint32_t>(g_recycle.out);
+                while (true)
+                {
+                    *out = KOS_THREAD_NONE;
+                    running() = g_main;
+                    if (err(call_as(g_recycle.other, KOS_SYS_THREAD_CREATE, g_recycle.plain,
+                                    g_recycle.out))
+                        != 0)
+                    {
+                        return;
+                    }
+                    Thread* const filler = kernel().threads.resolve(static_cast<int>(*out));
+                    if (kernel().threads.index_of(filler) == g_recycle.slot)
+                    {
+                        running() = filler;
+                        run_exit(0);
+                        break;
+                    }
+                }
+                running() = g_main;
+                on_window(other_slain_hook);
+                if (setjmp(g_slain) == 0)
+                {
+                    (void)call_as(g_recycle.other, KOS_SYS_THREAD_CREATE, g_recycle.other_params,
+                                  g_recycle.out);
+                }
+                on_window(nullptr);
+                running() = g_main;
+                Thread* const seated = &kernel().threads.slots()[g_recycle.slot];
+                if (seated->state == ThreadState::INACTIVE)
+                {
+                    g_recycle.seated = seated;
+                }
+            }
+
+            TEST_F(SysPresync, a_create_whose_entry_slot_is_seated_again_mid_passes_is_cancelled)
+            {
+                g_recycle = Recycled{};
+                g_recycle.blk = reserve_only(SHORT_PAGES * G);
+                g_recycle.other_blk = reserve_only(SHORT_PAGES * G);
+                ASSERT_NE(g_recycle.blk, 0u);
+                ASSERT_NE(g_recycle.other_blk, 0u);
+                g_recycle.other = spawn_member();
+                ASSERT_NE(g_recycle.other, nullptr);
+                g_recycle.plain = spawn_params(MAIN_PARAMS, 0, 0, 0);
+                g_recycle.other_params =
+                    spawn_params(EDIT_PARAMS, g_recycle.other_blk, SHORT_PAGES * G, 0);
+                g_recycle.out = uva(EDIT_OUT);
+                running() = g_main;
+                sys_seam_reset();
+                on_window(recycle_hook);
+                kos_task_t t = KOS_TASK_NONE;
+                EXPECT_EQ(create_task(g_main, g_recycle.blk, SHORT_PAGES * G, 0, &t),
+                          -KOS_ECANCELED);
+                on_window(nullptr);
+                ASSERT_NE(g_recycle.seated, nullptr) << "fixture: the slot was not seated again";
+                EXPECT_EQ(t, KOS_TASK_NONE) << "the old create named another thread's task";
+                Thread* const seated = g_recycle.seated;
+                EXPECT_EQ(seated->state, ThreadState::INACTIVE) << "the old create started it";
+                EXPECT_EQ(seated->cancel_kind, CANCEL_NONE);
+                size_t const doubles = host_pool_double_frees();
+                running() = g_recycle.other;
+                run_exit(KOS_EXIT_CANCELLED);
+                running() = g_main;
+                EXPECT_EQ(seated->cancel_kind, CANCEL_SLAY);
+                expect_create_gone(seated, g_recycle.other_blk, doubles);
+            }
+
+            TEST_F(SysPresync, a_creator_slain_mid_passes_leaves_its_task_to_die_unrun)
+            {
+                uintptr_t const blk = reserve_only(LONG_PAGES * G);
+                ASSERT_NE(blk, 0u);
+                g_victim = spawn_member();
+                ASSERT_NE(g_victim, nullptr);
+                int const tasks = created_tasks();
+                sys_seam_reset();
+                g_slay_blk = blk;
+                on_window(slay_built_hook);
+                if (setjmp(g_slain) == 0)
+                {
+                    kos_task_t t = KOS_TASK_NONE;
+                    (void)create_task(g_victim, blk, LONG_PAGES * G, 0, &t, {}, EDIT_PARAMS,
+                                      EDIT_OUT);
+                    FAIL() << "the create opened no window";
+                }
+                on_window(nullptr);
+                Domain* d = nullptr;
+                Thread* const entry = building_over(blk, &d);
+                ASSERT_NE(entry, nullptr);
+                EXPECT_EQ(entry->state, ThreadState::INACTIVE);
+                size_t const doubles = host_pool_double_frees();
+                running() = g_victim;
+                run_exit(KOS_EXIT_CANCELLED);
+                running() = g_main;
+                EXPECT_EQ(created_tasks(), tasks) << "the creator's death kept its hold";
+                EXPECT_EQ(entry->cancel_kind, CANCEL_SLAY) << "the creator's death left its task";
+                expect_create_gone(entry, blk, doubles);
+            }
+
+            // The frames of `blk` still taken, and what `d`'s space maps of them.
+            uint32_t held_pages(Domain const* d, uintptr_t blk)
+            {
+                uint32_t n = space_mapped(d, blk);
+                for (uint32_t i = 0; i < LONG_PAGES; i++)
+                {
+                    if (host_pool_mark().used[(aspace_frame_of(blk) + i * G - HOST_POOL_LO) / G])
+                    {
+                        n++;
+                    }
+                }
+                return n;
+            }
+
+            Domain const* g_reap_space = nullptr;
+            uintptr_t g_reap_blk = 0;
+            Thread const* g_reap_thread = nullptr;
+            uint32_t g_reap_last = 0;
+            uint32_t g_reap_most = 0;
+            uint32_t g_reap_windows = 0;
+
+            void reap_hook(uint32_t)
+            {
+                if (running() != g_reap_thread)
+                {
+                    return;
+                }
+                uint32_t const now = held_pages(g_reap_space, g_reap_blk);
+                if (g_reap_last - now > g_reap_most)
+                {
+                    g_reap_most = g_reap_last - now;
+                }
+                g_reap_last = now;
+                g_reap_windows++;
+            }
+
+            TEST_F(SysPresync, the_last_borrower_of_a_shed_reservation_frees_it_in_passes)
+            {
+                // Main's user pages handed to the lender, whose calls read and write them.
+                kos_task_t const a = new_task(g_main, user_, USER_PAGES * G, 0);
+                ASSERT_NE(a, KOS_TASK_NONE);
+                Thread* const lender = entry_of(a);
+                ASSERT_NE(lender, nullptr);
+                {
+                    IrqLock lock;
+                    cap_seat_authority(lender, AUTH_MEMORY | AUTH_TASKS);
+                }
+                uintptr_t const blk = call_as(lender, KOS_SYS_RAM_ALLOC, LONG_PAGES * G);
+                ASSERT_NE(blk, 0u);
+                kos_task_t b = KOS_TASK_NONE;
+                ASSERT_EQ(create_task(lender, blk, LONG_PAGES * G, 0, &b, {}, EDIT_PARAMS,
+                                      EDIT_OUT),
+                          0);
+                Thread* const borrower = entry_of(b);
+                ASSERT_NE(borrower, nullptr);
+                Domain* const shed = thread_domain(lender);
+                running() = g_main;
+                exit_as(lender);
+                ASSERT_EQ(call_as(g_main, KOS_SYS_TASK_SLAY, a), 0u);
+                ASSERT_EQ(domain_space(shed), nullptr) << "fixture: the lender's space is not shed";
+                ASSERT_NE(shed->ranges.at_base(blk), nullptr);
+                Domain const* const d = thread_domain(borrower);
+                sys_seam_reset();
+                g_reap_space = d;
+                g_reap_blk = blk;
+                g_reap_thread = borrower;
+                g_reap_last = held_pages(d, blk);
+                g_reap_most = 0;
+                g_reap_windows = 0;
+                ASSERT_EQ(g_reap_last, 2u * LONG_PAGES);
+                size_t const doubles = host_pool_double_frees();
+                on_window(reap_hook);
+                exit_as(borrower);
+                on_window(nullptr);
+                EXPECT_EQ(g_reap_windows, 6u) << "a window after each pass";
+                EXPECT_EQ(g_reap_most, ASPACE_MAP_PASS_PAGES);
+                for (uint32_t i = 0; i < LONG_PAGES; i++)
+                {
+                    EXPECT_FALSE(frame_taken(aspace_frame_of(blk) + i * G)) << "page " << i;
+                }
+                EXPECT_EQ(host_pool_double_frees(), doubles);
+            }
+
+            void watch_reap(Thread const* t, Domain const* d, uintptr_t blk)
+            {
+                sys_seam_reset();
+                g_reap_space = d;
+                g_reap_blk = blk;
+                g_reap_thread = t;
+                g_reap_last = held_pages(d, blk);
+                g_reap_most = 0;
+                g_reap_windows = 0;
+                on_window(reap_hook);
+            }
+
+            TEST_F(SysPresync, the_last_member_s_exit_frees_an_unmapped_reservation_in_passes)
+            {
+                kos_task_t const h = new_task(g_main, 0, 0, 0);
+                ASSERT_NE(h, KOS_TASK_NONE);
+                Thread* const entry = entry_of(h);
+                ASSERT_NE(entry, nullptr);
+                {
+                    IrqLock lock;
+                    cap_seat_authority(entry, AUTH_MEMORY);
+                }
+                uintptr_t const blk = call_as(entry, KOS_SYS_RAM_ALLOC, LONG_PAGES * G);
+                ASSERT_NE(blk, 0u);
+                Domain const* const d = thread_domain(entry);
+                running() = g_main;
+                watch_reap(entry, d, blk);
+                ASSERT_EQ(g_reap_last, LONG_PAGES) << "fixture: the reservation is mapped";
+                size_t const doubles = host_pool_double_frees();
+                exit_as(entry);
+                on_window(nullptr);
+                EXPECT_EQ(g_reap_windows, 3u) << "a window after each pass";
+                EXPECT_EQ(g_reap_most, ASPACE_MAP_PASS_PAGES);
+                EXPECT_EQ(held_pages(d, blk), 0u);
+                EXPECT_EQ(host_pool_double_frees(), doubles);
+                ASSERT_EQ(call_as(g_main, KOS_SYS_TASK_SLAY, h), 0u);
+            }
+
+            TEST_F(SysPresync, the_last_member_s_exit_unmaps_a_lent_reservation_and_keeps_it)
+            {
+                // Main's user pages handed to the lender, whose calls read and write them.
+                kos_task_t const a = new_task(g_main, user_, USER_PAGES * G, 0);
+                ASSERT_NE(a, KOS_TASK_NONE);
+                Thread* const lender = entry_of(a);
+                ASSERT_NE(lender, nullptr);
+                {
+                    IrqLock lock;
+                    cap_seat_authority(lender, AUTH_MEMORY | AUTH_TASKS);
+                }
+                uintptr_t const blk = call_as(lender, KOS_SYS_RAM_ALLOC, LONG_PAGES * G);
+                ASSERT_NE(blk, 0u);
+                ASSERT_EQ(call_as(lender, KOS_SYS_MEM_SELF_GRANT, blk, LONG_PAGES * G, 0), 0u);
+                kos_task_t b = KOS_TASK_NONE;
+                ASSERT_EQ(create_task(lender, blk, LONG_PAGES * G, 0, &b, {}, EDIT_PARAMS,
+                                      EDIT_OUT),
+                          0);
+                Thread* const borrower = entry_of(b);
+                ASSERT_NE(borrower, nullptr);
+                Domain const* const d = thread_domain(lender);
+                ASSERT_NE(domain_ranges(d)->at_base(blk)->lends, 0u);
+                running() = g_main;
+                watch_span(lender, d, blk);
+                ASSERT_EQ(g_span.last, LONG_PAGES) << "fixture: the lender maps its reservation";
+                exit_as(lender);
+                on_window(nullptr);
+                // Main's pages handed to the lender take one more.
+                EXPECT_EQ(g_span.windows, 4u) << "a window after each pass";
+                EXPECT_EQ(g_span.most, ASPACE_MAP_PASS_PAGES);
+                EXPECT_EQ(space_mapped(d, blk), 0u);
+                EXPECT_EQ(create_mapped(blk), LONG_PAGES) << "the trim unmapped its borrower";
+                for (uint32_t i = 0; i < LONG_PAGES; i++)
+                {
+                    EXPECT_TRUE(frame_taken(aspace_frame_of(blk) + i * G)) << "page " << i;
+                }
+            }
+
+            TEST_F(SysPresync, the_last_window_onto_a_shed_reservation_frees_it_in_passes)
+            {
+                // Main's user pages handed to the lender, whose calls read and write them.
+                kos_task_t const a = new_task(g_main, user_, USER_PAGES * G, 0);
+                ASSERT_NE(a, KOS_TASK_NONE);
+                Thread* const lender = entry_of(a);
+                ASSERT_NE(lender, nullptr);
+                {
+                    IrqLock lock;
+                    cap_seat_authority(lender, AUTH_MEMORY | AUTH_TASKS);
+                }
+                uintptr_t const blk = call_as(lender, KOS_SYS_RAM_ALLOC, LONG_PAGES * G);
+                ASSERT_NE(blk, 0u);
+                kos_task_t b = KOS_TASK_NONE;
+                PeerWindow const w = {blk, LONG_PAGES * G, 0};
+                ASSERT_EQ(create_task(lender, 0, 0, 0, &b, w, EDIT_PARAMS, EDIT_OUT), 0);
+                Thread* const borrower = entry_of(b);
+                ASSERT_NE(borrower, nullptr);
+                Domain* const shed = thread_domain(lender);
+                running() = g_main;
+                exit_as(lender);
+                ASSERT_EQ(call_as(g_main, KOS_SYS_TASK_SLAY, a), 0u);
+                ASSERT_EQ(domain_space(shed), nullptr) << "fixture: the lender's space is not shed";
+                ASSERT_NE(shed->ranges.at_base(blk), nullptr);
+                Domain const* const d = thread_domain(borrower);
+                // The window sits in the window area: only the frames count here.
+                watch_reap(borrower, d, blk);
+                ASSERT_EQ(g_reap_last, LONG_PAGES);
+                size_t const doubles = host_pool_double_frees();
+                exit_as(borrower);
+                on_window(nullptr);
+                EXPECT_EQ(g_reap_windows, 7u) << "a window after each pass";
+                EXPECT_EQ(g_reap_most, ASPACE_MAP_PASS_PAGES);
+                for (uint32_t i = 0; i < LONG_PAGES; i++)
+                {
+                    EXPECT_FALSE(frame_taken(aspace_frame_of(blk) + i * G)) << "page " << i;
+                }
+                EXPECT_EQ(host_pool_double_frees(), doubles);
+            }
+
+            // Tables from the pool, one leaf table per 32 pages: a long map's later passes link
+            // tables of their own.
+            class SysCreateTables : public SysPresync
+            {
+              protected:
+                void SetUp() override
+                {
+                    host_aspace_tables_from_pool(true);
+                    host_aspace_leaf_table_span(leaf_span_shift());
+                    SysPresync::SetUp();
+                }
+
+                void TearDown() override
+                {
+                    SysPresync::TearDown();
+                    host_aspace_leaf_table_span(0);
+                    host_aspace_tables_from_pool(false);
+                }
+
+                virtual unsigned leaf_span_shift() const
+                {
+                    return 17u;
+                }
+            };
+
+            // Two pages a leaf table: a long map's reserve takes more than one pass.
+            constexpr unsigned WIDE_SPAN_SHIFT = 13u;
+
+            class SysWideTables : public SysCreateTables
+            {
+              protected:
+                unsigned leaf_span_shift() const override
+                {
+                    return WIDE_SPAN_SHIFT;
+                }
+            };
+
+            // The pool frames taken, less the tables main's space links, which the host editor
+            // keeps until the space goes.
+            size_t loose_frames()
+            {
+                return host_pool_used()
+                       - arch_aspace_table_pages(domain_space(thread_domain(g_main)));
+            }
+
+            uint32_t tables_reserved()
+            {
+                uint32_t n = 0;
+                for (Task const& t : kernel().tasks())
+                {
+                    n = n + t.tables_reserved;
+                }
+                return n;
+            }
+
+            enum class Mapper
+            {
+                HANDOFF,
+                WINDOW,
+                FRAME_MAP
+            };
+
+            // What a refused call left at its windows: no window may see it built or mapped.
+            struct WindowSeen
+            {
+                uintptr_t blk = 0;
+                bool built = false;
+                uint32_t mapped = 0;
+            };
+            WindowSeen g_seen_at_window;
+
+            void seen_hook(uint32_t)
+            {
+                if (running() != g_main)
+                {
+                    return;
+                }
+                Domain* d = nullptr;
+                if (g_seen_at_window.blk != 0 and building_over(g_seen_at_window.blk, &d) != nullptr)
+                {
+                    g_seen_at_window.built = true;
+                }
+                uint32_t const now = space_mapped(thread_domain(g_main), RUN_VA);
+                if (now > g_seen_at_window.mapped)
+                {
+                    g_seen_at_window.mapped = now;
+                }
+            }
+
+            class SysRefusedUpFront : public SysCreateTables,
+                                      public ::testing::WithParamInterface<std::tuple<Mapper, unsigned>>
+            {
+              protected:
+                Mapper mapper() const
+                {
+                    return std::get<0>(GetParam());
+                }
+
+                unsigned leaf_span_shift() const override
+                {
+                    return std::get<1>(GetParam());
+                }
+
+                void undo_long_map(uint32_t named, RunCaps const& run)
+                {
+                    if (mapper() == Mapper::HANDOFF)
+                    {
+                        Thread* const entry = entry_of(static_cast<kos_task_t>(named));
+                        ASSERT_NE(entry, nullptr);
+                        ASSERT_EQ(call_as(g_main, KOS_SYS_TASK_SLAY, named), 0u);
+                        running() = entry;
+                        run_exit(KOS_EXIT_CANCELLED);
+                    }
+                    else if (mapper() == Mapper::WINDOW)
+                    {
+                        running() = kernel().threads.resolve(static_cast<int>(named));
+                        ASSERT_NE(running(), nullptr);
+                        run_exit(0);
+                    }
+                    else
+                    {
+                        ASSERT_EQ(call_as(g_main, KOS_SYS_FRAME_UNMAP, run.fcap, run.acap, RUN_VA),
+                                  0u);
+                    }
+                    running() = g_main;
+                }
+            };
+
+            // Every pool take of the call refused in turn: the call succeeds, or is refused with
+            // nothing built, nothing mapped and every frame back.
+            TEST_P(SysRefusedUpFront, a_long_map_refused_a_frame_anywhere_leaves_no_trace)
+            {
+                uintptr_t blk = 0;
+                RunCaps run;
+                if (mapper() == Mapper::FRAME_MAP)
+                {
+                    run = mint(LONG_PAGES);
+                    ASSERT_NE(run.obj, FRAME_RUN_NONE);
+                }
+                else
+                {
+                    blk = reserve_only(LONG_PAGES * G);
+                    ASSERT_NE(blk, 0u);
+                }
+                int const tasks = created_tasks();
+                bool done = false;
+                for (size_t nth = 1; nth < 192 and not done; nth++)
+                {
+                    running() = g_main;
+                    size_t const used = loose_frames();
+                    sys_seam_reset();
+                    g_seen_at_window = WindowSeen{blk, false, 0};
+                    on_window(seen_hook);
+                    host_pool_fail_in(nth);
+                    int32_t rc = 0;
+                    uint32_t named = 0;
+                    if (mapper() == Mapper::HANDOFF)
+                    {
+                        kos_task_t t = KOS_TASK_NONE;
+                        rc = create_task(g_main, blk, LONG_PAGES * G, 0, &t);
+                        named = t;
+                    }
+                    else if (mapper() == Mapper::WINDOW)
+                    {
+                        kos_thread_t h = KOS_THREAD_NONE;
+                        rc = spawn(g_main, spawn_params(EDIT_PARAMS, blk, LONG_PAGES * G, 0),
+                                   MAIN_OUT, &h);
+                        named = h;
+                    }
+                    else
+                    {
+                        rc = err(call_as(g_main, KOS_SYS_FRAME_MAP, run.fcap, run.acap,
+                                         va_word(RUN_VA), 0));
+                    }
+                    bool const unreached = host_pool_fail_armed();
+                    host_pool_fail_in(0);
+                    on_window(nullptr);
+                    if (rc == 0 and unreached)
+                    {
+                        done = true;
+                        break;
+                    }
+                    if (rc == 0)
+                    {
+                        // A round sent again took the frame: undo the call and refuse the next.
+                        undo_long_map(named, run);
+                        continue;
+                    }
+                    Domain* d = nullptr;
+                    EXPECT_FALSE(g_seen_at_window.built) << "take " << nth << " refused past a pass";
+                    EXPECT_EQ(g_seen_at_window.mapped, 0u)
+                        << "take " << nth << " refused past a pass";
+                    EXPECT_EQ(created_tasks(), tasks) << "take " << nth;
+                    EXPECT_EQ(building_over(blk, &d), nullptr) << "take " << nth;
+                    EXPECT_EQ(space_mapped(thread_domain(g_main), RUN_VA), 0u) << "take " << nth;
+                    EXPECT_EQ(loose_frames(), used) << "take " << nth << " kept frames";
+                    EXPECT_EQ(tables_reserved(), 0u) << "take " << nth;
+                    EXPECT_TRUE(named == KOS_TASK_NONE or named == KOS_THREAD_NONE);
+                }
+                EXPECT_TRUE(done) << "fixture: no take let the call through";
+                EXPECT_EQ(tables_reserved(), 0u);
+                EXPECT_EQ(record_of(g_main).table_count, 0u);
+            }
+
+            INSTANTIATE_TEST_SUITE_P(
+                Mappers, SysRefusedUpFront,
+                ::testing::Combine(::testing::Values(Mapper::HANDOFF, Mapper::WINDOW,
+                                                     Mapper::FRAME_MAP),
+                                   ::testing::Values(17u, WIDE_SPAN_SHIFT)));
+
+            TEST_F(SysCreateTables, a_creator_slain_mid_passes_gives_its_reserved_tables_back)
+            {
+                uintptr_t const blk = reserve_only(SHORT_PAGES * G);
+                ASSERT_NE(blk, 0u);
+                size_t const used = loose_frames();
+                g_victim = spawn_member();
+                ASSERT_NE(g_victim, nullptr);
+                sys_seam_reset();
+                g_slay_blk = blk;
+                on_window(slay_built_hook);
+                if (setjmp(g_slain) == 0)
+                {
+                    kos_task_t t = KOS_TASK_NONE;
+                    int const rc = create_task(g_victim, blk, SHORT_PAGES * G, 0, &t, {},
+                                               EDIT_PARAMS, EDIT_OUT);
+                    FAIL() << "the create opened no window: " << rc;
+                }
+                on_window(nullptr);
+                EXPECT_NE(record_of(g_victim).table_count, 0u) << "fixture: nothing reserved";
+                EXPECT_NE(tables_reserved(), 0u);
+                Domain* d = nullptr;
+                Thread* const entry = building_over(blk, &d);
+                ASSERT_NE(entry, nullptr);
+                size_t const doubles = host_pool_double_frees();
+                running() = g_victim;
+                run_exit(KOS_EXIT_CANCELLED);
+                running() = g_main;
+                EXPECT_EQ(tables_reserved(), 0u);
+                expect_create_gone(entry, blk, doubles);
+                EXPECT_EQ(loose_frames(), used) << "a reserved table frame leaked";
+            }
+
+            TEST_F(SysCreateTables, a_mapper_slain_mid_map_gives_its_reserved_tables_back)
+            {
+                RunCaps const run = mint(LONG_PAGES);
+                ASSERT_NE(run.obj, FRAME_RUN_NONE);
+                size_t const used = loose_frames();
+                g_victim = spawn_member();
+                ASSERT_NE(g_victim, nullptr);
+                ASSERT_NE(slay_mid_frame_map(this, run, nullptr, 1, false), nullptr);
+                EXPECT_NE(record_of(g_victim).table_count, 0u) << "fixture: nothing reserved";
+                running() = g_victim;
+                run_exit(KOS_EXIT_CANCELLED);
+                running() = g_main;
+                EXPECT_EQ(tables_reserved(), 0u);
+                EXPECT_EQ(space_mapped(thread_domain(g_main), RUN_VA), 0u);
+                EXPECT_EQ(loose_frames(), used) << "a reserved table frame leaked";
+            }
+
+            TEST_F(SysCreateTables, a_frame_map_another_map_finished_between_its_passes_is_done)
+            {
+                RunCaps const run = mint(LONG_PAGES);
+                ASSERT_NE(run.obj, FRAME_RUN_NONE);
+                uint8_t const refs = run_refs(run.obj);
+                g_finisher = spawn_member();
+                ASSERT_NE(g_finisher, nullptr);
+                g_finisher_run = share_to(g_finisher, run);
+                ASSERT_NE(g_finisher_run.obj, FRAME_RUN_NONE);
+                g_finisher_rc = 1;
+                running() = g_main;
+                size_t const used = loose_frames();
+                sys_seam_reset();
+                on_window(finish_hook);
+                EXPECT_EQ(err(call_as(g_main, KOS_SYS_FRAME_MAP, run.fcap, run.acap,
+                                      va_word(RUN_VA), 0)),
+                          0);
+                on_window(nullptr);
+                EXPECT_EQ(g_finisher_rc, 0);
+                Domain const* const d = thread_domain(g_main);
+                EXPECT_EQ(space_mapped(d, RUN_VA), LONG_PAGES);
+                EXPECT_EQ(*host<uintptr_t>(uva(MAIN_OUT, VA_WORD_AT)), RUN_VA);
+                EXPECT_EQ(record_of(g_main).table_count, 0u) << "the done map kept its reserve";
+                EXPECT_EQ(tables_reserved(), 0u);
+                EXPECT_EQ(loose_frames(), used) << "a reserved table frame leaked";
+                EXPECT_EQ(call_as(g_main, KOS_SYS_FRAME_UNMAP, run.fcap, run.acap, RUN_VA), 0u);
+                EXPECT_EQ(run_refs(run.obj), refs + 1u) << "the finished map kept a reference";
+            }
+
+            // How a thread's table reserve moved between two of its windows.
+            struct TablesWatch
+            {
+                Thread const* t = nullptr;
+                uintptr_t blk = 0;
+                uint32_t last = 0;
+                uint32_t most = 0;
+                bool built = false;
+                bool short_unmapped = false;
+                bool taken_after_build = false;
+                bool part_given_back = false;
+            };
+            TablesWatch g_tables;
+
+            void tables_hook(uint32_t)
+            {
+                if (running() != g_tables.t)
+                {
+                    return;
+                }
+                uint32_t const now = record_of(running()).table_count;
+                uint32_t step = now - g_tables.last;
+                if (now < g_tables.last)
+                {
+                    step = g_tables.last - now;
+                    if (now != 0)
+                    {
+                        g_tables.part_given_back = true;
+                    }
+                }
+                if (step > g_tables.most)
+                {
+                    g_tables.most = step;
+                }
+                Domain* d = nullptr;
+                bool const built = (g_tables.blk != 0 and building_over(g_tables.blk, &d) != nullptr)
+                                   or space_mapped(thread_domain(g_main), RUN_VA) != 0;
+                // The pass that takes the last tables may build: one already built may not take.
+                if (now > g_tables.last and g_tables.built)
+                {
+                    g_tables.taken_after_build = true;
+                }
+                if (now > g_tables.last and not built)
+                {
+                    g_tables.short_unmapped = true;
+                }
+                g_tables.last = now;
+                g_tables.built = built;
+            }
+
+            void watch_tables(Thread const* t, uintptr_t blk)
+            {
+                sys_seam_reset();
+                g_tables = TablesWatch{};
+                g_tables.t = t;
+                g_tables.blk = blk;
+                on_window(tables_hook);
+            }
+
+            TEST_F(SysWideTables, a_long_frame_map_takes_and_gives_back_its_tables_in_bounded_passes)
+            {
+                RunCaps const run = mint(LONG_PAGES);
+                ASSERT_NE(run.obj, FRAME_RUN_NONE);
+                // Every table in place: the second map's whole reserve is left over.
+                ASSERT_EQ(err(call_as(g_main, KOS_SYS_FRAME_MAP, run.fcap, run.acap,
+                                      va_word(RUN_VA), 0)),
+                          0);
+                ASSERT_EQ(call_as(g_main, KOS_SYS_FRAME_UNMAP, run.fcap, run.acap, RUN_VA), 0u);
+                ASSERT_GT(arch_aspace_range_tables(RUN_VA, LONG_PAGES), ASPACE_TABLE_PASS_FRAMES)
+                    << "fixture: the reserve fits one pass";
+                size_t const used = loose_frames();
+                watch_tables(g_main, 0);
+                EXPECT_EQ(err(call_as(g_main, KOS_SYS_FRAME_MAP, run.fcap, run.acap,
+                                      va_word(RUN_VA), 0)),
+                          0);
+                on_window(nullptr);
+                EXPECT_LE(g_tables.most, ASPACE_TABLE_PASS_FRAMES) << "one pass moved more tables";
+                EXPECT_TRUE(g_tables.short_unmapped) << "no window inside the take";
+                EXPECT_FALSE(g_tables.taken_after_build) << "a table taken once the map began";
+                EXPECT_TRUE(g_tables.part_given_back) << "no window inside the give-back";
+                EXPECT_EQ(space_mapped(thread_domain(g_main), RUN_VA), LONG_PAGES);
+                EXPECT_EQ(record_of(g_main).table_count, 0u);
+                EXPECT_EQ(tables_reserved(), 0u);
+                EXPECT_EQ(loose_frames(), used) << "a reserved table frame leaked";
+            }
+
+            TEST_F(SysWideTables, a_long_window_spawn_takes_its_tables_before_it_builds_in_bounded_passes)
+            {
+                uintptr_t const blk = reserve_only(LONG_PAGES * G);
+                ASSERT_NE(blk, 0u);
+                size_t const used = loose_frames();
+                watch_tables(g_main, blk);
+                kos_thread_t h = KOS_THREAD_NONE;
+                EXPECT_EQ(spawn(g_main, spawn_params(EDIT_PARAMS, blk, LONG_PAGES * G, 0), MAIN_OUT,
+                                &h),
+                          0);
+                on_window(nullptr);
+                EXPECT_LE(g_tables.most, ASPACE_TABLE_PASS_FRAMES) << "one pass moved more tables";
+                EXPECT_TRUE(g_tables.short_unmapped) << "no window inside the take";
+                EXPECT_FALSE(g_tables.taken_after_build) << "a table taken once the build began";
+                EXPECT_EQ(record_of(g_main).table_count, 0u);
+                EXPECT_EQ(tables_reserved(), 0u);
+                running() = kernel().threads.resolve(static_cast<int>(h));
+                ASSERT_NE(running(), nullptr);
+                run_exit(0);
+                running() = g_main;
+                EXPECT_EQ(loose_frames(), used) << "a reserved table frame leaked";
+            }
+
+            TEST_F(SysWideTables, a_mapper_slain_mid_take_gives_its_tables_back_in_bounded_passes)
+            {
+                RunCaps const run = mint(LONG_PAGES);
+                ASSERT_NE(run.obj, FRAME_RUN_NONE);
+                size_t const used = loose_frames();
+                g_victim = spawn_member();
+                ASSERT_NE(g_victim, nullptr);
+                ASSERT_NE(slay_mid_frame_map(this, run, nullptr, 1, false), nullptr);
+                EXPECT_EQ(record_of(g_victim).table_count, ASPACE_TABLE_PASS_FRAMES)
+                    << "fixture: not slain inside the take";
+                EXPECT_EQ(space_mapped(thread_domain(g_main), RUN_VA), 0u);
+                watch_tables(g_victim, 0);
+                g_tables.last = record_of(g_victim).table_count;
+                running() = g_victim;
+                run_exit(KOS_EXIT_CANCELLED);
+                running() = g_main;
+                on_window(nullptr);
+                EXPECT_LE(g_tables.most, ASPACE_TABLE_PASS_FRAMES) << "one pass moved more tables";
+                EXPECT_EQ(tables_reserved(), 0u);
+                EXPECT_EQ(loose_frames(), used) << "a reserved table frame leaked";
             }
 
             INSTANTIATE_TEST_SUITE_P(Calls, SysPresyncSlain,
@@ -780,6 +2617,11 @@ namespace kickos
                 p->authority = UNDEFINED_AUTHORITY;
             }
 
+            void unknown_policy(kos_thread_params* p, uintptr_t)
+            {
+                p->policy = 7;
+            }
+
             void misaligned_stack(kos_thread_params* p, uintptr_t grant)
             {
                 p->stack_base = reinterpret_cast<void*>(grant + KICKOS_STACK_ALIGN / 2u);
@@ -800,6 +2642,7 @@ namespace kickos
                 Malformed const cases[] = {
                     {"window list", -KOS_EFAULT, unmapped_window_list},
                     {"authority", -KOS_EINVAL, undefined_authority},
+                    {"policy", -KOS_EINVAL, unknown_policy},
                     {"stack", -KOS_EINVAL, misaligned_stack},
                 };
                 for (Malformed const& m : cases)
@@ -900,7 +2743,7 @@ namespace kickos
                 {
                     if ((taken[i] / G) % 2u == 0u)
                     {
-                        frame_pool_free_run(taken[i], 1, G);
+                        frame_pool_free_run(taken[i], 1);
                     }
                 }
                 size_t const fragmented = host_pool_used();
@@ -915,7 +2758,7 @@ namespace kickos
                 {
                     if ((taken[i] / G) % 2u != 0u)
                     {
-                        frame_pool_free_run(taken[i], 1, G);
+                        frame_pool_free_run(taken[i], 1);
                     }
                 }
                 EXPECT_EQ(host_pool_used(), before);

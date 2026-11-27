@@ -96,4 +96,9 @@ void kickos_frame_free(arch_phys_addr_t frame)
     (void)frame;
 }
 
+void kickos_leaf_free(arch_phys_addr_t frame)
+{
+    (void)frame;
+}
+
 }

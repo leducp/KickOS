@@ -20,7 +20,10 @@ namespace kickos::esp32c6::reg::io_mux
     }
 
     constexpr uint32_t MCU_SEL_GPIO = 1u << 12; // MCU_SEL=1 -> GPIO matrix function
+    constexpr uint32_t MCU_SEL_S = 12u;
+    constexpr uint32_t MCU_SEL_GPIO_FUNC = 1u;
     constexpr uint32_t FUN_DRV_2 = 2u << 10;    // ~20 mA drive
+    constexpr uint32_t FUN_IE = 1u << 9;        // Register 7.20, p.282
 }
 
 #endif

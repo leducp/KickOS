@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Check the x86-64-v3 floor before running code built for it. This file is compiled for the
-// base level so an older processor can report the refusal through firmware and return safely.
+// Check the floor, x86-64-v3 with SMEP and SMAP, before running code built for it. This file is
+// compiled for the base level so an older processor can report the refusal through firmware and
+// return safely.
 
 #include <kickos/arch/regs.h>
 #include <kickos/arch/uefi.h>
@@ -41,8 +42,8 @@ namespace
     constexpr uint32_t leaf1_ecx = (1u << 0) | (1u << 9) | (1u << 12) | (1u << 13) | (1u << 19)
                                    | (1u << 20) | (1u << 22) | (1u << 23) | (1u << 26) | (1u << 28)
                                    | (1u << 29);
-    // Leaf 7 EBX: BMI1, AVX2, BMI2.
-    constexpr uint32_t leaf7_ebx = (1u << 3) | (1u << 5) | (1u << 8);
+    // Leaf 7 EBX: BMI1, AVX2, BMI2, and SMEP and SMAP, which x86-64-v3 does not name.
+    constexpr uint32_t leaf7_ebx = (1u << 3) | (1u << 5) | (1u << 7) | (1u << 8) | (1u << 20);
     // Leaf 0x80000001 ECX: LAHF/SAHF, LZCNT. EDX: SYSCALL/SYSRET, and RDTSCP, which
     // kos_core_current reads and x86-64-v3 does not name.
     constexpr uint32_t ext1_ecx = (1u << 0) | (1u << 5);
@@ -76,8 +77,8 @@ kickos_x86_64_floor(kickos::uefi::system_table* systab)
     if (systab != nullptr and systab->con_out != nullptr)
     {
         systab->con_out->output_string(systab->con_out,
-                                       u"KickOS: this processor is below x86-64-v3, the floor "
-                                       u"it is built for\r\n");
+                                       u"KickOS: this processor is below the floor it is built "
+                                       u"for, x86-64-v3 with SMEP and SMAP\r\n");
     }
     return false;
 }

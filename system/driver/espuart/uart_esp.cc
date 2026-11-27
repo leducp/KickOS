@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The ESP UART0 family body: read, write, flush and close, shared by the ESP32 (Xtensa LX6)
+// The ESP UART family body: read, write, flush and close, shared by the ESP32 (Xtensa LX6)
 // and ESP32-C6 (RV32) backends of <kickos/driver/uart.h>. Which chip's registers these are
 // is decided by the include path; see uart_esp.h.
 //

@@ -22,19 +22,18 @@ extern "C"
 // the cross toolchains and 8 on the host. One static_assert per name in
 // user/src/syscall_stubs.cc holds them at 4, so a name added here needs one there.
 
-// Debug console: unbuffered, straight at the kernel console, so it works in boot and panic. NOT
-// stdout: ordinary output is libc stdio over a userspace console driver. The write(2) shape:
-// returns bytes written (a len-0 write is a legitimate 0), or with none completed -KOS_EBUSY (a
-// driver owns the console and this thread's stdout send would be taken now; send there instead),
-// -KOS_EFAULT for a buffer the caller cannot read, or -KOS_ECANCELED for a writer cancelled while
-// it waited. A full transmit ring makes it WAIT, with no bound, as a pipe's writer waits, and so
-// does the DARK WINDOW, a console driver's task dead and the kernel's reclaim of the device not
-// landed yet, until the reclaim or a publish. THE COUNT CAN BE SHORT: the walk stops at the first
-// byte the console cannot take. A page unmapped mid-write stops it too, the chunks spanning no
-// lock. With KOS_KCONSOLE_NOWAIT in `flags` it never waits: it is answered -KOS_EAGAIN instead,
-// and any other flag is refused -KOS_EINVAL.
-// It is the raw call: a line no route carries to the wire, a driver owning the UART or the
-// caller's own task holding it, is reported taken and dropped.
+// Debug console: unbuffered, straight at the kernel console, which is the users' until a console
+// is published. NOT stdout: ordinary output is libc stdio over a userspace console driver. The
+// write(2) shape: returns bytes written (a len-0 write is a legitimate 0), or with none completed
+// -KOS_EBUSY once a console was published or a panic took the device, a driver's death and its
+// reclaim included, -KOS_EFAULT for a buffer the caller cannot read, or -KOS_ECANCELED for a
+// writer cancelled while it waited. A full transmit ring makes it WAIT, with no bound, as a pipe's
+// writer waits. THE COUNT CAN BE SHORT: the walk stops at the first byte the console cannot take.
+// A page unmapped mid-write stops it too, the chunks spanning no lock. With KOS_KCONSOLE_NOWAIT in
+// `flags` it never waits: it is answered -KOS_EAGAIN instead, and any other flag is refused
+// -KOS_EINVAL.
+// It is the raw call: a line written while the caller's own task holds the console's registers
+// is reported taken and dropped.
 int32_t kos_kconsole_write(void const* buf, size_t len, uint32_t flags);
 // An app writes through kos_print or stdio. The raw call drops what no route carries and leaves
 // a short count's rest to its caller, so an app spells it only where its drop, its answer or its
@@ -56,8 +55,8 @@ extern "C++"
     {
         struct WriteResult;
         inline WriteResult kconsole_offer(char const* s, size_t n);
-        // The raw call for <kickos/sys/emit.h>'s fallback alone, which every app's stdout may
-        // reach, named ahead of the poison.
+        // The raw call for <kickos/sys/emit.h>'s kernel console route alone, which every app's
+        // stdout may reach, named ahead of the poison.
         class KconsoleRaw
         {
             static constexpr int32_t (*write)(void const*, size_t, uint32_t) = &kos_kconsole_write;
@@ -72,9 +71,9 @@ extern "C++"
 #endif
 
 // The whole of s to this thread's stdout, as libc's write(1) sends it (kickos::stdout_write,
-// sys/emit.h): through the published console where one serves this thread, else the kernel
-// console, waiting out a full ring and a dark window. A task that set O_NONBLOCK (fcntl) stops at
-// the first byte that would make it wait, and a refusal of either route ends it; the rest is dropped.
+// sys/emit.h): through the console its capability 0 names, else the kernel console until a
+// console is published, waiting out a full ring. A task that set O_NONBLOCK (fcntl) stops at the
+// first byte that would make it wait, and a refusal of either route ends it; the rest is dropped.
 void kos_print(char const* s);
 
 void kos_yield(void);
@@ -239,21 +238,22 @@ int kos_endpoint_badge(kos_cap_t source_cap, uint32_t badge, kos_cap_t* out_cap)
 // EFAULT (out), EINVAL (a node outside the partition, an unknown id).
 int kos_amp_count(uint32_t node, uint32_t which, uint32_t* out);
 #endif
-// Send `len` bytes, waiting for a receiver until `until`. The deadline bounds the PARK only: a
-// receiver already waiting rendezvouses regardless of it, and a passed one never parks. A far
-// endpoint's send waits the same way for a slot of its port's share of the peer's call ring while
-// that share is full, and with no deadline for as long as it stays full: two nodes' servers that
-// each hold a received call while sending to the other then wait until one is cancelled. Returns
-// bytes transferred or -KOS_E*: EINVAL for len > KOS_EP_MSG_MAX, EFAULT for an invalid buffer,
-// EBADF/EACCES for an invalid capability or missing SIGNAL right, ECONNREFUSED for an endpoint
-// with no receiver, whatever the deadline, EAGAIN for KOS_POLL wherever the send would wait, and
-// ETIMEDOUT for any other deadline that passed with NO receiver, or with no slot of a far
-// endpoint's ring freed: the send did NOT happen and no bytes crossed. ECONNREFUSED arrives at
-// once, or on waking when the last receiver leaves a parked sender; nothing was sent. The
-// published console is the exception while the task it was published for lives: a send there
-// parks, receiver or not, like a write to a pipe, and is answered so only once that task has
-// ended. A far send returns once its request is published: the serving node holds it for its
-// port's next receive, and drops it where that port has no receiver. A zero-length message is
+// Send `len` bytes: a RENDEZVOUS, waiting for a receiver until `until`. The deadline bounds the
+// PARK only: a receiver already waiting rendezvouses regardless of it, and a passed one never
+// parks. An endpoint with no receiver waits for one as for a busy one, so long as something can
+// still serve it: a holder of KOS_CAP_WAIT or of KOS_CAP_HANDOUT, which seats one. Only an
+// endpoint DEAD FOR GOOD, none of either left, refuses it. A far send is a rendezvous too: it
+// returns once a receiver on the serving node has taken it, after waiting for a slot of its port's
+// share of the peer's call ring while that share is full, and with no deadline for as long as it
+// stays full: two nodes' servers that each hold a received call while sending to the other then
+// wait until one is cancelled. A thread that must not wait on another node hands the send to a
+// thread of its own. Returns bytes transferred or -KOS_E*: EINVAL for len > KOS_EP_MSG_MAX, EFAULT
+// for an invalid buffer, EBADF/EACCES for an invalid capability or missing SIGNAL right,
+// ECONNREFUSED for an endpoint dead for good, whatever the deadline, EAGAIN for KOS_POLL wherever
+// the send would wait, which a far send always does, and ETIMEDOUT for any other deadline that
+// passed with NO receiver taking it: the send did NOT happen and no bytes crossed. ECONNREFUSED
+// arrives at once, or on waking when the endpoint a sender is parked on dies for good; nothing was
+// sent. A far send that gives up before a receiver took it withdraws it. A zero-length message is
 // valid.
 //
 // For all IPC copies, either buffer may become inaccessible after validation.
@@ -270,12 +270,13 @@ int32_t kos_send(kos_cap_t ep, void const* buf, size_t len, kos_monotonic_t unti
 // endpoint's call first waits, within that deadline, for a slot of its port's share of the peer's
 // call ring while that share is full, and with no deadline for as long as it stays full, as
 // kos_send does; its request is then held by the serving node until its port's next receive.
-// A far call's ECONNREFUSED is the serving node's answer: its port had no receiver when the
-// request arrived, or lost its last one while the request was held. A far call that gives up
-// before a receiver took its request withdraws it, as a local one does.
+// A call to an endpoint with no receiver waits for one while the endpoint can still be served, as
+// kos_send does. A far call's ECONNREFUSED is the serving node's answer: its port's endpoint was
+// dead for good when the request arrived, or died for good while the request was held. A far call
+// that gives up before a receiver took its request withdraws it, as a local one does.
 // -> reply bytes (>= 0), or a negative -KOS_E*: EINVAL (request > KOS_EP_MSG_MAX), EFAULT (bad
-// buffer), EBADF/EACCES (bad cap / no SIGNAL), ECONNREFUSED (no receiver, whatever the deadline:
-// nothing sent), EPIPE (the server died holding the request), EMFILE (the SERVER's cap table is
+// buffer), EBADF/EACCES (bad cap / no SIGNAL), ECONNREFUSED (the endpoint is dead for good,
+// whatever the deadline: nothing sent), EPIPE (the server died holding the request), EMFILE (the SERVER's cap table is
 // full, so the reply cap cannot be minted), ENOTSUP (server took an info-less recv, so it hosts
 // no calls), EAGAIN (KOS_POLL, which a call always waits under: nothing sent), ETIMEDOUT (any
 // other deadline passed and NO reply was received). A request already taken by a server stays
@@ -470,9 +471,10 @@ int kos_task_create(kos_program_t prog, struct kos_task_params const* params,
 int kos_watch(enum kos_watch_kind kind, uint32_t events, uintptr_t source, kos_cap_t notify_cap,
               uintptr_t arg, kos_cap_t* out_watch);
 
-// The enum kos_task_state bits for the task `task` names, or -KOS_EBADF once your hold is gone,
-// which for a task you slew is its death (kos_task_slay), -KOS_EPERM for a task you did not
-// create, -KOS_EINVAL / -KOS_EFAULT for a bad `status`.
+// The enum kos_task_state bits for the task `task` names, KOS_TASK_NONE for your own, or
+// -KOS_EBADF once your hold is gone, which for a task you slew is its death (kos_task_slay),
+// -KOS_EPERM for a task you did not create, -KOS_EINVAL / -KOS_EFAULT for a bad `status`.
+// ORPHANED is answered for your own task alone.
 // ENDED comes first, at the end's cause, with its members stopped and possibly still tearing
 // down; DEAD, not the absence of LIVE, is the death: it is set once every member's teardown is
 // done, and a watch asking for either is raised at it. Where ENDED is set and `status` is not
@@ -541,9 +543,9 @@ static inline uint32_t kos_window_size(kos_window_t window)
     return window.size;
 }
 // The i-th task the caller's declaration watches, the one bit i of /init/events stands for, read from record i of
-// its own /init/status. 0, -KOS_EINVAL (a null `out`, i past the last, or no status window
-// held) or -KOS_EAGAIN (the init held the record mid-write through every retry), `out` then
-// untouched.
+// its own /init/status. 0, or -KOS_EINVAL (a null `out`, i past the last, or no status window
+// held), -KOS_EOWNERDEAD (the init died with the record half written), `out` then untouched. A
+// record the init is writing is slept on until the write ends or the init is gone.
 // It names a function and its struct, as stat does, which GCC's -Wshadow reads in C++ as the
 // function hiding the struct's constructor.
 #if defined(__GNUC__)
@@ -727,8 +729,9 @@ int kos_pinmux_set(uint32_t port, uint32_t pin, uint32_t func);
 
 // Retune the core clock to a P-state. Returns the ACTUALLY-LANDED core Hz, which the caller
 // must compare against what the requested point implies. Needs KOS_AUTH_PSTATE. Returns 0
-// when the chip cannot change its clock, the caller lacks that authority, or a userspace
-// driver owns the console (a retune would garble a baud the kernel cannot relocate).
+// when the chip cannot change its clock or the caller lacks that authority. Returns the
+// unchanged rate, moving nothing, while a userspace driver owns the console (a retune would
+// garble a baud the kernel cannot relocate).
 uint64_t kos_cpu_clock_set(kos_pstate_t pstate);
 
 // Reserve page-aligned user RAM for this task; returns NULL on exhaustion.
@@ -750,11 +753,15 @@ void* kos_ram_alloc(size_t size);
 // flags selects memory type. A type change must update the descriptor even
 // if the range is already accessible; identical grants consume no new entry.
 // MPU grants are limited by hardware region capacity. MMU reservations are
-// bounded at allocation.
+// bounded at allocation, and mapped a bounded number of pages at a time with interrupts
+// open between: until the call returns 0 the reservation stays as it was to every other
+// call, and a grant left unfinished (its caller refused part way or killed) is finished by
+// the next one asking for its type. Meanwhile its frames take no mapping of another type.
 // Returns 0 or -KOS_E*:
 //   EPERM: missing authority, or an unowned/invalid range.
 //   ENOTSUP: a memory type this chip cannot honour.
-//   EBUSY: the range is mapped elsewhere, a window over it included, with another type.
+//   EBUSY: the range is mapped elsewhere, a window over it included, with another type, or a
+//          grant of it with another type is unfinished.
 //   EINVAL: zero size, wraparound, unknown flags, or bad MPU region alignment.
 //   ENOMEM: descriptor budget exhausted.
 int kos_mem_self_grant(void* base, size_t size, uint32_t flags);
@@ -783,21 +790,31 @@ int kos_aspace_self(kos_cap_t* out_space);
 // va, an address off a page boundary, an undefined flag), EFAULT (va), EBADF (a capability that
 // does not resolve, a stale space capability, an unfilled run), ENOMEM (the space cannot take the
 // range there, the run's own address included), EBUSY (another mapping of the run carries
-// another memory type), ENOTSUP (a memory type this chip cannot honour over the run's frames).
-// *va is written only on 0.
+// another memory type, or a map of it there with another type is unfinished), ENOTSUP (a memory
+// type this chip cannot honour over the run's frames). *va is written only on 0.
+// The run is mapped a bounded number of pages at a time with interrupts open between, every
+// table it can need taken before the first, a bounded number at a time too, so only that taking
+// is refused, before anything is mapped. A map whose address cannot be written to *va is taken
+// back as a refused one is. An unfinished
+// map names nothing; another map of the same run at the same address and type finishes it, and
+// both answer 0. A map whose capability is closed between two passes, or whose caller is killed,
+// leaves nothing: what it mapped is unmapped, a bounded number of pages at a time, before the
+// call answers or as its caller dies.
 int kos_frame_map(kos_cap_t frame, kos_cap_t space, uintptr_t* va, uint32_t flags);
-// Unmap a range mapped with kos_frame_map. A receive using that range fails with -KOS_EFAULT,
-// as does its sender. 0, or -KOS_EBADF / -KOS_EINVAL / -KOS_EPERM.
+// Unmap a range mapped with kos_frame_map, a bounded number of pages at a time from its top with
+// interrupts open between. A receive using that range fails with -KOS_EFAULT, as does its sender.
+// An unmapper killed part way leaves the mapping shorter, still at `va`, for a later unmap.
+// 0, or -KOS_EBADF / -KOS_EINVAL / -KOS_EPERM, or -KOS_EBUSY while its map is unfinished.
 int kos_frame_unmap(kos_cap_t frame, kos_cap_t space, uintptr_t va);
-// One count, read when the call runs, into *out. Needs KOS_AUTH_MEMORY. 0, or in this order
+// One count, read when the call runs, into *out. Needs KOS_AUTH_MEMORY. KOS_MEM_TABLES_HELD counts,
+// machine-wide like KOS_MEM_FRAMES_FREE and in the same frames, every pool frame the kernel holds
+// as a translation table of any space, the table reserves of calls in progress included: a frame
+// leaves the one count for the other when a map builds a table, and comes back when an unmap or a
+// space's end frees it. 0, or in this order
 // -KOS_E*: EPERM (no KOS_AUTH_MEMORY), EINVAL (a null or misaligned out), EFAULT (out), EINVAL (an
 // unknown id, or KOS_MEM_RANGES_FREE for a caller with no address space).
 int kos_mem_count(uint32_t which, uint32_t* out);
 #endif
-
-// Borrow the KERNEL'S single diagnostic LED, which the kernel also drives for itself (solid
-// on panic). Takes effect on a board whose diag LED the kernel knows.
-void kos_kernel_diag_led_set(int on);
 
 #ifdef __cplusplus
 }

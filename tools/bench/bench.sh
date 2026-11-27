@@ -61,8 +61,8 @@
 #
 #   APP=pvprobe tools/bench/bench.sh xmc4800-relax
 #
-# An image that no row and no JUDGE judges is refused, and so is one its row marks emulator-judged,
-# human-judged or inapplicable; JUDGE=none takes the capture unjudged.
+# An image that no row and no JUDGE judges is refused, and so is one its row marks emulator-judged
+# or inapplicable; JUDGE=none takes the capture unjudged.
 set -u
 # AMP_PARTITION=1, with VARIANT=amp2-n0, builds one of the board's AMP partitions, every node's
 # image merged into one, flashes that, and logs the capture under the partition's target:
@@ -75,8 +75,8 @@ set -u
 # caller asks: configure, print one `<image>|<stdout>|<judge>|<args>` row per image, flash nothing.
 # The stdout is `kernel`, the packaged console driver the image's composition names, or `-`. The
 # judge is a gate script relative to the tree; `emulator` or `emulator-owed` for an image whose
-# verdict an emulator gate holds, by whether this build registers that gate; `human` for one whose
-# verdict only a person reads; `inapplicable` for one whose claim this posture voids; or `-`. The
+# verdict an emulator gate holds, by whether this build registers that gate; `inapplicable` for one
+# whose claim this posture voids; or `-`. The
 # args are the judge's, `;`-separated. Everything this script narrates goes to stderr in that mode,
 # so the caller's $(...) holds the rows and nothing else.
 #
@@ -270,16 +270,11 @@ if [ -z "${CAP_SECS:-}" ] && [ -n "$APP_WINDOW" ] && [ "$APP_WINDOW" != "-" ]; t
   export CAP_SECS
 fi
 APP_EMULATED=""
-APP_HUMAN=""
 APP_VOID=""
 case $APP_JUDGE in
   -) APP_JUDGE="" ;;
   emulator|emulator-owed)
     APP_EMULATED=$APP_JUDGE
-    APP_JUDGE=""
-    ;;
-  human)
-    APP_HUMAN=$APP_JUDGE_ARGS
     APP_JUDGE=""
     ;;
   inapplicable)
@@ -296,9 +291,6 @@ if [ -z "$JUDGE" ]; then
   if [ -n "$APP_EMULATED" ]; then
     echo "REFUSING: $APP is emulator-judged ($APP_EMULATED): an exit status, a panic, a reboot or a" >&2
     echo "  deliberate fault holds its verdict, and no capture carries it (JUDGE=none to waive)" >&2
-  elif [ -n "$APP_HUMAN" ]; then
-    echo "REFUSING: $APP is human-judged ($APP_HUMAN): a person reads its verdict and no capture" >&2
-    echo "  carries it (JUDGE=none to waive)" >&2
   elif [ -n "$APP_VOID" ]; then
     echo "REFUSING: $APP is inapplicable on $PRESET ($APP_VOID): nothing can witness its claim" >&2
     echo "  here (JUDGE=none to waive)" >&2
@@ -432,7 +424,7 @@ fi
 route_identity() {
   [ "$CONSOLE_USB_CDC" = "1" ] || return 0
   local version built app why
-  version=$(sed -n 's/^CMAKE_PROJECT_VERSION:STATIC=//p' "$BUILD/CMakeCache.txt" | tail -1)
+  version=$(sed -n 's/^KICKOS_VERSION:INTERNAL=//p' "$BUILD/CMakeCache.txt" | tail -1)
   [ -n "$version" ] || { echo "REFUSING: $BUILD states no version, so the identity rows cannot \
 be rendered" >&2; return 1; }
   built=$(image_string "$IMG" kickos_build_time)

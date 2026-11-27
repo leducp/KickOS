@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// An ordered halt halts whatever terminal outcome is set; the software fault reporter takes it
-// before it halts. console_leaves.cc's seam prints each call.
+// An ordered halt halts whatever terminal outcome is set; the software fault reporter ends the
+// system through kfault_terminate, which takes it. console_leaves.cc's seam prints each call.
 
 #include <gtest/gtest.h>
 
@@ -23,14 +23,13 @@ namespace
             ::testing::ExitedWithCode(43), "^SEAM: arch_shutdown\\(5\\)");
     }
 
-    TEST(ConsoleTerminal, TheFaultReporterTakesTheTerminalOutcome)
+    TEST(ConsoleTerminal, TheFaultReporterEndsThroughTheFaultTerminal)
     {
         EXPECT_EXIT(
             {
                 dup2(STDERR_FILENO, STDOUT_FILENO);
                 kickos_isr_fault(0x1000u, 1);
             },
-            ::testing::ExitedWithCode(43),
-            "SEAM: kickos_terminal_outcome_apply\nSEAM: arch_shutdown\\(0\\)");
+            ::testing::ExitedWithCode(42), "SEAM: kfault_terminate\n");
     }
 }

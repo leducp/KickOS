@@ -28,8 +28,8 @@ constexpr ApertureCase CASES[] = {
     {"LP_APM", 0x600B3800u, 0x400u, -KOS_EINVAL},
     {"ASSIST_DEBUG", 0x600C2000u, 0x1000u, -KOS_EINVAL},
     {"INTPRI", 0x600C5000u, 0x1000u, -KOS_EINVAL},
-    {"RMT", 0x60006000u, 0x1000u, -KOS_EPERM},
     {"UART1", 0x60001000u, 0x1000u, 0},
+    {"RMT", 0x60006000u, 0x1000u, 0},
     {"LP_I2C", 0x600B1800u, 0x400u, 0},
     {"RTC_WDT", 0x600B1C00u, 0x400u, 0},
 };

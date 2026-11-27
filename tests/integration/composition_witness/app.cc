@@ -15,7 +15,8 @@
 namespace
 {
     constexpr int64_t PERIOD_MS = 100; // 10 readings a second
-    constexpr int64_t CALL_WAIT_MS = 500;
+    // A call made as an instance ends waits for the restarted one, so this bounds a restart.
+    constexpr int64_t CALL_WAIT_MS = 5000;
     // Identical readings in a row: 2 s, longer than the slowest sensor here, a clock that
     // moves once a second.
     constexpr unsigned FROZEN_AFTER = 20u;

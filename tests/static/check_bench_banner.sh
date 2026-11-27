@@ -39,6 +39,8 @@ label_is() {
 
 boot "$TMP/prose" "$PROSE" '   commit  6c3ce8c7'
 label_is prose 6c3ce8c7
+boot "$TMP/centred" '                  KickOS unknown' '   commit  6c3ce8c7'
+label_is centred 6c3ce8c7
 boot "$TMP/prosedirty" "$PROSE" '   commit  6c3ce8c7-dirty'
 label_is prosedirty 6c3ce8c7-dirty
 boot "$TMP/prosetag" "$PROSE" '   commit  v0.5.1-3-g6c3ce8c7'
@@ -55,6 +57,15 @@ label_is nolabel ''
 boot "$TMP/rowlessprose" "$PROSE" '   commit  6c3ce8c7'
 boot "$TMP/rowlessprose" "$PROSE" ''
 label_is rowlessprose 6c3ce8c7-UNVERIFIED
+# A title cut short, last in the capture, is no boot.
+boot "$TMP/cuttitle" "$PROSE" '   commit  6c3ce8c7'
+printf '                   KickOS 0' >> "$TMP/cuttitle"
+label_is cuttitle 6c3ce8c7
+boot "$TMP/suffixed" '                KickOS 0.10.0-rc1' '   commit  v0.10.0-rc1'
+label_is suffixed v0.10.0-rc1
+if [ "$KOS_BANNER_TITLE_ERE" != "$BANNER_TITLE_ERE" ]; then
+    bad "tests/lib/gate.sh and tools/bench/banner.sh read a banner title by different expressions"
+fi
 
 # --- the identity verdict over planted captures -------------------------------------------------
 DIAG=include/kickos/diag.h
@@ -66,9 +77,9 @@ plant() {
     printf '%s' "$2" | sed 's/$/\r/' > "$TMP/$1.log"
 }
 # <name> [<app stamp>]: the verdict over the planted <name> for picopi at 0123abcd-dirty,
-# 0.5.1, built at $BUILT, its app stamped $STAMP unless another is given.
+# $VERSION or 0.5.1, built at $BUILT, its app stamped $STAMP unless another is given.
 verdict() {
-    identity_verdict "$TMP/$1.log" "$DIAG" 0.5.1 picopi 0123abcd-dirty "$BUILT" "${2-$STAMP}"
+    identity_verdict "$TMP/$1.log" "$DIAG" "${VERSION:-0.5.1}" picopi 0123abcd-dirty "$BUILT" "${2-$STAMP}"
 }
 accepted() { # <name> [<app stamp>]
     verdict "$@" > "$TMP/why" || bad "the good capture '$1' is refused: $(cat "$TMP/why")"
@@ -85,7 +96,7 @@ refused() { # <name> <word in the refusal> [<app stamp>]
 APP='[usbcdcwit] accepted=8192 of 8192 err=0 maxzero=3
 [usbcdcwit] PASS (sustained output past a full ring)
 '
-T='   KickOS 0.5.1  -  microkernel RTOS'
+T='                   KickOS 0.5.1'
 B='   board   picopi'
 U="   build   $BUILT"
 P="   app     $STAMP"
@@ -106,6 +117,23 @@ $U
 $C
 $APP"
 accepted noapp ''
+# The title is read by its name and version alone, whatever decorates them.
+plant decorated "
+== KickOS 0.5.1 ==
+$B
+$U
+$P
+$C
+$APP"
+accepted decorated
+plant noversion "
+                   KickOS
+$B
+$U
+$P
+$C
+$APP"
+refused noversion 'no identity rows'
 plant stale-then-good "
 $T
 $B
@@ -174,7 +202,7 @@ $C
 $APP"
 refused otherboard 'row 2'
 plant otherversion "
-   KickOS 0.5.0  -  microkernel RTOS
+                   KickOS 0.5.0
 $B
 $U
 $P
@@ -219,6 +247,41 @@ $P
 $C
 $APP"
 refused appless 'row 4' ''
+# The version the banner prints, untagged and tagged with a suffix.
+plant untagged "
+                   KickOS unknown
+$B
+$U
+$P
+$C
+$APP"
+VERSION=unknown accepted untagged
+plant unknownx "
+                   KickOS unknownX
+$B
+$U
+$P
+$C
+$APP"
+VERSION=unknown refused unknownx 'no identity rows'
+plant rc "
+                 KickOS 0.10.0-rc1
+$B
+$U
+$P
+$C
+$APP"
+VERSION=0.10.0-rc1 accepted rc
+VERSION=0.10.0 refused rc 'row 1'
+plant cuttitle "
+$T
+$B
+$U
+$P
+$C
+$APP
+                   KickOS 0"
+accepted cuttitle
 plant good-then-stale "
 $T
 $B

@@ -21,6 +21,8 @@ namespace kickos
 
             alignas(HOST_POOL_GRANULE) unsigned char g_bytes[HOST_POOL_FRAMES * G];
             bool g_used[HOST_POOL_FRAMES] = {};
+            // Taken by kickos_frame_alloc: a table, as the kernel counts them.
+            bool g_table[HOST_POOL_FRAMES] = {};
             size_t g_fail_in = 0;
             size_t g_attempts = 0;
             size_t g_double_frees = 0;
@@ -162,11 +164,11 @@ namespace kickos
         return run;
     }
 
-    void frame_pool_free_run(arch_phys_addr_t run, size_t pages, size_t granule)
+    void frame_pool_free_run(arch_phys_addr_t run, size_t pages)
     {
         for (size_t i = 0; i < pages; i++)
         {
-            kickos_frame_free(run + static_cast<arch_phys_addr_t>(i * granule));
+            kickos_leaf_free(run + static_cast<arch_phys_addr_t>(i * testfix::HOST_POOL_GRANULE));
         }
     }
 
@@ -194,6 +196,19 @@ namespace kickos
         return testfix::HOST_POOL_FRAMES - testfix::host_pool_used();
     }
 
+    size_t frame_pool_tables()
+    {
+        size_t n = 0;
+        for (size_t i = 0; i < testfix::HOST_POOL_FRAMES; i++)
+        {
+            if (testfix::g_used[i] and testfix::g_table[i])
+            {
+                n++;
+            }
+        }
+        return n;
+    }
+
     void frame_pool_phys_bounds(arch_phys_addr_t* lo, arch_phys_addr_t* hi)
     {
         *lo = testfix::HOST_POOL_LO;
@@ -203,12 +218,33 @@ namespace kickos
 
 extern "C"
 {
+    // The kernel's (kernel/mem/aspace.cc) where the gate links it.
+    __attribute__((weak)) arch_phys_addr_t kickos_presync_table_take(void)
+    {
+        return 0;
+    }
+
     arch_phys_addr_t kickos_frame_alloc(void)
     {
-        return kickos::testfix::host_pool_take(1);
+        arch_phys_addr_t const reserved = kickos_presync_table_take();
+        if (reserved != 0)
+        {
+            return reserved;
+        }
+        arch_phys_addr_t const frame = kickos::testfix::host_pool_take(1);
+        if (frame != 0)
+        {
+            kickos::testfix::g_table[kickos::testfix::index_of(frame)] = true;
+        }
+        return frame;
     }
 
     void kickos_frame_free(arch_phys_addr_t frame)
+    {
+        kickos_leaf_free(frame);
+    }
+
+    void kickos_leaf_free(arch_phys_addr_t frame)
     {
         using namespace kickos::testfix;
         if (not host_pool_owns(frame))
@@ -222,5 +258,6 @@ extern "C"
             return;
         }
         g_used[index_of(frame)] = false;
+        g_table[index_of(frame)] = false;
     }
 }

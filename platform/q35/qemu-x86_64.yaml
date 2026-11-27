@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# QEMU q35. The console is COM1, the 16550 the kernel drives (com1_q35.cc).
+# QEMU q35. The console is COM1, the 16550 QEMU's first serial port is.
 
 version: 1
 board: qemu-x86_64

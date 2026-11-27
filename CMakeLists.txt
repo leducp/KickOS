@@ -2,8 +2,13 @@
 # Copyright (c) 2026 Philippe Leduc
 
 cmake_minimum_required(VERSION 3.24)
-project(KickOS VERSION 0.5.1 LANGUAGES C CXX ASM)
-set(KICKOS_VERSION "${PROJECT_VERSION}")
+include(cmake/kickos_version.cmake)
+kickos_version("${CMAKE_CURRENT_SOURCE_DIR}" _kickos_version _kickos_package_version
+               _kickos_version_inputs)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${_kickos_version_inputs})
+# Cached so tools/bench/bench.sh reads the version the banner prints.
+set(KICKOS_VERSION "${_kickos_version}" CACHE INTERNAL "")
+project(KickOS VERSION ${_kickos_package_version} LANGUAGES C CXX ASM)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(cmake/kickos.cmake)
@@ -272,6 +277,48 @@ if(KICKOS_WITNESS_REWIND)
       "compare-and-swap: armv6m or rxv3")
   endif()
   add_compile_definitions(KICKOS_WITNESS_REWIND=1)
+endif()
+
+# A kernel built with this runs forced doorbell rounds, a negative control and a lock-contention
+# phase at every multicore boot, and ends the boot on any failure, so only the doorbell witness's
+# scratch configure, which also passes the marker below, may turn it on.
+option(KICKOS_WITNESS_DOORBELL "Run the doorbell boot check, for the doorbell witness" OFF)
+if(KICKOS_WITNESS_DOORBELL)
+  if(NOT "${KICKOS_WITNESS_DOORBELL_SCRATCH}" STREQUAL "check_smp_doorbell.sh")
+    message(FATAL_ERROR "KickOS: WITNESS_DOORBELL_REFUSED: KICKOS_WITNESS_DOORBELL builds a "
+      "kernel that runs a doorbell boot check. Only tests/integration/check_smp_doorbell.sh "
+      "configures it, in a scratch tree of its own.")
+  endif()
+  add_compile_definitions(KICKOS_WITNESS_DOORBELL=1)
+endif()
+
+# A kernel built with this runs a console probe as its ring is set up and records it in a word
+# an application of the flat build reads, so only the TX-idle witness's capture, which also
+# passes the marker below, may turn it on.
+option(KICKOS_WITNESS_TXIDLE "Probe the ESP32-C6 console flush at boot, for the TX-idle witness" OFF)
+if(KICKOS_WITNESS_TXIDLE)
+  if(NOT "${KICKOS_WITNESS_TXIDLE_SCRATCH}" STREQUAL "check_c6txidle.sh")
+    message(FATAL_ERROR "KickOS: WITNESS_TXIDLE_REFUSED: KICKOS_WITNESS_TXIDLE builds a kernel "
+      "that drives its console UART from a boot probe. Only a capture "
+      "tests/integration/check_c6txidle.sh judges configures it.")
+  endif()
+  add_compile_definitions(KICKOS_WITNESS_TXIDLE=1)
+endif()
+
+# A kernel built with this prints the kernel block's high-water line on every panic, so only the
+# stack-depth witness's scratch configure, which also passes the marker below, may turn it on.
+option(KICKOS_WITNESS_KSTACK "Print the kernel block's high-water line on a panic, for the stack-depth witness" OFF)
+if(KICKOS_WITNESS_KSTACK)
+  if(NOT "${KICKOS_WITNESS_KSTACK_SCRATCH}" STREQUAL "check_stackdepth.sh")
+    message(FATAL_ERROR "KickOS: WITNESS_KSTACK_REFUSED: KICKOS_WITNESS_KSTACK builds a kernel "
+      "whose panic reports its kernel block's depth. Only tests/integration/check_stackdepth.sh "
+      "configures it, in a scratch tree of its own.")
+  endif()
+  if(NOT KICKOS_KERNEL_STACKS)
+    message(FATAL_ERROR "KICKOS_WITNESS_KSTACK needs a board whose threads run on kernel blocks "
+      "(KICKOS_KERNEL_STACKS)")
+  endif()
+  add_compile_definitions(KICKOS_WITNESS_KSTACK=1)
 endif()
 
 option(KICKOS_SMP_TRACE "Record a per-core park/wake event ring for SMP diagnosis" OFF)
@@ -569,12 +616,6 @@ list(LENGTH KICKOS_KERNEL_LINES KICKOS_KERNEL_LINE_COUNT)
 string(REPLACE ";" "," _kl_csv "${KICKOS_KERNEL_LINES}")
 add_compile_definitions("KICKOS_KERNEL_LINES=${_kl_csv}"
                         KICKOS_KERNEL_LINE_COUNT=${KICKOS_KERNEL_LINE_COUNT})
-if(KICKOS_AMP_DIAG_REPORT)
-  add_compile_definitions(KICKOS_AMP_DIAG_REPORT=1
-                          KICKOS_AMP_DIAG_TAG=${KICKOS_AMP_DIAG_TAG})
-  message(STATUS "KickOS: AMP peer self-report ON (tag ${KICKOS_AMP_DIAG_TAG}): a peer writes "
-                 "its node index, its vector-table base and that tag into the shared region")
-endif()
 
 include("${CMAKE_SOURCE_DIR}/cmake/amp_partition.cmake")
 
@@ -897,8 +938,8 @@ if(TARGET kickos_kernel)
     add_library(kickos_cxx_throw STATIC $<TARGET_OBJECTS:kickos_cxx_throw_objects>)
 
     kickos_export_name(kickos_cxx_rt _kickos_cxx_rt_name)
-    # Full C++: omitting -nostdlib++ lets the g++ driver auto-link the toolchain
-    # libstdc++/libsupc++ (EH, RTTI, new/delete) over newlib.
+    # Full C++ in each program: its own link takes the toolchain libstdc++/libsupc++ (EH, RTTI,
+    # new/delete) over newlib, while the kernel's link takes none (tools/image-link.py).
     target_compile_options(kickos_kernel_leaf INTERFACE
       "$<$<COMPILE_LANGUAGE:CXX>:-fexceptions;-frtti>")
     # A second rescan group, one layer out: the driver-appended libstdc++'s operator new
@@ -1019,8 +1060,8 @@ endif()
 # Every image this configure emits as `<image>|<stdout>|<judge>|<args>|<window>`: the stdout is
 # `kernel`, the packaged driver its system names, or `-` for an image composing no system of its
 # own; the judge is the gate script KICKOS_IMAGE_JUDGE names, `emulator` or `emulator-owed` for an
-# image kickos_emulator_judged marks, by whether a test this build runs names it, `human` or
-# `inapplicable` for one kickos_human_judged or kickos_inapplicable marks, or `-`; the args are the
+# image kickos_emulator_judged marks, by whether a test this build runs names it, `inapplicable`
+# for one kickos_inapplicable marks, or `-`; the args are the
 # judge's, `;`-separated; the window is kickos_app_judge's WINDOW in seconds, or `-`. The bench
 # reads it. Deferred behind the systems a directory composes once the manifest is written.
 function(_kickos_write_images)
@@ -1060,7 +1101,7 @@ function(_kickos_write_images)
     string(APPEND _rows "${_image}|${_stdout}|${_judge}|${_judge_args}|${_window}\n")
     get_target_property(_why ${_image} KICKOS_IMAGE_UNBOOTED)
     if(NOT _image IN_LIST _run_images AND NOT _why
-       AND NOT _judge MATCHES "^(human|inapplicable)$")
+       AND NOT _judge STREQUAL "inapplicable")
       list(APPEND _unbooted ${_image})
     endif()
   endforeach()
@@ -1071,8 +1112,7 @@ function(_kickos_write_images)
      AND (KICKOS_ARCH STREQUAL "sim" OR NOT _machine STREQUAL "") AND _unbooted)
     list(JOIN _unbooted " " _unbooted)
     message(FATAL_ERROR "this build boots its images, and no test boots ${_unbooted}: register "
-      "the test that does, or state why none can (kickos_unbooted, kickos_inapplicable, "
-      "kickos_human_judged)")
+      "the test that does, or state why none can (kickos_unbooted, kickos_inapplicable)")
   endif()
   # Every image's link map, one per line, for the host gates that read them all.
   if(NOT KICKOS_ARCH STREQUAL "sim")

@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// RX72M/SCI6 buffered IRQ-driven userspace UART driver.
+// RX72M SCI buffered IRQ-driven userspace UART driver.
 //
-// TXI6 (vector 87) and RXI6 (vector 86) are EDGE. TEI6 / ERI6 (GROUPBL0 268 / 269) are LEVEL
-// and are NOT claimed: their latches are cleared inside kos_uart_flush and kos_uart_read
-// instead, so error recovery waits for the next event.
+// TXI and RXI are EDGE. TEI and ERI, group-interrupt sources, are LEVEL and are NOT claimed:
+// their latches are cleared inside kos_uart_flush and kos_uart_read instead, so error
+// recovery waits for the next event.
 //
 // The RX MPU checks every user-mode access over the whole address space, SFR aperture
 // included, with no carve-out (UM sec.17.1 and Table 17.1). 16 bytes is the MPU minimum,
-// so the SCI6 window also exposes SNFR..TDRL at +0x08..+0x0F.
+// so the SCI window also exposes SNFR..TDRL at +0x08..+0x0F.
 
 #ifndef KICKOS_DRIVER_RX72M_RXSCI_H
 #define KICKOS_DRIVER_RX72M_RXSCI_H

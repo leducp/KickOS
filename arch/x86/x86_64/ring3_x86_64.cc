@@ -8,8 +8,9 @@
 // memory carries the user bit CLEAR, and the permission ANDs down the walk. The kernel leaves
 // it that way: the firmware's map is the kernel half, supervisor-only, and a task reaches only
 // what its own space maps in the user half (docs/design-m10-kernel-share.md section 1).
-// The other direction is SMEP and SMAP, set on every core whose CPUID offers them and never
-// lifted: no kernel path reads, writes or runs a user page.
+// The other direction is SMEP and SMAP, set on every core and never lifted: no kernel path
+// reads, writes or runs a user page. The floor refuses a boot core without them, and ap_main a
+// core whose CR4 differs from the boot core's.
 
 #include <kickos/arch/desc.h>
 #include <kickos/arch/arch.h>
@@ -174,18 +175,9 @@ namespace kickos::x86_64
 extern "C" char const* arch_uaccess_guard(void)
 {
     using namespace kickos::x86_64;
-    uint64_t const guard = g_boot_cr4 & cr4_guard;
-    if (guard == cr4_guard)
+    if ((g_boot_cr4 & cr4_guard) == cr4_guard)
     {
         return "smep smap";
-    }
-    if (guard == cr4_smep)
-    {
-        return "smep";
-    }
-    if (guard == cr4_smap)
-    {
-        return "smap";
     }
     return "none";
 }

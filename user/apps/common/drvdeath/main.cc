@@ -4,14 +4,14 @@
 // Console reclaim when the DRIVER DIES. USER_OWNED drops every kernel write, so a driver
 // that exits without the reclaim hook leaves the system permanently mute: no panic
 // banner, no fault dump, no kprintf. The hook is console_on_driver_death, run by
-// exit_current AFTER cap_teardown.
+// exit_current AFTER cap_teardown. The reclaimed console is the kernel's alone: a user write
+// there is refused, as it is from the publish on.
 //
 // The composition names the packaged simcon as stdout, with no restart, and main watches it.
 // Sequenced by the wire and the init's death report, not by sleeps. The image is built with
-// KICKOS_SIMCON_EXIT_AFTER=2, so the driver serves the handover probe and one message, then
-// exits:
+// KICKOS_SIMCON_EXIT_AFTER=1, so the driver serves one message, then exits:
 //
-//   0. a raw kernel console write, dropped because the console is USER_OWNED. Its ABSENCE is
+//   0. a raw kernel console write, refused because the console is published. Its ABSENCE is
 //      the anti-vacuity witness: a line on the wire here means the console was never
 //      published and every assertion below is meaningless.
 //   1. kos::print() -> the published route, served by the driver, reaches the wire.
@@ -20,15 +20,17 @@
 //   3. the init reports the death on /init/events, and a send is refused -KOS_ECONNREFUSED.
 //      That is what PROVES the driver is gone rather than merely slow, with no timing
 //      assumption.
-//   4. the SAME raw write now has to reach the wire. Steps 0 and 4 together are the
-//      whole assertion.
+//   4. a stdout write and the SAME raw write are refused at once, and neither reaches the wire.
+//   5. a faulter started now: the kernel's record of it on the wire is the console back.
+//
+// Every verdict after the death is main's exit status, no user line reaching the wire then.
 //
 // Under KICKOS_SIMCON_WINDOW_THREAD the driver is THREE threads: a service thread that
 // receives, a window thread at the lowest priority holding the register window, and the
 // task's entry. The receiver's exit leaves a live driver with no receiver, where a send parks,
 // and a thread faulting then leaves its record held for that driver. The entry's release then
-// ends the task while the window is still held: the reclaim writes the record, and a writer
-// parked across that end lands its line once, after it.
+// ends the task while the window is still held: a writer parked across that end is refused, and
+// the reclaim writes the record.
 
 #include <kickos/apps/peer_run.h>
 #include <kickos/config/priorities.h> // KICKOS_PRIO_MIN
@@ -43,18 +45,28 @@
 
 namespace
 {
-    // One raw kernel console write: on the wire only while the kernel owns the console.
-    void kconsole_raw(char const* s)
+    size_t length(char const* s)
     {
         size_t n = 0;
         while (s[n] != '\0')
         {
             n++;
         }
-        (void)KICKOS_KCONSOLE_MEASURED(DROP, s, n);
+        return n;
     }
 
-    char const BLOCKED_LINE[] = "[drvdeath] blocked line, written once after the reclaim\n";
+    // One raw kernel console write: refused once the console is published.
+    int32_t kconsole_raw(char const* s)
+    {
+        return KICKOS_KCONSOLE_MEASURED(ANSWER, s, length(s));
+    }
+
+    bool refused(kickos::WriteResult r, int32_t error)
+    {
+        return r.sent == 0u and r.error == error;
+    }
+
+    char const BLOCKED_LINE[] = "[drvdeath] blocked line, refused at the driver's death\n";
 
     // Blocks until the init reports the driver's death: bit 0, simcon being the one task main
     // watches.
@@ -80,9 +92,11 @@ namespace
     constexpr std::chrono::milliseconds WRITER_PARKED{20};
     constexpr std::chrono::seconds WRITER_DONE{2};
 
+    kickos::WriteResult g_blocked = {1u, 0};
+
     void blocked_writer(void*)
     {
-        kos::print(BLOCKED_LINE);
+        g_blocked = kickos::stdout_write(BLOCKED_LINE, length(BLOCKED_LINE));
     }
 
     // The kill gate is PARENTHOOD, so witnessing a refusal needs a live thread this thread
@@ -142,7 +156,7 @@ namespace
     }
 
     // Runs while the console is still USER_OWNED, so nothing may be printed here: the
-    // results have to be carried out through the reclaimed route.
+    // results are carried out as main's exit status.
     void kill_gate_matrix(int* bad_handle_rc, int* big_handle_rc, int* stranger_rc,
                           int* child_kill_rc, int* child_twice_rc)
     {
@@ -188,6 +202,30 @@ namespace
 }
 #endif
 
+namespace
+{
+    // The faulter's run: 0 once its task is dead.
+    int run_faulter()
+    {
+        kos_program_t prog = KOS_CAP_NONE;
+        int rc = kos_program_find("drvdeath_fault", &prog);
+        if (rc != 0)
+        {
+            return rc;
+        }
+        kos_task_params fp = {};
+        kos_task_t task = KOS_TASK_NONE;
+        rc = kickos::apps::create_peer(prog, fp, &task);
+        if (rc == 0)
+        {
+            int status = 0;
+            rc = kickos::apps::wait_dead(task, &status, std::chrono::seconds{2});
+        }
+        (void)kos_handle_close(prog);
+        return rc;
+    }
+}
+
 int main(int, char**)
 {
     kos_cap_t const events = kos_grant_notify("/init/events");
@@ -197,7 +235,8 @@ int main(int, char**)
         exit(9);
     }
 
-    kconsole_raw("[drvdeath] kernel console BEFORE death (must NOT reach the wire)\n");
+    int32_t const before_rc =
+        kconsole_raw("[drvdeath] kernel console BEFORE death (must NOT reach the wire)\n");
 
 #if defined(KICKOS_SIMCON_WINDOW_THREAD) && KICKOS_SIMCON_WINDOW_THREAD
     int bad_handle_rc = 0;
@@ -209,9 +248,8 @@ int main(int, char**)
                      &child_twice_rc);
 #endif
 
-    // Served by the driver, which then exits (KICKOS_SIMCON_EXIT_AFTER=2, the handover probe
-    // being the first). kos_send is a rendezvous, so this returns only once the driver has
-    // taken the message.
+    // Served by the driver, which then exits (KICKOS_SIMCON_EXIT_AFTER=1). kos_send is a
+    // rendezvous, so this returns only once the driver has taken the message.
     kos::print("[drvdeath] published route live\n");
 
 #if defined(KICKOS_SIMCON_WINDOW_THREAD) && KICKOS_SIMCON_WINDOW_THREAD
@@ -226,24 +264,10 @@ int main(int, char**)
         kos::thread::create(blocked_writer, nullptr, "dwriter", WRITER_PRIO);
     int const parked_rc = writer.join_for(WRITER_PARKED);
     // A fault ends its thread's task, so the faulter is a program of its own.
-    int faulted_rc = -KOS_ENOENT;
-    kos_program_t fault_prog = KOS_CAP_NONE;
-    if (kos_program_find("drvdeath_fault", &fault_prog) == 0)
-    {
-        kos_task_params fp = {};
-        kos_task_t fault_task = KOS_TASK_NONE;
-        faulted_rc = kickos::apps::create_peer(fault_prog, fp, &fault_task);
-        if (faulted_rc == 0)
-        {
-            int status = 0;
-            faulted_rc = kickos::apps::wait_dead(fault_task, &status, WRITER_DONE);
-        }
-        (void)kos_handle_close(fault_prog);
-    }
-    // The receiver is gone but its task is not, so the console must still be USER_OWNED.
-    // Absent on the wire == correct.
-    kconsole_raw("[drvdeath] kernel console AFTER death, window HELD "
-                 "(must NOT reach the wire)\n");
+    int const faulted_rc = run_faulter();
+    // The receiver is gone but its task is not, so the console is still published.
+    int32_t const held_rc = kconsole_raw("[drvdeath] kernel console AFTER death, window HELD "
+                                         "(must NOT reach the wire)\n");
     // The entry's exit ends the driver's task while the window thread still holds the
     // registers: the reclaim lands at that thread's exit.
     kickos_simcon_window_release();
@@ -251,79 +275,90 @@ int main(int, char**)
 
     if (not wait_driver_death())
     {
-        kos_print("[drvdeath] ERROR: the init never reported the driver's death\n");
         exit(2);
     }
     if (kos_send(KOS_CAP_STDOUT, "x", 1, KOS_NEVER) != -KOS_ECONNREFUSED)
     {
-        // A live receiver means nothing below tests the reclaim. Reported through BOTH
-        // routes: which one works is exactly what is in doubt here.
-        kconsole_raw("[drvdeath] ERROR: driver still alive after its bounded serve\n");
-        kos::print("[drvdeath] ERROR: driver still alive after its bounded serve\n");
         exit(1);
+    }
+
+    // The driver is gone and the console the kernel's: refused at once, on neither route.
+    char const AFTER_PRINT[] = "[drvdeath] stdout AFTER death (must NOT reach the wire)\n";
+    kickos::WriteResult const after_print = kickos::stdout_write(AFTER_PRINT, length(AFTER_PRINT));
+    int32_t const after_rc =
+        kconsole_raw("[drvdeath] kernel console AFTER death (must NOT reach the wire)\n");
+    if (before_rc != -KOS_EBUSY)
+    {
+        exit(15);
+    }
+    if (not refused(after_print, -KOS_ECONNREFUSED))
+    {
+        exit(16);
+    }
+    if (after_rc != -KOS_EBUSY)
+    {
+        exit(17);
     }
 
 #if defined(KICKOS_SIMCON_WINDOW_THREAD) && KICKOS_SIMCON_WINDOW_THREAD
     if (nowait_rc != -KOS_EAGAIN or tried.sent != 0u or tried.error != -KOS_EAGAIN)
     {
-        kos_print("[drvdeath] ERROR: a write of no wait was not refused at once by a live "
-                  "driver with no receiver\n");
         exit(10);
     }
     if (parked_rc != -KOS_ETIMEDOUT)
     {
-        kos_print("[drvdeath] ERROR: a writer of a live driver with no receiver did not park\n");
         exit(11);
-    }
-    if (faulted_rc != 0)
-    {
-        kos_print("[drvdeath] ERROR: the faulter's thread was not reported gone\n");
-        exit(13);
     }
     if (writer.join_for(WRITER_DONE) != 0)
     {
-        kos_print("[drvdeath] ERROR: the parked writer never finished after the reclaim\n");
         exit(12);
+    }
+    if (not refused(g_blocked, -KOS_ECONNREFUSED))
+    {
+        exit(18);
+    }
+    if (faulted_rc != 0)
+    {
+        exit(13);
+    }
+    if (held_rc != -KOS_EBUSY)
+    {
+        exit(19);
     }
     if (child_kill_rc != 0)
     {
-        kos_print("[drvdeath] ERROR: a spawner could not cancel its own child\n");
         exit(3);
     }
     if (g_spin_rc[0] != 0 or g_spin_rc[1] != 0 or g_spin_rc[2] != -KOS_EBADF)
     {
-        kos_print("[drvdeath] ERROR: a kill of no timeout waited, or its target lived on\n");
         exit(14);
     }
     if (child_twice_rc != -KOS_EBADF)
     {
-        kos_print("[drvdeath] ERROR: killing an exited thread did not answer EBADF\n");
         exit(4);
     }
     if (bad_handle_rc != -KOS_EBADF or big_handle_rc != -KOS_EBADF)
     {
-        kos_print("[drvdeath] ERROR: a bogus thread handle was not EBADF\n");
         exit(5);
     }
     if (stranger_rc != -KOS_EPERM)
     {
-        kos_print("[drvdeath] ERROR: killing a thread this app did not spawn was allowed\n");
         exit(6);
     }
     if (g_child_kill_rc != 0)
     {
-        kos_print("[drvdeath] ERROR: a spawner could not cancel its own grandchild\n");
         exit(7);
     }
     if (g_root_kill_rc != -KOS_EPERM)
     {
-        kos_print("[drvdeath] ERROR: root was killable by an app thread\n");
         exit(8);
     }
-    kos_print("[drvdeath] kill gate: EBADF/EPERM refused, root unkillable, spawner accepted\n");
+#else
+    // The kernel's record of a fault now reaches the wire only on the console it took back.
+    if (run_faulter() != 0)
+    {
+        exit(13);
+    }
 #endif
-
-    // Identical call to the one dropped above; its presence on the wire is the assertion.
-    kconsole_raw("[drvdeath] kernel console AFTER death (reclaimed)\n");
     exit(0);
 }

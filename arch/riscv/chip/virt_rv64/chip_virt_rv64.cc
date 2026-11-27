@@ -25,6 +25,7 @@
 #include <kickos/sys/abi.h>
 #include <kickos/arch/clk_q32.h> // KICKOS_NS_PER_SEC (canonical 1e9 ns/sec)
 #include <kickos/chip_limits.h>
+#include <kickos/chip_mmap.h>
 #include <kickos/arch/doorbell_protocol.h>
 #include <kickos/arch/rv64_doorbell.h>
 
@@ -71,6 +72,8 @@ namespace
     // QEMU `virt` NS16550A. Byte registers: THR at +0, LSR at +5 with bit 5 = holding
     // register empty and bit 6 = transmitter empty (holding register AND shift register).
     constexpr uintptr_t UART0_PA = KICKOS_RV64_UART0_PA;
+    static_assert(UART0_PA == kickos::virt_rv64::mmap::UART0_BASE,
+                  "the board's console is not the UART of this machine");
     constexpr uintptr_t UART0_BASE = DEV_VA + UART0_PA;
     constexpr uintptr_t UART_THR = UART0_BASE + 0;
     constexpr uintptr_t UART_LSR = UART0_BASE + 5;
@@ -192,6 +195,9 @@ void arch_init(void)
     // here runs a kickos_rv64_init of its own against tables this hart has already installed.
     release_secondaries();
 #if KICKOS_KERNEL_CORES > 1
+    kickos_doorbell_reachable();
+#endif
+#if KICKOS_KERNEL_CORES > 1 && defined(KICKOS_WITNESS_DOORBELL) && KICKOS_WITNESS_DOORBELL
     kickos_doorbell_boot_check();
 #endif
 #endif

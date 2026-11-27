@@ -508,8 +508,9 @@ only a purity argument. It is where the performance argument lands too.
   Chapter 7.4, *[Privilege is three axes, not one bit](privilege-is-three-axes-not-one-bit.md)*.
 - The handle-resolve chokepoint every object-naming syscall funnels through: Chapter
   8.1, *[Naming a kernel object](handles-and-the-resolve-chokepoint.md)*.
-- Each ISA's concrete trap entry, worked end to end: [Chapter 4](one-kernel-many-isas.md), *Per-ISA guided tour*,
-  and the fully worked port
+- Each ISA's concrete trap entry, worked end to end: the
+  [journey](../journey/README.md), whose chapter 02 walks the first syscall and whose
+  per-ISA chapters walk the same path on each ISA, and the fully worked port
   [`porting-a-new-isa-riscv.md`](porting-a-new-isa-riscv.md).
 - The exact contracts: [`../reference/invariants.md`](../reference/invariants.md)
   ("Syscall, privilege & the user/kernel boundary") and

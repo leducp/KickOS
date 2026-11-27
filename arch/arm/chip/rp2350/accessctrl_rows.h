@@ -37,9 +37,10 @@ namespace kickos::rp2350::accessctrl
         return (now & (gate::NSP | gate::NSU)) != 0u;
     }
 
-    // Every row is checked before any is written. `at` is the refused row.
+    // Every row is checked before any is written. `at` is the refused row. `console` is the
+    // register of the board's console UART, which no node is assigned either.
     inline Refusal refusal_of(kickos_gate_row const* rows, uint16_t count, uint32_t const* node_core,
-                              uint32_t node_count, uint16_t& at)
+                              uint32_t node_count, uint32_t console, uint16_t& at)
     {
         at = 0;
         for (uint16_t i = 0; i < count; i++)
@@ -53,6 +54,10 @@ namespace kickos::rp2350::accessctrl
             if (row.reg < gate::FIRST_BUS_REG or row.reg > gate::LAST_BUS_REG or (row.reg & 3u) != 0u)
             {
                 return Refusal::REGISTER;
+            }
+            if (row.reg == console)
+            {
+                return Refusal::NEVER;
             }
             for (uint32_t never : gate::NEVER_ASSIGNED)
             {

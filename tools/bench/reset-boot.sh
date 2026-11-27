@@ -4,8 +4,10 @@
 #
 # Sourced by bench-capture.sh, never executed.
 
-# A whole banner title, and every row only a banner prints after it. CR tolerated.
-RESET_BOOT_TITLE_RE='^   KickOS [0-9][^ ]*  -  microkernel RTOS'$'\r''?$'
+. "$(dirname "${BASH_SOURCE[0]}")/banner.sh"
+
+# A banner title, and every row only a banner prints after it. CR tolerated.
+RESET_BOOT_TITLE_RE=$BANNER_TITLE_ERE
 _rb_stamp='[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2} [+-][0-9]{4}'
 _rb_app='[A-Za-z0-9_.+-]+ [A-Z][a-z]{2} [ 0-9][0-9] [0-9]{4} [0-9]{2}:[0-9]{2}:[0-9]{2}( [+-][0-9]{4})?'
 _rb_commit='[A-Za-z0-9._/+-]+'
@@ -27,9 +29,9 @@ RESET_BOOT_ROW_RE='^('\
 unset _rb_stamp _rb_app _rb_commit
 
 # reset_boot_cut <log> <bytes>: cuts <log> to the boot that printed past its first <bytes>, from
-# its banner title and the rule above it. Returns 1, printing why, when no whole title
-# follows <bytes>, or when a banner row comes ahead of the first one: a boot whose title arrived
-# damaged, which a cut at a later title would hide.
+# its banner title. Returns 1, printing why, when no title follows <bytes>, or when a banner row
+# comes ahead of the first one: a boot whose title arrived damaged, which a cut at a later title
+# would hide.
 reset_boot_cut() {
   local log=$1 bytes=$2 post first row
   post=$(mktemp) || return 1
@@ -43,11 +45,8 @@ reset_boot_cut() {
   fi
   if [ -z "$first" ]; then
     rm -f "$post"
-    echo "no whole banner title follows the reset in $log"
+    echo "no banner title follows the reset in $log"
     return 1
-  fi
-  if [ "$first" -gt 1 ] && sed -n "$((first - 1))p" "$post" | grep -aqE '^  =+'$'\r''?$'; then
-    first=$((first - 1))
   fi
   tail -n +"$first" "$post" > "$log"
   rm -f "$post"

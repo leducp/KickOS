@@ -65,14 +65,14 @@ qemu-system-aarch64 -M virt -cpu cortex-a53 -nic none -display none -serial stdi
     -semihosting -kernel build/qemu-arm64/user/apps/common/hello/hello \
     -gdb tcp::1234 -S &
 gdb-multiarch build/qemu-arm64/user/apps/common/hello/hello \
-    -ex 'add-symbol-file build/qemu-arm64/user/apps/common/hello/hello.image1.elf' \
+    -ex 'add-symbol-file build/qemu-arm64/user/apps/common/hello/hello.kimg/image1.elf' \
     -ex 'target remote :1234'
 ```
 
-The first file is the kernel's. Each task runs a program linked on its own beside it: the
-init's is `hello.image0.elf`, and main's, the app, is `hello.image1.elf`. The kernel's image
-only carries their bytes, so the app's symbols come from that second file. For `selftest`, load
-`selftest` and `selftest.image1.elf` the same way.
+The first file is the kernel's. Each task runs a program linked on its own beside it, in the
+directory `hello.kimg`: the init's is `image0.elf`, and main's, the app, is `image1.elf`. The
+kernel's image only carries their bytes, so the app's symbols come from that second file. For
+`selftest`, load `selftest` and `selftest.kimg/image1.elf` the same way.
 `tools/gdb/kickos.py` does the loading for you once a task runs: `source tools/gdb/kickos.py`,
 and every stop loads the program of the task on that core (`kos-space` prints which).
 
@@ -268,16 +268,16 @@ lacks the 4 KiB granule or cannot output as many physical address bits as `TCR` 
 `continue`, `info registers sp VBAR_EL1`. You should see:
 
 ```
-pc             0xffffff804001a220  0xffffff804001a220 <kickos_arm64_boot_high>
+pc             0xffffff8040021290  0xffffff8040021290 <kickos_arm64_boot_high>
 sp             0x44000000          0x44000000
-SCTLR_EL1      0xc5183d            12916797
+SCTLR_EL1      0x34d5d81d          886429725
 TTBR0_EL1      0x40001000          1073745920
 TTBR1_EL1      0x40002000          1073750016
 TCR_EL1        0x12b5193519        80347739417
-VBAR_EL1       0x40017800          1073838080
+VBAR_EL1       0x4001f000          1073868800
 ...
 sp             0xffffff8044000000  0xffffff8044000000
-VBAR_EL1       0xffffff8040017800  -548681975808
+VBAR_EL1       0xffffff804001f000  -548681945088
 ```
 
 At the first stop the PC is already high but SP and `VBAR_EL1` are still physical. At
@@ -310,12 +310,12 @@ it can write through by adding the direct-map offset (`table_at` in `aspace_armv
 `finish`, twice. You should see the two table frames the first mapping needs:
 
 ```
-Value returned is $1 = 1077043200
+Value returned is $1 = 1077030912
 ...
-Value returned is $2 = 1077047296
+Value returned is $2 = 1077035008
 ```
 
-That is `0x40326000` and `0x40327000`: the level-2 and level-3 tables for root's app text.
+That is `0x40323000` and `0x40324000`: the level-2 and level-3 tables for root's app text.
 
 **Why, and the contract:** [Book: Where your RAM goes](../book/where-your-ram-goes-full-cxx-memory-floor-and-the-linker-split.md),
 [Reference: porting.md](../reference/porting.md) (the translating ports' frame pool)
@@ -336,36 +336,38 @@ build `claim_slot` does three things:
    pointing at the frames the loader put it in, so every task shares one physical copy. The app
    data is mapped read and write. Every space, root's included, gets a private copy of the
    frames the loader put the image's data in, which no space maps, never of a running space's
-   data. Each space maps the image its task runs: root's the init's.
+   data (`data_map`). Each space maps the image its task runs: root's the init's.
 3. Back in `kmain`, `ustack_alloc` takes a run of frames for root's stack and maps all but the
    lowest one. That lowest frame is the **guard page**: it is never mapped, so a store just
    below the stack has no translation and faults.
 
 The app window is identity-linked on this board: a task reaches a frame at its own physical
-address. `arch_aspace_user_offset` answers 0 here. So in the outputs below VA and PA are equal.
+address. `arch_aspace_user_offset` answers 0 here. So in the outputs below VA and PA are equal for
+the text and the stack. The data is the private copy, in frames of its own.
 
 **Try it:** `break arch_aspace_create`, `continue`, `bt 5`, `finish`. Then `delete`,
-`break arch_aspace_map`, and `continue` three times, printing `p/x va`, `p pages` and
-`p/x rights` each time. You should see:
+`break arch_aspace_map`, and `continue` three times, reading the arguments and `bt 2` each time.
+You should see:
 
 ```
-#1  ... in kickos::(anonymous namespace)::claim_slot (err=err@entry=0xffffff8043ffff8c) at .../kernel/domain/domain.cc:85
+#1  ... in kickos::(anonymous namespace)::claim_slot (image=0, payer=payer@entry=-1, err=err@entry=0xffffff8043ffff7c) at .../kernel/domain/domain.cc:152
 #2  ... in kickos::domain_for (...)
 #3  ... in kickos::task_for (...)
-#4  ... in kickos::kmain (argc=argc@entry=0, argv=argv@entry=0x0) at .../kernel/init/kmain.cc:351
-Value returned is $1 = (arch_aspace *) 0xffffff8040325000
+#4  ... in kickos::kmain (argc=argc@entry=0, argv=argv@entry=0x0) at .../kernel/init/kmain.cc:356
+Value returned is $1 = (arch_aspace *) 0xffffff8040322000
 
-arch_aspace_map (space=0xffffff8040325000, va=1074810880, pa=1074810880, pages=15, rights=5, ...)
+arch_aspace_map (space=0xffffff8040322000, va=1074810880, pa=1074810880, pages=4, rights=5, type=ARCH_MAP_NORMAL)
 #1  ... in kickos::aspace_image_seed (...)
-arch_aspace_map (space=0xffffff8040325000, va=1075838976, pa=1075838976, pages=19, rights=3, ...)
-#1  ... in kickos::aspace_image_seed (...)
-arch_aspace_map (space=0xffffff8040325000, va=1077137408, pa=1077137408, pages=5, rights=3, ...)
-#1  ... in kickos::ustack_alloc (d=<optimized out>, want=want@entry=20480) at .../kernel/mem/ustack.cc:53
+arch_aspace_map (space=0xffffff8040322000, va=1075838976, pa=1077039104, pages=17, rights=3, type=ARCH_MAP_NORMAL)
+#1  ... in kickos::(anonymous namespace)::data_map (...)
+arch_aspace_map (space=0xffffff8040322000, va=1077116928, pa=1077116928, pages=5, rights=3, type=ARCH_MAP_NORMAL)
+#1  ... in kickos::ustack_alloc (d=<optimized out>, want=want@entry=20480) at .../kernel/mem/ustack.cc:68
 ```
 
-The space handle `0xffffff8040325000` is the root frame `0x40325000` seen through the direct map.
+The space handle `0xffffff8040322000` is the root frame `0x40322000` seen through the direct map.
 `rights=5` is `ARCH_MAP_R | ARCH_MAP_X` (app text at `0x40105000`), `rights=3` is
-`ARCH_MAP_R | ARCH_MAP_W` (app data at `0x40200000`, then the stack at `0x4033d000`).
+`ARCH_MAP_R | ARCH_MAP_W` (app data at `0x40200000`, in the frames at `0x40325000`, then the
+stack at `0x40338000`, above its guard page at `0x40337000`).
 
 **Why, and the contract:** [Reference: Memory domains](../reference/architecture.md#memory-domains-the-isolation-unit),
 [Reference: invariants.md](../reference/invariants.md) (`task-data-starts-from-its-image`)
@@ -436,26 +438,29 @@ of the table it points to. When a leaf replaces a valid one, the old one is clea
 invalidated first: the architecture calls this **break-before-make**, and skipping it can leave
 two translations for one address in the TLB.
 
-**Try it:** `break kickos_root_entry` (it is the first user instruction, Stop 8), `continue`,
-then use the helper: `uwalk 0x40105000`, `uwalk 0x40200000`, `uwalk 0x4033d000`,
-`uwalk 0x4033c000`, `uwalk 0x09000000`. You should see:
+**Try it:** root runs the init's program, so load its symbols with
+`add-symbol-file build/qemu-arm64/user/apps/common/hello/hello.kimg/image0.elf`, then
+`break kickos_root_entry` (it is the first user instruction, Stop 8), `continue`, and use the
+helper: `uwalk 0x40105000`, `uwalk 0x40200000`, `uwalk 0x40338000`, `uwalk 0x40337000`,
+`uwalk 0x09000000`. You should see:
 
 ```
-L1[1] = 0x0000000040326003
-L2[0] = 0x0000000040327003
+L1[1] = 0x0000000040323003
+L2[0] = 0x0000000040324003
 L3[261] = 0x0020000040105fc3
 ...
-L3[0] = 0x0060000040200f43
+L3[0] = 0x0060000040325f43
 ...
-L3[317] = 0x006000004033df43
+L3[312] = 0x0060000040338f43
 ...
-L3[316] = 0x0000000000000000
+L3[311] = 0x0000000000000000
 L1[0] = 0x0000000000000000
 ```
 
 App text ends in `fc3`: valid page, `AP` = read-only at EL0, `nG` set, and only `PXN` in the top
 bits, so EL0 may execute it. Data and stack end in `f43` with both `UXN` and `PXN`: read-write,
-never executable. The guard page below the stack is zero. And the UART at `0x0900_0000` is not
+never executable. The data leaf names the private copy at `0x40325000`, not `0x40200000`. The
+guard page below the stack is zero. And the UART at `0x0900_0000` is not
 in this task's space at all: level-1 entry 0 is empty. Compare with the boot root of Stop 2,
 whose entry 0 mapped the whole device gigabyte.
 
@@ -472,7 +477,7 @@ incoming thread may touch with two lines, the same two lines on every board:
 
 ```
             // What the incoming thread may touch is installed here and nowhere else.
-            [[maybe_unused]] struct arch_aspace* const rspace = aspace_activate_for(next);
+            (void)aspace_activate_for(next);
             next->mpu.apply();
 ```
 
@@ -543,16 +548,19 @@ empty root. The outgoing thread's own user code cannot run again before the swit
 `finish`, `info registers TTBR0_EL1`, `p/x kickos_armv8a_percpu[0].user_ttbr0`. You should see:
 
 ```
-#4  kickos::aspace_activate_for (t=t@entry=0xffffff8040313bb8 <kickos::detail::g_instance+8368>) at .../kernel/mem/aspace.cc:1379
-#5  0xffffff8040016404 in kickos::sched::start () at .../kernel/sched/sched.cc:775
+#1  0xffffff804000e8e8 in kickos::activate_locked (space=0xffffff8040322000) at .../kernel/mem/aspace.cc:1515
+#2  kickos::seat (space=0xffffff8040322000) at .../kernel/mem/aspace.cc:1526
+...
+#4  kickos::aspace_activate_for (t=t@entry=0xffffff804031bab0 <kickos::(anonymous namespace)::system_pools+21632>) at .../kernel/mem/aspace.cc:1722
+#5  0xffffff804001c11c in kickos::sched::start () at .../kernel/sched/sched.cc:724
 TTBR0_EL1      0x40001000          1073745920
 ...
 TTBR0_EL1      0x40001000          1073745920
-$1 = 0x1000040325000
+$1 = 0x1000040322000
 ```
 
 The register still holds the boot identity root, ASID 0, and the cell holds root's own table
-`0x40325000`, ASID 1. To see the flush rule, run
+`0x40322000`, ASID 1. To see the flush rule, run
 `disassemble arch_aspace_activate` (the compiler folds `write_ttbr0` into it), find its `tlbi vmalle1`, and put a
 breakpoint on that instruction's address. On `selftest` it never fires: the cell starts out
 holding the empty root, no task there runs untagged, and the boot root's global entries are
@@ -580,20 +588,20 @@ the space Stop 7 left in this core's `user_ttbr0` cell, and the `eret` makes it 
 `eret`, `SP_EL1` sits at the top of the kernel block. Every
 later trap from this thread lands on that block (Stop 9).
 
-**Try it:** `break kickos_root_entry`, `continue`,
+**Try it:** with the init's symbols loaded as in Stop 6, `break kickos_root_entry`, `continue`,
 `info registers pc cpsr sp SP_EL0 SP_EL1 TTBR0_EL1`, `p/x ($cpsr >> 2) & 3`. You should see:
 
 ```
-pc             0x40109744          0x40109744 <kickos_root_entry(void*)>
+pc             0x40107680          0x40107680 <kickos_root_entry(void*)>
 cpsr           0x60000200          [ EL=0 D BTYPE=0 C Z ]
-sp             0x40342000          0x40342000
-SP_EL0         0x40342000          1077157888
-SP_EL1         0xffffff8040301080  -548678922112
-TTBR0_EL1      0x1000040325000     281476053749760
+sp             0x4033d000          0x4033d000
+SP_EL0         0x4033d000          1077137408
+SP_EL1         0xffffff8040317630  -548678830544
+TTBR0_EL1      0x1000040322000     281476053737472
 $1 = 0x0
 ```
 
-EL is 0. The user SP is the top of the stack mapped at Stop 5 (`0x4033d000` plus 5 pages).
+EL is 0. The user SP is the top of the stack mapped at Stop 5 (`0x40338000` plus 5 pages).
 `SP_EL1` is the top of a kernel block, in the high half.
 
 **Why, and the contract:** [Book: Context switching and the silicon contract](../book/context-switching-and-the-silicon-contract.md),
@@ -601,13 +609,15 @@ EL is 0. The user SP is the top of the stack mapped at Stop 5 (`0x4033d000` plus
 [Reference: invariants.md](../reference/invariants.md) (`root-unprivileged-idle-alone-privileged`)
 
 ### Stop 9: the exception vector and the SVC path at EL1
-**Where:** `arch/arm64/armv8a/switch.S`, `arch_syscall`, `kickos_armv8a_el0_sync_entry`,
-`ENTER_FROM_EL0`; `arch/arm64/armv8a/vectors.S`, `kickos_armv8a_vectors`;
-`kernel/syscall/syscall.cc`, `syscall_dispatch`
+**Where:** `user/src/arch/armv8a/syscall.S`, `arch_syscall`; `arch/arm64/armv8a/switch.S`,
+`kickos_armv8a_el0_sync_entry`, `ENTER_FROM_EL0`, `SERROR_FROM_EL0_FIRST`;
+`arch/arm64/armv8a/vectors.S`, `kickos_armv8a_vectors`; `kernel/syscall/syscall.cc`,
+`syscall_dispatch`
 
-The user side is the same idea as on the Cortex-M: `arch_syscall` puts the call number and the
-arguments in registers and executes `svc #0`. It sits in the app's own text (section `.apptrap`),
-because EL0 cannot execute anything in the kernel half.
+The user side is the same idea as on the Cortex-M, and simpler: the C calling convention already
+puts the call number and the five arguments in `x0` to `x5`, so `arch_syscall` is `svc #0` and
+`ret`. It sits in each program's own text, because EL0 cannot execute anything in the kernel
+half.
 
 The hardware side differs. AArch64 has one vector table of sixteen slots, 128 bytes each, at
 `VBAR_EL1`. The slot is chosen by WHERE the exception came from (same EL or lower EL) and WHAT it
@@ -621,6 +631,7 @@ first ask which one it is, from the exception class in `ESR_EL1`:
 ```
 kickos_armv8a_el0_sync_entry:
     ENTER_FROM_EL0
+    SERROR_FROM_EL0_FIRST
     mrs     x0, esr_el1
     lsr     x0, x0, #26                     /* ESR_EL1.EC */
     cmp     x0, #0x15                       /* SVC instruction executed in AArch64 state */
@@ -628,9 +639,9 @@ kickos_armv8a_el0_sync_entry:
     // ...
     ldp     x0, x1, [sp, #0]
     ldp     x2, x3, [sp, #16]
-    ldr     x4, [sp, #32]
+    ldp     x4, x5, [sp, #32]
     bl      syscall_dispatch
-    /* uint64_t returns in x0 at this width, so the arch_syscall64 pair collapses. */
+    /* uint64_t returns in x0. */
     str     x0, [sp, #0]
     RESTORE_FRAME_AND_ERET
 ```
@@ -643,39 +654,51 @@ those two, and `SP_EL0` into a frame on the thread's kernel block, where `SP_EL1
 points. Then it installs the empty root in `TTBR0_EL1`, with an ISB, so for the rest of the trap a
 stray kernel load of a user address faults instead of reading the task's page; on a core with PAN
 the hardware does that on entry and this step is skipped. `RESTORE_FRAME_AND_ERET` puts the
-task's root back when the frame it pops returns to EL0. `syscall_dispatch` then runs at EL1 on that block, still in the calling thread's context,
+task's root back when the frame it pops returns to EL0. Before the class is read,
+`SERROR_FROM_EL0_FIRST` completes the thread's outstanding memory accesses and checks for a
+pending SError: one that is pending belongs to the thread, and the entry returns to EL0 at once
+so that the thread takes it there, under the kill rule. `syscall_dispatch` then runs at EL1 on that block, still in the calling thread's context,
 so it can block like any kernel code. The result goes back into the saved `x0` and
 `RESTORE_FRAME_AND_ERET` returns to EL0. A class other than 0x15 goes to `.Lel0_fault` and
 `kickos_fault_kill_thread` ([chapter 9](09-fault-and-kill.md)).
 
-**Try it:** `break main` (the hello app's `main`, [01, Stop 17](01-power-on.md#stop-17-the-first-instruction-of-main)), `continue`,
-`delete`, `break arch_syscall`, `continue`, `info registers x0`, `x/2i $pc`. Then
-`break kickos_armv8a_el0_sync_entry`, `continue`,
-`info registers pc sp cpsr ELR_EL1 SPSR_EL1 ESR_EL1`, `p/x $ESR_EL1 >> 26`. Then
-`break syscall_dispatch`, `continue`, `bt 3`, `info registers sp`. You should see:
+**Try it:** the init and the app are linked at the same addresses, each in its own space, so a
+breakpoint on an app address also stops the init wherever its own code sits there. Make the
+user-side breakpoint name the app's space, ASID 2 (Exercise 2). With the app's symbols loaded
+(`hello.kimg/image1.elf`), `break arch_syscall if $x0 == 50 && ($TTBR0_EL1 >> 48) == 2`,
+`continue`, `info registers x0 x1 x2 x3 x4 x5`, `x/2i $pc`. Then `delete`,
+`break kickos_armv8a_el0_sync_entry if $ELR_EL1 == 0x401058d0` (the address after the `svc` just
+printed; yours may differ), `continue`, `info registers pc sp cpsr ELR_EL1 SPSR_EL1 ESR_EL1`,
+`p/x $ESR_EL1 >> 26`. Then `delete`, `break syscall_dispatch if nr == 50`, `continue`, `bt 3`,
+`info registers sp`. You should see:
 
 ```
 x0             0x32                50
-=> 0x40105040 <arch_syscall64>:	svc	#0x0
-   0x40105044 <arch_syscall64+4>:	ret
+x1             0x0                 0
+x2             0x401066a7          1074816679
+x3             0x1d                29
+x4             0xffffffff          4294967295
+x5             0xffffffff          4294967295
+=> 0x401058cc:	svc	#0x0
+   0x401058d0:	ret
 ...
-pc             0xffffff804001813c  0xffffff804001813c <kickos_armv8a_el0_sync_entry>
-sp             0xffffff8040302080  0xffffff8040302080 <kickos::(anonymous namespace)::g_kstacks+8192>
+pc             0xffffff804001f964  0xffffff804001f964 <kickos_armv8a_el0_sync_entry>
+sp             0xffffff8040318630  0xffffff8040318630 <kickos::(anonymous namespace)::system_pools+8192>
 cpsr           0x3c5               [ SP EL=1 F I A D BTYPE=0 ]
-ELR_EL1        0x40105044          1074810948
-SPSR_EL1       0x80000200          2147484160
+ELR_EL1        0x401058d0          1074813136
+SPSR_EL1       0x60000200          1610613248
 ESR_EL1        0x56000000          1442840576
 $1 = 0x15
 ...
-#0  syscall_dispatch (nr=50, a0=0, a1=1074859327, a2=29, a3=4294967295) at .../kernel/syscall/syscall.cc:392
-#1  0xffffff8040018214 in kickos_armv8a_el0_sync_entry () at .../arch/arm64/armv8a/switch.S:252
-#2  0x0000000040107118 in kos_send (ep=<optimized out>, buf=<optimized out>, len=<optimized out>, timeout_us=<optimized out>) at .../user/src/syscall_stubs.cc:95
-sp             0xffffff8040301d60  0xffffff8040301d60 <kickos::(anonymous namespace)::g_kstacks+7392>
+#0  syscall_dispatch (nr=50, a0=0, a1=1074816679, a2=29, a3=4294967295, a4=4294967295) at .../kernel/syscall/syscall.cc:405
+#1  0xffffff804001fb2c in kickos_armv8a_el0_sync_entry () at .../arch/arm64/armv8a/switch.S:264
+#2  0x00000000401053f8 in kos_send (ep=<optimized out>, buf=<optimized out>, len=<optimized out>, until=...) at .../user/src/syscall_stubs.cc:95
+sp             0xffffff8040318310  0xffffff8040318310 <kickos::(anonymous namespace)::system_pools+7392>
 ```
 
 Call 50 is `KOS_SYS_SEND`: `main`'s first `kos::print` sends its 29 bytes to the endpoint at index
-0 of its table, its stdout. `ELR_EL1` is the instruction after the `svc`, and `SPSR_EL1`'s
-low four bits are 0 (EL0t). SP at entry is the top of the `main` thread's kernel block, and the
+0 of its table, its stdout, with no deadline: `x4` and `x5` are the two halves of `KOS_NEVER`.
+`ELR_EL1` is the instruction after the `svc`, and `SPSR_EL1`'s low four bits are 0 (EL0t). SP at entry is the top of the `main` thread's kernel block, and the
 dispatcher runs 800 bytes lower: that is the frame `ENTER_FROM_EL0` pushed (31 general
 registers, the saved state, and all 32 vector registers). gdb even unwinds through the trap into
 the user caller.
@@ -694,7 +717,7 @@ checked that a user pointer lies in memory the caller owns, `access_copy` is a p
 
 Here a user pointer is a VIRTUAL address in some task's space. The kernel does not use it as a
 pointer. For each granule, `access_copy` asks `arch_aspace_acquire` for a kernel pointer to the
-same bytes:
+same bytes, and names the access it will make, a read or a write:
 
 ```
     arch_irq_state_t const s = arch_irq_save();
@@ -711,12 +734,21 @@ same bytes:
     }
     arch_phys_addr_t const out = static_cast<arch_phys_addr_t>(desc & DESC_OA_MASK);
     // ...
+    uint64_t const attr = (desc >> 2) & 7u;
+    if (attr == ATTR_DEVICE or (access == ARCH_ASPACE_WRITE and (desc & DESC_AP_RO) != 0)
+        or not direct_reaches(out, access == ARCH_ASPACE_WRITE))
+    {
+        return nullptr;
+    }
+    // ...
     return reinterpret_cast<void*>(static_cast<uintptr_t>(out) + va_base() +
                                    (va & (GRANULE - 1)));
 ```
 
 The acquire walks the space's tables in software, takes the physical frame from the leaf, and
-answers that frame's address in the direct map. This buys three things:
+answers that frame's address in the direct map. It answers null for a device leaf, for a write
+to a leaf the task may only read, and for a frame the direct map does not reach (or reaches
+read-only, for a write). This buys three things:
 
 - **The right space.** The space is named explicitly, so the kernel can copy between two tasks
   (an IPC send, `ep_copy`) even though at most one of them is in `TTBR0`.
@@ -730,21 +762,23 @@ answers that frame's address in the direct map. This buys three things:
 The copy goes granule by granule because two neighbouring user pages need not be neighbours in
 physical memory.
 
-**Try it:** on `hello`, `break kickos_root_entry`, `continue`, `delete`,
-`break arch_aspace_acquire`, `continue`, `bt 5`, `p/x va`, `finish`. You should see:
+**Try it:** on `hello`, with the init's symbols loaded as in Stop 6, `break kickos_root_entry`,
+`continue`, `delete`, `break arch_aspace_acquire`, `continue`, `bt 5`, `p/x va`, `finish`. You
+should see:
 
 ```
-#1  ... in kickos::(anonymous namespace)::access_copy (dspace=0xffffff8040325000, dst=dst@entry=1077157720, sspace=sspace@entry=0x0, ...)
-#2  ... in kickos::kaccess_to_user (dspace=<optimized out>, udst=udst@entry=1077157720, ...)
-#3  ... in kickos::cap_out_deliver (out=1077157720, ...)
-#4  ... in (anonymous namespace)::syscall_body (nr=11, a0=1077157720, ...)
-$1 = 0x40341f58
-Value returned is $2 = (void *) 0xffffff8040341f58
+arch_aspace_acquire (space=0xffffff8040322000, va=1077137236, access=ARCH_ASPACE_WRITE, ...)
+#1  ... in kickos::(anonymous namespace)::access_copy (dspace=0xffffff8040322000, dst=dst@entry=1077137236, sspace=sspace@entry=0x0, ...)
+#2  ... in kickos::kaccess_to_user (dspace=<optimized out>, udst=udst@entry=1077137236, ...)
+#3  ... in kickos::out_word_deliver (out=1077137236, rc=rc@entry=0, ...)
+#4  ... in kickos::cap_out_deliver (out=<optimized out>, rc=0, cap=1)
+$1 = 0x4033cf54
+Value returned is $2 = (void *) 0xffffff804033cf54
 ```
 
-Call 11 (`KOS_SYS_NOTIFY_CREATE`) returns a new handle through an out-pointer on root's stack,
-`0x40341f58`. The kernel writes it at `0xffffff8040341f58`: the same physical byte, through
-TTBR1.
+The init's first call that answers a capability returns it through an out-pointer on root's
+stack, `0x4033cf54`. The kernel writes it at `0xffffff804033cf54`: the same physical byte,
+through TTBR1.
 
 **Why, and the contract:** [Reference: The map editor's acquire pair](../reference/porting.md#the-map-editors-acquire-pair-arch_aspace_acquire-arch_aspace_release),
 [Reference: invariants.md](../reference/invariants.md) (`user-args-validated-at-boundary`,
@@ -763,9 +797,8 @@ backend:
 ```
 #if KICKOS_HAVE_ASPACE
             // ...
-            int const grc = aspace_self_grant(domain_space(thread_domain(c)),
-                                              domain_ranges_mut(thread_domain(c)), base, size,
-                                              ARCH_MAP_R | ARCH_MAP_W, map_memtype_of(attr));
+            int const grc = aspace_self_grant(domain_payer(thread_domain(c)), space, ranges, base,
+                                              size, ARCH_MAP_R | ARCH_MAP_W, type);
             // ...
             return static_cast<uint64_t>(grc);
 #else
@@ -787,26 +820,27 @@ and `KOS_SYS_FRAME_UNMAP` (`kos_frame_map` in user code) name a run of frames by
 map it into a space named by another capability, through `aspace_cap_map`. A region build does
 not compile them, because there is no translation to map into.
 
-**Try it:** run the same `selftest` call on both builds. On `qemu-arm64`:
-`break arch_aspace_map if pages == 1`, `continue`, `bt 4`, `finish`, then `uwalk base`. On the reference `qemu` build (launched as in [Setup](00-setup.md)):
+**Try it:** run `hello` on both builds and stop at the init's first self-grant, 64 bytes. On
+`qemu-arm64`: `break arch_aspace_map if pages == 1`, `continue`, `bt 4`, `finish`, then
+`uwalk base`. On the reference `qemu` build (launched as in [Setup](00-setup.md)):
 `break kickos::thread_self_grant`, `continue`, `bt 4`. You should see, on arm64:
 
 ```
-arch_aspace_map (space=0xffffff8040325000, va=1077141504, pa=1077141504, pages=1, rights=3, type=ARCH_MAP_NORMAL)
-#1  ... in kickos::aspace_self_grant (..., base=base@entry=1077141504, size=size@entry=64, rights=rights@entry=3, ...)
-#2  ... in (anonymous namespace)::syscall_body (nr=37, a0=1077141504, a1=64, a2=0, a3=0)
-#3  syscall_dispatch (nr=37, a0=1077141504, a1=64, a2=0, a3=0)
+arch_aspace_map (space=0xffffff8040322000, va=1077137408, pa=1077137408, pages=1, rights=3, type=ARCH_MAP_NORMAL)
+#1  ... in kickos::aspace_self_grant (..., base=base@entry=1077137408, size=size@entry=64, rights=rights@entry=3, ...)
+#2  ... in (anonymous namespace)::syscall_body (nr=37, a0=1077137408, a1=64, a2=0, a3=0, a4=0)
+#3  syscall_dispatch (nr=37, a0=1077137408, a1=64, a2=0, a3=0, a4=0)
 ...
-L3[318] = 0x006000004033ef43
+L3[317] = 0x006000004033df43
 ```
 
 and on the Cortex-M4F:
 
 ```
-kickos::thread_self_grant (c=c@entry=0x20004ed8 <kickos::detail::g_instance+1816>, base=base@entry=537018368, size=size@entry=64, attr=attr@entry=3)
-#1  ... in (anonymous namespace)::syscall_body (nr=<optimized out>, a0=537018368, a1=64, ...)
-#2  syscall_dispatch (nr=<optimized out>, a0=537018368, a1=64, ...)
-#3  0x00018bfe in svc_trampoline () at .../arch/arm/armv7m/switch.S:540
+kickos::thread_self_grant (c=c@entry=0x20002370 <kickos::(anonymous namespace)::system_pools+6192>, base=base@entry=536970752, size=size@entry=64, attr=attr@entry=3)
+#1  ... in (anonymous namespace)::syscall_body (nr=<optimized out>, a0=536970752, a1=64, ...)
+#2  syscall_dispatch (nr=<optimized out>, a0=536970752, a1=64, ...)
+#3  0x00000e0e in svc_trampoline () at .../arch/arm/armv7m/switch.S:690
 ```
 
 Same call number (37), same 64-byte grant. On one build it becomes a page-table leaf for a task,
@@ -859,34 +893,31 @@ continue
 Let it run: the selftest ends by itself. You should see lines like:
 
 ```
-activate space=0xffffff8040325000  TTBR0=0x40001000  cell before=0xffff00004001b000
-activate space=0xffffff8040353000  TTBR0=0xffff00004001b000  cell before=0x1000040325000
-destroy space=0xffffff80403c7000
-activate space=0xffffff80403c7000  TTBR0=0xffff00004001b000  cell before=0x2000040353000
-activate space=0xffffff8040353000  TTBR0=0xffff00004001b000  cell before=0x30000403c7000
-activate space=0xffffff80403c7000  TTBR0=0xffff00004001b000  cell before=0x2000040353000
-activate space=0xffffff8040353000  TTBR0=0xffff00004001b000  cell before=0x30000403c7000
-destroy space=0xffffff80403c7000
-activate space=0xffffff80403c7000  TTBR0=0xffff00004001b000  cell before=0x2000040353000
-activate space=0xffffff8040353000  TTBR0=0xffff00004001b000  cell before=0x30000403c7000
-activate space=0xffffff80403c7000  TTBR0=0xffff00004001b000  cell before=0x2000040353000
-activate space=0xffffff804001b000  TTBR0=0xffff00004001b000  cell before=0x30000403c7000
-destroy space=0xffffff80403c7000
-activate space=0xffffff8040353000  TTBR0=0xffff00004001b000  cell before=0xffff00004001b000
+activate space=0xffffff804038c000  TTBR0=0x40001000  cell before=0xffff000040022000
+activate space=0xffffff80403ab000  TTBR0=0xffff000040022000  cell before=0x100004038c000
+activate space=0xffffff804041a000  TTBR0=0xffff000040022000  cell before=0x20000403ab000
+activate space=0xffffff80403ab000  TTBR0=0xffff000040022000  cell before=0x300004041a000
 ...
-activate space=0xffffff80403cb000  TTBR0=0xffff00004001b000  cell before=0x2000040353000
-activate space=0xffffff804001b000  TTBR0=0xffff00004001b000  cell before=0x30000403cb000
+activate space=0xffffff80403ab000  TTBR0=0xffff000040022000  cell before=0x300004041a000
+destroy space=0xffffff804041a000
+activate space=0xffffff8040416000  TTBR0=0xffff000040022000  cell before=0x20000403ab000
+activate space=0xffffff80403ab000  TTBR0=0xffff000040022000  cell before=0x3000040416000
+...
+activate space=0xffffff804041a000  TTBR0=0xffff000040022000  cell before=0x20000403ab000
+activate space=0xffffff8040022000  TTBR0=0xffff000040022000  cell before=0x300004041a000
+destroy space=0xffffff804041a000
+activate space=0xffffff80403ab000  TTBR0=0xffff000040022000  cell before=0xffff000040022000
 ```
 
-The register reads the empty root, `0x4001b000` under ASID `0xffff`, from the first trap on:
+The register reads the empty root, `0x40022000` under ASID `0xffff`, from the first trap on:
 EL1 never runs on a task's root. Read the top 16 bits of each "cell before" value: ASID 1 is
-root, ASID 2 the selftest's main task, ASID 3 a child task. When the child exits,
-`aspace_release` moves this core to the empty root (`0xffffff804001b000`) before it frees the
-child's tables. The next child, a different root at `0x403cb000`, gets ASID 3 again, because it
-was given back.
+root, ASID 2 the selftest's main task, ASID 3 a child task. When the first child exits, its space
+is destroyed, and the next child, a different root at `0x40416000`, gets ASID 3 again, because it
+was given back. Where the core is still on the dying child's space, `aspace_release` first moves
+it to the empty root (`0xffffff8040022000`), then frees the child's tables.
 
 Add a third logging breakpoint on `kickos::aspace_activate_for` and count. In one whole run it was
-reached 3695 times and `arch_aspace_activate` 284 times: `seat` skips every switch
+reached 5903 times and `arch_aspace_activate` 2424 times: `seat` skips every switch
 that stays inside one task.
 
 **Why, and the contract:** [Book: Protection follows the CPU](../book/protection-follows-the-cpu-not-the-schedulers-intent.md),
@@ -940,20 +971,20 @@ the TLB.
 You should see:
 
 ```
-arch_aspace_unmap (space=0xffffff8040353000, va=1077645312, pages=3)
-#1  ... in kickos::ustack_free (..., base=1077645312, ...)
+arch_aspace_unmap (space=0xffffff80403ab000, va=1078022144, pages=3)
+#1  ... in kickos::ustack_free (..., base=1078022144, ...)
 #2  ... in kickos::sched::exit_current (code=0, ...)
-$1 = 0x403b9000
-L1[1] = 0x0000000040354003
-L2[1] = 0x0000000040356003
-L3[441] = 0x00600000403b9f43
-Value returned is $3 = ARCH_ASPACE_OK
-L1[1] = 0x0000000040354003
-L2[1] = 0x0000000040356003
-L3[441] = 0x0000000000000000
+$1 = 0x40415000
+L1[1] = 0x00000000403ac003
+L2[2] = 0x0000000040413003
+L3[21] = 0x0060000040415f43
+Value returned is $2 = ARCH_ASPACE_OK
+L1[1] = 0x00000000403ac003
+L2[2] = 0x0000000040413003
+L3[21] = 0x0000000000000000
 ...
-(anonymous namespace)::invalidate_page (va=1077661696)
-#2  ... in (anonymous namespace)::remove_run (root=root@entry=0xffffff8040353000, va=va@entry=1077661696, pages=pages@entry=3, e=...)
+(anonymous namespace)::invalidate_page (va=1078038528)
+#2  ... in (anonymous namespace)::remove_run (root=root@entry=0xffffff80403ab000, va=1078038528, pages=3, e=...)
 => ...:	dsb	ishst
    ...:	lsr	x0, x0, #12
    ...:	tlbi	vaae1, x0
@@ -961,8 +992,8 @@ L3[441] = 0x0000000000000000
    ...:	isb
 ```
 
-A thread of the selftest's main task (`TTBR0` with ASID 2) exits, and `ustack_free` unmaps its
-three stack pages. The leaf that pointed at `0x403b9000` is zero after the unmap. `uwalk` reads
+A thread of the selftest's main task (ASID 2, root `0x403ab000`) exits, and `ustack_free` unmaps
+its three stack pages. The leaf that pointed at `0x40415000` is zero after the unmap. `uwalk` reads
 the `user_ttbr0` cell, so it shows the space of the core's current task, which is the exiting
 thread's own here.
 
@@ -986,10 +1017,11 @@ seam and the cross-core maintenance), [Reference: invariants.md](../reference/in
    result from Stop 2 and Stop 5 before you look. (Level-1 entry 0 is empty: the task has no
    device mapping at all, while the boot root had one.)
 2. **Count the root writes in `hello`.** Before running, predict how many times
-   `arch_aspace_activate` fires while `ping` and `pong` play for ten seconds. Then log it with a
-   `commands` block as in Stop 12. (Twice: root's space with ASID 1, where the init runs, then
-   the space of the task that runs `main`, with ASID 2. `ping` and `pong` are threads of that
-   task, so every switch between them is skipped by `seat`. Check with `break kickos_init_entry`
+   `arch_aspace_activate` fires while `ping` and `pong` play their ten rounds. Then log it with a
+   `commands` block as in Stop 12. (Twice while they play: root's space with ASID 1, where the
+   init runs, then the space of the task that runs `main`, with ASID 2. `ping` and `pong` are
+   threads of that task, so every switch between them is skipped by `seat`. A third write takes
+   the core back to root's space once `main` has returned. Check with `break kickos_init_entry`
    and a breakpoint on `ping`, reading `TTBR0_EL1` at each.)
 3. **When does the full flush fire?** Break on the `tlbi vmalle1` inside `write_ttbr0` and log
    `kickos_armv8a_percpu[0].user_ttbr0` at each `arch_aspace_activate`. Predict which activations

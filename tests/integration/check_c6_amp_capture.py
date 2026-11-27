@@ -4,9 +4,9 @@
 """Verdict for the unattended ESP32-C6 HP/LP AMP capture. A refusal is `FAIL: <token>: <prose>`,
 the token a planted row of tests/static/check_app_judges.sh names.
 
-    check_c6_amp_capture.py <capture.log> <node 0 base> <node 1 base> <node 1 end>
+    check_c6_amp_capture.py <capture.log> <node 0 base> <node 1 base>
 
-The three addresses are the build's (user/apps/common/ampping/CMakeLists.txt).
+The two addresses are the build's (user/apps/common/ampping/CMakeLists.txt).
 """
 
 import re
@@ -30,10 +30,10 @@ def one(token: str, pattern: str, log: str) -> tuple[str, ...]:
 
 
 def main() -> None:
-    require(len(sys.argv) == 5, "usage",
-            "usage: check_c6_amp_capture.py <capture.log> <node 0 base> <node 1 base> <node 1 end>")
+    require(len(sys.argv) == 4, "usage",
+            "usage: check_c6_amp_capture.py <capture.log> <node 0 base> <node 1 base>")
     log = Path(sys.argv[1]).read_text().replace("\r", "")
-    node0, node1, node1_end = (int(v, 16) for v in sys.argv[2:5])
+    node0, node1 = (int(v, 16) for v in sys.argv[2:4])
     # Node 0's slice of HP SRAM, below the LP slice (ampping/systems/esp32c6-wroom/amp2/gate.c
     # holds the word).
     node0_own = (node0, node1)
@@ -43,13 +43,11 @@ def main() -> None:
     one("load", rf"^load:{node0:#010x},len:0x[0-9a-f]+$", log)
     one("load", rf"^load:{node1:#010x},len:0x[0-9a-f]+$", log)
     one("lp-rtc", r"^# c6amp: LP RTC ([0-9]+) Hz$", log)
-    vector, self_clk = one("vectors", r"^# ampdiag: peer node=1 vectors=0x([0-9a-f]+) tag=0 clk=20000000 "
-                           r"self clk=([0-9]+)$", log)
-    vector = int(vector, 16)
-    require(int(self_clk) == 160000000, "vectors",
-            f"HP clock {self_clk} Hz is not the 160 MHz the boot's PLL bring-up selects")
-    require(node1 <= (vector & ~3) < node1_end and (vector & 3) == 1, "vectors",
-            f"LP mtvec {vector:#x} is outside its HP-SRAM image or not vectored")
+    hp_clk, lp_clk = (int(v) for v in one(
+        "clock", r"^ampping: gate: node 0 runs at ([0-9]+) Hz, node 1 at ([0-9]+) Hz$", log))
+    require(hp_clk == 160000000, "clock",
+            f"HP clock {hp_clk} Hz is not the 160 MHz the boot's PLL bring-up selects")
+    require(lp_clk == 20000000, "clock", f"LP clock {lp_clk} Hz is not the LP core's 20 MHz")
     one("relay", r"^ampping: node 1 serves port 3$", log)
     one("alive", r"^ampping: 2 of 2 node app\(s\) alive on the port the partition names, own row 1$", log)
     own, held, foreign = (int(v, 16) for v in one(

@@ -13,7 +13,7 @@ console:
   pins: { tx: PA2, rx: PA3 }
 
 leds:
-  ld4: { pin: PD12, active: high, owner: kernel } # green, the kernel's diagnostic LED
+  ld4: { pin: PD12, active: high, diagnostic: true } # green
 
 # The gyro is an L3GD20 or an I3G4250D depending on the board revision; both answer on the
 # same wiring.

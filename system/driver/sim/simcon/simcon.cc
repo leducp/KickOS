@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // The host sim's console driver: the posture the silicon boards ship, where a userspace driver
-// owns the console and the kernel chip path is dark.
+// owns the console, the kernel chip path drops and the kernel console refuses a user write.
 //
 // The driver thread write(2)s to host fd 1, which reaches the console WITHOUT going through
 // kconsole_write, so bytes appear if and only if they travelled the endpoint -> driver route.
@@ -317,7 +317,7 @@ namespace
 extern "C"
 {
     // Unprivileged console driver: drain the published endpoint to the "wire". Its stdout is the
-    // kernel console, whose line the published board drops; the banner written straight to the
+    // kernel console, which refuses its line once published; the banner written straight to the
     // wire survives.
     //
     // The `n < 0` break never fires on a lost sender: no kernel path wakes a receiver parked in
@@ -326,13 +326,12 @@ extern "C"
     void simconsole_driver(void* arg)
     {
         (void)arg; // records the posture; the thread takes no arg
-        kos::print("[simcon] kernel console diagnostic (dropped post-publish)\n");
+        kos::print("[simcon] kernel console diagnostic (refused post-publish)\n");
         wire_puts("[simcon] driver up (host fd 1)\n");
 
 #if defined(KICKOS_SIMCON_DIE_AT_BRINGUP) && KICKOS_SIMCON_DIE_AT_BRINGUP
-        // A driver whose bring-up fails on a real chip: die BEFORE ever receiving. The
-        // service's handover probe must then see -KOS_ECONNREFUSED and report it, which is only
-        // possible because the death reclaimed the console.
+        // A driver whose bring-up fails on a real chip: die BEFORE ever receiving, so its task
+        // ends before it is ready.
         wire_puts("[simcon] driver dying during bring-up\n");
         kos_exit(1);
 #endif
@@ -413,13 +412,13 @@ extern "C"
 #ifdef SIMCON_START_WEDGE
     // The READY TIMEOUT: the wedged thread holds the register window and never sets the latch,
     // so the service's wait expires and its trap ends the task, whose end notes the console dead
-    // and whose wedged thread's exit releases the window. The init reports the failed start on
-    // the console that comes back.
+    // and whose wedged thread's exit releases the window. The reclaim then writes the trap's
+    // record, held for the driver.
     static int simconsole_start_wedge(struct kos_driver_instance* in)
     {
         char const wedge[]
             = "[simcon] wedge: post-publish kernel write (must NOT reach the wire)\n";
-        (void)kos_kconsole_write(wedge, sizeof(wedge) - 1u, 0u); // a dropped line is the measurement
+        (void)kos_kconsole_write(wedge, sizeof(wedge) - 1u, 0u); // its absence is the measurement
         if (not window_thread_up(simconsole_wedge_thread, in->ceiling, "simconirq"))
         {
             return -1;

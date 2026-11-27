@@ -33,7 +33,6 @@ set(KICKOS_ARCH_SOURCES
   x86/x86_64/smp_boot_x86_64.cc
   x86/x86_64/smp_trampoline.S
   common/doorbell_protocol.cc
-  x86/x86_64/kickos_x86_64_paging_entry_default.cc
   ${_x86_defaults})
 
 # The fault report prints through the chip's COM1 primitives: the same reporter serves the

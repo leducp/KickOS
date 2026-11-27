@@ -16,9 +16,10 @@ namespace
     constexpr size_t G = HOST_POOL_GRANULE;
     constexpr size_t SPACES = 48u;
     constexpr size_t LEAVES = 256u;
-    constexpr size_t TABLES = 8u;
+    constexpr size_t TABLES = 256u;
     constexpr unsigned L1_SHIFT = 30u;
-    constexpr unsigned L2_SHIFT = 21u;
+    constexpr unsigned LEAF_TABLE_SHIFT = 21u;
+    unsigned g_leaf_table_shift = LEAF_TABLE_SHIFT;
 
     bool g_tables_from_pool = false;
     bool g_map_refused = false;
@@ -147,6 +148,15 @@ namespace kickos
         void host_aspace_tables_from_pool(bool on)
         {
             g_tables_from_pool = on;
+        }
+
+        void host_aspace_leaf_table_span(unsigned shift)
+        {
+            g_leaf_table_shift = shift;
+            if (shift == 0)
+            {
+                g_leaf_table_shift = LEAF_TABLE_SHIFT;
+            }
         }
 
         void refuse_acquire(uintptr_t va, uint32_t count, uint32_t after)
@@ -278,7 +288,29 @@ extern "C"
             return 0;
         }
         return space->missing_tables(L1_SHIFT, va, pages)
-               + space->missing_tables(L2_SHIFT, va, pages);
+               + space->missing_tables(g_leaf_table_shift, va, pages);
+    }
+
+    size_t arch_aspace_range_tables(uintptr_t va, size_t pages)
+    {
+        if (not g_tables_from_pool or pages == 0)
+        {
+            return 0;
+        }
+        uintptr_t const last = va + (pages - 1u) * G;
+        return static_cast<size_t>((last >> L1_SHIFT) - (va >> L1_SHIFT) + 1u)
+               + static_cast<size_t>((last >> g_leaf_table_shift) - (va >> g_leaf_table_shift) + 1u);
+    }
+
+    size_t arch_aspace_run_tables(size_t pages)
+    {
+        if (not g_tables_from_pool or pages == 0)
+        {
+            return 0;
+        }
+        size_t const l1 = (static_cast<uintptr_t>(1) << L1_SHIFT) / G;
+        size_t const leaf = (static_cast<uintptr_t>(1) << g_leaf_table_shift) / G;
+        return (pages + l1 - 2u) / l1 + 1u + (pages + leaf - 2u) / leaf + 1u;
     }
 
     // A backend's walk frees every frame a leaf still names, and its tables.
@@ -301,7 +333,7 @@ extern "C"
         {
             if (l.used)
             {
-                kickos_frame_free(l.pa);
+                kickos_leaf_free(l.pa);
             }
         }
         for (arch_aspace::Table const& t : space->tables)
@@ -353,7 +385,7 @@ extern "C"
         for (size_t i = 0; g_tables_from_pool and i < pages; i++)
         {
             uintptr_t const at = va + i * G;
-            if (not space->table(L1_SHIFT, at) or not space->table(L2_SHIFT, at))
+            if (not space->table(L1_SHIFT, at) or not space->table(g_leaf_table_shift, at))
             {
                 return ARCH_ASPACE_ENOMEM;
             }

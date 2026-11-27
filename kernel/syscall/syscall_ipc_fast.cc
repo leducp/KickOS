@@ -89,14 +89,14 @@ namespace kickos
         Thread* w = wq_peek_highest(e->recv_waiters);
         if (w == nullptr)
         {
-            return nullptr; // no parked receiver, which a vacated endpoint never has
+            return nullptr; // no parked receiver
         }
-        if (w->ipc.badge_out == 0 or w->dying)
+        if (w->ipc.badge_out == 0 or not endpoint_takes_to(e, w))
         {
-            return nullptr; // info-less receiver cannot host a call; a dying one takes no cap
+            return nullptr; // info-less receiver cannot host a call
         }
-        // A live parked receiver holds WAIT and waited here, so the endpoint is receiving.
-        KICKOS_DEBUG_ASSERT(endpoint_receiving(e));
+        // A live parked receiver holds WAIT, so the endpoint can be served.
+        KICKOS_DEBUG_ASSERT(endpoint_servable(e));
         if (c->prio > w->prio)
         {
             // A caller outranking the receiver would need priority donation, so the fastpath

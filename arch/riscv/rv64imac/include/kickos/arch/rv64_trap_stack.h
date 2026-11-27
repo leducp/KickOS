@@ -47,7 +47,7 @@
  * unexpected-cause report, whose line ends its chip-writer bracket by waking the publisher it
  * raced, the wake settling the lends a death left:
  *   kickos_rv64_isr_dispatch[48] -> kprintf[352] -> console_emit[80]
- *   -> console_chip_writer_leave[16] -> console_dark_wake[32] -> wake[16]
+ *   -> console_chip_writer_leave[16] -> console_wake[32] -> wake[16]
  *   -> wake_no_resched[32] -> watch_lend_settle[0] -> pi_drain_deaths[80] -> pi_settle_from[48]
  *   -> set_prio[48] -> place[64] -> policy_place[80] -> sched_effective_level[32] */
 #define KICKOS_RV64_TRAP_DEPTH_IRQ 1024

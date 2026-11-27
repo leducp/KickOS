@@ -20,6 +20,8 @@ namespace seam
     std::vector<uint32_t> asked;
     std::vector<int64_t> sleeps;
     std::function<void()> on_sleep;
+    bool orphaned = false;
+    std::function<void()> on_task_state;
     kos_self_t const* entered = nullptr;
     kos_table_task entered_record = {};
     std::function<void(kos_self_t const*)> entry_seen;
@@ -33,6 +35,8 @@ namespace seam
         asked.clear();
         sleeps.clear();
         on_sleep = nullptr;
+        orphaned = false;
+        on_task_state = nullptr;
         entered = nullptr;
         entered_record = {};
         entry_seen = nullptr;
@@ -238,6 +242,24 @@ void kos_sleep_for(kos_duration_t d)
     {
         seam::on_sleep();
     }
+}
+
+int kos_task_state(kos_task_t task, int* status)
+{
+    (void)status;
+    if (task != KOS_TASK_NONE)
+    {
+        return -KOS_EPERM;
+    }
+    if (seam::on_task_state)
+    {
+        seam::on_task_state();
+    }
+    if (seam::orphaned)
+    {
+        return KOS_TASK_LIVE | KOS_TASK_ORPHANED;
+    }
+    return KOS_TASK_LIVE;
 }
 
 void kos_exit(int code)

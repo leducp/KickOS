@@ -13,8 +13,8 @@ accepts: [no_protection] # for the -flat build alone
 tasks:
   - name: rxsci
     driver: rxsci
-    devices: [/dev/sci6]
-    lines: { txi: /dev/sci6/txi, rxi: /dev/sci6/rxi }
+    devices: [/dev/console]
+    lines: { txi: /dev/console/txi, rxi: /dev/console/rxi }
     core: 0
     serves: /svc/console
     priority: 12

@@ -16,10 +16,12 @@
 # interrupt posture held across the test that decides whether to sleep. REFUSED: an RSIL to
 # level 0 anywhere ahead of the first WAITI, a WAITI with nothing having raised the level, and a
 # body carrying no WAITI. WAITI takes PS.INTLEVEL from its own immediate, so `waiti 0` is the
-# unmask and the sleep together. This reader builds no control-flow graph: what it proves is
-# that the body contains no unmask ahead of its sleep and does contain a raise ahead of it, not
-# that the raise dominates the sleep on every path. The raise may be an inlined RSIL to a
-# nonzero level or a call to arch_irq_save, and both count.
+# unmask and the sleep together. The park is read as the instructions reachable from its entry
+# and its in-body branch targets, in address order: the assembler pads ahead of an aligned
+# target, and a linear sweep decodes that padding and loses the stream past it. What the reader
+# proves is that the body contains no unmask ahead of its sleep and does contain a raise ahead
+# of it, not that the raise dominates the sleep on every path. The raise may be an inlined RSIL
+# to a nonzero level or a call to arch_irq_save, and both count.
 #
 # AN EMPTY CORPUS IS A FAILURE, not a pass.
 #
@@ -163,9 +165,14 @@ ctl_dead_reader "$(scoped_body "$TMP/park.awk" "$TMP/ctl" a_symbol_no_listing_ca
 # --- the image ----------------------------------------------------------------
 image_listing "$elf" "$nm" "$objdump" 100
 
-read_body() { # <reader> <symbol> -> REC, the reader's record for the image's body
+read_body() { # <reader> <symbol> [reachable] -> REC, the reader's record for the image's body
     image_body "$2" "$elf"
-    REC="$(scoped_body "$TMP/$1.awk" "$TMP/dis" "$2")"
+    _rb_list="$TMP/dis"
+    if [ "${3:-}" = reachable ]; then
+        image_reach "$objdump" "$elf" "$2"
+        _rb_list="$TMP/reach"
+    fi
+    REC="$(scoped_body "$TMP/$1.awk" "$_rb_list" "$2")"
     case "$REC" in
         NOSYM) fail "'$2' is a sized symbol in $elf but the disassembly carries no body for it,
   so the reader started nowhere. The disassembler's output shape has moved" ;;
@@ -207,7 +214,7 @@ if [ "$cores" -le 1 ]; then
 fi
 
 SYM=kickos_lx6_doorbell_park
-read_body park "$SYM"
+read_body park "$SYM" reachable
 set -- $REC
 case "$1" in
     NOWAITI)
@@ -229,13 +236,13 @@ require_number "$mask" "the first mask's ordinal in $SYM"
 require_number "$open" "the first unmask-to-0's ordinal in $SYM"
 require_number "$waiti" "the first WAITI's ordinal in $SYM"
 if [ "$mask" -ge "$waiti" ]; then
-    image_body_dump "$SYM"
+    sed 's/^/      /' "$TMP/reach" >&2
     fail "in '$SYM' the first mask is instruction #$mask and the first WAITI is #$waiti, so
   nothing raises PS.INTLEVEL ahead of the sleep decision and the test is made with this core's
   interrupts open"
 fi
 if [ "$open" -ne 0 ] && [ "$open" -lt "$waiti" ]; then
-    image_body_dump "$SYM"
+    sed 's/^/      /' "$TMP/reach" >&2
     fail "in '$SYM' an RSIL to level 0 is instruction #$open, ahead of the WAITI at #$waiti. The
   park then tests the cells that decide whether to sleep with its interrupts already open: the
   level-1 dispatch can take and clear the core-start raise between that test and the WAITI, and

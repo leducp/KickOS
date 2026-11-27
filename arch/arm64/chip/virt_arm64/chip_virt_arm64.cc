@@ -16,6 +16,7 @@
 
 #include <chip_layout.h>
 #include <kickos/chip_limits.h>
+#include <board_pins.h>
 #include <kickos/chip_mmap.h>
 #include <kickos/config/limits.h>
 #include <kickos/sys/abi.h>
@@ -66,7 +67,12 @@ extern "C"
     // returns for a core it merely started.
     extern kickos::Atomic<uint8_t, kickos::Order::RELAXED> kickos_armv8a_core_online[];
 
+#if KICKOS_KERNEL_CORES > 1
+    void kickos_doorbell_reachable(void);
+#endif
+#if defined(KICKOS_WITNESS_DOORBELL) && KICKOS_WITNESS_DOORBELL
     void kickos_doorbell_boot_check(void);
+#endif
 #endif
 }
 
@@ -83,7 +89,10 @@ namespace
 #error "KICKOS_AMP_CONSOLES names a UART qemu-arm64 does not have: it has /dev/uart0 and /dev/uart1"
 #endif
 #else
-    constexpr uintptr_t UART_BASE = kickos::virt_arm64::mmap::UART0_BASE;
+    constexpr uintptr_t UART_BASE = KICKOS_BOARD_CONSOLE_BASE;
+    static_assert(UART_BASE == kickos::virt_arm64::mmap::UART0_BASE
+                      or UART_BASE == kickos::virt_arm64::mmap::UART1_BASE,
+                  "the board's console is not a UART of this machine");
 #endif
     constexpr uintptr_t UART_DR = UART_BASE + 0x00;
     constexpr uintptr_t UART_FR = UART_BASE + 0x18;
@@ -305,9 +314,14 @@ namespace
         // The positive statement a gate reads, a TAP comment so it is legal ahead of a plan.
         kickos::kprintf("# smp: %x core(s) online\n", static_cast<unsigned>(KICKOS_NUM_CORES));
 
+#if KICKOS_KERNEL_CORES > 1
+        kickos_doorbell_reachable();
+#endif
+#if defined(KICKOS_WITNESS_DOORBELL) && KICKOS_WITNESS_DOORBELL
         // After arrival: the check needs every core's interface live and its target bit
         // published.
         kickos_doorbell_boot_check();
+#endif
     }
 #endif
 }

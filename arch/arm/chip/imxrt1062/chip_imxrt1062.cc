@@ -320,8 +320,50 @@ namespace
         arch_irq_unmask(irq::GPT1_IRQ);
     }
 
-    static_assert(KICKOS_BOARD_CONSOLE_BASE == mmap::LPUART6_BASE,
-                  "the board's console is not the LPUART this backend drives");
+    // Each LPUART's CCGR gate (RM Table 14-4, pp.1018-1019) and RX daisy register, 0 where its
+    // RX has one pad.
+    struct lpuart_row
+    {
+        uintptr_t base;
+        uintptr_t ccgr;
+        uint32_t cg;
+        uintptr_t rx_select;
+    };
+
+    constexpr lpuart_row LPUARTS[] = {
+        {mmap::LPUART1_BASE, reg::ccm::CCGR5, reg::ccm::cg(12), 0u},
+        {mmap::LPUART2_BASE, reg::ccm::CCGR0, reg::ccm::cg(14), reg::iomuxc::LPUART2_RX_SELECT_INPUT},
+        {mmap::LPUART3_BASE, reg::ccm::CCGR0, reg::ccm::cg(6), reg::iomuxc::LPUART3_RX_SELECT_INPUT},
+        {mmap::LPUART4_BASE, reg::ccm::CCGR1, reg::ccm::cg(12), reg::iomuxc::LPUART4_RX_SELECT_INPUT},
+        {mmap::LPUART5_BASE, reg::ccm::CCGR3, reg::ccm::cg(1), reg::iomuxc::LPUART5_RX_SELECT_INPUT},
+        {mmap::LPUART6_BASE, reg::ccm::CCGR3, reg::ccm::cg(3), reg::iomuxc::LPUART6_RX_SELECT_INPUT},
+        {mmap::LPUART7_BASE, reg::ccm::CCGR5, reg::ccm::cg(13), reg::iomuxc::LPUART7_RX_SELECT_INPUT},
+        {mmap::LPUART8_BASE, reg::ccm::CCGR6, reg::ccm::cg(7), reg::iomuxc::LPUART8_RX_SELECT_INPUT},
+    };
+
+    constexpr lpuart_row lpuart_of(uintptr_t base)
+    {
+        for (lpuart_row const& row : LPUARTS)
+        {
+            if (row.base == base)
+            {
+                return row;
+            }
+        }
+        return {0u, 0u, 0u, 0u};
+    }
+
+    constexpr lpuart_row CONSOLE = lpuart_of(KICKOS_BOARD_CONSOLE_BASE);
+    static_assert(CONSOLE.base != 0u, "the board's console is not an LPUART of this chip");
+
+    namespace con
+    {
+        constexpr uintptr_t GLOBAL = KICKOS_BOARD_CONSOLE_BASE + reg::lpuart::GLOBAL_OFFSET;
+        constexpr uintptr_t BAUD = KICKOS_BOARD_CONSOLE_BASE + reg::lpuart::BAUD_OFFSET;
+        constexpr uintptr_t STAT = KICKOS_BOARD_CONSOLE_BASE + reg::lpuart::STAT_OFFSET;
+        constexpr uintptr_t CTRL = KICKOS_BOARD_CONSOLE_BASE + reg::lpuart::CTRL_OFFSET;
+        constexpr uintptr_t DATA = KICKOS_BOARD_CONSOLE_BASE + reg::lpuart::DATA_OFFSET;
+    }
 
     constexpr bool pad_listed(uint32_t port, uint32_t pin)
     {
@@ -346,20 +388,25 @@ namespace
 
     constexpr bool LED_LIT = KICKOS_BOARD_LED_ACTIVE_LOW == 0;
 
-    void uart6_init()
+    void console_uart_init()
     {
-        r32(reg::ccm::CCGR3) |= reg::ccm::CCGR3_LPUART6;
+        r32(CONSOLE.ccgr) |= CONSOLE.cg;
 
         r32(reg::iomuxc::sw_mux(KICKOS_BOARD_CONSOLE_TX_PORT, KICKOS_BOARD_CONSOLE_TX_BIT)) = KICKOS_BOARD_CONSOLE_TX_SELECT;
         r32(reg::iomuxc::sw_mux(KICKOS_BOARD_CONSOLE_RX_PORT, KICKOS_BOARD_CONSOLE_RX_BIT)) = KICKOS_BOARD_CONSOLE_RX_SELECT;
-        r32(reg::iomuxc::LPUART6_RX_SELECT_INPUT) = KICKOS_BOARD_CONSOLE_RX_INPUT_SELECT;
+#if defined(KICKOS_BOARD_CONSOLE_RX_INPUT_SELECT)
+        static_assert(CONSOLE.rx_select != 0u, "the console's RX names a daisy value its LPUART has no register for");
+        r32(CONSOLE.rx_select) = KICKOS_BOARD_CONSOLE_RX_INPUT_SELECT;
+#else
+        static_assert(CONSOLE.rx_select == 0u, "the console's RX pad names no daisy value its LPUART needs");
+#endif
 
-        r32(reg::lpuart::LPUART6_CTRL) = 0;                     // disable TX/RX while configuring
-        r32(reg::lpuart::LPUART6_GLOBAL) = reg::lpuart::GLOBAL_RST;
-        r32(reg::lpuart::LPUART6_GLOBAL) = 0;
+        r32(con::CTRL) = 0;                     // disable TX/RX while configuring
+        r32(con::GLOBAL) = reg::lpuart::GLOBAL_RST;
+        r32(con::GLOBAL) = 0;
 
-        r32(reg::lpuart::LPUART6_BAUD) = reg::lpuart::BAUD_CONSOLE;
-        r32(reg::lpuart::LPUART6_CTRL) = reg::lpuart::CTRL_TE | reg::lpuart::CTRL_RE; // TIE stays clear; the ring primes it
+        r32(con::BAUD) = reg::lpuart::BAUD_CONSOLE;
+        r32(con::CTRL) = reg::lpuart::CTRL_TE | reg::lpuart::CTRL_RE; // TIE stays clear; the ring primes it
     }
 
     // The USB1 clock tree and PHY, none of which the unprivileged driver can reach (CCM is in
@@ -401,43 +448,43 @@ namespace
     // baud that reads clean 0x55 is the on-wire baud, so
     // real_uart_clk = clean_reader_baud * (OSR+1) * BEACON_SBR.
     constexpr uint32_t BEACON_SBR = 11u;
-    void uart6_beacon(void)
+    void uart_beacon(void)
     {
-        r32(reg::lpuart::LPUART6_CTRL) = 0;
-        r32(reg::lpuart::LPUART6_BAUD) = (15u << 24) | (BEACON_SBR & 0x1FFFu);
-        r32(reg::lpuart::LPUART6_CTRL) = reg::lpuart::CTRL_TE;
+        r32(con::CTRL) = 0;
+        r32(con::BAUD) = (15u << 24) | (BEACON_SBR & 0x1FFFu);
+        r32(con::CTRL) = reg::lpuart::CTRL_TE;
         while (true)
         {
-            while ((r32(reg::lpuart::LPUART6_STAT) & reg::lpuart::STAT_TDRE) == 0)
+            while ((r32(con::STAT) & reg::lpuart::STAT_TDRE) == 0)
             {
             }
-            r32(reg::lpuart::LPUART6_DATA) = 0x55u;
+            r32(con::DATA) = 0x55u;
         }
     }
 #endif
 
-    int lp6_tx_slot_free(void) { return (r32(reg::lpuart::LPUART6_STAT) & reg::lpuart::STAT_TDRE) != 0; }
-    void lp6_tx_push(uint8_t b) { r32(reg::lpuart::LPUART6_DATA) = b; }
-    void lp6_tx_irq_enable(void) { r32(reg::lpuart::LPUART6_CTRL) |= reg::lpuart::CTRL_TIE; }
-    void lp6_tx_irq_disable(void) { r32(reg::lpuart::LPUART6_CTRL) &= ~reg::lpuart::CTRL_TIE; }
-    console_tx_backend const lp6_console_backend = {
-        lp6_tx_slot_free, lp6_tx_push, lp6_tx_irq_enable, lp6_tx_irq_disable,
+    int con_tx_slot_free(void) { return (r32(con::STAT) & reg::lpuart::STAT_TDRE) != 0; }
+    void con_tx_push(uint8_t b) { r32(con::DATA) = b; }
+    void con_tx_irq_enable(void) { r32(con::CTRL) |= reg::lpuart::CTRL_TIE; }
+    void con_tx_irq_disable(void) { r32(con::CTRL) &= ~reg::lpuart::CTRL_TIE; }
+    console_tx_backend const con_console_backend = {
+        con_tx_slot_free, con_tx_push, con_tx_irq_enable, con_tx_irq_disable,
         &kickos_console_tx_storage};
 
-    // The window arch_console_reclaim reports: LPUART6's whole AIPS-2 slot (RM Table 3-3), not
-    // its 0x30 register block.
-    constexpr uintptr_t CONSOLE_WIN_BASE = mmap::LPUART6_BASE;
+    // The window arch_console_reclaim reports: the console LPUART's whole AIPS-2 slot (RM Table
+    // 3-3), not its 0x30 register block.
+    constexpr uintptr_t CONSOLE_WIN_BASE = KICKOS_BOARD_CONSOLE_BASE;
     constexpr size_t CONSOLE_WIN_SIZE = KICKOS_BOARD_CONSOLE_SIZE;
 
     static_assert((CONSOLE_WIN_SIZE & (CONSOLE_WIN_SIZE - 1u)) == 0u
                       and (CONSOLE_WIN_BASE % CONSOLE_WIN_SIZE) == 0u,
                   "PMSAv7 needs a power-of-two size on a naturally aligned base");
 
-    static_assert(reg::lpuart::LPUART6_CTRL >= CONSOLE_WIN_BASE
-                      and reg::lpuart::LPUART6_CTRL < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
-                      and reg::lpuart::LPUART6_GLOBAL < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
-                      and reg::lpuart::LPUART6_BAUD < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
-                      and reg::lpuart::LPUART6_STAT < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE,
+    static_assert(con::CTRL >= CONSOLE_WIN_BASE
+                      and con::CTRL < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
+                      and con::GLOBAL < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
+                      and con::BAUD < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
+                      and con::STAT < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE,
                   "arch_console_reclaim writes outside the window it reports");
 }
 
@@ -469,13 +516,13 @@ void arch_init(void)
 #endif
     clock_init();
     gpt_clock_init();
-    uart6_init();
+    console_uart_init();
     if (kickos_usb_device_console != 0)
     {
-        usb_clock_init(); // after uart6_init: a refusal here must still be able to print
+        usb_clock_init(); // after console_uart_init: a refusal here must still be able to print
     }
 #ifdef KICKOS_UART_BEACON
-    uart6_beacon(); // never returns
+    uart_beacon(); // never returns
 #endif
     kickos_armv7m_init();
 }
@@ -501,13 +548,13 @@ extern "C"
 
 bool arch_console_write_sync(char const* buf, size_t n)
 {
-    return kickos::console_poll::write<lp6_tx_slot_free, lp6_tx_push>(buf, n);
+    return kickos::console_poll::write<con_tx_slot_free, con_tx_push>(buf, n);
 }
 
 console_tx_backend const* arch_console_tx_backend(int* irq_line)
 {
-    *irq_line = irq::LPUART6_IRQ;
-    return &lp6_console_backend;
+    *irq_line = KICKOS_BOARD_CONSOLE_LINE_IRQ;
+    return &con_console_backend;
 }
 
 void arch_console_reclaim_window(uintptr_t* base, size_t* size)
@@ -519,33 +566,35 @@ void arch_console_reclaim_window(uintptr_t* base, size_t* size)
 // Panic-path reclaim after a userspace driver may have garbled every register in the window.
 // Runs privileged with IRQs masked; MUST be idempotent and re-entrant, so straight-line
 // ABSOLUTE stores only, no read-modify-write and no loops. GLOBAL[RST] resets every register
-// at once with no minimum delay (RM 49.6.1.4). The pin mux and the CCGR3 gate are out of any
+// at once with no minimum delay (RM 49.6.1.4). The pin mux and the CCGR gate are out of any
 // driver's reach, so neither needs restoring.
 void arch_console_reclaim(void)
 {
     // Silence first: a stale TIE storms the console IRQ through the whole dump, and CTRL may be
     // altered only with transmitter and receiver disabled (RM 49.6.1.8).
-    r32(reg::lpuart::LPUART6_CTRL) = 0;
+    r32(con::CTRL) = 0;
 
-    r32(reg::lpuart::LPUART6_GLOBAL) = reg::lpuart::GLOBAL_RST;
-    r32(reg::lpuart::LPUART6_GLOBAL) = 0;
+    r32(con::GLOBAL) = reg::lpuart::GLOBAL_RST;
+    r32(con::GLOBAL) = 0;
 
     // Reset leaves BAUD at 0x0F00_0004: the right OSR and the wrong divisor, so the rate has
     // to be restored explicitly.
-    r32(reg::lpuart::LPUART6_BAUD) = reg::lpuart::BAUD_CONSOLE;
+    r32(con::BAUD) = reg::lpuart::BAUD_CONSOLE;
 
     // Last, and TIE stays clear: the reclaimed console is polled, and the ring re-primes the
     // interrupt itself.
-    r32(reg::lpuart::LPUART6_CTRL) = reg::lpuart::CTRL_TE | reg::lpuart::CTRL_RE;
+    r32(con::CTRL) = reg::lpuart::CTRL_TE | reg::lpuart::CTRL_RE;
 }
 
-// Blocks until LPUART6 is transmission-complete: TDRE only means the holding register took the
-// byte, TC waits for the last stop bit (RM 49.6.1.7).
+// Blocks until the console LPUART is transmission-complete: TDRE only means the holding register
+// took the byte, TC waits for the last stop bit (RM 49.6.1.7).
 void arch_console_flush_sync(void)
 {
-    (void)kickos::arch::wait_set(r32(reg::lpuart::LPUART6_STAT), reg::lpuart::STAT_TC);
+    (void)kickos::arch::wait_set(r32(con::STAT), reg::lpuart::STAT_TC);
 }
 
+// GPR27 and GDIR have no per-pin alias: read-modify-writes, safe only because this runs on the one
+// core with interrupts masked.
 void arch_diag_led_init(void)
 {
     r32(reg::ccm::CCGR0) |= reg::ccm::CCGR0_GPIO2;
@@ -553,6 +602,7 @@ void arch_diag_led_init(void)
     // the instance that does not own the bit is silently ignored. Clear = GPIO2.
     r32(reg::iomuxc::GPR27) &= ~LED_BIT;
     r32(reg::iomuxc::sw_mux(KICKOS_BOARD_LED_PORT, KICKOS_BOARD_LED_BIT)) = reg::iomuxc::MUX_ALT5;
+    r32(reg::iomuxc::sw_pad(KICKOS_BOARD_LED_PORT, KICKOS_BOARD_LED_BIT)) = reg::iomuxc::PAD_CTL_RESET;
     // Dark BEFORE the pin becomes an output, so bring-up never flashes it.
     r32(led_out(not LED_LIT)) = LED_BIT;
     r32(reg::gpio::GPIO2_GDIR) |= LED_BIT;
@@ -628,14 +678,38 @@ void arch_idle_wait(void)
     __asm volatile("nop");
 }
 
-// Bridge access only; usb_clock_init did USB1's clock half.
+// Every LPUART runs off uart_clk_root.
+uint32_t arch_periph_clock_hz(uintptr_t base)
+{
+    if (lpuart_of(base).base != 0u)
+    {
+        return reg::lpuart::UART_CLK_ROOT_HZ;
+    }
+    return 0u;
+}
+
+// An LPUART but the console takes its CCGR gate, which sits in the kernel-reserved CCM, then its
+// bridge access like any gated block; usb_clock_init did USB1's clock half.
 int arch_periph_enable(uintptr_t base)
 {
+    lpuart_row const uart = lpuart_of(base);
+    if (uart.base != 0u)
+    {
+        if (base == KICKOS_BOARD_CONSOLE_BASE)
+        {
+            return -KOS_EINVAL;
+        }
+        r32(uart.ccgr) |= uart.cg;
+    }
     return kickos::imxrt1062::aipstz_gate::open(base, r32);
 }
 
 int arch_periph_disable(uintptr_t base)
 {
+    if (base == KICKOS_BOARD_CONSOLE_BASE)
+    {
+        return -KOS_EINVAL;
+    }
     return kickos::imxrt1062::aipstz_gate::close(base, r32);
 }
 

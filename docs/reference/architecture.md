@@ -91,7 +91,8 @@ mechanisms. Four are refused, and each is refused on **arithmetic**, not on tast
 because "we are seL4-like" otherwise reads as a promise that these are coming.
 
 - **No untyped memory and no `Retype`.** The kernel owns the arena and bump-allocates it, by
-  design. Accountability for who may obtain memory comes from Rule 7 grant admission plus the two
+  design. It keeps one free range, the largest alignment run-up a block skipped, for a later
+  block that fits it, and frees no block (`arch/common/ram_arena.h`). Accountability for who may obtain memory comes from Rule 7 grant admission plus the two
   ways a region reaches a thread -- a spawn grant, and self-grant -- both gated on `AUTH_MEMORY`.
   Untyped/Retype answers "which memory may this task obtain and from whose budget", and a
   single-owner static arena answers it already, without a derivation object per allocation.
@@ -361,14 +362,19 @@ KickOS/
     x86/   x86_64/ chip/q35/         # x86_64 UEFI application (PE32+): the syscall entry is
                                     #   SYSCALL/SYSRET, arch_init ADOPTS the translation regime
                                     #   firmware already has live, pe_image.ld places no memory
-                                    #   map (the linker's own default layout plus section
-                                    #   wildcards), and program.ld links a program at the fixed
-                                    #   user base
+                                    #   map (its own section list: .text, .data, .bss, the
+                                    #   embedded images, .rdata holding the image tables and the
+                                    #   constructor range, .reloc last; debug info, .eh_frame
+                                    #   and .fini_array discarded), and program.ld links a
+                                    #   program at the fixed user base
   kernel/
     include/kickos/                 # public kernel + syscall-number headers
     sched/  thread/  task/  sync/  time/  irq/  syscall/  init/  ktrace/  bench/  domain/  grant/
   lib/
     libc/                           # freestanding: mem/str (string.cc) + a small vsnprintf (fmt.cc)
+                                    #   the kickos_string object carries string.cc, and on
+                                    #   Arm M also arch/arm/common/aeabi_div0.cc, linked ahead
+                                    #   of the libc's and libgcc's archives
     include/kickos/                 # libc/{fmt,string}.h, console_tx.h, rtt.h
     rtt.cc                          # SEGGER RTT backend (console ch0 + telemetry ch1)
   system/                           # kickos_system: fleet-wide system layer
@@ -388,7 +394,7 @@ KickOS/
     lib/spi_proxy/                  # vendor-neutral proxy backend of the SPI class
     apps/common/                    # fleet-wide apps; a sample, not the list: hello, selftest
                                     #   (TAP gate), stress, mpu_fault, fault,
-                                    #   fp_switch, blink, bench, cxxtest, tele_*
+                                    #   fp_switch, bench, cxxtest, tele_*
     apps/<board>/                   # that board's own demos (pvprobe, k64drv, rxdrv, c6blink, ...)
   boards/
     Kconfig                        # one stanza per board: the board choice + `select` of its chip
@@ -540,16 +546,16 @@ a kind. `KOS_CANCEL_KILL` is a COOPERATIVE cancel: it marks the target and wakes
 TOTAL over `WaitKind` (`kernel/thread/park.cc`, `thread_abort_park`) and reports `-KOS_ECANCELED`
 where the primitive has a channel to report one; the target then runs its own `sched::exit_current`.
 `KOS_CANCEL_SLAY` also claims the target's next resume, so it runs no further instruction of its
-own. A timeout of 0 answers once the cancel is raised; any other parks the caller on the target
-BEFORE the cancel is raised, as a join parks, and answers once the target is gone.
-`KOS_SYS_THREAD_JOIN` OBSERVES the death, bounded by an optional `timeout_us`
-(`KOS_NEVER` = none). The joiner parks **queue-less** tagged `WAIT_JOIN` with `wait_obj`
+own. The cancel takes no time argument: it answers once the cancel is raised and never waits, so
+0 does not confirm the death. `KOS_SYS_THREAD_JOIN` OBSERVES the death, bounded by a deadline
+(`KOS_NEVER` = none, `KOS_POLL` = answer at once, `-KOS_EBUSY` while the target runs). The joiner parks **queue-less** tagged `WAIT_JOIN` with `wait_obj`
 naming the target TCB, and `sched::exit_current` sweeps the thread pool for that tag at every
 thread exit -- a scan at an exit and on no other path, which is what buys join **zero per-TCB
-state and no waiter list**, a byte budget the 16 KiB boards care about. Kill and join take the
-SAME gate, spawn parenthood (`ThreadAttr::spawner_tag` against `ThreadPool::kill_tag_of`), which
-is non-transferable: there is no table entry for a `cap_grant` to copy, and it hands the caller
-nothing it did not already have. They decide ONE state oppositely, and that difference is the
+state and no waiter list**, a byte budget the 16 KiB boards care about. The cancel's gate is
+spawn parenthood (`ThreadAttr::spawner_tag` against `ThreadPool::kill_tag_of`), which is
+non-transferable: there is no table entry for a `cap_grant` to copy, and it hands the caller
+nothing it did not already have. The join passes the same gate, and also any thread of the
+target's own task. Cancel and join decide ONE state oppositely, and that difference is the
 point -- see `invariants.md` `join-accepts-the-unreclaimed-exit`.
 
 **Group death is the TASK layer's, not the thread's.** `KOS_SYS_TASK_CREATE` starts a declared
@@ -562,9 +568,16 @@ other member is slain at once, a thread that never re-enters the kernel included
 further instruction of its own. No member gets a cleanup window, so a device is left as its
 driver last touched it, and the next start of that driver programs it again. It is DEAD once every
 member's capability sweep is done.
-The gate there is CREATORSHIP rather than possession, the address space stays on `Domain`, and 0
-from a kill means the request was ACCEPTED and never that the group is gone; `KOS_SYS_TASK_SLAY`
-is the form that waits. archived `M4_task_layer_record.md` is the record.
+The gate there is CREATORSHIP rather than possession, and the address space stays on `Domain`.
+0 from a cancel or from `KOS_SYS_TASK_SLAY` means the stop is COMMITTED and never that the group
+is gone; neither takes a time argument. Waiting for the end is a join of a member, or the task's
+`KOS_TASK_ENDED` and `KOS_TASK_DEAD` events (`kos_watch`, `KOS_WATCH_TASK`). archived
+`M4_task_layer_record.md` is the record.
+
+**A divide by zero is a fault where the core or its run-time ABI traps it.** Where faults are
+isolated it kills the dividing thread, and so ends its task as any member's fault does; where they
+are not, it ends the system. On the other arches the division returns a value and nothing faults.
+[porting.md](porting.md) lists each arch's outcome.
 
 ---
 
@@ -612,9 +625,11 @@ is the form that waits. archived `M4_task_layer_record.md` is the record.
   `kernel/syscall/syscall_thread.cc`; documented per call in `user/include/kickos/sys.h`);
   **`ETIMEDOUT`** is a caller-supplied deadline that passed before the operation could happen,
   and it promises that NOTHING happened for the caller: `KOS_SYS_SEND`, `KOS_SYS_REPLY_RECV`,
-  `KOS_SYS_CALL`, `KOS_SYS_WORD_WAIT` and `KOS_SYS_THREAD_JOIN` given a `timeout_us` other
-  than `KOS_NEVER` expire with no peer, move no bytes, return no reply, take no unit,
-  and leave the joined thread running. `kernel/time/time.cc` decides only THAT a deadline
+  `KOS_SYS_CALL`, `KOS_SYS_WORD_WAIT` and `KOS_SYS_THREAD_JOIN` whose deadline passes
+  expire with no peer, move no bytes, return no reply, take no unit,
+  and leave the joined thread running. Every time argument is a 64-bit deadline
+  (`kos_monotonic_t`), `KOS_NEVER` for none; a `KOS_POLL` wait answers `EAGAIN` or `EBUSY` as
+  above, and a polled plain word wait answers `ETIMEDOUT`. `kernel/time/time.cc` decides only THAT a deadline
   expired and delegates each park's unwind to `thread_abort_park`
   (`kernel/thread/park.cc`), which unlinks the right queue and reverts the right
   donation; the deadline is cancelled in `sched::wake_no_resched`, the one unpark funnel, so a
@@ -670,8 +685,8 @@ set and every domain lives in ONE physical address space; where the chip transla
 carries a page-table root and the boundary IS a virtual address space. Ring 0 reaches a task's memory
 only through the kaccess seam's kernel alias of its frames, never through the task's own addresses,
 and the hardware holds it to that: PAN, or an empty TTBR0 root at EL1 on a core without PAN, on
-armv8a; `sstatus.SUM` never set on rv64imac; SMEP and SMAP on x86_64, with the interrupt entry
-clearing the RFLAGS.AC that would lift SMAP. No code above the arch layer
+armv8a; `sstatus.SUM` never set on rv64imac; SMEP and SMAP on x86_64, which its floor requires,
+with the interrupt entry clearing the RFLAGS.AC that would lift SMAP. No code above the arch layer
 names an ISA, a register or a descriptor format, and the same call sites serve both. The kernel above
 the seam does know WHICH kind it runs on, deliberately: on `KICKOS_HAVE_ASPACE` the frame pool
 (`FrameAllocator`), the address-space syscalls and the per-task space in the domain layer are
@@ -807,15 +822,17 @@ state on all of them, not a per-app step. Registers
 
 | Register | Address / offset | Reset | Contents |
 |---|---|---|---|
-| `HP_TEE_M0_MODE_CTRL_REG` | `0x6009_8000` (`+0x00 + 0x4*n`) | 0 | per-master security mode; the HP CPU is master **M0**, and reset 0 already maps its U-mode to **REE0**, so KickOS writes nothing here |
+| `HP_TEE_M0_MODE_CTRL_REG` | `0x6009_8000` (`+0x00 + 0x4*n`) | 0 | per-master security mode; the HP CPU is master **M0**, and 0 maps its U-mode to **REE0**; KickOS writes 0 and reads it back |
 | `HP_APM_REGION_FILTER_EN_REG` | `HP_APM` `+0x0000` | `0x01` | bit n enables region n; region 0 on at reset |
 | `HP_APM_REGIONn_ADDR_START_REG` | `+0x0004 + 0xC*n` | 0 | region start |
 | `HP_APM_REGIONn_ADDR_END_REG` | `+0x0008 + 0xC*n` | `0xFFFFFFFF` | region end |
 | `HP_APM_REGIONn_ATTR_REG` | `+0x000C + 0xC*n` | 0 | `R0_X` b0, `R0_W` b1, `R0_R` b2, `R1_X` b4, `R1_W` b5, `R1_R` b6, `R2_X` b8, `R2_W` b9, `R2_R` b10 (Reg 16.4) |
-| `HP_APM_FUNC_CTRL_REG` | `+0x00C4` | `0xF` | `M0..M3_FUNC_EN`; all four enforcing at reset, so KickOS writes nothing here either |
+| `HP_APM_FUNC_CTRL_REG` | `+0x00C4` | `0xF` | `M0..M3_FUNC_EN`; KickOS writes all four enforcing and reads them back |
 
-`HP_APM` is at `0x6009_9000`. Region 0 is LEFT at its reset values -- start 0, end `0xFFFFFFFF`,
-attr 0 -- which is the catch-all that denies every REE mode everywhere; overlaps are a permit
+`HP_APM` is at `0x6009_9000`. Region 0 is written with its reset values, start 0, end
+`0xFFFFFFFF`, attr 0, the catch-all that denies every REE mode everywhere. The boot writes every
+word the gate rests on, on HP_APM, LP_APM and LP_APM0, reads each back once all are written, and
+refuses the boot naming a word that does not hold (`arch/riscv/chip/esp32c6/apm_rows.h`); overlaps are a permit
 UNION (16.3.2.3), so a later region granting `R0_R | R0_W` beats it on the overlap. `arch_init`
 programs each gate's rows into its regions from 1 up and writes its `FILTER_EN` whole, so a region
 no row names stays off: for REE0 each device node 0's composition grants and nothing else, none in
@@ -823,7 +840,8 @@ an image linking no composition, so a U-mode task reaches through the APM only a
 composition grants it, and no CPU peripheral and no HP SRAM, which PMP alone gates for the HP CPU
 (Table 16.1-1); for the LP node, which `arch_amp_release_peers` moves to
 REE1 before it wakes it because every other bus master shares REE2 at power-up (16.3.2 Note),
-its slice, the shared window, its kernel's three LP pages and its granted devices. The APM registers are writable only in TEE mode
+its slice, the shared window, the LP spans its kernel uses (its PMU row covering only the kernel's own
+words, PMU_LP_INT_ST to PMU_HP_LP_CPU_COMM) and its granted devices. The APM registers are writable only in TEE mode
 (= M-mode), so a REE thread cannot reprogram them even if it somehow held a PMP window over
 `0x6009_9000`; the grant path refuses that window anyway (Rule 7 lists HP_APM and HP_TEE).
 
@@ -949,9 +967,11 @@ API. Two flavors:
   either way). The driver never runs in handler mode.
 
 **API sketch (arch-neutral):** `irq_attach/detach` (in-kernel);
-`kos_irq_claim/bind_notify/ack/discard/raise`
+`kos_irq_claim/ack/discard/raise`, with the line tied to its notification by
+`kos_watch(KOS_WATCH_IRQ, ...)`
 (userspace, CAPABILITY-based: the C++ `kos::Irq` owns the cap and closes it on destruction, so
-root writes `auto irq = kos::Irq::claim(line);` and the driver `auto irq = kos::Irq::adopt(cap);`).
+root writes `auto irq = kos::Irq::claim(line);` and the driver `auto irq = kos::Irq::adopt(cap);`,
+then `irq.watch(notify_cap)`).
 The notification is the delivery object (`notification-is-the-delivery-object` in
 `invariants.md`): `kos_notify` raises it WITHOUT touching the controller, the doorbell a service
 thread rings for an IRQ thread that owns the registers, and `kos_irq_discard`
@@ -976,7 +996,9 @@ never the reverse.** A driver is packaged as an in-process CLASS, as a shared SE
   multiplexes clients over a `CAP_ENDPOINT` (call/reply, reply-cap). Sharing and arbitration live
   here and ONLY here. It tells its clients apart by the badge on each one's copy of its endpoint
   (*Service publication* below), so a bus service fronts several mutually untrusting clients, each
-  on device slots of its own ([bus-service.md](bus-service.md), *Device slots*).
+  on device slots of its own ([bus-service.md](bus-service.md), *Device slots*). Above the slot
+  mask the badge carries the rights the client's use declares (`KOS_RIGHT_*`,
+  `<kickos/sys/rights.h>`), and the service checks the right each op needs.
 
 The class is written first and DEFINES the API; the service is a transport over that same API and
 is not allowed to invent its own.
@@ -1052,8 +1074,10 @@ feeds the slave app.
   Of the usual ABI stubs only `__dso_handle` exists (`user/src/newlib_stubs.cc`, and it is in
   `tests/static/weak_allowlist.txt`): `-fno-use-cxa-atexit` removes the need for `__cxa_atexit`, and
   `__cxa_pure_virtual` is never emitted because nothing declares a pure virtual. **`operator
-  new/delete` is not provided at all** -- the kernel links `-nostdlib++`, so a stray `operator new`
-  is a LINK ERROR rather than a silent heap allocation (`CMakeLists.txt`, the `-nostdlib++` link options). No implicitly
+  new/delete` is not provided at all** -- the kernel's link takes no C++ library (`-nostdlib++`,
+  `tools/image-link.py`), so a stray `operator new` is a LINK ERROR rather than a silent heap
+  allocation; where the kernel shares the program's link, on the sim, `kernel_alloc`
+  (`tests/static/check_kernel_got.sh`) refuses it (maintainer, 2026-11-25). No implicitly
   heap-allocating STL. `extern "C"` at asm/startup/syscall seams.
 - **Userspace**: **full C++** (`-fexceptions -frtti`): every app links the toolchain's
   `libstdc++`/`libsupc++` over the **toolchain's own libc** -- newlib on every arch (Arm GNU / RISCStar / GNURX are all newlib) -- so the C++
@@ -1237,7 +1261,9 @@ feeds the slave app.
   `kos_task_create(prog, &params, &task)` (`struct kos_task_params`) starts a declared instance:
   `params.instance` names it, or NULL takes the lowest-numbered one the caller may start that is
   not live. An instance is live from its create until its task is dead, and a second create of it
-  answers `-KOS_EBUSY`; with none left the call answers `-KOS_ENOMEM`. A declaration with neither
+  answers `-KOS_EBUSY`; with none left the call answers `-KOS_ENOMEM`. The create never waits: an
+  instance whose last incarnation has ended but is not yet dead answers `-KOS_EAGAIN`, and a
+  `KOS_WATCH_INSTANCE` watch reports when it can start again. A declaration with neither
   `restart` nor `start: on_request` starts once: a create of it after its first incarnation started
   answers `-KOS_EPERM`, on every board. The creator holds
   `AUTH_TASKS` and every authority bit the declaration names (`-KOS_EPERM`, never narrowed), and
@@ -1270,7 +1296,7 @@ feeds the slave app.
   layout, thread 0 with the driver's windows and authority. A driver with a readiness latch is
   waited on until the latch reads service-ready, which its service thread publishes once the
   device half is up and just before its first receive. The host then sends the endpoint a
-  zero-length probe, bounded as a console handover's is, and a receive is the only thing that
+  zero-length probe, bounded past the readiness wait, and a receive is the only thing that
   takes it, so the task's entry runs only once the driver serves, whatever the priorities. Each
   driver thread that waits on one of its roles, a service or IRQ worker, is spawned
   `KOS_THREAD_ESSENTIAL`: its end by any cause, a return, `kos_exit` or a cancel, ends the host
@@ -1388,13 +1414,16 @@ by the composer (maintainer, 2026-10-22; `tools/compose/kickos_compose/supply.py
   used under the SAME continuous lock** -- so a concurrent `handle_close` cannot free the object
   between resolve and use. Two independent generations guard it: per-thread **cap-gen**
   (use-after-close) plus global **object-gen** (use-after-destroy), both `uint16_t`.
-- **Rights are three bits, each enforced at a real site (no dead field):** `CAP_WAIT` (endpoint
-  receive, notification bind and wait, IRQ ack, discard and bind), `CAP_SIGNAL` (endpoint send,
-  notification signal, IRQ raise), `CAP_TRANSFER` (may be delegated). Memory R/W/X is NOT a cap right --
+- **Rights are four bits, each enforced at a real site (no dead field):** `CAP_WAIT` (endpoint
+  receive, notification bind, IRQ ack, discard and bind; a notification wait needs no capability,
+  the bind being its authority), `CAP_SIGNAL` (endpoint send, notification signal, IRQ raise),
+  `CAP_TRANSFER` (may be delegated), `CAP_HANDOUT` (endpoint only: a delegation or a console
+  publish may seat WAIT from it although it holds none, and a badge mint needs it).
+  Memory R/W/X is NOT a cap right --
   it lives in the MPU region descriptor and is enforced by hardware; duplicating it in the cap
   would be the forbidden checked-twice field.
 - **Lifecycle: refcounted destroy-on-last-close.** `endpoint_create` allocates the object (refs = 1)
-  and returns a full-rights (`WAIT|SIGNAL|TRANSFER`) cap handle into the creator's table.
+  and returns a full-rights (`CAP_RIGHTS_ALL`, all four) cap handle into the creator's table.
   `KOS_SYS_HANDLE_CLOSE(cap)` (type-agnostic) drops MY handle:
   bump the slot cap-gen, empty the entry, `refs--`; the object frees only at the LAST close
   (refs -> 0). Thread exit closes every held cap (`cap_teardown`, called from `exit_current`) so
@@ -1512,20 +1541,22 @@ pointer is an info-leak oracle). Handles then resolve at that already-checked bo
 closes the confused-deputy path a whole-arena syscall raise would leave open.
 
 **Console device handover.** The kernel owns the buffered debug console at boot. Because two
-drivers cannot share one peripheral, a three-state ownership axis `g_console_state`
-(KERNEL_OWNED / USER_OWNED / RECLAIMED) gates `console_emit` ahead of its buffered-vs-sync
+drivers cannot share one peripheral, an ownership axis `g_console_state`
+(KERNEL_OWNED / HANDING_OFF / USER_OWNED / RECLAIMED / PANICKED) gates `console_emit` ahead of its buffered-vs-sync
 decision: in USER_OWNED the kernel touches the device on no path (RTT still carries kernel
-output). A console driver's create, gated on `AUTH_CONSOLE`, performs the handover, as
+output). From the publish on, a user write to the kernel console is refused (`-KOS_EBUSY`), a
+reclaim and a panic included: the device comes back to the kernel alone. A console driver's
+create, gated on `AUTH_CONSOLE`, performs the handover, as
 the console publish call does for an empty task an app fills -- it **relinquishes** the buffered
 path via `console_tx_deinit` (flush, disable the TX interrupt, detach/NVIC-mask, disarm), takes a
 kernel ref on the userspace driver's stdout endpoint, then flips the state to USER_OWNED last; a
-stale chip writer that raced the flip is drained (via the `g_chip_writers` count, with the
-publisher yielding at lowered priority so a lower-priority writer can finish) before the driver's
+stale chip writer that raced the flip is drained (via the `g_chip_writers` count, the publisher
+parked on the console until the last counted writer's leave wakes it) before the driver's
 entry thread runs and the call returns. The publisher names the endpoint through a capability
 holding HANDOUT, and the publish seats WAIT on it when it is missing, so the init creates a
 restarted console driver again and repeats the first handover (see [console.md](console.md),
 "Capability handover"). The **field panic path reclaims** the UART:
-`kpanic_enter` calls `arch_console_reclaim` and flips to RECLAIMED, and `kickos_isr_fault`
+`kpanic_enter` calls `arch_console_reclaim` and flips to PANICKED, and `kickos_isr_fault`
 funnels through `kpanic_enter` so a terminal fault in the driver still reclaims and polled-prints;
 the diag LED stays the always-present 1-bit last resort. A chip `arch_console_reclaim` body
 force-retakes the peripheral and rewrites every in-window register to a known baud/state, since
@@ -1533,7 +1564,7 @@ userspace config is untrusted; every chip has one except `an505`, `imx8mp`, `mps
 `q35`, `sam3x8e`, `stm32f103`, `stm32f302` and the three `virt_*` machines (the live set is
 `grep -rn "^void arch_console_reclaim(void)" arch/` minus the declaration in
 `arch/include/kickos/arch/arch.h`; the `arch/arm/chip/xmc4800/usic_uart.cc` one is
-silicon-witnessed), and those six keep the no-op fallback TU, so on them the reclaim is wiring
+silicon-witnessed), and those keep the no-op fallback TU, so on them the reclaim is wiring
 with nothing behind it (see [console.md](console.md)). Routing userspace output through a kernel syscall to "share" the device is
 rejected -- an ambient-authority console service contradicts the microkernel split.
 

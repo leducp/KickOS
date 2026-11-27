@@ -24,7 +24,7 @@ mapfile -t MACROS < <(grep -oE 'KDIAG_F_BANNER_[A-Z_]+' <<< "$KBANNER" | awk '!s
 # Arguments per format, one rendering per line, tab-separated; '-' renders a format with none. A
 # format whose argument kbanner() assigns from string literals is rendered with those instead.
 declare -A SAMPLES=(
-    [KDIAG_F_BANNER_NAME]=$'0.5.1\n0.5.1-rc1'
+    [KDIAG_F_BANNER_NAME]=$'                  \t0.10.0\n                 \t0.10.11\n                \tunknown\n  \t0.5.1-rc1'
     [KDIAG_F_BANNER_BOARD]=$'f411disco\npizero2350-amp2-n0'
     [KDIAG_F_BANNER_ARCH]=$'armv7m\nx86_64\nsim'
     [KDIAG_F_BANNER_CPU]=$'cortex-m4\ncortex-m33+nodsp\nrv32imac_zicsr\nrxv3\nx86-64'
@@ -93,10 +93,16 @@ for i in "${!MACROS[@]}"; do
     done <<< "$renders"
 done
 [ "$nrows" -gt 0 ] || fail "rendered no banner row"
-for line in '[blink] tick 41' 'ok 1 - case' '1..3' '# done' '[hello] up' 'not ok 2'; do
+for line in '[blink] tick 41' 'ok 1 - case' '1..3' '# done' '[hello] up' 'not ok 2' \
+    '[rebootdemo] KickOS reboot-to-bootloader demo' '                  KickOS' 'KickOS: refused'; do
     if grep -qE "$RESET_BOOT_ROW_RE|$RESET_BOOT_TITLE_RE" <<< "$line"; then
-        bad "an ordinary line is taken for a banner row: '$line'"
+        bad "an ordinary line or a title with no version is taken for a banner row: '$line'"
     fi
+done
+# A title is its name and version whatever decoration surrounds them.
+for line in '   KickOS 0.5.1  -  microkernel RTOS' '== KickOS unknown ==' 'KickOS 0.10.0'; do
+    grep -qE "$RESET_BOOT_TITLE_RE" <<< "$line" \
+        || bad "RESET_BOOT_TITLE_RE does not match the differently decorated title '$line'"
 done
 
 # <file> <title> <commit row>: a banner as the console prints it.
@@ -106,7 +112,7 @@ banner() {
     printf '  ==============================================\r\n   board   f411disco\r\n' >> "$1"
     printf '%s\r\n\r\n' "$3" >> "$1"
 }
-TITLE='   KickOS 0.5.1  -  microkernel RTOS'
+TITLE='                  KickOS 0.10.0'
 COMMIT='   commit  0355b756'
 
 # <name>: a log holding an earlier boot's tail, its size in $SIZE.
@@ -127,22 +133,22 @@ cut_log clean "$SIZE" || bad "the clean capture is refused: $(cat "$TMP/why")"
 if grep -q 'blink' "$TMP/clean"; then
     bad "the earlier boot's tail survives the cut"
 fi
-head -n 1 "$TMP/clean" | grep -qE '^  =+'"$(printf '\r')"'$' \
-    || bad "the cut does not start at the reset's banner rule: $(head -n 1 "$TMP/clean")"
+head -n 1 "$TMP/clean" | grep -qE "$RESET_BOOT_TITLE_RE" \
+    || bad "the cut does not start at the reset's banner title: $(head -n 1 "$TMP/clean")"
 
 printf '\r\n  ==============================================\r\n' > "$TMP/whole"
 printf '%s\r\n' "$TITLE" >> "$TMP/whole"
 cp "$TMP/whole" "$TMP/whole.before"
 cut_log whole 0 || bad "a capture with nothing ahead of its banner is refused"
-tail -n +2 "$TMP/whole.before" | cmp -s - "$TMP/whole" \
-    || bad "a capture with nothing ahead of its banner lost more than its leading blank line"
+tail -n +3 "$TMP/whole.before" | cmp -s - "$TMP/whole" \
+    || bad "a capture with nothing ahead of its banner does not start at its title"
 
 tail_of_earlier none
 printf '[blink] tick 43\r\n[blink] tick 44\r\n' >> "$TMP/none"
 if cut_log none "$SIZE"; then
     bad "a capture in which no boot follows the reset is not refused"
 fi
-grep -q 'no whole banner title follows the reset' "$TMP/why" \
+grep -q 'no banner title follows the reset' "$TMP/why" \
     || bad "the no-boot refusal says: $(cat "$TMP/why")"
 
 # The earlier boot's own banner ahead of the reset is no boot the reset started.
@@ -207,7 +213,7 @@ done
 tail_of_earlier joined
 printf 'x\r\n  ==============================================\r\n%s\r\n' "$TITLE" >> "$TMP/joined"
 cut_log joined "$SIZE" || bad "a capture whose reset split a line is refused: $(cat "$TMP/why")"
-head -n 1 "$TMP/joined" | grep -qE '^  =+'"$(printf '\r')"'$' \
+head -n 1 "$TMP/joined" | grep -qE "$RESET_BOOT_TITLE_RE" \
     || bad "the line the reset split is read as damage: $(head -n 1 "$TMP/joined")"
 
 mkdir -p "$TMP/bin" "$TMP/tmpdir"

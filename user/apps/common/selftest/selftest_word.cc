@@ -435,9 +435,11 @@ namespace selftest
     }
 
 #if KICKOS_MEMORY_ENFORCED
-    // --- A forged holder in memory only main reaches -----------------------------------------
+    // --- A forged holder in memory only main's task reaches ----------------------------------
     // The word names a live thread of another task, which cannot write main's block: the
-    // kernel takes the id for a dead holder's, and boosts nobody.
+    // kernel takes the id for a dead holder's, and boosts nobody. A worker of main's task takes
+    // the lock, so its grant of the block dies with it and no descriptor of main's outlives the
+    // arm.
     constexpr uint32_t WFO_WAIT_US = 500000;
 #if KICKOS_SELFTEST_PEER
     int wfo_victim() // caps: E(SIGNAL)@0, its release N(WAIT)@1
@@ -449,34 +451,60 @@ namespace selftest
         return 0;
     }
 #endif
+    struct WfoTake
+    {
+        kos_mutex_t* m;
+        uint32_t id;
+        int32_t granted;
+        int rc;
+        uint64_t took_us;
+        int unlocked;
+        uint32_t left;
+    };
+    WfoTake g_wfo = {};
+    void wfo_taker(void*)
+    {
+        g_wfo.granted = st_self_grant(g_wfo.m, 64, 0);
+        if (g_wfo.granted != 0)
+        {
+            return;
+        }
+        g_wfo.m->word = g_wfo.id;
+        kos_monotonic_t const t0 = kos_monotonic_now();
+        g_wfo.rc = kos_mutex_lock(g_wfo.m, after_us(WFO_WAIT_US));
+        g_wfo.took_us = kos_between(t0, kos_monotonic_now()).ns / 1000u;
+        g_wfo.unlocked = kos_mutex_unlock(g_wfo.m);
+        g_wfo.left = g_wfo.m->word;
+    }
     void t_mutex_forged_foreign()
     {
-        TAP_ASK(.workers = 1, .tasks = 1, .endpoints = 1, .notifies = 1);
+        TAP_ASK(.workers = 2, .tasks = 1, .endpoints = 1, .notifies = 1);
         void* const blk = st_ram<WFO_RAM, 0>();
         TAP_CHECK(blk != nullptr);
-        TAP_CHECK(kos_mem_self_grant(blk, 64, 0) == 0);
-        kos_mutex_t* const m = static_cast<kos_mutex_t*>(blk);
         kos_cap_t ep = KOS_CAP_NONE;
         kos_cap_t park = KOS_CAP_NONE;
         kos_task_t t = KOS_TASK_NONE;
+        kos::thread::Handle w;
         ArmHold hold;
-        TAP_HOLD(hold.cap(&ep) and hold.cap(&park) and hold.task(&t));
+        TAP_HOLD(hold.cap(&ep) and hold.cap(&park) and hold.task(&t) and hold.thread(&w));
         TAP_CHECK(kos_endpoint_create(&ep) == 0 and kos_notify_create(&park) == 0);
         kos_cap_grant const caps[2] = {{ep, KOS_CAP_SIGNAL}, {park, KOS_CAP_WAIT}};
         TAP_CHECK(PeerRun("wfo").caps(caps, 2).start(&t) == 0);
         uint32_t id = 0;
         TAP_CHECK(report_await(ep, &id, sizeof(id)));
         TAP_CHECK(id != 0);
-        m->word = id;
-        kos_monotonic_t const t0 = kos_monotonic_now();
-        int const rc = kos_mutex_lock(m, after_us(WFO_WAIT_US));
-        uint64_t const took_us = kos_between(t0, kos_monotonic_now()).ns / 1000u;
-        int const unlocked = kos_mutex_unlock(m);
+        g_wfo = {static_cast<kos_mutex_t*>(blk), id, -1, WORD_UNSET, 0, -1, 1u};
+        w = kos::thread::create_caps(wfo_taker, nullptr, "wfoT", TAP_PRIO_PARKS, nullptr, 0,
+                                     KOS_POLICY_FIFO, 0ns, KOS_AUTH_MEMORY, nullptr, nullptr, 0,
+                                     word_pin());
+        TAP_CHECK(w.valid());
+        TAP_CHECK(hold.joined());
         (void)kos_notify(park);
-        TAP_CHECK(rc == -KOS_EOWNERDEAD);
+        TAP_CHECK(g_wfo.granted == 0);
+        TAP_CHECK(g_wfo.rc == -KOS_EOWNERDEAD);
         // No park, so no boost: the answer came before the deadline it would have waited out.
-        TAP_CHECK(took_us < WFO_WAIT_US);
-        TAP_CHECK(unlocked == 0 and m->word == 0);
+        TAP_CHECK(g_wfo.took_us < WFO_WAIT_US);
+        TAP_CHECK(g_wfo.unlocked == 0 and g_wfo.left == 0);
     }
 #endif
 
@@ -599,7 +627,7 @@ namespace selftest
         size_t const g = arena_granule();
         void* const blk = st_ram<WWI_RAM, 0>();
         TAP_CHECK(blk != nullptr and g != 0);
-        TAP_CHECK(kos_mem_self_grant(blk, g, 0) == 0);
+        TAP_CHECK(st_self_grant(blk, g, 0) == 0);
         kos_mutex_t* const m = static_cast<kos_mutex_t*>(blk);
         m->word = 0;
         kos_cap_t ep = KOS_CAP_NONE;
@@ -758,7 +786,7 @@ namespace selftest
         void* const vblk = st_ram<WTW_RAM, 0>();
         void* const fblk = st_ram<WTW_RAM, 1>();
         TAP_CHECK(vblk != nullptr and fblk != nullptr and g != 0);
-        TAP_CHECK(kos_mem_self_grant(vblk, g, 0) == 0 and kos_mem_self_grant(fblk, g, 0) == 0);
+        TAP_CHECK(st_self_grant(vblk, g, 0) == 0 and st_self_grant(fblk, g, 0) == 0);
         static_cast<kos_mutex_t*>(vblk)->word = 0;
         static_cast<kos_mutex_t*>(fblk)->word = 0;
         kos_cap_t ep = KOS_CAP_NONE;
@@ -846,7 +874,7 @@ namespace selftest
         size_t const g = arena_granule();
         void* const blk = st_ram<WRT_RAM, 0>();
         TAP_CHECK(blk != nullptr and g != 0);
-        TAP_CHECK(kos_mem_self_grant(blk, g, 0) == 0);
+        TAP_CHECK(st_self_grant(blk, g, 0) == 0);
         kos_mutex_t* const m = static_cast<kos_mutex_t*>(blk);
         m->word = 0;
         kos::thread::Handle w;
@@ -857,6 +885,7 @@ namespace selftest
         w = word_spawn(wrl_waiter, m, "wrlR", TAP_PRIO_PARKS, nullptr, 0);
         TAP_CHECK(w.valid() and word_parked());
         int32_t const parked = g_wrl_rc;
+        // Unmeasured: the retype ends the wait, so the waiter's exit would land in the window.
         int const retyped = kos_mem_self_grant(blk, g, KOS_MEM_NOCACHE);
         bool const joined = hold.joined();
         int const restored = kos_mem_self_grant(blk, g, 0);

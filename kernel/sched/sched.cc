@@ -901,6 +901,128 @@ namespace kickos
 #endif
         }
 
+#if KICKOS_HAVE_ASPACE
+        // window_step's unmap, ending the waits on the words it took. noinline: off the donor
+        // release's chain.
+        __attribute__((noinline)) bool window_pass(Thread const* c, uint16_t holder,
+                                                   Domain** lender, uintptr_t* lent, Held lock)
+        {
+            Domain* const d = thread_domain(c);
+            MapPass pass;
+            if (not aspace_window_unmap_pass(domain_space(d), domain_ranges_mut(d), holder, &pass,
+                                             lender, lent))
+            {
+                return false;
+            }
+            word_reach_lost(domain_space(d), pass.base, pass.bytes, lock);
+            return true;
+        }
+
+        // One locked pass of a dying thread's window unmap, the shootdown included, then of the
+        // frame map it held in flight: false once `c` holds neither. Its caller opens the window
+        // between passes, so this frame and the donor release are on neither's chain.
+        __attribute__((noinline)) bool window_step(Thread const* c)
+        {
+            uint16_t const holder = static_cast<uint16_t>(kernel().threads.index_of(c) + 1);
+            IrqLock lock;
+            Domain* lender = nullptr;
+            uintptr_t lent = 0;
+            if (not window_pass(c, holder, &lender, &lent, lock))
+            {
+                return presync_map_unwind_pass(lock);
+            }
+            if (lender != nullptr)
+            {
+                domain_unlend(lender, lent);
+                domain_release(lender);
+            }
+            return true;
+        }
+
+        // One locked pass trimming what `c`'s space maps of runs a caller sized, once no thread of
+        // its task can reach the space again: the release that ends the space is left the image
+        // and the stacks. False once none is left. Its caller opens the window, as
+        // window_step's does.
+        __attribute__((noinline)) bool trim_step(Thread const* c)
+        {
+            IrqLock lock;
+            Domain* const d = task_domain(c->task);
+            return task_sheds(c->task)
+                   and aspace_trim_pass(domain_space(d), domain_ranges_mut(d));
+        }
+
+#endif
+
+        // What a dying thread gives back of its space and its devices once its windows are gone.
+        // Inlined: a frame here deepens the exit stubs' teardown chain.
+        inline __attribute__((always_inline)) void leave_locked(Thread* c, Held lock)
+        {
+#if KICKOS_HAVE_ASPACE
+            // Release the user stack before task_release can destroy its space.
+            // Execution is on the kernel stack; no later code may touch the user stack.
+            if (c->kstack_owned)
+            {
+                word_reach_lost(domain_space(thread_domain(c)),
+                                reinterpret_cast<uintptr_t>(c->stack_base), c->stack_size,
+                                lock);
+                ustack_free(thread_domain(c),
+                            reinterpret_cast<uintptr_t>(c->stack_base), c->stack_size);
+                c->stack_base = nullptr;
+                c->stack_size = 0;
+                // The reclaim-point harvest reads this flag to push an arena block onto
+                // the free list.
+                c->kstack_owned = false;
+            }
+#if KICKOS_KERNEL_CORES > 1
+            c->left_space = true;
+            aspace_install_boot();
+#endif
+#endif
+            // After the unmaps above, which ended the waits on words leaving with this
+            // thread: only words that stay are handed over.
+            mutex_owner_exit(c, lock);
+            // Release the device windows before teardown can wake a supervisor into a
+            // respawn that asks for them. No return to user code follows. Each block is
+            // re-gated while its window is still held, so no second holder is admitted first.
+            for (arch_mpu_region const& r : c->mpu)
+            {
+                if ((r.attr & ARCH_MPU_DEV) != 0)
+                {
+                    // -KOS_ENOSYS and -KOS_EINVAL are the answers for a block nothing gates.
+                    (void)arch_periph_disable(r.base);
+                }
+            }
+            c->mpu.drop_devices();
+#if KICKOS_ARCH_HAS_PORTS
+            // Its ports too: the next switch on this core closes them.
+            c->ctx.port_count = 0;
+            c->ctx.port_places = 0;
+#endif
+        }
+
+        // The dying thread leaves its task. Inlined as leave_locked.
+        inline __attribute__((always_inline)) void release_locked(Thread* c, int slot,
+                                                                  Task** left_task,
+                                                                  uint16_t* left_gen,
+                                                                  bool* emptied_task, Held lock)
+        {
+            // Capture task identity before retiring membership.
+            *left_task = c->task;
+            *left_gen = task_gen(c->task);
+            *emptied_task = task_release(c->task, lock);
+            // Clear the task pointer if this death empties the group, since its slot
+            // may be freed during teardown gaps. With surviving siblings, retain it
+            // until teardown finishes so still-open capabilities remain in the task budget.
+            if (*emptied_task)
+            {
+                task_member_leave(c, slot);
+            }
+            // The creator's hold ends with the creator, keyed on the tag: a recycled pool
+            // slot answers kill_tag_of with its predecessor's, so a hold left behind is
+            // creator authority its successor never earned.
+            task_orphan_created_by(kernel().threads.kill_tag_of(c), lock);
+        }
+
         void exit_current(int code, ExitCause cause, IrqLock* held)
         {
             Thread* c = nullptr;
@@ -910,6 +1032,7 @@ namespace kickos
             uint16_t left_gen = 0;
             bool emptied_task = false;
             int slot = -1;
+            bool split = false;
             {
                 IrqLock lock;
                 c = kernel().current(kickos_kernel_core());
@@ -944,75 +1067,24 @@ namespace kickos
                 {
                     task_end(c->task, KOS_EXIT_FAULT, true, lock);
                 }
-#if KICKOS_HAVE_ASPACE
-#if KICKOS_PRESYNC
-                // A thread leaving inside a call's work outside the lock: the run it staged has
-                // no other owner.
+#if KICKOS_HAVE_ASPACE and KICKOS_PRESYNC
+                // A thread leaving inside a call's work outside the lock: the run it staged and
+                // the thread it built have no other owner.
+                task_abandon_building(lock);
                 presync_exit();
 #endif
-                // Unmap this thread's windows, the shootdown included, before the release below
-                // frees a device for a second holder: a sibling keeps the space and must not
-                // keep the mapping.
-                uint16_t const holder = static_cast<uint16_t>(kernel().threads.index_of(c) + 1);
-                word_windows_lost(domain_space(thread_domain(c)), domain_ranges(thread_domain(c)),
-                                  holder, lock);
-                aspace_window_unmap_holder(domain_space(thread_domain(c)),
-                                           domain_ranges_mut(thread_domain(c)), holder);
-                // Release the user stack before task_release can destroy its space.
-                // Execution is on the kernel stack; no later code may touch the user stack.
-                if (c->kstack_owned)
-                {
-                    word_reach_lost(domain_space(thread_domain(c)),
-                                    reinterpret_cast<uintptr_t>(c->stack_base), c->stack_size,
-                                    lock);
-                    ustack_free(thread_domain(c),
-                                reinterpret_cast<uintptr_t>(c->stack_base), c->stack_size);
-                    c->stack_base = nullptr;
-                    c->stack_size = 0;
-                    // The reclaim-point harvest reads this flag to push an arena block onto
-                    // the free list.
-                    c->kstack_owned = false;
-                }
-#if KICKOS_KERNEL_CORES > 1
-                c->left_space = true;
-                aspace_install_boot();
+#if KICKOS_HAVE_ASPACE
+                // Its windows and an ended task's space go in passes outside this bracket.
+                uint16_t const holder = static_cast<uint16_t>(slot + 1);
+                split = aspace_window_held(domain_ranges(thread_domain(c)), holder)
+                        or task_ended(c->task) or presync_record()->map_into != nullptr
+                        or presync_record()->table_count != 0;
 #endif
-#endif
-                // After the unmaps above, which ended the waits on words leaving with this
-                // thread: only words that stay are handed over.
-                mutex_owner_exit(c, lock);
-                // Release the device windows before teardown can wake a supervisor into a
-                // respawn that asks for them. No return to user code follows. Each block is
-                // re-gated while its window is still held, so no second holder is admitted first.
-                for (arch_mpu_region const& r : c->mpu)
+                if (not split)
                 {
-                    if ((r.attr & ARCH_MPU_DEV) != 0)
-                    {
-                        // -KOS_ENOSYS and -KOS_EINVAL are the answers for a block nothing gates.
-                        (void)arch_periph_disable(r.base);
-                    }
+                    leave_locked(c, lock);
+                    release_locked(c, slot, &left_task, &left_gen, &emptied_task, lock);
                 }
-                c->mpu.drop_devices();
-#if KICKOS_ARCH_HAS_PORTS
-                // Its ports too: the next switch on this core closes them.
-                c->ctx.port_count = 0;
-                c->ctx.port_places = 0;
-#endif
-                // Capture task identity before retiring membership.
-                left_task = c->task;
-                left_gen = task_gen(c->task);
-                emptied_task = task_release(c->task, lock);
-                // Clear the task pointer if this death empties the group, since its slot
-                // may be freed during teardown gaps. With surviving siblings, retain it
-                // until teardown finishes so still-open capabilities remain in the task budget.
-                if (emptied_task)
-                {
-                    task_member_leave(c, slot);
-                }
-                // The creator's hold ends with the creator, keyed on the tag: a recycled pool
-                // slot answers kill_tag_of with its predecessor's, so a hold left behind is
-                // creator authority its successor never earned.
-                task_orphan_created_by(kernel().threads.kill_tag_of(c), lock);
             }
             // Ended only past `dying`, so a cancel read under the caller's bracket reaches the
             // mark with the exclusion never lapsing.
@@ -1020,6 +1092,33 @@ namespace kickos
             {
                 held->end();
             }
+#if KICKOS_HAVE_ASPACE
+            if (split)
+            {
+                // Before the device release: a sibling keeps the space and must not keep the
+                // mapping.
+                while (window_step(c))
+                {
+#if KICKOS_ARCH_IRQ_WINDOW
+                    arch_irq_window();
+#endif
+                }
+                {
+                    IrqLock lock;
+                    leave_locked(c, lock);
+                }
+                while (trim_step(c))
+                {
+#if KICKOS_ARCH_IRQ_WINDOW
+                    arch_irq_window();
+#endif
+                }
+                {
+                    IrqLock lock;
+                    release_locked(c, slot, &left_task, &left_gen, &emptied_task, lock);
+                }
+            }
+#endif
             // Must close every cap the exiting thread holds before its slot is reclaimable,
             // else object references leak (destroy-on-last-close).
             cap_teardown(c, left_task);
@@ -1040,7 +1139,7 @@ namespace kickos
                 // sweeps complete.
                 if (not cap_teardown_active())
                 {
-                    console_on_driver_death(lock);
+                    console_on_driver_death();
                 }
                 policy_on_remove(c);
                 if (c != k.idle(kickos_kernel_core()) and k.live > 0)

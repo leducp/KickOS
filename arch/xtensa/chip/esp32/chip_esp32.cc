@@ -25,6 +25,7 @@
 #include "board_pins.h"
 #include "irq.h"
 #include "routing.h"
+#include "uart_routes.h"
 #include "regs/uart.h"
 #include "esp_uart_console.h"
 #include "regs/timg.h"
@@ -43,6 +44,7 @@ namespace kickos
 namespace mmap = kickos::esp32::mmap;
 namespace reg = kickos::esp32::reg;
 namespace irq = kickos::esp32::irq;
+namespace con = kickos::espuart::con;
 
 extern "C"
 {
@@ -57,7 +59,7 @@ extern "C"
 
     // Add a (CPU interrupt, logical line) device route and arm that CPU interrupt in
     // INTENABLE, which then serves as the line's kernel-owned mask. The
-    // per-transfer gate stays at the peripheral, in the driver-owned reg::uart::INT_ENA.
+    // per-transfer gate stays at the peripheral, in the driver-owned UART INT_ENA.
     void kickos_lx6_bind_dev_int(int cpu_int, int line, int core);
 
     extern uint32_t _sidata, _sdata, _edata, _sbss, _ebss;
@@ -71,6 +73,72 @@ extern "C"
 
 namespace
 {
+    // Each UART's module gate, its interrupt-matrix source, the CPU interrupt and logical line it
+    // reaches, and its GPIO matrix signals (TRM Registers 12.19-12.20 p.255, Table 8.3-1 p.176,
+    // Table 6.9-1 pp.125 and 131).
+    struct uart_instance
+    {
+        uintptr_t base;
+        uint32_t perip;
+        uint32_t source;
+        uint32_t cpu_int;
+        int line;
+        uint32_t tx_signal;
+        uint32_t rx_signal;
+    };
+
+    constexpr uart_instance UARTS[] = {
+        {mmap::UART0_BASE, reg::dport::PERIP_UART0, irq::UART0_SRC, irq::UART0_CPU_INT, irq::UART0_IRQ, 14u, 14u},
+        {mmap::UART1_BASE, reg::dport::PERIP_UART1, irq::UART1_SRC, irq::UART1_CPU_INT, irq::UART1_IRQ, 17u, 17u},
+        {mmap::UART2_BASE, reg::dport::PERIP_UART2, irq::UART2_SRC, irq::UART2_CPU_INT, irq::UART2_IRQ, 198u, 198u},
+    };
+
+    using kickos::esp32::UART_ROUTES;
+    constexpr uint32_t UART_COUNT = sizeof(UARTS) / sizeof(UARTS[0]);
+    static_assert(sizeof(UART_ROUTES) / sizeof(UART_ROUTES[0]) == UART_COUNT
+                      and UART_ROUTES[0].line == UARTS[0].line and UART_ROUTES[1].line == UARTS[1].line
+                      and UART_ROUTES[2].line == UARTS[2].line
+                      and UART_ROUTES[0].status_bit == 1u << UARTS[0].cpu_int
+                      and UART_ROUTES[1].status_bit == 1u << UARTS[1].cpu_int
+                      and UART_ROUTES[2].status_bit == 1u << UARTS[2].cpu_int,
+                  "every UART has its route");
+
+    constexpr uart_instance uart_of(uintptr_t base)
+    {
+        for (uart_instance const& u : UARTS)
+        {
+            if (u.base == base)
+            {
+                return u;
+            }
+        }
+        return {0u, 0u, 0u, 0u, -1, 0u, 0u};
+    }
+
+    // At run time a pointer, not a copy: a struct returned by value is a memcpy call.
+    uart_instance const* uart_find(uintptr_t base)
+    {
+        for (uart_instance const& u : UARTS)
+        {
+            if (u.base == base)
+            {
+                return &u;
+            }
+        }
+        return nullptr;
+    }
+
+    constexpr uart_instance CONSOLE = uart_of(KICKOS_BOARD_CONSOLE_BASE);
+    static_assert(CONSOLE.perip != 0u, "the board's console is not a UART of this chip");
+    constexpr int CONSOLE_LINE = KICKOS_BOARD_CONSOLE_LINE_IRQ;
+    static_assert(CONSOLE.line == CONSOLE_LINE, "the console's line is its UART's");
+
+    // UART0 on the pads the ROM boots it on, at the baud it leaves: a console the kernel only
+    // re-times when APB doubles.
+    constexpr bool CONSOLE_FROM_ROM = CONSOLE.base == mmap::UART0_BASE
+                                      and KICKOS_BOARD_CONSOLE_TX_SELECT == 0
+                                      and KICKOS_BOARD_CONSOLE_RX_SELECT == 0;
+
     void cache_flush(uintptr_t ctrl)
     {
         r32(ctrl) &= ~reg::cache::FLUSH_ENA;
@@ -280,10 +348,13 @@ namespace
         delay_us(30, 240);
 
         // APB doubled 40->80 MHz, so the ROM's UART0 divider now halves the baud.
-        while (((r32(reg::uart::STATUS) >> reg::uart::TXFIFO_CNT_S) & reg::uart::TXFIFO_CNT_MASK) != 0)
+        if constexpr (CONSOLE_FROM_ROM)
         {
+            while (((r32(con::STATUS) >> reg::uart::TXFIFO_CNT_S) & reg::uart::TXFIFO_CNT_MASK) != 0)
+            {
+            }
+            r32(con::CLKDIV) = reg::uart::clkdiv(reg::system::APB_CLOCK_HZ, reg::uart::CONSOLE_BAUD);
         }
-        r32(reg::uart::CLKDIV) = reg::uart::clkdiv(reg::system::APB_CLOCK_HZ, reg::uart::CONSOLE_BAUD);
     }
 
     // TIMG0 T0 is the monotonic clock, not the CCOUNT fallback (arch/xtensa/lx6): CCOUNT is
@@ -337,12 +408,9 @@ namespace
         }
     }
 
-    // The window arch_console_reclaim rewrites. UART0 owns 0x3FF4_0000 to 0x3FF4_0FFF
-    // (TRM Table 3.3-6); UART1 starts at 0x3FF5_0000.
-    constexpr uintptr_t CONSOLE_WIN_BASE = mmap::UART0_BASE;
-    static_assert(KICKOS_BOARD_CONSOLE_BASE == CONSOLE_WIN_BASE, "the board's console is not the UART this backend drives");
-    static_assert(KICKOS_BOARD_CONSOLE_TX_SELECT == 0 and KICKOS_BOARD_CONSOLE_RX_SELECT == 0,
-                  "the console pads keep IO MUX function 0, their reset value, which this backend leaves");
+    // The window arch_console_reclaim rewrites: the console UART's 4 KiB slot (TRM Table
+    // 3.3-6).
+    constexpr uintptr_t CONSOLE_WIN_BASE = con::BASE;
     constexpr size_t CONSOLE_WIN_SIZE = KICKOS_BOARD_CONSOLE_SIZE;
 
     static_assert(reg::uart::OFF_INT_ENA < CONSOLE_WIN_SIZE
@@ -352,105 +420,100 @@ namespace
                       and reg::uart::OFF_CLKDIV < CONSOLE_WIN_SIZE,
                   "arch_console_reclaim writes outside the window it reports");
 
-    // UART0 sub-source -> logical line. Every entry names the one grouped line:
-    // the kernel-owned mask is CPU int 13's INTENABLE bit, which cannot separate
-    // sub-sources, so splitting them across lines would let masking one silently mask the
-    // others.
-    struct uart0_route
+    constexpr uint32_t io_mux_word(uint32_t select)
     {
-        uint32_t bit;
-        int line;
-    };
-    constexpr uart0_route UART0_LINES[] = {
-        {reg::uart::TXFIFO_EMPTY_INT, irq::CONSOLE_TX_LINE},
-        {reg::uart::RXFIFO_FULL_INT, irq::CONSOLE_TX_LINE},
-        {reg::uart::RXFIFO_OVF_INT, irq::CONSOLE_TX_LINE},
-        {reg::uart::FRM_ERR_INT, irq::CONSOLE_TX_LINE},
-        {reg::uart::PARITY_ERR_INT, irq::CONSOLE_TX_LINE},
-    };
-
-#if KICKOS_KERNEL_CORES > 1
-    constexpr bool uart0_posts_one_line()
-    {
-        for (auto const& row : UART0_LINES)
-        {
-            if (row.line != irq::CONSOLE_TX_LINE)
-            {
-                return false;
-            }
-        }
-        return true;
-    }
-    // A claim routes CPU int 13 whole, so a second line posted from it would follow a claim of
-    // the bound one away from its own. kickos_lx6_bind_dev_int refuses the bind half at boot.
-    static_assert(uart0_posts_one_line(),
-                  "every line CPU int 13 posts moves with the one bound to it");
-#endif
-
-    constexpr uint32_t uart0_routed_mask()
-    {
-        uint32_t m = 0;
-        for (auto const& row : UART0_LINES)
-        {
-            m = m | row.bit;
-        }
-        return m;
+        return (select << reg::gpio::MCU_SEL_S) | reg::gpio::FUN_DRV_2;
     }
 
-    void uart0_irq_setup()
-    {
-        // CPU int 13 is armed below while the ring is still unarmed, so a stale ROM-enabled
-        // source would storm the level-1 dispatcher.
-        r32(reg::uart::INT_ENA) = 0;
-        r32(reg::uart::INT_CLR) = 0xFFFFFFFFu;
+    static_assert(KICKOS_BOARD_CONSOLE_TX_BIT < 34u, "GPIO34 and above are input-only");
+    static_assert(reg::gpio::IO_MUX_OFF[KICKOS_BOARD_CONSOLE_TX_BIT] != 0u
+                      and reg::gpio::IO_MUX_OFF[KICKOS_BOARD_CONSOLE_RX_BIT] != 0u,
+                  "a console pin has no pad");
 
-        uint32_t conf1 = r32(reg::uart::CONF1);
+    // A pad on f2, its GPIO function, carries the UART's signal through the GPIO matrix; any
+    // other function is the pad's own UART signal, with the matrix bypassed.
+    void console_pins_init()
+    {
+        constexpr uint32_t tx = KICKOS_BOARD_CONSOLE_TX_BIT;
+        constexpr uint32_t rx = KICKOS_BOARD_CONSOLE_RX_BIT;
+        r32(mmap::IO_MUX_BASE + reg::gpio::IO_MUX_OFF[tx]) = io_mux_word(KICKOS_BOARD_CONSOLE_TX_SELECT);
+        if constexpr (KICKOS_BOARD_CONSOLE_TX_SELECT == reg::gpio::MCU_SEL_GPIO)
+        {
+            r32(reg::gpio::func_out_sel_cfg(tx)) = CONSOLE.tx_signal;
+        }
+        r32(mmap::IO_MUX_BASE + reg::gpio::IO_MUX_OFF[rx]) =
+            io_mux_word(KICKOS_BOARD_CONSOLE_RX_SELECT) | reg::gpio::FUN_IE;
+        if constexpr (KICKOS_BOARD_CONSOLE_RX_SELECT == reg::gpio::MCU_SEL_GPIO)
+        {
+            r32(reg::gpio::func_in_sel_cfg(CONSOLE.rx_signal)) = rx | reg::gpio::SIG_IN_SEL;
+        }
+        else
+        {
+            r32(reg::gpio::func_in_sel_cfg(CONSOLE.rx_signal)) = 0u;
+        }
+    }
+
+    // A UART the ROM left alone: its module out of reset, 8N1 at the console baud off the
+    // 80 MHz APB, then its pads.
+    void console_uart_init()
+    {
+        if constexpr (CONSOLE_FROM_ROM)
+        {
+            return;
+        }
+        r32(reg::dport::PERIP_CLK_EN) =
+            r32(reg::dport::PERIP_CLK_EN) | CONSOLE.perip | reg::dport::PERIP_UART_MEM;
+        r32(reg::dport::PERIP_RST_EN) = r32(reg::dport::PERIP_RST_EN) & ~CONSOLE.perip;
+        r32(con::CONF0) = reg::uart::CONF0_8N1 | reg::uart::CONF0_TXFIFO_RST | reg::uart::CONF0_RXFIFO_RST;
+        r32(con::CONF0) = reg::uart::CONF0_8N1;
+        r32(con::CLKDIV) = reg::uart::clkdiv(reg::system::APB_CLOCK_HZ, reg::uart::CONSOLE_BAUD);
+        console_pins_init();
+    }
+
+    void console_irq_setup()
+    {
+        // The CPU interrupt is armed below while the ring is still unarmed, so a stale
+        // ROM-enabled source would storm the level-1 dispatcher.
+        r32(con::INT_ENA) = 0;
+        r32(con::INT_CLR) = 0xFFFFFFFFu;
+
+        uint32_t conf1 = r32(con::CONF1);
         conf1 &= ~(reg::uart::TXFIFO_EMPTY_THRHD_MASK << reg::uart::TXFIFO_EMPTY_THRHD_S);
         conf1 |= (reg::uart::TXFIFO_EMPTY_THRHD & reg::uart::TXFIFO_EMPTY_THRHD_MASK)
                  << reg::uart::TXFIFO_EMPTY_THRHD_S;
-        r32(reg::uart::CONF1) = conf1;
+        r32(con::CONF1) = conf1;
 
-        route_source(irq::UART0_SRC, irq::CONSOLE_CORE, irq::UART0_CPU_INT);
-        kickos_lx6_bind_dev_int(static_cast<int>(irq::UART0_CPU_INT), irq::CONSOLE_TX_LINE,
-                                static_cast<int>(irq::CONSOLE_CORE));
+    }
+
+    // Every UART's source on its own CPU interrupt and logical line, so a driver granted a UART
+    // claims and waits on that UART's line. A UART left clock-gated raises nothing.
+    void uart_irq_setup()
+    {
+        for (uart_instance const& u : UARTS)
+        {
+            route_source(u.source, irq::DEVICE_CORE, u.cpu_int);
+            kickos_lx6_bind_dev_int(static_cast<int>(u.cpu_int), u.line,
+                                    static_cast<int>(irq::DEVICE_CORE));
+        }
     }
 }
 
 extern "C"
 {
 
-// ISR context. Every UART0 sub-source shares one interrupt-matrix source and one CPU
-// interrupt, so this is where they are told apart; 0 posts is a valid outcome.
-// INT_ST is already INT_RAW & INT_ENA, so a disabled source cannot appear here. The
-// driver owns every clear: this posts and returns.
+// ISR context. Every sub-source of a UART shares its interrupt-matrix source and its CPU
+// interrupt, which INTENABLE cannot split, so any asserted sub-source posts the UART's one line.
+// INT_CLR is left to the block's owner: clearing here would consume latches it must see.
 void kickos_lx6_dispatch_dev(int cpu_int)
 {
-    if (cpu_int != static_cast<int>(irq::UART0_CPU_INT))
+    uint32_t const lines = kickos::esp::lines_to_post(UART_ROUTES, UART_COUNT,
+                                                      1u << static_cast<unsigned>(cpu_int), ~0u);
+    for (kickos::esp::UartRoute const& route : UART_ROUTES)
     {
-        return;
-    }
-    uint32_t const st = r32(reg::uart::INT_ST);
-    // A source with no row in UART0_LINES has nothing that will ever clear it, and posts no
-    // line, so it never reaches the kernel's spurious accounting: the level-1 handler would
-    // re-enter forever. Silence it HERE. The window's MMIO grant lets a driver enable any
-    // sub-source (RXFIFO_TOUT), so an unrouted one must cost that driver its interrupt,
-    // never the machine.
-    uint32_t const stray = st & ~uart0_routed_mask();
-    if (stray != 0)
-    {
-        r32(reg::uart::INT_ENA) = r32(reg::uart::INT_ENA) & ~stray;
-        r32(reg::uart::INT_CLR) = stray;
-    }
-    uint32_t posted = 0;
-    for (auto const& row : UART0_LINES)
-    {
-        uint32_t const seen = 1u << static_cast<unsigned>(row.line);
-        if ((st & row.bit) == 0 or (posted & seen) != 0)
+        if ((lines & (1u << static_cast<unsigned>(route.line))) != 0u)
         {
-            continue;
+            kickos_isr_irq(route.line);
         }
-        posted = posted | seen;
-        kickos_isr_irq(row.line);
     }
 }
 
@@ -461,11 +524,16 @@ void kickos_lx6_dispatch_dev(int cpu_int)
 void kickos_lx6_route_dev_int(int cpu_int, int core)
 {
     constexpr uint32_t EDGE_INPUTS = (1u << 10) | (1u << 22) | (1u << 28) | (1u << 30);
-    static_assert(((1u << irq::UART0_CPU_INT) & EDGE_INPUTS) == 0,
+    static_assert(((1u << irq::UART0_CPU_INT) & EDGE_INPUTS) == 0
+                      and ((1u << irq::UART1_CPU_INT) & EDGE_INPUTS) == 0
+                      and ((1u << irq::UART2_CPU_INT) & EDGE_INPUTS) == 0,
                   "a routed device line needs a Level-Triggered CPU input");
-    if (cpu_int == static_cast<int>(irq::UART0_CPU_INT))
+    for (uart_instance const& u : UARTS)
     {
-        route_source(irq::UART0_SRC, static_cast<uint32_t>(core), irq::UART0_CPU_INT);
+        if (static_cast<int>(u.cpu_int) == cpu_int)
+        {
+            route_source(u.source, static_cast<uint32_t>(core), u.cpu_int);
+        }
     }
 }
 #endif
@@ -477,7 +545,7 @@ void arch_console_reclaim_window(uintptr_t* base, size_t* size)
 }
 
 // Runs from kpanic_enter, possibly in a partial nested-fault state, after a userspace
-// driver has owned the whole UART0 window. Straight-line ABSOLUTE stores only: no reads
+// driver has owned the whole console UART window. Straight-line ABSOLUTE stores only: no reads
 // of driver-mutable state, no loops, no baud derived from a clock the fault may have
 // left wrong, and running it twice lands on the same registers.
 // The pads are not restored because they cannot be lost: arch_pinmux_set refuses the console
@@ -486,19 +554,19 @@ void arch_console_reclaim(void)
 {
     // Silence first. A stale enabled source would storm the level-1 handler through the
     // whole panic dump, and INT_ENA=0 makes every INT_ST bit read 0 whatever is latched.
-    r32(reg::uart::INT_ENA) = 0;
-    r32(reg::uart::INT_CLR) = 0xFFFFFFFFu;
+    r32(con::INT_ENA) = 0;
+    r32(con::INT_CLR) = 0xFFFFFFFFu;
 
     // Framing and clock select, plus a FIFO reset in the same absolute word so the dead
     // driver's queued bytes do not bury the dump. The two RST bits are R/W, not
     // self-clearing, so the second store is what releases them.
-    r32(reg::uart::CONF0) =
+    r32(con::CONF0) =
         reg::uart::CONF0_8N1 | reg::uart::CONF0_TXFIFO_RST | reg::uart::CONF0_RXFIFO_RST;
-    r32(reg::uart::CONF0) = reg::uart::CONF0_8N1;
+    r32(con::CONF0) = reg::uart::CONF0_8N1;
 
     // Thresholds back to the bring-up values; also clears RX_TOUT_EN and RX_FLOW_EN,
     // the latter of which would gate TX on a CTS this board does not wire.
-    r32(reg::uart::CONF1) =
+    r32(con::CONF1) =
         ((reg::uart::TXFIFO_EMPTY_THRHD & reg::uart::TXFIFO_EMPTY_THRHD_MASK)
          << reg::uart::TXFIFO_EMPTY_THRHD_S)
         | ((reg::uart::RXFIFO_FULL_THRHD & reg::uart::RXFIFO_FULL_THRHD_MASK)
@@ -506,7 +574,7 @@ void arch_console_reclaim(void)
 
     // Baud off the fixed 80 MHz APB, the same constant folding clock_init_240mhz does.
     // SystemCoreClock is deliberately not consulted: it is writable state.
-    r32(reg::uart::CLKDIV) = reg::uart::clkdiv(reg::system::APB_CLOCK_HZ, reg::uart::CONSOLE_BAUD);
+    r32(con::CLKDIV) = reg::uart::clkdiv(reg::system::APB_CLOCK_HZ, reg::uart::CONSOLE_BAUD);
 }
 
 }
@@ -534,6 +602,8 @@ extern "C"
 
 void arch_diag_led_init(void)
 {
+    r32(reg::gpio::pin_reg(KICKOS_BOARD_LED_BIT)) = 0u;
+    r32(reg::gpio::func_out_sel_cfg(KICKOS_BOARD_LED_BIT)) = reg::gpio::OUT_SEL_SIMPLE;
     r32(mmap::IO_MUX_BASE + reg::gpio::IO_MUX_OFF[KICKOS_BOARD_LED_BIT]) = reg::gpio::IO_MUX_GPIO_FUNC;
     r32(reg::gpio::ENABLE_W1TS) = LED_BIT;
     r32(led_out(not LED_LIT)) = LED_BIT;
@@ -592,7 +662,7 @@ int arch_pinmux_set(uint32_t port, uint32_t pin, uint32_t func)
 // answer 0: a wrong branch clock silently garbles the wire.
 uint32_t arch_periph_clock_hz(uintptr_t base)
 {
-    if (base != mmap::UART0_BASE)
+    if (uart_find(base) == nullptr)
     {
         return 0;
     }
@@ -603,6 +673,20 @@ uint32_t arch_periph_clock_hz(uintptr_t base)
         return 0;
     }
     return reg::system::APB_CLOCK_HZ;
+}
+
+// A UART other than the console, out of its module reset with its clock on. Must stay in this
+// TU: arch_init anchors it, and anywhere else the arch/common fallback answers first.
+int arch_periph_enable(uintptr_t base)
+{
+    uart_instance const* const u = uart_find(base);
+    if (u == nullptr or base == CONSOLE.base)
+    {
+        return -KOS_EINVAL;
+    }
+    r32(reg::dport::PERIP_CLK_EN) = r32(reg::dport::PERIP_CLK_EN) | u->perip | reg::dport::PERIP_UART_MEM;
+    r32(reg::dport::PERIP_RST_EN) = r32(reg::dport::PERIP_RST_EN) & ~u->perip;
+    return 0;
 }
 
 #if KICKOS_NUM_CORES > 1
@@ -700,15 +784,23 @@ void arch_init(void)
 {
     wdt_disable();
     clock_init_240mhz();
+    // AFTER the PLL, its divider being off APB, and ahead of kickos_lx6_init's refusal.
+    console_uart_init();
     timg_clock_init();   // AFTER the PLL: its rate is off APB
     kickos_lx6_init();
-    uart0_irq_setup();
+    console_irq_setup();
+    uart_irq_setup();
 #if KICKOS_NUM_CORES > 1
     // After the console is routed, so the release can report.
     uint32_t const arrived = kickos_esp32_release_secondaries();
     kickos::kprintf("# cores: %x arrived\n", arrived);
+#if KICKOS_KERNEL_CORES > 1
+    kickos_doorbell_reachable();
+#endif
+#if defined(KICKOS_WITNESS_DOORBELL) && KICKOS_WITNESS_DOORBELL
     // After arrival: the check needs every peer's route live and its mask open.
     kickos_doorbell_boot_check();
+#endif
 #endif
     for (uint32_t core = 0; core < KICKOS_NUM_CORES; core++)
     {
@@ -735,7 +827,7 @@ bool arch_console_write_sync(char const* buf, size_t n)
     return kickos::espuart::console::write_sync(buf, n);
 }
 
-// Block until UART0 is transmission-complete. STATUS.TXFIFO_CNT reaching 0 is only
+// Block until the console UART is transmission-complete. STATUS.TXFIFO_CNT reaching 0 is only
 // buffer-empty and leaves up to one frame still clocking out of the shifter;
 // STATUS.ST_UTX_OUT is the transmitter state machine itself, idle only at its TX_IDLE
 // encoding (TRM Register 19.8).
@@ -744,7 +836,7 @@ void arch_console_flush_sync(void)
     uint32_t spin = 0;
     while (true)
     {
-        uint32_t const status = r32(reg::uart::STATUS);
+        uint32_t const status = r32(con::STATUS);
         uint32_t const queued = (status >> reg::uart::TXFIFO_CNT_S) & reg::uart::TXFIFO_CNT_MASK;
         uint32_t const tx_fsm = (status >> reg::uart::ST_UTX_OUT_S) & reg::uart::ST_UTX_OUT_MASK;
         if (queued == 0 and tx_fsm == reg::uart::ST_UTX_OUT_IDLE)
@@ -760,7 +852,7 @@ void arch_console_flush_sync(void)
 
 console_tx_backend const* arch_console_tx_backend(int* irq_line)
 {
-    *irq_line = irq::CONSOLE_TX_LINE;
+    *irq_line = CONSOLE_LINE;
     return &kickos::espuart::console::backend;
 }
 

@@ -281,8 +281,29 @@ PendSV_Handler:
 /* The SVC entry alone. r3 is still the outgoing ctx*, which is exactly what the shared tail
    expects to pop, so the spill the PendSV entry made is faked here rather than the pop being
    skipped: a contained refusal IS a physical swap and must emit its switch record, or the
-   decoder's from == previous.to continuity check breaks on the next one. r2 is the pad. */
+   decoder's from == previous.to continuity check breaks on the next one. r2 is the pad.
+
+   A PSP on the fault exit's frame is the SVCall a faulted entry left behind, taken as the kill
+   redirect returned and before the exit ran. It is dropped, not contained: a containment would
+   overwrite the kill's record. That frame is on the kernel block and its PC is the exit's. */
 .Lpsp_wild_svc:
+    ldr     r1, [r3, #F_CTX_KERNEL_SP]
+    lsrs    r1, r1, #3
+    lsls    r1, r1, #3
+    subs    r1, #32                 /* where kickos_arm_fault_frame_at builds the frame */
+    cmp     r0, r1
+    bne     .Lpsp_wild_svc_contain
+    ldr     r1, [r0, #24]           /* the stacked PC */
+    ldr     r4, =kickos_thread_fault_exit
+    lsrs    r4, r4, #1
+    lsls    r4, r4, #1
+    cmp     r1, r4
+    bne     .Lpsp_wild_svc_contain
+    push    {r0, lr}
+    bl      kickos_fault_record_svc_dropped
+    pop     {r0, r1}
+    bx      r1                      /* pops the frame into kickos_thread_fault_exit */
+.Lpsp_wild_svc_contain:
 #if KICKOS_TELEMETRY
     push    {r2, r3}
 #endif

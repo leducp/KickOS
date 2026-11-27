@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // A thread's lock id: (generation << LOCK_ID_SLOT_BITS) | (slot + 1), in 31 bits, 0 meaning
-// none. The kernel seats each thread's own where that thread reads it with one load.
+// none. The kernel seats each thread's own where that thread reads it in user mode.
 
 #ifndef KICKOS_LOCK_ID_H
 #define KICKOS_LOCK_ID_H

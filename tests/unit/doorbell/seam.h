@@ -13,6 +13,8 @@ namespace kickos::doorbellfix
 {
     extern bool g_masked;
     extern std::string g_log;
+    // Called at each spin, or not at all while null.
+    extern void (*g_on_spin)(void);
 
     void reset(void);
 }

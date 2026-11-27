@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// MK64FN1M0 AIPS0 peripheral-bridge register map (K64 Sub-Family RM ch.20): the
-// per-4-KB-slot access gate (MPRA + PACRA..PACRP).
+// MK64FN1M0 AIPS0 and AIPS1 peripheral-bridge register maps (K64 Sub-Family RM ch.20): the
+// per-4-KB-slot access gate (MPRA + PACRA..PACRP), at the same offsets on both bridges.
 
 #ifndef KICKOS_ARCH_ARM_CHIP_MK64F_REGS_AIPS_H
 #define KICKOS_ARCH_ARM_CHIP_MK64F_REGS_AIPS_H
@@ -18,8 +18,8 @@ namespace kickos::mk64f::reg::aips
 
     // PACR offsets are NOT contiguous: PACRA..PACRD (slots 0..31) at 0x20..0x2C, then
     // 0x30..0x3C reserved, PACRE..PACRP (slots 32..127) at 0x40..0x6C (RM 20.2.3).
-    constexpr uintptr_t PACRA = mmap::AIPS0_BASE + 0x20u;
-    constexpr uintptr_t PACRE = mmap::AIPS0_BASE + 0x40u;
+    constexpr uintptr_t PACRA_OFFSET = 0x20u;
+    constexpr uintptr_t PACRE_OFFSET = 0x40u;
     constexpr uint32_t PACR_LOW_GROUPS = 4u; // groups covered by PACRA..PACRD
     constexpr uint32_t SLOT_COUNT = 128u;    // slots with a PACR field on THIS bridge
 
@@ -37,15 +37,26 @@ namespace kickos::mk64f::reg::aips
         return static_cast<uint32_t>((base - mmap::AIPS0_BASE) / SLOT_STRIDE);
     }
 
-    // PACR holding slot's 4-bit field; 8 slots per register. slot < SLOT_COUNT.
-    constexpr uintptr_t pacr_of(uint32_t slot)
+    // An AIPS1 base's slot. GPIO sits in AIPS1's address range behind no slot of it.
+    constexpr uint32_t aips1_slot_of(uintptr_t base)
+    {
+        if (base < mmap::AIPS1_BASE or base >= mmap::GPIOA_BASE)
+        {
+            return SLOT_NONE;
+        }
+        return static_cast<uint32_t>((base - mmap::AIPS1_BASE) / SLOT_STRIDE);
+    }
+
+    // PACR holding slot's 4-bit field on the bridge at `bridge`; 8 slots per register.
+    // slot < SLOT_COUNT.
+    constexpr uintptr_t pacr_of(uint32_t slot, uintptr_t bridge = mmap::AIPS0_BASE)
     {
         uint32_t const group = slot / 8u;
         if (group < PACR_LOW_GROUPS)
         {
-            return PACRA + group * 4u;
+            return bridge + PACRA_OFFSET + group * 4u;
         }
-        return PACRE + (group - PACR_LOW_GROUPS) * 4u;
+        return bridge + PACRE_OFFSET + (group - PACR_LOW_GROUPS) * 4u;
     }
 
     // Field n of a PACR is a nibble, field 0 at bits [31:28] down to field 7 at [3:0];
@@ -78,6 +89,9 @@ namespace kickos::mk64f::reg::aips
     static_assert(pacr_of(SLOT_COUNT - 1u) == mmap::AIPS0_BASE + 0x6Cu);
     static_assert(slot_of(mmap::UART4_BASE) == SLOT_NONE);
     static_assert(slot_of(mmap::GPIOA_BASE) == SLOT_NONE);
+    static_assert(aips1_slot_of(mmap::UART4_BASE) == 106u and aips1_slot_of(mmap::UART5_BASE) == 107u);
+    static_assert(pacr_of(106u, mmap::AIPS1_BASE) == 0x40080064u);
+    static_assert(aips1_slot_of(mmap::GPIOA_BASE) == SLOT_NONE);
 }
 
 #endif

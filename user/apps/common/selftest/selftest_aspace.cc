@@ -379,22 +379,22 @@ namespace selftest
         volatile uint32_t canary = 0x51AC0DE5u;
         uintptr_t const page = reinterpret_cast<uintptr_t>(&canary) & ~(g - 1u);
         // The guard address names the base of the entire stack range.
-        rep->w[0] = kos_mem_self_grant(reinterpret_cast<void*>(guard), g, 0);
-        rep->w[1] = kos_mem_self_grant(reinterpret_cast<void*>(guard), 2u * g, 0);
+        rep->w[0] = st_self_grant(reinterpret_cast<void*>(guard), g, 0);
+        rep->w[1] = st_self_grant(reinterpret_cast<void*>(guard), 2u * g, 0);
         // A different memory type reaches admission; plain R|W takes the already-accessible
         // shortcut.
-        rep->w[2] = kos_mem_self_grant(reinterpret_cast<void*>(page), g, KOS_MEM_NOCACHE);
+        rep->w[2] = st_self_grant(reinterpret_cast<void*>(page), g, KOS_MEM_NOCACHE);
         rep->w[3] = static_cast<int32_t>(canary == 0x51AC0DE5u);
         // Control: the same calls accept a caller-owned reservation.
         void* const mine = st_ram_own(SNP_BLK);
         if (mine != nullptr)
         {
-            rep->w[4] = kos_mem_self_grant(mine, SNP_BLK, 0);
-            rep->w[5] = kos_mem_self_grant(mine, SNP_BLK, KOS_MEM_NOCACHE);
-            rep->w[6] = kos_mem_self_grant(mine, SNP_BLK, 0);
+            rep->w[4] = st_self_grant(mine, SNP_BLK, 0);
+            rep->w[5] = st_self_grant(mine, SNP_BLK, KOS_MEM_NOCACHE);
+            rep->w[6] = st_self_grant(mine, SNP_BLK, 0);
         }
         // Still refused after a success on the same path, so it is not a one-shot state.
-        rep->w[7] = kos_mem_self_grant(reinterpret_cast<void*>(guard), g, 0);
+        rep->w[7] = st_self_grant(reinterpret_cast<void*>(guard), g, 0);
     }
 
     // Reject donation of the live stack: its frames are freed when the donor exits.
@@ -752,6 +752,55 @@ namespace selftest
         TAP_CHECK(ranges2 == ranges0);
     }
 
+    // --- A map's tables leave the free frames for the tables held, and an unmap gives them back
+    // Longer than a leaf table's reach; main's pages budget refuses a run long enough to hold
+    // one wholly, so a map that finds every table it needs built already is partial.
+    constexpr size_t TABLES_RUN_BYTES = (2u << 20) + ASPACE_GRANULE;
+
+    void t_tables_held()
+    {
+        uint32_t const pages = static_cast<uint32_t>(TABLES_RUN_BYTES / ASPACE_GRANULE);
+        uint32_t const free0 = mem_count(KOS_MEM_FRAMES_FREE);
+        uint32_t const tables0 = mem_count(KOS_MEM_TABLES_HELD);
+        uint32_t free1 = 0;
+        uint32_t tables1 = 0;
+        uint32_t free2 = 0;
+        uint32_t tables2 = 0;
+        uint32_t free3 = 0;
+        uint32_t tables3 = 0;
+        uintptr_t va = 0;
+        int mapped = -1;
+        int unmapped = -1;
+        {
+            auto run = kos::Frame::create(TABLES_RUN_BYTES);
+            auto space = kos::Space::self();
+            TAP_CHECK(run.valid() and space.valid());
+            free1 = mem_count(KOS_MEM_FRAMES_FREE);
+            tables1 = mem_count(KOS_MEM_TABLES_HELD);
+            mapped = run.map(space.handle(), &va);
+            free2 = mem_count(KOS_MEM_FRAMES_FREE);
+            tables2 = mem_count(KOS_MEM_TABLES_HELD);
+            unmapped = run.unmap(space.handle(), va);
+            free3 = mem_count(KOS_MEM_FRAMES_FREE);
+            tables3 = mem_count(KOS_MEM_TABLES_HELD);
+        }
+        uint32_t const free4 = mem_count(KOS_MEM_FRAMES_FREE);
+        uint32_t const tables4 = mem_count(KOS_MEM_TABLES_HELD);
+        tap::diag("tables held: %u before, %u mapped, %u unmapped; frames free %u, %u, %u",
+                  static_cast<unsigned>(tables1), static_cast<unsigned>(tables2),
+                  static_cast<unsigned>(tables3), static_cast<unsigned>(free1),
+                  static_cast<unsigned>(free2), static_cast<unsigned>(free3));
+        TAP_CHECK(mapped == 0 and unmapped == 0);
+        TAP_CHECK(tables1 == tables0 and free1 == free0 - pages);
+        if (tables2 == tables1)
+        {
+            tap::partial("the map built no table");
+        }
+        TAP_CHECK(free2 == free1 - (tables2 - tables1));
+        TAP_CHECK(tables3 == tables1 and free3 == free1);
+        TAP_CHECK(tables4 == tables0 and free4 == free0);
+    }
+
     // --- A space capability names nothing once its task has ended --------------------
     // The child, entry of a task main created, hands its own space to a grandchild in a task
     // of the child's making, which outlives it and maps through that space before and after.
@@ -909,10 +958,10 @@ namespace selftest
         TAP_CHECK(f0 - f1 == 1u and f1 - f2 == 2u and f3 == f0);
         void* const blk = st_ram<SEAM_RAM, 0>();
         TAP_CHECK(blk != nullptr);
-        TAP_CHECK(kos_mem_self_grant(blk, SNP_BLK, 0) == 0);
-        int const typed = kos_mem_self_grant(blk, SNP_BLK, KOS_MEM_NOCACHE);
-        TAP_CHECK(kos_mem_self_grant(blk, SNP_BLK, KOS_MEM_NOCACHE << 1) == -KOS_EINVAL);
-        TAP_CHECK(kos_mem_self_grant(blk, SNP_BLK, 0) == 0);
+        TAP_CHECK(st_self_grant(blk, SNP_BLK, 0) == 0);
+        int const typed = st_self_grant(blk, SNP_BLK, KOS_MEM_NOCACHE);
+        TAP_CHECK(st_self_grant(blk, SNP_BLK, KOS_MEM_NOCACHE << 1) == -KOS_EINVAL);
+        TAP_CHECK(st_self_grant(blk, SNP_BLK, 0) == 0);
         if (typed == -KOS_ENOTSUP)
         {
             tap::partial("no uncached retype (no uncached RAM)");
@@ -1044,7 +1093,7 @@ namespace selftest
         void* const shared = st_ram<SP_RAM, 0>();
         TAP_CHECK(shared != nullptr);
         // main maps the block too: the pair answers through it.
-        TAP_CHECK(kos_mem_self_grant(shared, SP_BLK, 0) == 0);
+        TAP_CHECK(st_self_grant(shared, SP_BLK, 0) == 0);
         volatile uint32_t* const slot = static_cast<volatile uint32_t*>(shared);
         slot[SP_SEED] = SP_A;
         slot[SP_READ] = 0;
@@ -1106,8 +1155,8 @@ namespace selftest
         void* const ba = st_ram<PW_RAM, 0>();
         void* const bb = st_ram<PW_RAM, 1>();
         TAP_CHECK(ba != nullptr and bb != nullptr);
-        TAP_CHECK(kos_mem_self_grant(ba, PW_BLK, 0) == 0);
-        TAP_CHECK(kos_mem_self_grant(bb, PW_BLK, 0) == 0);
+        TAP_CHECK(st_self_grant(ba, PW_BLK, 0) == 0);
+        TAP_CHECK(st_self_grant(bb, PW_BLK, 0) == 0);
         volatile uint64_t* const oa = static_cast<volatile uint64_t*>(ba);
         volatile uint64_t* const ob = static_cast<volatile uint64_t*>(bb);
         for (int i = 0; i < PW_WORDS; i++)
@@ -1176,7 +1225,7 @@ namespace selftest
         constexpr uint32_t SIB_BLK = SIB_RAM.size[0];
         void* const blk = st_ram<SIB_RAM, 0>();
         TAP_CHECK(blk != nullptr);
-        TAP_CHECK(kos_mem_self_grant(blk, SIB_BLK, 0) == 0);
+        TAP_CHECK(st_self_grant(blk, SIB_BLK, 0) == 0);
         volatile uint64_t* const out = static_cast<volatile uint64_t*>(blk);
         out[0] = 0;
         out[1] = 0;
@@ -1224,7 +1273,7 @@ namespace selftest
         void* const blk = st_ram<HO_RAM, 0>();
         TAP_CHECK(blk != nullptr);
         // Reach it before writing it: allocation grants nothing.
-        TAP_CHECK(kos_mem_self_grant(blk, HO_BLK, 0) == 0);
+        TAP_CHECK(st_self_grant(blk, HO_BLK, 0) == 0);
         volatile uint64_t* const out = static_cast<volatile uint64_t*>(blk);
         out[HO_SEEN] = HO_SENTINEL;
         out[HO_ADDR] = 0;
@@ -1240,11 +1289,11 @@ namespace selftest
         TAP_CHECK(out[HO_ADDR] == reinterpret_cast<uintptr_t>(blk)); // at the address main named
         // A nondefault type on a separate block.
         void* const typed = st_ram<HO_RAM, 1>();
-        int const typed_rc = kos_mem_self_grant(typed, HO_BLK, KOS_MEM_NOCACHE);
+        int const typed_rc = st_self_grant(typed, HO_BLK, KOS_MEM_NOCACHE);
         if (typed_rc == -KOS_ENOTSUP)
         {
             // Both consumers refuse the type alike.
-            TAP_CHECK(kos_mem_self_grant(typed, HO_BLK, 0) == 0);
+            TAP_CHECK(st_self_grant(typed, HO_BLK, 0) == 0);
             TAP_CHECK(PeerRun("ho", peer_hex(reinterpret_cast<uintptr_t>(typed)).s)
                           .block(typed, HO_BLK, KOS_MEM_NOCACHE)
                           .start(&tt)
@@ -1290,7 +1339,7 @@ namespace selftest
         uint32_t const two = static_cast<uint32_t>(2u * g);
         void* const blk = st_ram<SL_RAM, 0>();
         TAP_CHECK(blk != nullptr);
-        TAP_CHECK(kos_mem_self_grant(blk, two, 0) == 0);
+        TAP_CHECK(st_self_grant(blk, two, 0) == 0);
         volatile uint64_t* const lower = static_cast<volatile uint64_t*>(blk);
         lower[0] = SL_TOKEN;
         void* const upper = reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(blk) + g);
@@ -1379,7 +1428,7 @@ namespace selftest
     {
         volatile uint64_t* const out = static_cast<volatile uint64_t*>(arg);
         void* const blk = st_ram_own(DX_BLK);
-        if (blk == nullptr or kos_mem_self_grant(blk, DX_BLK, 0) != 0)
+        if (blk == nullptr or st_self_grant(blk, DX_BLK, 0) != 0)
         {
             return;
         }
@@ -1421,7 +1470,7 @@ namespace selftest
         while (taken < static_cast<uint64_t>(CX_MAX))
         {
             void* const p = st_ram_own(g);
-            if (p == nullptr or kos_mem_self_grant(p, static_cast<uint32_t>(g), 0) != 0)
+            if (p == nullptr or st_self_grant(p, static_cast<uint32_t>(g), 0) != 0)
             {
                 break;
             }
@@ -1438,8 +1487,8 @@ namespace selftest
         void* const dblk = st_ram<DX_RAM, 0>();
         void* const cblk = st_ram<DX_RAM, 1>();
         TAP_CHECK(dblk != nullptr and cblk != nullptr);
-        if (kos_mem_self_grant(dblk, DX_BLK, 0) != 0
-            or kos_mem_self_grant(cblk, DX_CBLK, 0) != 0)
+        if (st_self_grant(dblk, DX_BLK, 0) != 0
+            or st_self_grant(cblk, DX_CBLK, 0) != 0)
         {
             tap::skip("the report blocks are not reachable");
             return;
@@ -1604,7 +1653,7 @@ namespace selftest
         uintptr_t const g = ASPACE_GRANULE;
         size_t const bytes = static_cast<size_t>(FS_PAGES * g);
         void* const blk = st_ram_own(bytes);
-        if (blk != nullptr and kos_mem_self_grant(blk, bytes, 0) == 0)
+        if (blk != nullptr and st_self_grant(blk, bytes, 0) == 0)
         {
             rep[FS_FRAME] = reinterpret_cast<uintptr_t>(blk);
             volatile uint64_t* const w = static_cast<volatile uint64_t*>(blk);
@@ -1684,7 +1733,7 @@ namespace selftest
         uintptr_t const g = ASPACE_GRANULE;
         uint32_t const bytes = static_cast<uint32_t>(2u * g);
         void* const blk = st_ram_own(bytes);
-        if (blk != nullptr and kos_mem_self_grant(blk, bytes, 0) == 0
+        if (blk != nullptr and st_self_grant(blk, bytes, 0) == 0
             and kos_sem_init(&g_lr_gate, 0) == 0)
         {
             kos_thread_t held[LR_PARK_CAP];
@@ -1789,7 +1838,7 @@ namespace selftest
         void* const blk = st_ram_own(bytes);
         int rc = 0;
         kos_program_t prog = KOS_CAP_NONE;
-        if (blk != nullptr and kos_mem_self_grant(blk, bytes, 0) == 0
+        if (blk != nullptr and st_self_grant(blk, bytes, 0) == 0
             and kos_program_find("stpeer", &prog) == 0)
         {
             kos_cap_grant caps[] = {{child_cap(0), KOS_CAP_SIGNAL}};
@@ -1907,7 +1956,7 @@ namespace selftest
         void* const raw = st_ram<PFH_RAM, 0>();
         TAP_CHECK(raw != nullptr);
         // Map main's reservation so it can read the shared verdict.
-        TAP_CHECK(kos_mem_self_grant(raw, 3u * VSTK, 0) == 0);
+        TAP_CHECK(st_self_grant(raw, 3u * VSTK, 0) == 0);
         volatile int32_t* const verdict =
             reinterpret_cast<volatile int32_t*>(reinterpret_cast<uintptr_t>(raw) + 2u * VSTK);
         *verdict = -99;
@@ -2074,8 +2123,8 @@ namespace selftest
             return;
         }
         run->blocks = true;
-        TAP_CHECK(kos_mem_self_grant(ba, PI_BLK, 0) == 0
-                  and kos_mem_self_grant(bb, PI_BLK, 0) == 0);
+        TAP_CHECK(st_self_grant(ba, PI_BLK, 0) == 0
+                  and st_self_grant(bb, PI_BLK, 0) == 0);
         volatile uint64_t* const sa = static_cast<volatile uint64_t*>(ba);
         volatile uint64_t* const sb = static_cast<volatile uint64_t*>(bb);
         for (int i = 0; i < PI_WORDS; i++)
@@ -2252,13 +2301,13 @@ namespace selftest
     // --- The x86 port grant --------------------------------------------------------------
     // A holder of the CMOS pair has the kernel write the index, which the chip keeps closed to
     // it, and reads the data port itself; a value with the NMI-mask bit is refused, and so is a
-    // port it does not hold. A second holder and the PIC are refused, and COM1 is granted, or
-    // refused as held where a console driver holds it. A COM2 holder
+    // port it does not hold. A second holder and the PIC are refused, and the console's COM port is
+    // granted, or refused as held where a console driver holds it. A holder of another COM port
     // alternates with it on one core, each reading its own port, then reaches for the CMOS
     // data port and faults; the CMOS holder moves to another core where there is one and reads
     // again. A holder writing the CMOS index itself faults. Reports travel over an endpoint.
     constexpr uint16_t PW_CMOS = 0x70u;
-    constexpr uint16_t PW_COM2 = 0x2f8u;
+    constexpr uint16_t PW_OTHER_COM = other_com();
     constexpr int PW_ROUNDS = 4;
     constexpr uint64_t PW_IOPL = 0x3000u;
     constexpr uint64_t PW_IF = 0x200u;
@@ -2291,7 +2340,7 @@ namespace selftest
         PwSeen seen = {-99, -99, -99, 0, 0};
         seen.index = kos_port_reg_write(PW_CMOS, 0, 0x0au);
         seen.nmi = kos_port_reg_write(PW_CMOS, 0, 0x8au);
-        seen.unheld = kos_port_reg_write(PW_COM2, 0, 0);
+        seen.unheld = kos_port_reg_write(PW_OTHER_COM, 0, 0);
         for (int i = 0; i < PW_ROUNDS; i++)
         {
             kos_sem_wait(mine, KOS_NEVER);
@@ -2308,7 +2357,7 @@ namespace selftest
         (void)kos_send(child_cap(0), &seen, sizeof(seen), KOS_NEVER);
         kos_exit(0);
     }
-    void pw_com2(void* arg) // caps: E(SIGNAL)@0
+    void pw_other_com(void* arg) // caps: E(SIGNAL)@0
     {
         kos_sem_t* const mine = static_cast<kos_sem_t*>(arg) + PW_SB;
         kos_sem_t* const theirs = static_cast<kos_sem_t*>(arg) + PW_SA;
@@ -2316,7 +2365,7 @@ namespace selftest
         for (int i = 0; i < PW_ROUNDS; i++)
         {
             kos_sem_wait(mine, KOS_NEVER);
-            (void)pw_inb(PW_COM2);
+            (void)pw_inb(PW_OTHER_COM);
             rounds++;
             if (i + 1 < PW_ROUNDS)
             {
@@ -2443,8 +2492,8 @@ namespace selftest
         char x = 0;
         TAP_CHECK(pw_recv(ep, &x, 1, after_us(20000)) == -KOS_ETIMEDOUT);
         TAP_CHECK(task_end(&ti) == 0);
-        kos_window const com1 = {0x3f8u, 8u, KOS_WINDOW_PORTS, 0};
-        int const console = PeerRun("nop").windows(&com1, 1).start(&tk);
+        kos_window const com = {KICKOS_BOARD_CONSOLE_BASE, 8u, KOS_WINDOW_PORTS, 0};
+        int const console = PeerRun("nop").windows(&com, 1).start(&tk);
 #if defined(KICKOS_SELFTEST_CONSOLE_DRIVER)
         TAP_CHECK(console == -KOS_EBUSY);
 #else
@@ -2681,12 +2730,12 @@ namespace selftest
                   static_cast<unsigned long>(reinterpret_cast<uintptr_t>(kword)),
                   static_cast<unsigned long>(reinterpret_cast<uintptr_t>(mine)));
         TAP_CHECK(in_kernel_half(reinterpret_cast<uintptr_t>(kword)));
-        TAP_CHECK(kos_mem_self_grant(kword, sizeof(uint32_t), 0) == -KOS_EPERM);
+        TAP_CHECK(st_self_grant(kword, sizeof(uint32_t), 0) == -KOS_EPERM);
         // Control: a caller-owned reservation, same syscall.
-        TAP_CHECK(kos_mem_self_grant(mine, 64, 0) == 0);
+        TAP_CHECK(st_self_grant(mine, 64, 0) == 0);
         // Still refused after a success on the same path, so the refusal is not a one-shot
         // state the first call left behind.
-        TAP_CHECK(kos_mem_self_grant(kword, sizeof(uint32_t), 0) == -KOS_EPERM);
+        TAP_CHECK(st_self_grant(kword, sizeof(uint32_t), 0) == -KOS_EPERM);
     }
 
     // A non-cacheable mapping reads what the kernel wrote through its cacheable view, and the
@@ -2716,7 +2765,7 @@ namespace selftest
     int32_t g_ua_unauth = 0;
     void ua_unauthorised(void*)
     {
-        g_ua_unauth = kos_mem_self_grant(g_ua_unauth_blk, UA_BLK, KOS_MEM_NOCACHE);
+        g_ua_unauth = st_self_grant(g_ua_unauth_blk, UA_BLK, KOS_MEM_NOCACHE);
     }
 
     uint32_t ua_mismatches(uintptr_t p, size_t bytes, uint32_t base)
@@ -2837,8 +2886,8 @@ namespace selftest
         ArmHold hold;
         TAP_HOLD(hold.cap(&ep) and hold.thread(&unauth) and hold.thread(&receiver));
         TAP_CHECK(kos_endpoint_create(&ep) == 0);
-        TAP_CHECK(kos_mem_self_grant(cac, UA_BLK, 0) == 0);
-        int const unc_rc = kos_mem_self_grant(unc, UA_BLK, KOS_MEM_NOCACHE);
+        TAP_CHECK(st_self_grant(cac, UA_BLK, 0) == 0);
+        int const unc_rc = st_self_grant(unc, UA_BLK, KOS_MEM_NOCACHE);
         if (unc_rc == -KOS_ENOTSUP)
         {
             ua_refused();
@@ -2847,7 +2896,7 @@ namespace selftest
         }
         TAP_CHECK(unc_rc == 0);
         // A wide reservation the kernel cleared, read through a non-cacheable grant.
-        TAP_CHECK(kos_mem_self_grant(wide, wide_bytes, KOS_MEM_NOCACHE) == 0);
+        TAP_CHECK(st_self_grant(wide, wide_bytes, KOS_MEM_NOCACHE) == 0);
         uint32_t const wide_cleared =
             ua_nonzero(reinterpret_cast<uintptr_t>(wide), wide_bytes);
         tap::diag("%u words of %lu granules not cleared through the non-cacheable grant",
@@ -2862,7 +2911,7 @@ namespace selftest
         TAP_CHECK(unauth.valid());
         TAP_CHECK(thread_end(&unauth) == 0);
         TAP_CHECK(g_ua_unauth == -KOS_EPERM);
-        TAP_CHECK(kos_mem_self_grant(unc, UA_BLK, KOS_MEM_NOCACHE) == 0);
+        TAP_CHECK(st_self_grant(unc, UA_BLK, KOS_MEM_NOCACHE) == 0);
         for (size_t i = 0; i < UA_LEN; i++)
         {
             cac[UA_LEN * 2 + i] = static_cast<unsigned char>(0x40u + i);
@@ -2899,7 +2948,7 @@ namespace selftest
         }
         TAP_CHECK(hold.close(&ep) == 0);
         // Back to cacheable: the lines the kernel's reads left are stale to the new mapping.
-        TAP_CHECK(kos_mem_self_grant(unc, UA_BLK, 0) == 0);
+        TAP_CHECK(st_self_grant(unc, UA_BLK, 0) == 0);
         bool same = true;
         for (size_t i = 0; i < UA_LEN; i++)
         {
@@ -3298,7 +3347,7 @@ namespace selftest
         static_assert(FI_RAM.size[0] == FI_BLK);
         void* const blk = st_ram<FI_RAM, 0>();
         TAP_CHECK(blk != nullptr);
-        TAP_CHECK(kos_mem_self_grant(blk, FI_BLK, 0) == 0);
+        TAP_CHECK(st_self_grant(blk, FI_BLK, 0) == 0);
         volatile uint64_t* const out = static_cast<volatile uint64_t*>(blk);
         kos_task_t t = KOS_TASK_NONE;
         kos::thread::Handle holder;
@@ -3390,7 +3439,7 @@ namespace selftest
         static_assert(TS_RAM.size[0] == TS_BLK);
         void* const blk = st_ram<TS_RAM, 0>();
         TAP_CHECK(blk != nullptr);
-        TAP_CHECK(kos_mem_self_grant(blk, TS_BLK, 0) == 0);
+        TAP_CHECK(st_self_grant(blk, TS_BLK, 0) == 0);
         volatile uint64_t* const out = static_cast<volatile uint64_t*>(blk);
         for (uint32_t i = 0; i < TS_WORDS; i++)
         {
@@ -3432,7 +3481,7 @@ namespace selftest
         static_assert(DS_RAM.size[0] == DS_BLK);
         void* const blk = st_ram<DS_RAM, 0>();
         TAP_CHECK(blk != nullptr);
-        TAP_CHECK(kos_mem_self_grant(blk, DS_BLK, 0) == 0);
+        TAP_CHECK(st_self_grant(blk, DS_BLK, 0) == 0);
         volatile uint64_t* const out = static_cast<volatile uint64_t*>(blk);
         for (uint32_t i = 0; i < DS_WORDS; i++)
         {
@@ -3575,7 +3624,7 @@ namespace selftest
         TAP_ASK(.tasks = 1);
         void* const blk = st_ram<IF_RAM, 0>();
         TAP_CHECK(blk != nullptr);
-        TAP_CHECK(kos_mem_self_grant(blk, 8u * IF_WORDS, 0) == 0);
+        TAP_CHECK(st_self_grant(blk, 8u * IF_WORDS, 0) == 0);
         volatile uint64_t* const io = static_cast<volatile uint64_t*>(blk);
         kos_image_header const& h = kickos_image_header;
         for (int i = 0; i < IF_WORDS; i++)
@@ -3939,8 +3988,8 @@ namespace selftest
         }
         if (arg == nullptr and peer_is(role, "pwb"))
         {
-            kos_window const com2 = {PW_COM2, 8u, KOS_WINDOW_PORTS, 0};
-            return pw_holder(pw_com2, "pwb", com2);
+            kos_window const other = {PW_OTHER_COM, 8u, KOS_WINDOW_PORTS, 0};
+            return pw_holder(pw_other_com, "pwb", other);
         }
         if (arg == nullptr and peer_is(role, "pwi"))
         {

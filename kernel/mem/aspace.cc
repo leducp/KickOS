@@ -20,6 +20,7 @@
 #include <kickos/kruntime.h>
 #include <kickos/sched.h>
 #include <kickos/start_watch.h>
+#include <kickos/sync.h>
 #include <kickos/task.h>
 #include <kickos/thread.h>
 
@@ -124,7 +125,7 @@ namespace kickos
         {
             if (r.staged != 0)
             {
-                frame_pool_free_run(r.staged, r.staged_pages, arch_aspace_granule());
+                frame_pool_free_run(r.staged, r.staged_pages);
             }
             ThreadLink* const stager = task_image_stager(image_stage_for(r));
             bool const marked = stager != nullptr and *stager == presync_slot_link(r);
@@ -325,7 +326,7 @@ namespace kickos
                                                            struct arch_aspace* space,
                                                            VirtualRanges* ranges,
                                                            Extent const& data,
-                                                           arch_phys_addr_t run, size_t g)
+                                                           arch_phys_addr_t run)
         {
             int rc = 0;
             if (not aspace_tables_admit(payer, space, data.base, data.pages))
@@ -339,7 +340,7 @@ namespace kickos
             }
             if (rc != 0)
             {
-                frame_pool_free_run(run, data.pages, g);
+                frame_pool_free_run(run, data.pages);
                 (void)ranges->release(data.base);
                 return rc;
             }
@@ -367,7 +368,7 @@ namespace kickos
                 arch_phys_addr_t const run = AspaceUnwritten::alloc_run(data.pages);
                 if (run != 0)
                 {
-                    frame_pool_free_run(run, data.pages, g);
+                    frame_pool_free_run(run, data.pages);
                     r->refused = true;
                 }
                 return -KOS_ENOMEM;
@@ -391,7 +392,7 @@ namespace kickos
                 {
                     r->stage_taken = true;
                 }
-                return data_map(payer, space, ranges, data, staged, g);
+                return data_map(payer, space, ranges, data, staged);
             }
 #endif
             if (not admit_pages(payer, data.pages))
@@ -414,12 +415,12 @@ namespace kickos
             {
                 if (not copy_data_granule(run, tmpl, i, g))
                 {
-                    frame_pool_free_run(run, data.pages, g);
+                    frame_pool_free_run(run, data.pages);
                     (void)ranges->release(data.base);
                     return -KOS_ENOMEM;
                 }
             }
-            return data_map(payer, space, ranges, data, run, g);
+            return data_map(payer, space, ranges, data, run);
         }
     }
 
@@ -607,8 +608,17 @@ namespace kickos
                  i++)
             {
                 VirtualRange const* const e = ranges->at(i);
-                if (e == nullptr or e == self or e->state != VirtualState::Granted
-                    or (e->flags & VR_IMAGE) != 0 or e->memtype == memtype)
+                if (e == nullptr or e == self or (e->flags & VR_IMAGE) != 0)
+                {
+                    continue;
+                }
+                // A range under an edit holds the edit's type beside the one it was granted.
+                bool clash = vr_pending(e) and e->pending != static_cast<uint8_t>(memtype + 1u);
+                if (e->state == VirtualState::Granted and e->memtype != memtype)
+                {
+                    clash = true;
+                }
+                if (not clash)
                 {
                     continue;
                 }
@@ -904,7 +914,7 @@ namespace kickos
                 }
                 // The rest of the run stays the record's, so a thread slain at the window
                 // below frees it from its exit.
-                kickos_frame_free(r->staged);
+                frame_pool_free_run(r->staged, 1);
                 r->staged += static_cast<arch_phys_addr_t>(g);
                 r->staged_pages--;
             }
@@ -969,6 +979,204 @@ namespace kickos
         kmemset(r, 0, sizeof(*r));
     }
 
+    namespace
+    {
+        arch_phys_addr_t* chained(arch_phys_addr_t frame)
+        {
+            return static_cast<arch_phys_addr_t*>(frame_pool_alias(frame));
+        }
+
+        // The reserve's charge moves to `payer`: false, keeping it where it was, where `payer`
+        // cannot take it.
+        bool tables_recharge(PresyncRecord* r, Task const* payer)
+        {
+            uint16_t gen = 0;
+            if (payer != nullptr)
+            {
+                gen = payer->gen;
+            }
+            if (r->table_payer == payer and r->table_payer_gen == gen)
+            {
+                return true;
+            }
+            task_tables_reserved(r->table_payer, r->table_payer_gen, r->table_count, false);
+            if (not admit_pages(payer, r->table_count))
+            {
+                task_tables_reserved(r->table_payer, r->table_payer_gen, r->table_count, true);
+                return false;
+            }
+            r->table_payer = payer;
+            r->table_payer_gen = gen;
+            task_tables_reserved(payer, gen, r->table_count, true);
+            return true;
+        }
+    }
+
+    int presync_tables_take_pass(Task const* payer, size_t n)
+    {
+        PresyncRecord* const r = presync_record();
+        if (r == nullptr or r->table_count >= n)
+        {
+            return 0;
+        }
+        // Disarmed first: kickos_frame_alloc would otherwise hand the reserve back to itself.
+        r->tables_armed = false;
+        if (not tables_recharge(r, payer))
+        {
+            return -KOS_EAGAIN;
+        }
+        size_t k = n - r->table_count;
+        if (k > ASPACE_TABLE_PASS_FRAMES)
+        {
+            k = ASPACE_TABLE_PASS_FRAMES;
+        }
+        if (not admit_pages(payer, k))
+        {
+            return -KOS_EAGAIN;
+        }
+        for (size_t i = 0; i < k; i++)
+        {
+            arch_phys_addr_t const f = kickos_frame_alloc();
+            if (f == 0)
+            {
+                return -KOS_ENOMEM;
+            }
+            *chained(f) = r->tables;
+            r->tables = f;
+            r->table_count++;
+            task_tables_reserved(payer, r->table_payer_gen, 1u, true);
+        }
+        if (r->table_count < n)
+        {
+            return 1;
+        }
+        return 0;
+    }
+
+    int presync_tables_arm(Task const* payer, size_t n)
+    {
+        PresyncRecord* const r = presync_record();
+        if (r == nullptr or n == 0)
+        {
+            return 0;
+        }
+        if (r->table_count < n)
+        {
+            if (r->table_refusal != 0)
+            {
+                return r->table_refusal;
+            }
+            if (not admit_pages(payer, n - r->table_count))
+            {
+                return -KOS_EAGAIN;
+            }
+            return -KOS_ENOMEM;
+        }
+        if (not tables_recharge(r, payer))
+        {
+            return -KOS_EAGAIN;
+        }
+        r->tables_armed = true;
+        return 0;
+    }
+
+    bool presync_tables_held()
+    {
+        PresyncRecord const* const r = presync_record();
+        return r != nullptr and r->tables_armed and r->table_count != 0;
+    }
+
+    bool presync_tables_release_pass()
+    {
+        PresyncRecord* const r = presync_record();
+        if (r == nullptr)
+        {
+            return false;
+        }
+        r->tables_armed = false;
+        r->table_refusal = 0;
+        size_t k = r->table_count;
+        if (k > ASPACE_TABLE_PASS_FRAMES)
+        {
+            k = ASPACE_TABLE_PASS_FRAMES;
+        }
+        task_tables_reserved(r->table_payer, r->table_payer_gen, static_cast<uint32_t>(k), false);
+        for (size_t i = 0; i < k; i++)
+        {
+            arch_phys_addr_t const f = r->tables;
+            r->tables = *chained(f);
+            kickos_frame_free(f);
+        }
+        r->table_count = r->table_count - static_cast<uint32_t>(k);
+        if (r->table_count != 0)
+        {
+            return true;
+        }
+        r->tables = 0;
+        r->table_payer = nullptr;
+        r->table_payer_gen = 0;
+        return false;
+    }
+
+    bool presync_map_unwind_pass(Held held)
+    {
+        PresyncRecord* const r = presync_record();
+        if (r == nullptr)
+        {
+            return false;
+        }
+        if (r->table_count != 0 and presync_tables_release_pass())
+        {
+            return true;
+        }
+        if (r->map_into == nullptr)
+        {
+            return false;
+        }
+        Domain* const d = r->map_into;
+        uint16_t const holder =
+            static_cast<uint16_t>(kernel().threads.index_of(sched::current()) + 1);
+        MapPass pass;
+        aspace_cap_map_unwind(domain_space(d), domain_ranges_mut(d), r->map_at, holder, &pass);
+        if (pass.bytes != 0)
+        {
+            word_reach_lost(domain_space(d), pass.base, pass.bytes, held);
+        }
+        if (pass.done)
+        {
+            r->map_into = nullptr;
+            r->map_at = 0;
+        }
+        return true;
+    }
+
+    bool presync_map_retract()
+    {
+        PresyncRecord* const r = presync_record();
+        if (r == nullptr or r->map_into == nullptr)
+        {
+            return false;
+        }
+        uint16_t const holder =
+            static_cast<uint16_t>(kernel().threads.index_of(sched::current()) + 1);
+        VirtualRanges* const ranges = domain_ranges_mut(r->map_into);
+        VirtualRange const* e = nullptr;
+        if (ranges != nullptr)
+        {
+            e = ranges->at_base(r->map_at);
+        }
+        if (e == nullptr or e->base != r->map_at or (e->flags & VR_FRAMECAP) == 0 or vr_pending(e)
+            or e->state != VirtualState::Granted or e->holder != holder)
+        {
+            r->map_into = nullptr;
+            r->map_at = 0;
+            return false;
+        }
+        bool const noted = ranges->set_pending(r->map_at, VR_UNWIND_MEMTYPE, e->pages);
+        KICKOS_ASSERT(noted);
+        return true;
+    }
+
     void presync_exit()
     {
         PresyncRecord* const r = presync_record();
@@ -1011,8 +1219,16 @@ namespace kickos
             {
                 return -KOS_EPERM;
             }
-            if (e->state == VirtualState::Granted and (e->rights & rights) == rights
-                and e->memtype == memtype)
+            // A grant under way is resumed by one asking for its type, whoever began it.
+            if (vr_pending(e))
+            {
+                if (e->pending != static_cast<uint8_t>(memtype + 1u))
+                {
+                    return -KOS_EBUSY;
+                }
+            }
+            else if (e->state == VirtualState::Granted and (e->rights & rights) == rights
+                     and e->memtype == memtype)
             {
                 return 1;
             }
@@ -1183,10 +1399,139 @@ namespace kickos
     }
 #endif
 
+    namespace
+    {
+        // The pages one pass takes of `left`.
+        size_t pass_pages(size_t left)
+        {
+            if (left > ASPACE_MAP_PASS_PAGES)
+            {
+                return ASPACE_MAP_PASS_PAGES;
+            }
+            return left;
+        }
+
+        // One pass of the map under way over `e`, whose frames start at `pa`: its next pages
+        // mapped, and on its last page the range granted. -KOS_EAGAIN or -KOS_ENOMEM with
+        // nothing more mapped.
+        int map_pass(Task const* payer, struct arch_aspace* space, VirtualRanges* ranges,
+                     VirtualRange const* e, arch_phys_addr_t pa, uint32_t rights,
+                     enum arch_map_memtype type, MapPass* pass)
+        {
+            // A right no range holds, refused before a leaf goes in.
+            if (rights == 0 or rights != static_cast<uint32_t>(static_cast<uint8_t>(rights)))
+            {
+                return -KOS_ENOMEM;
+            }
+            size_t const g = arch_aspace_granule();
+            uintptr_t const b = e->base;
+            size_t const pages = e->pages;
+            size_t const from = e->pending_pages;
+            size_t const n = pass_pages(pages - from);
+            uintptr_t const at = b + from * g;
+            if (not presync_tables_held() and not aspace_tables_admit(payer, space, at, n))
+            {
+                return -KOS_EAGAIN;
+            }
+            if (arch_aspace_map(space, at, pa + static_cast<arch_phys_addr_t>(from * g), n,
+                                rights, type)
+                != ARCH_ASPACE_OK)
+            {
+                return -KOS_ENOMEM;
+            }
+            pass->base = at;
+            pass->bytes = n * g;
+            uint8_t const memtype = static_cast<uint8_t>(type);
+            if (from + n < pages)
+            {
+                bool const noted = ranges->set_pending(b, memtype, static_cast<uint32_t>(from + n));
+                KICKOS_ASSERT(noted);
+                return 0;
+            }
+            bool const granted = ranges->grant(b, pages, rights, memtype);
+            KICKOS_ASSERT(granted);
+            pass->done = true;
+            return 0;
+        }
+
+        // The pages a create's locked pass maps of a run before it leaves the rest to passes:
+        // one at least, so the range names its frames, and at most what `budget` has left.
+        size_t first_pages(size_t pages, size_t* budget)
+        {
+            size_t n = *budget;
+            if (n == 0)
+            {
+                n = 1;
+            }
+            if (n > pages)
+            {
+                n = pages;
+            }
+            if (*budget > n)
+            {
+                *budget = *budget - n;
+            }
+            else
+            {
+                *budget = 0;
+            }
+            return n;
+        }
+
+        // The shed domain whose reservation at `base` a mapping in another space is the last to
+        // borrow, the frames above its first still to free; null otherwise.
+        Domain* last_lender_shed(uintptr_t base)
+        {
+            for (int d = 0; d < kernel().domains().size(); d++)
+            {
+                Domain* const dom = &kernel().domains()[d];
+                if (domain_space(dom) != nullptr or dom->immortal)
+                {
+                    continue;
+                }
+                // A shed domain's list, which domain_ranges does not answer.
+                VirtualRange const* const e = dom->ranges.at_base(base);
+                if (aspace_range_lent(e) and e->lends == 1 and e->pages > 1)
+                {
+                    return dom;
+                }
+            }
+            return nullptr;
+        }
+
+        // One pass freeing the frames of `lender`'s reservation at `base` above its first, which
+        // the last borrower's release frees.
+        void shed_reap_pass(Domain* lender, uintptr_t base)
+        {
+            VirtualRanges* const ranges = &lender->ranges;
+            uint32_t const pages = ranges->at_base(base)->pages;
+            uint32_t const n = static_cast<uint32_t>(pass_pages(pages - 1u));
+            size_t const g = arch_aspace_granule();
+            frame_pool_free_run(aspace_frame_of(base) + static_cast<arch_phys_addr_t>(pages - n) * g,
+                                n);
+            (void)ranges->shrink(base, pages - n);
+        }
+
+        // A create's pending range: a handoff, or a window `holder` holds.
+        bool create_pending(VirtualRange const* e, uint16_t holder)
+        {
+            if (not vr_pending(e))
+            {
+                return false;
+            }
+            if ((e->flags & VR_WINDOW) != 0)
+            {
+                return e->holder == holder;
+            }
+            return aspace_range_handed_off(e);
+        }
+    }
+
     int aspace_self_grant(Task const* payer, struct arch_aspace* space, VirtualRanges* ranges,
                           uintptr_t base, size_t size, uint32_t rights,
-                          enum arch_map_memtype type)
+                          enum arch_map_memtype type, MapPass* pass)
     {
+        *pass = MapPass{};
         if (space == nullptr or ranges == nullptr)
         {
             return -KOS_EPERM;
@@ -1202,6 +1547,7 @@ namespace kickos
         {
             if (admit > 0)
             {
+                pass->done = true;
                 return 0;
             }
             return admit;
@@ -1214,29 +1560,21 @@ namespace kickos
         {
             return -KOS_ENOMEM;
         }
-        if (not aspace_tables_admit(payer, space, b, pages))
+        int const mrc = map_pass(payer, space, ranges, e, aspace_frame_of(b), rights, type, pass);
+        if (mrc == 0 and pass->done)
         {
-            return -KOS_EAGAIN;
+            edited(aspace_frame_of(b), pages);
+            owner_mapped(owner, type);
         }
-        if (arch_aspace_map(space, b, aspace_frame_of(b), pages, rights, type)
-            != ARCH_ASPACE_OK)
-        {
-            return -KOS_ENOMEM;
-        }
-        if (not ranges->grant(b, pages, rights, memtype))
-        {
-            (void)arch_aspace_unmap(space, b, pages);
-            return -KOS_ENOMEM;
-        }
-        edited(aspace_frame_of(b), pages);
-        owner_mapped(owner, type);
-        return 0;
+        return mrc;
     }
 
     int aspace_cap_map(Task const* payer, struct arch_aspace* space, VirtualRanges* ranges,
                        uintptr_t* at, int run_obj, arch_phys_addr_t base, uint32_t pages,
-                       uint32_t rights, enum arch_map_memtype type)
+                       uint32_t rights, enum arch_map_memtype type, MapPass* pass,
+                       uint16_t holder, bool resuming)
     {
+        *pass = MapPass{};
         if (space == nullptr or ranges == nullptr or pages == 0)
         {
             return -KOS_EINVAL;
@@ -1260,53 +1598,154 @@ namespace kickos
         {
             return -KOS_ENOTSUP;
         }
-        // Another space mapping the run with another type keeps it.
-        if (not aspace_frames_type_ok(base, pages, static_cast<uint8_t>(type), nullptr))
-        {
-            return -KOS_EBUSY;
-        }
-        if (not aspace_tables_admit(payer, space, va, pages))
-        {
-            return -KOS_EAGAIN;
-        }
-        // A leaf is a holder: the frames come back at the last one, not the last capability.
-        if (not frame_run_ref(run_obj))
-        {
-            return -KOS_ENOMEM;
-        }
         int const run_slot = frame_run_slot_of(run_obj);
-        if (not ranges->reserve(va, pages, VR_BORROWED | VR_FRAMECAP,
-                                static_cast<uint32_t>(run_slot) + 1u))
-        {
-            frame_run_release(run_obj);
-            return -KOS_ENOMEM; // overlaps something this space already names, or the list is full
-        }
+        uint8_t const memtype = static_cast<uint8_t>(type);
         bool const syncs = not cacheable(type) or frame_run_sync_owed(run_obj);
-        if ((syncs and not sync_frames(base, pages))
-            or arch_aspace_map(space, va, base, pages, rights, type) != ARCH_ASPACE_OK)
+        VirtualRange const* e = ranges->at_base(va);
+        bool const same = e != nullptr and (e->flags & VR_FRAMECAP) != 0 and run_slot >= 0
+                          and e->run == static_cast<uint32_t>(run_slot) + 1u and e->pages == pages;
+        if (resuming and same and not vr_pending(e) and e->memtype == memtype
+            and e->state == VirtualState::Granted)
         {
-            ranges->release(va);
-            frame_run_release(run_obj);
-            return -KOS_ENOMEM;
+            // Another map of the same run finished this one between two passes.
+            pass->done = true;
+            *at = va;
+            return 0;
         }
-        // The type the PTE carries: the list is what a second mapping's agreement is tested
-        // against, and 0 would claim Normal over a non-cacheable leaf.
-        if (not ranges->grant(va, pages, rights, static_cast<uint8_t>(type)))
+        if (same and vr_pending(e))
         {
-            (void)arch_aspace_unmap(space, va, pages);
-            ranges->release(va);
-            frame_run_release(run_obj);
-            return -KOS_ENOMEM;
+            if (e->pending != static_cast<uint8_t>(memtype + 1u))
+            {
+                return -KOS_EBUSY;
+            }
+            if (syncs and not sync_frames(base, pages))
+            {
+                return -KOS_ENOMEM;
+            }
         }
-        edited(base, pages);
-        frame_run_set_sync_owed(run_obj, not cacheable(type));
+        else
+        {
+            // Another space mapping the run with another type keeps it.
+            if (not aspace_frames_type_ok(base, pages, memtype, nullptr))
+            {
+                return -KOS_EBUSY;
+            }
+            // A map of more than one pass takes its tables first, in passes of their own with
+            // nothing reserved yet: no pass after them can be refused one.
+            if (pages <= ASPACE_MAP_PASS_PAGES)
+            {
+                if (not aspace_tables_admit(payer, space, va, pages))
+                {
+                    return -KOS_EAGAIN;
+                }
+            }
+            else
+            {
+                size_t const need = arch_aspace_range_tables(va, pages);
+                int const trc = presync_tables_take_pass(payer, need);
+                if (trc < 0)
+                {
+                    return trc;
+                }
+                if (trc > 0)
+                {
+                    *at = va;
+                    return 0;
+                }
+                int const arc = presync_tables_arm(payer, need);
+                if (arc != 0)
+                {
+                    return arc;
+                }
+            }
+            // A leaf is a holder: the frames come back at the last one, not the last capability.
+            if (not frame_run_ref(run_obj))
+            {
+                return -KOS_ENOMEM;
+            }
+            if (not ranges->reserve(va, pages, VR_BORROWED | VR_FRAMECAP,
+                                    static_cast<uint32_t>(run_slot) + 1u, holder))
+            {
+                frame_run_release(run_obj);
+                return -KOS_ENOMEM; // overlaps something this space already names, or the list is full
+            }
+            e = ranges->at_base(va);
+            bool const noted = ranges->set_pending(va, memtype, 0);
+            KICKOS_ASSERT(noted);
+            if (syncs and not sync_frames(base, pages))
+            {
+                ranges->release(va);
+                frame_run_release(run_obj);
+                return -KOS_ENOMEM;
+            }
+        }
+        bool const first = e->pending_pages == 0;
+        int const mrc = map_pass(payer, space, ranges, e, base, rights, type, pass);
+        if (mrc != 0)
+        {
+            if (first)
+            {
+                ranges->release(va);
+                frame_run_release(run_obj);
+            }
+            return mrc;
+        }
         *at = va;
+        if (pass->done)
+        {
+            edited(base, pages);
+            frame_run_set_sync_owed(run_obj, not cacheable(type));
+        }
         return 0;
     }
 
-    int aspace_cap_unmap(struct arch_aspace* space, VirtualRanges* ranges, uintptr_t va,
-                         int run_obj)
+    void aspace_cap_map_unwind(struct arch_aspace* space, VirtualRanges* ranges, uintptr_t va,
+                               uint16_t holder, MapPass* pass)
     {
+        *pass = MapPass{};
+        VirtualRange const* e = nullptr;
+        if (ranges != nullptr)
+        {
+            e = ranges->at_base(va);
+        }
+        if (space == nullptr or e == nullptr or e->base != va or (e->flags & VR_FRAMECAP) == 0
+            or not vr_pending(e) or e->holder != holder or holder == 0)
+        {
+            pass->done = true;
+            return;
+        }
+        int const slot = static_cast<int>(e->run) - 1;
+        // Only the first pass still finds the map's own type: later ones carry VR_UNWIND_MEMTYPE.
+        if (e->pending != static_cast<uint8_t>(VR_UNWIND_MEMTYPE + 1u)
+            and not cacheable(static_cast<enum arch_map_memtype>(e->pending - 1u)))
+        {
+            frame_run_set_sync_owed(kernel().frame_runs.handle_for(slot), true);
+        }
+        uint32_t const mapped = e->pending_pages;
+        uint32_t const n = static_cast<uint32_t>(pass_pages(mapped));
+        size_t const g = arch_aspace_granule();
+        uintptr_t const top = va + static_cast<uintptr_t>(mapped - n) * g;
+        if (n != 0)
+        {
+            (void)arch_aspace_unmap(space, top, n);
+            pass->base = top;
+            pass->bytes = static_cast<size_t>(n) * g;
+        }
+        if (n < mapped)
+        {
+            bool const noted = ranges->set_pending(va, VR_UNWIND_MEMTYPE, mapped - n);
+            KICKOS_ASSERT(noted);
+            return;
+        }
+        (void)ranges->release(va);
+        frame_run_release_by_slot(slot);
+        pass->done = true;
+    }
+
+    int aspace_cap_unmap(struct arch_aspace* space, VirtualRanges* ranges, uintptr_t va,
+                         int run_obj, MapPass* pass)
+    {
+        *pass = MapPass{};
         if (space == nullptr or ranges == nullptr)
         {
             return -KOS_EINVAL;
@@ -1323,20 +1762,36 @@ namespace kickos
         {
             return -KOS_EPERM;
         }
+        if (vr_pending(e))
+        {
+            return -KOS_EBUSY;
+        }
+        size_t const g = arch_aspace_granule();
         uint32_t const pages = e->pages;
-        if (arch_aspace_unmap(space, va, pages) != ARCH_ASPACE_OK)
+        uint32_t const n = static_cast<uint32_t>(pass_pages(pages));
+        uintptr_t const top = va + static_cast<uintptr_t>(pages - n) * g;
+        if (arch_aspace_unmap(space, top, n) != ARCH_ASPACE_OK)
         {
             return -KOS_ENOMEM;
         }
+        pass->base = top;
+        pass->bytes = static_cast<size_t>(n) * g;
+        if (n < pages)
+        {
+            bool const cut = ranges->shrink(va, pages - n);
+            KICKOS_ASSERT(cut);
+            return 0;
+        }
         ranges->release(va);
         frame_run_release(run_obj);
+        pass->done = true;
         return 0;
     }
 
     int aspace_window_map(Task const* payer, struct arch_aspace* space, VirtualRanges* ranges,
                           arch_phys_addr_t pa, size_t bytes, uint32_t rights,
                           enum arch_map_memtype type, uint16_t holder, uint32_t place,
-                          Domain* donor)
+                          Domain* donor, size_t* budget)
     {
         size_t const g = arch_aspace_granule();
         if (space == nullptr or ranges == nullptr or bytes == 0 or (pa % g) != 0)
@@ -1359,7 +1814,8 @@ namespace kickos
             return -KOS_EBUSY;
         }
         uintptr_t const va = ranges->place(area, area_bytes / g, pages);
-        if (va != 0 and not aspace_tables_admit(payer, space, va, pages))
+        size_t const n = first_pages(pages, budget);
+        if (va != 0 and not aspace_tables_admit(payer, space, va, n))
         {
             return -KOS_EAGAIN;
         }
@@ -1379,32 +1835,115 @@ namespace kickos
         {
             owner = owner_of(pa);
         }
+        uint8_t const memtype = static_cast<uint8_t>(type);
         bool const syncs = type == ARCH_MAP_NOCACHE or owner.owed;
+        // Not map_pass: its frame would deepen a spawn's descent the red zone prices.
         if ((syncs and not sync_frames(pa, pages))
-            or arch_aspace_map(space, va, pa, pages, rights, type) != ARCH_ASPACE_OK)
+            or arch_aspace_map(space, va, pa, n, rights, type) != ARCH_ASPACE_OK)
         {
             ranges->release(va);
             return -KOS_ENOMEM;
         }
-        if (not ranges->grant(va, pages, rights, static_cast<uint8_t>(type)))
-        {
-            (void)arch_aspace_unmap(space, va, pages);
-            ranges->release(va);
-            return -KOS_ENOMEM;
-        }
-        edited(pa, pages);
         if (donor != nullptr)
         {
-            owner_mapped(owner, type);
             domain_ref(donor);
             (void)donor->ranges.lend(aspace_user_va(pa), true);
+        }
+        if (n < pages)
+        {
+            bool const noted = ranges->set_pending(va, memtype, static_cast<uint32_t>(n))
+                               and ranges->set_rights(va, rights);
+            KICKOS_ASSERT(noted);
+            return 0;
+        }
+        bool const granted = ranges->grant(va, pages, rights, memtype);
+        KICKOS_ASSERT(granted);
+        edited(pa, pages);
+        owner_mapped(owner, type);
+        return 0;
+    }
+
+    bool aspace_create_pending(VirtualRanges const* ranges, uint16_t holder)
+    {
+        for (size_t i = 0; ranges != nullptr and i < VirtualRanges::capacity(); i++)
+        {
+            if (create_pending(ranges->at(i), holder))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    size_t aspace_create_tables(VirtualRanges const* ranges, uint16_t holder)
+    {
+        size_t const g = arch_aspace_granule();
+        size_t n = 0;
+        for (size_t i = 0; ranges != nullptr and i < VirtualRanges::capacity(); i++)
+        {
+            VirtualRange const* const e = ranges->at(i);
+            if (create_pending(e, holder))
+            {
+                uint32_t const mapped = vr_mapped(e);
+                n = n + arch_aspace_range_tables(e->base + static_cast<uintptr_t>(mapped) * g,
+                                                 e->pages - mapped);
+            }
+        }
+        return n;
+    }
+
+    int aspace_create_pass(Task const* payer, struct arch_aspace* space, VirtualRanges* ranges,
+                           uint16_t holder, MapPass* pass)
+    {
+        *pass = MapPass{};
+        for (size_t i = 0; space != nullptr and ranges != nullptr and i < VirtualRanges::capacity();
+             i++)
+        {
+            VirtualRange const* const e = ranges->at(i);
+            if (not create_pending(e, holder))
+            {
+                continue;
+            }
+            arch_phys_addr_t pa = aspace_frame_of(e->base);
+            bool lent = true;
+            if ((e->flags & VR_WINDOW) != 0)
+            {
+                pa = arch_aspace_frame_at(space, e->base);
+                lent = e->donor != 0;
+            }
+            enum arch_map_memtype const type = static_cast<enum arch_map_memtype>(e->pending - 1u);
+            Owner owner;
+            if (lent)
+            {
+                owner = owner_of(pa);
+            }
+            size_t const pages = e->pages;
+            if ((type == ARCH_MAP_NOCACHE or owner.owed) and not sync_frames(pa, pages))
+            {
+                return -KOS_ENOMEM;
+            }
+            int const rc = map_pass(payer, space, ranges, e, pa, e->rights, type, pass);
+            if (rc != 0)
+            {
+                return rc;
+            }
+            if (pass->done)
+            {
+                edited(pa, pages);
+                owner_mapped(owner, type);
+            }
+            return 1;
         }
         return 0;
     }
 
-    void aspace_window_unmap_holder(struct arch_aspace* space, VirtualRanges* ranges,
-                                    uint16_t holder)
+    bool aspace_window_unmap_pass(struct arch_aspace* space, VirtualRanges* ranges,
+                                  uint16_t holder, MapPass* pass, Domain** lender,
+                                  uintptr_t* lent)
     {
+        *pass = MapPass{};
+        *lender = nullptr;
+        *lent = 0;
         for (size_t i = 0; space != nullptr and ranges != nullptr and i < VirtualRanges::capacity();
              i++)
         {
@@ -1413,15 +1952,79 @@ namespace kickos
             {
                 continue;
             }
+            size_t const g = arch_aspace_granule();
+            uintptr_t const b = e->base;
+            uint32_t const mapped = vr_mapped(e);
+            uint32_t n = static_cast<uint32_t>(pass_pages(mapped));
             uint16_t const donor = e->donor;
-            arch_phys_addr_t const pa = arch_aspace_frame_at(space, e->base);
-            (void)arch_aspace_unmap(space, e->base, e->pages);
-            ranges->release(e->base);
+            arch_phys_addr_t const pa = arch_aspace_frame_at(space, b);
+            // The last borrower of a shed reservation frees it in passes, its first page last.
+            Domain* shed = nullptr;
             if (donor != 0)
             {
-                Domain* const d = &kernel().domains()[donor - 1u];
-                domain_unlend(d, aspace_user_va(pa));
-                domain_release(d);
+                shed = last_lender_shed(aspace_user_va(pa));
+            }
+            if (shed != nullptr)
+            {
+                if (mapped == 1)
+                {
+                    shed_reap_pass(shed, aspace_user_va(pa));
+                    return true;
+                }
+                n = static_cast<uint32_t>(pass_pages(mapped - 1u));
+            }
+            uintptr_t const top = b + static_cast<uintptr_t>(mapped - n) * g;
+            (void)arch_aspace_unmap(space, top, n);
+            pass->base = top;
+            pass->bytes = static_cast<size_t>(n) * g;
+            if (n < mapped)
+            {
+                if (vr_pending(e))
+                {
+                    (void)ranges->recede(b, mapped - n);
+                }
+                else
+                {
+                    (void)ranges->shrink(b, mapped - n);
+                }
+                return true;
+            }
+            ranges->release(b);
+            if (donor != 0)
+            {
+                *lender = &kernel().domains()[donor - 1u];
+                *lent = aspace_user_va(pa);
+            }
+            return true;
+        }
+        return false;
+    }
+
+    bool aspace_window_held(VirtualRanges const* ranges, uint16_t holder)
+    {
+        for (size_t i = 0; ranges != nullptr and i < VirtualRanges::capacity(); i++)
+        {
+            VirtualRange const* const e = ranges->at(i);
+            if (e != nullptr and (e->flags & VR_WINDOW) != 0 and e->holder == holder)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    void aspace_window_unmap_holder(struct arch_aspace* space, VirtualRanges* ranges,
+                                    uint16_t holder)
+    {
+        MapPass pass;
+        Domain* lender = nullptr;
+        uintptr_t lent = 0;
+        while (aspace_window_unmap_pass(space, ranges, holder, &pass, &lender, &lent))
+        {
+            if (lender != nullptr)
+            {
+                domain_unlend(lender, lent);
+                domain_release(lender);
             }
         }
     }
@@ -1469,16 +2072,17 @@ namespace kickos
             return -KOS_ENOTSUP;
         }
         uint32_t const rights = ARCH_MAP_R | ARCH_MAP_W;
+        uint8_t const memtype = static_cast<uint8_t>(type);
         // The donor, a window or another handoff mapping these frames with another type keeps
         // them.
-        if (not aspace_frames_type_ok(aspace_frame_of(b), pages, static_cast<uint8_t>(type),
-                                      nullptr))
+        if (not aspace_frames_type_ok(aspace_frame_of(b), pages, memtype, nullptr))
         {
             return -KOS_EBUSY;
         }
         Owner const owner = owner_of(aspace_frame_of(b));
         bool const syncs = type == ARCH_MAP_NOCACHE or owner.owed;
-        if (not aspace_tables_admit(payer, space, b, pages))
+        size_t const n = pass_pages(pages);
+        if (not aspace_tables_admit(payer, space, b, n))
         {
             return -KOS_EAGAIN;
         }
@@ -1488,18 +2092,21 @@ namespace kickos
             return -KOS_ENOMEM;
         }
         if ((syncs and not sync_frames(aspace_frame_of(b), pages))
-            or arch_aspace_map(space, b, aspace_frame_of(b), pages, rights, type)
-                   != ARCH_ASPACE_OK)
+            or arch_aspace_map(space, b, aspace_frame_of(b), n, rights, type) != ARCH_ASPACE_OK)
         {
             (void)ranges->release(b);
             return -KOS_ENOMEM;
         }
-        if (not ranges->grant(b, pages, rights, static_cast<uint8_t>(type)))
+        // Not map_pass: its frame would deepen a task create's descent the red zone prices.
+        if (n < pages)
         {
-            (void)arch_aspace_unmap(space, b, pages);
-            (void)ranges->release(b);
-            return -KOS_ENOMEM;
+            bool const noted = ranges->set_pending(b, memtype, static_cast<uint32_t>(n))
+                               and ranges->set_rights(b, rights);
+            KICKOS_ASSERT(noted);
+            return 0;
         }
+        bool const granted = ranges->grant(b, pages, rights, memtype);
+        KICKOS_ASSERT(granted);
         edited(aspace_frame_of(b), pages);
         owner_mapped(owner, type);
         return 0;
@@ -1540,7 +2147,7 @@ namespace kickos
             // so the subtraction cannot reach VR_RUN_NONE.
             int const slot = static_cast<int>(e->run) - 1;
             uintptr_t const base = e->base;
-            (void)arch_aspace_unmap(space, base, e->pages);
+            (void)arch_aspace_unmap(space, base, vr_mapped(e));
             (void)ranges->release(base);
             frame_run_release_by_slot(slot);
         }
@@ -1561,9 +2168,9 @@ namespace kickos
             {
                 continue;
             }
-            if (e->state == VirtualState::Granted)
+            if (vr_mapped(e) != 0)
             {
-                (void)arch_aspace_unmap(space, e->base, e->pages);
+                (void)arch_aspace_unmap(space, e->base, vr_mapped(e));
             }
             (void)ranges->release_at(i);
         }
@@ -1585,10 +2192,15 @@ namespace kickos
         for (size_t i = 0; i < VirtualRanges::capacity(); i++)
         {
             VirtualRange const* const e = ranges->at(i);
-            if (aspace_range_lent(e) and e->state == VirtualState::Granted)
+            if (not aspace_range_lent(e))
             {
-                (void)arch_aspace_unmap(space, e->base, e->pages);
+                continue;
             }
+            if (vr_mapped(e) != 0)
+            {
+                (void)arch_aspace_unmap(space, e->base, vr_mapped(e));
+            }
+            (void)ranges->clear_pending(e->base);
         }
         aspace_release(space, ranges, true);
         for (size_t i = 0; i < VirtualRanges::capacity(); i++)
@@ -1599,6 +2211,87 @@ namespace kickos
                 (void)ranges->release_at(i);
             }
         }
+    }
+
+    bool aspace_trim_pass(struct arch_aspace* space, VirtualRanges* ranges)
+    {
+        size_t const g = arch_aspace_granule();
+        for (size_t i = 0; space != nullptr and ranges != nullptr and i < VirtualRanges::capacity();
+             i++)
+        {
+            VirtualRange const* const e = ranges->at(i);
+            if (e == nullptr or (e->flags & (VR_IMAGE | VR_USTACK | VR_WINDOW | VR_SHARE)) != 0)
+            {
+                continue;
+            }
+            uintptr_t const b = e->base;
+            uint32_t const pages = e->pages;
+            uint32_t const mapped = vr_mapped(e);
+            bool const owned = (e->flags & static_cast<uint8_t>(~VR_SYNC_OWED)) == 0
+                               and e->lends == 0;
+            if (not owned and (e->flags & VR_FRAMECAP) == 0 and mapped == 0)
+            {
+                if (not aspace_range_handed_off(e))
+                {
+                    continue;
+                }
+                Domain* const shed = last_lender_shed(b);
+                if (shed != nullptr)
+                {
+                    shed_reap_pass(shed, b);
+                    return true;
+                }
+                continue;
+            }
+            if (owned and pages > mapped)
+            {
+                // The frames no leaf names, the top first.
+                uint32_t const n = static_cast<uint32_t>(pass_pages(pages - mapped));
+                arch_phys_addr_t const tail = aspace_frame_of(b)
+                                              + static_cast<arch_phys_addr_t>(pages - n) * g;
+                frame_pool_free_run(tail, n);
+                if (n == pages)
+                {
+                    (void)ranges->release_at(i);
+                }
+                else
+                {
+                    (void)ranges->shrink(b, pages - n);
+                }
+                return true;
+            }
+            uint32_t const n = static_cast<uint32_t>(pass_pages(mapped));
+            uintptr_t const top = b + static_cast<uintptr_t>(mapped - n) * g;
+            if (n != 0)
+            {
+                (void)arch_aspace_unmap(space, top, n);
+            }
+            if (owned)
+            {
+                frame_pool_free_run(aspace_frame_of(top), n);
+                if (n == pages)
+                {
+                    (void)ranges->release_at(i);
+                }
+                else
+                {
+                    (void)ranges->shrink(b, pages - n);
+                }
+            }
+            else if ((e->flags & VR_FRAMECAP) != 0 and n == mapped)
+            {
+                int const slot = static_cast<int>(e->run) - 1;
+                (void)ranges->release_at(i);
+                frame_run_release_by_slot(slot);
+            }
+            else
+            {
+                // Another record frees these frames: the range keeps its extent.
+                (void)ranges->recede(b, mapped - n);
+            }
+            return true;
+        }
+        return false;
     }
 
     uint32_t aspace_shed_pages(VirtualRanges const* ranges)
@@ -1622,7 +2315,7 @@ namespace kickos
         {
             return;
         }
-        frame_pool_free_run(aspace_frame_of(e->base), e->pages, arch_aspace_granule());
+        frame_pool_free_run(aspace_frame_of(e->base), e->pages);
         (void)ranges->release_at(i);
     }
 
@@ -1677,18 +2370,25 @@ namespace kickos
                 // Another space's frames: unmapped here, freed by their owner.
                 // A window's donor reference is not dropped here: its holder's exit unmapped it
                 // already, and releasing from the teardown would recurse into this function.
-                (void)arch_aspace_unmap(space, e->base, e->pages);
+                if (vr_mapped(e) != 0)
+                {
+                    (void)arch_aspace_unmap(space, e->base, vr_mapped(e));
+                }
                 continue;
             }
             if (keep_lent and aspace_range_lent(e))
             {
                 continue;
             }
-            if (e->state == VirtualState::Reserved and (e->flags & VR_IMAGE) == 0)
+            if (e->state == VirtualState::Reserved and (e->flags & VR_IMAGE) == 0
+                and e->pending_pages < e->pages)
             {
-                // No leaf points at these, so the destroy walk cannot see them; the image is
-                // excluded, its pages not being the pool's to take back.
-                frame_pool_free_run(aspace_frame_of(e->base), e->pages, g);
+                // No leaf points at these past a pending self-grant's mapped pages, so the
+                // destroy walk cannot see them; the image is excluded, its pages not being the
+                // pool's to take back.
+                arch_phys_addr_t const tail = aspace_frame_of(e->base)
+                                              + static_cast<arch_phys_addr_t>(e->pending_pages) * g;
+                frame_pool_free_run(tail, e->pages - e->pending_pages);
             }
         }
         arch_aspace_destroy(space);
@@ -1728,5 +2428,27 @@ namespace kickos
         seat(arch_aspace_boot());
     }
 }
+
+#if KICKOS_PRESYNC
+extern "C" arch_phys_addr_t kickos_presync_table_take(void)
+{
+    kickos::Kernel& k = kickos::kernel();
+    int const i = k.threads.index_of(kickos::sched::current());
+    if (i < 0 or k.presync()[i].table_count == 0)
+    {
+        return 0;
+    }
+    kickos::PresyncRecord* const r = &k.presync()[i];
+    if (not r->tables_armed)
+    {
+        return 0;
+    }
+    arch_phys_addr_t const f = r->tables;
+    r->tables = *static_cast<arch_phys_addr_t*>(kickos::frame_pool_alias(f));
+    r->table_count--;
+    kickos::task_tables_reserved(r->table_payer, r->table_payer_gen, 1u, false);
+    return f;
+}
+#endif
 
 #endif

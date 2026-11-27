@@ -6,6 +6,7 @@
 #ifndef KICKOS_ARCH_RISCV_CHIP_VIRT_RV64_BOOT_LAYOUT_LD_H
 #define KICKOS_ARCH_RISCV_CHIP_VIRT_RV64_BOOT_LAYOUT_LD_H
 
+#include <board_pins.h>
 #include <chip_layout.h>
 
 /* QEMU `virt` DRAM. The machine reports 128 MiB from this base; the value below is the
@@ -25,13 +26,13 @@
  */
 #define KICKOS_RV64_VA_BASE 0xFFFFFFFF00000000
 
-/* The console and the finisher, physical: reached untranslated before paging is on, and at
- * KICKOS_RV64_VA_BASE plus these once it is.
+/* The console, the board's, and the finisher, physical: reached untranslated before paging is
+ * on, and at KICKOS_RV64_VA_BASE plus these once it is.
  *
  * The paging mode is a Kconfig choice and lives in <kickos/arch/rv64_paging.h>, which this file
  * may not include: the linker script reads it with no arch include directory.
  */
-#define KICKOS_RV64_UART0_PA         KICKOS_LAYOUT_UART0_BASE
+#define KICKOS_RV64_UART0_PA         KICKOS_BOARD_CONSOLE_BASE
 
 /* The CLINT, whose msip word per hart IS the cross-hart doorbell. startup.S's machine-mode
  * trampoline lowers a raise on it to mip.SSIP and reaches it UNTRANSLATED at this address; a

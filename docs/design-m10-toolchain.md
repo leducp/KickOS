@@ -358,9 +358,10 @@ above, `Kconfig`). The trap red-zone gate measures
 every x86 class again all the same, and
 `arch/x86/x86_64/include/kickos/arch/x86_64_trap_stack.h` changes only where a measurement passes
 its figure. Newlib's port did pass one, measured: with `KICKOS_LIBC_REENT` at 1 a timer's wake
-primes the incoming thread's libc state inside `pick_and_seat`, through `reent_prime` and
-`arch_aspace_acquire`, and IRQ, IRQK and IST measure 544 on qemu-x86_64 against 512. The
-one-core figures take 576, the interrupt's whole extent 760, and the one-core
+primed the incoming thread's libc state inside `pick_and_seat`, through `reent_prime` and
+`arch_aspace_acquire`, and IRQ, IRQK and IST measured 544 on qemu-x86_64 against 512. (Superseded:
+`thread_create` primes a thread's libc state once, at its creation, and `pick_and_seat` primes
+none.) The one-core figures take 576, the interrupt's whole extent 760, and the one-core
 `KICKOS_MIN_STACK_SIZE` 2624 to cover a privileged syscall with that interrupt below it; the
 SMP presets fit their figures already. User stacks move: the 16-byte cell of 5.5 comes off the
 top of each, and app code built with vectors, `printf` of a `double` above all, runs deeper. The
@@ -557,8 +558,9 @@ hosted, as every other target's apps are: `cmake/toolchain-x86_64-uefi.cmake` dr
 `-ffreestanding`, under which libstdc++'s `<cstdlib>` declares no `strtol`, and KickOS's own
 libraries keep it through `kickos_apply_freestanding`.
 
-**The heap.** `pe_image.ld` already states `_kickos_heap_start` and `_kickos_heap_limit`, as one
-address at the end of `.appbss`. It carves `KICKOS_USER_HEAP_SIZE` between them, as
+**The heap.** `arch/x86/x86_64/program.ld`, the app image's own link, states
+`_kickos_heap_start` and `_kickos_heap_limit` at the end of `.appbss`. It carves
+`KICKOS_USER_HEAP_SIZE` between them, as
 `arch/arm64/chip/virt_arm64/virt_arm64.ld` does, with the same `KICKOS_HEAP_MIN` assert. The heap
 is in the app window, so every address space gets its own copy, frames taken per task.
 
@@ -635,11 +637,12 @@ libstdc++'s `operator new` reaches `malloc`. The fleet's `-Wl,-u,_exit` becomes 
 _exit`. `tools/check-x86_64-no-got.sh` and the relocation-copy pass already read every group
 member, so the package archives join their corpus.
 
-**Exceptions.** `pe_image.ld` places `.eh_frame` in the kernel half, which ring 3's unwinder
-cannot read; it moves into the app window's read-only data, bounded by `__eh_frame_start`, with
-the zero word crtend would end it with. So do the LSDAs, which `-ffunction-sections` names
+**Exceptions.** `pe_image.ld` placed `.eh_frame` in the kernel half, which ring 3's unwinder
+cannot read. The app's tables move into the app window's read-only data, `.approdata` of the app
+image's own link (`arch/x86/x86_64/program.ld`), bounded by `__eh_frame_start`, with the zero word
+crtend would end it with. So do the LSDAs, which `-ffunction-sections` names
 `.gcc_except_table.<function>` and which the script named only bare, so each landed in the
-kernel half as an orphan section.
+kernel half as an orphan section. `pe_image.ld` discards the kernel's own `.eh_frame`.
 `user/src/root_entry.cc` registers the tables only under `KICKOS_LINKER_WEAK_UNDEF`. On q35 the
 registration is a constructor of the highest priority in the `kickos_cxx_rt` object of
 `system/cxx/vterminate.cc`, which only full-C++ images link, and `SORT(.init_array.*)` runs it
@@ -843,7 +846,7 @@ model is `single`; `__cxa_thread_atexit_impl` is named only under
 registers nothing in any image today. `__libc_init_array` and `__libc_fini_array` are crt0's, which
 KickOS does not link: the root task runs the app's own constructor range itself, the loop over
 `__kickos_app_init_array_start` in `user/src/root_entry.cc`. On q35 the `__init_array_start` that
-`__libc_init_array` would walk is moreover the kernel's constructor range in `.kosinit`
+`__libc_init_array` would walk is moreover the kernel's constructor range in `.rdata`
 (`arch/x86/x86_64/pe_image.ld`), which it would run at ring 3, so `init.o` goes. `fini.o` goes with
 it, but only once `register_fini` has gone: `register_fini` hands `__libc_fini_array` to `atexit`
 (`newlib/libc/stdlib/__call_atexit.c` line 52), a strong reference every image calling `exit`

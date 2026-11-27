@@ -8,7 +8,7 @@
 // which is arch_cpu_id, arch_ipi_send, arch_ipi_fence, endpoint_far_call_deliver,
 // endpoint_far_hold, endpoint_far_reply_deliver and endpoint_far_send_wake at four nodes;
 // kmemcpy folds to memcpy where no address space is enforced. One thread of execution runs the
-// arms, so the doorbell only records: servicing it here would echo a payload an arm has not yet
+// arms, so the doorbell only records: servicing it here would take a call an arm has not yet
 // inspected.
 
 #include "amp_seam.h"
@@ -30,6 +30,7 @@ namespace kickos
         uint32_t g_sent_mask = 0;
         void (*g_on_raise)() = nullptr;
         bool g_deliver_answers = false;
+        bool g_deliver_echoes = false;
         uint32_t g_hold_port = amp::PORT_MAX;
         uint32_t g_held[HELD_MAX] = {};
         uint32_t g_held_count = 0;
@@ -91,6 +92,7 @@ namespace kickos
             g_sent_mask = 0;
             g_on_raise = nullptr;
             g_deliver_answers = false;
+            g_deliver_echoes = false;
             g_hold_port = amp::PORT_MAX;
             g_held_count = 0;
             g_replies = 0;
@@ -108,9 +110,9 @@ namespace kickos
     // No endpoint layer here: unless an arm asks for the answer, this refuses as an unbound
     // port does.
     bool endpoint_far_call_deliver(uint32_t from, uint32_t, amp::ReplyTag const& tag,
-                                   uint32_t badge, uint32_t, uint32_t slot, Held)
+                                   uint32_t badge, uint32_t len, uint32_t slot, Held)
     {
-        if (not ampfix::g_deliver_answers)
+        if (not ampfix::g_deliver_answers and not ampfix::g_deliver_echoes)
         {
             return false;
         }
@@ -119,7 +121,14 @@ namespace kickos
         {
             return false;
         }
-        amp::inbound_reply(record, nullptr, 0u);
+        if (ampfix::g_deliver_echoes)
+        {
+            amp::inbound_reply(record, amp::hold_payload(record), len);
+        }
+        else
+        {
+            amp::inbound_reply(record, nullptr, 0u);
+        }
         return true;
     }
 
@@ -151,14 +160,14 @@ namespace kickos
     // A caller that takes the reply HOLDS it: releasing it is the arm's, as landing it is a
     // resumed caller's.
     bool endpoint_far_reply_deliver(uint32_t from, amp::ReplyTag const& tag, uint32_t hold,
-                                    uint32_t len, bool refused, Held)
+                                    uint32_t len, uint32_t word, Held)
     {
         ampfix::g_replies++;
         ampfix::g_reply_from = from;
         ampfix::g_reply_thread = tag.thread;
         ampfix::g_reply_seq = tag.seq;
         ampfix::g_reply_len = len;
-        ampfix::g_reply_refused = refused;
+        ampfix::g_reply_refused = word == amp::REPLY_REFUSED;
         ampfix::g_reply_first = 0;
         if (len != 0)
         {

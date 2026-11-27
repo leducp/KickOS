@@ -20,6 +20,8 @@ namespace kickos
         // Each space takes its root, and a table per 1 GiB and per 2 MiB of address it maps,
         // from the pool, and keeps the tables a refused map took until it is destroyed.
         void host_aspace_tables_from_pool(bool on);
+        // The span of one leaf table, as an address shift; 0 restores 2 MiB.
+        void host_aspace_leaf_table_span(unsigned shift);
 
         // Spaces created and not yet destroyed, and destroys of a space already destroyed.
         extern size_t g_aspaces_live;

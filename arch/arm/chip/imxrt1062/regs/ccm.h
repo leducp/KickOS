@@ -19,9 +19,15 @@ namespace kickos::imxrt1062::reg::ccm
     // Clock gating registers (RM 14.7). Each peripheral gate is a 2-bit CGn field.
     constexpr uintptr_t CCGR0 = mmap::CCM_BASE + 0x68u; // GPIO2: CG15 [31:30]
     constexpr uintptr_t CCGR1 = mmap::CCM_BASE + 0x6Cu; // GPT1: CG10 [21:20], CG11 [23:22]
-    constexpr uintptr_t CCGR3 = mmap::CCM_BASE + 0x74u; // LPUART6: CG3 [7:6]
+    constexpr uintptr_t CCGR3 = mmap::CCM_BASE + 0x74u;
+    constexpr uintptr_t CCGR5 = mmap::CCM_BASE + 0x7Cu;
+    constexpr uintptr_t CCGR6 = mmap::CCM_BASE + 0x80u;
 
-    constexpr uint32_t CCGR3_LPUART6 = 3u << 6;
+    // The CGn field of a CCGR register, both bits set: on in every mode.
+    constexpr uint32_t cg(uint32_t n)
+    {
+        return 3u << (2u * n);
+    }
     constexpr uint32_t CCGR1_GPT1 = (3u << 20) | (3u << 22); // bus + serial, on
     // gpio2_clocks (RM 14.7.21). CCGR0 resets to all-ones and RM Table 9-6 does not list this
     // gate among the ones the boot ROM disables.

@@ -20,11 +20,10 @@ namespace kickos
     // The completed input bytes, n or fewer. A kernel caller may ignore it. The SYSCALL may
     // not, or a dropped middle chunk leaves a hole in a line whose later chunks were taken.
     int kconsole_write(char const* buf, size_t n);
-    // -KOS_EBUSY where the console is published and the caller's own stdout send would be
-    // taken now: nothing was written. Where `wait` holds it waits for room in a full ring and in
-    // the dark window (console_dark) for the reclaim or a publish, and writes then; where it does
-    // not, it answers -KOS_EAGAIN wherever it would wait. -KOS_ECANCELED where the writer is
-    // cancelled.
+    // -KOS_EBUSY once the kernel console is not KERNEL_OWNED: a publish, a reclaim or a panic
+    // took it, and nothing was written. Where `wait` holds it waits for room in a full ring and
+    // writes then; where it does not, it answers -KOS_EAGAIN wherever it would wait.
+    // -KOS_ECANCELED where the writer is cancelled.
     int kconsole_write_user(char const* buf, size_t n, bool wait);
 
     void kputs(char const* s);
@@ -71,10 +70,6 @@ namespace kickos
 
     // Unrecoverable error: report and halt the system.
     void kpanic(char const* msg) __attribute__((noreturn));
-
-    // Kernel diagnostic LED: the board's single status LED. No-op on boards with no known LED.
-    void kdiag_led_init(void);
-    void kdiag_led_set(bool on);
 
     // Leaves the thread INACTIVE: the caller publishes it with sched::add, under the same lock
     // that allocated it. A publish deferred past that lock leaves a child only a slay discards.
@@ -174,14 +169,13 @@ extern "C" void kpanic_write_unlocked(char const* buf, size_t n);
 extern "C" void kfault_terminate(void) __attribute__((noreturn));
 
 // The chokepoint every ORDERED halt goes through: KOS_SYS_SHUTDOWN's halt, KOS_SYS_EXIT by
-// ROOT, last-thread-out and the software fault reporter. Drains the console, then ends the
+// ROOT and last-thread-out. Drains the console, then ends the
 // system via arch_shutdown: it halts, whatever terminal outcome is set.
 extern "C" void kickos_terminate(int status) __attribute__((noreturn));
 
 // Hands the chip to the terminal outcome KOS_SYS_TERMINAL_OUTCOME set: returns where none is
 // set, it is halt, its word does not check, or the chip has no entry for it. Every
-// kfault_terminate and the software fault reporter call it once the console is drained; it takes
-// no lock and prints nothing.
+// kfault_terminate calls it once the console is drained; it takes no lock and prints nothing.
 extern "C" void kickos_terminal_outcome_apply(void);
 
 #define KICKOS_ASSERT(cond)                     \

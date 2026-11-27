@@ -13,7 +13,8 @@ unmap owes the other cores, and the idle loop each core falls back to.
 
 The second half is AMP (asymmetric multiprocessing): several independent kernels, each driving
 its own core, that share a machine. They share no kernel state at all. They share one memory
-window with rings in it, one doorbell, and one console.
+window with rings in it and one doorbell. They share no console: each node's kernel has a UART
+of its own, or none.
 
 The design is in the Book chapter [One kernel lock, many ready queues](../book/one-lock-many-ready-queues.md),
 which explains why KickOS keeps one big kernel lock (BKL) and still gives each core its own ready
@@ -429,11 +430,7 @@ retried until the store succeeds) and waits until `g_now_serving` equals its num
 ```cpp
 void arch_kernel_lock(void)
 {
-#if KICKOS_BENCH
-    // ...
-#else
     uint32_t const ticket = kernel_lock_draw();
-#endif
     kickos::doorbell::await_turn([ticket] { return now_serving() == ticket; });
     kickos::klock::owner_take();
 }
@@ -524,8 +521,7 @@ Now the rule that makes per-core queues safe: **no core writes another core's re
             KICKOS_DEBUG_ASSERT(k.threads.index_of(t) >= 0);
             t->queue_core = static_cast<uint8_t>(home);
             t->state.to<ThreadState::HANDED>();
-            ring_stage(home, static_cast<uint16_t>(t - &k.threads.slots[0]));
-            KICKOS_BENCH_SCHED_COUNT(::kickos::BS_HANDOFF);
+            ring_stage(home, static_cast<uint16_t>(t - &k.threads.slots()[0]));
         }
 
         // ...
@@ -889,12 +885,14 @@ The rest of this part follows the own-image posture.
 (`-M virt,gic-version=3 -cpu cortex-a53 -nic none -smp 2 -m 132M`). The merge only joins the two
 images' loadable segments, so you can also load the two builds directly: node 0's ELF as the
 kernel, and node 1's flat `.bin` at its image base, 0x44000000. Node 1's ELF cannot be given to
-the loader as well, because both ELFs describe the shared region at the same address.
+the loader as well, because both ELFs describe the shared region at the same address. Each node
+here drives a PL011 of its own (`CONFIG_KICKOS_AMP_CONSOLES="/dev/uart0,/dev/uart1"`), so the
+machine needs two serial ports: the first `-serial` is node 0's console, the second node 1's.
 
 ```
 B=build
 qemu-system-aarch64 -M virt,gic-version=3 -cpu cortex-a53 -nic none -smp 2 -m 132M \
-    -nographic -semihosting \
+    -nographic -semihosting -serial mon:stdio -serial file:node1.log \
     -kernel $B/qemu-arm64-amp2-n0/user/apps/common/ampping/ampping_n0 \
     -device loader,file=$B/qemu-arm64-amp2-n1/user/apps/common/ampping/ampserve.bin,addr=0x44000000,force-raw=on \
     -gdb tcp::1234 -S &
@@ -905,16 +903,23 @@ gdb-multiarch $B/qemu-arm64-amp2-n0/user/apps/common/ampping/ampping_n0 \
 
 Both kernels' symbols are now loaded. They have the same names, so a breakpoint on a kernel
 function gets two locations, one per node: node 0's code is at `0xffffff8040...`, node 1's at
-`0xffffff8044...`. Run without gdb and the console shows two banners, then:
+`0xffffff8044...`. Run without gdb and node 0's console shows its banner, then:
+
+```
+ampping: 2 of 2 node app(s) alive on the port the partition names, own row 1
+ampping: node 0 calls node 1 port 3
+  ping 1 -> pong 2 from node 1 (4 byte(s))
+...
+ampping: node 1 answered 4 round(s), its own record says 4
+ampping: node 0 done, 4 round(s) across the partition
+```
+
+while `node1.log` holds node 1's banner, then:
 
 ```
 ampping: node 1 serves port 3
-ampping: 2 of 2 node app(s) alive on the port the partition names, own row 1
-ampping: node 0 calls node 1 port 3
   serve 1 -> 2
-  ping 1 -> pong 2 from node 1 (4 byte(s))
 ...
-ampping: node 0 done, 4 round(s) across the partition
 ```
 
 On the shared image (`hello` from `build/qemu-arm64-amp`, `-M virt,gic-version=3 -smp 4`),
@@ -939,7 +944,7 @@ $1 = (kickos::Thread *) 0x0
 Node 0 boots exactly as the one-core reference walk does, with these additions in `kmain`,
 before root is created:
 
-1. `amp::diag_peer_publish` and `amp::window_init`. The window is the shared memory of Stop 16.
+1. `amp::window_init`. The window is the shared memory of Stop 16.
    Anything both kernels write is declared with `KICKOS_AMP_SHARED("...")`, which puts it in a
    `.amp_shared.*` section that each node's link script places at the same derived address, as
    NOLOAD so no image's load overwrites a peer's writes. Node 0 alone zeroes that region
@@ -973,61 +978,80 @@ one per image), `continue`:
 
 ```
 Thread 2 hit Breakpoint 2.2, kickos::amp::window_init () at .../ampwindow.cc
-  1    Thread 1.1 (CPU#0 [running]) kickos::init::Walk::boot (this=this@entry=0x40335f10) at .../walk.cc
+  1    Thread 1.1 (CPU#0 [running]) 0xffffff8040005880 in kickos::tls_libc_carve (image=image@entry=0) at .../tls.cc
 * 2    Thread 1.2 (CPU#1 [running]) kickos::amp::window_init () at .../ampwindow.cc
 (gdb) bt
 #0  kickos::amp::window_init () at .../ampwindow.cc
-#1  0xffffff80440095f8 in kickos::kmain (argc=<optimized out>, argv=<optimized out>) at .../kmain.cc
-#2  0xffffff804401ca14 in kickos_crt_tail () at .../crt_tail.h
+#1  0xffffff804400bd78 in kickos::kmain (argc=<optimized out>, argv=<optimized out>) at .../kmain.cc
+#2  0xffffff8044024314 in kickos_crt_tail () at .../crt_tail.h
+#3  Reset_Handler () at .../chip_virt_arm64.cc
 ```
 
 CPU#1 is running the second kernel's own `kmain`, at `0xffffff8044...` addresses, while node 0
-carries on with its own boot (here in the init walk that composes the system).
+carries on with its own boot (here creating its first threads).
 
 **Why, and the contract:** [design-multicore.md N6g and N6h](../design-multicore.md)
 
 ### Stop 16: the shared window and its rings
-**Where:** `kernel/include/kickos/ampwindow.h`, `Window`, `Ring`, `Slot`, `Class`; `kernel/amp/ampwindow.cc`, `g_window`, `send`, `send_on`, `take_call`, `take_reply`; `kernel/amp/ampmap.cc`, `ring`
+**Where:** `kernel/include/kickos/ampwindow.h`, `Window`, `Ring`, `Slot`, `Class`, `Lane`, `lane_of`; `kernel/amp/ampwindow.cc`, `g_window`, `send`, `send_on`, `ring_peer`, `take_call`, `take_reply`; `kernel/amp/ampmap.cc`, `ring`
 
 The window is one array of rings: `inbox[class][to][from]`. For every ordered pair of nodes there
 are two rings, one for **calls** and one for **replies**, because their slots are freed at
 different times (a call slot is held until the reply is sent; a reply slot is freed once the
-caller has copied it out). Each ring is a head written only by the sender, a tail written only by
-the receiver, and `RING_SLOTS` fixed-size slots of up to `KOS_EP_MSG_MAX` bytes.
+caller has copied it out). Each ring has `RING_SLOTS` fixed-size slots of up to `KOS_EP_MSG_MAX`
+bytes. A head index is written only by the sender, a tail index only by the receiver.
+
+A call ring is split into **lanes**, one per port the receiving node serves (`lane_of`). Each lane
+owns an equal, power-of-two run of the ring's slots, with a head and a tail of its own, and slots
+are given back in order within a lane only. So a port whose receiver keeps every slot of its lane
+holds no slot of another port. A reply ring is one lane of every slot.
 
 The header's opening comment is the rule for every field: anything a peer wrote is **untrusted
 input**. A far index is never used as an index without a bound, a far length never as a length.
 The receiver checks the head it reads; the sender checks the tail it reads:
 
 ```cpp
-                uint32_t head = r.head.v.load();
+                Lane const ln = lane_for(class_of(port), to, port);
+                // ...
+                uint32_t head = r.head.v[ln.index].load();
                 // FAR: the consumer owns this index. A producer that believed it would compute
                 // a free-slot count out of it and overwrite slots the consumer is still
                 // reading.
-                uint32_t const tail = r.tail.v.load();
+                uint32_t const tail = r.tail.v[ln.index].load();
                 // ...
                 uint32_t const used = outstanding(head, tail);
-                // ...
+                if (used > ln.slots)
+                {
+                    count_up(g_counts[me].send_refused);
+                    return Sent::DEPTH;
+                }
+                if (used == ln.slots)
+                {
+                    count_up(g_counts[me].send_refused);
+                    return Sent::FULL;
+                }
+
                 // The slot index comes from the producer's OWN head, never from the far tail.
-                Slot& s = r.slot[head & RING_MASK];
+                Slot& s = r.slot[lane_slot(ln, head)];
                 s.port.store(port);
                 s.tag = tag;
+                s.badge = badge;
                 s.len.store(len);
                 if (len != 0u)
                 {
                     kmemcpy(s.payload, payload, len);
                 }
                 // ...
-                r.head.v.store(head + 1u);
+                r.head.v[ln.index].store(head + 1u);
                 count_up(g_counts[me].sent);
 
-                ring(to);
+                ring_peer(me, to);
                 return Sent::OK;
 ```
 
-The head is published with a release store after the slot is complete, and `ring(to)` raises the
-peer's doorbell: `amp::ring` maps the node to its core and calls `arch_ipi_send`, the same
-doorbell as SMP. This validation defends a node against a *malformed* peer. It is not a security
+The head is published with a release store after the slot is complete, and `ring_peer` raises the
+peer's doorbell, at once or at the end of a batch of publications: `amp::ring` maps the node to
+its core and calls `arch_ipi_send`, the same doorbell as SMP. This validation defends a node against a *malformed* peer. It is not a security
 boundary: every node maps the same writable kernel RAM, so a hostile peer kernel could rewrite
 anything.
 
@@ -1035,26 +1059,29 @@ anything.
 `ampping` makes its first call:
 
 ```
-Thread 1 hit Breakpoint 1.1, kickos::amp::send (to=1, port=3, tag=..., payload=..., len=len@entry=4) at .../ampwindow.cc
+Thread 1 hit Breakpoint 1.1, kickos::amp::send (to=1, port=3, tag=..., badge=badge@entry=0, payload=..., len=len@entry=4) at .../ampwindow.cc
 * 1    Thread 1.1 (CPU#0 [running]) kickos::amp::send (to=1, port=3, ...) at .../ampwindow.cc
-  2    Thread 1.2 (CPU#1 [halted ]) 0xffffff804401af8c in arch_idle_wait () at .../arch_armv8a.cc
-(gdb) p 'kickos::amp::(anonymous namespace)::g_window'.inbox[0][1][0].head
-$1 = {v = 0}
+  2    Thread 1.2 (CPU#1 [halted ]) 0xffffff8044023bdc in arch_idle_wait () at .../arch_armv8a.cc
+(gdb) p kickos::amp::lane_for(kickos::amp::Class::CALL, 1, 3)
+$1 = {index = 1, base = 1, slots = 1}
+(gdb) p 'kickos::amp::(anonymous namespace)::g_window'.inbox[0][1][0].head.v[1].v_._M_i
+$2 = 0
 (gdb) p &'kickos::amp::(anonymous namespace)::g_window'
-$2 = (kickos::amp::Window *) 0xffffff8048000140 <kickos::amp::(anonymous namespace)::g_window>
+$3 = (kickos::amp::Window *) 0xffffff8048000140 <kickos::amp::(anonymous namespace)::g_window>
 ```
 
-`inbox[0][1][0]` is the call ring (class 0) to node 1 from node 0, still empty. The window sits
-above both images, at the same address in each. Then `delete`,
-`break kickos::endpoint_far_call_deliver`, `continue`, and read the same ring from node 1's side:
+`inbox[0][1][0]` is the call ring (class 0) to node 1 from node 0. Port 3 publishes on lane 1 of
+it, one slot wide here, and that lane is still empty. The window sits above both images, at the
+same address in each. Then `delete`, `break kickos::endpoint_far_call_deliver`, `continue`, and
+read the same lane from node 1's side:
 
 ```
-(gdb) p 'kickos::amp::(anonymous namespace)::g_window'.inbox[0][1][0].head
-$3 = {v = 1}
-(gdb) p 'kickos::amp::(anonymous namespace)::g_window'.inbox[0][1][0].tail
-$4 = {v = 0}
+(gdb) p 'kickos::amp::(anonymous namespace)::g_window'.inbox[0][1][0].head.v[1].v_._M_i
+$4 = 1
+(gdb) p 'kickos::amp::(anonymous namespace)::g_window'.inbox[0][1][0].tail.v[1].v_._M_i
+$5 = 0
 (gdb) p tag
-$5 = (const kickos::amp::ReplyTag &) @0xffffff8044b24c68: {thread = 1, seq = 1}
+$6 = (const kickos::amp::ReplyTag &) @0xffffff8044b26c68: {thread = 1, seq = 1}
 ```
 
 One entry published by node 0, not yet taken by node 1. The tag names node 0's caller and its
@@ -1064,12 +1091,12 @@ call sequence.
 [Reference: invariants, `amp-hold-landed-by-its-holder-or-given-back-at-exit`](../reference/invariants.md#scheduler--instance-state)
 
 ### Stop 17: a call that crosses kernels
-**Where:** `kernel/syscall/syscall_ipc.cc`, `endpoint_call` (the far arm), `endpoint_far_call_deliver`, `endpoint_far_reply_deliver`, `far_call_land`, `far_reply_land`; `arch/common/doorbell_protocol.cc`, `kickos_doorbell_service`; `kernel/amp/ampwindow.cc`, `kickos_amp_node_service`, `node_service`, `dispatch_call`
+**Where:** `kernel/syscall/syscall_ipc.cc`, `endpoint_call`, `call_once` (the far arm), `far_send_or_park`, `endpoint_far_call_deliver`, `endpoint_far_send_hold`, `endpoint_far_reply_deliver`, `far_call_land`, `far_reply_land`; `arch/common/doorbell_protocol.cc`, `kickos_doorbell_service`; `kernel/amp/ampwindow.cc`, `kickos_amp_node_service`, `node_service`, `dispatch_call`
 
 The `ampping` app on node 0 calls node 1 with plain `kos_call`, the call of
 [Call and reply](05-call-and-reply.md). Locality never reaches the API: the app does not know the
-endpoint is far. In the kernel, `endpoint_call` resolves the capability as usual and then
-branches:
+endpoint is far. In the kernel, `endpoint_call` runs `call_once`, which resolves the capability as
+usual and then branches:
 
 ```cpp
             if (far)
@@ -1078,18 +1105,27 @@ branches:
                 uint16_t const seq = static_cast<uint16_t>(c->call_seq + 1u);
                 amp::ReplyTag const tag = {kernel().threads.handle_for(idx),
                                            amp::reply_seq(seq)};
-                int32_t const sent = far_publish(c, e, buf, send_len, tag);
+                int32_t const sent =
+                    far_send_or_park(c, e, buf, send_len, tag, badge, limit, ask, out_epoch, lock);
+                if (sent == PARKED)
+                {
+                    relay.settled();
+                    *out_far_slot = true;
+                    return PARKED;
+                }
                 if (sent < 0)
                 {
                     return sent;
                 }
+                relay.settled();
                 c->call_seq = seq;
                 reply_wait_seat(c, buf, recv_cap);
                 // Cross-node calls do not donate priority to the peer scheduler.
-                epoch = park_queueless(ask)(c, WAIT_EP_FAR_REPLY, e, lock);
-                ktime_deadline_arm(c, timeout_us, lock);
-                // ...
+                *out_epoch = park_queueless(ask)(c, WAIT_EP_FAR_REPLY, e, lock);
+                ktime_limit_arm(c, limit, lock);
+                // No wake schedules this park; request a switch explicitly.
                 sched::reschedule(nullptr, lock);
+                return PARKED;
             }
 ```
 
@@ -1098,13 +1134,22 @@ sequence number, which is how the reply finds its way back. No capability crosse
 kernels, only names. And no priority crosses either: two kernels' priority scales are not
 comparable, so there is no priority inheritance across nodes.
 
+`far_send_or_park` publishes on the lane of the call's port. When that lane is full, a blocking
+call does not fail: it parks for a slot of the lane (`WAIT_EP_FAR_SEND`), and the slot's release
+wakes the highest waiter, which publishes again. A `KOS_POLL` call that finds the lane full answers
+`-KOS_EAGAIN`, and a deadline that has already passed answers `-KOS_ETIMEDOUT`. A plain far send
+takes the same path, with no reply tag.
+
 On node 1 the doorbell enters `kickos_doorbell_service` (inlined into the GIC dispatch on this
 build), which, after any rendezvous answers, calls `kickos_amp_node_service` -> `node_service`. That body drains the **reply rings first**
 (a reply wakes a parked caller and must not wait behind a burst of calls), then the call rings,
 each bounded per sender so a peer cannot keep the core in the masked handler. A call is handed to
 `endpoint_far_call_deliver`, which wakes a receiver parked in `kos_reply_recv` on the bound
 endpoint. The handler copies no payload: it hands the receiver a *hold* on the slot, and the
-receiver copies its bytes out in its own syscall (`far_call_land`) with interrupts enabled. The
+receiver copies its bytes out in its own syscall (`far_call_land`) with interrupts enabled. A far
+send that reaches a served endpoint while no receiver is parked on it is not lost:
+`endpoint_far_send_hold` keeps it in its slot, and the port's next receive takes the oldest one
+held. The
 reply goes back on the reply ring the same way, `endpoint_far_reply_deliver` wakes node 0's
 caller, and `far_reply_land` copies the reply into its buffer.
 
@@ -1112,16 +1157,16 @@ caller, and `far_reply_land` copies the reply into its buffer.
 `continue`:
 
 ```
-Thread 2 hit Breakpoint 1.2, kickos::endpoint_far_call_deliver (from=0, port=3, tag=..., len=4, slot=0, held=...) at .../syscall_ipc.cc
-  1    Thread 1.1 (CPU#0 [halted ]) 0xffffff804001af7c in arch_idle_wait () at .../arch_armv8a.cc
+Thread 2 hit Breakpoint 1.2, kickos::endpoint_far_call_deliver (from=0, port=3, tag=..., badge=0, len=4, slot=1, held=...) at .../syscall_ipc.cc
+  1    Thread 1.1 (CPU#0 [halted ]) 0xffffff8040023bdc in arch_idle_wait () at .../arch_armv8a.cc
 * 2    Thread 1.2 (CPU#1 [running]) kickos::endpoint_far_call_deliver (...) at .../syscall_ipc.cc
 (gdb) bt
-#0  kickos::endpoint_far_call_deliver (from=0, port=3, tag=..., len=4, slot=0, held=...)
-#1  kickos::amp::(anonymous namespace)::dispatch_call (me=1, from=0, ...) at .../ampwindow.cc
-#2  kickos::amp::node_service (held=..., held@entry=...) at .../ampwindow.cc
-#3  0xffffff804400e0a4 in kickos_amp_node_service () at .../held.h
-#4  0xffffff804401a8b0 in kickos_armv8a_gic_dispatch () at .../arch_arm64_gicv3.cc
-#5  0xffffff804401af54 in kickos_armv8a_irq () at .../arch_armv8a.cc
+#0  kickos::endpoint_far_call_deliver (from=0, port=3, tag=..., badge=0, len=4, slot=1, held=...)
+#1  0xffffff8044011b50 in kickos::amp::(anonymous namespace)::dispatch_call (me=1, from=0, ...) at .../ampwindow.cc
+#2  kickos::amp::node_service (held=...) at .../ampwindow.cc
+#3  0xffffff8044012070 in kickos_amp_node_service () at .../held.h
+#4  0xffffff804402345c in kickos_armv8a_gic_dispatch () at .../arch_arm64_gicv3.cc
+#5  0xffffff8044023ba4 in kickos_armv8a_irq () at .../arch_armv8a.cc
 ```
 
 Node 0's caller is parked, so CPU#0 sleeps; CPU#1 is in its doorbell interrupt. Then `delete`,
@@ -1130,14 +1175,17 @@ server's own syscall (`endpoint_reply_recv`), copying the request out of the slo
 `delete`, `break 'kickos::(anonymous namespace)::far_reply_land'`, `continue`:
 
 ```
-Thread 1 hit Breakpoint 3.1, kickos::(anonymous namespace)::far_reply_land (c=..., buf=buf@entry=1077129192) at .../syscall_ipc.cc
+Thread 1 hit Breakpoint 3.1, kickos::(anonymous namespace)::far_reply_land (c=..., buf=buf@entry=1077129112) at .../syscall_ipc.cc
 (gdb) bt
-#0  kickos::(anonymous namespace)::far_reply_land (c=..., buf=buf@entry=1077129192)
-#1  0xffffff80400112f8 in kickos::endpoint_call (cap=cap@entry=1, buf=buf@entry=1077129192, send_len=<optimized out>, recv_cap=4, timeout_us=500000) at .../syscall_ipc.cc
-#2  (anonymous namespace)::syscall_body (nr=46, a0=1, a1=1077129192, a2=2052, a3=500000) at .../syscall.cc
+#0  kickos::(anonymous namespace)::far_reply_land (c=..., buf=buf@entry=1077129112)
+#1  0xffffff8040015d44 in kickos::endpoint_call (cap=cap@entry=1, buf=buf@entry=1077129112, send_len=send_len@entry=4, recv_cap=4, deadline=deadline@entry=569549392) at .../syscall_ipc.cc
+#2  0xffffff80400133e4 in (anonymous namespace)::syscall_body (nr=46, a0=1, a1=1077129112, a2=2052, a3=569549392, a4=0) at .../syscall.cc
 (gdb) p c->name
 $1 = "main", '\000' <repeats 11 times>
 ```
+
+The call's deadline crosses the trap as two words, `a3` and `a4`, and here it is an absolute time
+on the monotonic clock, 569549392 ns.
 
 Node 0's `main` has woken inside the same `endpoint_call` that parked it, and copies the reply
 into its buffer. Its `kos_call` returns and the console prints

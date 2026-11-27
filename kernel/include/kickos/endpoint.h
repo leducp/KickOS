@@ -61,17 +61,13 @@ namespace kickos
         List send_waiters;
         List recv_waiters;
         // Live caps carrying CAP_WAIT naming this endpoint, and the single home for that
-        // state. NOT the pool refcount, which counts ALL caps: this one gates the send-side
-        // dead-endpoint check and fires EPIPE at 0. Shares endpoint_refs' uint8_t ceiling
-        // and refusal, because obj_ref_inc tests both before moving either.
+        // state. NOT the pool refcount, which counts ALL caps. Shares endpoint_refs' uint8_t
+        // ceiling and refusal, because obj_ref_inc tests both before moving either.
         uint8_t recv_holders = 0;
         // Live caps carrying CAP_HANDOUT: holders that may seat a receiver without being one.
         uint8_t handout_holders = 0;
         // Link in `server`'s served-endpoint chain; non-sentinel only while `server` is set.
         uint16_t next_served = EP_SERVED_NONE;
-        // Set when recv_holders falls to 0 and cleared when a receiver next waits here: a
-        // receiver a handout seats counts as none until it first receives.
-        uint8_t vacated = 0;
         // EP_CONSOLE_*: whether this is the published console, and whether its task lives.
         uint8_t console = 0;
         // The holdings epoch that last counted this slot (cap.cc).
@@ -119,12 +115,16 @@ namespace kickos
 
     // Keep one far send or call that found no receiver parked on the endpoint its port is bound
     // to, in the slot it arrived in, until a receive of that endpoint takes it. False where the
-    // endpoint has no receiver left or nothing can hold it, and dispatch_call refuses it.
+    // endpoint is dead for good, and dispatch_call refuses it.
     bool endpoint_far_hold(uint32_t from, uint32_t port, amp::ReplyTag const& tag,
                            uint32_t badge, uint32_t len, uint32_t slot, Held held);
 
-    // Refuse and give back every far send and call held for `e`, whose last receiver has left.
+    // Refuse and give back every far send and call held for `e`, now dead for good.
     void endpoint_far_held_refuse(Endpoint const* e, Held held);
+
+    // Every far send and call held for `from` is held for `to` instead, its order kept. Caller
+    // holds IrqLock.
+    void endpoint_far_held_move(Endpoint const* from, Endpoint const* to, Held held);
 
     // Give back every far call held on this node whose caller withdrew it. Run by the doorbell
     // service.
@@ -134,10 +134,10 @@ namespace kickos
     // `tag` is another node's writing: nothing in it may be spent before this validates it.
     // `from` is the RING the reply arrived on, which the validation tests the caller's own
     // far node against. True hands the caller `hold`, the reply's slot, which it lands and
-    // releases in its own call (endpoint_call); nothing is copied here. A `refused` reply
-    // answers the call -KOS_ECONNREFUSED.
+    // releases in its own call or send; nothing is copied here. `word` is the reply's badge: a
+    // REPLY_REFUSED answers -KOS_ECONNREFUSED and a REPLY_FAULTED -KOS_EFAULT.
     bool endpoint_far_reply_deliver(uint32_t from, amp::ReplyTag const& tag, uint32_t hold,
-                                    uint32_t len, bool refused, Held held);
+                                    uint32_t len, uint32_t word, Held held);
 
     // This node's threads waiting in a blocking far send or call for a slot of a full lane of a
     // call ring, per node that ring leads to and per lane, and that lane's far tail at the last
@@ -162,7 +162,7 @@ namespace kickos
     void endpoint_far_send_seat(Thread* t, uint32_t node, uint32_t lane, uint32_t tail);
     // Take `t` out of that count, on any unpark.
     void endpoint_far_send_leave(Thread const* t);
-    // Withdraw the far call `t` published, as `t` leaves its WAIT_EP_FAR_REPLY park.
+    // Withdraw the far send or call `t` published, as `t` leaves its WAIT_EP_FAR_REPLY park.
     void endpoint_far_call_withdraw(Thread const* t);
 
     // Create a LOCAL endpoint, bind `port` to it and install a capability in `c`. Caller holds
@@ -194,28 +194,26 @@ namespace kickos
 
 #endif
 
-    // Whether a sender or caller finds a receiver: one holds WAIT, and one has waited since the
-    // last left.
-    inline bool endpoint_receiving(Endpoint const* e)
-    {
-        return e->recv_holders != 0 and e->vacated == 0;
-    }
+    // Hand the work waiting on `e` to the receivers parked on it that may take it, each through
+    // the take a receive runs, until either runs out: for where receivers parked while they could
+    // take nothing. Caller holds IrqLock.
+    void endpoint_pair_waiting(Endpoint* e, Held held);
 
     // Endpoint::console: SERVED from the publish to the end of the task it names, ENDED after.
     constexpr uint8_t EP_CONSOLE_NONE = 0;
     constexpr uint8_t EP_CONSOLE_SERVED = 1;
     constexpr uint8_t EP_CONSOLE_ENDED = 2;
 
-    // Whether a send is taken, parked where no receiver waits: a receiving endpoint, and the
-    // published console while its task lives, receiver or not. always_inline: -Os otherwise
-    // emits it out of line on every send and call.
-    __attribute__((always_inline)) inline bool endpoint_takes_sends(Endpoint const* e)
+    // Whether a sender or caller waits for a receiver rather than being refused: one holds WAIT
+    // or HANDOUT, or it is the published console while its task lives. False is the endpoint dead
+    // for good. always_inline: -Os otherwise emits it out of line on every send and call.
+    __attribute__((always_inline)) inline bool endpoint_servable(Endpoint const* e)
     {
-        if (e->console != EP_CONSOLE_NONE)
+        if (e->console == EP_CONSOLE_SERVED)
         {
-            return e->console == EP_CONSOLE_SERVED;
+            return true;
         }
-        return endpoint_receiving(e);
+        return e->recv_holders != 0 or e->handout_holders != 0;
     }
 
     // The span the narrow fields take ahead of `server`: one pointer on a 64-bit build, two

@@ -44,22 +44,29 @@ namespace
             }
         }
 
-        // `fmt` with its one `%s` replaced by the first `max` characters of `value`.
-        void row(char const* fmt, char const* value, size_t max)
+        // `fmt` with its n-th `%s` replaced by the first `maxes[n]` characters of `values[n]`.
+        void row(char const* fmt, char const* const* values, size_t const* maxes)
         {
+            size_t n = 0;
             for (char const* f = fmt; *f != '\0'; f++)
             {
                 if (f[0] == '%' and f[1] == 's')
                 {
-                    for (size_t i = 0; i < max and value[i] != '\0'; i++)
+                    for (size_t i = 0; i < maxes[n] and values[n][i] != '\0'; i++)
                     {
-                        put(value[i]);
+                        put(values[n][i]);
                     }
+                    n++;
                     f++;
                     continue;
                 }
                 put(*f);
             }
+        }
+
+        void row(char const* fmt, char const* value, size_t max)
+        {
+            row(fmt, &value, &max);
         }
     };
 }
@@ -74,7 +81,9 @@ size_t banner_identity(char* out, size_t cap)
     char const* const volatile app = kickos_app_stamp;
     Block b{out, cap, 0};
     b.put('\n');
-    b.row(KDIAG_F_BANNER_NAME, KICKOS_VERSION, BANNER_IDENTITY_VERSION_MAX);
+    char const* const title[] = {diag::banner_title_indent(KICKOS_VERSION), KICKOS_VERSION};
+    size_t const title_max[] = {sizeof(diag::kBannerIndent) - 1u, BANNER_IDENTITY_VERSION_MAX};
+    b.row(KDIAG_F_BANNER_NAME, title, title_max);
     b.row(KDIAG_F_BANNER_BOARD, KICKOS_BOARD_NAME, BANNER_IDENTITY_BOARD_MAX);
     b.row(KDIAG_F_BANNER_BUILD, kickos_identity_build_time, BANNER_IDENTITY_TIME_MAX);
     if (app != nullptr)

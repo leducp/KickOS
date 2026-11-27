@@ -259,7 +259,10 @@ void arch_init(void)
             __asm__ volatile("pause" ::: "memory");
         }
     }
+    kickos_doorbell_reachable();
+#if defined(KICKOS_WITNESS_DOORBELL) && KICKOS_WITNESS_DOORBELL
     kickos_doorbell_boot_check();
+#endif
 #endif
 }
 

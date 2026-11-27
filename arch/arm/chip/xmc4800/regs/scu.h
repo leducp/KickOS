@@ -2,8 +2,7 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // XMC4800 SCU registers: clock control, PLL, OSC, peripheral clock gates and resets, traps (RM
-// V1.3). Addresses are the sub-unit bases in mmap.h plus the offsets below. USIC0 and CCU40 share
-// the CGATCLR0/PRCLR0 gate/reset pair (different bits), so both are defined here.
+// V1.3). Addresses are the sub-unit bases in mmap.h plus the offsets below.
 
 #ifndef KICKOS_ARCH_ARM_CHIP_XMC4800_REGS_SCU_H
 #define KICKOS_ARCH_ARM_CHIP_XMC4800_REGS_SCU_H
@@ -23,6 +22,7 @@ namespace kickos::xmc::reg::scu
 
     // RCU sub-unit: peripheral reset clear.
     constexpr uintptr_t PRCLR0 = mmap::SCU_RCU_BASE + 0x14;
+    constexpr uintptr_t PRCLR1 = mmap::SCU_RCU_BASE + 0x20; // RM p.11-151
 
     // CLK sub-unit.
     constexpr uintptr_t CLKSET = mmap::SCU_CLK_BASE + 0x04;
@@ -32,6 +32,7 @@ namespace kickos::xmc::reg::scu
     constexpr uintptr_t CCUCLKCR = mmap::SCU_CLK_BASE + 0x20;
     constexpr uintptr_t SLEEPCR = mmap::SCU_CLK_BASE + 0x30;
     constexpr uintptr_t CGATCLR0 = mmap::SCU_CLK_BASE + 0x48; // peripheral clock gating clear
+    constexpr uintptr_t CGATCLR1 = mmap::SCU_CLK_BASE + 0x54; // RM p.11-181
 
     // OSC sub-unit (RM): MODE[5:4]=0 external crystal; OSCVAL[19:16].
     constexpr uintptr_t OSCHPCTRL = mmap::SCU_OSC_BASE + 0x04;
@@ -82,8 +83,11 @@ namespace kickos::xmc::reg::scu
     constexpr uint32_t CLKSET_CCUCEN = 1u << 4;
     constexpr uint32_t CCUCLKCR_CCUDIV = 1u << 0;
 
-    // Peripheral gate/reset bits in the CGATCLR0/PRCLR0 pair (RM 18.10 / SCU).
-    constexpr uint32_t USIC0_GATE_BIT = 1u << 11; // USIC0 in both CGATCLR0 and PRCLR0
+    // Peripheral gate/reset bits, each module's the same bit in its CGATCLRn and PRCLRn (RM
+    // pp.11-152 and 11-182 for USIC1 and USIC2).
+    constexpr uint32_t USIC0_GATE_BIT = 1u << 11; // CGATCLR0 and PRCLR0
+    constexpr uint32_t USIC1_GATE_BIT = 1u << 7;  // CGATCLR1 and PRCLR1
+    constexpr uint32_t USIC2_GATE_BIT = 1u << 8;  // CGATCLR1 and PRCLR1
     constexpr uint32_t CCU40_GATE_BIT = 1u << 2;  // CCU40 clock-gate bit (CGATCLR0)
     constexpr uint32_t CCU40_RESET_BIT = 1u << 2; // CCU40 reset bit (PRCLR0)
 }

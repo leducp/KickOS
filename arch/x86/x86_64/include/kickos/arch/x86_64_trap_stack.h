@@ -83,11 +83,12 @@
  * by IRQ's chain, which bounds the reporter those vectors actually take. */
 #define KICKOS_X86_64_TRAP_DEPTH_IST 704
 
-/* The fault and slay stubs on the block with an interrupt nested below: 816 on both presets, a
- * dying task's teardown releasing its address space down the map editor's walks. */
+/* The fault and slay stubs on the block with an interrupt nested below: 1016 on qemu-x86_64
+ * under GCC 16.2, a dying task's teardown releasing its address space down the map editor's
+ * walks. */
 #define KICKOS_X86_64_TRAP_DEPTH_EXITK 1024
 
-/* The same stubs through the switch: 816 on both presets, down EXITK's chain. */
+/* The same stubs through the switch: 1016 on qemu-x86_64 under GCC 16.2, down EXITK's chain. */
 #define KICKOS_X86_64_TRAP_DEPTH_EXITKSW 1024
 
 /* idle_entry's own frame and arch_idle_wait's, above the interrupt idle waits for: 24 on both
@@ -103,8 +104,8 @@
 #define KICKOS_X86_64_PANIC_DEPTH 384
 
 /* The SMP doorbell, lock wait and route service lengthen reachable call chains. These bounds
- * cover qemu-x86_64-smp12's callgraph, the deepest of the SMP presets: IRQ and IST 592 and
- * PANIC 536 under g++ 13, EXITK's teardown 1080 under both. */
+ * cover qemu-x86_64-smp12's callgraph, the deepest of the SMP presets: IRQ and IST 696 under
+ * GCC 16.2, PANIC 536 under g++ 13, EXITK's teardown 1160 under GCC 16.2. */
 #if KICKOS_KERNEL_CORES > 1
 #undef KICKOS_X86_64_TRAP_DEPTH_IRQ
 #define KICKOS_X86_64_TRAP_DEPTH_IRQ 768

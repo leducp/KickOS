@@ -16,7 +16,7 @@ data_cache: false
 # alone, and mis-reads a QIO header ("Checksum failure"). The task text the cache maps follows
 # in the same file (tools/esp-image.py), each image's .data template with it.
 esptool_image: [--use-segments, --ram-only-header, --flash-mode, dio]
-c: { line_enum: "kernel_line : int", led: addressable }
+c: { line_enum: "kernel_line : int", led: [level, addressable], addressable_led: rmt }
 
 # Two cores, two postures. An own-image AMP node per core, so a composition is per node.
 cores:
@@ -78,11 +78,16 @@ apertures:
 
 devices:
   # Interrupts are routed: a peripheral's matrix source reaches a CPU interrupt, and the
-  # kernel posts it on a logical line. The number kos_irq_claim takes is the logical line.
+  # kernel posts it on a logical line. The number kos_irq_claim takes is the logical line, and
+  # the kernel routes every UART's.
   uart0:
     window: [0x60000000, 0x1000]
     ref: "Table 5.3-2, p.175"
-    lines: { uart0: { number: 16, symbol: UART0_TX_LINE } }
+    lines: { irq: 16 }
+  uart1:
+    window: [0x60001000, 0x1000]
+    ref: "Table 5.3-2, p.175"
+    lines: { irq: 17 }
 
   # The pin bank is one register block: its set/clear and direction registers are
   # whole-port, so whoever holds it drives the latch of every pin in the port. The unit of
@@ -112,8 +117,9 @@ devices:
     blocks:
       m: { offset: 0x800, symbol: CLINT_BASE, ref: "1.7.5 Register Summary, p.61" }
       u: { offset: 0xC00, ref: "1.7.5 Register Summary, p.61" }
-  # The diagnostic LED's driver.
-  rmt: { window: [0x60006000, 0x1000], owner: kernel, ref: "Table 5.3-2, p.175" }
+  # The kernel resets it and takes channel 0 at the terminal panic where the board's diagnostic
+  # LED is addressable.
+  rmt: { window: [0x60006000, 0x1000], ref: "Table 5.3-2, p.175" }
   intmtx: { window: [0x60010000, 0x1000], owner: kernel, ref: "Table 5.3-2, p.175" }
   # Pad functions, set through kos_pinmux_set only.
   io_mux: { window: [0x60090000, 0x1000], owner: kernel, ref: "Table 5.3-2, p.176" }
@@ -154,7 +160,9 @@ memory:
     ref: "Table 5.3-1, p.171, and 5.3.3.1 External Memory Address Mapping, p.172"
   lp_sram: { base: 0x50000000, size: 0x4000, ref: "Table 5.3-1, p.171" }
 
-# Pins are GPIOn. A selector other than `gpio` is the IO MUX function its MCU_SEL selects.
+# Pins are GPIOn. A selector other than `gpio` is the IO MUX function its MCU_SEL selects. f1 is
+# every pad's GPIO function: a UART signal listed under it reaches the pad through the GPIO
+# matrix (Table 7.11-1, p.257), so any UART may use the pad.
 pins:
   GPIO8: { gpio: gpio.8 }
   GPIO9: { gpio: gpio.9 }

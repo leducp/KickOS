@@ -282,23 +282,9 @@ namespace
         EXPECT_EQ(seam::task_status(seam::task("health"), 0, &st), -KOS_EINVAL);
     }
 
-    TEST_F(Lookup, a_record_held_odd_answers_eagain_after_a_hundred_sleeps)
+    TEST_F(Lookup, a_record_held_odd_is_slept_on_until_the_write_ends)
     {
-        seam::StatusBlock block(PAGE);
-        as_health(block);
-        kickos::init::StatusWriter held(block.record(seam::watched_at("health", "sensor")));
-        held.deaths(5u);
-        struct kos_task_status st;
-        memset(&st, 0xA5, sizeof(st));
-        struct kos_task_status untouched;
-        memcpy(&untouched, &st, sizeof(st));
-        EXPECT_EQ(seam::task_status(seam::task("health"), 1, &st), -KOS_EAGAIN);
-        EXPECT_EQ(memcmp(&st, &untouched, sizeof(st)), 0);
-        EXPECT_EQ(seam::sleeps, std::vector<int64_t>(100u, 1000000));
-    }
-
-    TEST_F(Lookup, a_record_going_even_within_the_bound_is_answered)
-    {
+        constexpr size_t HELD_SLEEPS = 250u;
         seam::StatusBlock block(PAGE);
         as_health(block);
         std::optional<kickos::init::StatusWriter> sensor;
@@ -306,7 +292,7 @@ namespace
         sensor->deaths(3u);
         seam::on_sleep = [&]()
         {
-            if (seam::sleeps.size() == 100u)
+            if (seam::sleeps.size() == HELD_SLEEPS)
             {
                 sensor->restarts_left(7u);
                 sensor->state(kickos::init::STATUS_ALIVE);
@@ -318,7 +304,53 @@ namespace
         EXPECT_EQ(st.deaths, 3u);
         EXPECT_EQ(st.restarts_left, 7u);
         EXPECT_TRUE(st.alive);
-        EXPECT_EQ(seam::sleeps.size(), 100u);
+        EXPECT_EQ(seam::sleeps, std::vector<int64_t>(HELD_SLEEPS, 1000000));
+    }
+
+    TEST_F(Lookup, a_record_held_odd_by_an_init_gone_answers_owner_dead)
+    {
+        constexpr size_t GONE_SLEEPS = 25u;
+        seam::StatusBlock block(PAGE);
+        as_health(block);
+        std::optional<kickos::init::StatusWriter> sensor;
+        sensor.emplace(block.record(seam::watched_at("health", "sensor")));
+        sensor->deaths(3u);
+        seam::on_sleep = [&]()
+        {
+            if (seam::sleeps.size() == GONE_SLEEPS)
+            {
+                seam::orphaned = true;
+            }
+            if (seam::sleeps.size() == 4u * GONE_SLEEPS)
+            {
+                sensor.reset();
+            }
+        };
+        struct kos_task_status st = {};
+        EXPECT_EQ(seam::task_status(seam::task("health"), 1, &st), -KOS_EOWNERDEAD)
+            << "the wait outlived the init that left the record odd";
+        EXPECT_EQ(seam::sleeps.size(), GONE_SLEEPS);
+        EXPECT_EQ(st.deaths, 0u) << "a half-written record was answered";
+    }
+
+    TEST_F(Lookup, a_record_the_init_finished_before_it_died_is_answered)
+    {
+        seam::StatusBlock block(PAGE);
+        as_health(block);
+        std::optional<kickos::init::StatusWriter> sensor;
+        sensor.emplace(block.record(seam::watched_at("health", "sensor")));
+        sensor->deaths(3u);
+        seam::on_task_state = [&]()
+        {
+            sensor->restarts_left(7u);
+            sensor.reset();
+            seam::orphaned = true;
+        };
+        struct kos_task_status st = {};
+        ASSERT_EQ(seam::task_status(seam::task("health"), 1, &st), 0);
+        EXPECT_EQ(st.deaths, 3u);
+        EXPECT_EQ(st.restarts_left, 7u);
+        EXPECT_TRUE(seam::sleeps.empty());
     }
 
     // A write landing between the reader's two loads of the count: the block is unreadable until

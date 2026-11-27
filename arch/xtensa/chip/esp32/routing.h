@@ -6,27 +6,31 @@
 
 namespace kickos::esp32::irq
 {
-    // TRM Table 8.3-1: source 34 is UART_INTR, mapped by DPORT_PRO_UART_INTR_MAP_REG (TRM 12.4).
+    // TRM Table 8.3-1 (p.176): the matrix source of each UART.
     enum periph_src
     {
         UART0_SRC = 34,
+        UART1_SRC = 35,
+        UART2_SRC = 36,
     };
 
-    // TRM Table 8.3-2 fixes each number's type and priority. 13 is Peripheral, Level-Triggered,
-    // priority 1, so the level-1 vector takes it (bit 13 is in KICKOS_L1_INT_MASK).
+    // TRM Table 8.3-2 fixes each number's type and priority. Every one here must be
+    // Level-Triggered at priority 1, so the level-1 vector takes it (KICKOS_L1_INT_MASK): a level
+    // input's pending state follows the trigger, so clearing the trigger is the whole
+    // acknowledgement. 0, 1, 2, 3, 4, 5, 8, 9, 12, 13, 17 and 18 qualify. Each UART has its own,
+    // so masking one UART's line never masks another's.
     enum cpu_int
     {
         UART0_CPU_INT = 13,
-        // Must be Level-Triggered at priority 1: a level input's pending state follows the
-        // trigger register, so clearing the trigger is the whole acknowledgement. 0, 1, 2, 3, 4,
-        // 5, 8, 9, 12, 17 and 18 all qualify.
+        UART1_CPU_INT = 17,
+        UART2_CPU_INT = 18,
         DOORBELL_CPU_INT = 12,
     };
 
     // The core that takes a device line until a claim routes it.
     enum dev_core
     {
-        CONSOLE_CORE = 0,
+        DEVICE_CORE = 0,
     };
 }
 

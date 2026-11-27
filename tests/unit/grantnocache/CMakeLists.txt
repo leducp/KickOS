@@ -28,6 +28,6 @@ set_source_files_properties("${PROJECT_SOURCE_DIR}/kernel/thread/thread.cc" PROP
 kickos_add_unit_test(NAME grant_memtype_at
   SOURCES memtype_at.cc "${PROJECT_SOURCE_DIR}/tests/unit/common/kpanic_seam.cc"
           "${PROJECT_SOURCE_DIR}/kernel/grant/grant.cc"
-  POSTURE KICKOS_HAVE_ASPACE=1)
+  POSTURE KICKOS_HAVE_ASPACE=1 KICKOS_ARCH_IRQ_WINDOW=1)
 target_compile_options(grant_memtype_at PRIVATE -ffunction-sections -fdata-sections)
 target_link_options(grant_memtype_at PRIVATE -Wl,--gc-sections)

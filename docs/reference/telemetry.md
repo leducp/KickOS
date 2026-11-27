@@ -82,9 +82,9 @@ fractured along this line at M1. The implementations:
 | arch / chip | source | width | rate | notes |
 |---|---|---|---|---|
 | armv7m (silicon) | DWT `CYCCNT` (enabled by `kickos_armv7m_init`) | 32 | core clk | **uniform arch-layer fallback TU** (`arch/arm/armv7m/arch_trace_now_default.cc`). Cycle-accurate. |
-| armv7m / mps2 (QEMU, board `qemu`) | semihosting `SYS_CLOCK` scaled to us (`chip_mps2.cc` defines its own -- DWT is frozen on QEMU) | 32 | 1 MHz nominal, ~10 ms resolution | coarse, monotonic; drives the QEMU **structural** CI gate 4 (section 8) so the fragile PendSV-tail asm gets automated coverage. |
+| armv7m / mps2 and an505 (QEMU, boards `qemu`, `qemu-m3`, `qemu-m7`, `qemu-m33`) | the low word of `arch_clock_now`'s own count, the CMSDK dual timer's timer 1 free-running at SYSCLK (`chip_mps2.cc` defines its own, QEMU's DWT reading zero) | 32 | SYSCLK: 25 MHz on mps2, 20 MHz on an505 | emulated, so structural coverage only; drives the QEMU **structural** CI gate 4 (section 8) so the fragile PendSV-tail asm gets automated coverage. |
 | armv6m / RP2040 (`picopi`) | free-running **1 us TIMER** (one `TIMERAWL` read; same source as `arch_clock_now`) | 32 | 1 MHz | **chip-provided capability** (`chip_rp2040.cc`), no ALARM spent, SysTick untouched. Coarse (below). |
-| armv6m / nRF51 (`microbit`, a QEMU vehicle) | semihosting `SYS_CLOCK` scaled to us (`chip_nrf51.cc`) | 32 | 1 MHz nominal, ~10 ms resolution | structural coverage only, like mps2. |
+| armv6m / nRF51 (`microbit`, a QEMU vehicle) | the low word of `arch_clock_now`'s own count, TIMER0 free-running at 1 MHz (`chip_nrf51.cc`) | 32 | 1 MHz | structural coverage only, like mps2. |
 | sim | `arch_clock_now` -> **us** as u32 (ns/1000) | 32 | 1 MHz | us not ns, so it wraps at ~71 min not 4.29 s (CI runs never alias). Logic/structural only, not a timing benchmark. |
 | xtensa / esp32 | `CCOUNT` (RSR) -- free-running, independent of the kernel timer (`arch_xtensa.cc`) | 32 | CPU clk | cycle-accurate. |
 | rx / rx72m | the free-running **CMTW1** the RX port already runs for `arch_clock_now` (one `CMWCNT` read; CMTW min prescaler is PCLK/8) (`arch_rxv3.cc`) | 32 | ~PCLK/8 | **not** a "cycle counter" -- RXv3 has none. |
@@ -111,9 +111,9 @@ baseline is defended on XMC/DWT** (cycle-accurate), where the MPU delta is visib
 `KICKOS_HAVE_TRACE_CLOCK`) is what `TELEMETRY_RTT` depends on, so a request for
 telemetry without it is refused at configure; an unresolved strong reference
 is the link-time backstop. `arch_trace_now` has an **armv7m-layer fallback TU (DWT)**
-(`arch_trace_now_default.cc`); a chip whose DWT is unusable defines its own --
-**mps2 defines a semihosting `SYS_CLOCK`** one (the same source it already uses for
-`arch_clock_now`, because QEMU's DWT is frozen). So QEMU telemetry is *coarse but real* and drives the
+(`arch_trace_now_default.cc`); a chip whose DWT is unusable defines its own:
+**mps2 reads its dual timer**, the same count `arch_clock_now` extends, because QEMU's DWT reads
+zero. So QEMU telemetry is *real* and drives the
 structural CI gate 4 (section 8) -- the capability var stays honest per chip.
 
 ## 2. Record format
@@ -376,7 +376,7 @@ live stream via `--follow` (stdin/fifo, e.g. `JLinkRTTLogger -RTTChannel 1`;
 4. **QEMU structural run (armv7m tail-asm coverage)** (`check_qemu.py`, ctest
    `telemetry_qemu_structural`, `qemu-telem` preset; SKIP exit 77 without QEMU)
    -- the same `tele_pingpong` + structural checks booted on the `qemu` board
-   (mps2-an386), using mps2's semihosting trace clock (section 1); the mps2
+   (mps2-an386), using mps2's dual-timer trace clock (section 1); the mps2
    backend writes the ch1 ring to `kicktrace.bin` via semihosting at shutdown.
    This is the ONLY automated coverage of the PendSV-tail C-callback
    (EXC_RETURN save, MSP alignment, `-mgeneral-regs-only`); without it that asm

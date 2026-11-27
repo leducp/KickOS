@@ -28,17 +28,9 @@ namespace
     // One-shot: the flip lands as a racing writer masks interrupts, the last instant that
     // writer can still be caught.
     bool g_flip_at_mask = false;
-    // Whether the writing thread's own stdout send would be taken, and how often it was asked.
-    bool g_serves = false;
-    int g_serves_asked = 0;
     // The writing thread.
     kickos::Thread g_writer;
-    // The dark-window wait: how often a writer entered it, and what it answers. Answering 0
-    // stands for the reclaim that ended it, so the wait frees the window and lands it first.
-    int g_dark_waits = 0;
-    int g_dark_wait_answer = 0;
-    int g_pokes_in_wait = -1;
-    int g_dark_wakes = 0;
+    int g_wakes = 0;
 
     void note_poke()
     {
@@ -91,28 +83,9 @@ namespace kickos
 {
     bool dev_window_free(uintptr_t, size_t) { return g_window_free; }
 
-    int console_dark_wait(void)
+    void console_wake(Held)
     {
-        g_dark_waits = g_dark_waits + 1;
-        g_pokes_in_wait = g_pokes;
-        if (g_dark_wait_answer == 0)
-        {
-            g_window_free = true;
-            console_on_driver_death(kickos::IrqLock());
-        }
-        return g_dark_wait_answer;
-    }
-
-    void console_dark_wake(Held)
-    {
-        g_dark_wakes = g_dark_wakes + 1;
-    }
-
-    bool cap_console_serves(Thread const* t)
-    {
-        g_serves_asked = g_serves_asked + 1;
-        EXPECT_EQ(t, &g_writer);
-        return g_serves;
+        g_wakes = g_wakes + 1;
     }
 
     namespace sched
@@ -175,11 +148,12 @@ namespace
         run_isolated([]() {
             publish();
             console_note_driver_death();
-            console_on_driver_death(kickos::IrqLock());
+            { kickos::IrqLock lock; console_on_driver_death(); }
             EXPECT_EQ(g_reclaims, 1);
             EXPECT_EQ(console_owner_is_kernel(), 0);
+            EXPECT_EQ(g_pokes, 1) << "the reclaim wrote no line of its own on the driver's death";
             kickos::kputs("after");
-            EXPECT_EQ(g_pokes, 1) << "RECLAIMED must carry a kernel write on the polled route";
+            EXPECT_EQ(g_pokes, 2) << "RECLAIMED must carry a kernel write on the polled route";
             EXPECT_EQ(g_poke_writers, 1) << "the RECLAIMED poke was not inside the bracket";
         });
     }
@@ -191,7 +165,7 @@ namespace
         run_isolated([]() {
             publish();
             console_note_driver_death();
-            console_on_driver_death(kickos::IrqLock());
+            { kickos::IrqLock lock; console_on_driver_death(); }
             ASSERT_EQ(g_reclaims, 1) << "the console never reached RECLAIMED";
             g_pokes = 0;
             g_pokes_not_owned = 0;
@@ -213,10 +187,10 @@ namespace
             publish();
             console_note_driver_death();
             g_window_free = false;
-            console_on_driver_death(kickos::IrqLock());
+            { kickos::IrqLock lock; console_on_driver_death(); }
             EXPECT_EQ(g_reclaims, 0);
             g_window_free = true;
-            console_on_driver_death(kickos::IrqLock());
+            { kickos::IrqLock lock; console_on_driver_death(); }
             EXPECT_EQ(g_reclaims, 1);
         });
     }
@@ -229,13 +203,13 @@ namespace
             publish(); // the first driver's publish
             console_note_driver_death();
             g_window_free = false; // its IRQ thread still holds the registers
-            console_on_driver_death(kickos::IrqLock());
+            { kickos::IrqLock lock; console_on_driver_death(); }
             ASSERT_EQ(g_reclaims, 0) << "the reclaim did not defer, so no stale note can exist";
 
             publish(); // the supervisor publishes a NEW endpoint
 
             g_window_free = true; // the OLD driver's IRQ thread finally exits
-            console_on_driver_death(kickos::IrqLock());
+            { kickos::IrqLock lock; console_on_driver_death(); }
             EXPECT_EQ(g_reclaims, 0)
                 << "the old driver's death note reclaimed a console the NEW driver owns";
             EXPECT_EQ(console_owner_is_kernel(), 0);
@@ -247,115 +221,81 @@ namespace
         });
     }
 
-    // A writer whose send was refused while the endpoint stood vacated reaches the kernel
-    // console only after a restart published it again: the chunk belongs on the endpoint now,
-    // and a "taken" answer would lose it.
-    TEST(ConsoleOwnership, AFallbackAfterARePublishIsHandedBackToTheServedEndpoint)
+    // A console published again after a reclaim is the new driver's: a user write is refused,
+    // nothing written.
+    TEST(ConsoleOwnership, AUserWriteAfterARePublishIsRefused)
     {
         run_isolated([]() {
             publish();
             console_note_driver_death();
-            console_on_driver_death(kickos::IrqLock());
+            { kickos::IrqLock lock; console_on_driver_death(); }
             ASSERT_EQ(g_reclaims, 1) << "the console never reached RECLAIMED";
             publish(); // the restart's publish
             g_pokes = 0;
-            g_serves = true;
             EXPECT_EQ(kickos::kconsole_write_user("line 6\n", 7, true), -KOS_EBUSY);
-            EXPECT_EQ(g_serves_asked, 1);
             EXPECT_EQ(g_pokes, 0);
             EXPECT_EQ(console_chip_writers(), 0);
         });
     }
 
-    // Boundaries of the answer above: a writer the endpoint would not take keeps the designed
-    // drop, a kernel writer is never asked, and a kernel-owned console takes the bytes.
-    TEST(ConsoleOwnership, OnlyAServedUserWriterIsRefused)
+    // A kernel-owned console takes a user write; from the publish on, every user write is
+    // refused, blocking or not, and a kernel line drops.
+    TEST(ConsoleOwnership, EveryUserWriteIsRefusedOnceAConsoleIsPublished)
     {
         run_isolated([]() {
             EXPECT_GT(kickos::kconsole_write_user("boot\n", 5, true), 0);
             EXPECT_EQ(g_pokes, 1);
-            EXPECT_EQ(g_serves_asked, 0) << "a kernel-owned console asked about the endpoint";
             publish();
             g_pokes = 0;
-            g_serves = false;
-            EXPECT_EQ(kickos::kconsole_write_user("lost\n", 5, true), 5);
-            EXPECT_EQ(g_serves_asked, 1);
-            g_serves = true;
+            EXPECT_EQ(kickos::kconsole_write_user("lost\n", 5, true), -KOS_EBUSY);
+            EXPECT_EQ(kickos::kconsole_write_user("lost\n", 5, false), -KOS_EBUSY);
             kickos::kputs("kernel line");
-            EXPECT_EQ(g_serves_asked, 1) << "a kernel write asked about a thread's endpoint";
             EXPECT_EQ(g_pokes, 0);
+            EXPECT_EQ(console_chip_writers(), 0);
         });
     }
 
-    // The dark window: the driver's task ended while a thread of it still holds the device, so
-    // the console stays published and unserved until that thread exits. A writer waits it out
-    // with the device untouched, and its line lands once, after the reclaim.
-    TEST(ConsoleOwnership, AWriterInTheDarkWindowWaitsAndWritesOnceTheReclaimLands)
+    // The driver's task ended while a thread of it still holds the device, so the reclaim
+    // waits: a user write there is refused at once, with no wait, and the device untouched.
+    TEST(ConsoleOwnership, AUserWriteBeforeTheReclaimLandsIsRefusedAtOnce)
     {
         run_isolated([]() {
             publish();
             console_note_driver_death();
             g_window_free = false;
-            console_on_driver_death(kickos::IrqLock());
+            { kickos::IrqLock lock; console_on_driver_death(); }
             ASSERT_EQ(g_reclaims, 0) << "the reclaim did not defer, so no window was opened";
-            ASSERT_NE(console_dark(), 0);
-            g_serves = false;
-            EXPECT_EQ(kickos::kconsole_write_user("line 6\n", 7, true), 7);
-            EXPECT_EQ(g_dark_waits, 1) << "the writer did not wait out the dark window";
-            EXPECT_EQ(g_pokes_in_wait, 0) << "the device was written while a live thread held it";
-            EXPECT_EQ(g_reclaims, 1);
-            EXPECT_GT(g_pokes, 0) << "the line did not land after the reclaim";
-            EXPECT_EQ(console_chip_writers(), 0);
-        });
-    }
-
-    // The same window for a non-blocking writer: told to try again at once, nothing written.
-    TEST(ConsoleOwnership, ANonBlockingWriterInTheDarkWindowIsAnsweredAtOnce)
-    {
-        run_isolated([]() {
-            publish();
-            console_note_driver_death();
-            g_window_free = false;
-            console_on_driver_death(kickos::IrqLock());
-            g_serves = false;
-            EXPECT_EQ(kickos::kconsole_write_user("line 6\n", 7, false), -KOS_EAGAIN);
-            EXPECT_EQ(g_dark_waits, 0) << "a non-blocking writer waited";
+            EXPECT_EQ(kickos::kconsole_write_user("line 6\n", 7, true), -KOS_EBUSY);
+            EXPECT_EQ(kickos::kconsole_write_user("line 6\n", 7, false), -KOS_EBUSY);
             EXPECT_EQ(g_pokes, 0);
             EXPECT_EQ(console_chip_writers(), 0);
         });
     }
 
-    // A writer cancelled in the wait leaves it with nothing written.
-    TEST(ConsoleOwnership, ACancelledWaitEndsTheWrite)
+    // The reclaimed console is the kernel's alone: a kernel line reaches the device, a user
+    // write is refused.
+    TEST(ConsoleOwnership, TheReclaimedConsoleRefusesAUserWrite)
     {
         run_isolated([]() {
             publish();
             console_note_driver_death();
-            g_window_free = false;
-            console_on_driver_death(kickos::IrqLock());
-            g_serves = false;
-            g_dark_wait_answer = -KOS_ECANCELED;
-            EXPECT_EQ(kickos::kconsole_write_user("line 6\n", 7, true), -KOS_ECANCELED);
-            EXPECT_EQ(g_dark_waits, 1);
-            EXPECT_EQ(g_pokes, 0);
+            { kickos::IrqLock lock; console_on_driver_death(); }
+            ASSERT_EQ(g_reclaims, 1) << "the console never reached RECLAIMED";
+            g_pokes = 0;
+            EXPECT_EQ(kickos::kconsole_write_user("line 6\n", 7, true), -KOS_EBUSY);
+            EXPECT_EQ(g_pokes, 0) << "a user write reached the reclaimed device";
+            kickos::kputs("kernel line");
+            EXPECT_EQ(g_pokes, 1);
+            EXPECT_EQ(console_chip_writers(), 0);
         });
     }
 
-    // What ends the wait: the reclaim landing, and a publish. A refused reclaim wakes nobody.
-    TEST(ConsoleOwnership, TheReclaimAndAPublishWakeTheDarkWindowsWriters)
+    // A publish wakes the writers parked on the console before it, who then find it refused.
+    TEST(ConsoleOwnership, APublishWakesTheConsolesWriters)
     {
         run_isolated([]() {
             publish();
-            int const after_publish = g_dark_wakes;
-            EXPECT_GE(after_publish, 1) << "a publish did not wake the dark window's writers";
-            console_note_driver_death();
-            g_window_free = false;
-            console_on_driver_death(kickos::IrqLock());
-            EXPECT_EQ(g_dark_wakes, after_publish) << "a refused reclaim woke the writers";
-            g_window_free = true;
-            console_on_driver_death(kickos::IrqLock());
-            EXPECT_EQ(g_dark_wakes, after_publish + 1) << "the reclaim did not wake the writers";
-            EXPECT_EQ(console_dark(), 0);
+            EXPECT_GE(g_wakes, 1) << "a publish did not wake the console's writers";
         });
     }
 }

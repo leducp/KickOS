@@ -2,8 +2,9 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // The owner node's half of another node's standard output: it serves the one /amp/ port its
-// declaration names, and writes each message it receives, one console chunk, in one write on its
-// own standard output. A call is answered with an empty reply.
+// declaration names, and writes each message it receives in one write on its
+// own standard output. A call is made again, as a call, on that standard output, and its answer
+// is the reply: a console request such as a drain reaches the console that serves the relay.
 
 #include <iso646.h> // and / or / not are macros in C, not keywords
 #include <stdbool.h>
@@ -107,11 +108,14 @@ int main(void)
     char msg[KOS_EP_MSG_MAX];
     struct kos_reply_recv_opts opts;
     kos_cap_t reply = KOS_CAP_NONE;
+    size_t answer = 0;
     while (true)
     {
         kos_reply_recv_opts_init(&opts, ep, 0u, KOS_NEVER);
-        int32_t const n = kos_reply_recv(reply, msg, kos_call_lens_pack(0, sizeof(msg)), &opts);
+        int32_t const n =
+            kos_reply_recv(reply, msg, kos_call_lens_pack(answer, sizeof(msg)), &opts);
         reply = KOS_CAP_NONE;
+        answer = 0;
         if (n == -KOS_ECANCELED)
         {
             continue;
@@ -122,10 +126,19 @@ int main(void)
             say_error(REFUSED, sizeof(REFUSED) - 1u, n);
             return 1;
         }
-        if (n > 0)
+        reply = opts.info.reply_cap;
+        if (reply != KOS_CAP_NONE)
+        {
+            // A refused forward is answered empty, which its caller reads as no answer.
+            int32_t const got = kos_call(KOS_CAP_STDOUT, msg, (size_t)n, sizeof(msg), KOS_NEVER);
+            if (got > 0)
+            {
+                answer = (size_t)got;
+            }
+        }
+        else if (n > 0)
         {
             (void)write(STDOUT_FILENO, msg, (size_t)n);
         }
-        reply = opts.info.reply_cap;
     }
 }

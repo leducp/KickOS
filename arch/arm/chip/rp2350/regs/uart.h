@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The RP2350 console UART, UART1.
+// The RP2350 PL011 UARTs.
 
 #ifndef KICKOS_ARCH_ARM_CHIP_RP2350_REGS_UART_H
 #define KICKOS_ARCH_ARM_CHIP_RP2350_REGS_UART_H
@@ -10,13 +10,10 @@
 #include "clocks.h"
 #include "xosc.h"
 
-#include <kickos/chip_mmap.h>
-
 #include <stdint.h>
 
 namespace kickos::rp2350::reg::uart
 {
-    constexpr uintptr_t BASE = mmap::UART1_BASE;
 #include "../../rp2xxx/regs/uart.inc"
 }
 

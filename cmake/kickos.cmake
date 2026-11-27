@@ -590,17 +590,14 @@ function(kickos_add_driver name)
 endfunction()
 
 # The processor every x86_64 emulation runs, the application gates and the boot witnesses
-# alike: qemu64, which is below the floor, plus the features x86-64-v3 requires
+# alike: qemu64, which is below the floor, plus the features the floor requires
 # (arch/x86/x86_64/floor_x86_64.cc). It reaches both runners as KICKOS_X86_64_CPU.
 #
 # +xsaveopt is not in x86-64-v3 and the port never executes it: QEMU 11.1's TCG spins on the
 # CR4 write that sets OSXSAVE for a model reporting XSAVE without it, measured, so the boot
 # never reaches its first thread.
 #
-# +smep and +smap are not in x86-64-v3 either: qemu64 offers neither, and without them every gate
-# runs a kernel that can read, write and run user pages.
-#
-# +rdtscp is not in x86-64-v3 and the floor requires it: qemu64 lacks it.
+# +smep, +smap and +rdtscp are not in x86-64-v3 and the floor requires them: qemu64 lacks them.
 #
 # +rdseed is not in x86-64-v3 either: getentropy draws from it where CPUID reports it.
 set(KICKOS_X86_64_QEMU_CPU

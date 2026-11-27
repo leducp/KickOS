@@ -2,6 +2,10 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // The physical frame allocator. kickos/frame.h carries the contract.
+//
+// Every operation is bounded by the range's order count L = log2(frames), whatever the run:
+// find, a split and a merge are O(L) each, a span is at most 2L blocks, so alloc() is O(L) and
+// alloc_run, release_run and release are O(L^2).
 
 #include <kickos/frame.h>
 
@@ -12,11 +16,10 @@ namespace kickos
     namespace
     {
         constexpr size_t WORD_BYTES = sizeof(size_t);
-        constexpr size_t WORD_BITS = WORD_BYTES * 8u;
-        constexpr size_t ALL_SET = ~static_cast<size_t>(0);
+        constexpr size_t NIL = ~static_cast<size_t>(0);
+        constexpr uint8_t TAG_FREE = 0x80u;
+        constexpr uint8_t TAG_ORDER = 0x7Fu;
 
-        // A size_t wider than __builtin_ctzl's unsigned long would truncate the scanned word
-        // and report a bit that is not the lowest one set.
         static_assert(sizeof(size_t) == sizeof(unsigned long), "ctz builtin narrower than a word");
 
         // Undefined for 0: the word must be tested first.
@@ -25,47 +28,29 @@ namespace kickos
             return static_cast<size_t>(__builtin_ctzl(static_cast<unsigned long>(v)));
         }
 
-        // Bit i of the bitmap is bits_[i / 8] & (1 << (i % 8)), so frame order equals ascending
-        // bit order in a loaded word only where byte 0 lands in the word's low bits: the
-        // little-endian load. The big-endian arm writes the byte weights out instead.
-        // may_alias because the bitmap is addressed as bytes everywhere else, and aligned(1)
-        // because init() accepts a granule of 1, which leaves `bits_` byte-aligned.
-#if defined(__BYTE_ORDER__) and defined(__ORDER_LITTLE_ENDIAN__) \
-    and __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
-        typedef size_t __attribute__((__may_alias__, __aligned__(1))) word_load;
+        // The pool is raw bytes, never a size_t object.
+        typedef size_t __attribute__((__may_alias__)) link_word;
 
-        size_t word_at(uint8_t const* p)
+        size_t bit(size_t order)
         {
-            return *reinterpret_cast<word_load const*>(p);
+            return static_cast<size_t>(1) << order;
         }
-#elif defined(__BYTE_ORDER__) and defined(__ORDER_BIG_ENDIAN__) \
-    and __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
-        size_t word_at(uint8_t const* p)
-        {
-            size_t w = 0;
-            for (size_t k = 0; k < WORD_BYTES; k++)
-            {
-                w |= static_cast<size_t>(p[k]) << (8u * k);
-            }
-            return w;
-        }
-#else
-#error "kernel/mem/frame.cc: the bitmap's word scan needs a known byte order"
-#endif
     }
 
     bool FrameAllocator::init(uintptr_t base, size_t size, size_t granule)
     {
-        bits_ = nullptr;
+        tags_ = nullptr;
+        heads_ = nullptr;
         base_ = 0;
         granule_ = 0;
         frames_ = 0;
         reserved_ = 0;
         usable_ = 0;
         free_ = 0;
-        hint_ = 0;
+        top_ = 0;
+        orders_ = 0;
 
-        if (base == 0 or not is_pow2(granule))
+        if (base == 0 or not is_pow2(granule) or granule < 2u * WORD_BYTES)
         {
             return false;
         }
@@ -78,39 +63,48 @@ namespace kickos
         {
             return false;
         }
-        // The bitmap describes itself, so its size and the space it occupies are mutually
-        // dependent.
-        size_t const bitmap_bytes = (frames + 7u) / 8u;
-        size_t const reserved = (bitmap_bytes + granule - 1u) / granule;
+        size_t top = 0;
+        while (top + 1u < 8u * WORD_BYTES and bit(top + 1u) <= frames)
+        {
+            top++;
+        }
+        size_t const tag_bytes = ((frames + WORD_BYTES - 1u) / WORD_BYTES) * WORD_BYTES;
+        size_t const record = tag_bytes + (top + 1u) * WORD_BYTES;
+        size_t const reserved = (record + granule - 1u) / granule;
         if (reserved >= frames)
         {
             return false; // capacity 0 would read to a caller as ordinary exhaustion
         }
 
-        bits_ = reinterpret_cast<uint8_t*>(base);
         base_ = base;
         granule_ = granule;
         frames_ = frames;
         reserved_ = reserved;
         usable_ = frames - reserved;
         free_ = usable_;
-        hint_ = reserved;
-
-        for (size_t i = 0; i < bitmap_bytes; i++)
+        top_ = top;
+        tags_ = reinterpret_cast<uint8_t*>(base + usable_ * granule);
+        heads_ = reinterpret_cast<size_t*>(tags_ + tag_bytes);
+        for (size_t i = 0; i < tag_bytes; i++)
         {
-            bits_[i] = 0;
+            tags_[i] = 0;
         }
-        // The bitmap's own frames are marked allocated, so no path has to treat them as
-        // special. `reserved < frames` keeps the partial byte inside the bitmap.
-        size_t const whole = reserved / 8u;
-        for (size_t i = 0; i < whole; i++)
+        for (size_t o = 0; o <= top; o++)
         {
-            bits_[i] = 0xFFu;
+            heads_[o] = NIL;
         }
-        size_t const rest = reserved % 8u;
-        if (rest != 0)
+        // Greedy blocks are maximal, so neither span holds two buddies.
+        size_t o = 0;
+        for (size_t i = 0; i < usable_; i = i + bit(o))
         {
-            bits_[whole] = static_cast<uint8_t>((1u << rest) - 1u);
+            o = block_at(i, usable_);
+            tags_[i] = static_cast<uint8_t>(TAG_FREE | (o + 1u));
+            push(i, o);
+        }
+        for (size_t i = usable_; i < frames; i = i + bit(o))
+        {
+            o = block_at(i, frames);
+            tags_[i] = static_cast<uint8_t>(o + 1u);
         }
         return true;
     }
@@ -135,87 +129,172 @@ namespace kickos
         return true;
     }
 
-    size_t FrameAllocator::scan_word(size_t widx) const
+    // Inlined, with push, unlink and flip, so that alloc() and release() call nothing: they end
+    // the deepest x86_64 kernel stack chains (SYSK, EXITK).
+    inline __attribute__((always_inline))
+    void FrameAllocator::find(size_t i, size_t* head, size_t* order) const
     {
-        size_t const first = widx * WORD_BITS;
-        if (frames_ - first >= WORD_BITS)
+        // The first head met going up is the block's: a smaller order's candidate is either
+        // inside the block (tag 0) or the block's own head.
+        for (size_t o = 0; o <= top_; o++)
         {
-            return word_at(bits_ + widx * WORD_BYTES);
+            size_t const h = i & ~(bit(o) - 1u);
+            size_t const t = tags_[h] & TAG_ORDER;
+            if (t > o)
+            {
+                *head = h;
+                *order = t - 1u;
+                return;
+            }
         }
-        // The bitmap's last byte holds bits past frames_, stored as zero: forced to 1 here, as
-        // is every byte past the bitmap, which the loop stops before reading.
-        size_t const bitmap_bytes = (frames_ + 7u) / 8u;
-        size_t w = ALL_SET << (frames_ - first);
-        for (size_t k = 0; k < WORD_BYTES; k++)
+        *head = i;
+        *order = 0;
+    }
+
+    inline __attribute__((always_inline))
+    void FrameAllocator::push(size_t head, size_t order)
+    {
+        link_word* const node = reinterpret_cast<link_word*>(base_ + head * granule_);
+        size_t const next = heads_[order];
+        node[0] = next;
+        node[1] = NIL;
+        if (next != NIL)
         {
-            size_t const b = widx * WORD_BYTES + k;
-            if (b >= bitmap_bytes)
+            reinterpret_cast<link_word*>(base_ + next * granule_)[1] = head;
+        }
+        heads_[order] = head;
+        orders_ = orders_ | bit(order);
+    }
+
+    inline __attribute__((always_inline))
+    void FrameAllocator::unlink(size_t head, size_t order)
+    {
+        link_word const* const node = reinterpret_cast<link_word const*>(base_ + head * granule_);
+        size_t const next = node[0];
+        size_t const prev = node[1];
+        if (prev == NIL)
+        {
+            heads_[order] = next;
+        }
+        else
+        {
+            reinterpret_cast<link_word*>(base_ + prev * granule_)[0] = next;
+        }
+        if (next != NIL)
+        {
+            reinterpret_cast<link_word*>(base_ + next * granule_)[1] = prev;
+        }
+        if (heads_[order] == NIL)
+        {
+            orders_ = orders_ & ~bit(order);
+        }
+    }
+
+    inline __attribute__((always_inline))
+    bool FrameAllocator::flip(size_t i, size_t order, uint8_t state)
+    {
+        uint8_t const was = static_cast<uint8_t>(state ^ TAG_FREE);
+        size_t h = 0;
+        size_t o = 0;
+        find(i, &h, &o);
+        if ((tags_[h] & TAG_FREE) != was or o < order)
+        {
+            return false;
+        }
+        if (was == TAG_FREE)
+        {
+            unlink(h, o);
+        }
+        // Each half left behind keeps the old state; its buddy holds `i`, so it cannot merge.
+        while (o > order)
+        {
+            o--;
+            size_t rest = h + bit(o);
+            if (i >= rest)
+            {
+                rest = h;
+                h = h + bit(o);
+            }
+            tags_[rest] = static_cast<uint8_t>(was | (o + 1u));
+            if (was == TAG_FREE)
+            {
+                push(rest, o);
+            }
+        }
+        while (o < top_)
+        {
+            // tags_[frames_] is padding or the low byte of heads_[0]. A buddy cut short by the end
+            // heads a smaller block, so it never matches.
+            size_t const buddy = h ^ bit(o);
+            if (buddy >= frames_ or tags_[buddy] != (state | (o + 1u)))
             {
                 break;
             }
-            w |= static_cast<size_t>(bits_[b]) << (8u * k);
+            if (state == TAG_FREE)
+            {
+                unlink(buddy, o);
+            }
+            h = h & ~bit(o);
+            tags_[h + bit(o)] = 0;
+            o++;
         }
-        return w;
+        tags_[h] = static_cast<uint8_t>(state | (o + 1u));
+        if (state == TAG_FREE)
+        {
+            push(h, o);
+        }
+        return true;
     }
 
-    uintptr_t FrameAllocator::take_one(size_t j)
+    size_t FrameAllocator::block_at(size_t first, size_t end) const
     {
-        bits_[j / 8u] = static_cast<uint8_t>(bits_[j / 8u] | (1u << (j % 8u)));
-        free_--;
-        hint_ = j + 1u;
-        return base_ + j * granule_;
+        size_t o = 0;
+        while (o < top_ and (first & bit(o)) == 0 and bit(o + 1u) <= end - first)
+        {
+            o++;
+        }
+        return o;
     }
 
-    uintptr_t FrameAllocator::take_run(size_t first, size_t pages)
+    bool FrameAllocator::spans(size_t first, size_t n, uint8_t state) const
     {
-        for (size_t j = first; j < first + pages; j++)
+        size_t const end = first + n;
+        size_t o = 0;
+        for (size_t i = first; i < end; i = i + bit(o))
         {
-            bits_[j / 8u] = static_cast<uint8_t>(bits_[j / 8u] | (1u << (j % 8u)));
+            o = block_at(i, end);
+            size_t h = 0;
+            size_t q = 0;
+            find(i, &h, &q);
+            if ((tags_[h] & TAG_FREE) != state or q < o)
+            {
+                return false;
+            }
         }
-        free_ -= pages;
-        if (hint_ < first + pages)
+        return true;
+    }
+
+    void FrameAllocator::flip_span(size_t first, size_t n, uint8_t state)
+    {
+        size_t const end = first + n;
+        size_t o = 0;
+        for (size_t i = first; i < end; i = i + bit(o))
         {
-            hint_ = first + pages;
+            o = block_at(i, end);
+            (void)flip(i, o, state);
         }
-        return base_ + first * granule_;
     }
 
     uintptr_t FrameAllocator::alloc()
     {
-        if (free_ == 0)
+        if (orders_ == 0)
         {
             return 0;
         }
-        if (hint_ < frames_ and (bits_[hint_ / 8u] & (1u << (hint_ % 8u))) == 0)
-        {
-            return take_one(hint_);
-        }
-        // Two passes: hint to end, then reserved to hint. free_ is non-zero, so one finds.
-        for (int pass = 0; pass < 2; pass++)
-        {
-            size_t start = hint_;
-            size_t end = frames_;
-            if (pass == 1)
-            {
-                start = reserved_;
-                end = hint_;
-            }
-            size_t i = start;
-            while (i < end)
-            {
-                size_t const first = (i / WORD_BITS) * WORD_BITS;
-                // The last word of a pass runs past `end` and needs no upper mask: bits at
-                // and past frames_ read as allocated, and in the wrap pass everything from
-                // hint_ up is allocated or the first pass would have returned it.
-                size_t const free_bits = ~scan_word(i / WORD_BITS) & (ALL_SET << (i - first));
-                if (free_bits != 0)
-                {
-                    return take_one(first + ctz_word(free_bits));
-                }
-                i = first + WORD_BITS;
-            }
-        }
-        return 0;
+        size_t const h = heads_[ctz_word(orders_)];
+        (void)flip(h, 0, 0);
+        free_--;
+        return base_ + h * granule_;
     }
 
     uintptr_t FrameAllocator::alloc_run(size_t pages)
@@ -224,69 +303,54 @@ namespace kickos
         {
             return 0;
         }
-        // One forward sweep from the bitmap's own frames, and not from hint_: hint_ chases
-        // single allocations, so starting there would refuse a run that fits below it while
-        // the count says one is free.
-        //
-        // `run` counts the free frames immediately below `p` and is under `pages` at the top
-        // of every word, the completing frame being taken the moment the total reaches it.
-        size_t run = 0;
-        size_t i = reserved_;
-        while (i < frames_)
+        size_t k = 0;
+        while (bit(k) < pages)
         {
-            size_t const first = (i / WORD_BITS) * WORD_BITS;
-            size_t const above = ALL_SET << (i - first);
-            size_t taken = scan_word(i / WORD_BITS) & above;
-            if (taken == above)
-            {
-                run = 0;
-                i = first + WORD_BITS;
-                continue;
-            }
-            size_t p = i;
-            while (taken != 0)
-            {
-                size_t const q = first + ctz_word(taken);
-                if (run + (q - p) >= pages)
-                {
-                    return take_run(p - run, pages);
-                }
-                run = 0;
-                p = q + 1u;
-                taken &= taken - 1u;
-            }
-            if (run + (first + WORD_BITS - p) >= pages)
-            {
-                return take_run(p - run, pages);
-            }
-            run += first + WORD_BITS - p;
-            i = first + WORD_BITS;
+            k++;
         }
-        return 0;
+        size_t first = NIL;
+        if (k <= top_ and (orders_ >> k) != 0)
+        {
+            first = heads_[k + ctz_word(orders_ >> k)];
+        }
+        else if (spans(0, pages, TAG_FREE))
+        {
+            first = 0;
+        }
+        if (first == NIL)
+        {
+            return 0;
+        }
+        flip_span(first, pages, 0);
+        free_ -= pages;
+        return base_ + first * granule_;
+    }
+
+    size_t FrameAllocator::release_run(uintptr_t addr, size_t pages)
+    {
+        size_t first = 0;
+        if (pages == 0 or not index_of(addr, &first) or first >= usable_
+            or pages > usable_ - first)
+        {
+            return 0;
+        }
+        if (not spans(first, pages, 0))
+        {
+            return 0;
+        }
+        flip_span(first, pages, TAG_FREE);
+        free_ += pages;
+        return pages;
     }
 
     bool FrameAllocator::release(uintptr_t addr)
     {
         size_t i = 0;
-        if (not index_of(addr, &i))
+        if (not index_of(addr, &i) or i >= usable_ or not flip(i, 0, TAG_FREE))
         {
             return false;
         }
-        if (i < reserved_)
-        {
-            return false; // the bitmap's own frames were never handed out
-        }
-        uint8_t const mask = static_cast<uint8_t>(1u << (i % 8u));
-        if ((bits_[i / 8u] & mask) == 0)
-        {
-            return false; // already free: a double release, and it changes nothing
-        }
-        bits_[i / 8u] = static_cast<uint8_t>(bits_[i / 8u] & ~mask);
         free_++;
-        if (i < hint_)
-        {
-            hint_ = i;
-        }
         return true;
     }
 
@@ -297,6 +361,9 @@ namespace kickos
         {
             return false;
         }
-        return (bits_[i / 8u] & (1u << (i % 8u))) != 0;
+        size_t h = 0;
+        size_t o = 0;
+        find(i, &h, &o);
+        return (tags_[h] & TAG_FREE) == 0;
     }
 }

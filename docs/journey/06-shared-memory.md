@@ -45,14 +45,20 @@ exactly the three things this chapter is about:
 ```
     void* rA = kos_ram_alloc(BLOCK);
     // ...
-    kos::thread::create(domainA_worker, rA, "domainA", 10, KOS_POLICY_FIFO, 0,
-                        rA, REGION);
+    kos_window win = {};
+    win.base = reinterpret_cast<uintptr_t>(rA);
+    win.size = REGION;
+    win.kind = KOS_WINDOW_MEMORY;
+    auto w = kos::thread::create(domainA_worker, nullptr, "domainA", 10, KOS_POLICY_FIFO,
+                                 std::chrono::nanoseconds{0}, nullptr, 0, &win, 1);
+    (void)w.join();
 ```
 
-`main` reserves an 8 KiB block (`BLOCK`), then starts a thread called `domainA` and grants it
-the low 4 KiB of that block (`REGION`, the last two arguments). The worker writes inside its
-4 KiB, which works, then writes at `base + REGION`, the first byte of the high half, which
-nobody granted it. That write faults, the kernel kills `domainA`, and the system carries on.
+`main` reserves an 8 KiB block (`BLOCK`), then starts a thread called `domainA` with one
+**window** over the low 4 KiB of that block (`REGION`). The worker reads the window's base with
+`kos_window_get`, writes inside its 4 KiB, which works, then writes at `base + REGION`, the first
+byte of the high half, which nobody granted it. That write faults, the kernel kills `domainA`,
+`main`'s join returns, and the system carries on.
 
 Two stops near the end use the `selftest` image instead, for the two other ways of sharing a
 block: granting it to yourself, and granting it to a thread of another task.
@@ -108,11 +114,14 @@ touches the block itself.
 there.
 
 ```
-Breakpoint 1, kickos::ram_owner_alloc (owner=0x20006d80 <kickos::detail::g_instance+9664>, size=size@entry=8192) at .../kernel/mem/ramown.cc:55
-#1  0x000074d2 in (anonymous namespace)::syscall_body (nr=13, a0=8192, ...) at .../kernel/syscall/syscall.cc:940
-#2  syscall_dispatch (nr=13, a0=8192, ...) at .../kernel/syscall/syscall.cc:421
-#3  0x0000242e in svc_trampoline () at .../arch/arm/armv7m/switch.S:540
+Breakpoint 1, kickos::ram_owner_alloc (owner=0x20002d44 <kickos::(anonymous namespace)::system_pools+8708>, size=size@entry=8192) at .../kernel/mem/ramown.cc:59
+#1  0x00007048 in (anonymous namespace)::syscall_body (nr=<optimized out>, a0=8192, ...) at .../kernel/syscall/syscall.cc:889
+#2  syscall_dispatch (nr=<optimized out>, a0=8192, ...) at .../kernel/syscall/syscall.cc:431
+#3  0x00000e0e in svc_trampoline () at .../arch/arm/armv7m/switch.S:690
 ```
+
+`owner` is `main`'s task. The kernel's objects (tasks, threads, domains) sit in the pools the
+build sizes, `system_pools`.
 
 **Why, and the contract:** [Book: The syscall path](../book/the-syscall-path-trap-dispatch-return.md),
 [Reference: Memory domains](../reference/architecture.md#memory-domains-the-isolation-unit)
@@ -126,10 +135,12 @@ The bytes come from the **user-RAM arena**: one stretch of SRAM between two link
 `__kickos_ram_start` and `__kickos_ram_end`. The shared Cortex-M layout in
 `arch/arm/common/cortexm.ld.h` places them, and the chip's linker script includes it
 (`arch/arm/chip/mps2/mps2.ld`; on the f411, `arch/arm/chip/stm32f411/stm32f411.ld`). The
-allocator is a **bump allocator**: one counter, `g_ram_used`, that only grows. Nothing is ever
-given back to it. The kernel takes its own blocks from the same arena: the boot stacks before
-any app runs, and later a default stack for each thread spawned without one. That is why the
-counter is not zero when the first app asks.
+allocator is a **bump allocator** (`ram_arena_alloc` in `arch/common/ram_arena.h`, its state
+`g_arena`): a counter, `used`, that only grows, and one kept gap, the largest alignment run-up a
+block skipped, which a later block that fits it takes. Nothing is ever given back. The kernel
+takes its own blocks from the same arena: the boot stacks before any app runs, and later a
+default stack for each thread spawned without one. That is why the counter is not zero when the
+first app asks.
 
 Before it bumps, it rounds the request up to a size one MPU row can describe and aligns the base
 to that size: the code is in [01, Stop 7](01-power-on.md#stop-7-the-arena-hands-out-the-first-two-stacks),
@@ -141,18 +152,25 @@ boundary. A 24-byte request (you will see one at Stop 10) becomes 32 bytes. The 
 done here, at allocation, so a later grant of the whole block never has to round up into a
 neighbour.
 
-**Try it:** at the Stop 1 breakpoint, print the arena bounds and the counter, then `finish`:
+**Try it:** at the Stop 1 breakpoint, print the arena bounds and its state, then `finish` and
+print the state again:
 
 ```
 (gdb) p/x (unsigned long)__kickos_ram_start
-$2 = 0x20020000
+$1 = 0x20018400
 (gdb) p/x (unsigned long)__kickos_ram_end
-$3 = 0x203fc000
+$2 = 0x203fc000
+(gdb) p/x '(anonymous namespace)::g_arena'
+$3 = {used = 0x5c00, gap_off = 0x240, gap_len = 0x19c0}
 (gdb) finish
-Value returned is $1 = (void *) 0x20028000
+Value returned is $4 = (void *) 0x2001e000
+(gdb) p/x '(anonymous namespace)::g_arena'
+$5 = {used = 0x7c00, gap_off = 0x240, gap_len = 0x19c0}
 ```
 
-`0x20028000` is a multiple of `0x2000` (8 KiB): natural alignment at work.
+`0x2001e000` is a multiple of `0x2000` (8 KiB): natural alignment at work. The counter was at
+`0x20018400 + 0x5c00 = 0x2001e000`, already aligned, so the block is bumped there and the kept
+gap does not change: 8 KiB does not fit in it.
 
 **Why, and the contract:** [Book: Thread stacks](../book/thread-stacks-and-the-kiss-tension.md)
 (why a no-free bump arena), [Reference: Memory domains](../reference/architecture.md#memory-domains-the-isolation-unit)
@@ -169,6 +187,10 @@ per task, so any thread of the reserving task may use the block, and a thread of
 may not.
 
 ```
+        if (not admit(owner, rsz))
+        {
+            return nullptr;
+        }
         RamBlock* const slot = free_block();
         if (slot == nullptr)
         {
@@ -180,41 +202,53 @@ may not.
             return nullptr;
         }
         // ...
-        *slot = RamBlock{reinterpret_cast<uintptr_t>(p), static_cast<uint32_t>(rsz), tag};
+        record(owner, slot, reinterpret_cast<uintptr_t>(p), static_cast<uint32_t>(rsz));
 ```
 
-The order matters. The free record slot is found before the arena is spent: since the arena
-never takes a block back, allocating first and then finding the table full would lose the block
-for the life of the image.
+The order matters. The task's budget (`admit`: one more block, so many more bytes) and a free
+record are checked before the arena is spent: since the arena never takes a block back,
+allocating first and then finding the table full would lose the block for the life of the
+image. `record` also chains the record onto the task's own list, so a lookup walks only that
+task's blocks.
 
-Later, every path that lets a caller name a range of RAM (a spawn's data grant, a caller-owned
-stack, `kos_mem_self_grant`) asks `ram_owner_nameable`: is this range inside one block that the
-caller's task reserved? The owner is stored as a task handle with a generation number, so when a
-task dies its blocks become nameable by nobody, even if its slot is reused.
+Later, every path that lets a caller name a range of RAM (a spawn's memory window, a task's
+block, a caller-owned stack, `kos_mem_self_grant`) asks `ram_owner_nameable`: is this range inside
+one block that the caller's task reserved? The owner is stored as a task handle with a generation
+number, so when a task dies its blocks become nameable by nobody, even if its slot is reused.
 
-**Try it:** after the `finish` of Stop 2, print the record table:
+**Try it:** after the `finish` of Stop 2, print the record table, `kickos_kernel_pools.ram_owners`:
 
 ```
-(gdb) p '(anonymous namespace)::g_owners'.per_instance[0][1]
-$2 = {base = 537034752, size = 8192, owner = 3}
+(gdb) p kickos_kernel_pools.ram_owners[0]
+$6 = {base = 536970752, size = 64, owner = 2, next = 0}
+(gdb) p kickos_kernel_pools.ram_owners[1]
+$7 = {base = 536993792, size = 8192, owner = 3, next = 0}
 ```
 
-`537034752` is `0x20028000`. Entry 0 is the init's 64-byte block.
+`536993792` is `0x2001e000`. Entry 0 is the init's 64-byte block.
 
 **Why, and the contract:** [Reference: Invariants](../reference/invariants.md),
 `arena-block-owner-is-the-reserving-task`.
 
-### Stop 4: admitting the grant at spawn
-**Where:** `kernel/syscall/syscall_thread.cc`, `spawn_grant_admit`; `kernel/thread/thread.cc`,
-`ram_region_admit`; `kernel/grant/grant.cc`, `grant_region_admissible`
+### Stop 4: admitting the window at spawn
+**Where:** `kernel/syscall/syscall_thread.cc`, `spawn_windows_admit` and `window_admit`;
+`kernel/thread/thread.cc`, `ram_region_admit`; `kernel/grant/grant.cc`, `grant_region_admissible`
 
-`kos::thread::create` with a `mem`/`mem_size` pair asks for a **data grant**: the new thread
-gets read/write access to that range. The spawn path ([08](08-spawn-and-caps.md) walks it whole)
-checks the range before it spends anything, in `ram_region_admit`:
+A `KOS_WINDOW_MEMORY` entry in the spawn's window list asks for a **memory window**: the new
+thread gets access to that range, read/write unless the window's flags say otherwise. The spawn
+path ([08](08-spawn-and-caps.md) walks it whole) copies the list once and admits each window
+before it spends anything (`spawn_windows_admit`). For a memory window `window_admit` refuses an
+unknown flag, and a list that names the same block twice (`-KOS_EINVAL`), then asks
+`ram_region_admit`:
 
 ```
-        size_t const rsz = arch_ram_region_size(size);
-        if (not arch_ram_region_admissible(base, rsz))
+        if (not grant_nocache_admissible(attr))
+        {
+            return -KOS_ENOTSUP;
+        }
+        // ...
+        size_t const rsz = ram_grant_extent(size);
+        if (not ram_grant_shaped(base, rsz))
         {
             return -KOS_EINVAL;
         }
@@ -232,60 +266,68 @@ checks the range before it spends anything, in `ram_region_admit`:
         }
 ```
 
-Read it as four questions, each with its own error code. Can one MPU row describe this range
-exactly? (`-KOS_EINVAL`.) Is it inside the user arena, and clear of every block the kernel owns
-for life, such as the MPU itself or the interrupt controller? That is "Rule 7",
-`grant_region_admissible`. Did the caller's task reserve it? (Both `-KOS_EPERM`.) And is
-nobody else holding the same bytes with a different memory type, cached in one place and
-uncached in another? (`-KOS_EBUSY`.) Notice that the range is checked at its **rounded** size,
-the size the MPU row will really cover, never at the size the caller typed.
+Read it as questions, each with its own error code. Can this MPU make the range uncached, if that
+is asked? (`-KOS_ENOTSUP`.) Can one MPU row describe this range exactly? (`-KOS_EINVAL`.) Is it
+inside the user arena, and clear of every block the kernel owns for life, such as the MPU itself
+or the interrupt controller? That is "Rule 7", `grant_region_admissible`. Did the caller's task
+reserve it? (Both `-KOS_EPERM`.) And is nobody else holding the same bytes with a different
+memory type, cached in one place and uncached in another? (`-KOS_EBUSY`.) Notice that the range
+is checked at its **rounded** size (`ram_grant_extent`), the size the MPU row will really cover,
+never at the size the caller typed.
 
-**Try it:** `break kickos::ram_region_admit`, `continue`, then print the arguments and `finish`:
+**Try it:** `break kickos::ram_region_admit`, `continue`, `bt 4`, then `finish`:
 
 ```
-Breakpoint 2, kickos::ram_region_admit (granter=0x20005030 <...>, base=base@entry=537034752, size=4096, attr=attr@entry=3, how=how@entry=kickos::RAM_ADMIT_GRANT) at .../kernel/thread/thread.cc:338
-(gdb) bt 3
-#1  ... kickos::(anonymous namespace)::spawn_grant_admit (p=...) at .../kernel/syscall/syscall_thread.cc:509
-#2  kickos::(anonymous namespace)::spawn_admit (p=...) at .../kernel/syscall/syscall_thread.cc:612
+Breakpoint 2, kickos::ram_region_admit (granter=granter@entry=0x200024e8 <...>, base=536993792, size=4096, attr=attr@entry=3, how=how@entry=kickos::RAM_ADMIT_GRANT) at .../kernel/thread/thread.cc:331
+#1  0x000086be in kickos::(anonymous namespace)::window_admit (i=i@entry=0, into=into@entry=0x20002d44 <...>, list=0x200007b8 <...>) at .../kernel/syscall/syscall_thread.cc:226
+#2  0x00008d30 in kickos::(anonymous namespace)::spawn_windows_admit (p=0x20000878 <...>, into=0x20002d44 <...>, staged=false) at .../kernel/syscall/syscall_thread.cc:469
+#3  kickos::(anonymous namespace)::spawn_admit (p=0x20000878 <...>, into=0x20002d44 <...>, staged=false) at .../kernel/syscall/syscall_thread.cc:549
 (gdb) finish
-Value returned is $7 = 0
+Value returned is $10 = 0
 ```
 
 `attr=3` is `ARCH_MPU_R | ARCH_MPU_W` (`arch/include/kickos/arch/arch.h`: R is bit 0, W bit 1,
-X bit 2, `ARCH_MPU_DEV` bit 3, `ARCH_MPU_NOCACHE` bit 4).
+X bit 2, `ARCH_MPU_DEV` bit 3, `ARCH_MPU_NOCACHE` bit 4). `into` is the task the child joins:
+`main`'s own, the `owner` of Stop 1.
 
 **Why, and the contract:** [Reference: Memory domains](../reference/architecture.md#memory-domains-the-isolation-unit)
 ("Rule 7 -- the grant path refuses kernel-reserved blocks"),
 [Reference: Invariants](../reference/invariants.md), `grant-refuses-kernel-reserved-blocks`.
 
-### Stop 5: the grant becomes a domain
-**Where:** `kernel/task/task.cc`, `task_for`; `kernel/domain/domain.cc`, `domain_for`
+### Stop 5: a window is the thread's, a domain is the task's
+**Where:** `kernel/syscall/syscall_thread.cc`, `spawn_locked`; `kernel/domain/domain.cc`,
+`domain_for`
 
-A thread spawned with its own data grant does not join its parent's task. Admitting the grant
-into the parent's task would hand the block to every other thread there too. So the spawn builds a
-new task, and with it a new **domain**: the object that holds the regions every thread of the
-task shares. On the region backend a domain is little more than one region:
+A thread spawned with `kos::thread::create` joins its spawner's task: `spawn_locked` takes
+`spawner->task` when the call names no other. The window does not change that. It is the
+thread's own region, carried by no task and no domain, so the other threads of `main`'s task do
+not reach the block through it.
+
+What every thread of a task shares is its **domain**: the object that holds the task's regions.
+A task gets a region of its own when it is created with a block (`kos_task_create`, its
+`kos_task_params` `block` and `size`, [08](08-spawn-and-caps.md)). On the region backend
+`domain_for` then makes that block the domain's one region:
 
 ```
         d->regions[0].base = base;
-        d->regions[0].size = arch_ram_region_size(mem_size);
+        d->regions[0].size = ram_grant_extent(mem_size);
         d->regions[0].attr = attr;
         d->region_count = 1;
 ```
 
-Building a task is itself an authority (`AUTH_TASKS`), checked in `spawn_masked` before
-`task_for` runs.
+`main`'s task was created with none, so its domain holds no region.
 
-**Try it:** `break kickos::domain_for if mem_size == 4096`, `continue`, `finish`:
+**Try it:** `break kickos::thread_regions_stage if attr.window_count == 1`, `continue`, then:
 
 ```
-#1  0x0000431c in kickos::task_for (caller=caller@entry=0, mem_base=mem_base@entry=0x20028000, mem_size=mem_size@entry=4096, ...) at .../kernel/task/task.cc:194
-#2  0x00008cd0 in kickos::spawn_masked (...) at .../kernel/syscall/syscall_thread.cc:926
-(gdb) finish
-Value returned is $1 = (kickos::Domain *) 0x200066d0 <kickos::detail::g_instance+7952>
-(gdb) p/x $->regions[0]
-$2 = {base = 0x20028000, size = 0x1000, attr = 0x3}
+Breakpoint 1, kickos::thread_regions_stage (dom=0x20002c04 <...>, attr=..., stack_base=stack_base@entry=0x20020000, stack_size=stack_size@entry=8192) at .../kernel/thread/thread.cc:492
+(gdb) p dom->region_count
+$1 = 0 '\000'
+(gdb) up
+#1  0x0000909c in kickos::spawn_locked (..., kname=kname@entry=0x200012a0 <...> "domainA", args=args@entry=0x0 <g_isr_vector>, into=into@entry=0x0 <g_isr_vector>, ...) at .../kernel/syscall/syscall_thread.cc:1213
 ```
+
+`into` is null: the spawn named no task, so `domainA` joins `main`'s.
 
 **Why, and the contract:** [Reference: Memory domains](../reference/architecture.md#memory-domains-the-isolation-unit)
 (a domain owns a region set; threads belong to a task).
@@ -301,7 +343,7 @@ explicit list, built once at spawn, in this order:
         set.clear();
         if (not attr.privileged)
         {
-            set.append_statics();
+            set.append_statics(task_image(task));
         }
         // ...
         if (dom != nullptr)
@@ -324,8 +366,9 @@ explicit list, built once at spawn, in this order:
 ```
 
 First the **statics** (`arch_domain_static_regions` in `kernel/domain/domain.cc`): the code,
-read and execute, and the app's static data, read and write. Then the task's domain regions.
-Then the thread's own windows (Stop 11). Last its own stack. The stack is per thread, which is
+read and execute, and the static data of the task's image, read and write. Then the task's
+domain regions, none here (Stop 5). Then the thread's own windows (Stop 11), here the one memory
+window. Last its own stack. The stack is per thread, which is
 why the MPU must be reloaded on every switch even between two threads of one task.
 
 The result is an `MpuSet`. It holds two things side by side: the list of regions in a portable
@@ -335,28 +378,29 @@ so the encoded image is never stale. The kernel uses the portable list too: when
 the kernel a pointer, `user_range_ok` (`kernel/syscall/syscall_mem.cc`) checks it against these
 same regions, so the kernel never accepts a pointer the thread itself could not use.
 
-**Try it:** `break kickos::thread_regions_stage`. The first two hits are the boot's own threads;
-a simpler way to land on the worker is to stop at Stop 1 first, `delete`, then
-`break kickos::thread_regions_stage`, `continue`, `finish`:
+**Try it:** `break kickos::thread_regions_stage if attr.window_count == 1` lands on the worker
+(the boot's own threads hold no window). `continue`, `p/x attr.windows[0]`, `finish`:
 
 ```
-Breakpoint 2, kickos::thread_regions_stage (dom=0x200066d0 <...>, attr=..., stack_base=stack_base@entry=0x2002a000, stack_size=stack_size@entry=8192) at .../kernel/thread/thread.cc:487
+Breakpoint 3, kickos::thread_regions_stage (dom=0x20002c04 <...>, attr=..., stack_base=stack_base@entry=0x20020000, stack_size=stack_size@entry=8192) at .../kernel/thread/thread.cc:492
+(gdb) p/x attr.windows[0]
+$12 = {base = 0x2001e000, size = 0x1000, kind = 0x1, flags = 0x0}
 (gdb) finish
-Value returned is $1 = (const kickos::MpuSet *) 0x20004e30 <kickos::detail::g_instance+1648>
+Value returned is $13 = (const kickos::MpuSet *) 0x200008b0 <kickos::detail::g_instance+968>
 (gdb) set $s = $
 (gdb) p/x $s->regions_
-$2 = {{base = 0x0, size = 0x400000, attr = 0x5}, {base = 0x20010000, size = 0x10000, attr = 0x3},
-      {base = 0x20028000, size = 0x1000, attr = 0x3}, {base = 0x2002a000, size = 0x2000, attr = 0x3},
+$14 = {{base = 0x0, size = 0x400000, attr = 0x5}, {base = 0x20010000, size = 0x8000, attr = 0x3},
+      {base = 0x2001e000, size = 0x1000, attr = 0x3}, {base = 0x20020000, size = 0x2000, attr = 0x3},
       {base = 0x0, size = 0x0, attr = 0x0}, ...}
 (gdb) p $s->count_
-$3 = 4 '\004'
+$15 = 4 '\004'
 (gdb) p/x $s->image_
-$4 = {rbar = {0x0, 0x20010000, 0x20028000, 0x2002a000, 0x0, 0x0, 0x0, 0x0},
-      rasr = {0x603002b, 0x1303001f, 0x13030017, 0x13030019, 0x0, 0x0, 0x0, 0x0}}
+$16 = {rbar = {0x0, 0x20010000, 0x2001e000, 0x20020000, 0x0, 0x0, 0x0, 0x0},
+      rasr = {0x603002b, 0x1303001d, 0x13030017, 0x13030019, 0x0, 0x0, 0x0, 0x0}}
 ```
 
-Four regions: code (4 MiB at 0, `attr = 5` is R|X), static data (64 KiB), the 4 KiB grant, and
-the 8 KiB stack, which the spawn took from the arena right after the block (`0x2002a000`).
+Four regions: code (4 MiB at 0, `attr = 5` is R|X), static data (32 KiB), the 4 KiB window, and
+the 8 KiB stack, which the spawn took from the arena right after the block (`0x20020000`).
 The other four rows are empty.
 
 **Why, and the contract:** [Reference: Memory domains](../reference/architecture.md#memory-domains-the-isolation-unit)
@@ -371,7 +415,7 @@ each region, but only if `arch_mpu_region_encodable` says one row can describe i
 otherwise the region gets no row at all, never a rounded one. The returned bitmask says which
 regions got a row.
 
-Take the grant's word, `0x13030017`, apart:
+Take the window's word, `0x13030017`, apart:
 
 | Bits | Field | Value | Meaning |
 |---|---|---|---|
@@ -384,7 +428,7 @@ Take the grant's word, `0x13030017`, apart:
 The code region's `0x0603002b` has XN clear and AP `110` (read-only for everyone), and SIZE 21,
 which is 4 MiB.
 
-**Try it:** no new commands: compare `rasr[2]` (the 4 KiB grant, SIZE 11) and `rasr[3]` (the
+**Try it:** no new commands: compare `rasr[2]` (the 4 KiB window, SIZE 11) and `rasr[3]` (the
 8 KiB stack, `0x13030019`, SIZE 12) in the output of Stop 6.
 
 **Why, and the contract:** [Book: The CPU reads ahead: memory types](../book/memory-types-and-speculative-access.md)
@@ -395,12 +439,12 @@ section B3.5 (the MPU registers).
 **Where:** `kernel/sched/sched.cc`, `switch_book`; `arch/common/arch_mpu_stash.cc`,
 `arch_mpu_apply`
 
-`main` returns from the spawn and parks, so the scheduler picks `domainA`. In `switch_book`, the
+`main` returns from the spawn and parks in its join, so the scheduler picks `domainA`. In `switch_book`, the
 bookkeeping half of a switch, the kernel names the incoming thread's regions:
 
 ```
             // What the incoming thread may touch is installed here and nowhere else.
-            [[maybe_unused]] struct arch_aspace* const rspace = aspace_activate_for(next);
+            (void)aspace_activate_for(next);
             next->mpu.apply();
 ```
 
@@ -425,17 +469,17 @@ loaded now, `main` would run its last instructions under `domainA`'s regions, wh
 is not mapped, and fault on it.
 
 **Try it:** from Stop 6, `delete`, then
-`break arch_mpu_apply if image->rbar[2] == 0x20028000`, `continue`, `bt 4`:
+`break arch_mpu_apply if image->rbar[2] == 0x2001e000`, `continue`, `bt 4`:
 
 ```
-Breakpoint 3, arch_mpu_apply (regions=0x20005204 <...>, n=4, image=0x20005268 <...>) at .../arch/common/arch_mpu_stash.cc:41
-#1  0x000029ba in kickos::(anonymous namespace)::switch_book (next=0x20005188 <...>, me=0, held=...) at .../kernel/sched/sched.cc:430
-#2  kickos::(anonymous namespace)::switch_to (me=0, held=..., next=0x20005188 <...>) at .../kernel/sched/sched.cc:534
-#3  kickos::(anonymous namespace)::pick_and_seat (held=..., woken=<optimized out>) at .../kernel/sched/sched.cc:584
+Breakpoint 4, arch_mpu_apply (regions=0x200026e4 <...>, n=4, image=0x20002748 <...>) at .../arch/common/arch_mpu_stash.cc:41
+#1  0x0000c3fe in kickos::(anonymous namespace)::switch_book (next=0x20002660 <...>, me=0, held=...) at .../kernel/sched/sched.cc:399
+#2  kickos::(anonymous namespace)::switch_to (me=0, held=..., next=0x20002660 <...>) at .../kernel/sched/sched.cc:509
+#3  kickos::(anonymous namespace)::pick_and_seat (held=..., woken=<optimized out>) at .../kernel/sched/sched.cc:545
 ```
 
-The image pointer `0x20005268` points into the new thread's own control block: the spawn copied
-the staged `MpuSet` of Stop 6 into `Thread::mpu`.
+The image pointer `0x20002748` points into the new thread's own control block (`next` is
+`0x20002660`): the spawn copied the staged `MpuSet` of Stop 6 into `Thread::mpu`.
 
 **Why, and the contract:** [Book: Protection follows the CPU](../book/protection-follows-the-cpu-not-the-schedulers-intent.md),
 [Reference: Invariants](../reference/invariants.md), `mpu-apply-on-every-switch-in`.
@@ -446,16 +490,25 @@ the staged `MpuSet` of Stop 6 into `Thread::mpu`.
 `arch/arm/common/arch_arm_mpu_pmsav7.cc`, `kickos_arm_mpu_program`
 
 PendSV saves `main`'s registers, loads `domainA`'s stack pointer and registers, sets
-`CONTROL.nPRIV` for the incoming thread, and only then, as the last thing before the exception
-returns, commits the stash:
+`CONTROL.nPRIV` for the incoming thread, and only then, near the end of the exception, commits
+the stash:
 
 ```
     push    {r0, lr}
     bl      kickos_arch_mpu_commit
+    ldr     r0, =g_arch_current
+    ldr     r0, [r0]
+    bl      kickos_switch_landed
     pop     {r0, lr}
+    SWITCH_IN_FRAME
+    clrex                           /* the incoming thread's cut STREX fails (DDI0403E A3.4.4) */
     cpsie   i                       /* pair consumed; never resume a thread masked */
     bx      lr                      /* EXC_RETURN -> resume incoming on PSP */
 ```
+
+`kickos_switch_landed` (`kernel/time/time.cc`) runs under the incoming thread's new rows: it
+seats that thread's C library state pointer and finishes the switch's timer bookkeeping
+([3. Sleep](03-sleep.md)).
 
 `kickos_arch_mpu_commit` reads `g_pend_image`, masks interrupts with `cpsid i`, and calls
 `kickos_arm_mpu_program`. That function keeps a copy of the words the MPU already holds,
@@ -474,26 +527,27 @@ static __attribute__((noinline)) void mpu_write_slot(uint32_t slot, uint32_t rba
 ```
 
 After the writes it issues `dsb` and `isb`, so the next instruction, the exception return,
-already runs under the new rows. `MPU_CTRL` stays at `ENABLE | PRIVDEFENA` the whole time.
+already runs under the new rows. `MPU_CTRL` stays at `ENABLE | HFNMIENA | PRIVDEFENA` the whole
+time.
 `PRIVDEFENA` is the **background region**: privileged code (the kernel) may touch any address
 the rows do not cover. That is how the kernel spends no rows on itself.
 
-**Try it:** from Stop 8, `delete`, `break kickos_arm_mpu_program if img->rbar[2] == 0x20028000`,
+**Try it:** from Stop 8, `delete`, `break kickos_arm_mpu_program if img->rbar[2] == 0x2001e000`,
 `continue`, then look at the record before and after:
 
 ```
-Breakpoint 4, kickos_arm_mpu_program (img=0x20005268 <...>) at .../arch/arm/common/arch_arm_mpu_pmsav7.cc:87
-#1  0x000024d4 in kickos_arch_mpu_commit () at .../arch/arm/common/kickos_arch_mpu_commit_default.cc:36
-#2  0x000022a2 in PendSV_Handler () at .../arch/arm/armv7m/switch.S:227
+Breakpoint 5, kickos_arm_mpu_program (img=0x20002748 <...>) at .../arch/arm/common/arch_arm_mpu_pmsav7.cc:84
+#1  0x00000e80 in kickos_arch_mpu_commit () at .../arch/arm/common/kickos_arch_mpu_commit_default.cc:31
+#2  0x00000ae6 in PendSV_Handler () at .../arch/arm/armv7m/switch.S:281
 (gdb) p/x g_mpu_held[0]
-$8 = {rbar = {0x0, 0x20010000, 0x20026000, 0x0, ...}, rasr = {0x603002b, 0x1303001f, 0x13030019, 0x0, ...}}
+$17 = {rbar = {0x0, 0x20010000, 0x2001c000, 0x0, ...}, rasr = {0x603002b, 0x1303001d, 0x13030019, 0x0, ...}}
 (gdb) finish
 (gdb) p/x g_mpu_held[0]
-$9 = {rbar = {0x0, 0x20010000, 0x20028000, 0x2002a000, ...}, rasr = {0x603002b, 0x1303001f, 0x13030017, 0x13030019, ...}}
+$18 = {rbar = {0x0, 0x20010000, 0x2001e000, 0x20020000, ...}, rasr = {0x603002b, 0x1303001d, 0x13030017, 0x13030019, ...}}
 ```
 
-Before: `main`'s rows (code, static data, `main`'s stack at `0x20026000`). After: rows 0 and 1
-are the same for both threads and were not rewritten; rows 2 and 3 now hold the grant and
+Before: `main`'s rows (code, static data, `main`'s stack at `0x2001c000`). After: rows 0 and 1
+are the same for both threads and were not rewritten; rows 2 and 3 now hold the window and
 `domainA`'s stack. You can read the hardware itself: write the row number into `MPU_RNR`, then
 read `MPU_RBAR` and `MPU_RASR`. (This changes `MPU_RNR`, which the next commit sets again
 before it writes anything.)
@@ -501,17 +555,18 @@ before it writes anything.)
 ```
 (gdb) set *(unsigned *)0xE000ED98 = 2
 (gdb) x/2wx 0xE000ED9C
-0xe000ed9c:	0x20028002	0x13030017
+0xe000ed9c:	0x2001e002	0x13030017
 (gdb) x/wx 0xE000ED94
-0xe000ed94:	0x00000005
+0xe000ed94:	0x00000007
 (gdb) info registers psp control
-psp            0x2002bfe0          537051104
+psp            0x20021fe0          537010144
 control        0x1                 1
 ```
 
-`RBAR` reads back with the row number in its low bits. `MPU_CTRL` is 5: enabled, with the
-background region. The process stack pointer is already inside `domainA`'s stack
-(`0x2002a000` to `0x2002c000`), and `CONTROL` bit 0 says the thread will run unprivileged.
+`RBAR` reads back with the row number in its low bits. `MPU_CTRL` is 7: enabled, the rows kept
+in force in HardFault and NMI handlers too (`HFNMIENA`), and the background region. The process stack
+pointer is already inside `domainA`'s stack (`0x20020000` to `0x20022000`), and `CONTROL` bit 0
+says the thread will run unprivileged.
 
 **Why, and the contract:** [Book: Protection follows the CPU](../book/protection-follows-the-cpu-not-the-schedulers-intent.md)
 ("The fix: commit protection in the switch epilogue"), [Reference: Invariants](../reference/invariants.md),
@@ -523,9 +578,9 @@ background region. The process stack pointer is already inside `domainA`'s stack
 `MpuSet::add_enforced_retyping`; `arch/common/arch_mpu_stash.cc`, `arch_mpu_apply_now`
 
 A thread that reserved a block and wants to use it itself calls `kos_mem_self_grant`. The
-`selftest` image does this in its `t_irqdrv` arm, which [07](07-interrupt-to-a-driver.md) walks:
-`main` reserves 24 bytes, a fake device register block of 16 bytes and two semaphore words, and
-grants them to itself.
+`selftest` image does this in its `t_irqdrv` arm, which [07](07-interrupt-to-a-driver.md) walks.
+The image reserves 24 bytes for that arm when it starts, a fake device register block of 16 bytes
+and two semaphore words, and the arm's `main` grants them to itself.
 
 `thread_self_grant` runs the same admission as Stop 4, then adds a row to the caller's own set.
 If a row already names exactly this base and size, it is changed in place (a "retype", for
@@ -550,17 +605,17 @@ switch that was already pending still finds its own thread's image in the stash.
 `p/x c->mpu.regions_`:
 
 ```
-Breakpoint 1, kickos::thread_self_grant (c=c@entry=0x20005030 <...>, base=base@entry=537083744, size=size@entry=24, attr=attr@entry=3) at .../kernel/thread/thread.cc:371
+Breakpoint 1, kickos::thread_self_grant (c=c@entry=0x20004288 <...>, base=base@entry=537019808, size=size@entry=24, attr=attr@entry=3) at .../kernel/thread/thread.cc:375
 (gdb) p/x c->mpu.regions_
-$3 = {{base = 0x0, size = 0x400000, attr = 0x5}, {base = 0x20010000, size = 0x10000, attr = 0x3},
-      {base = 0x20026000, size = 0x2000, attr = 0x3}, {base = 0x20033d00, size = 0x40, attr = 0x3},
+$1 = {{base = 0x0, size = 0x400000, attr = 0x5}, {base = 0x20010000, size = 0x2000, attr = 0x3},
+      {base = 0x20016000, size = 0x2000, attr = 0x3}, {base = 0x20024380, size = 0x40, attr = 0x3},
       {base = 0x0, size = 0x0, attr = 0x0}, ...}
 (gdb) finish
-Value returned is $5 = 0
+Value returned is $2 = 0
 (gdb) p/x c->mpu.regions_
-$6 = {{base = 0x0, size = 0x400000, attr = 0x5}, {base = 0x20010000, size = 0x10000, attr = 0x3},
-      {base = 0x20026000, size = 0x2000, attr = 0x3}, {base = 0x20033d00, size = 0x40, attr = 0x3},
-      {base = 0x20033f60, size = 0x20, attr = 0x3}, ...}
+$3 = {{base = 0x0, size = 0x400000, attr = 0x5}, {base = 0x20010000, size = 0x2000, attr = 0x3},
+      {base = 0x20016000, size = 0x2000, attr = 0x3}, {base = 0x20024380, size = 0x40, attr = 0x3},
+      {base = 0x200245a0, size = 0x20, attr = 0x3}, ...}
 ```
 
 The 24 bytes became a 32-byte row, the smallest PMSAv7 can describe.
@@ -573,17 +628,17 @@ stash is one cell).
 **Where:** `kernel/thread/thread.cc`, `seat_windows` and `window_memory_attr`;
 `kernel/syscall/syscall_mem.cc`, `window_get_call`; `system/init/compose/walk.cc`
 
-A data grant (Stop 4) makes a new task. To let a thread of an **existing** task reach a block,
-including a task other than the owner's, the spawner passes a **window**: an entry of the
-`windows` list in `kos_thread_params`, with `kind = KOS_WINDOW_MEMORY`. A window belongs to the
-one thread it was given to, not to its task. `seat_windows` turns each window into a row:
+A window is not limited to the spawner's own task. A task create takes a window list too
+(`kos_task_params` `windows`, for its entry thread), admitted the same way, so a block one task
+reserved can reach a thread of another task. Either way the window belongs to the one thread it
+was given to, not to its task. `seat_windows` turns each window into a row:
 
 ```
                 size_t size = w.size;
                 uint32_t rights = ARCH_MPU_R | ARCH_MPU_W | ARCH_MPU_DEV;
                 if (w.kind == KOS_WINDOW_MEMORY)
                 {
-                    size = arch_ram_region_size(w.size);
+                    size = ram_grant_extent(w.size);
                     rights = window_memory_attr(w.flags);
                 }
                 fitted = set.add_window(w.base, size, rights, static_cast<uint8_t>(i), w.flags)
@@ -602,22 +657,24 @@ reserves each shared region of the composition with `kos_ram_alloc`, so the init
 and hands it to every task that names it as a `KOS_WINDOW_MEMORY` window. A task finds it by
 name with `kos_grant_mem`.
 
-**Try it:** the `selftest` arm `t_window_memory_ro` spawns two children over one 32-byte block,
-the first with a writable window, the second into another task with `KOS_WINDOW_RO`.
+**Try it:** the `selftest` arm `t_window_memory_ro` gives one 32-byte block to two threads. The
+first is a thread of `main`'s task with a writable window. The second is the entry thread of a
+task it creates from another image, with `KOS_WINDOW_RO`.
 `break '(anonymous namespace)::t_window_memory_ro'`, `continue`, `delete`,
 `break kickos::thread_regions_stage if attr.window_count == 1`, `continue`,
-`p/x attr.windows[0]`, `finish`, `p/x $->image_`, and the same again for the second child:
+`p/x attr.windows[0]`, `finish`, `p/x $->image_`, and the same again for the second thread:
 
 ```
-$1 = {base = 0x20033f80, size = 0x20, kind = 0x1, flags = 0x0}
-$5 = {rbar = {0x0, 0x20010000, 0x20033f80, 0x20028000, ...}, rasr = {0x603002b, 0x1303001f, 0x13030009, 0x13030019, ...}}
+$4 = {base = 0x200245e0, size = 0x20, kind = 0x1, flags = 0x0}
+$6 = {rbar = {0x0, 0x20010000, 0x200245e0, 0x2001a000, ...}, rasr = {0x603002b, 0x13030019, 0x13030009, 0x13030019, ...}}
 
-$6 = {base = 0x20033f80, size = 0x20, kind = 0x1, flags = 0x1}
-$9 = {rbar = {0x0, 0x20010000, 0x20033f80, 0x20028000, ...}, rasr = {0x603002b, 0x1303001f, 0x12030009, 0x13030019, ...}}
+$7 = {base = 0x200245e0, size = 0x20, kind = 0x1, flags = 0x1}
+$9 = {rbar = {0x0, 0x20012000, 0x200245e0, 0x2001a000, ...}, rasr = {0x603002b, 0x13030015, 0x12030009, 0x13030019, ...}}
 ```
 
-The two rows differ in one hex digit: AP `011` (unprivileged read/write) became `010`
-(unprivileged read-only). SIZE 4 is 2^5 = 32 bytes.
+Row 2 is the window in both. Its two words differ in one hex digit: AP `011` (unprivileged
+read/write) became `010` (unprivileged read-only). SIZE 4 is 2^5 = 32 bytes. Row 1 differs too:
+the second thread runs another image, whose static data is its own (2 KiB at `0x20012000`).
 
 **Why, and the contract:** [Reference: Memory domains](../reference/architecture.md#memory-domains-the-isolation-unit)
 ("Cross-domain sharing = a region deliberately mapped into two domains"), the `kos_window_get`
@@ -630,54 +687,71 @@ and `kos_grant_mem` comments in `user/include/kickos/sys.h`,
 `kickos_armv7m_fault_report`; then `kickos_fault_kill_thread`
 
 Back in `mpu_fault`, `domainA` writes `0x1111` at `base + 64`. Row 2 allows it. Then it writes
-at `base + REGION`, `0x20029000`. No row covers that address, and an unprivileged thread gets
-no background region, so the MPU refuses the store. The core takes a **MemManage** exception.
-The `qemu` vector table routes MemManage, BusFault and UsageFault to the same handler,
-`HardFault_Handler`, which picks the stack the frame was pushed on and jumps to the C reporter:
+at `base + REGION`, `0x2001f000`, through `poke`, a function the worker calls through a pointer
+so that the store is its first instruction. No row covers that address, and an unprivileged
+thread gets no background region, so the MPU refuses the store. The core takes a **MemManage**
+exception. The `qemu` vector table (`KICKOS_CORE_VECTORS_V7M` in
+`arch/arm/common/core_vectors.inc`) routes MemManage, BusFault and UsageFault to the same handler,
+`HardFault_Handler`, which picks the stack the frame was pushed on and calls the C reporter:
 
 ```
 __attribute__((naked)) void HardFault_Handler(void)
 {
+    // ...
     __asm volatile(
+        KICKOS_ARMV7M_LSPACT_CLEAR
         "tst lr, #4          \n"
         "ite eq              \n"
         "mrseq r0, msp       \n"
         "mrsne r0, psp       \n"
         "mov r1, lr          \n"
-        "b kickos_armv7m_fault_report \n");
+        "bl kickos_armv7m_fault_report \n"
+        "bx r0               \n");
 }
 ```
 
 `kickos_armv7m_fault_report` first asks `kickos_fault_kill_thread` whether this fault can be
-contained: an unprivileged thread faulted, so yes. The thread is killed, the rest of the system
-keeps running, and the handler returns into another thread. Only a fault that cannot be
-contained, one in the kernel itself, goes on to the panic dump. What the kill does, and who
-survives it, is [9. Fault and kill](09-fault-and-kill.md).
+contained: a thread faulted on its own process stack, so yes. The thread is killed, the report
+returns the `EXC_RETURN` that resumes another thread, and `bx r0` takes it: the rest of the
+system keeps running. Only a fault that cannot be contained, one in the kernel itself, goes on
+to the panic dump. What the kill does, and who survives it, is
+[9. Fault and kill](09-fault-and-kill.md).
 
-**Try it:** run `mpu_fault` again. `break kickos_armv7m_fault_report`, `continue`, `bt 3`, then
-read the fault registers: `CFSR` at `0xE000ED28` and `MMFAR` (the faulting address) at
-`0xE000ED34`.
+**Try it:** run `mpu_fault` again. `break kickos_armv7m_fault_report`, `continue`. In this build
+gdb names the stop after a C library line of the app image, so ask the symbol table where the
+core is, then read the two arguments from `r0` and `r1`, the stacked frame, and the fault
+registers: `CFSR` at `0xE000ED28` and `MMFAR` (the faulting address) at `0xE000ED34`.
 
 ```
-Breakpoint 1, kickos_armv7m_fault_report (frame=0x2002bfd8, exc_return=4294967293) at .../arch/arm/armv7m/arch_armv7m.cc:441
-#1  <signal handler called>
-#2  0x00000130 in (anonymous namespace)::domainA_worker (arg=0x20028000) at .../user/apps/common/mpu_fault/main.cc:41
+(gdb) info symbol $pc
+kickos_armv7m_fault_report in section .text
+(gdb) p/x $r0
+$1 = 0x20021fc8
+(gdb) p/x $r1
+$2 = 0xfffffffd
+(gdb) x/8wx $r0
+0x20021fc8:	0x2001f000	0x00002222	0x00000000	0x00011769
+0x20021fd8:	0x00000001	0x000117b5	0x00011768	0x61000000
+(gdb) info symbol ((unsigned*)$r0)[6]
+(anonymous namespace)::poke(int volatile*, int) in section .kickos_image1_text
 (gdb) x/wx 0xE000ED28
 0xe000ed28:	0x00000082
 (gdb) x/wx 0xE000ED34
-0xe000ed34:	0x20029000
+0xe000ed34:	0x2001f000
 ```
 
-`CFSR = 0x82` is two bits of its MemManage byte: bit 1, a data access violation, and bit 7, "the
-address in MMFAR is valid". `exc_return = 0xfffffffd` says the frame is on the process stack, the
-thread's own, at `0x2002bfd8`. `continue`, and the console shows the kill:
+The frame holds `r0` to `r3`, `r12`, `lr`, `pc` and `xPSR`: `poke` was called with the cell
+`0x2001f000` and the value `0x2222`, and the stacked `pc` is `poke` itself. `CFSR = 0x82` is two
+bits of its MemManage byte: bit 1, a data access violation, and bit 7, "the address in MMFAR is
+valid". `exc_return = 0xfffffffd` says the frame is on the process stack, the thread's own, at
+`0x20021fc8`. `continue`, and the console shows the kill:
 
 ```
 [domain] A: my region ok; writing domain B (expect fault)
 
 === THREAD FAULT === thread 'domainA' killed, system continues
-  PC=0x130 CFSR=0x82
-  ADDR=0x20029000
+  PC=0x11768 CFSR=0x82
+  ADDR=0x2001f000
 ```
 
 **Why, and the contract:** [Book: Whoever stacks the trap frame owns the bounds check](../book/whoever-stacks-the-trap-frame-owns-the-bounds-check.md),
@@ -721,7 +795,7 @@ mean the same thing, but every stop above changes underneath. The walk is
    and by watching the console.
 2. In Stop 9, rows 0 and 1 were not rewritten. Predict which rows a switch from `domainA` back to
    `main` rewrites. Check with
-   `break kickos_arm_mpu_program if img->rbar[2] == 0x20026000` and `p/x g_mpu_held[0]` before
+   `break kickos_arm_mpu_program if img->rbar[2] == 0x2001c000` and `p/x g_mpu_held[0]` before
    and after `finish`.
 3. Predict what happens if `main` writes into the block it reserved, without a self-grant.
    Which function reports it, and what does `MMFAR` hold? Add the write to a copy of the app and

@@ -22,7 +22,7 @@
 # <judge> is the script, then `;<arg>` for each argument its kickos_app_judge ARGS pass it, and
 # `;@<fitting>` for each bench fitting the rig declares on the board; none declares none.
 # Every judge an app CMake or a gate fragment names must have a passing row, and every app a
-# board directory builds names a judge, is human-judged or sits on WAIVED. With --listing, every
+# board directory builds names a judge or sits on WAIVED. With --listing, every
 # (judge, arguments) pair one build's image listing names must have a row.
 # A passing judge names each verdict clause a capture does not carry as `NOT EVALUATED: <clause>`,
 # and each (judge, arguments) pair's fixture must print exactly the clauses OWED declares for it.
@@ -322,34 +322,35 @@ tests/integration/check_inprstorm.sh|inprstorm.capture||no-fifo|after|rerouting 
 tests/integration/check_inprstorm.sh|inprstorm.capture||heartbeat-1|drop|[inprstorm] heartbeat |
 tests/integration/check_inprstorm.sh|inprstorm.capture||heartbeat-2|drop|[inprstorm] heartbeat 7||drop|[inprstorm] heartbeat 8|
 tests/integration/check_inprstorm.sh|inprstorm.capture||panic|after|rerouting INPR|KERNEL PANIC: planted
-tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000;0x40878000|ampping-c6.capture||load|drop|load:0x40833000|
-tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000;0x40878000|ampping-c6.capture||load|swap|load:0x40833000|load:0x4083d000
-tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000;0x40878000|ampping-c6.capture||load|drop|load:0x40800000|
-tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000;0x40878000|ampping-c6.capture||lp-rtc|drop|# c6amp: LP RTC|
-tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000;0x40878000|ampping-c6.capture||vectors|swap|vectors=0x40833901|vectors=0x40833900
-tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000;0x40878000|ampping-c6.capture||vectors|swap|vectors=0x40833901|vectors=0x40878901
-tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000;0x40878000|ampping-c6.capture||vectors|swap|self clk=160000000|self clk=120000000
-tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000;0x40878000|ampping-c6.capture||vectors|swap|self clk=160000000|self clk=40000000
-tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000;0x40878000|ampping-c6.capture||vectors|swap|self clk=160000000|self clk=80000000
-tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000;0x40878000|ampping-c6.capture||vectors|swap|self clk=160000000|self clk=1600000000
-tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000;0x40878000|ampping-c6.capture||alive|swap|2 of 2 node app(s)|1 of 2 node app(s)
-tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000;0x40878000|ampping-c6.capture||relay|drop|ampping: node 1 serves port 3|
-tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000;0x40878000|ampping-c6.capture||relay|swap|ampping: node 1 serves|ampping: nodampping: node 1 serves
-tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000;0x40878000|ampping-c6.capture||gate|swap|and 0x0 from node 0's timg0|and 0x5a3c from node 0's timg0
-tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000;0x40878000|ampping-c6.capture||memory|drop|ampping: gate: node 1 stored|
-tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000;0x40878000|ampping-c6.capture||memory|swap|and loaded 0x0;|and loaded 0xbadc0de5;
-tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000;0x40878000|ampping-c6.capture||memory|swap|node 0 reads 0x600df00d there|node 0 reads 0xbadc0de5 there
-tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000;0x40878000|ampping-c6.capture||memory|swap|to 0x408163b8,|to 0x408163bc,
-tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000;0x40878000|ampping-c6.capture||memory|swap|to 0x408163b8,|to 0x40850000,|swap|word at 0x408163b8|word at 0x40850000
-tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000;0x40878000|ampping-c6.capture||memory|swap|to 0x408163b8,|to 0x40833000,|swap|word at 0x408163b8|word at 0x40833000
-tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000;0x40878000|ampping-c6-top.capture||memory|swap|to 0x40832ffc,|to 0x40833000,|swap|word at 0x40832ffc|word at 0x40833000
-tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000;0x40878000|ampping-c6.capture||call|drop|ampping: node 0 calls node 1 port 3|
-tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000;0x40878000|ampping-c6.capture||round|drop|  ping 3 -> pong 4|
-tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000;0x40878000|ampping-c6.capture||served|swap|its own record says 4|its own record says 3
-tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000;0x40878000|ampping-c6.capture||done|drop|ampping: node 0 done|
-tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000;0x40878000|ampping-c6.capture||panic|after|ampping: node 0 done|KERNEL PANIC: planted
-tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000;0x40878000|ampping-c6.capture||panic|after|ampping: node 0 done|=== RISC-V TRAP ===
-tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000;0x40878000|ampping-c6.capture||fault|after|ampping: node 0 done|=== THREAD FAULT === thread 'ampping' killed, system continues
+tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000|ampping-c6.capture||load|drop|load:0x40833000|
+tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000|ampping-c6.capture||load|swap|load:0x40833000|load:0x4083d000
+tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000|ampping-c6.capture||load|drop|load:0x40800000|
+tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000|ampping-c6.capture||lp-rtc|drop|# c6amp: LP RTC|
+tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000|ampping-c6.capture||clock|drop|ampping: gate: node 0 runs at|
+tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000|ampping-c6.capture||clock|swap|node 0 runs at 160000000 Hz|node 0 runs at 120000000 Hz
+tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000|ampping-c6.capture||clock|swap|node 0 runs at 160000000 Hz|node 0 runs at 40000000 Hz
+tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000|ampping-c6.capture||clock|swap|node 0 runs at 160000000 Hz|node 0 runs at 80000000 Hz
+tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000|ampping-c6.capture||clock|swap|node 0 runs at 160000000 Hz|node 0 runs at 1600000000 Hz
+tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000|ampping-c6.capture||clock|swap|node 1 at 20000000 Hz|node 1 at 16000000 Hz
+tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000|ampping-c6.capture||clock|swap|node 1 at 20000000 Hz|node 1 at 0 Hz
+tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000|ampping-c6.capture||alive|swap|2 of 2 node app(s)|1 of 2 node app(s)
+tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000|ampping-c6.capture||relay|drop|ampping: node 1 serves port 3|
+tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000|ampping-c6.capture||relay|swap|ampping: node 1 serves|ampping: nodampping: node 1 serves
+tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000|ampping-c6.capture||gate|swap|and 0x0 from node 0's timg0|and 0x5a3c from node 0's timg0
+tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000|ampping-c6.capture||memory|drop|ampping: gate: node 1 stored|
+tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000|ampping-c6.capture||memory|swap|and loaded 0x0;|and loaded 0xbadc0de5;
+tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000|ampping-c6.capture||memory|swap|node 0 reads 0x600df00d there|node 0 reads 0xbadc0de5 there
+tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000|ampping-c6.capture||memory|swap|to 0x408163b8,|to 0x408163bc,
+tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000|ampping-c6.capture||memory|swap|to 0x408163b8,|to 0x40850000,|swap|word at 0x408163b8|word at 0x40850000
+tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000|ampping-c6.capture||memory|swap|to 0x408163b8,|to 0x40833000,|swap|word at 0x408163b8|word at 0x40833000
+tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000|ampping-c6-top.capture||memory|swap|to 0x40832ffc,|to 0x40833000,|swap|word at 0x40832ffc|word at 0x40833000
+tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000|ampping-c6.capture||call|drop|ampping: node 0 calls node 1 port 3|
+tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000|ampping-c6.capture||round|drop|  ping 3 -> pong 4|
+tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000|ampping-c6.capture||served|swap|its own record says 4|its own record says 3
+tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000|ampping-c6.capture||done|drop|ampping: node 0 done|
+tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000|ampping-c6.capture||panic|after|ampping: node 0 done|KERNEL PANIC: planted
+tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000|ampping-c6.capture||panic|after|ampping: node 0 done|=== RISC-V TRAP ===
+tests/integration/check_c6_amp_capture.sh;0x40800000;0x40833000|ampping-c6.capture||fault|after|ampping: node 0 done|=== THREAD FAULT === thread 'ampping' killed, system continues
 tests/integration/check_pizero_amp_gate.sh|ampping-pizero.capture||readback|drop|# accessctrl: 0xa0|
 tests/integration/check_pizero_amp_gate.sh|ampping-pizero.capture||readback|swap|# accessctrl: 0xa0 = 0x9c|# accessctrl: 0xa0 = 0xbc
 tests/integration/check_pizero_amp_gate.sh|ampping-pizero.capture||banners|after|# accessctrl: 0xa0|   KickOS 0.5.1  -  microkernel RTOS
@@ -687,18 +688,22 @@ tests/integration/check_usbcdcwit.sh|usbcdcwit.capture||verdict|drop|[usbcdcwit]
 tests/integration/check_usbcdcwit.sh|usbcdcwit.capture||panic|after|[usbcdcwit] PASS|KERNEL PANIC: planted
 tests/integration/check_reclaimwit.sh;park|reclaimwit.capture||key|drop|HOW TO READ THIS CAPTURE|
 tests/integration/check_reclaimwit.sh;park|reclaimwit.capture||key|drop|both absent ==|
-tests/integration/check_reclaimwit.sh;park|reclaimwit.capture||arm|after|park arm:|[reclaimwit] DRAINTAIL 0123456789abcdef0123456789abcdef <<<DRAIN-END>>>
+tests/integration/check_reclaimwit.sh;park|reclaimwit.capture||arm|after|park arm:|[reclaimwit] drain arm: kickos_terminate follows the LIVE record, written
 tests/integration/check_reclaimwit.sh;park|reclaimwit.capture||mute|after| 4. the app then|[reclaimwit] MUTE kernel console while the driver holds it
-tests/integration/check_reclaimwit.sh;park|reclaimwit.capture||sink|after|handle_close rc=0|[reclaimwit] routed through the driver, which discards it
-tests/integration/check_reclaimwit.sh;park|reclaimwit.capture||live|drop|LIVE kernel console after|
-tests/integration/check_reclaimwit.sh;park|reclaimwit.capture||live|after|LIVE kernel console after|[reclaimwit] LIVE kernel console after the driver died
-tests/integration/check_reclaimwit.sh;park|reclaimwit.capture||verdict|drop|PASS reclaim fired|
+tests/integration/check_reclaimwit.sh;park|reclaimwit.capture||mute|after|park arm:|[reclaimwit] MUTE kernel console after the driver died
+tests/integration/check_reclaimwit.sh;park|reclaimwit.capture||sink|after|park arm:|[reclaimwit] routed through the driver, which discards it
+tests/integration/check_reclaimwit.sh;park|reclaimwit.capture||reclaimed|drop|kernel: console driver task ended|
+tests/integration/check_reclaimwit.sh;park|reclaimwit.capture||reclaimed|after|kernel: console driver task ended|kernel: console driver task ended, console reclaimed
+tests/integration/check_reclaimwit.sh;park|reclaimwit.capture||live|drop|  [reclaimwit] LIVE |
+tests/integration/check_reclaimwit.sh;park|reclaimwit.capture||live|after|  [reclaimwit] LIVE |  [reclaimwit] LIVE PASS reclaim fired
+tests/integration/check_reclaimwit.sh;park|reclaimwit.capture||verdict|swap|LIVE PASS reclaim fired|LIVE FAIL 0 58 0 -111
 tests/integration/check_reclaimwit.sh;park|reclaimwit.capture||panic|after|park arm:|KERNEL PANIC: planted
-tests/integration/check_reclaimwit.sh;drain|reclaimwit-drain.capture||arm|after|drain arm:|[reclaimwit] park arm: nothing further is printed, then main returns its verdict
+tests/integration/check_reclaimwit.sh;drain|reclaimwit-drain.capture||arm|after|drain arm:|[reclaimwit] park arm: the LIVE record is the last line of the app
 tests/integration/check_reclaimwit.sh;drain|reclaimwit-drain.capture||drain-tail|swap|<<<DRAIN-END>>>|<<<DRAIN-
-tests/integration/check_reclaimwit.sh;drain|reclaimwit-drain.capture||live|drop|LIVE kernel console after|
-tests/integration/check_reclaimwit.sh;drain|reclaimwit-drain.capture||verdict|drop|PASS reclaim fired|
-tests/integration/check_reclaimwit.sh;drain|reclaimwit-drain.capture||panic|after|DRAINTAIL|KERNEL PANIC: planted
+tests/integration/check_reclaimwit.sh;drain|reclaimwit-drain.capture||reclaimed|drop|kernel: console driver task ended|
+tests/integration/check_reclaimwit.sh;drain|reclaimwit-drain.capture||live|drop|  [reclaimwit] LIVE |
+tests/integration/check_reclaimwit.sh;drain|reclaimwit-drain.capture||verdict|swap|LIVE PASS 0123456789abcdef <<<DRAIN-END>>>|LIVE FAIL 0 58 0 -111
+tests/integration/check_reclaimwit.sh;drain|reclaimwit-drain.capture||panic|after|record's last line|KERNEL PANIC: planted
 tests/integration/check_mpu_fault.sh;thread-kill|mpu_fault.capture||error|after|A: writing my own region|[domain] ERROR: planted
 tests/integration/check_mpu_fault.sh;thread-kill|mpu_fault.capture||confined|after|A: my region ok|[domain] cross-domain write completed
 tests/integration/check_mpu_fault.sh;thread-kill|mpu_fault.capture||control|drop|A: my region ok|
@@ -1094,11 +1099,11 @@ tests/integration/check_reboot.sh;reset|rebootdemo-reset.capture||decline|swap|r
 tests/integration/check_reboot.sh;reset|rebootdemo-reset.capture||decline|last-swap|rc=-38|rc=-5
 tests/integration/check_reboot.sh;reset|rebootdemo-reset.capture||reset|after|[rebootdemo] reboot declined: rc=-38|[rebootdemo] reset declined: rc=-38
 tests/integration/check_reboot.sh;reset|rebootdemo-reset.capture||order|order|[rebootdemo] handing the chip to its bootloader in 3s|[rebootdemo] reboot declined: rc=-38
-tests/integration/check_reboot.sh;reset|rebootdemo-reset.capture||second-boot|cut|   KickOS 0.5.1  -  microkernel RTOS||cut|   KickOS 0.5.1  -  microkernel RTOS|
-tests/integration/check_reboot.sh;reset|rebootdemo-reset.capture||second-boot|cut|   KickOS 0.5.1  -  microkernel RTOS||last-drop|   KickOS 0.5.1  -  microkernel RTOS|
+tests/integration/check_reboot.sh;reset|rebootdemo-reset.capture||second-boot|cut|KickOS unknown||cut|KickOS 0.5.1|
+tests/integration/check_reboot.sh;reset|rebootdemo-reset.capture||second-boot|cut|KickOS unknown||last-drop|KickOS 0.5.1|
 tests/integration/check_reboot.sh;reset|rebootdemo-reset.capture||same-image|last-swap|commit  70a1a9b4|commit  70a1a9b5
 tests/integration/check_reboot.sh;reset|rebootdemo-reset.capture||same-image|drop|   commit  |
-tests/integration/check_reboot.sh;reset|rebootdemo-reset.capture||no-banner|drop|   KickOS 0.5.1  -  microkernel RTOS|
+tests/integration/check_reboot.sh;reset|rebootdemo-reset.capture||no-banner|drop|KickOS 0.||drop|KickOS unknown|
 tests/integration/check_reboot.sh;reset|rebootdemo-reset-truncated.capture||same-image|last-swap|2026-11-05 13:24:|2026-11-04 13:24:44 +0100
 tests/integration/check_reboot.sh;reset|rebootdemo-reset-cutline-truncated.capture||same-image|last-swap|commit  70a1a9b4|commit  70a1a9b5
 tests/integration/check_reboot.sh;bootloader|rebootdemo-bootloader.capture|KICKOS_BOARD:STRING=picopi|announce|drop|[rebootdemo] KickOS reboot-to-bootloader demo|
@@ -1125,6 +1130,7 @@ tests/integration/check_reboot.sh;refused|rebootdemo-refused.capture||countdown|
 tests/integration/check_reboot.sh;refused|rebootdemo-refused.capture||decline|drop|reboot declined: rc=-1|
 tests/integration/check_reboot.sh;refused|rebootdemo-refused.capture||decline|swap|reboot declined: rc=-1|reboot declined: rc=-38
 tests/integration/check_reboot.sh;refused|rebootdemo-refused.capture||reset|drop|reset declined: rc=-1|
+tests/integration/check_reboot.sh;refused|rebootdemo-refused.capture||no-banner|swap|KickOS 0.5.1|KickOS
 tests/integration/check_reboot.sh;refused|rebootdemo-refused.capture||reboot|after|reset declined: rc=-1|   KickOS 0.5.1  -  microkernel RTOS
 tests/integration/check_reboot.sh;refused|rebootdemo-refused.capture||panic|after|reset declined: rc=-1|KERNEL PANIC: planted
 tests/integration/check_reboot.sh;refused|rebootdemo-refused.capture||fault|after|[rebootdemo] handing the chip to its bootloader in 3s|=== THREAD FAULT === thread 'main' killed, system continues"
@@ -1188,7 +1194,7 @@ tests/integration/check_userbench.sh|the bench ended
 tests/integration/check_userbench.sh;flash|the bench ended
 tests/integration/check_qemu_cxxterm.sh|terminate stopped the image
 tests/integration/check_qemu_cxxterm.sh;--worker|the creator ended the system cleanly
-tests/integration/check_reclaimwit.sh;drain|the drain arm shut the system down with status 0
+tests/integration/check_reclaimwit.sh;drain|the drain arm shut the system down with main's panic status, 134
 tests/integration/check_reboot.sh;refused|the app shut down cleanly with status 0
 tests/integration/check_rootfault.sh;thread-kill|main's fault ended the system with KOS_EXIT_FAULT (139)
 tests/integration/check_slaypeer.sh|the system exited 0 once main returned past PASS
@@ -1204,7 +1210,7 @@ if [ "${1:-}" = --listing ]; then
     pairs=0
     while IFS='|' read -r image _stdout judge args _window; do
         case "$judge" in
-            tests/integration/check_tap_stream.sh | - | emulator | emulator-owed | human | inapplicable | "") continue ;;
+            tests/integration/check_tap_stream.sh | - | emulator | emulator-owed | inapplicable | "") continue ;;
             *) ;;
         esac
         key="$judge"
@@ -1523,13 +1529,13 @@ BOARD_APPS="$(git ls-files 'user/apps/*/*/CMakeLists.txt' | grep -v '^user/apps/
 for f in $BOARD_APPS; do
     app="${f#user/apps/}"
     app="${app%/CMakeLists.txt}"
-    if grep -qE '^ *kickos_(app_judge|human_judged)\(' "$f"; then
+    if grep -qE '^ *kickos_app_judge\(' "$f"; then
         continue
     fi
     if printf '%s\n' "$WAIVED" | grep -qxF -- "$app"; then
         continue
     fi
-    bad "$app names no judge (kickos_app_judge), is not human-judged (kickos_human_judged) and is not on WAIVED"
+    bad "$app names no judge (kickos_app_judge) and is not on WAIVED"
 done
 
 [ "$rc" -eq 0 ] || exit 1

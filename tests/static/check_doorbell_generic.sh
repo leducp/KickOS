@@ -112,10 +112,16 @@ ctl_dead_reader "$(body_calls "$TMP/ctl_clean" a_symbol_no_listing_carries)" \
 
 image_listing "$elf" "$nm" "$objdump" "$SYM_FLOOR" --no-show-raw-insn
 
-# The branch targets of a body the image defines, into $TMP/targets.
+# The branch targets of a body the image defines, into $TMP/targets. lx6 bodies are read as
+# their reachable instructions (gate.sh image_reach).
 targets() { # <symbol>
     image_body "$1" "$elf"
-    rec="$(body_calls "$TMP/dis" "$1")"
+    _t_list="$TMP/dis"
+    if [ "$arch" = lx6 ]; then
+        image_reach "$objdump" "$elf" "$1" --no-show-raw-insn
+        _t_list="$TMP/reach"
+    fi
+    rec="$(body_calls "$_t_list" "$1")"
     case "$rec" in
         NOSYM) fail "'$1' is a sized symbol in $elf but the disassembly carries no body for it" ;;
         NOINSN) fail "the body of '$1' in $elf disassembles to no instruction at all" ;;

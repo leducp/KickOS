@@ -158,6 +158,7 @@ namespace kickos
 
 extern "C"
 {
+    void arch_irq_window(void) {}
     void arch_aspace_activate(struct arch_aspace*) {}
     struct arch_aspace* arch_aspace_boot(void) { return nullptr; }
     void* kmemcpy(void* dst, void const* src, size_t n)

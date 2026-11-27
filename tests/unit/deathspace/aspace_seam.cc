@@ -124,6 +124,8 @@ namespace kickos
 
 extern "C"
 {
+    void arch_irq_window(void) {}
+
     // kernel/mem/aspace.cc writes a core's root only when its own record of that core differs.
     void arch_aspace_activate(struct arch_aspace* space)
     {

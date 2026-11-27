@@ -235,13 +235,12 @@ enum kos_syscall_nr
     KOS_SYS_KCONSOLE_WRITE = 1, // (buf, len, flags)     -> bytes written, WHICH CAN BE SHORT
                                 //   where the console took part or a page went away
                                 //   mid-stream, or with no input byte completed -KOS_EFAULT
-                                //   (bad buffer), -KOS_EBUSY (the caller's stdout takes it
-                                //   now), -KOS_ECANCELED (cancelled while waiting), -KOS_EINVAL
-                                //   (a flag other than KOS_KCONSOLE_NOWAIT) or, with
-                                //   KOS_KCONSOLE_NOWAIT, -KOS_EAGAIN where it would have
-                                //   to wait. Waits, with no
-                                //   bound, for room in the console and while a dead console
-                                //   driver's task awaits its reclaim
+                                //   (bad buffer), -KOS_EBUSY (a console was published, or a
+                                //   panic took the device), -KOS_ECANCELED (cancelled while
+                                //   waiting), -KOS_EINVAL (a flag other than
+                                //   KOS_KCONSOLE_NOWAIT) or, with KOS_KCONSOLE_NOWAIT,
+                                //   -KOS_EAGAIN where it would have to wait. Waits, with no
+                                //   bound, for room in the console
     KOS_SYS_YIELD = 2,          // ()                    -> 0
     KOS_SYS_SLEEP = 3,          // (limit lo, limit hi, enum kos_limit_kind) -> 0, or -KOS_EINVAL
                                 //   (an unknown kind). Yields for a passed deadline or a
@@ -293,7 +292,6 @@ enum kos_syscall_nr
                                 //   notification the caller is bound to
     KOS_SYS_IRQ_ACK = 16,       // (irq_cap) -> 0, or -KOS_EBADF / -KOS_EACCES (cap lacks WAIT)
                                 //   / -KOS_EINVAL (the line signals no notification)
-    KOS_SYS_DIAG_LED_SET = 19,  // (on)                  -> 0 (kernel diagnostic LED)
     KOS_SYS_CPU_CLOCK_HZ = 22,  // ()  -> running core clock in Hz (u64), 0 if unknown (NO KOS_E*).
                                 //   On x86_64 the timestamp counter's rate, the one the kernel's
                                 //   clock and kos_monotonic_now scale by
@@ -366,8 +364,8 @@ enum kos_syscall_nr
     KOS_SYS_CALL = 46,         // (ep_cap, buf, kos_call_lens_pack(send_len, recv_cap),
                                //   deadline lo, deadline hi) -> reply bytes (>= 0), or -KOS_E*
                                //   (EINVAL/EFAULT/
-                               //   EBADF/EACCES/ENOTSUP, ECONNREFUSED no receiver, and
-                               //   nothing was sent, EPIPE the
+                               //   EBADF/EACCES/ENOTSUP, ECONNREFUSED the endpoint dead
+                               //   for good, and nothing was sent, EPIPE the
                                //   server died holding the request, EMFILE the SERVER's cap
                                //   table has no slot for the reply cap, EAGAIN KOS_POLL and
                                //   nothing was sent, ETIMEDOUT no reply came in time).
@@ -386,14 +384,13 @@ enum kos_syscall_nr
                                //   or -KOS_E*:
                                //   EINVAL (len above KOS_EP_MSG_MAX, rejected and never
                                //   clamped), EFAULT (bad buffer), EBADF/EACCES (bad cap / no
-                               //   SIGNAL right), ECONNREFUSED (no receiver, at once or on
-                               //   waking when the last receiver leaves), EAGAIN (KOS_POLL
-                               //   wherever the send would wait); nothing sent. ETIMEDOUT
-                               //   where any other deadline passed with no receiver or no slot
-                               //   of a far endpoint's full peer ring, at once for a passed
-                               //   one, which never parks.
-                               //   KOS_LIMIT_NONE parks indefinitely, and on the published
-                               //   console while its task lives, receiver or not.
+                               //   SIGNAL right), ECONNREFUSED (the endpoint dead for good,
+                               //   no WAIT or HANDOUT holder left, at once or on waking when
+                               //   it dies), EAGAIN (KOS_POLL wherever the send would wait,
+                               //   which a far send always does); nothing sent. ETIMEDOUT
+                               //   where any other deadline passed with no receiver taking it,
+                               //   at once for a passed one, which never parks.
+                               //   KOS_LIMIT_NONE parks until a receiver takes it.
                                //   EFAULT also answers a
                                //   rendezvous copy refused at either end, and the receiver's
                                //   info refused after the payload landed, the message lost
@@ -480,7 +477,8 @@ enum kos_syscall_nr
                                //   chip does not keep for this write, a value outside its mask,
                                //   or past port 0xffff / a byte), -KOS_ENOSYS (an arch with no
                                //   ports).
-    KOS_SYS_TASK_STATE = 76,   // (kos_task_t, int* status or NULL) -> enum kos_task_state bits,
+    KOS_SYS_TASK_STATE = 76,   // (kos_task_t, KOS_TASK_NONE for the caller's, int* status or
+                               //   NULL) -> enum kos_task_state bits,
                                //   with *status the status the task ended with where ENDED is
                                //   set and status is not NULL, or -KOS_EBADF (stale task),
                                //   -KOS_EPERM (not the creator), -KOS_EINVAL / -KOS_EFAULT
@@ -633,13 +631,14 @@ enum kos_cancel
 // names a core.
 #define KOS_AFFINITY_QUERY 0x80000000u
 
-// What KOS_SYS_TASK_STATE answers for the task a handle names.
+// What KOS_SYS_TASK_STATE answers for the task a handle names, or for the caller's own.
 enum kos_task_state
 {
-    KOS_TASK_LIVE = 1 << 0,  // it has members
-    KOS_TASK_READY = 1 << 1, // a member has waited on its ready endpoint since it last emptied
-    KOS_TASK_DEAD = 1 << 2,  // it is empty and every member's teardown is done: its death
-    KOS_TASK_ENDED = 1 << 3  // its status is set and it takes no member; set by its death too
+    KOS_TASK_LIVE = 1 << 0,    // it has members
+    KOS_TASK_READY = 1 << 1,   // a member has waited on its ready endpoint since it last emptied
+    KOS_TASK_DEAD = 1 << 2,    // it is empty and every member's teardown is done: its death
+    KOS_TASK_ENDED = 1 << 3,   // its status is set and it takes no member; set by its death too
+    KOS_TASK_ORPHANED = 1 << 4 // no creator holds it: the thread that created it died, or none did
 };
 
 // KOS_SYS_WATCH's spec: the kind in bits 31-24, flags in 23-16 (none defined, each refused),
@@ -662,7 +661,8 @@ enum kos_mem_count_id
 {
     KOS_MEM_FRAMES_FREE = 0, // frames free in the pool, machine-wide
     KOS_MEM_SPACES_HELD = 1, // address spaces alive, machine-wide
-    KOS_MEM_RANGES_FREE = 2  // free range slots in the caller's own task's space
+    KOS_MEM_RANGES_FREE = 2, // free range slots in the caller's own task's space
+    KOS_MEM_TABLES_HELD = 3  // pool frames held as translation tables, machine-wide
 };
 
 // What KOS_SYS_AMP_COUNT reads: one of a node's window counts, as that node last wrote it.
@@ -688,12 +688,11 @@ enum kos_amp_count_id
    by it, so a second spelling would size that band against a ring the window does not have. */
 #define KOS_AMP_RING_SLOTS 4
 
-/* The window layer's own two ports, which every node mints and no node binds. Every OTHER
-   port is the partition's: CONFIG_KICKOS_AMP_PORTS names which node serves which, and
-   <kickos/amp.h> is how an app names the capability it was handed for one. */
+/* The window layer's own port, which every node mints and no node binds. Every OTHER port is
+   the partition's: CONFIG_KICKOS_AMP_PORTS names which node serves which, and <kickos/amp.h> is
+   how an app names the capability it was handed for one. */
 enum
 {
-    KOS_AMP_PORT_ECHO = 0, /* the payload comes back to the sender's reply port */
     KOS_AMP_PORT_REPLY = 1 /* a reply, routed to whatever local caller its tag names */
 };
 
@@ -947,7 +946,7 @@ struct kos_thread_params
     void* arg;
     char const* name;
     uint8_t prio;
-    uint8_t policy;      // enum kos_policy
+    uint8_t policy;      // enum kos_policy; any other value: -KOS_EINVAL
     uint8_t cap_count;   // number of entries in caps[]; under default placement they land
                          // at child indices 1..cap_count.
                          // Above KICKOS_MAX_SPAWN_GRANTS: -KOS_EINVAL. That bound is the

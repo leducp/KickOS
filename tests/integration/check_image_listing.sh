@@ -65,12 +65,12 @@ read_listing() {
                     return 1
                 fi
                 ;;
-            human | inapplicable)
+            inapplicable)
                 if [ -z "$_args" ]; then
                     echo "$_image is marked $_judge and says nothing of why"
                     return 1
                 fi
-                if [ "$_judge" = inapplicable ] && [ -n "$_run" ]; then
+                if [ -n "$_run" ]; then
                     echo "$_image is marked inapplicable and $_run runs it"
                     return 1
                 fi
@@ -91,7 +91,6 @@ if [ "${1:-}" = --self-test ]; then
     src="$(cd "$(dirname "$0")/../.." && pwd)"
     good='hello|kernel|tests/integration/check_qemu_hello.sh||-
 stackdepth0|kernel|emulator-owed||-
-blink|kernel|human|LED|-
 rootfault|kernel|inapplicable|memory not enforced|-
 fault|kernel|tests/integration/check_fault_dump.sh|THREAD FAULT|-
 userbench|kernel|tests/integration/check_userbench.sh||60
@@ -146,7 +145,6 @@ STUB
         'no count of seconds'
     refused window-word 'hello_c|kernel|tests/integration/check_qemu_hello.sh||1m' \
         'no count of seconds'
-    refused human-silent 'blink2|kernel|human||-' 'says nothing of why'
     refused void-silent 'mpu_fault|kernel|inapplicable||-' 'says nothing of why'
     refused directory 'stress|kernel|tests/integration||-' 'no gate script'
     refused missing-script 'stress|kernel|tests/integration/check_nothing.sh||-' \

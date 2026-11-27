@@ -233,7 +233,6 @@ namespace
 
     // Kept from REE0: the kernel-owned HP blocks of platform/esp32c6/chip.yaml and HP SRAM.
     Block const KERNEL_BLOCKS[] = {
-        {"RMT", mmap::RMT_BASE, mmap::RMT_SIZE},
         {"INTMTX", mmap::INTMTX_BASE, mmap::INTMTX_SIZE},
         {"IO_MUX", mmap::IO_MUX_BASE, mmap::IO_MUX_SIZE},
         {"GPIO_MATRIX", mmap::GPIO_MATRIX_BASE, mmap::GPIO_MATRIX_SIZE},

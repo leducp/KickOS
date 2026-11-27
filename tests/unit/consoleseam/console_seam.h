@@ -41,6 +41,8 @@ namespace consoleseam
     // The largest number of bytes pushed inside ONE contiguous masked span. With IRQs off,
     // every push costs a byte time at the line rate.
     uint32_t max_masked_pushes();
+    // Forgets the spans so far, the reclaim's own lines included.
+    void reset_masked_pushes();
 
     // Times the mask fell to zero while a producer was running (the drain windows).
     uint32_t gap_count();
@@ -105,11 +107,9 @@ namespace consoleseam
     extern bool g_window_free;
     // What task_serves_console answers.
     extern bool g_serves_console;
-    // arch_console_reclaim calls, and console_dark_wake calls.
+    // arch_console_reclaim calls, and console_wake calls.
     extern uint32_t g_reclaims;
-    extern uint32_t g_dark_wakes;
-    // Run in place of the dark window's park where set: what the writer's wait answers.
-    extern int (*g_dark_wait)(void);
+    extern uint32_t g_wakes;
     // Run once by the next arch_console_flush_sync, the first step of a reclaim: what another
     // core does while this one reclaims.
     extern void (*g_flush_hook)(void);

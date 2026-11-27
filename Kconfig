@@ -337,27 +337,6 @@ config KICKOS_AMP_TEXT_SHARE
 	  the three facts above describe.
 	  genconfig.py refuses this stated without KICKOS_AMP_TEXT_BASE beside it.
 
-config KICKOS_AMP_DIAG_REPORT
-	int "A peer node reports its own boot state into the shared region (0/1)"
-	depends on KICKOS_AMP_POSTURE_OWN_IMAGE
-	range 0 1
-	default 0
-	help
-	  A diagnostic for a peer that drives no console: it writes five words into the
-	  region every node already shares and the primary prints them. Three of the five are
-	  values the primary already knows, which is what tells a real report from an
-	  artefact. Costs the primary a bounded spin at boot, and places a 20-byte object
-	  LAST in the shared region so nothing above it moves when this is turned on.
-
-config KICKOS_AMP_DIAG_TAG
-	int "A number of this build's own for a node to report back"
-	depends on KICKOS_AMP_DIAG_REPORT != 0
-	default 0
-	help
-	  Reported back verbatim in the third cell. State a different one per image when
-	  comparing several peer builds against one primary; a report carrying the wrong
-	  tag is stale.
-
 config KICKOS_AMP_PARTITION_CORES
 	int "Machine cores the AMP partition spans"
 	depends on KICKOS_AMP_POSTURE_OWN_IMAGE
@@ -391,8 +370,6 @@ config KICKOS_AMP_PORTS
 	  genconfig.py refuses a malformed entry, a node the partition does not hold,
 	  a port outside the mint's 32-bit width, a repeated crossing, and port 1, which
 	  is the port every reply travels on and which no node can therefore serve.
-	  PORT 0 IS NOT REFUSED: it is the window layer's echo, answered with no thread
-	  involved, so naming it for a PEER is legal and an in-tree partition does it.
 
 config KICKOS_AMP_CONSOLES
 	string "The UART each node's kernel drives, one per node: /dev/uartN or none"
@@ -1111,27 +1088,5 @@ config KICKOS_PANIC_DUMP
 	  Off keeps the fault banner and drops the register dump under it. Five
 	  tests read a named register out of that dump and fail by name when it is
 	  missing, so a board turning this off de-registers nothing and reports.
-
-config KICKOS_KSTACK_REPORT
-	int
-	default 1 if BOARD_QEMU_RISCV
-	default 1 if BOARD_QEMU
-	default 1 if BOARD_QEMU_M3
-	default 1 if BOARD_QEMU_M33
-	default 1 if BOARD_QEMU_M7
-	default 1 if BOARD_MICROBIT
-	default 0
-	range 0 1
-	help
-	  Whether kpanic prints the kernel block's high-water line. One reader,
-	  tests/integration/check_stackdepth.sh, which boots the two stackdepth images
-	  on the boards defaulted to 1 above and divides the two numbers the line
-	  carries; that gate registers on the same condition. Everywhere else the line
-	  only lengthens a capture every panic on every board already prints, so the
-	  default is off and a board that wants the figure joins the list above. Inert
-	  where KICKOS_KERNEL_STACKS is 0, there being no block to measure.
-
-	  Unprompted, like KICKOS_KERNEL_STACKS: it is a property of the board rather
-	  than a posture a build line selects.
 
 endmenu

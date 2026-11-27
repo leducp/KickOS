@@ -56,10 +56,6 @@ namespace
     using kickos::Atomic;
     using kickos::Order;
 
-    // console_emit's answer in the dark window, kept inside kconsole_write_user, so it is outside
-    // the -KOS_E* range.
-    constexpr int CONSOLE_DARK = -1000;
-
     // Who owns the UART TX register: in USER_OWNED the kernel touches the device on no path.
     // No path restores KERNEL_OWNED, only a publish leaves RECLAIMED, and nothing leaves
     // PANICKED.
@@ -169,7 +165,7 @@ namespace
         if (line().waiting)
         {
             line().waiting = false;
-            kickos::console_dark_wake(held);
+            kickos::console_wake(held);
         }
     }
 
@@ -281,8 +277,7 @@ namespace
         KERNEL_OWNED,
         RECLAIMED,
         PANICKED, // no publish can follow, so the writer is not counted
-        SERVED,   // the writer's own stdout send would be taken now
-        OWED,     // the console is dark: the writer waits it out
+        REFUSED,  // a user write once the kernel console is no longer the users'
         DROPPED
     };
 
@@ -298,6 +293,10 @@ namespace
     {
         kickos::IrqLock lock;
         ConsoleState const state = g_console_state;
+        if ((flags & WRITE_USER) != 0 and state != ConsoleState::KERNEL_OWNED)
+        {
+            return ChipEntry::REFUSED;
+        }
         if (state == ConsoleState::PANICKED)
         {
             return ChipEntry::PANICKED;
@@ -308,17 +307,6 @@ namespace
             {
                 (void)console_held_append(held_key(), buf, static_cast<uint32_t>(n),
                                           KDIAG_FAULT_RECORD_MAX);
-            }
-            if ((flags & WRITE_USER) != 0)
-            {
-                if (kickos::cap_console_serves(kickos::sched::current()))
-                {
-                    return ChipEntry::SERVED;
-                }
-                if (g_console_driver_died)
-                {
-                    return ChipEntry::OWED;
-                }
             }
             return ChipEntry::DROPPED;
         }
@@ -375,12 +363,11 @@ extern "C" void console_owner_set_user(void)
         return;
     }
     g_console_state = ConsoleState::USER_OWNED;
+    kickos::console_wake(lock);
     if (g_console_driver_died)
     {
-        console_on_driver_death(lock);
-        return;
+        console_on_driver_death();
     }
-    kickos::console_dark_wake(lock);
 }
 
 // Every access to the chip-writer count, mutators and reader alike, MUST run under IrqLock:
@@ -394,7 +381,7 @@ extern "C" void console_chip_writer_leave(void)
     g_chip_writers = g_chip_writers - 1;
     if (g_chip_writers == 0 and g_publisher != nullptr)
     {
-        kickos::console_dark_wake(lock);
+        kickos::console_wake(lock);
     }
 }
 
@@ -426,12 +413,21 @@ static void console_flush_then_reclaim(void)
     console_held_flush_sync();
 }
 
-extern "C" int console_dark(void)
+// The kernel's own line on its console driver's death, after the records the reclaim wrote.
+static void console_reclaimed_line(void)
 {
-    return static_cast<int>(g_console_driver_died and published(g_console_state));
+    constexpr size_t n = sizeof(kickos::diag::kConsoleReclaimed) - 1u;
+    (void)n;
+#if KICKOS_CONSOLE_CHIP
+    console_write_line_sync(kickos::diag::kConsoleReclaimed, n);
+#endif
+#if KICKOS_CONSOLE_RTT
+    kickos::IrqLock lock;
+    kickos_rtt_write(kickos::diag::kConsoleReclaimed, n);
+#endif
 }
 
-void console_on_driver_death(kickos::Held held)
+void console_on_driver_death(void)
 {
     if (not g_console_driver_died or g_console_state == ConsoleState::HANDING_OFF)
     {
@@ -457,13 +453,13 @@ void console_on_driver_death(kickos::Held held)
     }
     g_console_state = ConsoleState::RECLAIMED;
     console_flush_then_reclaim();
-    kickos::console_dark_wake(held);
+    console_reclaimed_line();
 }
 
 extern "C" void console_tx_room_freed(void)
 {
     kickos::IrqLock lock;
-    kickos::console_dark_wake(lock);
+    kickos::console_wake(lock);
 }
 
 // Whether a thread of `t`'s own task holds the console's registers. A window has one holder.
@@ -602,16 +598,15 @@ namespace kickos
     {
         // A panic's lines take no lock: a core may hold it bare and never release it. Lines of
         // two failing cores can then interleave byte by byte.
-        if (g_console_state == ConsoleState::PANICKED)
+        if (g_console_state == ConsoleState::PANICKED and (flags & WRITE_USER) == 0)
         {
             write_line_polled(buf, n);
             return static_cast<int>(n);
         }
         ChipEntry const entry = chip_writer_enter(buf, n, flags);
-        // The dark window: the writer waits it out and offers the same bytes here again.
-        if (entry == ChipEntry::OWED)
+        if (entry == ChipEntry::REFUSED)
         {
-            return CONSOLE_DARK;
+            return -KOS_EBUSY;
         }
         if (entry == ChipEntry::KERNEL_OWNED or entry == ChipEntry::RECLAIMED)
         {
@@ -625,12 +620,6 @@ namespace kickos
         {
             write_line_polled(buf, n);
             return static_cast<int>(n);
-        }
-        // A thread whose send failed before a publish lands here after it: its bytes now
-        // belong on the endpoint, which takes them.
-        if (entry == ChipEntry::SERVED)
-        {
-            return -KOS_EBUSY;
         }
         // The driver owns the UART: reported as taken, since no retry of this route can win. A
         // fault record's line was held for the driver instead.
@@ -702,8 +691,15 @@ namespace kickos
         Thread* const t = sched::current();
         while (true)
         {
+#if !KICKOS_CONSOLE_CHIP
+            // No chip gate refuses here: the state is the whole answer.
+            if (g_console_state != ConsoleState::KERNEL_OWNED)
+            {
+                return -KOS_EBUSY;
+            }
+#endif
             int const took = kconsole_write_impl(buf, n, WRITE_USER | WRITE_OFFERED);
-            if (took != CONSOLE_DARK and (took != 0 or n == 0))
+            if (took != 0 or n == 0)
             {
                 return took;
             }
@@ -711,21 +707,13 @@ namespace kickos
             {
                 return -KOS_EAGAIN;
             }
-            int woke = 0;
-            if (took == CONSOLE_DARK)
+            // A drain this writer's own task can stop never comes.
+            if (console_window_own(t))
             {
-                woke = console_dark_wait();
+                return static_cast<int>(n);
             }
-            else
-            {
-                // A drain this writer's own task can stop never comes.
-                if (console_window_own(t))
-                {
-                    return static_cast<int>(n);
-                }
-                woke = console_room_wait(console_tx_line_needed(buf, n, KICKOS_CONSOLE_CRLF),
-                                         KOS_LIMIT_NONE);
-            }
+            int const woke = console_room_wait(
+                console_tx_line_needed(buf, n, KICKOS_CONSOLE_CRLF), KOS_LIMIT_NONE);
             if (woke < 0)
             {
                 return woke;
@@ -938,7 +926,7 @@ namespace kickos
             g_publisher = nullptr;
             g_console_state = ConsoleState::RECLAIMED;
             console_held_flush_sync();
-            console_dark_wake(lock);
+            console_wake(lock);
         }
     }
 
@@ -959,7 +947,7 @@ namespace kickos
                and grant_ranges_overlap(base, base + size - 1u, w.base, w.base + w.size - 1u);
     }
 
-#if KICKOS_KERNEL_STACKS && KICKOS_KSTACK_REPORT
+#if defined(KICKOS_WITNESS_KSTACK) && KICKOS_WITNESS_KSTACK
     struct UsableText
     {
         char s[12];
@@ -1131,7 +1119,7 @@ extern "C" void kickos_panic_report(char const* msg, char const* file, unsigned 
     kickos::kputs("\nKERNEL PANIC: ");
     kickos::kputs(msg);
     kickos::kputs("\n");
-#if KICKOS_KERNEL_STACKS && KICKOS_KSTACK_REPORT
+#if defined(KICKOS_WITNESS_KSTACK) && KICKOS_WITNESS_KSTACK
     kickos::kputs(kickos::kstack_report_text());
 #endif
     kfault_terminate();
@@ -1281,7 +1269,5 @@ extern "C" void kickos_isr_fault(uintptr_t addr, int is_write)
                           reinterpret_cast<void*>(lo + c->stack_size));
     }
     console_tx_flush_sync();
-    arch_console_flush_sync();
-    kickos_terminal_outcome_apply();
-    kickos_terminate(0);
+    kfault_terminate();
 }

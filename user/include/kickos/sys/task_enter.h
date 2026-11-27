@@ -26,8 +26,8 @@ extern "C" [[noreturn]] void kickos_task_entry(void* args) __attribute__((visibi
 // as kickos_task_enter, brings up the drivers it hosts, then kickos_program_run.
 extern "C" [[noreturn]] void kickos_program_entry(void* args) __attribute__((visibility("hidden")));
 
-// Runs the program's main, `t`'s entry, with the argv of `args`, or the system's where the create
-// passed none, and passes its return to exit().
+// Runs the program's main, `t`'s entry, with the argv of `args`, an empty one included, and passes
+// its return to exit().
 extern "C" [[noreturn]] void kickos_program_run(kos_table_task const* t, kos_task_args* args)
     __attribute__((visibility("hidden")));
 

@@ -159,6 +159,22 @@ namespace kickos
                 kickos_thread_slay_exit(nullptr);
             }
 
+            // A holder of the console driver's handle slays it between its naming and its start.
+            void slay_the_console_task()
+            {
+                g_saw_pending = console_entry_pending();
+                IrqLock lock;
+                for (Thread& th : kernel().threads.all())
+                {
+                    if (th.task_role == TASK_ROLE_ENTRY and th.task != nullptr
+                        and task_decl_of(th.task) == 2 and th.state == ThreadState::INACTIVE)
+                    {
+                        task_stop_for_slay(th.task, lock);
+                        return;
+                    }
+                }
+            }
+
             // Moves the first delegated capability onto the declared line slot, as a sibling
             // thread of the creator could store between two reads of the array.
             void dest_onto_the_line()
@@ -632,6 +648,20 @@ namespace kickos
             ASSERT_EQ(create("con", &h), 0);
             EXPECT_TRUE(g_saw_pending) << "fixture: the probe ran outside the handover";
             EXPECT_EQ(g_racer_rc, -KOS_EBUSY) << "a second thread was granted the driver's device";
+        }
+
+        TEST_F(DriverCreate, a_console_driver_slain_between_its_naming_and_its_start_starts_once)
+        {
+            root(AUTH_TASKS | AUTH_CONSOLE);
+            console_endpoint(CAP_SIGNAL | CAP_TRANSFER | CAP_HANDOUT);
+            g_handover_probe = slay_the_console_task;
+            kos_task_t h = KOS_TASK_NONE;
+            ASSERT_EQ(create("con", &h), 0);
+            EXPECT_TRUE(g_saw_pending) << "fixture: the probe ran outside the handover";
+            Thread* const e = slain_entry();
+            ASSERT_NE(e, nullptr) << "the slay left the entry thread unstarted";
+            EXPECT_NE(e->state, ThreadState::INACTIVE);
+            end(e);
         }
 
         // A declaration that starts once: its entry thread never ran.

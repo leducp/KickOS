@@ -115,13 +115,8 @@ namespace kickos
     void pi_raise(Thread* o, uint8_t p, Held held);
     void pi_settle(Thread* o, Held held);
 
-    // Park the calling writer while the kernel console is dark (console_dark), with no
-    // deadline: the reclaim and a publish end the wait (console_dark_wake). 0 once the console
-    // is no longer dark, or -KOS_ECANCELED where the caller is cancelled, before or during it.
-    // Caller holds no lock.
-    int console_dark_wait(void);
     // Wake every thread parked on the console.
-    void console_dark_wake(Held held);
+    void console_wake(Held held);
 
     // A publish's drain: returns once every kernel chip writer counted before its handover began
     // has left, parked until the last one's leave wakes it. A cancel does not end it: those
@@ -215,16 +210,12 @@ namespace kickos
     void endpoint_server_set(Endpoint* ep, Thread* t);
     void endpoint_server_clear(Endpoint* ep);
 
-    // A receiver entering a receive on `ep`: it becomes the server and the endpoint is no
-    // longer vacated. Caller holds IrqLock.
-    void endpoint_receiver_waits(Endpoint* ep, Thread* t);
-
     // A pool slot reset to a fresh endpoint charged to `charged`'s ENDPOINTS budget, its index,
     // or with *out unchanged -1 when the pool is full and SLOT_OVER_BUDGET when the budget
     // refuses. Caller holds IrqLock.
     [[nodiscard]] int endpoint_slot_claim(Task const* charged, Endpoint** out);
     // The same, seated for its creator, whose cap carries every right: a receiver and a
-    // handout holder from the start, so the endpoint is never vacated before its first close.
+    // handout holder from the start.
     [[nodiscard]] int endpoint_claim_created(Task const* charged, Endpoint** out);
 
     // The single effective-priority recompute funnel. t's effective prio is the max of its
@@ -240,11 +231,11 @@ namespace kickos
 }
 
 // The console's driver-death reclaim (kickos/console_tx.h notes the death). Puts the UART back in
-// a known polled state so panic and ordinary kprintf still reach the wire, and wakes every
-// writer waiting out the dark window. Idempotent, and a no-op if the console was never
+// a known polled state so panic and ordinary kprintf still reach the wire, and writes the records
+// held for the dead driver. Idempotent, and a no-op if the console was never
 // published, if no death is noted, while a publish is handing over (its set_user acts on the
 // note), or while ANY live thread still holds arch_console_reclaim_window(). Only a thread
 // DEATH can free that window, so a refusal is retried at the next death.
-void console_on_driver_death(kickos::Held held);
+void console_on_driver_death(void);
 
 #endif

@@ -6,23 +6,18 @@
 //
 // The real-hardware dead-end: three 0.2 s blinks then a 2 s gap, forever. A chip that
 // terminates through a debug channel defines its own.
-//
-// The kernel-side declarations are repeated, not included: the arch layer has no
-// kernel/include path (arch/CMakeLists.txt).
 
 #include <kickos/arch/arch.h>
 
 #include <stdint.h>
 
-namespace kickos
-{
-    void kdiag_led_set(bool on);
-}
-
 extern "C"
 {
     void kpanic_enter(void);
     void kickos_terminal_outcome_apply(void);
+#if KICKOS_KERNEL_CORES > 1
+    void kickos_doorbell_halt_peers(void);
+#endif
 }
 
 namespace
@@ -55,13 +50,18 @@ extern "C" __attribute__((noreturn)) void kfault_terminate(void)
     arch_console_flush_sync();
     kpanic_enter(); // idempotent; masks IRQs for a path reaching here directly
     kickos_terminal_outcome_apply();
+#if KICKOS_KERNEL_CORES > 1
+    kickos_doorbell_halt_peers();
+#endif
+    // The LED's pin may be a task's GPIO until here.
+    arch_diag_led_init();
     while (true)
     {
         for (int b = 0; b < 3; b++)
         {
-            ::kickos::kdiag_led_set(true);
+            arch_diag_led_set(1);
             panic_delay_ms(200);
-            ::kickos::kdiag_led_set(false);
+            arch_diag_led_set(0);
             panic_delay_ms(200);
         }
         panic_delay_ms(2000);

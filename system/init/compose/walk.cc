@@ -7,8 +7,8 @@
 #include "message.h"
 
 #include <kickos/amp.h>
-#include <kickos/sys/driver_service.h> // KOS_DRV_HANDOVER_PROBE
-#include <kickos/sys/emit.h> // kconsole_write_all
+#include <kickos/sys/driver_service.h> // KOS_DRV_SEND_WAIT
+#include <kickos/sys/emit.h> // kconsole_offer
 #include <kickos/sys/errno.h>
 #include <kickos/sys/image.h>
 
@@ -38,21 +38,24 @@ namespace kickos::init
         }
 
         // One diagnostic line on stdout, then `m` emptied for the next. Bounded: a console driver
-        // the init holds slain or stalled never parks it, and what is not taken goes to the
-        // kernel console.
+        // the init holds slain or stalled never parks it, and its line is lost.
         void say(Message& m)
         {
             char const* const text = m.add("\n").text();
-            int32_t const sent = kos_send(KOS_CAP_STDOUT, text, m.length(),
-                                          kos::after(kickos::driver::KOS_DRV_HANDOVER_PROBE));
+            kos_monotonic_t const until = kos::after(kickos::driver::KOS_DRV_SEND_WAIT);
             size_t done = 0;
-            if (sent > 0)
+            while (done < m.length())
             {
-                done = static_cast<size_t>(sent);
-            }
-            if (done < m.length())
-            {
-                kickos::kconsole_write_all(text + done, m.length() - done);
+                int32_t const sent = kos_send(KOS_CAP_STDOUT, text + done, m.length() - done, until);
+                if (sent == -KOS_EBADF)
+                {
+                    (void)kickos::kconsole_offer(text + done, m.length() - done);
+                }
+                if (sent < 0)
+                {
+                    break;
+                }
+                done += static_cast<size_t>(sent);
             }
             m.clear();
         }
@@ -276,8 +279,8 @@ namespace kickos::init
             check(kos_endpoint_create(&r.endpoint), "kos_endpoint_create", i);
             if (not driver_path::narrows_at_handover(*this, i))
             {
-                // The init never receives, so a caller is refused -KOS_ECONNREFUSED until a
-                // server does, and the endpoint outlives every instance of its server.
+                // The init never receives, so a caller waits until a server does, and the
+                // endpoint outlives every instance of its server.
                 check(kos_cap_narrow(r.endpoint, KOS_CAP_SIGNAL | KOS_CAP_TRANSFER | KOS_CAP_HANDOUT),
                       "kos_cap_narrow", i);
             }
@@ -512,6 +515,7 @@ namespace kickos::init
         }
         r.handle = handle;
         r.phase = Phase::RUNNING;
+        narrow_crossing(i, r.restarts_left != 0u);
         // A server is ready once a member waits on its endpoint, which the watch reports.
         r.ready = KOS_TASK_NONE;
         if (r.endpoint == KOS_CAP_NONE)
@@ -759,9 +763,9 @@ namespace kickos::init
 
     void Walk::failed(uint16_t i, kos_task_t handle, char const* step, int rc)
     {
-        // Slain before it is reported: a console driver's failed start may still hold stdout,
-        // which its end darkens until the kernel's reclaim. A restart its members still sweeping
-        // are in the way of is answered -KOS_EAGAIN and waits on the instance's watch.
+        // Slain before it is reported: a console driver's failed start may still hold stdout. A
+        // restart its members still sweeping are in the way of is answered -KOS_EAGAIN and waits
+        // on the instance's watch.
         if (handle != KOS_TASK_NONE)
         {
             check(kos_task_slay(handle), "kos_task_slay", i);
@@ -957,12 +961,32 @@ namespace kickos::init
 
     void Walk::drop(uint16_t i)
     {
-        // The last HANDOUT goes, so a caller answers -KOS_ECONNREFUSED.
         TaskRecord& r = record(i);
         if (r.endpoint != KOS_CAP_NONE)
         {
             close(r.endpoint, "kos_handle_close of the endpoint", i);
             r.endpoint = KOS_CAP_NONE;
+        }
+        narrow_crossing(i, false);
+    }
+
+    void Walk::narrow_crossing(uint16_t i, bool restartable)
+    {
+        // SIGNAL stays: a task of this node that uses the crossing is delegated from this copy.
+        uint32_t mask = KOS_CAP_SIGNAL | KOS_CAP_TRANSFER;
+        if (restartable)
+        {
+            mask = mask | KOS_CAP_HANDOUT;
+        }
+        kos_table_task const& t = tasks_[i];
+        for (uint16_t k = 0; k < t.grant_count; k++)
+        {
+            kos_table_grant const& g = grants_[t.first_grant + k];
+            if (g.kind == KOS_GRANT_PORT and (g.flags & KOS_CAP_WAIT) != 0u)
+            {
+                check(kos_cap_narrow(seated_port(g.target, g.base), mask), "kos_cap_narrow of a seated port",
+                      i);
+            }
         }
     }
 

@@ -139,11 +139,11 @@ locks.
 The user side of the mutex is then short:
 
 ```
-lock(m, timeout):
+lock(m, deadline):
     held = compare_and_swap(&m->word, 0, self)    // answers what the word held
     if held == 0:              return 0            // it was free: taken, no kernel entry
     if owner(held) == self:    return -KOS_EDEADLK // locking a mutex you hold
-    return syscall(MUTEX_LOCK, &m->word, timeout)  // another thread holds it: wait
+    return syscall(MUTEX_LOCK, &m->word, deadline) // another thread holds it: wait
 
 unlock(m):
     held = compare_and_swap(&m->word, self, 0)
@@ -256,7 +256,8 @@ else:
     if owner(word) == c:           return -KOS_EDEADLK
     t = the live holder owner(word) names, or nullptr
     if t == nullptr:               compare-and-swap it to c, return -KOS_EOWNERDEAD
-if timeout == 0:                   return -KOS_ETIMEDOUT  // a try lends nothing, parks nothing
+if the deadline is a poll:         return -KOS_EBUSY      // a try lends nothing, parks nothing
+if the deadline has passed:        return -KOS_ETIMEDOUT
 
 // PASS 1, detect a cycle and write nothing:
 o = t
@@ -274,7 +275,7 @@ while o != nullptr:
     set_prio(o, c->prio)
     o = the holder of the mutex o waits on, or nullptr
 
-arm the deadline, unless timeout is forever
+arm the deadline, unless it is never
 park c on r's queue                   // parks AND seats the wait edge
 return c's wait_result                // what the waker wrote: the grant, or a refusal
 ```
@@ -294,9 +295,10 @@ handing the mutex over, and answer `-KOS_ECANCELED` and `-KOS_ETIMEDOUT`. Only a
 says the mutex was granted means the mutex is held.
 
 The deadline is the caller's, as on every other blocking call. A thread that would rather do
-something else than wait past some point says so. A try, a deadline of zero, asks only whether
-the mutex is free: when it is held, the try answers at once, before either pass, so it lends
-no priority and never parks. A waiting caller lends its urgency for as long as it waits, and
+something else than wait past some point says so. A try, a deadline already passed, asks only
+whether the mutex is free: when it is held, the try answers at once, before either pass, so it
+lends no priority and never parks. A poll, the deadline `KOS_POLL`, answers `-KOS_EBUSY`; any
+other deadline that has passed answers `-KOS_ETIMEDOUT`. A waiting caller lends its urgency for as long as it waits, and
 takes it back when it stops. That is all I2 asks: the boost is justified by a donor that is
 parked, and it goes when the donor goes, by grant, cancel or expiry alike.
 
@@ -391,7 +393,8 @@ values come from the one error list that every syscall returns from
 ([Chapter 3.9](the-syscall-path-trap-dispatch-return.md)): `0` for a normal grant, and
 otherwise a negated `KOS_E*` code. Most of those mean the caller does not hold the mutex:
 `-KOS_EDEADLK` for the refusals the walk found, `-KOS_ECANCELED` for a waiter cancelled while
-parked, `-KOS_ETIMEDOUT` for a waiter whose deadline passed or a try that found the mutex held.
+parked, `-KOS_EBUSY` for a poll that found the mutex held, `-KOS_ETIMEDOUT` for a waiter whose
+deadline passed or a try under a deadline already passed that found the mutex held.
 And one code does not.
 
 That code arises when a holder dies. There are two cases.
@@ -433,7 +436,7 @@ walks away from a mutex it holds and strands every waiter behind it, for good. T
 shape tests that code by name:
 
 ```
-int const rc = kos_mutex_lock(&m, KOS_TIMEOUT_NONE);
+int const rc = kos_mutex_lock(&m, KOS_NEVER);
 if (rc == -KOS_EOWNERDEAD)
 {
     // HELD. Repair or discard whatever the mutex protects, then carry on and unlock.

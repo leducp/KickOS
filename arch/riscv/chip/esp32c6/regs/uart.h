@@ -35,21 +35,6 @@ namespace kickos::esp32c6::reg::uart
 
     // UART0 absolute addresses, for the kernel console. A userspace driver uses OFF_* against
     // its granted window instead.
-    constexpr uintptr_t FIFO = mmap::UART0_BASE + OFF_FIFO;
-    constexpr uintptr_t INT_RAW = mmap::UART0_BASE + OFF_INT_RAW;
-    constexpr uintptr_t INT_ST = mmap::UART0_BASE + OFF_INT_ST;
-    constexpr uintptr_t INT_ENA = mmap::UART0_BASE + OFF_INT_ENA;
-    constexpr uintptr_t INT_CLR = mmap::UART0_BASE + OFF_INT_CLR;
-    constexpr uintptr_t STATUS = mmap::UART0_BASE + OFF_STATUS;
-    constexpr uintptr_t FSM_STATUS = mmap::UART0_BASE + OFF_FSM_STATUS;
-    constexpr uintptr_t CONF1 = mmap::UART0_BASE + OFF_CONF1;
-    constexpr uintptr_t CLKDIV = mmap::UART0_BASE + OFF_CLKDIV;
-    constexpr uintptr_t CONF0 = mmap::UART0_BASE + OFF_CONF0;
-    constexpr uintptr_t SWFC_CONF0 = mmap::UART0_BASE + OFF_SWFC_CONF0;
-    constexpr uintptr_t IDLE_CONF = mmap::UART0_BASE + OFF_IDLE_CONF;
-    constexpr uintptr_t RS485_CONF = mmap::UART0_BASE + OFF_RS485_CONF;
-    constexpr uintptr_t CLK_CONF = mmap::UART0_BASE + OFF_CLK_CONF;
-    constexpr uintptr_t REG_UPDATE = mmap::UART0_BASE + OFF_REG_UPDATE;
 
     constexpr uint32_t RXFIFO_CNT_S = 0u;
     constexpr uint32_t RXFIFO_CNT_MASK = 0xFFu;

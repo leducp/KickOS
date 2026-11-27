@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// K64F UART0 backend of <kickos/driver/uart.h>. Register facts: K64 Sub-Family Reference
+// K64F UART backend of <kickos/driver/uart.h>. Register facts: K64 Sub-Family Reference
 // Manual (K64P144M120SF5RM).
 //
 // BYTE-mapped: a 32-bit access at base+4 spans S1/S2/C3/D and reading D pops the RX FIFO,
@@ -101,7 +101,7 @@ namespace
     }
 
     // baud = clk / (16 x (SBR + BRFA/32)) (RM 52.4.3), rearranged to clk*2 / (SBR*32 + BRFA)
-    // to stay in 32-bit arithmetic. UART0 is CORE-clocked while UART2..4 are bus-clocked
+    // to stay in 32-bit arithmetic. UART0/1 are CORE-clocked while UART2..5 are bus-clocked
     // (RM 5.7.10), so the rate must come from the per-block clock oracle.
     int32_t achieved_baud(uintptr_t base)
     {

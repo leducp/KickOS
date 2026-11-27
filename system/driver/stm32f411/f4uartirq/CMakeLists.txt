@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 
-# kickos_f4uartirq: the STM32F411/USART2 buffered IRQ-driven userspace UART driver (an
+# kickos_f4uartirq: the STM32F411 buffered IRQ-driven userspace UART driver (an
 # unprivileged IRQ thread owning the register window + an unprivileged service thread owning
 # the endpoint; see f4uartirq.h).
 #
@@ -19,7 +19,7 @@
 # matters: RXNEIE arms it, and a bare DR read does not clear it.
 kickos_add_driver(f4uartirq SOURCES f4uartirq.cc ../uart_stm32f4.cc
                   REGDIR arch/arm/chip/stm32f411 CLASS kickos_class_stm32f411
-                  BASE mmap::USART2_BASE WINDOWS regs LINES global:level
+                  WINDOWS regs LINES global:level
                   BLOCK ${KICKOS_UART_BLOCK_SIZE} INIT block_init BARRIER 1 READY uart::KOS_UART_READY_OFFSET
                   POSTURE handover CONSOLE START f4uartirq_console_start
                   RIGHTS write read control

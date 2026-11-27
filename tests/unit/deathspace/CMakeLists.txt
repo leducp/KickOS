@@ -11,7 +11,7 @@ set(_leaves "${PROJECT_SOURCE_DIR}/tests/unit/common/aspace_leaves.cc")
 kickos_add_kseam(kickos_kseam_aspace
   EXTRA aspace_seam.cc ${_leaves} ${_aspace}
   POSTURE KICKOS_NUM_CORES=2 KICKOS_KERNEL_CORES=2 KICKOS_MULTICORE_MODEL_SHARED=1
-          KICKOS_HAVE_ASPACE=1)
+          KICKOS_HAVE_ASPACE=1 KICKOS_ARCH_IRQ_WINDOW=1)
 kickos_add_unit_test(NAME leave_space SOURCES leave_space.cc
   LIBRARIES kickos_kseam_aspace)
 kickos_add_unit_test(NAME reach_lost SOURCES reach_lost.cc
@@ -22,7 +22,7 @@ kickos_add_unit_test(NAME reach_lost SOURCES reach_lost.cc
 kickos_add_kseam(kickos_kseam_aspace_one
   EXTRA aspace_seam.cc ${_leaves} ${_aspace}
   POSTURE KICKOS_NUM_CORES=1 KICKOS_KERNEL_CORES=1 KICKOS_MULTICORE_MODEL_SHARED=1
-          KICKOS_HAVE_ASPACE=1)
+          KICKOS_HAVE_ASPACE=1 KICKOS_ARCH_IRQ_WINDOW=1)
 kickos_add_unit_test(NAME leave_space_one SOURCES leave_space_one.cc
   LIBRARIES kickos_kseam_aspace_one)
 kickos_add_unit_test(NAME libc_locks_space SOURCES libc_locks_space.cc

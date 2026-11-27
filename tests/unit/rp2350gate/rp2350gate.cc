@@ -20,6 +20,8 @@ namespace
     constexpr uint32_t NODES = 2u;
     // Table 911's reset value of UART0's register: DBG, DMA, CORE1, CORE0, SP and SU.
     constexpr uint32_t UART0_RESET = 0xFCu;
+    // The board's console UART, UART1 on pizero2350.
+    constexpr uint32_t CONSOLE = 0xA4u;
 
     kickos_gate_row row(uint16_t reg, uint8_t node)
     {
@@ -28,7 +30,7 @@ namespace
 
     accessctrl::Refusal refusal(kickos_gate_row const* rows, uint16_t count, uint16_t& at)
     {
-        return accessctrl::refusal_of(rows, count, NODE_CORE, NODES, at);
+        return accessctrl::refusal_of(rows, count, NODE_CORE, NODES, CONSOLE, at);
     }
 }
 
@@ -67,7 +69,7 @@ TEST(Rp2350Gate, APartitionImageAdmitsNoNonSecureMaster)
 TEST(Rp2350Gate, RefusesARegisterNoNodeIsAssigned)
 {
     uint16_t const never[] = {0x14u, 0x18u, 0x1Cu, 0x2Cu, 0x40u, 0x44u, 0x64u, 0x68u, 0x70u, 0x98u,
-                              0xA4u, 0xC0u, 0xC4u, 0xCCu, 0xD0u, 0xD4u, 0xD8u, 0xE0u, 0xE4u, 0xE8u};
+                              0xC0u, 0xC4u, 0xCCu, 0xD0u, 0xD4u, 0xD8u, 0xE0u, 0xE4u, 0xE8u};
     for (uint16_t reg : never)
     {
         kickos_gate_row const rows[] = {row(0xA0u, 0u), row(reg, 1u)};
@@ -75,6 +77,19 @@ TEST(Rp2350Gate, RefusesARegisterNoNodeIsAssigned)
         EXPECT_EQ(refusal(rows, 2u, at), accessctrl::Refusal::NEVER) << reg;
         EXPECT_EQ(at, 1u) << reg;
     }
+}
+
+// The board's console UART is the kernel's, whichever UART the board names.
+TEST(Rp2350Gate, RefusesTheConsoleUartAndAssignsTheOther)
+{
+    kickos_gate_row const console[] = {row(0x48u, 0u), row(CONSOLE, 1u)};
+    uint16_t at = 0;
+    EXPECT_EQ(refusal(console, 2u, at), accessctrl::Refusal::NEVER);
+    EXPECT_EQ(at, 1u);
+    kickos_gate_row const rows[] = {row(0x48u, 0u), row(0xA0u, 1u)};
+    EXPECT_EQ(accessctrl::refusal_of(rows, 2u, NODE_CORE, NODES, 0xA0u, at), accessctrl::Refusal::NEVER);
+    kickos_gate_row const other[] = {row(0x48u, 0u), row(0xA4u, 1u)};
+    EXPECT_EQ(accessctrl::refusal_of(other, 2u, NODE_CORE, NODES, 0xA0u, at), accessctrl::Refusal::NONE);
 }
 
 TEST(Rp2350Gate, RefusesARegisterTwoRowsName)
@@ -98,5 +113,5 @@ TEST(Rp2350Gate, RefusesWhatIsNoBusRegisterOrCore)
     EXPECT_EQ(refusal(bad, 1u, at), accessctrl::Refusal::NODE);
     uint32_t const far_core[] = {0u, 2u};
     bad[0] = row(0xA0u, 1u);
-    EXPECT_EQ(accessctrl::refusal_of(bad, 1u, far_core, NODES, at), accessctrl::Refusal::NODE);
+    EXPECT_EQ(accessctrl::refusal_of(bad, 1u, far_core, NODES, CONSOLE, at), accessctrl::Refusal::NODE);
 }

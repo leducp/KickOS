@@ -2,8 +2,8 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // The cross-core doorbell protocol shared by every backend: the request and answer cells, the
-// raise, the rendezvous wait, and the primary's boot check of the kernel lock's coupling to the
-// doorbell.
+// raise and the rendezvous wait. A KICKOS_WITNESS_DOORBELL kernel adds the primary's boot check of
+// the kernel lock's coupling to the doorbell (tests/integration/check_smp_doorbell.sh).
 //
 // The controller carries only the wake and the answer travels in the cells: no controller
 // reached from here tells a sender that a target serviced a raise. Every cell has exactly one
@@ -45,11 +45,6 @@ namespace kickos::doorbell
 
     namespace
     {
-        // How long a peer may leave a request unanswered before it is taken as lost. Sized far
-        // over, not tuned: under emulation without icount the guest clock tracks host time, and
-        // a host that deschedules a peer's vCPU makes it late without making it dead. Keep it a
-        // duration, never an iteration count: a spinning waiter's rate is not the peer's.
-        constexpr uint64_t PEER_WAIT_NS = 5ull * 1000ull * 1000ull * 1000ull;
         // Spins between two clock reads in a rendezvous wait. A power of two, so the test is a
         // mask. An answer that lands within this many spins never reads the clock at all.
         constexpr uint32_t CLOCK_CHECK_SPINS = 256u;
@@ -134,6 +129,14 @@ namespace kickos::doorbell
         return Drained();
     }
 
+#if KICKOS_KERNEL_CORES > 1
+    Seq g_halter = {};
+    Seq g_halted[KICKOS_DOORBELL_CORES] = {};
+    Seq g_reachable[KICKOS_DOORBELL_CORES] = {};
+
+    constinit uint32_t g_halt_claim = 0u;
+#endif
+
     bool pending(void)
     {
         uint32_t const me = arch_doorbell_core();
@@ -147,7 +150,7 @@ namespace kickos::doorbell
         return false;
     }
 
-#if KICKOS_NUM_CORES > 1
+#if KICKOS_NUM_CORES > 1 && defined(KICKOS_WITNESS_DOORBELL) && KICKOS_WITNESS_DOORBELL
     Seq g_contend = {};
     PartCell g_held[KICKOS_NUM_CORES] = {};
     PartCell g_spinning[KICKOS_NUM_CORES] = {};
@@ -317,6 +320,9 @@ void kickos_doorbell_service(void)
 {
     using kickos::doorbell::Service;
 
+#if KICKOS_KERNEL_CORES > 1
+    kickos::doorbell::halt_if_asked(arch_doorbell_core());
+#endif
     kickos::doorbell::Snapshot const s = Service::snapshot();
     if (s.owed())
     {
@@ -331,6 +337,18 @@ void kickos_doorbell_service(void)
     kickos_amp_node_service();
 #endif
 }
+
+#if KICKOS_KERNEL_CORES > 1
+void kickos_doorbell_halt_peers(void)
+{
+    kickos::doorbell::halt_peers();
+}
+
+void kickos_doorbell_reachable(void)
+{
+    kickos::doorbell::reachable(arch_cpu_id());
+}
+#endif
 
 // The caller's own bit is serviced here, not raised: a core waiting with interrupts masked would
 // wait on a handler it keeps out. Its request cell is still bumped, so the answer cells describe
@@ -429,7 +447,7 @@ bool arch_ipi_answered(uint32_t cores)
     return true;
 }
 
-#if KICKOS_NUM_CORES > 1
+#if KICKOS_NUM_CORES > 1 && defined(KICKOS_WITNESS_DOORBELL) && KICKOS_WITNESS_DOORBELL
 // The primary's boot check of the doorbell, run once with every secondary parked. Every round
 // holds the kernel lock across a raise and a rendezvous, so the far side answers while the
 // initiator holds what the far side contends for.

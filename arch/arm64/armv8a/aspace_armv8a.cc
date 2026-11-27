@@ -711,6 +711,20 @@ size_t arch_aspace_map_tables(struct arch_aspace* space, uintptr_t va, size_t pa
     return tables_needed(root_of(space), HEIGHT_ROOT, va, pages);
 }
 
+size_t arch_aspace_range_tables(uintptr_t va, size_t pages)
+{
+    if (not range_ok(va, pages))
+    {
+        return 0;
+    }
+    return tables_spanned(HEIGHT_ROOT, va, pages);
+}
+
+size_t arch_aspace_run_tables(size_t pages)
+{
+    return tables_run(HEIGHT_ROOT, pages);
+}
+
 enum arch_aspace_result arch_aspace_map(struct arch_aspace* space, uintptr_t va,
                                         arch_phys_addr_t pa, size_t pages,
                                         uint32_t rights, enum arch_map_memtype type)

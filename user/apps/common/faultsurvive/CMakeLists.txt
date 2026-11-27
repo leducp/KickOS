@@ -122,7 +122,7 @@ if(KICKOS_CHIP MATCHES "^(an505|rp2350)$" AND KICKOS_FAULT_ISOLATION)
   faultsurvive_image(faultsurvive_bxns 16)
   faultsurvive_image(faultsurvive_blxns 17)
 endif()
-# The bootrom's Non-secure fetch range, which only the RP2350's IDAU and SAU give.
+# The boot ROM Non-secure state may fetch, which only the RP2350's IDAU gives.
 if(KICKOS_CHIP STREQUAL "rp2350" AND KICKOS_FAULT_ISOLATION AND KICKOS_MEMORY_ENFORCED)
   faultsurvive_image(faultsurvive_bxnsrom 19)
 endif()

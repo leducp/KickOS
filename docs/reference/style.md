@@ -85,8 +85,9 @@ further down: it binds every tracked file.
     RMW: `x = x + 1` is the same work and a plain word on every backend. **A site with two
     real writers is a lock problem**, and the lock is the mechanism.
     The reason this surface is closed is NOT that an RMW is impossible. A `_4` RMW is a
-    libcall on armv6m and rxv3 that a freestanding link cannot resolve, but that only rules
-    out taking one from the toolchain -- a lock-bracketed RMW is implementable everywhere.
+    libcall on armv6m and rxv3. User code there links one: `user/src/user_atomic.cc` defines
+    the `__atomic_*` and `__sync_*` calls as loops over `kickos_user_cas`. The kernel takes no
+    RMW from the toolchain: it spells each one it needs inline, as below.
     It stays closed because the cheapest CORRECT mechanism differs per backend, so an RMW
     belongs behind a per-arch seam like the MPU backends. Two exist: `arch_swap_u32`
     (`kickos/arch/atomic_swap.h`) on the arches that run a shared kernel above one core, used

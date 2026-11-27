@@ -10,9 +10,9 @@
 // already disarmed by console_tx_deinit, so the banner can only come out over the
 // RECLAIMED polled route (kernel/init/console.cc).
 //
-// Anti-vacuity: console_emit DROPS the raw kernel console write below while the console is
-// USER_OWNED, so its absence proves the handover happened and the banner did not come out of
-// a kernel-owned console.
+// Anti-vacuity: the kernel console refuses the raw write below once the console is published, so
+// its absence proves the handover happened and the banner did not come out of a kernel-owned
+// console.
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
@@ -24,7 +24,7 @@
 int main(int, char**)
 {
     char const witness[] = "[pubpanic] kernel-console witness (must NOT reach the wire)\n";
-    (void)KICKOS_KCONSOLE_MEASURED(DROP, witness, sizeof(witness) - 1u);
+    (void)KICKOS_KCONSOLE_MEASURED(ANSWER, witness, sizeof(witness) - 1u);
     // kos_send blocks on the console rendezvous, so the driver thread has run and
     // drained before the terminal event below.
     kos::print("[pubpanic] published route live\n");

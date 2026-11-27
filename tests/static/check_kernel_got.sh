@@ -30,9 +30,15 @@
 # builtin compiles to a call of a libgcc or libatomic helper, which has no kernel twin, so the
 # kernel spells each atomic it needs inline (kickos/arch/atomic_*.h).
 #
+# NO C++ ALLOCATION OPERATOR (nm), on every backend: no reference to operator new or delete
+# (_Znw*, _Zna*, _Zdl*, _Zda*). Where the kernel links alone its link takes no C++ library
+# (tools/image-link.py), so such a reference fails that link; where the kernel and the program
+# share one link, as on the sim, the program's libstdc++ would answer it with a heap allocation
+# from kernel context, and this leg is what refuses it. --alloc-only runs this leg alone.
+#
 # SCOPE: the archives that hold kernel text (kernel, arch, chip). kickos_lib is app-side and
 # NOT scanned, and a region backend serves both privilege levels from one text mapping and has
-# no split to protect.
+# no split to protect, so it runs --alloc-only over the kernel's archives, kickos_lib included.
 #
 # TWO PROPERTIES OF readelf's OUTPUT ARE LOAD-BEARING, and both are checked rather than
 # assumed.
@@ -51,13 +57,19 @@
 #            silently empty. A hit no `File:` line attributes is therefore refused in its
 #            own right.
 #
-# usage: check_kernel_got.sh <readelf> <nm> <archive>...
+# usage: check_kernel_got.sh [--alloc-only] <readelf> <nm> <archive>...
 
 set -eu
 . "$(dirname "$0")/../lib/gate.sh"
 
+ALLOC_ONLY=0
+if [ "${1:-}" = --alloc-only ]; then
+    ALLOC_ONLY=1
+    shift
+fi
+
 if [ "$#" -lt 3 ]; then
-    echo "usage: $0 <readelf> <nm> <archive>..." >&2
+    echo "usage: $0 [--alloc-only] <readelf> <nm> <archive>..." >&2
     exit 2
 fi
 
@@ -79,6 +91,7 @@ WIDE_LIT="Symbol's Name"
 RUNTIME='memcpy memset memmove memcmp strlen strnlen bcmp bzero __memcpy_chk __memset_chk
 kvsnprintf ksnprintf __clzdi2 __ctzdi2'
 HELPERS='__aarch64_cas __aarch64_swp __aarch64_ld __atomic_ __sync_'
+ALLOC='_Znw _Zna _Zdl _Zda __Znw __Zna __Zdl __Zda'
 
 SYMS_DIR="$(dirname "$0")/../../cmake"
 : > "$TMP/banned"
@@ -93,6 +106,10 @@ for _b in $RUNTIME; do
     printf '%s\n_%s\n' "$_b" "$_b" >> "$TMP/banned"
 done
 BANNED="$(sort -u "$TMP/banned" | tr '\n' ' ')"
+if [ "$ALLOC_ONLY" -eq 1 ]; then
+    BANNED=""
+    HELPERS=""
+fi
 
 # `File: <archive>(<member>)` is what attributes a record to its object. The record ends
 # `<name> + <addend>`, so the name is three fields from the end.
@@ -124,20 +141,27 @@ scan_rel() { # <relocation-output> <archive-label> <hits-append>
 # the record is exactly three fields: prefix, `U` (or `w`, which binds the same way), name. The
 # member is the LAST colon-separated field, so a build path holding a colon does not shift it.
 scan_refs() { # <symfile> <archive label> <hits-append>
-    awk -v ban="$BANNED" -v pre="$HELPERS" -v arch="$2" '
+    awk -v ban="$BANNED" -v pre="$HELPERS" -v alloc="$ALLOC" -v arch="$2" '
     BEGIN {
         n = split(ban, b, " ")
         for (i = 1; i <= n; i++) { bad[b[i]] = 1 }
         np = split(pre, h, " ")
+        na = split(alloc, a, " ")
     }
     NF == 3 && ($2 == "U" || $2 == "w") {
         total++
-        hit = ($3 in bad)
-        for (i = 1; i <= np && !hit; i++) { hit = (index($3, h[i]) == 1) }
-        if (!hit) { next }
         loc = $1
         sub(/:$/, "", loc)
         k = split(loc, p, ":")
+        op = 0
+        for (i = 1; i <= na && !op; i++) { op = (index($3, a[i]) == 1) }
+        if (op) {
+            printf "ALLOC %s(%s) %s\n", arch, p[k], $3
+            next
+        }
+        hit = ($3 in bad)
+        for (i = 1; i <= np && !hit; i++) { hit = (index($3, h[i]) == 1) }
+        if (!hit) { next }
         printf "RUNTIME %s(%s) %s\n", arch, p[k], $3
     }
     END { printf "REFS %d\n", total + 0 }' "$1" >> "$3"
@@ -164,11 +188,21 @@ libkickos_kernel.a:sync.cc.obj:                 U __aarch64_ldadd4_acq_rel
 libkickos_kernel.a:sync.cc.obj:                 U __atomic_compare_exchange_4
 libkickos_kernel.a:sync.cc.obj:                 U __sync_val_compare_and_swap_4
 libkickos_kernel.a:sync.cc.obj:                 U kickos__atomic_fence
+libkickos_kernel.a:pool.cc.obj:                 U _Znwj
+libkickos_kernel.a:pool.cc.obj:                 U _ZdaPvm
+libkickos_kernel.a:pool.cc.obj:                 U __ZdlPvj
+libkickos_kernel.a:pool.cc.obj:                 U _Z5dlnewv
 EOF
+_alloc_want='ALLOC libkickos_kernel.a(pool.cc.obj) _Znwj
+ALLOC libkickos_kernel.a(pool.cc.obj) _ZdaPvm
+ALLOC libkickos_kernel.a(pool.cc.obj) __ZdlPvj
+REFS 12'
 : > "$TMP/ctl.hits"
-scan_rel "$TMP/ctl.rel" libkickos_kernel.a "$TMP/ctl.hits"
-scan_refs "$TMP/ctl.sym" libkickos_kernel.a "$TMP/ctl.hits"
-_want='GOT libkickos_kernel.a(aspace.cc.obj) R_AARCH64_LD64_GOT_LO12_NC kickos_chip_window
+if [ "$ALLOC_ONLY" -eq 1 ]; then
+    _want="$_alloc_want"
+else
+    scan_rel "$TMP/ctl.rel" libkickos_kernel.a "$TMP/ctl.hits"
+    _want="GOT libkickos_kernel.a(aspace.cc.obj) R_AARCH64_LD64_GOT_LO12_NC kickos_chip_window
 RELS 2
 RUNTIME libkickos_kernel.a(task.cc.obj) memset
 RUNTIME libkickos_kernel.a(sync.cc.obj) __aarch64_cas4_acq_rel
@@ -176,12 +210,15 @@ RUNTIME libkickos_kernel.a(sync.cc.obj) __aarch64_swp4_acq_rel
 RUNTIME libkickos_kernel.a(sync.cc.obj) __aarch64_ldadd4_acq_rel
 RUNTIME libkickos_kernel.a(sync.cc.obj) __atomic_compare_exchange_4
 RUNTIME libkickos_kernel.a(sync.cc.obj) __sync_val_compare_and_swap_4
-REFS 8'
+$_alloc_want"
+fi
+scan_refs "$TMP/ctl.sym" libkickos_kernel.a "$TMP/ctl.hits"
 [ "$(cat "$TMP/ctl.hits")" = "$_want" ] || {
     sed 's/^/      /' "$TMP/ctl.hits" >&2
     fail "the readers answered the above for the planted dumps rather than one GOT reference
-      in aspace.cc.obj, one memset in task.cc.obj and one atomic helper per prefix in
-      sync.cc.obj, so a real reference would go unreported or be blamed on the wrong object"
+      in aspace.cc.obj, one memset in task.cc.obj, one atomic helper per prefix in sync.cc.obj
+      and three allocation operators in pool.cc.obj, so a real reference would go unreported
+      or be blamed on the wrong object"
 }
 
 # --- the archives -------------------------------------------------------------
@@ -190,15 +227,17 @@ for A in "$@"; do
     [ -f "$A" ] || fail "archive not found: $A"
     # Positive control: every archive here carries relocated code, so a run that saw no
     # relocation record or no text symbol read nothing.
-    tool_out "$TMP/rel" '^[0-9a-f]+[[:space:]]+[0-9a-f]+[[:space:]]+R_' "$READELF" -rW "$A"
-    scan_rel "$TMP/rel" "$(basename "$A")" "$TMP/hits"
+    if [ "$ALLOC_ONLY" -eq 0 ]; then
+        tool_out "$TMP/rel" '^[0-9a-f]+[[:space:]]+[0-9a-f]+[[:space:]]+R_' "$READELF" -rW "$A"
+        scan_rel "$TMP/rel" "$(basename "$A")" "$TMP/hits"
+    fi
     tool_out "$TMP/sym" '[[:space:]][TtWw][[:space:]]' "$NM" -A "$A"
     scan_refs "$TMP/sym" "$(basename "$A")" "$TMP/hits"
 done
 
 rels="$(awk '/^RELS /{ t += $2 } END { print t + 0 }' "$TMP/hits")"
 refs="$(awk '/^REFS /{ t += $2 } END { print t + 0 }' "$TMP/hits")"
-[ "$rels" -gt 0 ] || fail "no relocation record in any of the $# archive(s) given: wrong
+[ "$ALLOC_ONLY" -eq 1 ] || [ "$rels" -gt 0 ] || fail "no relocation record in any of the $# archive(s) given: wrong
       readelf, wrong files, or a link model this gate cannot read (guard would pass vacuously)"
 [ "$refs" -gt 0 ] || fail "no undefined symbol in any of the $# archive(s) given: wrong nm,
       wrong files, or a link model this gate cannot read (guard would pass vacuously)"
@@ -226,7 +265,18 @@ if grep -q '^RUNTIME ' "$TMP/hits"; then
       atomic helper is a builtin's call, which the inline form in kickos/arch/atomic_*.h
       replaces."
 fi
+if grep -q '^ALLOC ' "$TMP/hits"; then
+    awk '/^ALLOC /{ printf "        %s names %s\n", $2, $3 }' "$TMP/hits" >&2
+    bad "archive(s) holding kernel text name a C++ allocation operator. The kernel allocates
+      from no heap: use a static object, a pool or a placement form instead."
+fi
 [ "$rc" -eq 0 ] || exit 1
 
+if [ "$ALLOC_ONLY" -eq 1 ]; then
+    echo "PASS: $# archive(s) holding kernel text, $refs undefined reference(s) with none to a
+  C++ allocation operator"
+    exit 0
+fi
 echo "PASS: $# archive(s) holding kernel text, $rels relocation record(s) with no GOT reference,
-  $refs undefined reference(s) with none to the app runtime or an atomic helper"
+  $refs undefined reference(s) with none to the app runtime, an atomic helper or a C++
+  allocation operator"

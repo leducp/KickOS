@@ -30,11 +30,6 @@ _kickos_app_stamp
 __register_frame
 ___register_frame
 
-# ESP32-C6 console flush witness: only a c6txidle link extracts the chip member that defines it,
-# so every other flat C6 image leaves it absent and arch_console_tx_backend skips it.
-kickos_c6_txidle_probe
-_kickos_c6_txidle_probe
-
 # --- a no-op the image's allocator replaces -----------------------------------
 # user/src/newlib_lock.cc defines it empty; user/src/newlib_sbrk.cc, which only an image that
 # allocates links, defines the real one. A weak reference would serve, but a PE32+ image holds

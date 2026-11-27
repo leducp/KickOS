@@ -269,7 +269,6 @@ level   rxv3 ISP fault reason: an exception, nested on any of the above; NMI is 
 root    rxv3 ISP rx_reset_handler level=boot
 root    rxv3 ISP kickos_rx_timer_isr level=interrupt
 root    rxv3 ISP kickos_rx_clock_isr level=interrupt
-root    rxv3 ISP kickos_rx_console_txi_isr level=interrupt
 root    rxv3 ISP kickos_rx_swint2 level=interrupt
 root    rxv3 ISP kickos_rx_default_irq level=interrupt
 root    rxv3 ISP kickos_rx_line_isr level=interrupt
@@ -293,7 +292,6 @@ vector  rxv3 kickos_rx_intb_swint2 level=fault reason: switch.S, branches to kic
 vector  rxv3 kickos_rx_intb_timer level=fault reason: switch.S, branches to kickos_rx_timer_isr or to kickos_rx_soft_trap
 vector  rxv3 kickos_rx_intb_clock level=fault reason: switch.S, branches to kickos_rx_clock_isr or to kickos_rx_soft_trap
 vector  rxv3 kickos_rx_intb_line_* level=fault reason: startup.S, one per device line, each banking R15 and branching to switch.S kickos_rx_intb_line, which branches to kickos_rx_line_isr or to kickos_rx_soft_trap
-vector  rxv3 kickos_rx_intb_console_txi level=fault reason: switch.S, branches to kickos_rx_console_txi_isr or to kickos_rx_soft_trap
 vector  rxv3 rx_ex_priv level=fault reason: startup.S, calls kickos_rx_fault_report
 vector  rxv3 rx_ex_access level=fault reason: startup.S, calls kickos_rx_fault_report
 vector  rxv3 rx_ex_undef level=fault reason: startup.S, calls kickos_rx_fault_report
@@ -455,6 +453,7 @@ root    armv6m MSP ?kickos_trace_switch_done level=system
 root    armv6m MSP kickos_ipc_fastpath level=system
 root    armv6m MSP kickos_arm_bad_psp level=system
 root    armv6m MSP kickos_arm_no_kernel_stack level=system
+root    armv6m MSP kickos_fault_record_svc_dropped level=system
 root    armv6m MSP SysTick_Handler level=system
 root    armv6m MSP kickos_arm_default_irq level=device
 root    armv6m MSP ?kickos_nrf51_clock_isr level=device
@@ -685,7 +684,7 @@ root    x86_64 AP chip_q35.cc:ap_main level=boot
 root    x86_64 AP kickos_x86_64_trap level=interrupt
 root    x86_64 AP ?kickos_switch_unlock level=interrupt
 root    x86_64 AP kickos_x86_64_trap level=fault
-init    x86_64 __init_array_start __init_array_end reason: kickos_x86_64_landed@1/1 is bound NONE
+init    x86_64 __init_array_start __init_array_end reason: kickos_x86_64_landed@1/1 is bound to the five-level witness's constructor where selftest_la57 is built and NONE elsewhere
 unsized x86_64 kickos_x86_64_start 8 reason: switch.S, the call's return address alone: it loads the first thread's rsp and jumps to the restore
 unsized x86_64 kickos_x86_64_la57_switch 72 reason: la57_witness_x86_64.cc's top-level asm, the call's return address, six pushes and the two-word far return, deeper than its 32-bit leg's twelve bytes; it calls nothing
 unsized x86_64 kickos_panic_stack_enter 8 reason: panic_stack.S, the call's return address on the stack it leaves, then a cli, a mov and a jmp; the pushq $0 lands on the reporter's array and is KICKOS_X86_64_PANIC_FRAME

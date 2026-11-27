@@ -21,8 +21,8 @@
 #
 # Exit status: 0 when every image is captured and nothing is owed; 1 on a failed capture, an absent
 # board, or an image not run or one no judge names; 3 when every capture passed and the pass still
-# owes a witness: an emulator-judged image on a board with no emulator, a human-judged one, or a
-# clause a capture judge could not evaluate.
+# owes a witness: an emulator-judged image on a board with no emulator, or a clause a capture judge
+# could not evaluate.
 #
 # REMOTE MODE, when the bench is not on this box:
 #   BENCH_HOST=<bench-host> BENCH_PORT=<port> TAG=<tag> tools/bench/bench-fleet.sh
@@ -269,11 +269,6 @@ take_image() { # <board> <image> <label> <judge> <args> [variant]
 "
       return
       ;;
-    human)
-      HUMAN_OWED="$HUMAN_OWED$board|$label|$args
-"
-      return
-      ;;
     inapplicable)
       VOID="$VOID$board|$label|$args
 "
@@ -353,7 +348,6 @@ OWED=""
 UNJUDGED=""
 EMULATED=""
 EMULATOR_OWED=""
-HUMAN_OWED=""
 VOID=""
 PARTLY=""
 JOBS=""
@@ -607,23 +601,10 @@ while IFS='|' read -r board img why; do
 done <<VOID
 $VOID
 VOID
-HUMANS=0
-while IFS='|' read -r board img what; do
-  [ -n "$board" ] || continue
-  printf '  %-16s %-38s human-judged (%s): owed\n' "$board" "$img" "$what"
-  HUMANS=$((HUMANS + 1))
-done <<HUMAN_OWED
-$HUMAN_OWED
-HUMAN_OWED
 if [ "$NOWITNESS" -ne 0 ]; then
   echo
   echo "OWED: $NOWITNESS emulator-judged image(s) have no emulator on their board, so nothing has"
   echo "  witnessed them there and this pass covers none of them."
-fi
-if [ "$HUMANS" -ne 0 ]; then
-  echo
-  echo "OWED: $HUMANS human-judged image(s) carry a verdict only a person reads, which this pass"
-  echo "  cannot see and covers none of."
 fi
 if [ "$CLAUSES" -ne 0 ]; then
   echo
@@ -646,7 +627,7 @@ fi
 if [ "$FAILED" -ne 0 ]; then
   exit 1
 fi
-if [ $((NOWITNESS + HUMANS + CLAUSES)) -ne 0 ]; then
+if [ $((NOWITNESS + CLAUSES)) -ne 0 ]; then
   echo
   echo "OWED: every capture passed, and the pass still owes the witnesses above."
   exit 3

@@ -10,7 +10,6 @@
 #include <kickos/arch/desc.h>
 #include <kickos/arch/regs.h>
 #include <kickos/arch/trap.h>
-#include <kickos/arch/x2probe.h>
 #include <kickos/chip_com1.h>
 
 #include <stdint.h>
@@ -183,7 +182,6 @@ namespace
         kickos_x86_64_fault_report_open();
 
         com1_puts("\n=== X86_64 EXCEPTION ===\n");
-        com1_puts("  token=" KICKOS_X2_TOKEN "\n");
 
         com1_puts("  vector=");
         com1_dec(frame->vector);

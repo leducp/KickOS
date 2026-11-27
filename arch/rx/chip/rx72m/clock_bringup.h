@@ -159,6 +159,18 @@ namespace kickos::rx::clocktree
         return src >> pckb;
     }
 
+    // PCLKA, the clock of SCI7 to SCI11 (UM Table 5.1 pp.273-279).
+    static inline uint32_t pclka_hz()
+    {
+        uint32_t const src = clock_source_hz();
+        uint32_t const pcka = (r32(cgc::SCKCR) >> cgc::SCKCR_PCKA_S) & cgc::SCKCR_DIV_MASK;
+        if (src == 0u or pcka > cgc::SCKCR_DIV_MAX)
+        {
+            return 0;
+        }
+        return src >> pcka;
+    }
+
     // ICLK off the live tree, 0 for a tree clock_source_hz() cannot describe.
     static inline uint32_t iclk_hz()
     {

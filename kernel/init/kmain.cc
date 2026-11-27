@@ -19,7 +19,6 @@
 #include <kickos/time.h>
 #include <kickos/irq.h>
 #include <kickos/app.h>
-#include <kickos/ampdiag.h>
 #include <kickos/ampshare.h>
 #include <kickos/ampwindow.h>
 #include <kickos/aspace.h>
@@ -102,7 +101,7 @@ namespace kickos
             char const* rule = diag::kBannerRule;
             kputs("\n");
             kputs(rule);
-            kprintf(KDIAG_F_BANNER_NAME, KICKOS_VERSION);
+            kprintf(KDIAG_F_BANNER_NAME, diag::banner_title_indent(KICKOS_VERSION), KICKOS_VERSION);
             kputs(rule);
             kprintf(KDIAG_F_BANNER_BOARD, KICKOS_BOARD_NAME);
             kprintf(KDIAG_F_BANNER_ARCH, KICKOS_ARCH_NAME);
@@ -259,7 +258,6 @@ namespace kickos
             args->argv = argv;
         }
 
-        kdiag_led_init();
         kbanner();
         sched::init();
         domain_init();
@@ -271,8 +269,6 @@ namespace kickos
 #if KICKOS_AMP_NODE
         // Before any node can be poked: the doorbell is open from arch_init, and a service
         // reaching an unminted node refuses every message it was sent.
-        // Before the window, so a peer reports even where the window layer refuses.
-        amp::diag_peer_publish();
         amp::window_init();
 #if KICKOS_AMP_SHARE
         amp_share_clear();
@@ -280,7 +276,6 @@ namespace kickos
         // AFTER the window is seated and before anything can be published at a peer: a node
         // released earlier would publish into bytes this node is about to clear.
         arch_amp_release_peers();
-        amp::diag_primary_report();
 #endif
 
         static_assert(KICKOS_ROOT_STACK_SIZE >= KICKOS_MIN_STACK_SIZE,

@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// XMC4800 IRQ-driven buffered UART console driver on USIC0 CH0 (see
-// <kickos/driver/xmcuartirq.h>).
+// XMC4800 IRQ-driven buffered UART console driver (see <kickos/driver/xmcuartirq.h>).
 //
 // The USIC behaviour cited below is clean-room from the XMC4700/XMC4800 Reference Manual
 // (V1.3, 2016-07); no XMCLib/DAVE/CMSIS vendor source. "RM p.NN" are the manual's printed

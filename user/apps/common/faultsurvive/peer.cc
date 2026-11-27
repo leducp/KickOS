@@ -703,8 +703,9 @@ namespace
         __asm volatile("blxns %0" ::"r"(target) : "lr", "memory");
 #endif
 #elif KICKOS_FS_MODE == 19
-        // RP2350 datasheet 10.2.2: 0x4300 starts the bootrom's Non-secure instruction-fetch range.
-        __asm volatile("bxns %0" ::"r"(0x00004300u) : "memory");
+        // RP2350 datasheet 10.2.2: the IDAU leaves the Arm boot ROM below 0x4300 Exempt, which
+        // Non-secure state fetches whatever SAU the bootrom left.
+        __asm volatile("bxns %0" ::"r"(0x00000100u) : "memory");
 #elif KICKOS_FS_MODE == 12
         forge();
 #elif KICKOS_FS_MODE == 13

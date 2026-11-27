@@ -5,8 +5,8 @@
 // hands the UART to that unprivileged driver, and main and a worker print through it. The driver's
 // up line and a constructor's line reach the wire in either order.
 //
-// UARTCONSOLE_SCRAMBLE_TEST instead garbles the K64's UART0 from a thread holding no grant and
-// panics: the panic must still reach the wire, the kernel reclaiming the console out of the
+// UARTCONSOLE_SCRAMBLE_TEST instead garbles the K64's console UART from a thread holding no grant
+// and panics: the panic must still reach the wire, the kernel reclaiming the console out of the
 // published state.
 
 #include <kickos/kos.h>
@@ -14,10 +14,6 @@
 
 #include <stdint.h>
 #include <stdio.h>
-
-#if UARTCONSOLE_SCRAMBLE_TEST
-#include <kickos/chip_mmap.h>
-#endif
 
 #if !KICKOS_HAVE_MPU
 #error "uartconsole requires enforcement: build the board's base variant, not its flat one"
@@ -51,7 +47,7 @@ namespace
 #else
     // Above main so it runs at once, and below the driver as every stdout writer must be.
     constexpr uint8_t SCRAMBLER_PRIO = 11;
-    // UART0 byte registers (RM ch.52): exactly the ones arch_console_reclaim undoes.
+    // UART byte registers (RM ch.52): exactly the ones arch_console_reclaim undoes.
     constexpr uintptr_t OFF_BDH = 0x00u;
     constexpr uintptr_t OFF_BDL = 0x01u;
     constexpr uintptr_t OFF_C2 = 0x03u;
@@ -67,13 +63,13 @@ namespace
 
     void scrambler(void*)
     {
-        uintptr_t const uart = kickos::mk64f::mmap::UART0_BASE;
+        uintptr_t const uart = KICKOS_BOARD_CONSOLE_BASE;
         r8(uart + OFF_MODEM) = MODEM_TXCTSE;
         r8(uart + OFF_BDH) = 0xFFu;
         r8(uart + OFF_BDL) = 0xFFu;
         r8(uart + OFF_C3) = C3_TXINV;
         r8(uart + OFF_C2) = 0; // TX off last
-        kos::print("[scramble] UART0 garbled (TXCTSE/baud/TXINV, TX off); ending the system\n");
+        kos::print("[scramble] console UART garbled (TXCTSE/baud/TXINV, TX off); ending the system\n");
         // A panic, never a fault: a thread's fault kills it alone and does not reclaim the
         // console, so nothing would reach the wire. Inside the kernel's 64-byte panic buffer.
         kos_panic("[uartconsole] PASS: the dead channel came back");

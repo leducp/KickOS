@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// ESP32 (Xtensa LX6) UART0 open, for a channel the ROM has already brought up. Everything
-// below open is the family body in system/driver/espuart. Register facts: ESP32 TRM v5.8
+// ESP32 (Xtensa LX6) UART open, for a channel the ROM or the kernel has already brought up.
+// Everything below open is the family body in system/driver/espuart. Register facts: ESP32 TRM v5.8
 // ch.19, via arch/xtensa/chip/esp32/regs/uart.h.
 
 #include <kickos/driver/uart.h>
@@ -72,7 +72,7 @@ int32_t kos_uart_open(struct kos_uart* u, struct kos_uart_config const* cfg)
     {
         return fixed_rate;
     }
-    // The frame stays the 8N1 the ROM left in CONF0.
+    // The frame stays the 8N1 left in CONF0.
     if (cfg->data_bits != 8u or cfg->parity != KOS_UART_PARITY_NONE or cfg->stop_bits != 1u)
     {
         return -KOS_ENOTSUP;

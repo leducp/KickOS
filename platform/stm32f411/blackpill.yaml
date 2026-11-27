@@ -13,4 +13,4 @@ console:
   pins: { tx: PA2, rx: PA3 }
 
 leds:
-  led: { pin: PC13, active: low, owner: kernel } # the kernel's diagnostic LED
+  led: { pin: PC13, active: low, diagnostic: true }

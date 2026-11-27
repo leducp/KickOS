@@ -224,12 +224,6 @@ namespace kos
         return kos_realtime_set(to_kos(t));
     }
 #endif
-    // Borrow the kernel's diagnostic LED (see kos_kernel_diag_led_set): a shared
-    // status pin, not an app-owned device; provisional until caps land.
-    inline void kernel_diag_led(bool on)
-    {
-        kos_kernel_diag_led_set(on);
-    }
     [[noreturn]] inline void exit(int code)
     {
         kos_exit(code);

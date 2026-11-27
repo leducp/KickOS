@@ -21,10 +21,19 @@
 # capture that carries a banner as carrying none.
 BANNER_COMMIT_RE='commit +[A-Za-z0-9._/+-]+'
 
+# A banner title is the name and its version, `unknown` where the build had no version tag,
+# whatever spacing or rule surrounds them. The version is the second group.
+BANNER_TITLE_ERE='(^|[^[:alnum:]_])KickOS[[:space:]]+(unknown|[0-9]+[.][0-9]+[.][0-9]+[-+.A-Za-z0-9]*)([[:space:]=]|$)'
+
+# banner_title_version <line>: the version a title line carries, or nothing.
+banner_title_version() {
+  printf '%s\n' "$1" | sed -nE "s/.*$BANNER_TITLE_ERE.*/\\2/p" | head -n 1
+}
+
 # A commit row is read only after the last boot's title, so a boot that lost its own row is
 # recovered below as damaged rather than credited with an earlier boot's label.
 banner_label() { # <log> [expected label]
-  _bl_from=$(grep -anE 'KickOS +[0-9]+\.' "$1" | tail -1 | cut -d: -f1)
+  _bl_from=$(grep -anE "$BANNER_TITLE_ERE" "$1" | tail -1 | cut -d: -f1)
   _bl=$(tail -n +"${_bl_from:-1}" "$1" | grep -aoE "$BANNER_COMMIT_RE" | tail -1)
   if [ -n "$_bl" ]; then
     printf '%s\n' "${_bl##* }"
@@ -106,7 +115,6 @@ more than once"
 # rows are rendered here from kbanner's own formats; an empty <app> is an image with no app stamp,
 # whose block has no app row. Prints the refusal and returns 1 otherwise.
 identity_verdict() { # <log> <diag> <version> <board> <label> <build> <app>
-  _iv_t=$(identity_row "$2" KDIAG_F_BANNER_NAME '%s') || { echo "no title format in $2"; return 1; }
   _iv_b=$(identity_row "$2" KDIAG_F_BANNER_BOARD "$4") || { echo "no board format in $2"; return 1; }
   _iv_u=$(identity_row "$2" KDIAG_F_BANNER_BUILD "$6") || { echo "no build format in $2"; return 1; }
   _iv_a=""
@@ -114,22 +122,20 @@ identity_verdict() { # <log> <diag> <version> <board> <label> <build> <app>
     _iv_a=$(identity_row "$2" KDIAG_F_BANNER_APP "$7") || { echo "no app format in $2"; return 1; }
   fi
   _iv_c=$(identity_row "$2" KDIAG_F_BANNER_COMMIT "$5") || { echo "no commit format in $2"; return 1; }
-  # shellcheck disable=SC2059
-  _iv_title=$(printf "$_iv_t" "$3")
-  # The last line a title of any version renders, so a stale image's block is the one judged.
-  _iv_at=$(tr -d '\r' < "$1" | KOS_IV_FMT="$_iv_t" awk '
-      BEGIN { f = ENVIRON["KOS_IV_FMT"]; i = index(f, "%s"); pre = substr(f, 1, i - 1)
-              post = substr(f, i + 2) }
-      length($0) > length(pre) + length(post) && substr($0, 1, length(pre)) == pre \
-          && substr($0, length($0) - length(post) + 1) == post { at = NR }
-      END { print at }')
+  # The last title of any version, so a stale image's block is the one judged.
+  _iv_at=$(tr -d '\r' < "$1" | grep -nE "$BANNER_TITLE_ERE" | tail -n 1 | cut -d: -f1)
   if [ -z "$_iv_at" ]; then
     echo "no identity rows: the image on the board printed none once the host configured it, so the capture names no build"
     return 1
   fi
   _iv_block=$(tr -d '\r' < "$1" | sed -n "${_iv_at},$((_iv_at + 4))p")
-  _iv_n=0
-  for _iv_row in "$_iv_title" "$_iv_b" "$_iv_u" "$_iv_a" "$_iv_c"; do
+  _iv_v=$(banner_title_version "$(printf '%s\n' "$_iv_block" | sed -n 1p)")
+  if [ "$_iv_v" != "$3" ]; then
+    echo "identity row 1 of the last block names version [$_iv_v], not the flashed image's [$3]"
+    return 1
+  fi
+  _iv_n=1
+  for _iv_row in "$_iv_b" "$_iv_u" "$_iv_a" "$_iv_c"; do
     if [ -z "$_iv_row" ]; then
       continue
     fi

@@ -201,9 +201,6 @@ int console_tx_line(void);
 // cleared by a reclaim that goes through, and by a re-publish, which retires a note naming the
 // console it replaced.
 void console_note_driver_death(void);
-// Nonzero in the DARK WINDOW: the published console's task has ended and the reclaim still
-// waits on a thread holding the device. Caller holds IrqLock.
-int console_dark(void);
 
 #ifdef __cplusplus
 }

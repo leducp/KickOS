@@ -24,7 +24,7 @@ KOS_MACHINE=q35
 KOS_TIMEOUT=60
 KOS_WORK_LEAF=x1floor
 KOS_END=halt
-KOS_REFUSAL="KickOS: this processor is below x86-64-v3"
+KOS_REFUSAL="KickOS: this processor is below the floor it is built for"
 KOS_END_RE="$KOS_REFUSAL"
 KICKOS_X86_64_CPU=${KICKOS_X86_64_FLOOR_CPU:-qemu64}
 

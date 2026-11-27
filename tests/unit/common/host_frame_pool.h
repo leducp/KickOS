@@ -17,7 +17,7 @@ namespace kickos
     namespace testfix
     {
         constexpr size_t HOST_POOL_GRANULE = 4096;
-        constexpr size_t HOST_POOL_FRAMES = 128;
+        constexpr size_t HOST_POOL_FRAMES = 256;
         constexpr arch_phys_addr_t HOST_POOL_LO = 0x40000000u;
 
         // `pages` consecutive free frames, or 0. Every entry point allocates through this, and

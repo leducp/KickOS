@@ -37,18 +37,30 @@
 # The refusal check runs before the banner check, so an image whose doorbell went unanswered is
 # reported on the refusal it printed rather than on the line it did not.
 #
-# usage: check_smp_doorbell.sh <elf> <expect-cores> <live-ere>
+# THE CHECK IS A WITNESS KERNEL'S, NOT THE PRODUCT'S. The rounds, the control and the lock phase
+# run only in a kernel built with KICKOS_WITNESS_DOORBELL, which this gate configures in a scratch
+# tree of the preset under test, passing the marker the configure refuses the knob without. <elf>
+# is the preset's own image: it must carry none of the check's refusals, and the image booted is
+# the witness tree's build of the same target.
+#
+# usage: check_smp_doorbell.sh <elf> <expect-cores> <live-ere> <backend> <source-dir> <cmake>
+#                              <preset> <build-dir> <scratch-dir>
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
 # The doorbell rounds run inside the arrival spin bound, and the trace log costs time.
 : "${QEMU_TIMEOUT:=60}"
 
-_usage="usage: check_smp_doorbell.sh <elf> <expect-cores> <live-ere> <backend>"
-elf="${1:?$_usage}"
+_usage="usage: check_smp_doorbell.sh <elf> <expect-cores> <live-ere> <backend> <source-dir> <cmake> <preset> <build-dir> <scratch-dir>"
+product="${1:?$_usage}"
 want="${2:?$_usage}"
 live="${3:?$_usage}"
 backend="${4:?$_usage}"
+SRC="${5:?$_usage}"
+CMAKE="${6:?$_usage}"
+PRESET="${7:?$_usage}"
+BUILD="${8:?$_usage}"
+SCRATCH="${9:?$_usage}"
 
 require_number "$want" "the expected core count"
 want_hex="$(printf '%x' "$want")"
@@ -57,7 +69,11 @@ if [ "$want" -le 1 ]; then
     fail "expected core count is $want. At one core the doorbell and the lock are empty macros
   and no round runs at all, so this gate belongs only on a preset whose core count exceeds one"
 fi
-[ -f "$elf" ] || fail "no image at $elf"
+[ -f "$product" ] || fail "no image at $product"
+case "$product" in
+    "$BUILD"/*) ;;
+    *) fail "the image $product is not under the build directory $BUILD" ;;
+esac
 need_qemu_machine
 need_qemu
 
@@ -77,6 +93,43 @@ for _m in "$UNANSWERED" "$EARLY_WAIT" "$NO_CONTEND" "$NO_SPIN" "$STILL_SETTLED" 
     require_literal "$_m" "a doorbell marker"
 done
 literal_matcher_control
+scratch_dir
+
+# --- the witness kernel -------------------------------------------------------------------
+# The preset's own image runs no check: the round's refusals are the witness kernel's alone.
+for _m in "$EARLY_WAIT" "$NO_CONTEND" "$NO_SPIN" "$STILL_SETTLED" "$CHECK_TAIL"; do
+    if grep -q -a -F -e "$_m" "$product"; then
+        fail "the preset's own image $product carries '$_m': the doorbell boot check is
+  compiled into a kernel built without KICKOS_WITNESS_DOORBELL"
+    fi
+done
+MARKER=check_smp_doorbell.sh
+if "$CMAKE" -S "$SRC" -B "$TMP/refused" --preset "$PRESET" -DKICKOS_WITNESS_DOORBELL=ON \
+       -DKICKOS_BUILD_TESTS=OFF > "$TMP/refused.log" 2>&1; then
+    fail "a configure with KICKOS_WITNESS_DOORBELL and no marker was accepted"
+fi
+if ! grep -q 'WITNESS_DOORBELL_REFUSED' "$TMP/refused.log"; then
+    sed -n '1,30p' "$TMP/refused.log" >&2
+    fail "the unmarked configure failed, but not on the refusal"
+fi
+_cache="$SCRATCH/CMakeCache.txt"
+_reuse=0
+if [ -f "$_cache" ] && grep -q '^KICKOS_WITNESS_DOORBELL:BOOL=ON$' "$_cache" \
+   && grep -qxF -e "KICKOS_WITNESS_DOORBELL_SCRATCH:UNINITIALIZED=$MARKER" "$_cache" \
+   && grep -qxF -e "CMAKE_HOME_DIRECTORY:INTERNAL=$SRC" "$_cache"; then
+    _reuse=1
+fi
+if [ "$_reuse" -eq 0 ]; then
+    rm -rf "$SCRATCH"
+    "$CMAKE" -S "$SRC" -B "$SCRATCH" --preset "$PRESET" -DKICKOS_WITNESS_DOORBELL=ON \
+        -DKICKOS_WITNESS_DOORBELL_SCRATCH="$MARKER" -DKICKOS_BUILD_TESTS=OFF > "$TMP/cfg.log" 2>&1 \
+        || { sed -n '1,40p' "$TMP/cfg.log" >&2; fail "configure of the witness kernel failed for $PRESET"; }
+fi
+elf="$SCRATCH/${product#"$BUILD"/}"
+"$CMAKE" --build "$SCRATCH" --target "$(basename "$product")" > "$TMP/build.log" 2>&1 \
+    || { grep -E 'error' "$TMP/build.log" | sed -n '1,20p' >&2; fail "build of the witness image failed in $SCRATCH"; }
+[ -f "$elf" ] || fail "the witness build wrote no image at $elf"
+
 # A refusal this image cannot print is one whose absence below asserts nothing.
 for _m in "$UNANSWERED" "$EARLY_WAIT" "$NO_CONTEND" "$NO_SPIN" "$STILL_SETTLED"; do
     grep -q -a -F -e "$_m" "$elf" || fail "the image carries no '$_m', so the arm reading the
@@ -211,7 +264,6 @@ case " ${QEMU_EXTRA:-} " in
   routes, and a disagreement makes this gate measure the wrong machine" ;;
 esac
 
-scratch_dir
 TRACE="$TMP/gic.log"
 
 # --- The boot, with QEMU's GIC model logging beside the console ----------------

@@ -25,6 +25,7 @@ namespace
     size_t g_next_frame = 1;
     uint32_t g_frames_allocated = 0;
     uint32_t g_frames_freed = 0;
+    uint32_t g_leaves_freed = 0;
     uint32_t g_frame_budget = SYSOPS_FRAMES;
 
     void (*g_mid_edit)() = nullptr;
@@ -50,6 +51,11 @@ extern "C"
     {
         // Do not reuse frames; residency is keyed by root address.
         g_frames_freed++;
+    }
+
+    void kickos_leaf_free(arch_phys_addr_t)
+    {
+        g_leaves_freed++;
     }
 
 #if KICKOS_NUM_CORES > 1
@@ -193,6 +199,11 @@ namespace kickos
             return g_frames_freed;
         }
 
+        uint32_t leaves_freed()
+        {
+            return g_leaves_freed;
+        }
+
         size_t frames_left()
         {
             size_t left = 0;
@@ -221,6 +232,7 @@ namespace kickos
             g_next_frame = first_frame;
             g_frames_allocated = 0;
             g_frames_freed = 0;
+            g_leaves_freed = 0;
             g_frame_budget = SYSOPS_FRAMES;
             g_mid_edit = nullptr;
         }

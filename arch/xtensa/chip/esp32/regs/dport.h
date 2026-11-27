@@ -17,7 +17,7 @@ namespace kickos::esp32::reg::dport
     constexpr uintptr_t CPU_PER_CONF = mmap::DPORT_BASE + 0x3Cu;
 
     // Interrupt-matrix map register for the UART0 source (peripheral source 34).
-    // Written with the TARGET CPU interrupt number (see irq::cpu_int::UART0_CPU_INT).
+    // Written with the TARGET CPU interrupt number (see irq::cpu_int).
     constexpr uintptr_t PRO_UART_INTR_MAP = mmap::DPORT_BASE + 0x18Cu;
 
     // CPU_PER_CONF.CPUPERIOD_SEL [1:0]: 0=80 1=160 2=240 MHz.
@@ -69,6 +69,15 @@ namespace kickos::esp32::reg::dport
     // them does not change behaviour. 16 is ALSO the reset value of every map register in both
     // banks (the shared map-register diagram, p.262), so an unwritten bank is already sunk.
     constexpr uint32_t INTR_MAP_SINK = 16u;
+
+    // Module clock gates and resets, one bit per module in both (Registers 12.19 and 12.20,
+    // p.255). Every UART also needs the shared FIFO memory's gate.
+    constexpr uintptr_t PERIP_CLK_EN = mmap::DPORT_BASE + 0x0C0u;
+    constexpr uintptr_t PERIP_RST_EN = mmap::DPORT_BASE + 0x0C4u;
+    constexpr uint32_t PERIP_UART0 = 1u << 2;
+    constexpr uint32_t PERIP_UART1 = 1u << 5;
+    constexpr uint32_t PERIP_UART2 = 1u << 23;
+    constexpr uint32_t PERIP_UART_MEM = 1u << 24;
 }
 
 #endif

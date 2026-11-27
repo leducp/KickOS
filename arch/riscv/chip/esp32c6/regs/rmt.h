@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// ESP32-C6 RMT registers, channel 0 TX, driving the WS2812B diag LED (GPIO8). The channel
-// clock is selected and divided in PCR (regs/pcr.h), not in RMT_SYS_CONF.
+// ESP32-C6 RMT registers, channel 0 TX, as led_rmt.h drives it. The channel clock is selected
+// and divided in PCR (regs/pcr.h), not in RMT_SYS_CONF.
 
 #ifndef KICKOS_ARCH_RISCV_CHIP_ESP32C6_REGS_RMT_H
 #define KICKOS_ARCH_RISCV_CHIP_ESP32C6_REGS_RMT_H

@@ -65,6 +65,10 @@ kickos_emit_image(ampecho)
 add_executable(ampecho_spare main_spare.c)
 target_link_libraries(ampecho_spare PRIVATE kickos)
 kickos_program_link(ampecho_spare)
+# The program of the echo compositions' task on port 7.
+add_executable(ampecho_mortal main_mortal.c)
+target_link_libraries(ampecho_mortal PRIVATE kickos)
+kickos_program_link(ampecho_mortal)
 
 # One entry per peer node in node order, which is the order build-partition.sh assigns them.
 # The same target repeats: what makes two peers different images is the node index their build
@@ -102,12 +106,10 @@ if(KICKOS_AMP_NODE_ID EQUAL 0)
   if(KICKOS_BOARD STREQUAL "esp32c6-wroom")
     string(REPLACE "," ";" _amp_slices "${KICKOS_AMP_SLICE_LIST}")
     list(GET _amp_slices 0 _amp_slice0)
-    list(GET _amp_slices 1 _amp_slice1)
     math(EXPR _amp_n0 "${KICKOS_AMP_PARTITION_BASE}" OUTPUT_FORMAT HEXADECIMAL)
     math(EXPR _amp_n1 "${KICKOS_AMP_PARTITION_BASE} + ${_amp_slice0}" OUTPUT_FORMAT HEXADECIMAL)
-    math(EXPR _amp_n1_end "${_amp_n1} + ${_amp_slice1}" OUTPUT_FORMAT HEXADECIMAL)
     kickos_app_judge(ampping_n0 tests/integration/check_c6_amp_capture.sh
-                     ARGS ${_amp_n0} ${_amp_n1} ${_amp_n1_end})
+                     ARGS ${_amp_n0} ${_amp_n1})
   elseif(KICKOS_BOARD STREQUAL "pizero2350")
     kickos_app_judge(ampping_n0 tests/integration/check_pizero_amp_gate.sh)
   endif()

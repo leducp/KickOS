@@ -94,9 +94,9 @@
 # INVEP), the frame goes to a Non-secure stack, and the kill record must name the SFSR and no PC.
 #
 # `bxnsrom' (faultsurvive_bxnsrom, KICKOS_FS_MODE 19, rp2350 silicon): the worker branches to the
-# bootrom's Non-secure instruction range, which Non-secure state may fetch. Only the Non-secure
-# MPU bring-up enables with no region stops it, at the first fetch: the kill record must name
-# CFSR_NS with IACCVIOL and no PC. Without that MPU the bootrom runs Non-secure and privileged.
+# boot ROM the IDAU leaves Exempt, which Non-secure state may fetch whatever the SAU says. Only the
+# Non-secure MPU bring-up enables with no region stops it, at the first fetch: the kill record must
+# name CFSR_NS with IACCVIOL and no PC.
 #
 # `div0' and `ldiv0' (faultsurvive_div0 and faultsurvive_ldiv0, KICKOS_FS_MODE 8 and 9): the
 # worker divides by zero in 32 and in 64 bits. The outcome is the arch's: `killed' where the core

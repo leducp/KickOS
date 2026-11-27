@@ -382,21 +382,12 @@ stranded thread. (An emulated target goes one step further and displaces even
 that telemetry read, because the model freezes or omits `CYCCNT` -- the same
 lesson from the emulator side: the cycle counter is not a dependable authority.)
 
-What "meets the checklist" admits is wider than one kind of peripheral, and the
-emulated boards are the instructive case. A board whose whole purpose is to exercise
-the kernel under an emulator can answer `arch_clock_now` from the *host*, through the
-semihosting clock the model already provides: no counter is programmed, no divider is
-derived, and the granularity is 10 ms rather than nanoseconds. That is a legitimate
-answer because the checklist asks for width, for a reading that does not stop when the
-core does, and for a source outside the debug block, and not for a particular unit. The
-coarse tick is honest about what an emulated board can measure anyway. It does drag one
-requirement into the open that a
-real peripheral satisfies for free: a host-provided reading can *glitch*, so the seam
-clamps it against the last value it returned, since a single low reading would regress
-the clock and a single bogus high one would strand every armed sleeper. The clamp is a
-read-modify-write on a 64-bit variable that both thread and interrupt context touch, so
-it runs with interrupts masked; a torn store latched by the clamp would jump the clock
-forward permanently, which is failure (a) arriving by another road.
+An emulated board is held to the same checklist, and it meets it the same way: it reads a
+peripheral counter that the model emulates, not a clock the host offers. On the MPS2 model the
+source is the CMSDK dual timer, a 32-bit down-counter at the 25 MHz system clock, extended to
+64 bits in software through its wrap interrupt. So the emulated board runs the same extension
+code, with the same failure modes, that a silicon board runs, and its clock has the counter's
+resolution.
 
 ### Per-arch realisations
 
@@ -406,7 +397,7 @@ reach. The shape is uniform; the source differs.
 | ISA / core         | Authoritative `now()` source                                   |
 |--------------------|----------------------------------------------------------------|
 | RISC-V (RV32IMAC)  | CLINT `mtime` -- wide, reliable, memory-mapped                  |
-| ARM Cortex-M       | a free-running peripheral timer, or the host's semihosting clock on an emulated board |
+| ARM Cortex-M       | a free-running peripheral timer, on an emulated board as on silicon |
 | RX (RXv3)          | CMTW compare-match unit on a derived PCLKB rate                |
 | Xtensa LX6         | a wide peripheral timer, chosen over the narrow core `CCOUNT`  |
 
@@ -437,8 +428,8 @@ safe to offer.
   boundary. So the rate the thread scales by is the kernel's own: a register user mode can read,
   a constant the chip description states, or, where only the kernel knows it because it measured
   it at boot, a value the kernel hands each program before any of its application code runs.
-- **The kernel trusts nothing the thread read.** Every deadline a thread passes the kernel is a
-  relative timeout, never an instant, so a wrong reading can only hurt the thread that made it.
+- **The kernel trusts nothing the thread read.** The kernel checks every deadline a thread
+  passes it against its own clock, so a wrong reading can only hurt the thread that made it.
 
 For the thread, the cost changes and the meaning does not: the same values at the same
 resolution. One consequence is easy to miss. A cooperative cancel lands when its target next
@@ -448,8 +439,8 @@ counter becomes a timing source every thread on that core can read. Because the 
 per-core register, a kernel that wants to ration time can close it again for a thread at each
 switch, for one register write.
 
-Where the clock is a memory-mapped peripheral behind the protection unit, or the host's clock
-reached through the emulator, the read stays a system call. The function a program calls is the
+Where the clock is a memory-mapped peripheral behind the protection unit, the read stays a
+system call. The function a program calls is the
 same either way.
 
 ## Where to go next
@@ -459,8 +450,9 @@ same either way.
 - The exact, binding seam and the tickless scheduler mechanics:
   `../reference/architecture.md` (`arch_timer_arm` / `arch_clock_now`, and the
   "Tickless" section -- delta list, minimum-delta guard).
-- Each chip's concrete counter (peripheral, rate, latch strategy): Chapters 4 and
-  5 (per-ISA and per-chip tours) over `arch/*/chip/*`.
+- Each chip's concrete counter (peripheral, rate, latch strategy): the
+  [journey](../journey/README.md), whose sleep chapter and per-ISA chapters walk the
+  clock on each chip, over `arch/*/chip/*`.
 - The one-shot's other half -- how a deferred timer interrupt drives a switch on
   the way out of an ISR: [Chapter 3.5](context-switching-and-the-silicon-contract.md), *Context switching and the silicon
   contract* (the deferred-switch axis).

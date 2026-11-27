@@ -51,9 +51,9 @@ witness image `selftest_la57` enters it before the kernel adopts the regime
 The kernel's PE32+ link (`pe_image.ld`) holds the program's text, data and bss as `.kimg0t`,
 `.kimg0d` and `.kimg0b`, each at the program's own offset from its first byte
 (`tools/image-link.py`). Firmware loads the image anywhere and applies its `DIR64` records to
-the kernel alone. `__kickos_app_load_delta`, the kernel's view of the program less its link
-address, is stated relative to `.kimg0t`, so its one word carries a record and firmware's pass
-moves it with the image. The program addresses the kernel names are absolute words no record
+the kernel alone. The kernel's view of the program is stated as an offset from
+`__kickos_image0_load_start`, the first byte of `.kimg0t` (formerly `__kickos_app_load_delta`), so
+firmware's pass moves it with the image. The program addresses the kernel names are absolute words no record
 moves. A PE32+ symbol table holds no 64-bit value, so ld drops those names from it.
 
 The program's `arch_syscall` body lives in program text. No privileged thread runs program

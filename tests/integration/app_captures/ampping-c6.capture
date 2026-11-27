@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
-# Recorded on esp32c6-wroom.
+# Recorded on esp32c6-wroom; the clock line written by hand.
 ESP-ROM:esp32c6-20220919
 Build:Sep 19 2022
 rst:0x1 (POWERON),boot:0xc (SPI_FAST_FLASH_BOOT)
@@ -22,9 +22,9 @@ entry 0x40800000
    kstack  1184 B x 5 = 5920 B
 
 # c6amp: LP RTC 149388 Hz
-# ampdiag: peer node=1 vectors=0x40833901 tag=0 clk=20000000 self clk=160000000
 ampping: node 1 serves port 3
 ampping: 2 of 2 node app(s) alive on the port the partition names, own row 1
+ampping: gate: node 0 runs at 160000000 Hz, node 1 at 20000000 Hz
 ampping: gate: node 0 read 0x2206072 from its timg0, node 1 read 0x2206072 from its timg1 and 0x0 from node 0's timg0
 ampping: gate: node 1 stored 0xbadc0de5 to 0x408163b8, node 0's word at 0x408163b8, and loaded 0x0; node 0 reads 0x600df00d there
 ampping: node 0 calls node 1 port 3

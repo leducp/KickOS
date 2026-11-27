@@ -1,22 +1,25 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// A witness image's paging entry: where firmware left four-level paging live on a processor that
-// offers five, the kernel moves to five levels before it adopts the regime, as firmware that
-// enables them leaves it: a five-level root whose first entry is firmware's four-level root.
+// A witness image's kernel constructor, which the boot landing runs before the kernel adopts the
+// paging regime: where firmware left four-level paging live on a processor that offers five, it
+// moves to five levels, as firmware that enables them leaves it: a five-level root whose first
+// entry is firmware's four-level root.
 // CR4.LA57 changes only with paging off, so the switch leaves long mode through a 32-bit code
 // segment and comes back; the code, the stack and the root must then sit below 4 GiB, which an
 // image at its preferred base does (Intel SDM Vol 3, section 10.8.5).
 
+#include <kickos/arch/arch.h>
 #include <kickos/arch/regs.h>
 #include <kickos/chip_com1.h>
+
+#include <fatal_status.ld.h>
 
 #include <stddef.h>
 #include <stdint.h>
 
 extern "C"
 {
-    void kfault_terminate(void) __attribute__((noreturn));
     // Leaves long mode, sets CR4.LA57 and CR3 to `root`, re-enters long mode (below).
     void kickos_x86_64_la57_switch(uint32_t root, void const* gdtr);
 }
@@ -49,7 +52,7 @@ namespace
         kickos::q35::com1_puts("\nx86_64 la57 witness: ");
         kickos::q35::com1_puts(what);
         kickos::q35::com1_puts("\n");
-        kfault_terminate();
+        arch_shutdown(KICKOS_FATAL_STATUS);
     }
 
     bool offers_la57(void)
@@ -66,39 +69,39 @@ namespace
         __asm__ volatile("cpuid" : "=a"(a), "=b"(b), "=c"(c), "=d"(d) : "a"(7u), "c"(0u));
         return (c & CPUID_7_ECX_LA57) != 0;
     }
-}
 
-extern "C" void kickos_x86_64_paging_entry(void)
-{
-    if ((kickos::x86_64::read_cr4() & CR4_LA57) != 0)
+    [[gnu::constructor]] void enter_la57(void)
     {
-        kickos::q35::com1_puts("x86_64 la57 witness: firmware left five-level paging live\n");
-        return;
+        if ((kickos::x86_64::read_cr4() & CR4_LA57) != 0)
+        {
+            kickos::q35::com1_puts("x86_64 la57 witness: firmware left five-level paging live\n");
+            return;
+        }
+        if (not offers_la57())
+        {
+            refuse("this processor offers no five-level paging");
+        }
+        if ((kickos::x86_64::read_cr4() & CR4_PCIDE) != 0)
+        {
+            refuse("PCIDs are on, and paging cannot be turned off under them");
+        }
+        uintptr_t const sp = reinterpret_cast<uintptr_t>(__builtin_frame_address(0));
+        uintptr_t const code = reinterpret_cast<uintptr_t>(&kickos_x86_64_la57_switch);
+        uintptr_t const root = reinterpret_cast<uintptr_t>(g_root5);
+        if (sp >= BELOW_4G or code >= BELOW_4G or root >= BELOW_4G)
+        {
+            refuse("the image is not below 4 GiB, so it cannot run with paging off");
+        }
+        g_root5[0] = (kickos::x86_64::read_cr3() & PTE_ADDR_MASK) | PTE_P | PTE_RW;
+        g_gdtr.limit = static_cast<uint16_t>(sizeof(g_gdt) - 1u);
+        g_gdtr.base = reinterpret_cast<uint64_t>(g_gdt);
+        kickos_x86_64_la57_switch(static_cast<uint32_t>(root), &g_gdtr);
+        if ((kickos::x86_64::read_cr4() & CR4_LA57) == 0)
+        {
+            refuse("CR4.LA57 is still clear after the switch");
+        }
+        kickos::q35::com1_puts("x86_64 la57 witness: five-level paging entered\n");
     }
-    if (not offers_la57())
-    {
-        refuse("this processor offers no five-level paging");
-    }
-    if ((kickos::x86_64::read_cr4() & CR4_PCIDE) != 0)
-    {
-        refuse("PCIDs are on, and paging cannot be turned off under them");
-    }
-    uintptr_t const sp = reinterpret_cast<uintptr_t>(__builtin_frame_address(0));
-    uintptr_t const code = reinterpret_cast<uintptr_t>(&kickos_x86_64_la57_switch);
-    uintptr_t const root = reinterpret_cast<uintptr_t>(g_root5);
-    if (sp >= BELOW_4G or code >= BELOW_4G or root >= BELOW_4G)
-    {
-        refuse("the image is not below 4 GiB, so it cannot run with paging off");
-    }
-    g_root5[0] = (kickos::x86_64::read_cr3() & PTE_ADDR_MASK) | PTE_P | PTE_RW;
-    g_gdtr.limit = static_cast<uint16_t>(sizeof(g_gdt) - 1u);
-    g_gdtr.base = reinterpret_cast<uint64_t>(g_gdt);
-    kickos_x86_64_la57_switch(static_cast<uint32_t>(root), &g_gdtr);
-    if ((kickos::x86_64::read_cr4() & CR4_LA57) == 0)
-    {
-        refuse("CR4.LA57 is still clear after the switch");
-    }
-    kickos::q35::com1_puts("x86_64 la57 witness: five-level paging entered\n");
 }
 
 // rdi: the root, rsi: the GDT pointer. Interrupts are off on this path. The upper halves of the

@@ -1194,19 +1194,19 @@ space by construction.
 *Which means a privileged thread holds NO SPACE, and the switch path must know it.* The kernel's half
 is reachable from any root, but the APP's half is not: it is the half that changes per process, and
 for a thread with no space of its own the installed root is still the last process's. libc's
-reentrant state lives there -- the per-slot array and the word libc resolves from are both app
-objects -- so the switch path asks `aspace_seated_for` before it primes or seats either, and writes
-neither when the answer is no. Idle is the only such thread and needs no prime.
+reentrant state lives there: a thread's state and the cell libc resolves it from sit in its stack
+block's carve, an app object. So no switch path writes either. `thread_create` primes the state
+once, at creation, through the frame pool's alias (`reent_prime`), and libc finds it through `tp`,
+which the restore loads from the thread's context. Idle runs on the shared state and needs no prime.
 
 **ON THIS BACKEND THE SPAWNED-PRIVILEGED-THREAD SCENARIO IS NOT REACHABLE AT ALL, and that is a
 hardware fact and not a policy one.** A spawned thread's body is app text, and the app's half is one
 level-2 slot of a per-space table whose every leaf carries `PTE_U`
 (`arch/riscv/rv64imac/aspace_rv64imac.cc`); the RISC-V Privileged ISA forbids S-mode FETCHING from a
-`U=1` page irrespective of `sstatus.SUM`. Such a thread therefore faults on its first instruction and
-never reaches a prime. `privilege-escalation-gated` closes it a second time, the privileged population
-being unable to grow after boot. So `aspace_seated_for` is not what saves THIS board; it is what
-covers the general case on a backend where a privileged thread CAN execute app-half code, and it is
-asked unconditionally so that no backend has to re-derive which case it is. Recorded at
+`U=1` page irrespective of `sstatus.SUM`. Such a thread therefore faults on its first instruction.
+`privilege-escalation-gated` closes it a second time, the privileged population being unable to grow
+after boot. The general case, a backend where a privileged thread CAN execute app-half code, is
+covered by no switch writing libc state (formerly a per-switch `aspace_seated_for` test). Recorded at
 `root-unprivileged-idle-alone-privileged` and witnessed by tests/unit/reentseat.
 
 *A caller-supplied stack re-keyed at T6.2 and is no longer arena-confined.* Where a backend

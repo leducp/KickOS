@@ -19,12 +19,34 @@ namespace kickos::esp32::reg::gpio
     constexpr uintptr_t OUT_W1TC = mmap::GPIO_BASE + 0x0Cu;
     constexpr uintptr_t ENABLE_W1TS = mmap::GPIO_BASE + 0x24u;
 
+    // Per-pin registers (TRM v5.8 Registers 6.30 and 6.32). A zero GPIO_PINn is a push-pull pad
+    // with its interrupt off; an out-sel of OUT_SEL_SIMPLE drives the pad from GPIO_OUT and
+    // GPIO_ENABLE.
+    constexpr uintptr_t pin_reg(uint32_t pin) { return mmap::GPIO_BASE + 0x88u + 4u * pin; }
+    constexpr uint32_t OUT_SEL_SIMPLE = 0x100u;
+
     // MCU_SEL=GPIO ([14:12]=2), DRV=2 ([11:10]=2), input disabled.
     constexpr uint32_t IO_MUX_GPIO_FUNC = (2u << 12) | (2u << 10);
 
     // IO_MUX word fields (for callers constructing `func`): MCU_SEL picks the pad
     // function (2 = GPIO matrix), FUN_IE enables the input buffer.
     constexpr uint32_t MCU_SEL_MASK = 0x7u << 12;
+    constexpr uint32_t MCU_SEL_S = 12u;
+    constexpr uint32_t MCU_SEL_GPIO = 2u; // the GPIO function, through the GPIO matrix
+    constexpr uint32_t FUN_DRV_2 = 2u << 10;
+
+    // GPIO matrix (Registers 6.31 and 6.32, pp.146-147). An input signal y takes the pad its
+    // IN_SEL names once SIG_IN_SEL routes it through the matrix; a pad n drives the output
+    // signal its OUT_SEL names, its output enable the peripheral's while OEN_SEL is 0.
+    constexpr uintptr_t func_in_sel_cfg(uint32_t signal)
+    {
+        return mmap::GPIO_BASE + 0x130u + 0x4u * signal;
+    }
+    constexpr uintptr_t func_out_sel_cfg(uint32_t pin)
+    {
+        return mmap::GPIO_BASE + 0x530u + 0x4u * pin;
+    }
+    constexpr uint32_t SIG_IN_SEL = 1u << 7;
     constexpr uint32_t FUN_IE = 1u << 9;
 
     // GPIO-number -> IO_MUX register byte offset (from IO_MUX_BASE). The mapping is

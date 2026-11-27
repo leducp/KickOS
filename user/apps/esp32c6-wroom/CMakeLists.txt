@@ -9,7 +9,8 @@ if(KICKOS_HAVE_MPU)
   add_subdirectory(c6blink)
 endif()
 
-# The TX idle witness drives the console's UART and pad.
-if(NOT KICKOS_HAVE_MPU AND NOT KICKOS_AMP_OWN_IMAGE)
+# The TX idle witness drives the console's UART and pad, and reads what a KICKOS_WITNESS_TXIDLE
+# kernel's probe recorded.
+if(NOT KICKOS_HAVE_MPU AND NOT KICKOS_AMP_OWN_IMAGE AND KICKOS_WITNESS_TXIDLE)
   add_subdirectory(c6txidle)
 endif()

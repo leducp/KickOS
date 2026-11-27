@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// ESP32-C6 UART0 open, for a channel the ROM has already brought up. Everything below open
-// is the family body in system/driver/espuart. Register facts: ESP32-C6 TRM v1.2 ch.27, via
+// ESP32-C6 UART open, for a channel the ROM or the kernel has already brought up. Everything
+// below open is the family body in system/driver/espuart. Register facts: ESP32-C6 TRM v1.2 ch.27, via
 // arch/riscv/chip/esp32c6/regs/uart.h.
 //
 // A write to a _SYNC register is inert until UART_REG_UPDATE carries it across (TRM section
@@ -90,7 +90,7 @@ namespace
     // integer arithmetic. Truncating, so the answer is the achieved rate rounded DOWN.
     int32_t achieved_baud(uintptr_t base)
     {
-        // PCR selects and divides UART0's source clock and is a kernel-reserved block, so the
+        // PCR selects and divides the UART's source clock and is a kernel-reserved block, so the
         // holder of this window cannot read the select itself.
         uint32_t const clk = kos_periph_clock_hz(base);
         if (clk == 0u)

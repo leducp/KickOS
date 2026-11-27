@@ -32,15 +32,17 @@ Instead, we use a selftest arm with a client and an echo server in
 
 - **`t_call_from_root`** is the client. It is the selftest's `main` thread (named `main`,
   priority 2). It creates an endpoint, spawns the server, and calls it twice with
-  `kos_call(g_ep, buf, 4, sizeof(buf), STALL_TOLERANT_US)`: first after the server has
-  parked (half A), then before the server has run at all (half B).
+  `kos_call(g_ep, buf, 4, sizeof(buf), after_us(STALL_TOLERANT_US))`, whose deadline is five
+  seconds after the clock reading: first after the server has parked (half A), then before
+  the server has run at all (half B).
 - **`echo_server`** is the server, spawned at `KICKOS_PRIO_MIN` (priority 1) as `rtS`, then
   `rtS2`. It receives once with `kos_reply_recv`, copies what came in, and answers `"pong!"`
   with `kos_reply`.
 
 The client outranks the server on purpose, so this walk also shows priority donation. For
 the last stop, a second arm in the same file, **`t_call_reg_fastpath`** (`fp_server` /
-`fp_caller`, run by `fp_run`), makes two equal-priority threads call with small payloads.
+`fp_caller`, run by `fp_run`), makes two equal-priority threads call with small payloads and no
+deadline.
 
 Nothing in this chapter is chip code. `f411disco` runs the same `kernel/syscall/` files and
 the same `arch/arm/armv7m/switch.S`, so every stop reads the same on the silicon twin.
@@ -98,16 +100,16 @@ creator gets every right: `CAP_WAIT` (receive), `CAP_SIGNAL` (send or call), `CA
         Thread* c = sched::current();
         // ...
         Endpoint* ep = nullptr;
-        int const i = endpoint_claim_created(&ep);
+        int const i = endpoint_claim_created(c->task, &ep);
         // ...
-        kernel().endpoint_refs[i] = 1;
+        kernel().endpoints.refs()[i] = 1;
         int const obj = kernel().endpoints.handle_for(i);
         int const rc = cap_install(c, obj, CapType::CAP_ENDPOINT, CAP_RIGHTS_ALL, out_cap);
 ```
 
 Notice what an `Endpoint` holds: two wait lists (`send_waiters`, `recv_waiters`), two holder
-counts, and a pointer to the thread that last received there (`server`). There is no message
-buffer. The parked side's own buffer is the storage, as the Book explains.
+counts, a `vacated` mark (Stop 10), and a pointer to the thread that last received there
+(`server`). There is no message buffer. The parked side's own buffer is the storage, as the Book explains.
 
 Notice also that there are two handles in play. The value `main` gets back in `g_ep` names a
 slot in `main`'s handle table. That slot, in turn, stores the endpoint pool's own handle in its
@@ -115,8 +117,8 @@ slot in `main`'s handle table. That slot, in turn, stores the endpoint pool's ow
 other ([Book: Naming a kernel object](../book/handles-and-the-resolve-chokepoint.md)).
 
 **Try it:** after the prelude, `break kos_endpoint_create`, `continue`, `finish`, then
-`p/x '(anonymous namespace)::g_ep'`. You should see something like `$3 = 0x9f0009`: the low 16
-bits (`KCAP_INDEX_BITS`) are the slot index in `main`'s table (9), the high bits the slot's
+`p/x '(anonymous namespace)::g_ep'`. You should see something like `$3 = 0x760003`: the low 16
+bits (`KCAP_INDEX_BITS`) are the slot index in `main`'s table (3), the high bits the slot's
 generation.
 
 **Why, and the contract:** [Book: Endpoints](../book/endpoints-synchronous-ipc-by-rendezvous.md),
@@ -125,7 +127,7 @@ generation.
 ### Stop 2: the server is given a receive-only capability
 
 **Where:** `user/apps/common/selftest/main.cc`, `t_call_from_root`; `kernel/syscall/syscall_thread.cc`,
-`spawn_masked`; `kernel/syscall/cap.cc`, `obj_ref_inc`, `cap_install_at`
+`spawn_masked`, `spawn_locked`; `kernel/syscall/cap.cc`, `obj_ref_inc`, `cap_install_at`
 
 `main` spawns the server with a grant list. Each entry names a capability `main` holds and the
 rights the child gets. Here the server gets one capability, the endpoint, with
@@ -142,8 +144,10 @@ The server tells `main` it has finished by posting `g_done`, a semaphore in the 
 static data. A semaphore is a word in memory both threads can write, not a kernel object, so
 it needs no capability and no grant.
 
-In the kernel, `spawn_masked` checks each grant before building anything: the source must carry
-`CAP_TRANSFER`, and the mask may only narrow the source's rights, never widen them. Then
+In the kernel, `spawn_masked` copies the request in, and `spawn_locked` checks each grant before
+building anything: the source must carry `CAP_TRANSFER`, and the mask may only narrow the
+source's rights, never widen them. The one exception is an endpoint capability that carries
+`CAP_HANDOUT`: it may seat `CAP_WAIT` in the child without holding it. Then
 `obj_ref_inc` raises the object's counts (for an endpoint granted `CAP_WAIT`, that includes
 `recv_holders`), and `cap_install_at` seats grant `i` at index `KOS_SPAWN_DELEGATED_CAP0 + i`
 in the child. That is why `echo_server` names its endpoint as `child_cap(0)`: the endpoint is
@@ -155,11 +159,11 @@ but not receive, a server can receive but not call. Neither could manufacture th
 right.
 
 **Try it:** after the prelude, `break kickos::cap_install_at`, `continue`. The first stop is
-Stop 1's own install, reached from `cap_install`: `main`'s table, `index=9`,
-`type=kickos::CapType::CAP_ENDPOINT`, `rights=15` (all four rights), `obj_handle=786432`.
-`continue` twice more. The third stop is the server's: `p c->name` gives `"rtS"`, `index=2`,
-the same `obj_handle=786432`, `rights=1` (`KOS_CAP_WAIT`), and `bt 2` shows `spawn_masked` as
-the caller. Two table entries, one endpoint, different rights.
+Stop 1's own install, reached from `cap_install`: `main`'s table, `index=3`,
+`type=kickos::CapType::CAP_ENDPOINT`, `rights=15` (all four rights), `obj_handle=262149`.
+`continue` once more. The second stop is the server's: `p c->name` gives `"rtS"`, `index=1`,
+the same `obj_handle=262149`, `rights=1` (`KOS_CAP_WAIT`), and `bt 3` shows `spawn_locked`
+and then `spawn_masked` as the callers. Two table entries, one endpoint, different rights.
 
 **Why, and the contract:** [Book: How a driver reaches its client](../book/synchronous-call-and-reply.md),
 [8. Spawn and capabilities](08-spawn-and-caps.md)
@@ -168,53 +172,60 @@ the caller. Two table entries, one endpoint, different rights.
 
 **Where:** `user/apps/common/selftest/main.cc`, `echo_server`; `kernel/syscall/syscall_ipc.cc`,
 `endpoint_reply_recv`, `endpoint_recv_locked`; `kernel/sync/sync.cc`, `endpoint_receiver_waits`,
-`wq_block`, `park_queueless`
+`wq_park`, `park_queueless`
 
 There is no plain receive syscall. A receive is `kos_reply_recv` with nothing to reply to:
 
 ```cpp
         struct kos_reply_recv_opts opts;
-        kos_reply_recv_opts_init(&opts, child_cap(0), 0, KOS_TIMEOUT_NONE);
+        kos_reply_recv_opts_init(&opts, child_cap(0), 0, KOS_NEVER);
         int32_t n = kos_reply_recv(KOS_CAP_NONE, buf, kos_call_lens_pack(0, sizeof(buf)), &opts);
 ```
 
 The first argument is the reply capability to answer first; `KOS_CAP_NONE` says there is none.
 `kos_call_lens_pack(0, 16)` packs "reply 0 bytes, accept up to 16" into one word. `opts`
-carries the endpoint to listen on (`child_cap(0)`, which is handle 1 on `qemu`), the flags
-(`0`, so this receive *can* host a call),
-and room for the answer: `opts.info` is where the kernel will write the reply capability.
+carries the deadline (`KOS_NEVER`, wait for as long as it takes), the endpoint to listen on
+(`child_cap(0)`, which is handle 1 on `qemu`), the flags (`0`, so this receive *can* host a
+call), and room for the answer: `opts.info` is where the kernel will write the reply
+capability.
 
 The trap arrives as `KOS_SYS_REPLY_RECV` (68) in `endpoint_reply_recv`. It snapshots the
 input half of `opts`, skips the reply half, and calls `endpoint_recv_locked`. That function
-resolves capability 1 for `CAP_WAIT`, then records this thread as the endpoint's `server`
-(`endpoint_receiver_waits`). It looks at `send_waiters` for a parked sender, finds none, and
-parks:
+resolves capability 1 for `CAP_WAIT`, then records this thread as the endpoint's `server` and
+clears the endpoint's `vacated` mark (`endpoint_receiver_waits`). It looks at `send_waiters`
+for a parked sender and finds none. A receive that may not wait would answer here: `KOS_POLL`
+with `-KOS_EAGAIN`, any other deadline already passed with `-KOS_ETIMEDOUT`. This one waits
+forever, so it parks:
 
 ```cpp
         c->ipc.buf = buf;
         c->ipc.len = cap_len;
         c->ipc.badge_out = badge_out;
-        ktime_deadline_arm(c, timeout_us, dw->held());
+        ktime_limit_arm(c, limit, dw->held());
+        *epoch = wq_park(ask)(e->recv_waiters, WAIT_EP_RECV, e, dw->held());
+        // ...
         // Transfer the pending wake to the park's reschedule, including peer notification.
-        *epoch = wq_block(ask)(e->recv_waiters, WAIT_EP_RECV, e, dw->take(), dw->held());
+        sched::reschedule(dw->take(), dw->held());
 ```
 
 `c->ipc` is the descriptor whoever arrives next will read: where the server's buffer is, how
 big, and where to write the arrival's metadata. `badge_out` points at `opts.info`. A receive
 with `KOS_RECV_NO_INFO` sets it to 0, and that 0 is what makes a call refuse this receiver.
-`wq_block` marks the thread `BLOCKED` through `park_queueless`, links it on `recv_waiters`,
-and reschedules. The server's kernel stack, frozen inside `endpoint_reply_recv`, is its
+`ktime_limit_arm` arms nothing for `KOS_NEVER`. `wq_park` marks the thread `BLOCKED` through
+`park_queueless` and links it on `recv_waiters`, and the reschedule switches away. The server's kernel stack, frozen inside `endpoint_reply_recv`, is its
 continuation ([3. Sleep](03-sleep.md) walked the same park).
 
 **Try it:** after the prelude, `break kickos::endpoint_recv_locked`, `continue`: `cap=1`,
 and `p c->name` gives `"rtS"`. (Stopping here first matters: `main` parked just before, waiting
-for the witness thread as `WAIT_JOIN`, and a `park_queueless` breakpoint set from the prelude
-would stop on that park.) `delete`, `break kickos::park_queueless`, `continue`. You should
-see `kind=kickos::WAIT_EP_RECV`, and `p c->name` is still `"rtS"`. Then
-`p *(kickos::Endpoint*)obj` shows `recv_holders = 2` (`main`'s capability and the server's),
-`handout_holders = 1`, empty lists, and `server` equal to `c`. `finish`, then `p/x c->ipc`:
-`{buf = 0x20029fd0, len = 0x10, badge_out = 0x20029ff0}`. `badge_out` is `buf + 0x20`, the
-`info` field of the server's `opts` on its own stack.
+for the witness thread as `WAIT_JOIN`, and a park breakpoint set from the prelude would stop on
+that park.) `set $srv = c`, `delete`, `break kickos::sched::reschedule`, `continue`: `bt 2`
+shows `endpoint_recv_locked` as the caller. `p $srv->state` is `BLOCKED` and
+`p $srv->wait_kind` is `kickos::WAIT_EP_RECV`. Then `p *(kickos::Endpoint*)$srv->wait_obj`
+shows `recv_holders = 2` (`main`'s capability and the server's), `handout_holders = 1`,
+`vacated = 0`, the server alone on `recv_waiters`, an empty `send_waiters`, and `server` equal
+to `$srv`. `p/x $srv->ipc` shows `buf = 0x20019fc8`, `len = 0x10` and
+`badge_out = 0x20019ff0`, each beside the union member that shares its word. `badge_out` is
+`buf + 0x28`, the `info` field of the server's `opts` on its own stack.
 
 **Why, and the contract:** [Book: The blocking substrate](../book/the-blocking-substrate-one-wait-wake-primitive.md),
 [Reference: `KOS_SYS_REPLY_RECV`](../reference/ipc-call-reply.md)
@@ -222,14 +233,15 @@ see `kind=kickos::WAIT_EP_RECV`, and `p c->name` is still `"rtS"`. Then
 ### Stop 4: the client calls
 
 **Where:** `user/src/syscall_stubs.cc`, `kos_call` and `kos_call_generic`; `kernel/syscall/syscall.cc`,
-the `KOS_SYS_CALL` arm; `kernel/syscall/syscall_ipc.cc`, `endpoint_call`;
-`kernel/include/kickos/endpoint.h`, `endpoint_takes_sends`
+the `KOS_SYS_CALL` arm; `kernel/syscall/syscall_ipc.cc`, `endpoint_call`, `call_once`;
+`kernel/include/kickos/endpoint.h`, `endpoint_takes_sends`, `endpoint_receiving`
 
 While the server was parking, `main` was blocked waiting for a witness thread to end. Now it
 runs again and calls. A call with a deadline skips the register form, so `kos_call` hands it to
-`kos_call_generic`, which traps with number 46. The trap frame has four argument slots, so the
-stub packs both lengths into one (`kos_call_lens_pack`) to make room for the deadline. The
-dispatch arm unpacks them and calls `endpoint_call`.
+`kos_call_generic`, which traps with number 46. The trap carries five argument words and the
+64-bit deadline takes two of them, so the stub packs both lengths into one
+(`kos_call_lens_pack`). The dispatch arm unpacks them, joins the deadline's halves, and calls
+`endpoint_call`.
 
 `endpoint_call` works in a fixed order, and the order matters:
 
@@ -237,18 +249,27 @@ dispatch arm unpacks them and calls `endpoint_call`.
 2. Check the one buffer is readable for the request *and* writable for the reply, in the
    caller's context, before any lock (`user_readable_and_writable_ok`). The same buffer
    carries the request out and the answer back.
-3. Under `IrqLock`: exit now if this thread was cancelled, *before* touching any receiver;
-   resolve the capability for `CAP_SIGNAL`; refuse an endpoint nobody can serve
-   (`endpoint_takes_sends`, answered by `endpoint_unserved`); then peek, without removing, the
-   best parked receiver with `wq_peek_highest(e->recv_waiters)`.
+3. Under `IrqLock`, in `call_once`: exit now if this thread was cancelled, *before* touching
+   any receiver; resolve the capability for `CAP_SIGNAL`; refuse an endpoint nobody serves with
+   `-KOS_ECONNREFUSED`, at once and whatever the deadline (`endpoint_takes_sends`); take
+   nothing if the deadline allows no wait (`KOS_POLL` answers `-KOS_EAGAIN`, any other deadline
+   already passed `-KOS_ETIMEDOUT`); then peek, without removing, the best parked receiver with
+   `wq_peek_highest(e->recv_waiters)`.
+
+An endpoint is served while a capability carrying `CAP_WAIT` names it and a receiver has waited
+on it since the last such capability went (`endpoint_receiving`). Here the server waits on it,
+and `main` holds `CAP_WAIT` too.
 
 From here the code splits in three: a receiver is parked (half A, Stops 5 to 9), none is
 parked yet (half B, Stop 10), or the endpoint lives in another kernel (an AMP build only; see
 [11. Multicore](11-multicore.md)).
 
 **Try it:** after the prelude, `break kickos::endpoint_call`, `continue`. gdb shows
-`cap=10420233` (that is `0x9f0009`, `g_ep` from Stop 1), `send_len=4`, `recv_cap=16`,
-`timeout_us=5000000`. `bt 4` shows `syscall_body (nr=46, ...)` under it and `svc_trampoline`
+`cap=7733251` (that is `0x760003`, `g_ep` from Stop 1), `send_len=4`, `recv_cap=16` and
+`deadline=5684081800`: an absolute time on the monotonic clock in nanoseconds, five seconds
+after `after_us` read the clock, so yours differs. gdb also prints stale `@entry` values for the
+two lengths; ignore them. `bt 4` shows `syscall_body (nr=46, ...)` under it, with `a2=8196` (the
+packed lengths, 4 and 16) and the deadline's halves in `a3` and `a4`, and `svc_trampoline`
 below that.
 
 **Why, and the contract:** [Reference: `KOS_SYS_CALL = 46`](../reference/ipc-call-reply.md),
@@ -316,9 +337,10 @@ the reply object. `write_recv_info` then writes `{badge, reply_cap}` into the se
 **Try it:** after the prelude, `break kos_call`, `continue`, `delete`, then
 `break kickos::ep_copy`, `continue`: `n=4`, and `x/4c src` prints `'p' 'i' 'n' 'g'`. Then
 `delete`, `break kickos::cap_install_reply`, `continue`: `p c->name` is `"rtS"` (the table
-being written), `p caller->name` is `"main"`, `p caller->call_seq` is `1`. `finish` back
-into `endpoint_call` and `p/x rcap`: `0x3`, generation 0, slot 3 of the server's table (1 and
-2 were granted at spawn).
+being written), `p caller->name` is `"main"`, `p caller->call_seq` is `2` in this run (it
+moves on at each call `main` makes). `finish` back into `call_once`, inlined in
+`endpoint_call`, and `p/x rcap`: `0x2`, generation 0, slot 2 of the server's table (slot 1
+was granted at spawn).
 
 **Why, and the contract:** [Book: What KickOS chose: the parked caller IS the reply object](../book/synchronous-call-and-reply.md),
 [Reference: The reply capability (`CAP_REPLY`)](../reference/ipc-call-reply.md)
@@ -327,8 +349,8 @@ into `endpoint_call` and `p/x rcap`: `0x3`, generation 0, slot 3 of the server's
 
 **Where:** `kernel/syscall/syscall_ipc.cc`, `endpoint_call`; `kernel/syscall/syscall_internal.h`,
 `reply_wait_seat`; `kernel/sync/sync.cc`, `park_queueless`, `reply_donor_park`;
-`kernel/sched/sched.cc`, `sched::set_prio`, `sched::wake`; `arch/arm/common/arch_arm_common.cc`,
-`arch_switch`
+`kernel/sched/sched.cc`, `sched::set_prio`, `sched::wake_no_resched`, `sched::reschedule`;
+`arch/arm/common/arch_arm_common.cc`, `arch_switch`
 
 ```cpp
                 w->wait_result = static_cast<intptr_t>(n);
@@ -342,12 +364,16 @@ into `endpoint_call` and `p/x rcap`: `0x3`, generation 0, slot 3 of the server's
                     // ...
                 }
                 // ...
-                epoch = park_queueless(ask)(c, WAIT_EP_REPLY, w, lock);
+                *out_epoch = park_queueless(ask)(c, WAIT_EP_REPLY, w, lock);
                 reply_donor_park(w, c); // Off the ready queue; link can be reused.
-                // Arm the reply deadline before the wake can switch threads.
-                ktime_deadline_arm(c, timeout_us, lock);
-                // ...
-                sched::wake(w, lock);
+                // Arm the reply deadline before the switch.
+                ktime_limit_arm(c, limit, lock);
+                Thread* woken = nullptr;
+                if (sched::wake_no_resched(w, lock))
+                {
+                    woken = w;
+                }
+                sched::reschedule(woken, lock);
 ```
 
 Read it in order:
@@ -364,23 +390,25 @@ Read it in order:
   `WAIT_EP_REPLY` and names the server. `reply_donor_park` then links the client onto the
   server's `reply_waiters`, which is how the priority funnel later finds every caller the
   server owes an answer to.
-- `ktime_deadline_arm` arms the five-second deadline of the `kos_call`. One deadline covers
+- `ktime_limit_arm` arms the five-second deadline of the `kos_call`. One deadline covers
   the whole call.
-- `sched::wake(w)` readies the server. The client has just parked, so the server, now at
-  priority 2, is the best ready thread and the scheduler picks it. On this Cortex-M `arch_switch` only records the next thread and pends PendSV; the
+- `sched::wake_no_resched(w)` readies the server, and `sched::reschedule` picks the next
+  thread. The client has just parked, so the server, now at priority 2, is the best ready
+  thread. On this Cortex-M `arch_switch` only records the next thread and pends PendSV; the
   real switch happens when `IrqLock` drops and PendSV runs
   ([Book: Context switching](../book/context-switching-and-the-silicon-contract.md)).
 
 **Try it:** after the prelude, `break kos_call`, `continue`, `delete`, then
 `break kickos::sched::set_prio`, `continue`: `p t->name` is `"rtS"`, `p t->prio` is `1`,
-`p p` is `2`. Next `delete`, `break kickos::park_queueless`, `continue`. In this build the park
-is inlined, so gdb stops in `endpoint_call` on the `park_queueless` line: `p w->prio` is now
-`2`, `p w->base_prio` still `1`, `p c->call_state` is `2` (`CALL_REPLY_WAIT`),
-`p/x c->ipc` is `{buf = 0x20027eb0, len = 0x10, badge_out = 0x0}`. Then `delete`,
-`break kickos::sched::wake`, `continue`: `p t->state` is `BLOCKED` (the server, about to be
-readied). `delete`, `break arch_switch`, `continue`, `bt 2` shows `endpoint_call` as the
-caller; `delete`, `break PendSV_Handler`, `continue` stops in `arch/arm/armv7m/switch.S`, where
-the switch really happens.
+`p p` is `2`. `set $srv = t`, because `w` prints as `<optimized out>` at the next stop. Next
+`delete`, `break kickos::park_queueless`, `continue`. In this build the park is inlined, so
+gdb stops in `call_once` on the `park_queueless` line: `p $srv->prio` is now `2`,
+`p $srv->base_prio` still `1`, `p c->call_state` is `2` (`CALL_REPLY_WAIT`), and `p/x c->ipc`
+shows `buf = 0x20017e80`, `len = 0x10` and `badge_out = 0x0`. Then `delete`,
+`break kickos::sched::wake_no_resched`, `continue`: `p t->name` is `"rtS"` and `p t->state` is
+`BLOCKED` (the server, about to be readied). `delete`, `break arch_switch`, `continue`, `bt 3`
+shows `call_once` inside `endpoint_call` as the caller; `delete`, `break PendSV_Handler`,
+`continue` stops in `arch/arm/armv7m/switch.S`, where the switch really happens.
 
 **Why, and the contract:** [Book: Why donation is required](../book/synchronous-call-and-reply.md),
 [Reference: Priority donation, D1](../reference/ipc-call-reply.md),
@@ -392,7 +420,7 @@ the switch really happens.
 `wq_confirm_resume`; `user/apps/common/selftest/main.cc`, `echo_server`
 
 PendSV restores the server's context, and the server continues inside `endpoint_reply_recv`
-from where `wq_block` left it. It runs `wq_confirm_resume` (wait until the switch that resumes
+from where its park left it. It runs `wq_confirm_resume` (wait until the switch that resumes
 it really happened before reading anything the waker wrote), then reads `c->wait_result`: 4.
 The syscall returns 4, and `opts.info.reply_cap` already holds the handle the client wrote
 there in Stop 5.
@@ -412,7 +440,7 @@ The test is against `KOS_CAP_NONE`, never a sign test: a handle fills all 32 bit
 `kos_send` arrival would have delivered `KOS_CAP_NONE` here, with nothing to answer.
 
 **Try it:** after the prelude, `break kos_reply`, `continue`. gdb shows
-`kos_reply (reply_cap=3, buf=0x20029fc8, len=5)`, and `bt 2` names `echo_server`. `x/5c buf`
+`kos_reply (reply_cap=2, buf=0x20019fc0, len=5)`, and `bt 2` names `echo_server`. `x/5c buf`
 prints `'p' 'o' 'n' 'g' '!'`.
 
 **Why, and the contract:** [Reference: The receive out-struct](../reference/ipc-call-reply.md),
@@ -449,7 +477,7 @@ what makes a late reply harmless. If the client had timed out and made a new cal
 sequence moved on and the old capability resolves to nothing (`-KOS_ESRCH`).
 
 `cap_slot_vacate` empties the slot and bumps its generation *on every path*, success or not.
-That is the one-shot rule: a second `kos_reply` on handle 4 finds an empty slot.
+That is the one-shot rule: a second `kos_reply` on handle 2 finds an empty slot.
 
 The rest copies and wakes:
 
@@ -482,12 +510,12 @@ between. `wake_no_resched` is also where the client's deadline is cancelled
 **Try it:** after the prelude, `break kos_reply`, `continue`, `delete`, then
 `break kickos::cap_reply_caller`, `continue`, `finish`. gdb prints the returned
 `(kickos::Thread *)`; `set $caller = (kickos::Thread*)$`, then `p $caller->name` is `"main"`,
-`p $caller->call_state` is `2`, `p $caller->call_seq` is `1`, `p $caller->wait_kind` is
-`kickos::WAIT_EP_REPLY`. Now `delete`, `break kickos::reply_donor_unpark`, `continue`:
+`p $caller->call_state` is `2`, `p $caller->call_seq` is `2` (as in Stop 5),
+`p $caller->wait_kind` is `kickos::WAIT_EP_REPLY`. Now `delete`, `break kickos::reply_donor_unpark`, `continue`:
 `p server->prio` is `2`, `p server->base_prio` is `1`. `delete`,
 `break kickos::thread_effective_prio`, `continue`, `finish`: `Value returned is ... 1`.
 `delete`, `break kickos::sched::wake_no_resched`, `continue`: `p t->name` is `"main"` and
-`p t->on_timer` is `true`, the deadline about to be cancelled.
+`p t->on_timer` is `1`, the deadline about to be cancelled.
 Finally `delete`, `break kickos::sched::resched_after_wake`, `continue`, `bt 3`: the caller is
 `DeferredWake::~DeferredWake` inside `endpoint_reply`, and `p t->name` is `"main"`.
 
@@ -498,10 +526,17 @@ Finally `delete`, `break kickos::sched::resched_after_wake`, `continue`, `bt 3`:
 
 **Where:** `kernel/syscall/syscall_ipc.cc`, `endpoint_call` (its tail)
 
-The client was parked inside `endpoint_call`. It resumes after the `IrqLock` block:
+The client was parked inside `call_once`, called from `endpoint_call`. It resumes there,
+after the `IrqLock` block, and `call_once` returns to `endpoint_call`:
 
 ```cpp
-        wq_confirm_resume(c, epoch);
+            wq_confirm_resume(c, epoch);
+            // A far slot wait the slot's wake ended reads 0 and publishes again.
+            if (not far_slot or c->wait_result != 0)
+            {
+                break;
+            }
+            // ...
         c->call_state = CALL_NONE;
         // ...
         return static_cast<int32_t>(c->wait_result);
@@ -524,13 +559,14 @@ mistaken for a call.
 
 ### Stop 10: the server is not there yet: the client parks on the endpoint
 
-**Where:** `kernel/syscall/syscall_ipc.cc`, `endpoint_call` (its last arm), `endpoint_recv_locked`
-(the `CALL_SEND_WAIT` arm), `caller_refuse`
+**Where:** `kernel/syscall/syscall_ipc.cc`, `call_once` (its last arm), `endpoint_recv_locked`
+(the `CALL_SEND_WAIT` arm), `caller_refuse`; `kernel/syscall/cap.cc`, `endpoint_rights_dropped`,
+`refuse_senders`
 
 Half B of `t_call_from_root` creates a second endpoint, spawns `rtS2` at priority 1, and calls
 at once. `main` outranks the new server, so `rtS2` has not run: `recv_waiters` is empty. The
-endpoint still *takes sends* (`main` holds `CAP_WAIT` on it), so the call does not fail. It
-parks:
+endpoint still *takes sends*: `main` holds `CAP_WAIT` on it, and no capability carrying
+`CAP_WAIT` has gone since its creation. So the call does not fail. It parks:
 
 ```cpp
                 c->ipc.buf = buf;
@@ -539,21 +575,21 @@ parks:
                 c->call_rx_cap = recv_cap;
                 c->call_seq++; // Packed when the receiver removes this call.
                 c->call_state = CALL_SEND_WAIT;
+                // Same wait kind as a plain sender; call_state is what separates the two. On
+                // send_waiters before the donation, whose recomputes count it there.
+                *out_epoch = wq_park(ask)(e->send_waiters, WAIT_EP_SEND, e, lock);
                 if (e->server != nullptr and c->prio > e->server->prio)
                 {
-                    // ...
-                    sched::set_prio(e->server, c->prio, lock);
-                    // ...
+                    pi_raise(e->server, c->prio, lock);
                 }
                 // ...
-                ktime_deadline_arm(c, timeout_us, lock);
-                // Same wait kind as a plain sender; call_state is what separates the two.
-                epoch = wq_block(ask)(e->send_waiters, WAIT_EP_SEND, e, nullptr, lock);
+                ktime_limit_arm(c, limit, lock);
+                sched::reschedule(nullptr, lock);
 ```
 
 The client sits on `send_waiters` exactly like a plain sender, with `CALL_SEND_WAIT` marking it
 as a call. Nothing is minted yet: the server's table is the server's business, and the server
-is not here. If the endpoint already had a server busy elsewhere, `set_prio(e->server, ...)`
+is not here. If the endpoint already had a server busy elsewhere, `pi_raise(e->server, ...)`
 would boost it now, so a low-priority server does not finish other work at low priority while
 an urgent caller queues (D2). Here `e->server` is still null, because nobody has received on
 this endpoint yet.
@@ -583,21 +619,27 @@ the reply is Stop 8 unchanged.
 This is the rendezvous rule from the Book in action: whichever side arrives second does the
 copy, while it holds the lock, out of or into the side that is parked.
 
-If the endpoint could not take sends at all (no holder of `CAP_WAIT`, or every receiver has
-left and none has waited since), the call would not park: `endpoint_unserved` answers
-`-KOS_EAGAIN` while a holder of `CAP_WAIT` or `CAP_HANDOUT` remains, so a receiver may still
-come, and `-KOS_ECONNREFUSED` once none does. A server that dies while the client is still on
-`send_waiters` wakes it with one of the same two codes.
+If the endpoint could not take sends at all, the call would not park. With no capability
+carrying `CAP_WAIT`, or once the last one has gone and no receiver has waited since (the
+endpoint's `vacated` mark), the call answers `-KOS_ECONNREFUSED` at once, whatever its
+deadline. A receiver seated after the last one left counts only from its first receive, so
+between the death of a server that held the last `CAP_WAIT` and its successor's first receive,
+every caller is refused. The same
+code reaches a client already on `send_waiters`: when the last capability carrying `CAP_WAIT`
+goes (a close, a narrow, or its holder's death), `endpoint_rights_dropped` sets `vacated` and
+`refuse_senders` wakes every parked sender and caller with `-KOS_ECONNREFUSED`.
 
 **Try it:** after the prelude, `break kos_call`, `continue`, `continue` (the second
-call), `delete`. Then `break kickos::park_queueless`, `continue`: `kind=kickos::WAIT_EP_SEND`,
-`p c->name` is `"main"`, `p c->call_state` is `1` (`CALL_SEND_WAIT`), `p c->call_seq` is `2`,
-`p/x c->ipc` is `{buf = 0x20027eb0, len = 0x4, badge_out = 0x0}`, and
-`p ((kickos::Endpoint*)obj)->server` is `0x0`. `delete`, `break kickos::cap_install_reply`,
-`continue`, `bt 4`: now the caller is `endpoint_recv_locked` inside `endpoint_reply_recv`,
-`p c->name` is `"rtS2"`, `p caller->call_state` is still `1`. `delete`,
-`break kickos::sched::set_prio`, `continue`: `p t->name` is `"rtS2"`, `p p` is `2`, and `bt 2`
-shows `endpoint_recv_locked`. The call still returns 5 and `"pong!"`.
+call), `delete`. Then `break kickos::sched::reschedule`, `continue`, and `up` into `call_once`:
+`p c->name` is `"main"`, `p c->state` is `BLOCKED`, `p c->wait_kind` is
+`kickos::WAIT_EP_SEND`, `p c->call_state` is `1` (`CALL_SEND_WAIT`), `p c->call_seq` is `3`
+(one more than in Stop 5), `p/x c->ipc` shows `buf = 0x20017e80`, `len = 0x4` and
+`badge_out = 0x0`, and `p ((kickos::Endpoint*)c->wait_obj)->server` is `0x0`. `delete`,
+`break kickos::cap_install_reply`, `continue`, `bt 4`: now the caller is
+`endpoint_recv_locked` inside `endpoint_reply_recv`, `p c->name` is `"rtS2"`,
+`p caller->call_state` is still `1`. `delete`, `break kickos::sched::set_prio`, `continue`:
+`p t->name` is `"rtS2"`, `p p` is `2`, and `bt 2` shows `endpoint_recv_locked`. The call still
+returns 5 and `"pong!"`.
 
 **Why, and the contract:** [Reference: Slowpath, D2, and the death matrix](../reference/ipc-call-reply.md),
 [Book: The rendezvous: the arriving thread copies, under the lock](../book/endpoints-synchronous-ipc-by-rendezvous.md)
@@ -631,13 +673,15 @@ calls `arch_syscall_reg(io)`, with `io[0] = KOS_SYS_CALL_REG` (56), `io[1]` the 
 
 For 56 it saves the callee registers exactly as PendSV would, which turns them into the
 array `args` (`args[0]` = `r4`, the result slot; `args[1]` the endpoint; and so on), and
-calls `kickos_ipc_fastpath(args)` with interrupts masked at the kernel-lock level. That function
-follows one rule: decide everything before writing anything. It falls through (returns
-`nullptr`, nothing changed) when the caller is cancelled or dying, the payload is too big, the
-capability fails to resolve for `CAP_SIGNAL`, the endpoint is in another kernel, no receiver is
-parked, the receiver is info-less or dying, the caller outranks the receiver, the receiver
-cannot take a reply capability, or the copy is refused. `SVC_Handler` itself also declines
-before calling it when interrupts were already masked or a PendSV is already pending. The
+calls `kickos_ipc_fastpath(args)` with interrupts masked at the kernel-lock level. It raises
+that mask before it reads whether a PendSV is pending, at the label
+`kickos_armv7m_svc_pend_read`. That function follows one rule: decide everything before writing
+anything. It falls through (returns `nullptr`, nothing changed) when the caller is cancelled or
+dying, the payload is too big, the capability fails to resolve for `CAP_SIGNAL`, the endpoint is
+in another kernel, no receiver is parked, the receiver is info-less or dying, the caller
+outranks the receiver, the receiver cannot take a reply capability, or the copy or the info
+store is refused. `SVC_Handler` itself also declines before calling it when interrupts were
+already masked or a PendSV is already pending. The
 priority test is the one that explains the equal priorities of this arm:
 
 ```cpp
@@ -672,17 +716,17 @@ The exception return then lands in `arch_syscall_reg` just after its `svc`, whic
 `r5`-`r9` back into `io`, and `kos_call` copies the reply bytes into the user's `buf`.
 
 **Try it:** start fresh, `break (anonymous namespace)::t_call_reg_fastpath`, `continue`,
-`delete`, `break kos_call`, `continue`: `kos_call (ep=1, buf=..., send_len=8, recv_cap=8, timeout_us=4294967295)`;
+`delete`, `break kos_call`, `continue`: `kos_call (ep=1, buf=..., send_len=8, recv_cap=8, until=...)`;
 `set $ret = $lr & ~1`, `delete`. Then `break arch_syscall_reg`, `continue`, `x/8wx $r0`:
 `0x00000038 0x00000001 0x00001008 0x04030201 0x08070605 0x00000000 ...` (56, endpoint 1, the
 packed 8|8, the payload bytes 1 to 8). `delete`, `break kickos_ipc_fastpath`, `continue`,
-`bt 2` shows `SVC_Handler` as the caller, and `x/8wx args` shows the same words from `args[1]`
-on (`args[0]` is whatever `r4` held). `delete`, `break kickos::cap_install_reply`, `continue`:
+`bt 2` shows `kickos_armv7m_svc_pend_read`, the label inside `SVC_Handler`, as the caller, and
+`x/8wx args` shows the same words from `args[1]` on (`args[0]` is whatever `r4` held). `delete`, `break kickos::cap_install_reply`, `continue`:
 `p c->name` is `"fpS"`, `p c->prio` and `p caller->prio` are both `11`. `delete`,
 `break kickos::sched::switch_prepare`, `continue`: `p next->name` is `"fpS"`. `delete`,
 `break kickos::ep_copy`, `continue`: this is the reply, `bt 2` names `endpoint_reply_locked`,
-and `p/x dst` is `args + 4`, the caller's saved frame (`0x2002bf18` when `args` was
-`0x2002bf14`). `delete`, `break arch_ctx_set_syscall_result`, `continue`: `result=8`, called
+and `p/x dst` is `args + 4`, the caller's saved frame (`0x2001bf0c` when `args` was
+`0x2001bf08`). `delete`, `break arch_ctx_set_syscall_result`, `continue`: `result=8`, called
 from `switch_book`. Last, `delete`, `tbreak *$ret`, `continue`: gdb lands in `fp_caller`,
 inside the inlined store of the result into `g_fp_rc` (it shows `__i=8`), and `p $r0` is `8`.
 
@@ -699,7 +743,9 @@ file discards its `write_recv_info` answer), [12. ARMv6-M](12-armv6m.md),
 - **Above one kernel core** ([11. Multicore](11-multicore.md)): the register fastpath is refused
   at configure time (`syscall_ipc_fast.cc` asserts `KICKOS_KERNEL_CORES == 1`), and
   `DeferredWake::offer` places extra woken threads on other cores. On an AMP partition a call to
-  an endpoint in another kernel leaves through `far_publish` and parks as `WAIT_EP_FAR_REPLY`.
+  an endpoint in another kernel leaves through `far_publish` into a slot of its port's lane of
+  the peer's call ring, and parks as `WAIT_EP_FAR_REPLY`. While that lane is full, a blocking
+  call first waits for a slot of it (`WAIT_EP_FAR_SEND`), within its deadline.
 - **A server loop** in real code uses the fused form,
   `kos_reply_recv(reply_cap, buf, lens, &opts)`: Stop 8 and Stop 3 in one kernel entry. The
   `DeferredWake` you met in Stop 8 is what keeps the answered client from running before the
@@ -728,5 +774,5 @@ file discards its `write_recv_info` answer), [12. ARMv6-M](12-armv6m.md),
    Then predict whether this call takes the register fastpath (look at the priorities
    `serve_one_call` uses). Check with `break kickos_ipc_fastpath` and `finish`: what does it
    return, and which refusal produced that?
-3. After Stop 8, the server's slot 3 was vacated. Predict what a second
-   `kos_reply(3, ...)` would return, and which test in `endpoint_reply_locked` returns it.
+3. After Stop 8, the server's slot 2 was vacated. Predict what a second
+   `kos_reply(2, ...)` would return, and which test in `endpoint_reply_locked` returns it.

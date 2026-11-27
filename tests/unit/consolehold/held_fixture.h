@@ -75,12 +75,15 @@ namespace heldfix
         consoleseam::publish_end();
     }
 
+    // The kernel's own line after a driver death's reclaim.
+    inline std::string const kReclaimed = kickos::diag::kConsoleReclaimed;
+
     // What the end of the console's task does (cap_console_task_ended).
     inline void task_ends()
     {
         kickos::IrqLock lock;
         console_note_driver_death();
-        console_on_driver_death(lock);
+        console_on_driver_death();
     }
 }
 

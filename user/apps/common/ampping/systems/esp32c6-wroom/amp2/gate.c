@@ -4,7 +4,8 @@
 // The ESP32-C6 partition gate's witness (docs/design-m10-fleet.md, section 9.5): the LP node reads
 // the timer group version register through its own /dev/timg1 and through node 0's /dev/timg0,
 // which the APM denies it, then stores to and loads from a word of node 0's own memory, outside its
-// slice and the partition window, and node 0 reports all of it beside its own reads.
+// slice and the partition window, and node 0 reports all of it beside its own reads and both
+// nodes' core clocks.
 
 #include <iso646.h> // and / or / not are macros in C, not keywords
 #include <stdatomic.h>
@@ -47,6 +48,7 @@ void ampping_gate_arm(struct ampbook_row* book)
 void ampping_gate_serve(struct ampbook_row* book)
 {
     struct ampbook_row* const row = &book[KOS_AMP_SELF_NODE];
+    atomic_store_explicit(&row->gate_clock, (uint32_t)kos_cpu_clock_hz(), memory_order_release);
     atomic_store_explicit(&row->gate_held, ampping_date("/dev/timg1"), memory_order_release);
     atomic_store_explicit(&row->gate_probing, 1u, memory_order_release);
     // An APM denial reads zero and does not trap (TRM v1.2 section 16.5).
@@ -99,6 +101,8 @@ void ampping_gate_report(struct ampbook_row* book)
                (unsigned long)own, AMPPING_GATE_NODE, held, (unsigned)probing);
         return;
     }
+    printf("ampping: gate: node 0 runs at %lu Hz, node %u at %lu Hz\n", (unsigned long)kos_cpu_clock_hz(),
+           AMPPING_GATE_NODE, (unsigned long)atomic_load_explicit(&lp->gate_clock, memory_order_acquire));
     printf("ampping: gate: node 0 read 0x%lx from its timg0, node %u read 0x%lx from its timg1 and 0x%lx from "
            "node 0's timg0\n",
            (unsigned long)own, AMPPING_GATE_NODE, held, foreign);

@@ -1,22 +1,23 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The PL011 both parts carry (RP2040 DS 4.2 / RP2350 DS 12.1), included inside a chip's
-// reg::uart namespace after its BASE, with clocks.h, xosc.h and pl011_baud.h already included.
-// Baud divisors latch only on the subsequent LCR_H write, so IBRD/FBRD are written before LCR_H.
+// The PL011 both parts carry (RP2040 DS 4.2 / RP2350 DS 12.1), as offsets from a UART's base,
+// included inside a chip's reg::uart namespace with clocks.h, xosc.h and pl011_baud.h already
+// included. Baud divisors latch only on the subsequent LCR_H write, so IBRD/FBRD are written
+// before LCR_H.
 
 #ifndef KICKOS_ARCH_ARM_CHIP_RP2XXX_REGS_UART_INC
 #define KICKOS_ARCH_ARM_CHIP_RP2XXX_REGS_UART_INC
 
-constexpr uintptr_t DR = BASE + 0x00u;
-constexpr uintptr_t FR = BASE + 0x18u;
-constexpr uintptr_t IBRD = BASE + 0x24u;
-constexpr uintptr_t FBRD = BASE + 0x28u;
-constexpr uintptr_t LCR_H = BASE + 0x2cu;
-constexpr uintptr_t CR = BASE + 0x30u;
-constexpr uintptr_t IFLS = BASE + 0x34u;  // interrupt FIFO level select
-constexpr uintptr_t IMSC = BASE + 0x38u;  // interrupt mask set/clear
-constexpr uintptr_t DMACR = BASE + 0x48u; // DMA control
+constexpr uintptr_t DR_OFFSET = 0x00u;
+constexpr uintptr_t FR_OFFSET = 0x18u;
+constexpr uintptr_t IBRD_OFFSET = 0x24u;
+constexpr uintptr_t FBRD_OFFSET = 0x28u;
+constexpr uintptr_t LCR_H_OFFSET = 0x2cu;
+constexpr uintptr_t CR_OFFSET = 0x30u;
+constexpr uintptr_t IFLS_OFFSET = 0x34u;  // interrupt FIFO level select
+constexpr uintptr_t IMSC_OFFSET = 0x38u;  // interrupt mask set/clear
+constexpr uintptr_t DMACR_OFFSET = 0x48u; // DMA control
 
 constexpr uint32_t FR_TXFF = 1u << 5; // TX (single holding location) full
 // Covers the shift register too, and is set from the moment the TX FIFO goes non-empty

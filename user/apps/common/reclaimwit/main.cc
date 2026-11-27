@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Board-agnostic witness that arch_console_reclaim gives the console back when a published
-// console driver is slain, and (KICKOS_RW_MODE 1) that kickos_terminate drains the console
-// before the core stops.
+// Board-agnostic witness that arch_console_reclaim gives the console back to the kernel when a
+// published console driver is slain, and (KICKOS_RW_MODE 1) that kickos_terminate drains the
+// console before the core stops. Past the publish no user line reaches the wire, so the verdict
+// is main's own task panic, whose record only the console the kernel took back carries.
 
 #include <kickos/board_config.h>
 #include <kickos/kos.h>
@@ -15,6 +16,7 @@
 #include <kickos/apps/peer_run.h>
 
 #include <stdint.h>
+#include <string.h>
 
 #ifndef KICKOS_RW_MODE
 #error "KICKOS_RW_MODE must be set by this app's CMakeLists"
@@ -29,14 +31,17 @@ namespace
     // timing, not the death.
     constexpr std::chrono::seconds SLAY_BOUND{5};
 
-    // The park arm's window in which nothing may follow its last line.
-    constexpr uint64_t QUIET_NS = 2000000000ull;
-
+    // A refusal before the publish, on the console the kernel still owns.
     void print_rc(char const* what, int rc)
     {
         char line[96];
         ksnprintf(line, sizeof(line), "[reclaimwit]   %s rc=%d\n", what, rc);
         kos::print(line);
+    }
+
+    void kconsole_raw(char const* s)
+    {
+        (void)KICKOS_KCONSOLE_MEASURED(ANSWER, s, strlen(s));
     }
 
     void print_reading_key(void)
@@ -47,17 +52,23 @@ namespace
         kos::print("[reclaimwit]  2. the app now publishes the console to a driver it spawns\n");
         kos::print("[reclaimwit]  3. that driver never writes to a console, so the wire must go\n");
         kos::print("[reclaimwit]     silent: a MUTE line below must occur ZERO times\n");
-        kos::print("[reclaimwit]  4. the app then SLAYS the driver and prints a LIVE line to\n");
-        kos::print("[reclaimwit]     the kernel console the MUTE line was dropped from\n");
+        kos::print("[reclaimwit]  4. the app then SLAYS the driver and ends its task with a\n");
+        kos::print("[reclaimwit]     panic, whose LIVE record only the kernel writes\n");
         kos::print("[reclaimwit]  5. LIVE present + MUTE absent == arch_console_reclaim fired.\n");
         kos::print("[reclaimwit]     MUTE present == the publish never took, verdict void.\n");
         kos::print("[reclaimwit]     both absent == the reclaim did not fire, console still "
                    "dark.\n");
 #if KICKOS_RW_RTT
-        // kconsole_write feeds RTT in every ownership state, so the MUTE line reaches an
-        // RTT viewer even on a correct run.
         kos::print("[reclaimwit] NOTE: this image also carries RTT. Read the CHIP UART capture;\n");
         kos::print("[reclaimwit] NOTE: the RTT stream carries kernel writes in every state.\n");
+#endif
+#if KICKOS_RW_MODE == 1
+        kos::print("[reclaimwit] drain arm: kickos_terminate follows the LIVE record, written\n");
+        kos::print("[reclaimwit] polled on the RECLAIMED console, so arch_console_flush_sync\n");
+        kos::print("[reclaimwit] alone holds the core until the shift register empties. The\n");
+        kos::print("[reclaimwit] record's last line must be INTACT, sentinel included.\n");
+#else
+        kos::print("[reclaimwit] park arm: the LIVE record is the last line of the app\n");
 #endif
     }
 }
@@ -102,8 +113,7 @@ int main(int, char**)
     // the driver is dead. The kernel's stdout ref keeps the endpoint alive.
     int const close_rc = kos_handle_close(ep);
 
-    char const mute[] = "[reclaimwit] MUTE kernel console while the driver holds it\n";
-    (void)KICKOS_KCONSOLE_MEASURED(DROP, mute, sizeof(mute) - 1u);
+    kconsole_raw("[reclaimwit] MUTE kernel console while the driver holds it\n");
 
     // Returns only once the driver has TAKEN the bytes, so the published route is served
     // and not merely created.
@@ -120,37 +130,20 @@ int main(int, char**)
     char const dead = 'x';
     int32_t const refused_rc = kos_send(KOS_CAP_STDOUT, &dead, 1, KOS_NEVER);
 
-    kos::print("[reclaimwit] LIVE kernel console after the driver died\n");
-    print_rc("handle_close", close_rc);
-    print_rc("driver serve bytes", serve_rc);
-    print_rc("slay", slay_rc);
-    print_rc("post-death send (want -KOS_ECONNREFUSED)", refused_rc);
+    kconsole_raw("[reclaimwit] MUTE kernel console after the driver died\n");
 
     bool const ok = (close_rc == 0 and serve_rc == static_cast<int32_t>(sizeof(served) - 1u)
                      and slay_rc == 0 and refused_rc == -KOS_ECONNREFUSED);
-    if (ok)
+    if (not ok)
     {
-        kos::print("[reclaimwit] PASS reclaim fired: driver slain, endpoint refused, wire back\n");
+        char verdict[64];
+        ksnprintf(verdict, sizeof(verdict), "[reclaimwit] LIVE FAIL %d %d %d %d", close_rc,
+                  static_cast<int>(serve_rc), slay_rc, static_cast<int>(refused_rc));
+        kos_panic(verdict);
     }
-    else
-    {
-        kos::print("[reclaimwit] FAIL see the rc lines above\n");
-    }
-
 #if KICKOS_RW_MODE == 1
-    kos::print("[reclaimwit] drain arm: kickos_terminate follows. The ring is disarmed in\n");
-    kos::print("[reclaimwit] RECLAIMED, so arch_console_flush_sync alone holds the core until\n");
-    kos::print("[reclaimwit] the shift register empties. The capture must END with the next\n");
-    kos::print("[reclaimwit] line INTACT, sentinel included; a short tail is a drain that\n");
-    kos::print("[reclaimwit] did not complete before arch_shutdown stopped the core.\n");
-    kos::print("[reclaimwit] DRAINTAIL 0123456789abcdef0123456789abcdef <<<DRAIN-END>>>\n");
+    kos_panic("[reclaimwit] LIVE PASS 0123456789abcdef <<<DRAIN-END>>>");
 #else
-    kos::print("[reclaimwit] park arm: nothing further is printed, then main returns its verdict\n");
-    kos::sleep_for(std::chrono::nanoseconds{QUIET_NS});
+    kos_panic("[reclaimwit] LIVE PASS reclaim fired");
 #endif
-    if (ok)
-    {
-        return 0;
-    }
-    return 1;
 }

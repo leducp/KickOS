@@ -3,10 +3,12 @@
 #
 # Written by hand from user/apps/common/rebootdemo/main.cc: the head is the tail of a boot the
 # capture's own reset cut, two boots decline and reset, and the window ends in a third's banner.
+# The three titles are decorated three ways, the banner's own centred title first, so a judge
+# that reads them by anything but the name and the version counts fewer boots.
 
 otloader in 3s
   ==============================================
-   KickOS 0.5.1  -  microkernel RTOS
+                  KickOS 0.10.0
   ==============================================
    board   frdmk64f
    arch    armv7m
@@ -40,7 +42,7 @@ otloader in 3s
 [rebootdemo] handing the chip to its bootloader in 3s
 [rebootdemo] reboot declined: rc=-38
   ==============================================
-   KickOS 0.5.1  -  microkernel RTOS
+== KickOS unknown ==
   ==============================================
    board   frdmk64f
    arch    armv7m

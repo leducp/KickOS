@@ -82,11 +82,6 @@ namespace kickos
         return static_cast<int>(n);
     }
 
-    void kdiag_led_set(bool)
-    {
-        unreached("kdiag_led_set");
-    }
-
     bool console_window_withheld(uintptr_t, size_t, Task const*)
     {
         return false;

@@ -3,7 +3,7 @@
 //
 // Echo calls on the crossing this node's composition serves, the first partition port named
 // for it; a marked call is held first, answered before a hold, or sets the wall clock and is held.
-// The node's other ports are served by tasks that never receive, for amp_far_share.
+// Port 4 is served by a task that never receives, for amp_far_share, and port 7 by main_mortal.c.
 
 #include <iso646.h> // and / or / not are macros in C, not keywords
 #include <stdbool.h>
@@ -22,6 +22,8 @@
 #define AMP_SHARE_MARK(node) (0x53480000u | (uint32_t)(node))
 // The calls this node has received, at this word of its own line. amp_far_call_held reads it.
 #define AMP_SEEN_WORD 4u
+// The sends this node has received, at this word of its own line. amp_far_send_held reads it.
+#define AMP_SENT_WORD 12u
 // A call whose first byte is AMP_HOLD_MARK is answered once node 0 stores its second byte at
 // AMP_HOLD_WORD of its own line, or after AMP_HOLD_NS. amp_far_reply_unmapped states the same.
 #define AMP_HOLD_MARK 0xD0u
@@ -37,18 +39,19 @@
 #define AMP_WALL_MARK 0xD1u
 #define AMP_WALL_DAY_NS (86400ull * 1000000000ull)
 
-// True once node 0 stored `seq`, false after AMP_HOLD_NS without it.
+// True once node 0 stored `seq`, false after AMP_HOLD_NS of the monotonic clock without it. The
+// clock and not a count of polls: on a loaded host each poll's sleep overruns, and a hold counted
+// in polls outlasts the caller's own deadline.
 static bool ampecho_hold(unsigned char const* view, unsigned char seq)
 {
-    uint64_t waited = 0;
-    while (view != NULL and waited < AMP_HOLD_NS)
+    int64_t const until = kos_monotonic_now().ns + (int64_t)AMP_HOLD_NS;
+    while (view != NULL and kos_monotonic_now().ns < until)
     {
         if (__atomic_load_n((uint32_t const*)(view + AMP_HOLD_WORD), __ATOMIC_ACQUIRE) == seq)
         {
             return true;
         }
         kos_sleep_for(kos_ns(AMP_HOLD_POLL_NS));
-        waited += AMP_HOLD_POLL_NS;
     }
     return false;
 }
@@ -97,15 +100,19 @@ int main(void)
             }
             continue;
         }
+        uint32_t word = AMP_SEEN_WORD;
         if (info.reply_cap == KOS_CAP_NONE)
         {
-            continue; // a send and not a call: there is nothing to answer
+            word = AMP_SENT_WORD;
         }
         if (view != NULL and kos_window_size(share) >= (KOS_AMP_SELF_NODE + 1u) * AMP_SHARE_LINE)
         {
-            uint32_t* const seen = (uint32_t*)(view + KOS_AMP_SELF_NODE * AMP_SHARE_LINE
-                                               + AMP_SEEN_WORD);
+            uint32_t* const seen = (uint32_t*)(view + KOS_AMP_SELF_NODE * AMP_SHARE_LINE + word);
             __atomic_store_n(seen, __atomic_load_n(seen, __ATOMIC_RELAXED) + 1u, __ATOMIC_RELEASE);
+        }
+        if (info.reply_cap == KOS_CAP_NONE)
+        {
+            continue; // a send and not a call: there is nothing to answer
         }
         if (got >= 2 and msg[0] == AMP_HOLD_MARK)
         {

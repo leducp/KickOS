@@ -47,7 +47,7 @@
  * above one core it is the console drain's wake, whose switch spins on the kernel lock and
  * services a route ask that GICv3 refuses:
  *   kickos_armv8a_irq[32] -> kickos_armv8a_gic_dispatch[48] -> kickos_isr_irq[48]
- *   -> console_tx_isr[64] -> console_tx_room_freed[32] -> console_dark_wake[48] -> sched::wake
+ *   -> console_tx_isr[64] -> console_tx_room_freed[32] -> console_wake[48] -> sched::wake
  *   -> pick_and_seat[96] -> klock_attach[48] -> arch_kernel_lock -> kickos_doorbell_poll
  *   -> kickos_doorbell_service -> kickos_irq_route_service[48] -> arch_irq_mask[48]
  *   -> wait_gicd_rwp[48] -> kpanic_refuse_unlocked[32]
@@ -90,7 +90,7 @@
  * qemu-arm64-gicv3 and smp12, the fault report's line waking the publisher it raced:
  *   kickos_thread_fault_exit[32] -> fault_record_print[96] -> kprintf_record[320]
  *   -> kvprintf_fault[176] -> console_emit[64] -> console_chip_writer_leave[32]
- *   -> console_dark_wake[48] -> ...
+ *   -> console_wake[48] -> ...
  *   -> klock_attach[48] -> arch_kernel_lock -> ... -> wait_gicd_rwp[48]
  *   -> kpanic_refuse_unlocked[32]
  * NEST + 2048 = 3696 is the block's deepest need, against 4092 above the canary. */
@@ -100,7 +100,7 @@
  * qemu-arm64-smp:
  *   kickos_thread_fault_exit -> fault_record_print[96] -> kprintf_record[320]
  *   -> kvprintf_fault[176] -> console_emit
- *   -> console_chip_writer_leave -> console_dark_wake -> sched::wake -> pick_and_seat
+ *   -> console_chip_writer_leave -> console_wake -> sched::wake -> pick_and_seat
  *   -> arch_switch -> kickos_armv8a_switch_now[800] -> kickos_switch_unlock
  *   -> sched_flush_owed -> klock_resched_ask -> resched_owe */
 #define KICKOS_ARMV8A_TRAP_DEPTH_EXITKSW 2048

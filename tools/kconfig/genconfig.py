@@ -296,13 +296,7 @@ def amp_ports(kconf, nodes, self_node):
         if port == 1:
             return None, (what + ": entry '" + entry + "' names port 1, which every reply "
                           "travels on, routed to the caller its token names, so no node can "
-                          "serve it. Service ports start at 2.")
-        if port == 0 and node == self_node:
-            return None, (what + ": entry '" + entry + "' names port 0 for this image's own "
-                          "node. Port 0 is the echo the window layer answers with no thread, "
-                          "and a node that runs a kernel binds every port named for it, taking "
-                          "the echo from the window layer. Name port 0 only for a peer that runs "
-                          "no kernel.")
+                          "serve it.")
         if port >= 32:
             return None, (what + ": entry '" + entry + "' names port " + str(port) + " and a "
                           "node's mint is a 32-bit mask, so 31 is its last port.")

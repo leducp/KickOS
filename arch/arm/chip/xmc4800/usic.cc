@@ -52,11 +52,6 @@ namespace usic
                               | (size << FIFO_SIZE_SHIFT);
     }
 
-    bool tx_ready(uintptr_t base)
-    {
-        return (r32(base + off::TCSR) & TCSR_TDV) == 0;
-    }
-
     void tx_put(uintptr_t base, uint8_t v)
     {
         r32(base + off::TBUF0) = v;

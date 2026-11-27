@@ -247,7 +247,7 @@ class Generated(unittest.TestCase):
     def test_tree_reserved_block_in_an_aperture(self):
         # The selftest's grant_reserved spawn names this block; a chip of None runs it partial.
         first = {
-            "an505": "0x50002000 0x1000", "esp32": None, "esp32c6": "0x60006000 0x1000", "imx8mp": None,
+            "an505": "0x50002000 0x1000", "esp32": None, "esp32c6": None, "imx8mp": None,
             "imxrt1062": "0x401EC000 0x4000", "mk64f": "0x40037000 0x120", "mps2": "0x40002000 0x1000",
             "nrf51": None, "q35": None, "rp2040": "0x40054000 0x4000", "rp2350": "0x400B0000 0x4000",
             "rx72m": "0x94200 0x100", "sam3x8e": "0x40080000 0x4000", "sim": None,
@@ -293,7 +293,8 @@ class Generated(unittest.TestCase):
         rows = chip.table_rows(self.view(os.path.join(PLATFORM, "q35", "chip.yaml"), "x86_64"))
         self.assertEqual([(b, s) for b, s, r in rows["reserved_blocks"]], [(0xFEE00000, 0x1000), (0xFEC00000, 0x1000)])
         self.assertEqual([(b, s) for b, s, r in rows["window_apertures"]], [(0xFED00000, 0x1000)])
-        self.assertEqual([(b, s) for b, s, r in rows["port_apertures"]], [(0x70, 2), (0x3F8, 8), (0x2F8, 8)])
+        self.assertEqual([(b, s) for b, s, r in rows["port_apertures"]],
+                         [(0x70, 2), (0x3F8, 8), (0x2F8, 8), (0x3E8, 8), (0x2E8, 8)])
         self.assertEqual(rows["bus_master_apertures"], [])
 
     def test_data_cache_reaches_the_limits(self):
@@ -301,7 +302,7 @@ class Generated(unittest.TestCase):
             view = self.view(os.path.join(PLATFORM, name, "chip.yaml"))
             self.assertIn(("KICKOS_CHIP_DCACHE", value, None), chip.limit_values(view), name)
 
-    def test_tree_kernel_led(self):
+    def test_tree_diag_led(self):
         led = ("blackpill", "f411disco", "picopi", "teensy41", "frdmk64f", "due",
                "xmc4800-relax", "esp32-wroom", "esp32c6-wroom")
         boards = [path for path in glob.glob(os.path.join(PLATFORM, "*", "*.yaml"))
@@ -310,11 +311,31 @@ class Generated(unittest.TestCase):
         for path in boards:
             name = os.path.splitext(os.path.basename(path))[0]
             chip_name = os.path.basename(os.path.dirname(path))
-            text = chip.generate(self.view(path, ARCHES[chip_name]))["chip.cmake"]
-            on = "OFF"
-            if name in led:
-                on = "ON"
-            self.assertIn("\nset(KICKOS_KERNEL_LED %s)\n" % on, text, name)
+            text = chip.generate(self.view(path, ARCHES[chip_name]))["board_pins.h"]
+            self.assertEqual("\n#define KICKOS_BOARD_LED_BIT " in text, name in led, name)
+
+    def test_priv_registers_cover_every_channel(self):
+        view = self.view(os.path.join(PLATFORM, "xmc4800", "chip.yaml"))
+        rows = [(base, offset) for base, offset, ref in chip.priv_register_rows(view)]
+        channels = (0x40030000, 0x40030200, 0x48020000, 0x48020200, 0x48024000, 0x48024200)
+        self.assertEqual(rows, [(base, offset) for base in channels for offset in (0x10, 0x14, 0x40)])
+        self.assertIn("    inline constexpr uintptr_t priv_registers[][2] = {\n        {0x40030000u, 0x10u},",
+                      chip.generate(view)["chip_tables.h"])
+        q35 = self.view(os.path.join(PLATFORM, "q35", "chip.yaml"), "x86_64")
+        self.assertNotIn("priv_registers", chip.generate(q35)["chip_tables.h"])
+
+    def test_console_base_reaches_cmake(self):
+        expected = {"frdmk64f": 0x4006A000, "qemu-x86_64": 0x3F8, "xmc4800-relax": 0x40030000}
+        for path in glob.glob(os.path.join(PLATFORM, "*", "*.yaml")):
+            name = os.path.splitext(os.path.basename(path))[0]
+            if name not in expected:
+                continue
+            chip_name = os.path.basename(os.path.dirname(path))
+            outputs = chip.generate(self.view(path, ARCHES[chip_name]))
+            self.assertIn("\n#define KICKOS_BOARD_CONSOLE_BASE 0x%X " % expected[name], outputs["board_pins.h"], name)
+            self.assertIn("\nset(KICKOS_BOARD_CONSOLE_BASE 0x%X)\n" % expected[name], outputs["chip.cmake"], name)
+            del expected[name]
+        self.assertEqual(expected, {})
 
     def test_region_rule_reaches_the_limits_and_cmake(self):
         outputs = chip.generate(self.view())
@@ -394,6 +415,12 @@ class Generated(unittest.TestCase):
         rows = chip.table_rows(self.view(os.path.join(PLATFORM, "imx8mp", "chip.yaml"), "armv8a"))
         self.assertEqual([(b, s) for b, s, r in rows["bus_master_apertures"]],
                          [(0x30BD0000, 0x1000), (0x30BE0000, 0x1000)])
+        # Every UART a board may name as its console, each a grantable window with its line.
+        for base in (0x30860000, 0x30890000, 0x30880000, 0x30A60000):
+            with self.subTest(uart=hex(base)):
+                self.assertIn((base, 0x1000), [(b, s) for b, s, r in rows["window_apertures"]])
+        evk = chip.generate(self.view(os.path.join(PLATFORM, "imx8mp", "imx8mp-evk.yaml"), "armv8a"))
+        self.assertIn("#define KICKOS_BOARD_CONSOLE_LINE_IRQ 58 ", evk["board_pins.h"])
         # A region chip's bus master has a row too, its window apertures the chip file's own.
         rows = chip.table_rows(self.view(os.path.join(PLATFORM, "imxrt1062", "chip.yaml"), "armv7m"))
         self.assertIn((0x402E0000, 0x200), [(b, s) for b, s, r in rows["bus_master_apertures"]])
@@ -575,7 +602,12 @@ class Generated(unittest.TestCase):
                                   "UART0_RXTX_IRQ = 31,", "UART0_ERR_IRQ = 32,"],
             ("esp32c6", "rv32imac"): ["#define KICKOS_MAX_IRQ 32", "#define KICKOS_IRQ_SOFT_ONLY_BASE 26",
                                       "PLIC_MX_BASE = 0x20001000u", "CLINT_BASE = 0x20001800u",
-                                      "RTC_WDT_BASE = 0x600B1C00u", "UART0_TX_LINE = 16,", "enum kernel_line : int"],
+                                      "RTC_WDT_BASE = 0x600B1C00u", "enum kernel_line : int",
+                                      "UART0_BASE = 0x60000000u", "UART1_BASE = 0x60001000u",
+                                      "UART0_IRQ = 16,", "UART1_IRQ = 17,"],
+            ("esp32", "lx6"): ["UART0_BASE = 0x3FF40000u", "UART1_BASE = 0x3FF50000u",
+                               "UART2_BASE = 0x3FF6E000u", "UART0_IRQ = 30,", "UART1_IRQ = 28,",
+                               "UART2_IRQ = 29,"],
             ("virt_rv32", "rv32imac"): ["#define KICKOS_MAX_IRQ 32",
                                         "#define KICKOS_CHIP_TIMEBASE_HZ 10000000",
                                         "CLINT_BASE = 0x2000000u"],
@@ -588,7 +620,8 @@ class Generated(unittest.TestCase):
                                         "#define KICKOS_CHIP_TIMEBASE_HZ 10000000",
                                         "#define KICKOS_LAYOUT_DRAM_SIZE 0x4000000",
                                         "#define KICKOS_LAYOUT_TEST_FINISHER_BASE 0x100000"],
-            ("q35", "x86_64"): ["#define KICKOS_MAX_IRQ 24", "COM1_BASE = 0x3F8u", "PIC_MASTER_BASE = 0x20u",
+            ("q35", "x86_64"): ["#define KICKOS_MAX_IRQ 24", "COM1_BASE = 0x3F8u", "COM2_BASE = 0x2F8u",
+                                "COM3_BASE = 0x3E8u", "COM4_BASE = 0x2E8u", "PIC_MASTER_BASE = 0x20u",
                                 "ACPI_PM_BASE = 0x600u"],
             ("imx8mp", "armv8a"): ["#define KICKOS_MAX_IRQ 192", "#define KICKOS_IRQ_FREE_BASE 181",
                                    "GICD_BASE = 0x38800000u",
@@ -684,6 +717,7 @@ class Generated(unittest.TestCase):
         disco = pins("stm32f411", "f411disco")
         for line in ("#define KICKOS_BOARD_CONSOLE_BASE 0x40004400 /* /dev/usart2 */",
                      "#define KICKOS_BOARD_CONSOLE_SIZE 0x20\n",
+                     "#define KICKOS_BOARD_CONSOLE_LINE_GLOBAL 38 /* Table 37 Vector table, p.204 */",
                      "#define KICKOS_BOARD_CONSOLE_TX_PORT 0\n", "#define KICKOS_BOARD_CONSOLE_TX_PORT_BASE 0x40020000\n",
                      "#define KICKOS_BOARD_CONSOLE_TX_BIT 2\n", "#define KICKOS_BOARD_CONSOLE_RX_SELECT 7 ",
                      "#define KICKOS_BOARD_LED_PORT 3\n", "#define KICKOS_BOARD_LED_PORT_BASE 0x40020C00\n",
@@ -700,35 +734,91 @@ class Generated(unittest.TestCase):
         self.assertIn("#define KICKOS_BOARD_CONSOLE_SIZE 0x200\n", xmc)
         self.assertNotIn("KICKOS_BOARD_CONSOLE_DX0_SELECT", xmc)
         self.assertIn("#define KICKOS_BOARD_CONSOLE_DX0_INPUT_SELECT 1 ", xmc)
+        # Every USIC module's lines, whichever channel a board makes its console.
+        xmc_irq = chip.generate(self.view(os.path.join(PLATFORM, "xmc4800", "xmc4800-relax.yaml")))["irq.h"]
+        for line in ("USIC1_SR0 = 90,", "USIC2_SR5 = 101,"):
+            with self.subTest(line=line):
+                self.assertIn(line, xmc_irq)
         # A chip of one port names none.
         rp = pins("rp2040", "picopi", "armv6m")
         self.assertNotIn("KICKOS_BOARD_LED_PORT ", rp)
         self.assertIn("#define KICKOS_BOARD_CONSOLE_TX_SELECT 2 ", rp)
         self.assertIn("#define KICKOS_BOARD_CONSOLE_TX_SELECT 0 ", pins("sam3x8e", "due"))
+        imx = pins("imx8mp", "imx8mp-evk", "armv8a")
+        # The console's own pads, GPIO5's bits 23 and 22, at ALT0, and UART1's RXD daisy value.
+        for line in ("#define KICKOS_BOARD_CONSOLE_TX_PORT 5\n", "#define KICKOS_BOARD_CONSOLE_TX_BIT 23\n",
+                     "#define KICKOS_BOARD_CONSOLE_TX_SELECT 0 ", "#define KICKOS_BOARD_CONSOLE_RX_BIT 22\n",
+                     "#define KICKOS_BOARD_CONSOLE_RX_INPUT_SELECT 4 "):
+            with self.subTest(line=line):
+                self.assertIn(line, imx)
         teensy = pins("imxrt1062", "teensy41")
         self.assertIn("#define KICKOS_BOARD_CONSOLE_RX_INPUT_SELECT 1 ", teensy)
+        self.assertIn("#define KICKOS_BOARD_CONSOLE_LINE_IRQ 25 ", teensy)
+        # Every LPUART a board may name as its console.
+        rt_view = self.view(os.path.join(PLATFORM, "imxrt1062", "teensy41.yaml"), "armv7m")
+        rt_mmap = chip.generate(rt_view)["chip_mmap.h"]
+        for n in range(1, 9):
+            with self.subTest(lpuart=n):
+                self.assertIn("LPUART%d_BASE = 0x%Xu" % (n, 0x40184000 + 0x4000 * (n - 1)), rt_mmap)
         # A port device of its own is numbered by its name.
         self.assertIn("#define KICKOS_BOARD_CONSOLE_TX_PORT 1\n", teensy)
         self.assertIn("#define KICKOS_BOARD_LED_PORT 2\n", teensy)
-        self.assertIn("#define KICKOS_BOARD_CONSOLE_TXD_SELECT 11 ", pins("rx72m", "rx72m", "rxv3"))
-        self.assertNotIn("KICKOS_BOARD_LED", pins("rp2350", "pizero2350"))
+        # A console that is a port range names its first port and its count.
+        q35 = pins("q35", "qemu-x86_64", "x86_64")
+        self.assertIn("#define KICKOS_BOARD_CONSOLE_BASE 0x3F8 /* /dev/com1 */", q35)
+        self.assertIn("#define KICKOS_BOARD_CONSOLE_SIZE 0x8\n", q35)
+        rx = pins("rx72m", "rx72m", "rxv3")
+        self.assertIn("#define KICKOS_BOARD_CONSOLE_TXD_SELECT 11 ", rx)
+        # Every line of the console device, under its own name.
+        self.assertIn("#define KICKOS_BOARD_CONSOLE_LINE_RXI 86 ", rx)
+        self.assertIn("#define KICKOS_BOARD_CONSOLE_LINE_TXI 87 ", rx)
+        pizero = pins("rp2350", "pizero2350")
+        self.assertNotIn("KICKOS_BOARD_LED", pizero)
+        # The console UART's partition-gate register, which no node is assigned.
+        self.assertIn("#define KICKOS_BOARD_CONSOLE_GATE_REGISTER 0xA4\n", pizero)
+        # Every UART a board may name as its console, with the lines its console driver claims.
+        self.assertIn("#define KICKOS_BOARD_CONSOLE_LINE_RXTX 31 ", pins("mk64f", "frdmk64f"))
+        k64 = chip.generate(self.view(os.path.join(PLATFORM, "mk64f", "frdmk64f.yaml"), "armv7m"))
+        for n in range(6):
+            with self.subTest(uart=n):
+                self.assertIn("UART%d_BASE" % n, k64["chip_mmap.h"])
+                self.assertIn("UART%d_RXTX_IRQ" % n, k64["irq.h"])
+                self.assertIn("UART%d_ERR_IRQ" % n, k64["irq.h"])
         # An addressable LED has a pin and no level.
         c6 = pins("esp32c6", "esp32c6-wroom", "rv32imac")
         self.assertIn("#define KICKOS_BOARD_LED_BIT 8\n", c6)
         self.assertIn("#define KICKOS_BOARD_LED_ADDRESSABLE 1\n", c6)
         self.assertNotIn("KICKOS_BOARD_LED_ACTIVE_LOW", c6)
         esp32 = pins("esp32", "esp32-wroom", "lx6")
-        # The console pins, the kernel LED and every reserved pin, each by its port's number.
-        self.assertIn("#define KICKOS_BOARD_KERNEL_PINS(PIN) PIN(0, 2) PIN(0, 3) PIN(3, 12) /*", disco)
-        self.assertIn("#define KICKOS_BOARD_KERNEL_PINS(PIN) PIN(0, 1) PIN(0, 3) PIN(0, 2) PIN(0, 6) PIN(0, 7) "
+        # The console's line under the name every UART of the part gives it.
+        self.assertIn("#define KICKOS_BOARD_CONSOLE_LINE_IRQ 30\n", esp32)
+        self.assertIn("#define KICKOS_BOARD_CONSOLE_LINE_IRQ 16\n", c6)
+        # The console pins and every reserved pin, each by its port's number; the diagnostic LED's
+        # pin is a task's to mux.
+        self.assertIn("#define KICKOS_BOARD_KERNEL_PINS(PIN) PIN(0, 2) PIN(0, 3) /*", disco)
+        self.assertIn("#define KICKOS_BOARD_KERNEL_PINS(PIN) PIN(0, 1) PIN(0, 3) PIN(0, 6) PIN(0, 7) "
                       "PIN(0, 8) PIN(0, 9) PIN(0, 10) PIN(0, 11) /*", esp32)
-        self.assertIn("#define KICKOS_BOARD_KERNEL_PINS(PIN) PIN(1, 2) PIN(1, 3) PIN(2, 3) /*", teensy)
-        self.assertIn("#define KICKOS_BOARD_KERNEL_PINS(PIN) PIN(0, 16) PIN(0, 17) PIN(0, 8) PIN(0, 9) PIN(0, 15) "
+        self.assertIn("#define KICKOS_BOARD_KERNEL_PINS(PIN) PIN(1, 2) PIN(1, 3) /*", teensy)
+        self.assertIn("#define KICKOS_BOARD_KERNEL_PINS(PIN) PIN(0, 16) PIN(0, 17) PIN(0, 9) PIN(0, 15) "
                       "PIN(0, 12) PIN(0, 13) /*", c6)
         self.assertIn("#define KICKOS_BOARD_KERNEL_PINS(PIN) PIN(0, 89) PIN(0, 88) /*", pins("rx72m", "rx72m", "rxv3"))
         # Every pin the chip file names with a `gpio` function, the board's or not.
         self.assertIn("#define KICKOS_CHIP_PINS(PIN) PIN(1, 0) PIN(1, 1) PIN(1, 2) PIN(1, 3) PIN(1, 4) PIN(1, 5) "
                       "PIN(2, 0) PIN(2, 1) PIN(2, 2) PIN(2, 3) /*", teensy)
+
+    def test_a_plain_diagnostic_led_on_the_c6_asks_for_no_rmt(self):
+        folder = os.path.join(self.scratch, "esp32c6")
+        os.makedirs(folder)
+        shutil.copy(os.path.join(PLATFORM, "esp32c6", "chip.yaml"), folder)
+        with open(os.path.join(PLATFORM, "esp32c6", "esp32c6-wroom.yaml"), encoding="ascii") as stream:
+            board = stream.read()
+        self.assertIn("kind: addressable,", board)
+        path = os.path.join(folder, "esp32c6-wroom.yaml")
+        self.write(path, board.replace("kind: addressable,", "active: high,"))
+        text = chip.generate(self.view(path, "rv32imac"))["board_pins.h"]
+        self.assertIn("#define KICKOS_BOARD_LED_BIT 8\n", text)
+        self.assertIn("#define KICKOS_BOARD_LED_ACTIVE_LOW 0\n", text)
+        self.assertNotIn("KICKOS_BOARD_LED_ADDRESSABLE", text)
 
     def test_an_unreadable_file_is_refused(self):
         with tempfile.TemporaryDirectory() as scratch:

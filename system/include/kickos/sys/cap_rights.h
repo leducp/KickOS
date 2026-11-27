@@ -13,7 +13,7 @@
 // carrying KOS_CAP_HANDOUT. Delegating requires the parent cap carry KOS_CAP_TRANSFER.
 enum kos_cap_rights
 {
-    KOS_CAP_WAIT = 1 << 0,     // endpoint recv; notification bind and wait; IRQ ack
+    KOS_CAP_WAIT = 1 << 0,     // endpoint recv; notification bind; IRQ ack
     KOS_CAP_SIGNAL = 1 << 1,   // endpoint send; notification signal; IRQ raise
     KOS_CAP_TRANSFER = 1 << 2, // may be delegated onward
     // Endpoint only: a delegation may grant KOS_CAP_WAIT from this cap although it holds no

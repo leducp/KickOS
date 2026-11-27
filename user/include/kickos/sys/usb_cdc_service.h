@@ -32,14 +32,8 @@
 // (<kickos/sys/banner_identity.h>), ahead of anything the ring holds: the kernel's own
 // banner never reaches this console. A resume continues the stream without them.
 //
-// Output is held from each configuration until the host's terminal is ready, so no byte reaches
-// a host line discipline still in its default (cooked, echoing) mode. Linux's cdc_acm starts
-// reading and raises DTR inside open(), before the opener can change its termios, and sends the
-// changed line coding from inside tcsetattr, whose lock the line discipline's receive path also
-// takes: a byte sent only after that SET_LINE_CODING is received under the new termios. So the
-// hold ends at a SET_LINE_CODING after a DTR rise, KOS_USB_HOLD_OPENED after the rise for a
-// host that sets no line coding, and KOS_USB_HOLD_UNOPENED after configuration for one that
-// never raises DTR. Every DTR rise holds again.
+// Output flows from each configuration: what reaches a host before its opener sets the
+// terminal is read in the terminal's default mode.
 //
 // Bulk IN completion sends the next packet. If the host stops reading without
 // a bus reset, tx_inflight stays set and the ring can remain full; a software
@@ -97,9 +91,6 @@ enum kos_usb_event
     KOS_USB_EV_SUSPEND = 1u << 3,
     KOS_USB_EV_RESUME = 1u << 4
 };
-
-constexpr std::chrono::seconds KOS_USB_HOLD_OPENED{1};
-constexpr std::chrono::seconds KOS_USB_HOLD_UNOPENED{5};
 
 // One power-of-two naturally-aligned allocation: the RAM arm of grant_region_admissible
 // requires it of every caller, privileged included. TX is larger than the UART's: the dark
@@ -220,16 +211,6 @@ public:
     // Identity bytes still owed to the host, or one of their packets with the controller.
     bool identity_pending() const { return id_left_ != 0u or id_inflight_; }
 
-    // The IRQ thread's deadline: the output hold's end, else KOS_NEVER.
-    kos_monotonic_t irq_wait_until() const
-    {
-        if (hold_until_.ns == 0)
-        {
-            return KOS_NEVER;
-        }
-        return hold_until_;
-    }
-
 private:
     enum ep0_state
     {
@@ -261,8 +242,6 @@ private:
         zlp_inflight_ = false;
         id_left_ = 0;
         id_inflight_ = false;
-        dtr_ = false;
-        hold_until_.ns = 0;
         sh_->tx_inflight = 0;
         sh_->tx_zlp = 0;
         // `mode` is deliberately NOT reset: it is the caller's choice, not link state, so a
@@ -346,8 +325,6 @@ private:
                 // rather than on an interrupt.
                 dev_.ep_out_arm(KOS_USB_CDC_EP_DATA, bulk_out_pid_);
                 id_left_ = id_len_;
-                dtr_ = false;
-                hold(KOS_USB_HOLD_UNOPENED);
             }
             ep0_ack();
             return;
@@ -474,16 +451,6 @@ private:
             return;
         }
         case KOS_CDC_SET_CONTROL_LINE_STATE:
-        {
-            bool const dtr = (s.wValue & KOS_CDC_CTRL_DTR) != 0u;
-            if (dtr and not dtr_)
-            {
-                hold(KOS_USB_HOLD_OPENED);
-            }
-            dtr_ = dtr;
-            ep0_ack();
-            return;
-        }
         case KOS_CDC_SEND_BREAK:
         {
             ep0_ack();
@@ -622,10 +589,6 @@ private:
         if (ep0_out_req_ == KOS_CDC_SET_LINE_CODING and n >= KOS_CDC_LINE_CODING_LEN)
         {
             kos_cdc_line_coding_unpack(&line_coding_, scratch_);
-            if (dtr_)
-            {
-                hold_until_.ns = 0;
-            }
         }
         ep0_out_req_ = 0;
         ep0_pid_ = 1;
@@ -652,38 +615,8 @@ private:
         dev_.ep_out_arm(KOS_USB_CDC_EP_DATA, bulk_out_pid_);
     }
 
-    // 0 is "not held", so a deadline is never stored as 0.
-    template <class Rep, class Period>
-    void hold(std::chrono::duration<Rep, Period> d)
-    {
-        hold_until_ = kos::after(d);
-        if (hold_until_.ns == 0)
-        {
-            hold_until_.ns = 1;
-        }
-    }
-
-    bool held()
-    {
-        if (hold_until_.ns == 0)
-        {
-            return false;
-        }
-        if (kos_monotonic_now().ns < hold_until_.ns)
-        {
-            return true;
-        }
-        hold_until_.ns = 0;
-        return false;
-    }
-
     void pump_tx()
     {
-        // Ahead of the bus state: an expired hold left standing keeps the IRQ thread's park at 0.
-        if (held())
-        {
-            return;
-        }
         if (config_ == 0u or suspended_)
         {
             return; // no host is reading: the bytes wait in the ring
@@ -764,9 +697,6 @@ private:
     uint32_t id_len_ = 0;
     uint32_t id_left_ = 0;
     bool id_inflight_ = false;
-    bool dtr_ = false;
-    // The monotonic instant the output hold ends; 0 while output flows.
-    kos_monotonic_t hold_until_ = {0};
 };
 
 // ---------------------------------------------------------------------------------
@@ -787,12 +717,7 @@ void irq_loop(Cdc<UsbDev>& cdc, Shared* sh)
     {
         // The FIRST wait is also what arms the line: a claim leaves it masked so no
         // window exists in which it is armed and unowned.
-        int const rc = kos_notify_wait(KOS_USB_ACCEPT, cdc.irq_wait_until(), nullptr);
-        if (rc == -KOS_ETIMEDOUT)
-        {
-            cdc.service_irq(); // the output hold ended
-            continue;
-        }
+        int const rc = kos_notify_wait(KOS_USB_ACCEPT, KOS_NEVER, nullptr);
         if (rc != 0)
         {
             driver::trap();

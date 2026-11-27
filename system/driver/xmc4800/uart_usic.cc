@@ -82,7 +82,7 @@ int32_t kos_uart_open(struct kos_uart* u, struct kos_uart_config const* cfg)
         return bad_cfg;
     }
     // FDR and BRG are Write = PV (RM Table 18-20, p.18-155) and the seam's allowlist carries
-    // a CCR entry only for U0C0, so the kernel's divisor stands. -KOS_ENOTSUP and not the
+    // a CCR entry only for the console channel, so the kernel's divisor stands. -KOS_ENOTSUP and not the
     // -KOS_EPERM the two CCR read-backs below use: no store is attempted here, so a consumer
     // must not read this as a grant that could have been widened.
     int32_t const fixed_rate = kos_uart_cfg_check_fixed_rate(cfg);

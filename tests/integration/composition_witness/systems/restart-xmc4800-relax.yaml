@@ -21,8 +21,8 @@ shared:
 tasks:
   - name: console
     driver: xmcuartirq
-    devices: [/dev/usic0/ch0]
-    lines: { irq: /dev/usic0/sr0 }
+    devices: [/dev/console]
+    lines: { irq: /dev/console/sr0 }
     serves: /svc/console
     priority: 12
     accepts: [coarse_gate]

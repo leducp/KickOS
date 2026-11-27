@@ -25,7 +25,7 @@ if [ -z "${KOS_CAPTURE:-}" ]; then
 fi
 [ -s "$KOS_CAPTURE" ] || jfail no-capture "no capture at $KOS_CAPTURE"
 
-BANNER_RE='^   KickOS [^ ]+  -  microkernel RTOS$|^K [0-9]'
+BANNER_RE="$KOS_BANNER_TITLE_ERE|^K [0-9]"
 READBACK_RE='^# accessctrl: 0xa0 = 0x[0-9a-f]+$'
 
 _at="$(tr -d '\r' < "$KOS_CAPTURE" | awk -v banner="$BANNER_RE" -v readback="$READBACK_RE" '

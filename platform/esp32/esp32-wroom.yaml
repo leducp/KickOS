@@ -13,7 +13,7 @@ console:
   pins: { tx: GPIO1, rx: GPIO3 }
 
 leds:
-  d2: { pin: GPIO2, active: high, owner: kernel } # the DevKit v1 / NodeMCU-32S blue LED; the kernel's diagnostic LED
+  d2: { pin: GPIO2, active: high, diagnostic: true } # the DevKit v1 / NodeMCU-32S blue LED
 
 reserved_pins:
   GPIO6: flash

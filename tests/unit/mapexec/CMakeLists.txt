@@ -19,7 +19,7 @@ kickos_add_kernel_host_lib(kickos_aspace_armv8a_host
   INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}" "${PROJECT_SOURCE_DIR}/tests/unit/common"
            "${PROJECT_SOURCE_DIR}/arch/common"
   POSTURE KICKOS_NUM_CORES=2 KICKOS_KERNEL_CORES=2 KICKOS_MULTICORE_MODEL_SHARED=1
-          KICKOS_HAVE_ASPACE=1 KICKOS_ARMV8A_SYSOPS_FROM_SEAM=1)
+          KICKOS_HAVE_ASPACE=1 KICKOS_ARCH_IRQ_WINDOW=1 KICKOS_ARMV8A_SYSOPS_FROM_SEAM=1)
 kickos_add_unit_test(NAME map_exec SOURCES map_exec.cc
   INCLUDES "${PROJECT_SOURCE_DIR}/arch/arm64/common" "${PROJECT_SOURCE_DIR}/arch/arm64/armv8a"
   LIBRARIES kickos_aspace_armv8a_host)
@@ -32,6 +32,6 @@ kickos_add_kernel_host_lib(kickos_aspace_armv8a_host_one
   INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}" "${PROJECT_SOURCE_DIR}/tests/unit/common"
            "${PROJECT_SOURCE_DIR}/arch/common"
   POSTURE KICKOS_NUM_CORES=1 KICKOS_KERNEL_CORES=1 KICKOS_MULTICORE_MODEL_SHARED=1
-          KICKOS_HAVE_ASPACE=1 KICKOS_ARMV8A_SYSOPS_FROM_SEAM=1)
+          KICKOS_HAVE_ASPACE=1 KICKOS_ARCH_IRQ_WINDOW=1 KICKOS_ARMV8A_SYSOPS_FROM_SEAM=1)
 kickos_add_unit_test(NAME map_publish SOURCES map_publish.cc
   LIBRARIES kickos_aspace_armv8a_host_one)

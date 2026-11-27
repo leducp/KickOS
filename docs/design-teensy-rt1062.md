@@ -51,6 +51,9 @@ vendor SDK or HAL.
 
 7. **Single-pad `0x03` read at 30 MHz in the FCB read LUT.** The universally compatible read, with
    no quad-enable step, which is what makes a first image flashable without a bench to debug it on.
+   (Superseded: the FCB reads with Fast Read Quad I/O, `0xEB`, at 60 MHz, sampled through the DQS
+   pad's loopback, in `arch/arm/chip/imxrt1062/chip_imxrt1062.cc`. That read needs the W25Q64JV's
+   non-volatile QE bit set, and nothing in the tree writes it.)
 
 8. **DCD = NULL.** The ROM register defaults suffice with no SDRAM or SEMC, and RM Table 9-37 makes
    the DCD optional. One less untestable structure.

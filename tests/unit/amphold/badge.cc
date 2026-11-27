@@ -376,6 +376,23 @@ namespace kickos
                 r.head.v[SERVED.index].store(head + 1u);
                 amp::node_service(kickos::IrqLock());
             }
+
+            // The peer's receiver took the whole of the send published last, and says so.
+            void far_send_taken(Thread*)
+            {
+                amp::Ring const& out = amp::ring_for(amp::Class::CALL, PEER, ME);
+                uint32_t const at = out.head.v[OUTBOUND.index].load() - 1u;
+                amp::Slot const& sent = out.slot[OUTBOUND.base + at % OUTBOUND.slots];
+                amp::Ring& back = amp::ring_for(amp::Class::REPLY, ME, PEER);
+                uint32_t const head = back.head.v[0].load();
+                amp::Slot& s = back.slot[head % amp::RING_SLOTS];
+                s.port.store(amp::PORT_REPLY);
+                s.tag = sent.tag;
+                s.badge.store(KOS_BADGE_NONE);
+                s.len.store(sent.len.load());
+                back.head.v[0].store(head + 1u);
+                amp::node_service(kickos::IrqLock());
+            }
         }
 
         TEST_F(IpcBadge, a_far_call_lands_with_the_badge_its_slot_carried)
@@ -407,14 +424,17 @@ namespace kickos
             ASSERT_EQ(endpoint_badge(c, far, BADGE, &badged), 0);
             amp::Ring const& out = amp::ring_for(amp::Class::CALL, PEER, ME);
             uint32_t const head = out.head.v[OUTBOUND.index].load();
-            ASSERT_EQ(endpoint_send(badged, reinterpret_cast<uintptr_t>(g_sbuf), MSG_LEN, 0u),
+            wake_next_park(far_send_taken);
+            ASSERT_EQ(endpoint_send(badged, reinterpret_cast<uintptr_t>(g_sbuf), MSG_LEN,
+                                    KOS_LIMIT_NONE),
                       static_cast<int32_t>(MSG_LEN));
             ASSERT_EQ(out.head.v[OUTBOUND.index].load(), head + 1u)
                 << "nothing crossed to the peer";
             EXPECT_EQ(out.slot[OUTBOUND.base + head % OUTBOUND.slots].badge, BADGE)
                 << "the far publication dropped the sender's badge";
 
-            ASSERT_EQ(endpoint_send(far, reinterpret_cast<uintptr_t>(g_sbuf), MSG_LEN, 0u),
+            wake_next_park(far_send_taken);
+            ASSERT_EQ(endpoint_send(far, reinterpret_cast<uintptr_t>(g_sbuf), MSG_LEN, KOS_LIMIT_NONE),
                       static_cast<int32_t>(MSG_LEN));
             EXPECT_EQ(out.slot[OUTBOUND.base + (head + 1u) % OUTBOUND.slots].badge,
                       KOS_BADGE_NONE);
