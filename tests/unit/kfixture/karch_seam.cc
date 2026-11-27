@@ -239,11 +239,6 @@ extern "C"
         kickos::testfix::trace_add("note");
     }
 
-    int console_dark(void)
-    {
-        return static_cast<int>(kickos::testfix::g_console_dark);
-    }
-
     int console_chip_writers(void)
     {
         return 0;
@@ -311,7 +306,7 @@ extern "C" int arch_periph_disable(uintptr_t base)
 }
 
 #if not KSEAM_REAL_CONSOLE
-void console_on_driver_death(kickos::Held)
+void console_on_driver_death(void)
 {
     kickos::testfix::g_console_reclaimed++;
     kickos::testfix::trace_add("reclaim");

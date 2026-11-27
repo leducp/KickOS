@@ -33,8 +33,8 @@ namespace mmap = kickos::xmc::mmap;
 
 namespace
 {
-    // UNPRIVILEGED driver thread, on the U0C1 window the descriptor pins. USIC0's module clock is
-    // ungated by the console's U0C0 bring-up, not here.
+    // UNPRIVILEGED driver thread, on the U0C1 window the descriptor pins. USIC0's module clock and
+    // reset are released here, or by the kernel's console bring-up where the console is USIC0's.
     void bus_thread(void* arg)
     {
         // The line is already owned before the bus open arms RIEN/AIEN, which is the ordering
@@ -49,6 +49,7 @@ namespace
         cfg.notify = spi::KOS_SPI_CAP_NOTIFY;
         cfg.notify_bit = 0;
 
+        (void)kos_periph_enable(cfg.base);
         struct kos_spi_bus bus;
         int32_t const opened = kos_spi_bus_open(&bus, &cfg);
         if (opened < 0)

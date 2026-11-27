@@ -113,6 +113,9 @@ FRAGMENTS = ('kickos_images.ld', 'kickos_images_code.ld', 'kickos_images_asserts
 PIN_LINKS = 4
 X86_LINK = 'x86_64-link.sh'
 KERNEL_ONLY = '--kernel-only'
+# The kernel's link takes no C++ library from the compiler driver, so a kernel `new` cannot link.
+# x86_64's tool is no driver and adds none.
+NO_CXX_LIB = '-nostdlib++'
 PAGE = 0x1000
 PT_LOAD = 1
 PF_X = 1
@@ -1122,7 +1125,10 @@ def embed(driver, objcopy, nm, names_file, kernel_objects, kernel_only, entries,
 
     # The fragment's directory before the script that includes it: ld reads a -T script where
     # the command names it.
-    kernel_link = (driver + ['-Wl,-L,' + os.path.abspath(kimg)] + both + kernel_own + [defsym]
+    no_cxx = [NO_CXX_LIB]
+    if pe:
+        no_cxx = []
+    kernel_link = (driver + no_cxx + ['-Wl,-L,' + os.path.abspath(kimg)] + both + kernel_own + [defsym]
                    + image_objs + kernel_objects + kernel_only + ['-o', out]
                    + kernel_inputs)
     if pe:
@@ -1265,8 +1271,12 @@ def main(argv):
 
     build_id = digest_of(objs + kernel_objects + [t for t in kernel_inputs if os.path.isfile(t)])
 
+    no_cxx = [NO_CXX_LIB]
+    if os.path.basename(cc) == X86_LINK:
+        no_cxx = []
+
     def final_link(extra=(), moves=True):
-        run([cc, '-Wl,-L,' + os.path.abspath(kimg)] + both + final_only + list(extra)
+        run([cc] + no_cxx + ['-Wl,-L,' + os.path.abspath(kimg)] + both + final_only + list(extra)
             + ['-Wl,--defsym=' + prefix + '__kickos_build_id=' + hex(build_id)] + objs
             + kernel_objects + ['-o', out] + kernel_inputs, 'the final link', moves)
 

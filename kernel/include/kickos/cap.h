@@ -657,16 +657,16 @@ namespace kickos
     // `stdout: /amp/N`, with a ref of the kernel's own. Touches no console state. Boot only.
     bool cap_stdout_far_seat(Thread* root, int obj, Held held);
 
-    // The reference a child of `t` seats its far standard output with, taken: false where it is
-    // at its ceiling, and the spawn is then refused. True having taken nothing for a local seat.
+    // The reference a child of `t` seats its standard output with, taken: false where it is at
+    // its ceiling, and the spawn is then refused. True having taken nothing where no seat is owed.
     bool cap_stdout_reserve(Task const* t);
     // Gives back what cap_stdout_reserve took, for a spawn refused after it.
     void cap_stdout_unreserve(Task const* t);
 
     // The privileged default cap set for a freshly spawned child. Pre-publish it installs
-    // NOTHING (index 0 empty; write() falls back to kconsole_write). Post-publish it seats
-    // a send-only (CAP_SIGNAL) copy of the console endpoint at index 0. See D4. A far standard
-    // output is seated on the reference cap_stdout_reserve took for the child.
+    // NOTHING (index 0 empty; write() takes the kernel console). Post-publish it seats
+    // a send-only (CAP_SIGNAL) copy of the console endpoint at index 0, or of the far standard
+    // output, on the reference cap_stdout_reserve took for the child.
     void cap_install_defaults(Thread* child, Held held);
 
     // Move the kernel's stdout-target ref to `obj_handle` AND seat `publisher`'s own slot 0 on
@@ -697,13 +697,11 @@ namespace kickos
     // The published console endpoint, or null where nothing is published.
     Endpoint* cap_console_endpoint();
 
-    // Whether a send through `t`'s stdout slot reaches the published console endpoint and is
-    // taken or parks there.
-    bool cap_console_serves(Thread const* t);
-
-    // Hand the kernel records held for the published console to a receiver already parked on
-    // it, as much as its buffer takes; with none parked they wait for its next receive. Never
-    // parks. Thread context only: the woken receiver may preempt it at the lock's release. No
+    // Hand the kernel records held for the published console to the first receiver parked on it
+    // that can take one, as much as its buffer takes; with none they wait for its next receive.
+    // A receiver whose buffer the map loaded now cannot store into is woken to receive again
+    // under its own, and the next one is tried: at most one wake per parked receiver. Never
+    // parks. Thread context only: a woken receiver may preempt it at the lock's release. No
     // assert: the fault reporter is the caller.
     void cap_console_deliver(Held held);
 

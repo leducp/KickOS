@@ -3,7 +3,7 @@
 //
 // What kernel/init/console.cc leaves undefined when it is compiled WITHOUT console_tx.cc and
 // without a kernel behind it, apart from what a gate records and console_leaves.cc answers: the
-// device writes, the ring's arm, the dark wait, the console's server and the current thread.
+// device writes, the ring's arm, the console's waits, its server and the current thread.
 
 #include <kickos/arch/arch.h>
 #include <kickos/console_tx.h>

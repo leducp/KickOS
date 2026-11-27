@@ -13,7 +13,7 @@ console:
   pins: { tx: GPIO0, rx: GPIO1 }
 
 leds:
-  led: { pin: GPIO25, active: high, owner: kernel } # the kernel's diagnostic LED
+  led: { pin: GPIO25, active: high, diagnostic: true }
 
 # The Pico's QSPI flash, a W25Q16JV.
 memory:

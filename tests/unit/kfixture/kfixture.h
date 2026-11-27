@@ -88,8 +88,6 @@ namespace kickos
         constexpr uint32_t FAULT_FMT_MAX = 8;
         extern char const* g_fault_fmt[FAULT_FMT_MAX];
         extern uint32_t g_fault_fmts;
-        // What console_dark answers: the kernel console's dark window. Reset clears it.
-        extern bool g_console_dark;
         // What console_window_held_outside answers. Reset clears it.
         extern bool g_console_window_held;
         // Run once by the next domain_for, as a sibling on another core would act while a create

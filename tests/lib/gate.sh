@@ -537,6 +537,70 @@ image_body_dump() { # <symbol>
         f && /^$/ { exit }' "$TMP/dis" >&2
 }
 
+# The xtensa body image_body located, as $TMP/reach in the shape `objdump -d <objdump arg>...`
+# prints: a header and the instructions reachable from its entry and from each in-body target of
+# a branch, jump or loop, in address order. The assembler pads ahead of an aligned target, and a
+# linear sweep decodes that padding and loses the stream past it. A reachable byte sequence that
+# decodes as no instruction is a refusal.
+image_reach() { # <objdump> <elf> <symbol> [objdump arg]...
+    _ir_od="$1"
+    _ir_elf="$2"
+    _ir_sym="$3"
+    shift 3
+    _ir_col=3
+    for _ir_a in "$@"; do
+        if [ "$_ir_a" = "--no-show-raw-insn" ]; then
+            _ir_col=2
+        fi
+    done
+    _ir_end="$(printf '%08x' $((0x$BODY_START + 0x$BODY_SIZE)))"
+    : > "$TMP/reach.insn"
+    _ir_todo="$BODY_START"
+    while [ -n "$_ir_todo" ]; do
+        _ir_at="${_ir_todo%% *}"
+        _ir_todo="$(echo "$_ir_todo" | sed 's/^[^ ]* *//')"
+        if grep -q "^$_ir_at " "$TMP/reach.insn"; then
+            continue
+        fi
+        tool_out "$TMP/reach.raw" "^ *$_ir_at:" "$_ir_od" -d "$@" \
+            --start-address="0x$_ir_at" --stop-address="0x$_ir_end" "$_ir_elf"
+        awk -v end="$_ir_end" -v start="$BODY_START" -v col="$_ir_col" \
+            -v seen_file="$TMP/reach.insn" '
+            FILENAME == seen_file { done[$1] = 1; next }
+            $0 !~ /^[ \t]*[0-9a-f]+:[ \t]/ { next }
+            {
+                line = $0
+                sub(/^[ \t]*/, "", line)
+                at = line
+                sub(/:.*$/, "", at)
+                if (at in done) { exit }
+                print "I " at " " line
+                split(line, f, "\t")
+                mnem = f[col]
+                sub(/ .*$/, "", mnem)
+                if (mnem == ".byte" || mnem == "") { print "U " at; exit }
+                if ((mnem ~ /^b/ && mnem !~ /^break/) || mnem == "j" || mnem ~ /^loop/) {
+                    if (match(line, /[0-9a-f]+ </)) {
+                        to = substr(line, RSTART, RLENGTH - 2)
+                        if (length(to) == length(end) && to >= start && to < end) { print "T " to }
+                    }
+                }
+                if (mnem ~ /^(j|jx|ret|ret\.n|retw|retw\.n|rfe|rfi|rfde|rfwo|rfwu|ill|ill\.n)$/) { exit }
+            }' "$TMP/reach.insn" "$TMP/reach.raw" > "$TMP/reach.step"
+        if grep -q '^U ' "$TMP/reach.step"; then
+            fail "'$_ir_sym' in $_ir_elf holds a byte sequence objdump decodes as no instruction
+  on a path reached from its entry, so its stream is UNKNOWN and nothing read in it is a verdict"
+        fi
+        sed -n 's/^I //p' "$TMP/reach.step" >> "$TMP/reach.insn"
+        _ir_todo="$_ir_todo $(sed -n 's/^T //p' "$TMP/reach.step" | tr '\n' ' ')"
+        _ir_todo="$(echo "$_ir_todo" | sed 's/^ *//')"
+    done
+    grep -q "^$BODY_START " "$TMP/reach.insn" || fail "the reachable decode of '$_ir_sym' in
+  $_ir_elf does not hold its entry at $BODY_START, so the reader would start nowhere"
+    { echo "$BODY_START <$_ir_sym>:"; LC_ALL=C sort "$TMP/reach.insn" | cut -d' ' -f2-; echo; } \
+        > "$TMP/reach"
+}
+
 # The section table of a linked image as $TMP/sec, one "name address size flags" row per
 # section that carries flags, readelf's "[ n]" index stripped. A table with no allocated section
 # is a misread.
@@ -1518,9 +1582,13 @@ require_drivers_up() { # <system> <before>
     done
 }
 
+# A banner title: the name and its version, `unknown` without a version tag, whatever spacing or
+# rule surrounds them. tools/bench/banner.sh's BANNER_TITLE_ERE is the same expression.
+KOS_BANNER_TITLE_ERE='(^|[^[:alnum:]_])KickOS[[:space:]]+(unknown|[0-9]+[.][0-9]+[.][0-9]+[-+.A-Za-z0-9]*)([[:space:]=]|$)'
+
 # The line of OUT each boot's banner title is on, one per line, first boot first.
 boot_starts() {
-    printf '%s\n' "$OUT" | awk '/^   KickOS [^ ]+  -  microkernel RTOS$/ || /^K [0-9]/ { print NR }'
+    printf '%s\n' "$OUT" | awk -v title="$KOS_BANNER_TITLE_ERE" '$0 ~ title || /^K [0-9]/ { print NR }'
 }
 
 # OUT: a silicon capture whole, CR stripped, holding at least one banner title.

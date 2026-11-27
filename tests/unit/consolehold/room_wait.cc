@@ -20,7 +20,7 @@
 
 #include <kickos/sys/errno.h>
 
-#include "dark_seam.h"
+#include "device_seam.h"
 #include "isolated_arm.h"
 #include "kseam_test.h"
 
@@ -54,7 +54,7 @@ namespace
     void push(uint8_t b)
     {
         g_pushes = g_pushes + 1;
-        darkseam::g_wire.push_back(static_cast<char>(b));
+        deviceseam::g_wire.push_back(static_cast<char>(b));
         if (g_slot_budget != 0)
         {
             g_slot_budget = g_slot_budget - 1;
@@ -76,7 +76,7 @@ namespace
     // only time its bytes sit queued.
     void stage(int irq_line, GapAction preempted = nullptr)
     {
-        darkseam::reset();
+        deviceseam::reset();
         g_slot_budget = 0;
         g_pushes = 0;
         g_park_kind = WAIT_NONE;
@@ -121,7 +121,7 @@ TEST_F(ConsoleRoom, a_writer_the_ring_refuses_drains_it_itself_on_a_producer_dra
                       static_cast<int>(kLine.size()));
         });
         EXPECT_FALSE(g_writer_parked) << "the writer waited for a drain only it could run";
-        EXPECT_EQ(darkseam::g_wire, kQueued + kLine);
+        EXPECT_EQ(deviceseam::g_wire, kQueued + kLine);
     });
 }
 
@@ -133,7 +133,7 @@ TEST_F(ConsoleRoom, a_writer_the_ring_refuses_sleeps_until_the_tx_drain_frees_ro
         stage(kTxLine);
         wake_next_park([](Thread* parked) {
             g_park_kind = parked->wait_kind;
-            EXPECT_EQ(darkseam::g_wire, "") << "a byte left before the drain ran";
+            EXPECT_EQ(deviceseam::g_wire, "") << "a byte left before the drain ran";
             EXPECT_FALSE(parked->on_timer) << "a user writer's wait for room has a deadline";
             console_tx_isr();
         });
@@ -141,7 +141,24 @@ TEST_F(ConsoleRoom, a_writer_the_ring_refuses_sleeps_until_the_tx_drain_frees_ro
                   static_cast<int>(kLine.size()));
         EXPECT_EQ(g_park_kind, WAIT_CONSOLE) << "the writer did not sleep on the console";
         console_tx_isr();
-        EXPECT_EQ(darkseam::g_wire, kQueued + kLine);
+        EXPECT_EQ(deviceseam::g_wire, kQueued + kLine);
+    });
+}
+
+// A publish lands while the writer sleeps for room: its wake ends the wait, and the console, the
+// service's now, refuses the line, nothing of it written.
+TEST_F(ConsoleRoom, a_writer_waiting_for_room_is_woken_by_a_publish_and_refused)
+{
+    run_isolated([]() {
+        stage(kTxLine);
+        wake_next_park([](Thread* parked) {
+            g_park_kind = parked->wait_kind;
+            ASSERT_TRUE(deviceseam::publish(parked, endpoint(), task(0)));
+        });
+        EXPECT_EQ(kconsole_write_user(kLine.data(), kLine.size(), true), -KOS_EBUSY);
+        EXPECT_EQ(g_park_kind, WAIT_CONSOLE) << "the writer did not sleep on the console";
+        EXPECT_EQ(deviceseam::g_wire.find(kLine), std::string::npos)
+            << "the refused line reached the device";
     });
 }
 
@@ -165,7 +182,7 @@ TEST_F(ConsoleRoom, a_writer_whose_own_task_holds_the_uart_does_not_wait)
 {
     run_isolated([]() {
         stage(kTxLine);
-        darkseam::g_window_free = false;
+        deviceseam::g_window_free = false;
         wake_next_park([](Thread*) {
             g_writer_parked = true;
             console_tx_isr();
@@ -174,7 +191,7 @@ TEST_F(ConsoleRoom, a_writer_whose_own_task_holds_the_uart_does_not_wait)
                   static_cast<int>(kLine.size()));
         EXPECT_FALSE(g_writer_parked) << "the writer waited on a UART its own task holds";
         console_tx_isr();
-        EXPECT_EQ(darkseam::g_wire, kQueued);
+        EXPECT_EQ(deviceseam::g_wire, kQueued);
     });
 }
 
@@ -190,15 +207,15 @@ TEST_F(ConsoleRoom, a_record_line_the_ring_refuses_sleeps_until_the_tx_drain_fre
             << "premise: the ring has room for the record line";
         wake_next_park([](Thread* parked) {
             g_park_kind = parked->wait_kind;
-            EXPECT_EQ(darkseam::g_wire, "") << "a byte left before the drain ran";
+            EXPECT_EQ(deviceseam::g_wire, "") << "a byte left before the drain ran";
             console_tx_isr();
         });
         EXPECT_TRUE(kconsole_record_wait(need));
         EXPECT_EQ(g_park_kind, WAIT_CONSOLE) << "the record line did not sleep on the console";
         EXPECT_EQ(kprintf_fault(kRecord, 0x100u), 0u);
         console_tx_isr();
-        EXPECT_EQ(darkseam::g_wire, kQueued + kRecordLine);
-        EXPECT_EQ(darkseam::g_sync_calls, 0u) << "the record line used the polled writer";
+        EXPECT_EQ(deviceseam::g_wire, kQueued + kRecordLine);
+        EXPECT_EQ(deviceseam::g_sync_calls, 0u) << "the record line used the polled writer";
     });
 }
 
@@ -216,8 +233,8 @@ TEST_F(ConsoleRoom, a_record_line_the_ring_refuses_drains_it_itself_on_a_produce
             EXPECT_EQ(kprintf_fault(kRecord, 0x100u), 0u);
         });
         EXPECT_FALSE(g_writer_parked) << "the record waited for a drain only it could run";
-        EXPECT_EQ(darkseam::g_wire, kQueued + kRecordLine);
-        EXPECT_EQ(darkseam::g_sync_calls, 0u) << "the record line used the polled writer";
+        EXPECT_EQ(deviceseam::g_wire, kQueued + kRecordLine);
+        EXPECT_EQ(deviceseam::g_sync_calls, 0u) << "the record line used the polled writer";
     });
 }
 
@@ -237,7 +254,7 @@ TEST_F(ConsoleRoom, a_record_line_behind_a_wedged_channel_is_dropped_after_one_s
         });
         EXPECT_FALSE(kconsole_record_wait(need)) << "a wedged channel kept the record waiting";
         EXPECT_EQ(g_park_kind, WAIT_CONSOLE);
-        EXPECT_EQ(darkseam::g_sync_calls, 0u);
+        EXPECT_EQ(deviceseam::g_sync_calls, 0u);
     });
 }
 
@@ -256,7 +273,7 @@ TEST_F(ConsoleRoom, a_record_line_behind_a_slow_channel_is_offered_again)
             thread_abort_park(parked, -KOS_ETIMEDOUT, lock);
         });
         EXPECT_TRUE(kconsole_record_wait(need)) << "a channel still moving gave the line up";
-        EXPECT_EQ(darkseam::g_wire, kQueued.substr(0, 1));
+        EXPECT_EQ(deviceseam::g_wire, kQueued.substr(0, 1));
     });
 }
 
@@ -266,7 +283,7 @@ TEST_F(ConsoleRoom, a_record_line_whose_own_task_holds_the_uart_is_dropped)
 {
     run_isolated([]() {
         stage(kTxLine);
-        darkseam::g_window_free = false;
+        deviceseam::g_window_free = false;
         uint32_t const need = kprintf_fault(kRecord, 0x100u);
         ASSERT_NE(need, 0u);
         wake_next_park([](Thread*) {
@@ -305,8 +322,8 @@ TEST_F(ConsoleRoom, a_record_line_through_kprintf_record_waits_and_goes_whole)
         kprintf_record(kRecord, 0x100u);
         EXPECT_EQ(g_park_kind, WAIT_CONSOLE) << "the record line did not wait for room";
         console_tx_isr();
-        EXPECT_EQ(darkseam::g_wire, kQueued + kRecordLine);
-        EXPECT_EQ(darkseam::g_sync_calls, 0u);
+        EXPECT_EQ(deviceseam::g_wire, kQueued + kRecordLine);
+        EXPECT_EQ(deviceseam::g_sync_calls, 0u);
     });
 }
 
@@ -331,7 +348,7 @@ namespace
 TEST_F(ConsoleRoom, a_record_goes_ahead_of_a_polled_line_which_goes_on_after_it)
 {
     run_isolated([]() {
-        darkseam::reset();
+        deviceseam::reset();
         g_line_writer = seat_pool(0, PRIO_WRITER);
         attach_caps(g_line_writer, KICKOS_SEAM_CAP_WIDTH);
         {
@@ -344,7 +361,7 @@ TEST_F(ConsoleRoom, a_record_goes_ahead_of_a_polled_line_which_goes_on_after_it)
         EXPECT_EQ(kconsole_write_user(line.data(), line.size(), true),
                   static_cast<int>(line.size()));
         EXPECT_EQ(g_record_need, 0u) << "the record waited for the line it goes ahead of";
-        std::string const wire = darkseam::g_wire;
+        std::string const wire = deviceseam::g_wire;
         size_t const at = wire.find("\nrec\n");
         ASSERT_NE(at, std::string::npos) << wire;
         EXPECT_GT(at, 0u) << "the record did not land inside the line: " << wire;

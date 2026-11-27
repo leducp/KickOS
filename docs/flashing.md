@@ -18,12 +18,11 @@ It also writes `<app>.map`, the link map, which is not an image.
 The build tree mirrors `user/apps/`: a fleet-wide app emits under
 `build/<board>/user/apps/common/<app>/`, a board-specific one under
 `build/<board>/user/apps/<board>/<app>/` -- e.g.
-`build/xmc4800-relax/user/apps/common/blink/blink.{elf-less name,hex,bin}` and
+`build/xmc4800-relax/user/apps/common/hello/hello.{elf-less name,hex,bin}` and
 `build/xmc4800-relax/user/apps/xmc4800-relax/pvprobe/pvprobe.hex`. A board's own demos
 (`pvprobe`, `k64dspi`, `rxdrv`, `c6blink`, `f411spi`, ...) are the second form.
 Espressif boards additionally emit `<app>.app.bin` (the bootable image).
 
-`blink` is the no-UART smoke test (built for xmc/f411/f302/picopi/bluepill-c8/due);
 `hello` prints the banner + ping-pong.
 
 ## One command: `tools/flash.sh`
@@ -138,7 +137,7 @@ or a Nucleo's ST-Link freed by pulling its **CN2** jumpers -- see below) to the
 `SWDIO<->DIO`, `SWCLK<->CLK`, `GND<->GND` (power over USB or `3V3` -- one supply, shared
 GND). A **fresh** chip needs no reset line -- SWD can halt it, so a plain:
 ```sh
-st-flash --reset write build/bluepill-c8/user/apps/common/blink/blink.bin 0x08000000
+st-flash --reset write build/bluepill-c8/user/apps/common/hello/hello.bin 0x08000000
 ```
 works (`--reset` here is a software SYSRESETREQ over SWD). Only *re-flashing a
 board already running KickOS* needs `--connect-under-reset` (the idle thread
@@ -158,7 +157,7 @@ The Black Pill has no on-board debugger; flash over USB with its ROM DFU
 bootloader. Hold **BOOT0**, tap **NRST**, release BOOT0 (it enumerates as DFU),
 then:
 ```sh
-dfu-util -a 0 -s 0x08000000:leave -D build/blackpill/user/apps/common/blink/blink.bin
+dfu-util -a 0 -s 0x08000000:leave -D build/blackpill/user/apps/common/hello/hello.bin
 ```
 `:leave` runs the app after flashing. Or flash via SWD with an external ST-Link
 (`st-flash write ... 0x08000000`) if you'd rather. LED = **PC13** (active-low).
@@ -170,7 +169,7 @@ crystal -- the backend derives PLLM from it, so it reaches the same 84 MHz.
 
 Hold **BOOTSEL** while plugging USB (mounts as mass storage / picoboot), then:
 ```sh
-picotool load -x build/picopi/user/apps/common/blink/blink
+picotool load -x build/picopi/user/apps/common/hello/hello
 ```
 `-x` runs it after loading. UART0 is GP0(TX)/GP1(RX) 115200 -- needs a 3.3 V
 adapter, confirmed on silicon. LED is GP25 (not the Pico W, whose LED is on the
@@ -210,7 +209,7 @@ Use the **Programming port** (the micro-USB next to the DC jack; enumerates as
 Arduino PID `003d`). BOSSA needs the SAM3X in its SAM-BA ROM bootloader:
 ```sh
 bossac -p ttyACMx --usb-port=0 -a -e -w -v -b -R \
-  build/due/user/apps/common/blink/blink.bin
+  build/due/user/apps/common/hello/hello.bin
 ```
 `-a` = the 1200-baud erase/reset hack, `--usb-port=0` = RS-232 (the prog port is
 UART-bridged via the 16U2), `-b` = set boot-from-flash, `-R` = reset. If it says
@@ -301,7 +300,7 @@ base -- see `arch/arm/chip/xmc4800/xmc4800.ld`).
 
 ```sh
 cat > /tmp/xmc.jlink <<'EOF'
-loadbin build/xmc4800-relax/user/apps/common/blink/blink.bin 0x08000000
+loadbin build/xmc4800-relax/user/apps/common/hello/hello.bin 0x08000000
 r
 g
 qc
@@ -311,13 +310,13 @@ JLinkExe -device XMC4800-2048 -if SWD -speed 4000 -autoconnect 1 -CommanderScrip
 
 `loadbin` needs the address because a `.bin` carries none; `0x08000000` is the
 flash origin. (`.hex` carries its own addresses: `loadfile <app>.hex` instead,
-no address.) `r` resets, `g` runs, `qc` quits. LED1 (P5.9) should blink.
+no address.) `r` resets, `g` runs, `qc` quits.
 
 ### Interactive equivalent
 
 ```sh
 JLinkExe -device XMC4800-2048 -if SWD -speed 4000 -autoconnect 1
-J-Link> loadbin build/xmc4800-relax/user/apps/common/blink/blink.bin 0x08000000
+J-Link> loadbin build/xmc4800-relax/user/apps/common/hello/hello.bin 0x08000000
 J-Link> r
 J-Link> g
 J-Link> q
@@ -327,7 +326,7 @@ J-Link> q
 
 ```sh
 JLinkGDBServer -device XMC4800-2048 -if SWD -speed 4000      # terminal 1
-arm-none-eabi-gdb build/xmc4800-relax/user/apps/common/blink/blink \      # terminal 2
+arm-none-eabi-gdb build/xmc4800-relax/user/apps/common/hello/hello \      # terminal 2
   -ex 'target remote :2331' -ex load -ex 'monitor reset' -ex continue
 ```
 
@@ -361,7 +360,7 @@ in `flash_resolve` and apply to every backend -- see *One command* above.
 
 ```sh
 tools/flash-jlink.sh frdmk64f              # build/frdmk64f/.../hello.hex  -> MK64FN1M0xxx12
-tools/flash-jlink.sh xmc4800-relax blink   # build/xmc4800-relax/.../blink.hex -> XMC4800-2048
+tools/flash-jlink.sh xmc4800-relax hello   # build/xmc4800-relax/.../hello.hex -> XMC4800-2048
 ```
 
 For **RTT** (over the probe, needs a `KICKOS_CONSOLE=rtt|both` image), the loop is

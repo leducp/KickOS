@@ -194,7 +194,7 @@ granted_devices() { # <composition>
 
 # Of a list of driver compositions, the ones this manifest's node can be granted the devices of,
 # one per line into <admitted>, and one reason per line into <skipped> for each composition holding
-# another node's console.
+# another node's console, or /dev/console on a node driving none.
 node_compositions() { # <compositions> <manifest> <admitted> <skipped>
     _nc_node="$(sed -n '/^  amp:$/,/^  [^ ]/s/^    node: \([0-9][0-9]*\)$/\1/p' "$2")"
     amp_consoles "$2" > "$TMP/nc_consoles"
@@ -203,7 +203,12 @@ node_compositions() { # <compositions> <manifest> <admitted> <skipped>
     while IFS= read -r _nc_path; do
         granted_devices "$_nc_path" > "$TMP/nc_devices"
         _nc_reason=""
-        while read -r _nc_k _nc_device; do
+        # /dev/console is this node's own console, which a node driving none cannot grant.
+        if grep -qxF /dev/console "$TMP/nc_devices" \
+            && grep -qxF "$_nc_node none" "$TMP/nc_consoles"; then
+            _nc_reason="/dev/console names no device, node $_nc_node's kernel driving no console"
+        fi
+        while [ -z "$_nc_reason" ] && read -r _nc_k _nc_device; do
             if [ "$_nc_device" = none ] || [ "$_nc_k" = "$_nc_node" ]; then
                 continue
             fi
@@ -242,8 +247,8 @@ if [ "$MODE" = drivers ]; then
     node_compositions "$TMP/catalogued" "$MANIFEST" "$TMP/files" "$TMP/skipped"
     # The skip run on a partition of two nodes whose node 0 drives /dev/uart0 as its console.
     _nd_c6="tools/compose/tests/drivers/esp32c6-wroom/c6uart.yaml"
-    grep -qxF "    devices: [/dev/uart0]" "$_nd_c6" \
-        || fail "$_nd_c6 no longer holds /dev/uart0, which the skip arms rest on"
+    grep -qxF "    devices: [/dev/console]" "$_nd_c6" \
+        || fail "$_nd_c6 no longer holds /dev/console, which the skip arms rest on"
     echo "$_nd_c6" > "$TMP/arm_list"
     for _nd_node in 0 1; do
         printf 'target:\n  amp:\n    node: %d\n    nodes: 2\n    consoles: ["/dev/uart0", none]\nprotection:\n' \
@@ -256,7 +261,7 @@ if [ "$MODE" = drivers ]; then
     [ ! -s "$TMP/arm_admitted" ] || fail "the skip rule admits $_nd_c6 on node 1, which holds node 0's console"
     drivers_summary 1 0 "$TMP/arm_skipped" > "$TMP/arm_summary"
     grep -qxF "   1 catalogue driver(s), 0 composition(s) admitted, 1 skipped" "$TMP/arm_summary" \
-        && grep -qxF "   skipped on node 1: $_nd_c6: /dev/uart0 is node 0's console" "$TMP/arm_summary" \
+        && grep -qxF "   skipped on node 1: $_nd_c6: /dev/console names no device, node 1's kernel driving no console" "$TMP/arm_summary" \
         || fail "a node whose only driver composition is skipped does not print the counts and why"
     if [ -s "$TMP/catalogue" ]; then
         read -r first < "$TMP/catalogue"

@@ -81,7 +81,7 @@ the emergency pool in the app data region. This is the model on **K64F, XMC, and
 
 ### SjLj (RX) -- a runtime context chain, no frame registration
 
-The Renesas GNURX toolchain uses **setjmp/longjmp** exceptions. Instead of walking the
+The RX toolchain (GCC with Renesas's GNURX changes) uses **setjmp/longjmp** exceptions. Instead of walking the
 machine stack from unwind tables, each `try` region registers a context on entry (a
 `setjmp`-style save) into a runtime chain, and `throw` `longjmp`s back down that chain,
 consulting `.gcc_except_table` (the LSDA -- language-specific data, landing pads and type
@@ -90,9 +90,11 @@ filters) to decide where to land. Two consequences for protection: the LSDA is
 [`arch/rx/chip/rx72m/rx72m.ld`](../../arch/rx/chip/rx72m/rx72m.ld), which places
 `.gcc_except_table` explicitly in ROM so it is not swallowed by the fixed 0x80-byte reset
 vector table, and so the app reads it via its ROM code grant), and the SjLj context chain
-head is **writable** and lives with the rest of the runtime's writable state in the app
-data region. There is **no `__register_frame`** -- SjLj has no `.eh_frame` and no FDE
-registry to register. This is the model on **RX72M**.
+head is **writable**. Each thread has its own chain: the unwinder keeps the head as a
+thread-specific value, and the threads model keeps those values in the thread's own runtime
+state at the base of its own stack block, inside the region the thread is granted. There is
+**no `__register_frame`** -- SjLj has no `.eh_frame` and no FDE registry to register. This
+is the model on **RX72M**.
 
 ### DWARF (RISC-V, Xtensa) -- .eh_frame plus a registration on the root thread
 
@@ -244,8 +246,9 @@ the same in all three:
   no registration, no `gp`. Read-only `.ARM.exidx`/`.ARM.extab` in the code grant, the
   writable `eh_globals` + emergency pool in the data grant. Under SYSMPU (K64F) and PMSA
   (XMC, RP2040).
-- **GNURX SjLj** (RX72M) -- `.gcc_except_table` (LSDA) in ROM under the code grant, a
-  writable setjmp context chain in the data grant, no `__register_frame`. Under the RX MPU.
+- **SjLj** (RX72M) -- `.gcc_except_table` (LSDA) in ROM under the code grant, a
+  writable setjmp context chain per thread in that thread's own runtime state, no
+  `__register_frame`. Under the RX MPU.
 - **DWARF** (ESP32-C6 / RISC-V, ESP32 / Xtensa) -- the root thread's `__register_frame`
   homes the FDE registry node in the granted heap, `.eh_frame` folds into the code grant,
   and the `gp` anchor sits in the app data region. Under PMP.

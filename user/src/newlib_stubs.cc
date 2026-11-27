@@ -116,6 +116,18 @@ namespace
             {
                 return EINVAL;
             }
+            case -KOS_EBUSY:
+            {
+                return EBUSY;
+            }
+            case -KOS_ECONNREFUSED:
+            {
+                return ECONNREFUSED;
+            }
+            case -KOS_EPIPE:
+            {
+                return EPIPE;
+            }
             default:
             {
                 return EIO;

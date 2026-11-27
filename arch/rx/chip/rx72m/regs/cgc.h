@@ -31,7 +31,21 @@ namespace kickos::rx::reg::cgc
     constexpr uint32_t MSTPA_CMTW1 = 1u << 0;  // MSTPCRA b0 = CMTW unit 1
     constexpr uint32_t MSTPA_CMTW0 = 1u << 1;  // MSTPCRA b1 = CMTW unit 0
     constexpr uintptr_t MSTPCRC = mmap::SYSTEM + 0x0018; // 32-bit module stop C
-    constexpr uint32_t MSTPB_SCI6 = 1u << 25;  // MSTPCRB b25 = SCI6
+    // MSTPCRB b31 down to b24 = SCI0 to SCI7, b4 = SCI12; MSTPCRC b27 down to b24 = SCI8 to
+    // SCI11 (UM sec.11.2.3 pp.419-420, sec.11.2.4 p.421).
+    constexpr uint32_t MSTPB_SCI0 = 1u << 31;
+    constexpr uint32_t MSTPB_SCI1 = 1u << 30;
+    constexpr uint32_t MSTPB_SCI2 = 1u << 29;
+    constexpr uint32_t MSTPB_SCI3 = 1u << 28;
+    constexpr uint32_t MSTPB_SCI4 = 1u << 27;
+    constexpr uint32_t MSTPB_SCI5 = 1u << 26;
+    constexpr uint32_t MSTPB_SCI6 = 1u << 25;
+    constexpr uint32_t MSTPB_SCI7 = 1u << 24;
+    constexpr uint32_t MSTPB_SCI12 = 1u << 4;
+    constexpr uint32_t MSTPC_SCI8 = 1u << 27;
+    constexpr uint32_t MSTPC_SCI9 = 1u << 26;
+    constexpr uint32_t MSTPC_SCI10 = 1u << 25;
+    constexpr uint32_t MSTPC_SCI11 = 1u << 24;
     constexpr uint32_t MSTPB_RIIC0 = 1u << 21; // MSTPCRB b21 = RIIC0
     constexpr uint32_t MSTPB_RIIC1 = 1u << 20; // MSTPCRB b20 = RIIC1
     constexpr uint32_t MSTPC_RIIC2 = 1u << 17; // MSTPCRC b17 = RIIC2

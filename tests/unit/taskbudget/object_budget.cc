@@ -1190,6 +1190,7 @@ namespace kickos
                 Thread* const dest = creator_in_task(SLOT_SECOND, 1);
                 {
                     IrqLock lock;
+                    ASSERT_TRUE(cap_stdout_reserve(dest->task));
                     cap_install_defaults(dest, lock);
                 }
                 (void)hold_endpoint(dest);
@@ -1204,6 +1205,7 @@ namespace kickos
                 Thread* const dest = creator_in_task(SLOT_SECOND, 1);
                 {
                     IrqLock lock;
+                    ASSERT_TRUE(cap_stdout_reserve(dest->task));
                     cap_install_defaults(dest, lock);
                 }
                 (void)hold_endpoint(dest);
@@ -1220,7 +1222,9 @@ namespace kickos
                 Thread* const sibling = sibling_of(dest, SLOT_THIRD);
                 {
                     IrqLock lock;
+                    ASSERT_TRUE(cap_stdout_reserve(dest->task));
                     cap_install_defaults(dest, lock);
+                    ASSERT_TRUE(cap_stdout_reserve(sibling->task));
                     cap_install_defaults(sibling, lock);
                 }
                 ASSERT_EQ(stdout_of(dest), first);
@@ -1240,6 +1244,7 @@ namespace kickos
                 Thread* const dest = creator_in_task(SLOT_SECOND, 1);
                 {
                     IrqLock lock;
+                    ASSERT_TRUE(cap_stdout_reserve(dest->task));
                     cap_install_defaults(dest, lock);
                     EXPECT_TRUE(obj_ref_inc(CapType::CAP_ENDPOINT, first, CAP_SIGNAL));
                     uint32_t cap = KCAP_INVALID;

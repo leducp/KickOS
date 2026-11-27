@@ -622,9 +622,4 @@ int kos_mem_count(uint32_t which, uint32_t* out)
 }
 #endif
 
-void kos_kernel_diag_led_set(int on)
-{
-    arch_syscall(KOS_SYS_DIAG_LED_SET, static_cast<uintptr_t>(on), 0, 0, 0, 0);
-}
-
 }

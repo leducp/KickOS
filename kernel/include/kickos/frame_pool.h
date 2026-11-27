@@ -69,11 +69,16 @@ namespace kickos
     // The slot is pinned by the very reference this drops.
     void frame_run_release_by_slot(int slot);
 
-    // Describes the carve at the granule the arch reports. False on a carve too small for a
-    // bitmap plus one usable frame. A second call strands every frame handed out since the first.
+    // Describes the carve at the granule the arch reports. False on a carve too small for the
+    // allocator's record plus one usable frame. A second call strands every frame handed out
+    // since the first.
     bool frame_pool_init();
 
     size_t frame_pool_free();
+
+    // The frames kickos_frame_alloc took from the pool that kickos_frame_free has not given back:
+    // every translation table, and every frame of a table reserve.
+    size_t frame_pool_tables();
 
     // The pointer the kernel reaches a frame's bytes through, or null when `frame` is not one
     // this pool handed out.
@@ -86,10 +91,10 @@ namespace kickos
     // whole allocation and the answer is 0.
     arch_phys_addr_t frame_pool_alloc_user_run(size_t pages);
 
-    // `granule` is the map editor's granule, which is what the run was measured in.
-    void frame_pool_free_run(arch_phys_addr_t run, size_t pages, size_t granule);
+    // Panics unless every frame of the run is allocated.
+    void frame_pool_free_run(arch_phys_addr_t run, size_t pages);
 
-    // The physical frames the pool describes, [*lo, *hi), bitmap included.
+    // The physical frames the pool describes, [*lo, *hi), the allocator's record included.
     void frame_pool_phys_bounds(arch_phys_addr_t* lo, arch_phys_addr_t* hi);
 }
 

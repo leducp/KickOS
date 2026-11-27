@@ -30,7 +30,7 @@ build_of() { # <cores>
 }
 
 restart_capture() { # <cores> <health-last: 0|1>
-    printf '   KickOS v0.0.0  -  microkernel RTOS\n'
+    printf '                   KickOS 0.0.0\n'
     printf 'sensor: a thread above its priority was refused\n'
     printf 'root: stack high water 2048 of 8192, 5000 free above the thread-local block\n'
     if [ "$1" -gt 1 ]; then
@@ -46,7 +46,7 @@ restart_capture() { # <cores> <health-last: 0|1>
         done
         printf 'health: sensor died, last reading %s in /shm/history\n' "$_rc_last"
         if [ -n "$_rc_end" ]; then
-            printf 'health: %s\nsensor: not served\n' "$_rc_end"
+            printf 'health: %s\n' "$_rc_end"
         fi
     done
     if [ "$2" -eq 1 ]; then

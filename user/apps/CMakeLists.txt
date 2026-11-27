@@ -93,22 +93,6 @@ function(kickos_app_judge image judge)
                                             KICKOS_IMAGE_CAPTURE_SECS "${KAJ_WINDOW}")
 endfunction()
 
-# kickos_human_judged(<image> <what a person reads>)
-#   States that <image>'s only verdict is something a person reads and no capture carries, an
-#   LED say. The image listing reads `human` with <what> as its argument, which the bench reports
-#   as owed.
-function(kickos_human_judged image what)
-  if(NOT TARGET ${image})
-    message(FATAL_ERROR "kickos_human_judged(${image}): no such image")
-  endif()
-  get_target_property(_judge ${image} KICKOS_IMAGE_JUDGE)
-  if(_judge)
-    message(FATAL_ERROR "kickos_human_judged(${image}): ${_judge} already judges it")
-  endif()
-  set_target_properties(${image} PROPERTIES KICKOS_IMAGE_JUDGE human
-                                            KICKOS_IMAGE_JUDGE_ARGS "${what}")
-endfunction()
-
 # This tree's posture for its own apps, which an out-of-tree app does not get. gcc 15 defaults
 # to gnu23, which accepts bool, static_assert, alignas and nullptr, so an unpinned C app stops
 # witnessing the C contract it exists for.

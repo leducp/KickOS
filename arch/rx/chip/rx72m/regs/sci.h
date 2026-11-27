@@ -32,21 +32,6 @@ namespace kickos::rx::reg::sci
     constexpr uintptr_t SPMR_OFFSET = 0x0D; // SPI mode (sec.42.2.21 p.2204)
     // +0x0E/+0x0F are TDRH/TDRL (sec.42.2.6 p.2161): a store there queues a byte.
 
-    // SCI6, the board console channel. Absolute, for the kernel console path only.
-    constexpr uintptr_t SMR = mmap::SCI6 + SMR_OFFSET;
-    constexpr uintptr_t BRR = mmap::SCI6 + BRR_OFFSET;
-    constexpr uintptr_t SCR = mmap::SCI6 + SCR_OFFSET;
-    constexpr uintptr_t TDR = mmap::SCI6 + TDR_OFFSET;
-    constexpr uintptr_t SSR = mmap::SCI6 + SSR_OFFSET;
-    constexpr uintptr_t RDR = mmap::SCI6 + RDR_OFFSET;
-    constexpr uintptr_t SCMR = mmap::SCI6 + SCMR_OFFSET;
-    constexpr uintptr_t SEMR = mmap::SCI6 + SEMR_OFFSET;
-    constexpr uintptr_t SNFR = mmap::SCI6 + SNFR_OFFSET;
-    constexpr uintptr_t SIMR1 = mmap::SCI6 + SIMR1_OFFSET;
-    constexpr uintptr_t SIMR2 = mmap::SCI6 + SIMR2_OFFSET;
-    constexpr uintptr_t SIMR3 = mmap::SCI6 + SIMR3_OFFSET;
-    constexpr uintptr_t SPMR = mmap::SCI6 + SPMR_OFFSET;
-
     // SCR fields, asynchronous mode (UM sec.42.2.10 p.2167).
     constexpr uint8_t SCR_TIE = 1u << 7;  // TXI interrupt enable
     constexpr uint8_t SCR_RIE = 1u << 6;  // RXI *and* ERI interrupt enable

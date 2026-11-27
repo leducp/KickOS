@@ -20,11 +20,13 @@ namespace kickos::stm32f411::clocktree
     constexpr uint32_t HSI_HZ = 16000000u;
     constexpr uint32_t SYSCLK_PLL_HZ = 84000000u;
     constexpr uint32_t PCLK1_PLL_HZ = 42000000u; // APB1 = 84/2
+    constexpr uint32_t PCLK2_PLL_HZ = 84000000u; // APB2 = 84/1
 
     struct Landed
     {
         uint32_t sysclk_hz;
         uint32_t pclk1_hz;
+        uint32_t pclk2_hz;
     };
 
     // `pllcfgr` is the board's PLLCFGR word, PLLM taken from its crystal.
@@ -32,7 +34,7 @@ namespace kickos::stm32f411::clocktree
     {
         namespace rcc = reg::rcc;
         namespace flash = reg::flash;
-        Landed const reset = {HSI_HZ, HSI_HZ};
+        Landed const reset = {HSI_HZ, HSI_HZ, HSI_HZ};
 
         // Flash wait states MUST widen before the core runs faster, else the first over-speed
         // fetch faults.
@@ -71,7 +73,7 @@ namespace kickos::stm32f411::clocktree
             return reset;
         }
 
-        return {SYSCLK_PLL_HZ, PCLK1_PLL_HZ};
+        return {SYSCLK_PLL_HZ, PCLK1_PLL_HZ, PCLK2_PLL_HZ};
     }
 }
 

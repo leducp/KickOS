@@ -206,7 +206,6 @@ _\entry:
     INTB_GUARD kickos_rx_intb_swint2, kickos_rx_swint2
     INTB_GUARD kickos_rx_intb_timer, kickos_rx_timer_isr
     INTB_GUARD kickos_rx_intb_clock, kickos_rx_clock_isr
-    INTB_GUARD kickos_rx_intb_console_txi, kickos_rx_console_txi_isr
 
 /* The shared tail of every device line's own INTB slot (the chip's startup.S), entered with R15
    banked on the ISP and holding the slot's vector, so [r0]=R15 4[r0]=PC 8[r0]=PSW. The vector

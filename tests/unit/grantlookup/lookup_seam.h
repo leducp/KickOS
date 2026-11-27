@@ -2,7 +2,8 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // The kernel the lookups ask, faked: kos_window_get answers `windows`, kos_sleep_for records and
-// runs `on_sleep`, kos_exit throws Exit. Each table's user entries are defined here too.
+// runs `on_sleep`, kos_task_state answers the caller's own task ORPHANED once `orphaned` is set,
+// kos_exit throws Exit. Each table's user entries are defined here too.
 //
 // HOST-ONLY. These are public kos_* names, which a target image linking this TU would take
 // from the executable instead of the syscall stubs.
@@ -32,6 +33,9 @@ namespace seam
     extern std::vector<int64_t> sleeps;
     // Run after each sleep is recorded.
     extern std::function<void()> on_sleep;
+    // Whether the caller's task has lost its creator, and what runs as kos_task_state is asked.
+    extern bool orphaned;
+    extern std::function<void()> on_task_state;
 
     // What a user entry saw, what it prints first, and the code it exits with itself, or -1 to
     // return.

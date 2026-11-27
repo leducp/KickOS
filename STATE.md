@@ -19,37 +19,22 @@ A milestone's own section leaves this file once the milestone after it merges, a
 
 ## Where we are
 
-**M10 HAS MERGED THROUGH M10.6.12, AND M10.6, THE CLEANUP PASS, IS DONE.** M9's answer is that
-the one big kernel lock stays, with per-core ready queues and per-pair rings under it and CLH
-arbitration on x86_64 alone. M10 is static composition: a declared system, admitted on the host,
-and an init provider that stays resident. `roadmap.md`'s `### M10` section is the ledger and the
-only place its numbers are assigned; the sections at the bottom of this file say what each
-milestone's green runs do not.
+**M10 HAS MERGED THROUGH M10.8.9, AND M10.8.10 CLOSES M10.8; THE LAST M10 STEP IS THE DOCS PASS
+THAT FOLLOWS IT.** M9's answer is that the one big kernel lock stays, with per-core ready queues
+and per-pair rings under it and CLH arbitration on x86_64 alone. M10 is static composition: a
+declared system, admitted on the host, and an init provider that stays resident. `roadmap.md`'s
+`### M10` section is the ledger and the only place its numbers are assigned; the sections at the
+bottom of this file say what each milestone's green runs do not.
 
-**M10.7 IS ON FOUR STACKED BRANCHES, M10.7.1 TO M10.7.4, NOT YET MERGED.** Time is typed down
-to the kernel, one watch call ties tasks, lines and restartable instances to a notification,
-and the create, the slay and the cancel no longer wait; the M10.7 section at the bottom of this
-file says what its green runs do not.
-
-**THE ORDER IS LOCKED: M10.6.12, THEN M10.7, THEN M10.8** (maintainer, 2026-10-13, M10.6.9 and
-M10.6.10 inserted 2026-10-21, M10.6.12 on 2026-11-05 and numbered so on 2026-11-07: "no need for
-sub milestone when there is only one"; on 2026-11-09 M10.6.12 opened with the test suite audit,
-and M10.7 became the API a usable kernel needs, the exit record moving to M10.8). M10.6.9 made a
-task on a region board the MPU equivalent of the MMU process, with its own libc state, nonblocking flag included, and closed the kernel's
-isolation holes; a board too small for that holds one task rather than lie about the isolation.
-M10.6.10 is C++ and libc conformance: a toolchain release giving GCC a KickOS threads model, the
-C++ exception state per thread, and the libc semantics a worker thread, the wall clock and entropy
-get wrong. M10.6.11 captured every board the bench holds, bounded the boot and interrupt stacks on every
-arch, and traps an integer divide by zero wherever the core or its ABI can. M10.6.12 takes the live
-bugs the TODO sweep found, per-core sleep queues and the bench items M10.6.11 left open, as its
-`TODO.md` entry lists. M10.7 is the API a usable kernel needs, `kos_task_create` no longer waiting
-first. M10.8, the exit record, reconciles the references against what shipped.
-**It opens with a cross-family audit** (maintainer, 2026-11-06): GPT-6 Astra, through the Codex
-plugin, audits ten areas from a prompt the maintainer keeps, and a Claude agent verifies each
-finding before it reaches the maintainer. It runs once, on M10.6.12's finished code (maintainer,
-2026-11-09: its tokens are not cheap). The KickOS journey, its PL022 capstone and the docs site
-land as a maintainer PR outside the numbering; the lock-free yield is measure-first and carries no
-number.
+**M10.8 OPENED WITH A CROSS-FAMILY AUDIT** (maintainer, 2026-11-06): GPT-6 Astra, through the
+Codex plugin, audited ten areas, and a Claude agent verified each finding before it reached the
+maintainer. Its fixes are M10.8.1 to M10.8.7, M10.8.5 moving the C6 HP node's task code to flash
+once M10.8.4 left that node no room; M10.8.8 and M10.8.9 answer an AMP console tear found in those
+runs. The sub-milestones were renumbered by merge order on 2026-11-22. M10.8.10 fixes what the
+audit's runs found next and reconciles the references against what shipped; the docs were frozen
+during M10.x for it (maintainer). M11 is
+back to the driver era. The KickOS journey, its PL022 capstone and the docs site land as a
+maintainer PR outside the numbering; the lock-free yield is measure-first and carries no number.
 
 M7 is the multicore milestone and `docs/design-multicore.md` is its contract; every ruling and every
 freeze lives there, `roadmap.md` assigns the numbers, and `git log` carries the order things landed
@@ -1011,16 +996,11 @@ The whole point of this file. A green fleet pass says none of the following.
 
 ## Open, and verified still open
 
-- **`kos_print` does not survive a published console.** `emit.h` exists and there are three
-  publish-aware writers, so silence from a `kos_print`-only app is not evidence of a dead driver.
-- **USB CDC: bulk OUT is never exercised and `Shared::configured` never clears on unplug.**
-  Detail at `TODO.md`.
+- **USB CDC: bulk OUT is never exercised.** Detail at `TODO.md`.
 - **No emulated gate for a buffered-ring panic flush**; the sim's ring is provably empty at
   panic time. Detail at `TODO.md`.
 - **Three app SOURCES grant a DEV window a live driver holds**: `xmccshold`, `pvprobe`,
   `inprstorm` -- five targets, `inprstorm` now building three ELFs from one source.
-  **The app authority macro surfaces only at runtime**, one consumer at boot and no build file
-  reading it.
 - **T7's OWED LATENCY MEASUREMENT WAS NEVER TAKEN, and there is no instrument to take it with.**
   The doc makes a compact-SVC-frame decision wait on the number; `qemu-arm64` has only a `base`
   preset, `bench-fleet.sh` does not list the board, and no aarch64 round-trip figure exists
@@ -1172,7 +1152,7 @@ missing from one of those QEMU captures under load is this, not a flake to re-ru
   A preemption between computing the deadline and reading the start makes the measured wait
   short although the kernel kept the deadline; such an arm fails only under load.
 
-## M10.6.12: the cleanup pass, and what these green runs do NOT say
+Carried from M10.6.12, still true:
 
 - **THE RP USB SUSPEND AND RESUME FIX HAS NO RP2350 WITNESS.** A host test models the race and
   picopi's `usbcdcwit` passed; that the RP2350 acknowledges its suspend interrupt by a write to a
@@ -1223,8 +1203,37 @@ Carried from M10.6.10, still true:
 - **`getentropy` FROM RDSEED RAN ON QEMU ONLY**, with and without the feature.
 - **NO ARM HOLDS THE SHARED WALL CLOCK'S READ BOUND ITSELF, NOR `quick_exit`, NOR AN `exit()`
   THAT FINDS A SIBLING ALREADY CANCELLED.**
-- **THE DOCS PASS IS OWED AT THE END OF M10.** The stale lines are listed under the M10.8 exit
-  record in `TODO.md`.
+
+## M10.8: the audit fixes, and what these green runs do NOT say
+
+- **ARMV6-M'S PRIVILEGE PATHS HAVE NO EMULATOR.** No QEMU armv6m core has a privilege ring, so
+  the trap clearing r2, r3 and r12, the switch-in seating the reent word after the region
+  commit, the kernel-block PSP bound and the M10.8.6 kill on register state rest on picopi, the
+  fleet's only enforcing armv6m, which owes a fleet pass (`TODO.md`).
+- **THE SVC FASTPATH RACE'S PROOF IS AN EMULATOR ARM** (ruled 2026-11-19): `callrace` pends a
+  line from the debugger at the mask; no silicon soak and no kernel counter. The armv7m `isb`
+  after lowering PRIMASK is settled from the ARMv7-M ARM; no run shows it.
+- **THE ARMV8A SERROR RULE SHIPPED UNWITNESSED** (ruled 2026-11-19). QEMU reports a failed
+  access as a synchronous external abort, never an SError, and this port refuses EL2 entry, so no
+  arm drives the EL0 entry or the return-path panic. The imx8mp witness is owed.
+- **RX72M HAS NO EMULATOR.** The per-vector INTB dispatch (`rxirq` on P07) and the trap clearing
+  R3 and R4 (`trap_scratch`) rest on rx72m captures alone. IRQ0..15 detection stays at the reset
+  low-level setting, open for the maintainer (`TODO.md`).
+- **THE NON-SECURE CLOSE HAS ONE ARM THE NON-SECURE MPU DECIDES.** `faultsurvive_bxnsrom` runs on
+  pizero2350 only: an505's SAU is off, so qemu-m33 has no Non-secure address. pizero2350 owes it.
+- **A `faultsurvive_storesvc` RUN CAN WITNESS NOTHING.** Where the denied store's bus error lands
+  is the bus's timing; one that lands before the `svc` fails as witnessing nothing, never as a
+  pass.
+- **THE C6 LP_APM0 BASE IS ESP-IDF'S, NOT THE TRM'S.** The DATE read does not tell LP_APM0 from
+  an alias of HP_APM, which resets to the same value; the read-back after every write does.
+- **THE C6 HP NODE'S FLASH TEXT HAS ONE CACHE-MISS FIGURE:** `userbench` on `base` with eight
+  aliases, hit 100 ns, miss 4099 ns per call (2026-11-22, measured). The sixteen-alias row and
+  the selftest partition are owed.
+- **TWO NODES' SERVERS CAN WAIT ON EACH OTHER.** A blocking far send waits with no deadline for as
+  long as its lane is full, so two servers that each hold a received call while sending to the
+  other wait until one is cancelled. `<kickos/sys.h>` states it; no arm drives it.
+- **AN AMP NODE WITH NO CONSOLE UART PRINTS NOTHING, ITS PANIC INCLUDED.** No path crosses to
+  another node's UART (ruling 2026-11-22); its tasks print through the relay, its kernel does not.
 
 ## Where to go next
 

@@ -33,6 +33,23 @@ extern "C" uint32_t SystemCoreClock;
 
 namespace reg = kickos::rp2xxx::reg;
 
+namespace
+{
+    namespace con
+    {
+        constexpr uintptr_t BASE = KICKOS_BOARD_CONSOLE_BASE;
+        constexpr uintptr_t DR = BASE + reg::uart::DR_OFFSET;
+        constexpr uintptr_t FR = BASE + reg::uart::FR_OFFSET;
+        constexpr uintptr_t IBRD = BASE + reg::uart::IBRD_OFFSET;
+        constexpr uintptr_t FBRD = BASE + reg::uart::FBRD_OFFSET;
+        constexpr uintptr_t LCR_H = BASE + reg::uart::LCR_H_OFFSET;
+        constexpr uintptr_t CR = BASE + reg::uart::CR_OFFSET;
+        constexpr uintptr_t IFLS = BASE + reg::uart::IFLS_OFFSET;
+        constexpr uintptr_t IMSC = BASE + reg::uart::IMSC_OFFSET;
+        constexpr uintptr_t DMACR = BASE + reg::uart::DMACR_OFFSET;
+    }
+}
+
 #if KICKOS_RP2XXX_CONSOLE
 namespace
 {
@@ -41,19 +58,19 @@ namespace
     // never a read-modify-write.
     int tx_slot_free(void)
     {
-        return (r32(reg::uart::FR) & reg::uart::FR_TXFF) == 0;
+        return (r32(con::FR) & reg::uart::FR_TXFF) == 0;
     }
     void tx_push(uint8_t b)
     {
-        r32(reg::uart::DR) = b;
+        r32(con::DR) = b;
     }
     void tx_irq_enable(void)
     {
-        r32(reg::uart::IMSC + kickos::rp2xxx::ATOMIC_SET) = reg::uart::IMSC_TXIM;
+        r32(con::IMSC + kickos::rp2xxx::ATOMIC_SET) = reg::uart::IMSC_TXIM;
     }
     void tx_irq_disable(void)
     {
-        r32(reg::uart::IMSC + kickos::rp2xxx::ATOMIC_CLR) = reg::uart::IMSC_TXIM;
+        r32(con::IMSC + kickos::rp2xxx::ATOMIC_CLR) = reg::uart::IMSC_TXIM;
     }
 }
 
@@ -138,17 +155,17 @@ namespace
     // The window arch_console_reclaim rewrites: the console UART's whole APB slot, which is
     // the register block plus the XOR/SET/CLR aliases at +0x1000/+0x2000/+0x3000. The aliases
     // must be inside it: a holder granted only an alias writes the very same registers.
-    constexpr uintptr_t CONSOLE_WIN_BASE = reg::uart::BASE;
+    constexpr uintptr_t CONSOLE_WIN_BASE = con::BASE;
     constexpr size_t CONSOLE_WIN_SIZE = KICKOS_BOARD_CONSOLE_SIZE;
 
-    static_assert(reg::uart::IBRD >= CONSOLE_WIN_BASE
-                      and reg::uart::IBRD < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
-                      and reg::uart::FBRD < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
-                      and reg::uart::LCR_H < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
-                      and reg::uart::CR < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
-                      and reg::uart::IFLS < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
-                      and reg::uart::IMSC < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
-                      and reg::uart::DMACR < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE,
+    static_assert(con::IBRD >= CONSOLE_WIN_BASE
+                      and con::IBRD < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
+                      and con::FBRD < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
+                      and con::LCR_H < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
+                      and con::CR < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
+                      and con::IFLS < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
+                      and con::IMSC < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
+                      and con::DMACR < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE,
                   "arch_console_reclaim writes outside the window it reports");
 
     // IBRD, FBRD, then LCR_H: the three are one internal register that latches only on the LCR_H
@@ -157,19 +174,17 @@ namespace
     {
         if (kickos::rp2xxx::clocktree::console_clk_on_pll())
         {
-            r32(reg::uart::IBRD) = reg::uart::IBRD_PLL;
-            r32(reg::uart::FBRD) = reg::uart::FBRD_PLL;
+            r32(con::IBRD) = reg::uart::IBRD_PLL;
+            r32(con::FBRD) = reg::uart::FBRD_PLL;
         }
         else
         {
-            r32(reg::uart::IBRD) = reg::uart::IBRD_115200;
-            r32(reg::uart::FBRD) = reg::uart::FBRD_115200;
+            r32(con::IBRD) = reg::uart::IBRD_115200;
+            r32(con::FBRD) = reg::uart::FBRD_115200;
         }
-        r32(reg::uart::LCR_H) = reg::uart::LCR_H_8N1;
+        r32(con::LCR_H) = reg::uart::LCR_H_8N1;
     }
 
-    static_assert(KICKOS_BOARD_CONSOLE_BASE == reg::uart::BASE,
-                  "the board's console is not the UART this backend drives");
     static_assert((KICKOS_BOARD_CONSOLE_TX_SELECT & ~kickos::rp2xxx::PIN_FUNCSEL_MASK) == 0u
                       and (KICKOS_BOARD_CONSOLE_RX_SELECT & ~kickos::rp2xxx::PIN_FUNCSEL_MASK) == 0u,
                   "a console pin's function is wider than the funcsel field");
@@ -183,8 +198,8 @@ namespace kickos::rp2xxx
         pin_function(KICKOS_BOARD_CONSOLE_TX_BIT, KICKOS_BOARD_CONSOLE_TX_SELECT | PIN_DRIVE);
         pin_function(KICKOS_BOARD_CONSOLE_RX_BIT, KICKOS_BOARD_CONSOLE_RX_SELECT | PIN_INPUT);
         uart_frame_set();
-        r32(reg::uart::IMSC) = 0; // the ring arms TXIM
-        r32(reg::uart::CR) = reg::uart::CR_ENABLE;
+        r32(con::IMSC) = 0; // the ring arms TXIM
+        r32(con::CR) = reg::uart::CR_ENABLE;
     }
 }
 
@@ -228,21 +243,21 @@ void arch_console_reclaim(void)
 #if KICKOS_RP2XXX_CONSOLE
     // Silence first: a stale TXIM storms the console IRQ through the dump. Absolute store, not
     // the CLR alias rp_tx_irq_disable uses, which would leave every other source as found.
-    r32(reg::uart::IMSC) = 0;
+    r32(con::IMSC) = 0;
 
     // Stop the UART before the LCR writes below: every LCR write must precede enabling the
     // UART (DS 4.2.7 / 12.1.7).
-    r32(reg::uart::CR) = 0;
+    r32(con::CR) = 0;
 
     // Also clears BRK, which pins UARTTXD low and sends nothing.
     uart_frame_set();
 
-    r32(reg::uart::DMACR) = 0; // a DMA channel still armed on TXDMAE interleaves its own bytes
-    r32(reg::uart::IFLS) = reg::uart::IFLS_RESET; // inert while FEN is off; not worth depending on that
+    r32(con::DMACR) = 0; // a DMA channel still armed on TXDMAE interleaves its own bytes
+    r32(con::IFLS) = reg::uart::IFLS_RESET; // inert while FEN is off; not worth depending on that
 
     // LAST, and absolute: CTSEN gates every byte on a CTS this board does not wire, LBE feeds
     // UARTTXD back into UARTRXD, SIREN turns the pin into IrDA pulses.
-    r32(reg::uart::CR) = reg::uart::CR_ENABLE;
+    r32(con::CR) = reg::uart::CR_ENABLE;
 #endif
 }
 
@@ -251,7 +266,7 @@ void arch_console_reclaim(void)
 void arch_console_flush_sync(void)
 {
 #if KICKOS_RP2XXX_CONSOLE
-    (void)kickos::arch::wait_clear(r32(reg::uart::FR), reg::uart::FR_BUSY);
+    (void)kickos::arch::wait_clear(r32(con::FR), reg::uart::FR_BUSY);
 #endif
 }
 

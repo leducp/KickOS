@@ -5,16 +5,12 @@
 // and the TAP harness (tests/tap/tap.cc) all write through stdout_write below. An app calls
 // kos_print; the names here are its implementation.
 //
-// Sends through this thread's stdout cap at index 0, a local console or another node's service,
-// and falls back to the kernel debug console for the unsent remainder only where no local route
-// serves the send: index 0 empty (-KOS_EBADF), or nothing serving the published console
-// (-KOS_ECONNREFUSED), a driver's task that ended or its endpoint gone. A far endpoint answers
-// neither. Any other refusal ends the write. A receiver taking fewer bytes than a chunk, none
-// included, is offered the rest again on the endpoint. The kernel console alone is not enough:
-// console_emit drops every byte handed to it once the UART is USER_OWNED
-// (kernel/init/console.cc). It answers -KOS_EBUSY where a publish landed
-// between the two and index 0 takes the line again, and the remainder is sent there. A task
-// that set O_NONBLOCK (stdout_nonblock) stops where either would wait, with -KOS_EAGAIN.
+// Sends through this thread's stdout cap at index 0, a local console or another node's service.
+// An empty index 0 (-KOS_EBADF) is a standard output of the kernel console, which takes the line
+// until a console is published and answers -KOS_EBUSY from then on. Any other refusal ends the
+// write, -KOS_ECONNREFUSED for a console whose driver is gone included. A receiver taking fewer
+// bytes than a chunk, none included, is offered the rest again on the endpoint. A task that set
+// O_NONBLOCK (stdout_nonblock) stops where either would wait, with -KOS_EAGAIN.
 
 #ifndef KICKOS_SYS_EMIT_H
 #define KICKOS_SYS_EMIT_H
@@ -63,9 +59,9 @@ struct WriteResult
 };
 
 // The bytes of s the kernel console took, which waits in the kernel for room where this task
-// blocks. Where it stopped short, error is -KOS_EBUSY where this thread's stdout endpoint takes the
-// rest now, -KOS_EAGAIN where this task is non-blocking and the console would make it wait, and
-// otherwise the refusal: a buffer the kernel refuses, a wait the writer's own cancellation ended.
+// blocks. Where it stopped short, error is -KOS_EBUSY once a console is published,
+// -KOS_EAGAIN where this task is non-blocking and the console would make it wait, and otherwise
+// the refusal: a buffer the kernel refuses, a wait the writer's own cancellation ended.
 inline WriteResult kconsole_offer(char const* s, size_t n)
 {
     WriteResult r = {0, 0};
@@ -95,6 +91,7 @@ inline WriteResult kconsole_offer(char const* s, size_t n)
 
 inline WriteResult stdout_write(char const* s, size_t total);
 
+// The kernel console, or this thread's stdout once a console is published.
 inline void kconsole_write_all(char const* s, size_t n)
 {
     WriteResult const r = kconsole_offer(s, n);
@@ -104,8 +101,8 @@ inline void kconsole_write_all(char const* s, size_t n)
     }
 }
 
-// One send of the console's chunk. Out of the loop below: GCC keeps a 64-bit deadline live across
-// a loop in a VFP register on an FP core, which would make every printing thread FP-live.
+// One send of up to KOS_EP_MSG_MAX bytes. Out of the loop below: GCC keeps a 64-bit deadline live
+// across a loop in a VFP register on an FP core, which would make every printing thread FP-live.
 __attribute__((noinline)) inline int32_t stdout_send(char const* s, size_t n, bool nonblock)
 {
     kos_monotonic_t until = KOS_NEVER;
@@ -139,20 +136,12 @@ inline WriteResult stdout_write(char const* s, size_t total)
             sent += static_cast<size_t>(r);
             continue;
         }
-        if (r != -KOS_EBADF and r != -KOS_ECONNREFUSED)
+        if (r != -KOS_EBADF)
         {
             return {sent, r};
         }
-        // Remainder only: resending from the start duplicates the chunks the driver already
-        // took.
         WriteResult const k = kconsole_offer(s + sent, total - sent);
-        sent += k.sent;
-        // Never a spin on one state: each pass back needs the send to have found the console
-        // unserved and the kernel console then to have found it served.
-        if (k.error != -KOS_EBUSY)
-        {
-            return {sent, k.error};
-        }
+        return {sent + k.sent, k.error};
     }
     return {sent, 0};
 }

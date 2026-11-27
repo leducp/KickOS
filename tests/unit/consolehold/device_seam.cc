@@ -15,9 +15,9 @@
 #include <kickos/irqlock.h>
 #include <kickos/kernel.h>
 
-#include "dark_seam.h"
+#include "device_seam.h"
 
-namespace darkseam
+namespace deviceseam
 {
     std::string g_wire;
     uint32_t g_sync_calls = 0;
@@ -54,8 +54,8 @@ extern "C"
 {
     bool arch_console_write_sync(char const* buf, size_t n)
     {
-        darkseam::g_sync_calls = darkseam::g_sync_calls + 1;
-        darkseam::g_wire.append(buf, n);
+        deviceseam::g_sync_calls = deviceseam::g_sync_calls + 1;
+        deviceseam::g_wire.append(buf, n);
         return true;
     }
 
@@ -65,7 +65,7 @@ extern "C"
 
     void arch_console_reclaim(void)
     {
-        darkseam::g_reclaims = darkseam::g_reclaims + 1;
+        deviceseam::g_reclaims = deviceseam::g_reclaims + 1;
     }
 
     struct console_tx_backend const* arch_console_tx_backend(int*)
@@ -82,6 +82,6 @@ namespace kickos
 {
     bool dev_window_free(uintptr_t, size_t)
     {
-        return darkseam::g_window_free;
+        return deviceseam::g_window_free;
     }
 }

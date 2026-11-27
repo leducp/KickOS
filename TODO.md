@@ -43,23 +43,6 @@ milestone does not close while any of them still composes a system.
       such as the spawn grant count may stay small. `roadmap.md` and
       `docs/design-m10-composition.md` carry it.
 
-- [ ] **M10.5: THE CLEANUP.** Write a chip file for every chip the fleet builds, not only the eight
-      the M10.0 draft covers, and generate the kernel's chip headers (`chip_mmap.h`, `irq.h`,
-      `arch_reserved_blocks`) from them, deleting the hand-written ones. Give every board its
-      minimal default composition, build the partition's compositions together (a partition gate's
-      assignment derived, a device two nodes grant refused, a region cached across nodes unless
-      accepted), and link `KickOS::system_default` in the out-of-tree examples CI builds
-      (`examples/oot-app`, `examples/oot-mcu-app`; **DONE AT M10.5.6**, their gates running them
-      where an emulator runs). Move every board and app onto compositions (the common apps but the
-      selftest and `ampping`: **DONE AT M10.5.10**), packaged drivers taking their lines from the
-      composition rather than by number, and delete the mechanisms listed above (**DONE AT
-      M10.5.13**). The four apps whose child never exits (`initdemo`, `tele_pingpong`,
-      `drvdeath`, `rootfault`) declare their ending explicitly (**DONE AT M10.5.10**, `ends:
-      main`). Run the fleet sweep and the silicon witnesses
-      against the result. The esp32-wroom-smp silicon selftest and the pizero2350-amp2
-      partition's ACCESSCTRL gate capture were witnessed on 2026-11-08 by M10.6.11's bench pass
-      (`git log -S'THE BENCH PASS, BOARD BY BOARD' -- TODO.md`).
-
 - [ ] **M10.6.12, FIRST: THE TEST SUITE AUDIT, NO TEST CODE IN THE KERNEL, AND THE BENCH OUT OF IT
       (maintainer, 2026-11-09: done before the rest of M10.6.12, to gain time on every chain after it).** The closing chain takes about 11 hours, 8 of them the stress run,
       and the maintainer finds the suite bloated. Measure first: each test's time across a chain,
@@ -78,7 +61,15 @@ milestone does not close while any of them still composes a system.
         fault-injection build option goes, after the clock fallback, the CCR plant and the repass
         witness, which went to host tests. The node witness option goes. `KICKOS_WITNESS_UACCESS`, `KICKOS_WITNESS_REWIND`, `KICKOS_SPLIM_PLANT` and
         `KICKOS_SPLIM_PLANT_UNLIMITED` are kept as named exceptions (maintainer, 2026-11-10): the
-        only fault-injection options kept. The clock
+        only fault-injection options kept. `KICKOS_WITNESS_DOORBELL` (the multicore doorbell boot
+        check, `check_smp_doorbell.sh`) and `KICKOS_WITNESS_TXIDLE` (the ESP32-C6 console flush
+        probe, `check_c6txidle.sh`) joined them when those checks left the production kernel
+        (maintainer, 2026-11-25: "dedicated audit ... B (6 kernel test-code items removed; a
+        surviving check becomes a test-image option or a host test)"). `KICKOS_WITNESS_KSTACK`,
+        the panic's kernel-block high-water line that only the stack-depth gate's scratch tree
+        prints, joined them when the dedicated audit's kernel test code went (maintainer,
+        2026-11-25), with the AMP boot-report mailbox removed outright; their silicon runs are in
+        the M10.8 exit record's final-tree list. The clock
         fallback is the first case: it stays on the reset clock and sets the console baud for
         it, both computations a host test holds, so its bench items in "M10.6.12: THE BENCH ITEMS
         M10.6.11 LEFT OPEN" go with the option.
@@ -88,92 +79,23 @@ milestone does not close while any of them still composes a system.
         switch and syscall paths go, and the bench measures from user space with the
         user-readable clock and from the trace. Until then nothing is added to it, and the walk
         slot count, a bench app setting kept in kernel Kconfig, goes with it.
+      **LANDED (M10.6.12):** the audit of the integration, image and unit tests; no test code in
+      kernel or arch code but the named options; and the bench out of the kernel, `userbench`
+      measuring from user space. Still open: the parked rerun, the sizing of the stress run, and
+      the items held for later.
       - **Held for later, from the test audit (2026-11-10):**
-        - Replace the fixed-time waits with a wait on the event in `capture_teardown`,
-          `dash_punct`, `reboot_reset` and `wallclock`; `capture_teardown`'s 0.5 s wait failed
-          under load.
+        - Replace the fixed-time waits with a wait on the event. `reboot_reset` still boots in a
+          fixed 12 s `QEMU_TIMEOUT` window (`tests/integration/check_reboot.sh`), and
+          `capture_teardown`'s planted console waits at most 0.5 s for the reader to leave
+          canonical mode, so under load that cap still decides the run. `dash_punct` has no wait
+          (its cost is its regex, a speed item), and `wallclock`'s 5 s and 1 s sleeps are what
+          it times.
         - Move `panicgate`'s text-format cases 2, 4 and 5 and four selftest refusal arms to unit
           tests (unsure; to check).
         - Replace `initwalk`'s scripted fake kernel (about 3k lines) with the real kernel through a
           bridge.
 
-- [x] **M10.7: `kos_task_create` NO LONGER WAITS (maintainer, 2026-11-09).** Its timeout bounds
-      only the wait for the instance's last incarnation to finish dying, which reads as a bound on
-      the create itself. The create answers `-KOS_EAGAIN` while the last incarnation is dying, its
-      members, lines or IRQ bindings still retiring, and a creator waits for "this instance can
-      start again" through a notification, as the task watch (formerly `kos_task_watch`) reports
-      an end. The smallest surface that does it, a new event of the existing watch before a new call, and it folds into "ONE
-      CALL TIES ANY EVENT SOURCE TO A NOTIFICATION" when that lands (maintainer: a new API now,
-      merged later). Whether that one call lands in M10.7 instead is checked first against its
-      design (maintainer, 2026-11-09: "seems a good moment yes, but to check").
-      **RULED (maintainer, 2026-11-10: "that's the idea yes"):** the one call lands in M10.7 with
-      the task, IRQ and "can start again" events, and the two calls
-      (formerly `kos_task_watch` and `kos_irq_bind_notify`) go, rather than a new event on the old
-      call first; every wait takes a deadline of the instant type below.
-      **RULED (maintainer, 2026-11-09):** "design [the one watch call] to be able to match this
-      epoll style later, even if this is not provided in the first version". The shape leaves room for a
-      message-waiting source (an endpoint kind, or a notification bound to the thread), several
-      timers in one loop, more sources than one notification word holds, and a libc `poll()` on
-      top; a wake is reported once and the waiter reads the source's state.
-      **RULED (maintainer, 2026-11-13), on the M10.7 design:** a watch on a task that has ENDED
-      lends the waiter's priority to its members while the waiter is parked accepting the bit
-      (reverses "a watch never lends priority" below: the lending create is gone); `kos_task_slay`
-      and `kos_thread_cancel` commit and return with no time argument, waiting being a dedicated
-      call (join, the task's end event); `kos_notify_wait` drops its capability and waits on the
-      bound notification, its bits in the result; the init's claim-retry counters go. "Can start
-      again" is keyed by program and instance name, with a create's authority, so a starter with
-      no handle can wait; the caller pays for each such watch with an entry of its own capability
-      table (a watch capability holding the notification), so no new budget kind: closing it
-      disarms and the task's death sweeps it.
-      **RULED (maintainer, 2026-11-16):** one "can start again" watch per thread per instance; a
-      re-arm reuses that watch, so no kernel walk grows with how often a thread arms.
-      **LANDED (M10.7.2 to M10.7.4).** A slain task's handle reads ENDED until its death is
-      reported, then names nothing; the kernel releases the creator's hold there.
-
-- [x] **M10.7: THE C++ API CARRIES TIME AS `std::chrono` DURATIONS (maintainer, 2026-11-09).** A C++
-      header takes and returns a duration, so its names drop the `_us` suffix (the USB console's
-      `max_irq_wait_us` first). Done across the whole C++ surface at once (`kickos/kos.h`, the
-      driver headers, the system services), never one function, and "no limit" keeps one spelling
-      that converts to `KOS_NEVER` at the C boundary. The C API gets the same safety from
-      one-member structs whose name says the type (maintainer, 2026-11-09), to weigh before it lands:
-      one duration type with unit constructors rather than a type per unit, an instant type apart
-      from it so a deadline cannot be passed as a timeout, and each struct's passing in registers
-      checked on every arch's ABI (the syscall stubs unpack it, so the kernel ABI is unchanged).
-      The C++ side defines no clock: `std::chrono` durations convert to the C duration,
-      `steady_clock` time points (already KickOS's monotonic clock) to the C instant, and
-      `system_clock` only to a wall-time type. The maintainer leans to a 64-bit duration
-      (2026-11-09), so no conversion narrows; to settle when the work starts.
-      Draft (2026-11-09), each type one `int64_t` of nanoseconds, a C++ duration converting
-      rounding up:
-
-      ```
-      typedef struct { int64_t ns; } kos_duration;   /* saturating unit constructors */
-      typedef struct { int64_t ns; } kos_instant;    /* monotonic, since boot */
-      typedef struct { int64_t ns; } kos_walltime;
-      #define KOS_FOREVER ((kos_duration){ INT64_MAX })
-      ```
-
-      Open: AAPCS32 returns an 8-byte struct through memory (RISC-V and x86_64 in registers,
-      Xtensa and RX unchecked), the rounding to the kernel tick as a promise or not, a negative
-      duration as an immediate poll or `-KOS_EINVAL`, and the type names against the other public
-      headers (no `_t`, which POSIX reserves).
-      **RULED (maintainer, 2026-11-13), on the M10.7 design:** the kernel takes a 64-bit
-      monotonic deadline on every wait, all ones for no limit, with no tag bits; the calls with
-      a realtime form, and sleep, take a separate kind word. The syscall trap grows from four
-      argument words to five on every arch (`kos_send` and `kos_call` need it on 32-bit
-      targets). The types keep the `_t` suffix, as every `kos_` type does, the prefix
-      making a clash with POSIX unlikely. The clocks are named alike: `kos_monotonic_now` and
-      `kos_realtime_now`, POSIX's "realtime" kept. The C++ side keeps `kos::now()`, a
-      `steady_clock` time point built straight from the monotonic clock.
-      **LANDED (M10.7.1).**
-
-- [ ] **A THREAD PRINTING IN A CONSOLE DARK WINDOW LENDS NO PRIORITY (found by the M10.7.4
-      review).** A print while a dying console driver still owns the device parks in the dark
-      wait, which lends nothing to that driver's members, so a middle-priority spinner can delay
-      the reclaim for any printer. The init avoids it by waiting on the driver's death watch
-      first; every other thread still meets it. The dark wait knows its holder, so it can lend
-      as a mutex wait does.
-- [ ] **ON CORTEX-M4F A 64-BIT TIME VALUE CAN MAKE A THREAD FP-LIVE (measured in M10.7).** GCC
+- [x] **ON CORTEX-M4F A 64-BIT TIME VALUE CAN MAKE A THREAD FP-LIVE (measured in M10.7).** GCC
       keeps a 64-bit deadline such as `KOS_NEVER` live across calls in `d8`, so a thread with
       no floating point of its own pays the FP context save on every switch: 65 to 72 cycles per
       call/reply round trip on f411disco, most of the 1.5 to 2.8 percent M10.7 still costs there
@@ -181,6 +103,8 @@ milestone does not close while any of them still composes a system.
       register; the cost lands in application code. **RULED (maintainer, 2026-11-15): accepted.**
       The FPU entry under "MEASURE FIRST" does not remove it: that thread really holds state in
       an FP register, so its save is owed under any switching scheme that does not leak.
+      **CLOSED (M10.8.10):** `docs/reference/porting.md`, "Context switch (PendSV)", states the
+      cost.
 
 - [ ] **M10.8: THE EXIT RECORD.** Reconcile `roadmap.md`, `docs/reference/architecture.md`,
       `docs/reference/invariants.md` and `STATE.md` against what shipped, and record what the green
@@ -188,147 +112,78 @@ milestone does not close while any of them still composes a system.
       **IT OPENS WITH A CROSS-FAMILY AUDIT (maintainer, 2026-11-06).** GPT-6 Astra, through the
       Codex plugin, audits ten areas from a prompt the maintainer keeps. A Claude agent verifies
       each finding before it reaches the maintainer.
-      Lines M10.6.9 to M10.6.11 left stale, docs being deferred to the end of M10:
-      - invariants.md: `timer-min-delta-guard` calls a deadline immutable, and a wall-clock set
-        now moves a realtime one; it fires a past-due deadline at once, where it now fires within
-        the minimum delta (maintainer, 2026-11-05: "1. OK"), as Stop 7 of
-        `docs/journey/03-sleep.md` must say too; the one-task clauses; the mechanism lines of
-        `task-data-starts-from-its-image`, of the cap table's dynamic slot and of the "two
-        recursive locks"; the device-window sentence on the LX6, where windows are task-wide.
-      - docs/reference/style.md: the `_4` read-modify-write line on armv6m and rxv3 (the user
-        atomics library now answers it). porting.md: RX user mode cannot write PSW.I either, the
-        restartable-sequence paragraph, the "declared reserve" section, and the M10.6.10 libc
-        lines. boards.md: the retired full-newlib knob, the microbit package guard and the
-        amp2 THREADS line. bench.md: the terse-diagnostics line. architecture.md: the join
-        gate, which any thread of the target's task now passes.
-      - The Book: the atomics page's RXv3 row and its link-failure and lock-table paragraphs, and
-        the SjLj section. A user-facing line that, on a region board, a sync object on a
-        thread's stack faults any other thread that touches it, one of the same task included.
-      - A stated limit (maintainer, 2026-11-05): a thread that ends without `kos_exit`, slain or
-        killed by a fault, leaves its libc scratch (dtoa lists, conversion buffer, signal table)
-        allocated in its task's heap.
-      - The journey: stop 08's create comment and stop 09's diagnostics lines.
-      - roadmap.md's M10.6.10 row, against what shipped.
-      - M10.7, by source (each a mechanism or wording line unless marked ruled):
-        - invariants.md: `syscall-in-priv-thread-context`, the continuation header's contents and
-          its PSPLIM word (five argument words on every arch); `timer-min-delta-guard`, a passed
-          deadline is never armed: a wait answers at once and a sleep yields;
-          `notification-is-the-delivery-object`, the bind alone authorises the wait (ruled);
-          `fault-record-is-printed-only-by-its-owner`, the "timed park floors any deadline"
-          sentence; `task-scoped-death-and-a-cancel-that-reaches-every-park`, the slay returns at
-          once and the hold is released at the death report (ruled), and its source list; the
-          `bind_notify` wording at the IRQ entries; `WAIT_TASK_EMPTY` and `WAIT_RETIRE` in the
-          wait-kind list;
-        - architecture.md: the cancel's timeout-0 mode and park, "the slay is the form that
-          waits", the ETIMEDOUT promise worded on `timeout_us`, the IRQ notify call and
-          `kos::Irq`, the create and its task watch; ipc-call-reply.md: the line attach and the
-          notification wait's capability; bench.md: the image listing's capture-window field;
-        - the journey and design pages that name removed calls (`check_doc_names.sh` holds the
-          unfenced ones; the fenced ones and the prose wait for this pass); stop 18 of the
-          journey names the init's PENDING phase, now one WAITING phase.
-      - M10.6.11, by source:
-        - the `pe_image.ld` rewrite: `docs/reference/architecture.md:356-358` ("the linker's own
-          default layout plus section wildcards"); `docs/design-m10-toolchain.md:638` (`.eh_frame`
-          "in the kernel half"; it is now discarded) and 846-847 (`.kosinit`; the constructor
-          range is now in `.rdata`); `docs/journey/15-x86_64.md:188` (`.kosinit`); stale before
-          it: `docs/reference/invariants.md:745`, `docs/design-m10-kernel-share.md:54-56`,
-          `docs/design-m10-toolchain.md:560`;
-        - the x86_64 calibration: `docs/journey/15-x86_64.md:342-344`, edited only for a gate;
-          it does not describe the TSC brackets or the median;
-        - the QEMU hardware clock: `docs/reference/porting.md:1152,2659,2879`, 2929-2935;
-          `docs/m2-readiness.md:90-94`; `docs/reference/telemetry.md:85,87,115,379`;
-          `docs/journey/01-power-on.md:144,242`, 624-625; `docs/journey/03-sleep.md:131`,
-          143-149; `docs/journey/12-armv6m.md:373`;
-          `docs/journey/07-interrupt-to-a-driver.md:32,65,121` (on mps2 the free IRQ base is now
-          11); `docs/book/the-time-base-a-monotonic-clock-you-can-trust.md:388,409`;
-        - the USB CDC console: `docs/reference/console.md`, its USB CDC part around 777-800
-          (output held until the host sets line coding after DTR, with 1 s and 5 s fallbacks; a
-          TAP image waits up to 10 s for its console to drain); `docs/reference/bench.md:74,90,96`
-          (PYBIN is now also needed for USB CDC captures) and 257-258 (identity rows held, sent
-          with CRLF);
-        - the uaccess witness: `docs/reference/invariants.md:359` is still accurate; it could
-          mention the park and move.
-        - the teensy41 hang fix: `docs/reference/invariants.md:494-532`,
-          `docs/reference/boards.md:609-618`, `docs/design-teensy-rt1062.md:52`;
-        - the amp2 fix: `docs/reference/porting.md:1889,2006,2014`, 2042-2043, 2098-2110 and 2337;
-          `docs/reference/architecture.md:86`; `docs/design-m10-target.md:503`;
-          `docs/reference/invariants.md:399`.
-        - the divide-by-zero trap: `docs/journey/12-armv6m.md:423-425` (the v6-M fault report now
-          also names the divide hook's UDF); `docs/reference/architecture.md:364` (the
-          `kickos_string` object also carries `arch/arm/common/aeabi_div0.cc` on Arm M);
-          `docs/reference/invariants.md:323` (the source list of
-          `fault-kills-the-unprivileged-thread-task` lacks the divide arms and the sim's SIGFPE
-          handler); and no Reference page states the guarantee: a divide by zero kills the thread
-          where the core or the ABI traps it, and which arches return a value instead.
-      - M10.6.12, by source:
-        - the rv32 PMP boot seat: `docs/reference/porting.md:3034` says it reads back the code
-          window; it now also turns off every entry the kernel does not program and refuses a
-          boot whose entries do not clear.
-        - porting.md states no rule that a frame carrying a privilege level or a resume pc sits
-          in memory no unprivileged thread can write (an unprivileged thread's first frame on
-          its kernel block); rv32imac broke it until M10.6.12.
-        - the kernel-only section selectors: `docs/reference/boards.md:520` and
-          `docs/design-rp2350.md:33` quote `KEEP(*(.isr_vector))`, now
-          `KICKOS_KERNEL_KEEP(.isr_vector)`; no Reference page states that an image section named
-          like one only the kernel supplies is refused at link;
-        - the armv8a EL0 control registers: `docs/reference/boards.md:201` (the imx8mp EL3
-          handover also writes MDCR_EL2); no Reference page states SCTLR_EL1, MDSCR_EL1 and
-          PMUSERENR_EL0 written whole, nor what they leave EL0 (wfi, wfe, CTR_EL0, cache
-          maintenance by VA and DC ZVA; not DAIF, the PMU or the debug comms channel).
-      - M10.6.12, the kernel access to user pages on translating backends: the acquire now takes
-        the access and answers no device leaf and no write to a leaf without user write.
-        `docs/reference/porting.md`'s acquire-pair section names neither; `invariants.md:223` and
-        `docs/reference/ipc-call-reply.md:464` say a late copy re-proves only that the page is
-        still mapped; `invariants.md:137` scopes the device-word refusal to backends that do not
-        translate, where the range check now refuses one on every backend.
-      - M10.6.12, the invariants the maintainer ruled (2026-11-12), for `invariants.md`:
-        - New, under "Syscall, privilege & the user/kernel boundary": no return into a thread
-          takes privilege state (EXC_RETURN, the stacked PC and xPSR, mstatus, PSW) from memory
-          that thread or a sibling can write. Cross-arch: armv7m and armv6m keep EXC_RETURN in
-          `ctx.exc_return`, build the SVC trampoline's and the fault exit's frames on the
-          thread's kernel block, and save a context off that block at its resting privilege; on
-          ARMv6-M the switcher clears a parked frame's IPSR and PC bit 0 before returning through
-          it. rv32imac seats an unprivileged thread's first frame on its kernel block and takes
-          MPP from the kernel. rxv3 keeps a thread's PC and PSW in its context, never on its
-          stack, and a user `brk` or `int` on any slot but the syscall's kills the thread that
-          issues it. Each arch's witnesses: `selftest`
-          (`parked_frame_exc_return`, `parked_frame_ipsr`, `svc_in_it_block`), `privwindow`,
-          `faultsurvive` modes `swtrap`, `forge`, `mppforge` and `wildspin`, `svcfp`.
-        - New, beside `wake-from-a-thread-that-will-not-run-again-must-not-switch`, which stays
-          as it is: `a-parked-current-takes-no-pass-before-its-own-reschedule`.
-          `sched::resched_after_wake` declines the pass while `kernel().current` is BLOCKED, and
-          every park site ends its lock span with its own `sched::reschedule` (or `wq_block`),
-          never with a wake whose pass would be its switch. Between the park and that reschedule
-          the parker's span is atomic with respect to switches on every backend, so
-          `kos_task_slay`, parked before it stops the task, marks every member and ends every
-          park before its one switch away. Source: `kernel/sched/sched.cc`,
-          `kernel/syscall/syscall_ipc.cc` (the call's reply park),
-          `tests/unit/schedwake/wake_dying.cc`, `tests/unit/amphold/badge.cc`; and on
-          `task-scoped-death-and-a-cancel-that-reaches-every-park`'s source list,
-          `tests/unit/taskdeath/slay_walk.cc` and the selftest's `task_slay_walk`.
-        - `npriv-banked-on-switch`, narrowed: CONTROL.nPRIV is banked per switch for a context
-          saved on its own kernel block, since a thread blocked mid-syscall must resume
-          privileged; at `KICKOS_KERNEL_STACKS` 1 a context saved anywhere else is saved at its
-          resting privilege, so no privileged context rests in memory a task-mate writes.
-        - `amp-user-share-is-roots-reservation`, one clause after "The arena confinement admits
-          it and nothing else outside the arena": a thread's stack is never in the share. On a
-          region board a caller-named stack meeting it is refused `-KOS_EPERM`
-          (`ram_stack_admit`), and under translation a stack needs a pool frame, since the
-          kernel resumes a thread through frames on its stack and another node's tasks write the
-          share.
-        - Unchanged by ruling: `invariants.md:158` keeps `KOS_SYS_DIAG_LED_SET` as it is, and
-          arm64 EL0 keeps `SCTLR_EL1` UCT, UCI and DZE set.
-      - M10.8.1, the libc state primed at creation and its word seated where the switch lands:
-        - `docs/design-m6-mmu.md:1198`: the switch path neither primes nor asks `aspace_seated_for`;
-        - `docs/design-m6-mmu.md:1207`: `aspace_seated_for` is gone;
-        - `docs/design-m10-toolchain.md:361`: `pick_and_seat` primes no libc state any more;
-        - `docs/journey/04-mutex.md:123`: `seat_reent` in `kernel/sched/sched.cc` is gone;
-        - `docs/journey/04-mutex.md:145`: `reent_seat` runs where the switch lands;
-        - `docs/journey/04-mutex.md:163`: the `reent_seat` breakpoint shows another signature.
-      - The far-send and poll-code work: `docs/journey/04-mutex.md`, `05-call-and-reply.md`,
-        `11-multicore.md` and `18-a-real-system.md`, and the Book's priority-inheritance pages.
-      - The boot banner (maintainer, 2026-11-03): its version (the project's 0.5.1) and its text
-        are out of date.
+      **DONE (M10.8.10):** the stale lines M10.6.9 to M10.8.9 left in the reference pages, the
+      journey, the Book and the design pages, the x86_64 trap-stack comment figures, `roadmap.md`'s
+      M10.6.10 and M10.8 rows, the ruled invariants of 2026-11-12, and the ticked boxes of merged
+      milestones swept out of this file. A stop of the journey or a chapter of the Book was checked
+      against the code, not only the lines listed. Still open in this entry:
+      - **OWED, silicon: the final-tree pass, one run on the M10.8.10 tree.** This is the one list
+        of the silicon runs M10.8 owes; each item's cause is in its entry below, and in the M10.8.1
+        and M10.6.12 boxes. A console capture runs on the board's default UART, no board here
+        wiring another.
+        - pizero2350: a fleet pass (M10.8.6); the console capture and its driver's handover.
+        - pizero2350-amp2 and esp32c6-wroom-amp2: ampping, node 1's lines whole through node 0's
+          relay (M10.8.9), and on pizero2350-amp2 the console capture and handover; the selftest
+          partition with `amp_far_call_held`, `amp_far_send_held`, `amp_far_share` and
+          `amp_far_server_gone` (M10.8.8, M10.8.10). On esp32c6-wroom-amp2 the selftest partition
+          (`AMP_PARTITION=1 APP=selftest VARIANT=amp2-n0`) runs node 0's `selftest_p4` plan to its
+          end, no failure, its peer arms run and not skipped (M10.8.5), and the ampping capture
+          replaces `ampping-c6.capture`'s hand-written clock line.
+        - picopi (RP2040, the fleet's only enforcing armv6m): a fleet pass (M10.8.1: the switch-in
+          order with the MPU enforcing, the reent word seated after the region commit;
+          `trap_scratch` clearing r2, r3 and r12; the kernel-block PSP bound under the pspguard and
+          faultsurvive images; the SVC fastpath masking under real interrupts);
+          `faultsurvive_ovf`, `_off` and `_wildsvc` (M10.8.6); the console capture and handover.
+        - teensy41: `faultsurvive_wildsvc` (M10.8.6); the console capture and handover; a
+          user-mode driver on a non-console LPUART, which opens its bridge slot. The AIPS slot of a
+          granted LPUARTk is `(base - 0x4018_0000) / 16 KiB`, read off IMXRT1060RM rev 3 Table 3-3
+          and section 32.2.1, not tabulated by the RM; if it is off by one, the grant opens a
+          neighbour to user mode. Four checks: (a) a user read of the enabled LPUARTk succeeds;
+          (b) user reads of LPUARTk-1 and LPUARTk+1 still fault; (c) disabling it brings the fault
+          back; (d) the same for slots 5 to 8 (LPUART5 to LPUART8), across the OPACR0/OPACR1
+          boundary. The teensy41 items of "M10.6.12: THE BENCH ITEMS M10.6.11 LEFT OPEN" too.
+        - frdmk64f: `faultsurvive_ovf`, `_wildsvc` and `_storesvc` (M10.8.6; a `_storesvc` whose
+          bus error lands before the `svc` fails as witnessing nothing, never as a pass); the
+          console capture and handover (`k64uartirq`).
+        - The GlaDOS fleet, a full pass, and in it:
+          - f411disco: `faultsurvive_ovf`, `_off` and `_wildsvc` (M10.8.6); the console capture
+            and handover.
+          - rx72m: `faultsurvive_kwrite`, `_misalign` and `_wildspin` printing the fault record
+            (M10.8.6); `rxirq` claiming IRQ15 on P07 and `trap_scratch` on rxv3 (M10.8.7); the
+            console capture and handover (`rxsci`, its TXI on the ordinary line path).
+          - xmc4800-relax: `faultsurvive_wildsvc` (M10.8.6); the console capture and handover
+            (`xmcuartirq`, and `xmcssc` releasing its own module); a driver granted a USIC channel
+            other than U0C1 (U1C0, say) sets its FDR, BRG and CCR through `kos_periph_reg_write`
+            and echoes bytes at its own baud.
+          - esp32-wroom: the console capture and handover (`lx6uart`); a driver granted UART2
+            echoes bytes through a TX/RX loopback on its interrupt line while the console stays
+            on UART0. esp32-wroom-smp: the doorbell check from a `KICKOS_WITNESS_DOORBELL` tree
+            (M10.6.12 FIRST).
+          - esp32c6-wroom: the console capture and handover (`c6uart`); a driver granted UART1
+            echoes bytes through a TX/RX loopback on its interrupt line while the console stays on
+            UART0; a `c6txidle` capture from a `KICKOS_WITNESS_TXIDLE` flat tree (M10.6.12 FIRST);
+            `userbench` on `base` with sixteen aliases, its miss four times its hit at least
+            (M10.8.5).
+        - blackpill: the console capture and handover (`f4uartirq`).
+        - An i.MX 8M Plus EVK: the SError witness, a selftest driver's 16-bit store into its ENET
+          window ending its task, and the EL0 entry and return cost on silicon `userbench`
+          (M10.8.2). The kernel sets a UART's clock root (24M_REF_CLK, undivided), its baud (UFCR,
+          UBIR, UBMR at 115200) and its pads' SW_PAD_CTL, which QEMU does not model: the console
+          capture and handover with the console pads muxed from the board file; a console capture
+          from a board file naming a UART the loader did not bring up, and the boot-span EL
+          refusal printing on it; a driver granted UART2 muxing its pads with `kos_pinmux_set` and
+          echoing bytes through them at that baud; a UART4 driver routing RX with input select 8,
+          a four-bit DAISY value.
+        - By eye, the diagnostic LED (M10.8.10): a terminal panic's blink on f411disco,
+          blackpill, picopi, teensy41, frdmk64f, xmc4800-relax, esp32-wroom and esp32c6-wroom; on
+          esp32c6-wroom a panic with the RMT granted to a task that left it transmitting, and a
+          task granted the RMT enabling it with `kos_periph_enable` and driving the WS2812
+          through it; on esp32-wroom-smp a panic with a task on the other core driving the LED
+          pin; on due (parked) a panic with the LED pin left multi-driven by a task.
+      - The console UART is the board file's choice alone (ruled 2026-11-25, landed M10.8.10):
+        every MCU chip drives the UART its board names, and a console driver's composition names
+        `/dev/console`. A granted non-console UART comes with its interrupt (ruled 2026-11-25).
+        Owed on silicon: in the final-tree list above.
       - Every guarantee states its limits beside it (maintainer, 2026-11-05). KickOS provides a
         tool, with its pros and cons, and the integrator alone is responsible for safety, so each
         guarantee in `docs/reference` (invariants.md included) is documented with its worst cases
@@ -336,11 +191,9 @@ milestone does not close while any of them still composes a system.
         error each failure answers, and what is not protected (for example: a transfer in progress
         is never interrupted; on the ESP32 the kernel is reachable from user code). A reader of a
         guarantee must not need TODO.md or a board page to learn its limits.
-      - TODO.md is swept and cleaned (maintainer, 2026-11-05): ticked boxes are removed, not kept
-        as history. Before a box goes, any fact still needed (a measurement, a ruling, a limit, a
-        rationale another box or a doc points at) moves to its proper home (docs/reference, a
-        design note, STATE.md) and every reference to the box is fixed, since git history is not
-        an archive a reader follows.
+      - `porting.md`'s "Minimum hardware requirement" and SRAM model still rest on the retired
+        `f302nucleo` and `bluepill-c8`, the one-task model and the single app window; a rewrite
+        needs new measurements and a stated floor.
       - M10.8.2, the kernel findings of the audit, each closed here:
         - A dying member switched back in during its capability sweep was put back on its task's
           root, which a sibling's last release could then free under that core (SMP x86_64,
@@ -405,8 +258,7 @@ milestone does not close while any of them still composes a system.
           Residual, by construction: a write a bridge acknowledges early can still answer an
           error after the drain, and it lands on whatever runs when it arrives: a panic if the
           kernel, the death of another thread's task if that thread is at EL0.
-          Owed: the imx8mp witness (a selftest driver's 16-bit store into its ENET window must
-          end its task), and the entry and return cost on silicon `userbench`.
+          Owed on silicon: in the final-tree list.
         - Left open, no trigger: on a region backend the owner-death hand-over (`mutex_owner_exit`)
           stores to the waiter's word with no re-check, `WordAccess` being the raw address there
           and `word_reach_lost`/`word_windows_lost` existing only under translation. Nothing can
@@ -501,8 +353,6 @@ milestone does not close while any of them still composes a system.
           under `--app-bin`, and `--digest` on the partition image where it is built;
           `test_esp_image.py`. Silicon at 4e9747176: the line is gone from every log of the
           esp32c6-wroom fleet (TAG m1086a) and of the partition run.
-        - Docs left stale: `docs/design-m10-fleet.md` section 9.5 states two gates and "the PMU
-          page".
       - M10.8.5 (the ESP32-C6 `amp2` HP node's task images run from flash; maintainer rulings
         2026-11-22: the kernel text stays in SRAM on every C6 posture, the partition merge learns
         a generic load-apart span and leaves every node naming none as it was, slices
@@ -515,11 +365,7 @@ milestone does not close while any of them still composes a system.
         - PASS, the base fleet, the `base` selftest among it (`.session/logs/m1088a-*`).
         - PASS, `userbench` on `base` with eight aliases: `flash text: hit 100 ns, miss 4099 ns
           per call` (`.session/logs/m1088a-esp32c6-wroom-userbench.log`).
-        Still owed:
-        - The selftest partition (`AMP_PARTITION=1 APP=selftest VARIANT=amp2-n0`), its node 0
-          `selftest_p4`, its plan run to the end with no failure and its peer arms run, not
-          skipped.
-        - `userbench` on `base` with sixteen aliases, its miss four times its hit at least.
+        Still owed on silicon: in the final-tree list.
       - M10.8.6 (the Cortex-M fault path, the wild-SP ruling):
         **RULED (maintainer, 2026-11-18):** a wild or overflowed unprivileged SP on ARM stops only
         its task ("should only stop its task, why the whole system?"), on every ARM-M path where
@@ -533,8 +379,7 @@ milestone does not close while any of them still composes a system.
           `terminated` to `killed`, red on qemu-m3, qemu, qemu-m7 and qemu-m33 before the fix.
           armv6m has no emulator with a privilege ring. On frdmk64f the record names the unit that
           latched the overflow's address (`SYSMPU ISOLATION FAULT`), which tells its STKERR from a
-          bare BusFault. Owed silicon runs: `faultsurvive_ovf` and `faultsurvive_off` on picopi and
-          f411disco, `faultsurvive_ovf` on frdmk64f. The limit is in
+          bare BusFault. The limit is in
           `fault-frame-untrusted-until-proved`. The handler drops a pending lazy FP save before its
           C chain: `fpunread` (qemu, qemu-m7, qemu-m33) makes FP live first and goes red only with
           both clears removed, nothing in the chain emitting FP.
@@ -543,9 +388,8 @@ milestone does not close while any of them still composes a system.
           (priority 0) outranks SVCall (0xE0). QEMU takes the SVCall ahead of the derived fault, so
           `faultpendsvc` (qemu-m3, qemu, qemu-m7, qemu-m33) pends it from the debugger where the
           kill starts, red with the clear removed: the SVCall ran on the exit and its guard
-          contained the thread. `faultsurvive_wildsvc` (picopi, f411disco, xmc4800-relax, teensy41,
-          frdmk64f) pends it on every run and owes a silicon run on each. `faultsurvive_storesvc`
-          owes one on frdmk64f too, but where the denied store's bus error lands is the bus's
+          contained the thread. `faultsurvive_wildsvc` pends it on every run. `faultsurvive_storesvc`
+          on frdmk64f does too, but where the denied store's bus error lands is the bus's
           timing: one that lands before the `svc` fails as witnessing nothing, never as a pass. The
           kill record names the SVCall it dropped, which every such arm requires and
           `pspguard_svcstkof` shows on qemu-m33.
@@ -556,23 +400,22 @@ milestone does not close while any of them still composes a system.
           `AIRCR.SYSRESETREQS` with `BFHFNMINS` clear, `MPU_CTRL_NS` on with every region off where
           memory is enforced, and on rp2350 no ACCESSCTRL port admitting NSP or NSU. Removing any
           of the first three ends every qemu-m33 boot. The rp2350 bootrom leaves the SAU on with
-          its ROM Non-secure (datasheet 10.2), so there a `bxns` into ROM would have run Non-secure
-          code privileged. `faultsurvive_bxns` and `_blxns`, red on qemu-m33 before the fix (an505
-          has no Non-secure address, its SAU being off); pizero2350 owes them and
-          `faultsurvive_bxnsrom`, the only arm the Non-secure MPU itself decides.
+          0x4780..0x7fff of its ROM Non-secure, and the ROM below it is IDAU-exempt (datasheet
+          10.2), so there a `bxns` into ROM would have run Non-secure code privileged.
+          `faultsurvive_bxns` and `_blxns`, red on qemu-m33 before the fix (an505 has no
+          Non-secure address, its SAU being off). `faultsurvive_bxnsrom` branches to 0x100, the
+          only arm the Non-secure MPU itself decides, and the record names CFSR_NS where it is
+          set. All three passed on pizero2350, ten runs each (2026-11-25).
         - The wild-stack containment on rxv3 and rv32imac printed its refusal on the kill path with
           `arch_in_isr()` 0, so the console marked the thread the pended switch booked and could
           strand the chip-writer count. The refusal is now a fault record the slain thread's exit
           prints, and a thread whose record a later fault took still announces itself by name.
-          `console_drain`'s two containment arms, red before the fix. rx72m owes silicon runs of
-          `faultsurvive_kwrite`, `_misalign` and `_wildspin` printing the record.
+          `console_drain`'s two containment arms, red before the fix.
         - The ARM PSP guard printed its contained refusal from the handler, on the kill path. It
           now records the leg, the site, the PSP, the bytes needed and the stack's bounds, and the
           slain thread's slay exit prints them, on the generic record rxv3 and rv32imac use.
           `check_pspguard.sh` reads the record's shape.
-        - OWED, silicon, run at M10.8's close with the picopi pass M10.8.1 owes: a pizero2350
-          fleet pass, covering bring-up's Non-secure close (the read-back refusing the boot)
-          and `faultsurvive_bxns`, `_blxns` and `_bxnsrom`.
+        Owed on silicon: in the final-tree list.
       - M10.8.7 (RX, the M10.8 audit's Area 8, verified 2026-11-18):
         **RULED (maintainer, 2026-11-18), D3:** every RX72M INTB vector a line can claim gets an
         entry of its own dispatching `kickos_isr_irq(n)`, not a refusal of the plain vectors.
@@ -610,14 +453,35 @@ milestone does not close while any of them still composes a system.
           refusal is published as one. `amp_hold` and `amp_window` arms, red with each reverted;
           `amp_far_call_held` (qemu-arm64-amp2, amp3) gives a call up while the echo is off its
           receive, and the echo's next receive does not see it.
+        **CLOSED by the rendezvous ruling (maintainer, 2026-11-25), M10.8.10:**
+        - A far send to a port nobody serves returned its byte count at publication. A far send is
+          now a rendezvous: its sender stays parked until a receiver takes it, or it is refused or
+          withdrawn; `KOS_POLL` answers it `-KOS_EAGAIN`.
+        - A dead server's far callers wait under their deadline while the endpoint can still be
+          served, as local ones do, and are refused once it cannot.
+        Owed on silicon: in the final-tree list.
+      - M10.8.10 (the rendezvous, maintainer rulings 2026-11-25: a blocked send or call is a
+        rendezvous refused only when its endpoint is dead for good, local and far; a far
+        `KOS_POLL` send answers `-KOS_EAGAIN`; senders parked on a replaced console move with
+        stdout; the kernel's echo port goes):
+        **CLOSED by the ruling of 2026-11-26 (maintainer):** the init narrows root's seated copy of
+        a crossing to `KOS_CAP_HANDOUT` once its server holds `CAP_WAIT`, and drops that too when no
+        restart is left, so a far port whose server is gone for good refuses its callers
+        `-KOS_ECONNREFUSED` (`amp_far_server_gone`).
         **OPEN, for the maintainer:**
-        - A far send to a port nobody serves still returns its byte count: the sender is answered
-          at publication, and the serving node drops it.
-        - A composed node never refuses a far port: root keeps `CAP_WAIT` on every port it seats,
-          so a port whose server died holds calls until their deadline where a local endpoint
-          whose server died refuses them.
-        Still owed: the selftest partition (`amp_far_call_held`) and ampping on esp32c6-wroom and
-        pizero2350 silicon.
+        - A receiver at the head of `recv_waiters` that is dying, with a live receiver behind it,
+          leaves a send or call parked until that live one receives again: the pop takes the head
+          alone (also so before this change for calls).
+        Owed on silicon: in the final-tree list.
+      - M10.8.10, the diagnostic LED (maintainer rulings 2026-11-25, the dedicated audit's C1): it
+        works like the console. The user LED system call and the `blink` app are gone, and the
+        board files mark the LED `diagnostic: true` instead of `owner: kernel`, so its pin is a
+        GPIO a task may be granted and mux (teensy41's GPIO2 port with it). The kernel takes the
+        pin back only at the terminal panic, re-asserting its clock gate, mux and direction and
+        writing only that pin's bits, and blinks it. The esp32c6 RMT is grantable too: where the
+        board's LED is addressable the kernel resets the block and takes channel 0 at the panic,
+        and otherwise never touches it.
+        Owed on silicon, by eye: in the final-tree list.
 - [ ] **M10.8.1: THE CORTEX-M TRAP ENTRY (the M10.8 audit, verified 2026-11-18).**
       **RULED (maintainer, 2026-11-18)** on the audit's findings:
       - Area 2 F2 (a K64F client's slow DSPI rate polled at a lent priority) is DROPPED: a granted
@@ -674,10 +538,7 @@ milestone does not close while any of them still composes a system.
         them. The selftest's `trap_scratch`, which M10.8.7 extends to RX R3 and R4.
       - Ruled 2026-11-19: `callrace`'s emulator arm is the fastpath race's proof; no silicon
         soak and no kernel test counter.
-      - OWED, silicon: a picopi (RP2040, the fleet's only enforcing armv6m) fleet pass. It covers
-        the switch-in order with the MPU enforcing (the reent word seated after the region commit),
-        the trap clearing r2, r3 and r12 (`trap_scratch`), the kernel-block PSP bound under the
-        pspguard and faultsurvive images, and the SVC fastpath masking under real interrupts.
+      - Owed on silicon, a picopi fleet pass: in the M10.8 exit record's final-tree list.
 
 - [ ] **A DEFERRED DELIVERY ON A REGION BACKEND RE-PROVES NOTHING (M10.6.12 audit review,
       2026-11-11).** A translating backend re-proves an out word or a parked receiver's buffer at
@@ -741,30 +602,8 @@ by ruling and sits in `roadmap.md`'s `Later`.
 
       **PARTLY:** the walk is in `docs/journey` and the site builds from `mkdocs.yml` with Zensical
       in `.github/workflows/docs.yml`. Still open: the PL022 capstone (chapter 18 walks the K64F
-      `k64dspi` service instead), the gdb stop gate, and the Book row in
-      `docs/book/the-syscall-path-trap-dispatch-return.md` that still names the Per-ISA guided tour.
+      `k64dspi` service instead) and the gdb stop gate.
 
-## Found by the KickOS journey (2026-10-12)
-
-- [x] **MEASURE FIRST: ABOVE ONE KERNEL CORE, ONE SLEEPER'S DEADLINE FIRES ON EVERY CORE.** It
-      carries no milestone number until a measurement argues for it (maintainer, 2026-10-13). The
-      sleep queue is
-      shared and `ktime_rearm` arms THIS core's timer to its head on every switch, so every core
-      that switches while a deadline heads the queue fires at it; the first wakes the sleeper and
-      the rest find nothing expired. Measured on the `stress` app (an instrumented `ktime_on_timer`
-      counting fires armed for a sleeper that woke none, and whether another core had already
-      served that deadline): one core, 0 of 477 such fires; `qemu-arm64-smp`, 525 of 1024, every
-      one a deadline another core had served; `qemu-riscv64-smp`, 1003 of 1598; `qemu-x86_64-smp4`,
-      1079 of 1715 (1068 served elsewhere). Each is an interrupt, a kernel-lock round and a rearm
-      for nothing, growing with the core count. Decide who arms a shared deadline (one owner core,
-      a per-core queue keyed by the sleeper's core, or a rearm doorbell when the head changes),
-      then re-measure the same scenarios. A witness counts the fires per deadline.
-      **TAKEN BY M10.6.12 (maintainer, 2026-11-05):** per-core sleep queues. The design note
-      `.session/reports/2026-11-05-percore-sleep-queues.md` is approved with its new invariant.
-      **LANDED:** each kernel core keeps its own sleep queue, armed and expired by that core
-      alone, and a wall-clock set asks each peer whose queue moved. Re-measured on `stress`: no
-      fire is served by another core on any SMP preset, and a four-core run takes about 400
-      timer interrupts where it took about 1000.
 ## Scheduler options for later (maintainer, 2026-10-03)
 
 - [ ] **MORE THAN 32 PRIORITY LEVELS, AS AN OPTION (maintainer, 2026-10-03).** The ready structure
@@ -807,20 +646,17 @@ by ruling and sits in `roadmap.md`'s `Later`.
       of the wider range. Read beside the pluggable EDF and rate-monotonic policies in
       `roadmap.md`'s Later section.
 
+## After M10, from the rulings of 2026-11-26 (maintainer)
+
+- [ ] **Q35 COM2 TO COM4 INTERRUPTS THROUGH THE I/O APIC** (ruled out of M10, 2026-11-26). A granted
+      COM port other than the console has no interrupt routed, so its driver polls it until the I/O
+      APIC routes those lines.
+
 ## Later, from the M10.6.10 rulings (maintainer, 2026-10-29)
 
-- [ ] **ONE CALL TIES ANY EVENT SOURCE TO A NOTIFICATION.** Each source has its own call today:
-      a task's end, death and readiness (formerly `kos_task_watch`), and a line
-      (formerly `kos_irq_bind_notify`). One generic watch, its parameters naming the source and
-      the events, would replace them, so a new source adds a kind and no new call.
-      **RULED (maintainer, 2026-11-05):** deferred to M11 (the driver era), to land with the first
-      device-event kind. Design: `.session/reports/2026-11-05-event-source-watch.md`. One watch call
-      takes a spec, a source, a notification capability and an argument; a kind is a table row, and
-      a program-slot kind is part of the shape. A watch never lends priority.
-
-- [ ] **SHARED LIBRARIES ON MMU BOARDS, WITH DYNAMIC LOADING.** M10.6.10 stores libc once in flash for
-      the region and flat boards only; an MMU program keeps libc linked into its own image, since RAM
-      does not bind there. Sharing on an MMU board is a shared library mapped into each space, which
+- [ ] **SHARED LIBRARIES ON MMU BOARDS, WITH DYNAMIC LOADING.** Every image links its own libc on
+      every board (maintainer, 2026-11-01: "libc stays linked into each image"; the reasons are in
+      `docs/reference/architecture.md`). Sharing it is a shared library mapped into each space, which
       belongs with loading programs from storage; a fixed-address runtime in the boot image would not
       survive dynamic loading.
 - [ ] **THE SIM RUNS ON THE KICKOS TOOLCHAIN, NOT GLIBC.** KickOS does not need a sim for itself: the sim
@@ -883,12 +719,6 @@ by ruling and sits in `roadmap.md`'s `Later`.
       link, on any board" (maintainer: LTO is itself a bug source, and not every user expects it),
       and these:
 
-      - [x] **A CREATE WITH NO INSTANCE NAMED WAITS FOR ONE INSTANCE, NOT FOR ANY.** With
-            `params->instance` NULL and none startable, `kos_task_create` with a timeout waits out
-            the first instance it finds still dying (`decl_wait` in
-            `kernel/syscall/syscall_thread.cc`), even when another becomes startable first. A
-            nameless create waits until any instance it may start can start.
-            **LANDED:** the create no longer waits.
       - [ ] **SIGNAL DISPOSITIONS ARE PER THREAD.** newlib keeps the signal table in each thread's
             `struct _reent`, so `signal()` sets the calling thread's disposition only, where POSIX
             makes it per process.
@@ -942,77 +772,6 @@ tests, tools and apps, with no ratio (maintainer, 2026-10-09); no gate is writte
       console under the kernel lock). Moved, a stack fault becomes reportable and the floor drops
       back to 1024. A silicon capture of a planted thread-stack fault on esp32-wroom-smp is owed.
 
-- [ ] **M10.6.12: THE LIVE BUGS FROM THE TODO SWEEP, AND PER-CORE SLEEP QUEUES (maintainer,
-      2026-11-05; numbered M10.6.11.1 until 2026-11-07: "no need for sub milestone when there is
-      only one").** It takes these open boxes, each named by its title:
-
-      - the imxrt1062 bus gate below, never closed after its holder;
-      - "A FAILED HANDLE WRITE LEAVES AN UNNAMED CAPABILITY INSTALLED";
-      - "A SECOND AUTHORITY NARROW ANSWERS -KOS_EBADF";
-      - "A WORD BROADCAST IS QUADRATIC WITH INTERRUPTS MASKED";
-      - "THE LOCK-FREE AUTHORITY READ WAS NEVER REVISITED FOR SMP" (a verdict; it may be benign);
-      - "THE FULL NEWLIB PROFILE LEAKS A DEAD THREAD'S DTOA LISTS", "`_close` FAILS WITHOUT SETTING
-        `errno`" and "THE CONSOLE LOOKS LIKE A SEEKABLE TERMINAL FILE";
-      - "`k64uartirq` RX cannot self-recover from an overrun";
-      - the `Shared::configured` half of the USB "Still owed" box: it does not clear on unplug;
-      - "The RV64 doorbell's INSTRUCTION-side half has no operation at this board's ISA baseline"
-        (rv64 without FENCE.I);
-      - "`sam3x8e` over-alignment": the compose min-region when the MPU is not driven;
-      - "LTO does not link, on any board": first establish whether LTO is a supported option;
-      - "M10.6.12: THE BENCH ITEMS M10.6.11 LEFT OPEN" below.
-
-      And these rulings:
-
-      - per-core sleep queues, design `.session/reports/2026-11-05-percore-sleep-queues.md`
-        approved with its invariant. It replaces "MEASURE FIRST: ABOVE ONE KERNEL CORE, ONE
-        SLEEPER'S DEADLINE FIRES ON EVERY CORE";
-      - rv64 answers NOCACHE and DEVICE per physical address: accept both on MMIO, refuse NOCACHE
-        on RAM. It settles "NOCACHE and DEVICE are still accepted where no PTE attribute carries
-        them";
-      - rx72m: delete the below-stack fault test and its 16-byte band now
-        that the stub runs on the kernel block, and witness `mpu_fault` and `faultsurvive_ovf` on
-        rx72m. It settles the two rxv3 boxes under "Found porting fault isolation to rxv3";
-      - ESP32: NOT in M10, and probably never (maintainer, 2026-11-05: "not even sure we want to
-        pay the cost for such small isolation"). The design note
-        (`.session/reports/2026-11-05-esp32-kernel-user-split.md`) found one user PID gives a fence
-        against faults, not a wall: the LX6 has no privilege ring, so a task can rewrite its vector
-        base or jump into a PID-0 gate. It would cap user RAM at 128 KiB, re-split the layout and
-        turn every system call into a trap, with no fault address on a violation. The ESP32 stays
-        flat. It settles "M10.6.9: CHECK WHETHER THE ESP32 CAN SPLIT USER FROM KERNEL";
-      - imxrt1062: a 4 GiB no-access MPU background region (maintainer, 2026-11-05: "Agree too"),
-        taken only if its cost in per-thread MPU slots allows; that cost is measured first.
-        **LANDED:** it costs no slot. The background row replaces the four aperture wraps, and
-        OCRAM2, the AIPS peripherals and the flash are given back to privileged code by three
-        rows, so the fixed rows go from five to four beside the eight per-thread slots, of the
-        part's sixteen. The silicon run on teensy41 is owed.
-      - newlib's allocator stays out of an image that never allocates (maintainer, 2026-11-09):
-        the exit release of a dead thread's libc scratch links its free path only into an image
-        that allocates. **LANDED:** the heap seat arms the release before an image's first
-        allocation, so an image that never allocates links no `_malloc_r` or `_free_r`.
-
-      - [x] **imxrt1062: A GRANTED USB1 SLOT STAYS OPEN AT THE BUS BRIDGE AFTER ITS HOLDER.**
-            `arch_periph_enable` in `arch/arm/chip/imxrt1062/chip_imxrt1062.cc` clears the
-            Supervisor-Protect bit of USB1's AIPSTZ slot, and the chip defines no
-            `arch_periph_disable`, so the exit path in `kernel/sched/sched.cc` gets the default
-            `-KOS_ENOSYS` and the slot stays open after the holder dies. That breaks
-            `dev-window-access-is-thread-scoped-its-lifetime-task-scoped` in
-            `docs/reference/invariants.md`. Only mk64f implements the close. The per-thread MPU
-            that covers devices limits the reach today.
-            **LANDED:** the chip sets USB1's protect bit back on a holder's disable and at its
-            death; no other chip's enable opens a bus gate.
-
-      - [x] **ESP32-C6: TASK TEXT RUNS FROM FLASH THROUGH THE CACHE MMU (maintainer,
-            2026-11-09).** The M10.6.12 libc merge grew each full-libc image by about 3.3 KiB, and
-            `esp32c6-wroom-bench`'s `bench` image stopped linking at its arena assert. Ruling: "C6
-            is not a small part in any means ... no execution from flash directly?" The TRM v1.2
-            documents no cache MMU register, so its facts may come from Espressif's sources (the
-            ESP-IDF headers, the ROM ELF, the bootloader), facts only and written in KickOS style;
-            the normal flash boot is preferred over Direct Boot. The isolation bar is the one PMP
-            TOR code window over every image's code, item 7 of the M10.6.10 ruling, now over flash.
-            **LANDED:** every image's code span, rodata and `.data` template run from flash, mapped
-            by `Reset_Handler` before the first template copy, on every C6 preset but the own-image
-            AMP pair; the kernel stays in HP SRAM.
-
 - [ ] **M10.6.12: THE BENCH ITEMS M10.6.11 LEFT OPEN (maintainer, 2026-11-08).** M10.6.11 closed
       with these sub-items of "M10.6.11: THE BENCH PASS, BOARD BY BOARD" still open; what it
       witnessed left this file at its merge, and
@@ -1035,6 +794,8 @@ tests, tools and apps, with no ratio (maintainer, 2026-10-09); no gate is writte
               HalfKay.
         - [ ] Owed since M10.5: the LPUART6 RX daisy fix (input on the console's RX pin), and the
               D-cache on in every image.
+        - [ ] Owed since M10.6.12: the 4 GiB no-access MPU background row, with OCRAM2, the AIPS
+              peripherals and the flash given back to privileged code by three rows.
       - **f411disco:**
         - [ ] `f411spi`'s loopback clause, which needs PA7 jumpered to PA6.
         - [ ] M10.6.7's kernel-lock wait: `mutexbench` on the -bench preset, the kernel's own rows
@@ -1108,8 +869,6 @@ tests, tools and apps, with no ratio (maintainer, 2026-10-09); no gate is writte
         - [ ] On -amp2: the HP and LP doorbell through the shared body, the ring both ways with no
               lost wake under load, the HP writer's wait for room; the MPU stash; the AMP window
               cleared by the primary alone; the node that does not own the reset is refused one.
-        - [x] `ampping-c6.capture` re-taken on silicon with the uneven slices (2026-11-17); no
-              line is edited by hand.
         - [ ] M10.6.7's dummy `sc` at `.Lrestore` (`arch/riscv/rv32imac/switch.S`), which QEMU's
               trap hides by dropping the reservation itself: first record whether the HP core's
               `mret` keeps a reservation. If it does, an arm still to write in which a thread cut
@@ -2202,14 +1961,6 @@ M10.6.4, their claims held by the `amp_hold` suite.
 Each of these was stated as a known-and-not-fixed caveat in the message of a commit that landed a
 different fix. Filing them so they stop living only in `git log`.
 
-- [x] **`k64uartirq` RX cannot self-recover from an overrun** (`372e7b4`). `OR` blocks `RDRF`, and
-      IRQ 32 (UART0 error) is unclaimed, so recovery happens only on the next TX doorbell. Design
-      section 7.7 predicts this but says "TX or RX wake"; there is no RX arm, so it is TX-only.
-      Invisible on a TX-heavy console, which is exactly why it will surface on the first RX-heavy
-      one.
-      **LANDED:** the driver claims `err` (IRQ 32) beside `rxtx` and open arms `C3.ORIE`, so an
-      overrun left with `RDRF` clear wakes the IRQ thread, whose read clears it, counts
-      `rx_overrun` and keeps the byte the overrun did not touch; close disarms it.
 - [ ] **The linker's own `.gnu.warning` output is ignored as noise** (`16662b2`). The missing
       `__getreent` that made every Xtensa stdio call crash was announced by the linker and read past.
       Recommendation as recorded: a `-Wl,--fatal-warnings` gate, or a CI grep for linker warnings.
@@ -2538,20 +2289,6 @@ here because they are pre-existing isolation facts, not things that pass created
       libstdc++, newlib, the heap and errno as gated apps (`tests/integration/gates/`), on the emulated
       boards only. The f302nucleo board and its presets are deleted.
 
-- [x] **`sam3x8e` over-alignment: PARKED on hardware absence, not open.** The chip HAS an MPU on
-      silicon (Atmel SAM3X/SAM3A datasheet, Cortex-M3 revision 2.0) but `platform/sam3x8e/chip.yaml`
-      marks the unit `driven: false`, so it builds `KICKOS_HAVE_MPU=0` while `arch_mpu_min_region()`
-      still answers the chip file's granule of 32 (`region_rule` in `tools/compose/kickos_compose/chip.py`
-      does not read `driven`), costing 3,808 bytes
-      of measured over-alignment on a part that enforces nothing. It is the third member of the class
-      `stm32f103` and `stm32f302` just left, both of which overrode to 0 in their chip files.
-      **PARKED by the maintainer for a concrete
-      reason: the physical Arduino Due unit is dead** (`docs/reference/boards.md`), so nothing on this
-      chip can ever be witnessed -- do not pick it up expecting to validate it. The class itself is
-      handled by the region-encoding item under M4.5.5 above, which is where a third encoding mode
-      would land.
-      **LANDED:** `region_rule` reads no unit the build does not drive, so sam3x8e and imx8mp's M7
-      answer a region granule of 0.
 - [ ] **About 270 `path:N` doc citations cannot be verified by any gate, and two of two spot-checks
       had drifted -- NEEDS A CONVENTION DECISION.** `tests/static/check_doc_names.sh` (landed, deliberately
       not wired into CTest) says so itself at `:57-61`: it strips the `:N` and never checks it,
@@ -3331,28 +3068,6 @@ at `517449e5` and stopped being true at `58b43d62` and `d4977780`, the two commi
 four doors; the sentence was not moved with them. The selftest figure DID move and is 134, the plan
 line reading `1..134` on all three.
 
-- [x] **NOCACHE and DEVICE are still accepted where no PTE attribute carries them. RAISED AGAIN,
-      NOT CHANGED, AND THIS IS A DECISION.** `docs/design-m6-mmu.md` R2.2 already argues the
-      position and the audit's prescribed remedy is wrong as stated. Refusing outright is wrong for
-      DEVICE: with Svpbmt absent the attribute is the physical address's PMA, which for an MMIO
-      address IS I/O, so a backend refusing DEVICE would refuse a type the platform does deliver.
-      Refusing NOCACHE alone has a live caller: `grant_nocache_admissible`
-      (`kernel/include/kickos/grant.h`) asks this member on every translating board, so every
-      `KOS_MEM_NOCACHE` self-grant and every `kos_task_create` carrying it would answer `-KOS_EPERM`
-      here, and `task_handoff_readback` -- which drives both consumers at `KOS_MEM_NOCACHE` with no
-      capability skip in front of it -- goes red. The honest answer differs by PHYSICAL ADDRESS and
-      the member takes none, which is the gap F8 records. Two things a decision would have to
-      settle: whether the answer moves to a per-CHIP seam beside `arch_mpu_nocache_support`, which
-      F8's own rule points at and which is a signature move in the milestone whose deliverable is
-      the signature diff; and whether the honesty claim in `memtype_known`'s comment, which reasons
-      about "this board", may live in an ARCH file every future rv64imac chip compiles.
-      **RULED (maintainer, 2026-11-05), taken by M10.6.12:** rv64 answers NOCACHE and DEVICE per
-      physical address. It accepts both on MMIO and refuses NOCACHE on RAM.
-      **LANDED:** the chip says whether a page entry carries the type (`arch_aspace_entry_memtype`,
-      false on virt_rv64), and `grant_memtype_at` answers per physical address: where the entry
-      carries none, NOCACHE and DEVICE only inside a chip-stated aperture, so a self-grant, a task
-      block, a frame map or a memory window at NOCACHE over RAM answers `-KOS_ENOTSUP` on rv64.
-
 ## M6.4 x86_64: what the `qemu-x86_64` port owes
 
 Each item is a residual the port left standing on purpose, not a defect it hid. The board's own
@@ -3482,21 +3197,6 @@ address-space assumptions into the one layer the MMU rewrite relies on being cle
       is now reachable and `check_doorbell_generic.sh` asserts it on this arch, where before the
       symbol was dropped for want of a caller. Treated the way the contract treats the data-cache
       seam: correct by construction, recorded as unwitnessed, not described as complete.
-
-- [x] **The RV64 doorbell's INSTRUCTION-side half has no operation at this board's ISA baseline.**
-      The service body carries `SFENCE.VMA`, which orders TRANSLATION and which the ISA gives no
-      way for one hart to perform for another. The instruction half is `FENCE.I`, and Zifencei is
-      absent from `arch/riscv/chip/virt_rv64/cpu.cmake`'s march string, so it does not assemble.
-      Ruled DEFERRED rather than papered over: calling `SFENCE.VMA` sufficient would put an untrue
-      statement of contract in the tree. No caller exists yet, the rv64 instruction-side rendezvous
-      being unwired and dropped by `--gc-sections`, so this is owed by the first caller that needs
-      it. Raising the baseline is a real option and not a free one: the toolchain's multilibs are
-      named for exact march strings, so a change is measured against them rather than assumed.
-      **LANDED:** no half is owed: FENCE.I orders a hart's fetch after stores to instruction
-      memory, which no map edit makes, and SFENCE.VMA orders the fetches of later instructions.
-      Every RISC-V chip's march carries Zifencei (GCC 16 still picks the same multilibs), and every
-      hart runs FENCE.I where it starts on code a loader or another hart stored: _start on both
-      QEMU virt chips, and the ESP32-C6 LP stub before it enters node 1's image.
 
 - [ ] **Give the converted fields their real ORDER.** M4.9.2 turned every cross-thread field
       into a relaxed `std::atomic`, which is a type change and nothing more: relaxed says
@@ -3819,52 +3519,6 @@ follows is what survived that.
       so no single `ldrh` covers both and the guard pays two byte loads. Both are `bool` and both sit
       in the same padding band the header already documents as free, so the swap costs no footprint
       and the `sizeof(Thread)` asserts would catch a mistake.
-## Found porting fault isolation to rxv3 (2026-08-12)
-
-- [x] **THE BELOW-STACK TEST (formerly `kickos_fault_below_stack`) NARROWS WHAT A FAULT REPORT
-      CAN ATTRIBUTE ON rxv3, and design 4.3's
-      reaper is what removes it rather than tuning it.** RXv3 cancels the faulting instruction and
-      restores SP (ISA UM sec.5.3.1), so no SP-based test can see a stack overflow and the faulting
-      ADDRESS is the only evidence. The test is EXACT for the overflow class -- a stack grows down, so
-      the first denied access is beneath the base by construction -- but its converse is not, and the
-      cost is MEASURED on one tree: `mpu_fault`'s cross-domain write to `0x13200`, below `domainA`'s
-      stack, escalates to the panic dump instead of dying alone, while `rxdrv`'s `0x8c068` above the
-      stack dies alone. So on this board an unprivileged operand access to any LOWER address is
-      reported as a system panic and the thread is not credited with dying alone. **Do NOT replace the
-      stack base with a distance threshold**: a frame larger than the threshold puts privileged code
-      back on an exhausted stack, which is the UNSAFE direction and is the exact defect this closed
-      (`.session/logs/m483rxovf-*`, which reached `PC=0x0`). The real fix is a stub that never runs on
-      the dying thread's stack, i.e. section 4.3 of the archived fault-isolation record, which
-      already recorded that it "would survive 4.2" and is now measured on an ISA that needs it. It
-      would delete the rxv3 test, not tune it. `fault-frame-untrusted-until-proved` called the
-      imprecise converse deliberate; that clause left the invariant on 2026-10-21 as this defect.
-      **PARTLY:** the rxv3 redirect moves the stub onto the thread's kernel block
-      (`kickos_fault_stack_top`), and the below-stack test now counts only an access within one
-      16-byte band below the base; the test itself is still there.
-      **RULED (maintainer, 2026-11-05), taken by M10.6.12:** the stub now runs on the kernel
-      block, so delete the below-stack test and its 16-byte band.
-      Witness `mpu_fault` and `faultsurvive_ovf` on rx72m.
-      **LANDED:** the predicate and the band are gone, and so is the USP containment test, which
-      was what escalated `faultsurvive_ovf` (the recursion's frame drops the USP below the base
-      before its first denied store): rxv3 kills every unprivileged fault whose thread has a
-      stub stack. `faultsurvive_ovf` and `faultsurvive_off` are judged `killed`, witnessed on rx72m.
-
-- [x] **On a FLAT rxv3 board nothing catches a wild SP that faults with a non-MPU cause.** The
-      below-stack test is inside `#if KICKOS_HAVE_MPU` because it reads `MPESTS`/`MPDEA`, and the USP
-      containment test only sees an SP that is out of range, not one that is in range with no room
-      below. So on `rx72m-flat` an address exception taken by a thread whose stack is exhausted would
-      be killed and the stub would run on it. Not witnessed either way -- the flat posture has no arm
-      that reaches this -- and it is the same hole 4.3 closes. Filed so the enforcing-only scope of the
-      guard is on the record rather than implied by an `#if`.
-      **PARTLY:** on every rxv3 posture the redirect resets the USP to the thread's kernel block
-      (`kickos_fault_stack_top`, `arch/rx/rxv3/arch_rxv3.cc`), so the stub no longer runs on the
-      exhausted stack; still not witnessed.
-      **RULED (maintainer, 2026-11-05), taken by M10.6.12:** the stub now runs on the kernel
-      block, so delete the below-stack test and its 16-byte band.
-      Witness `mpu_fault` and `faultsurvive_ovf` on rx72m.
-      **LANDED:** on every rxv3 posture the redirect seats the USP at the thread's kernel block
-      unconditionally, so the stub never runs on an exhausted or wild USP, flat included.
-
 ## Found landing task-layer step 9.3 (2026-08-11)
 
 - [ ] **`microbit` has ZERO arena slack, so no `.bss` addition is ever inert there again.**
@@ -3993,10 +3647,21 @@ follows is what survived that.
 
 ## Found closing M10.6.4 (2026-10-09)
 
-- [ ] **M10.8: `amp_hold` fails when the whole binary runs in order.** A suite that passes alone
+- [x] **M10.8: `amp_hold` fails when the whole binary runs in order.** A suite that passes alone
       fails after its neighbours in the one binary, so the order of the cases matters.
-- [ ] **M10.8: The self-grant map takes time under `IrqLock` that grows with the run size.** The
-      map walk for a long run holds interrupts masked for its whole length.
+      **CLOSED (M10.8.10):** the whole binary passes, and `amp_hold_one_process` runs every case in
+      one process in shuffled orders (`tests/unit/amphold/CMakeLists.txt`).
+- [x] **M10.8: The self-grant map takes time under `IrqLock` that grows with the run size.** The
+      map walk for a long run holds interrupts masked for its whole length. **CLOSED (M10.8.10,
+      ruled 2026-11-25):** a translating self-grant maps a bounded number of pages per locked
+      pass, with an interrupt window between passes; an unfinished grant stays pending on the
+      reservation.
+- [x] **M10.8: A create maps its handoff and its windows under one `IrqLock`.** A failed
+      spawn's unwind and the release of a shed donor's lent reservation freed a caller-sized run
+      at once too. **CLOSED (M10.8.10, ruled 2026-11-25):** a create publishes its thread or task
+      not runnable, maps the rest in bounded passes, and only then names it and makes it
+      runnable; a refused pass or a creator's death leaves it to die unrun; the last borrower of
+      a shed reservation frees it in passes.
 - [ ] **M10.8: `qemu_riscv64_stress` runs 60 to 100 times slower under host load**, on the base
       tree and on this one alike, so a loaded box turns its bound into a failure.
       **PARTLY:** above one core the stress gate's bound is 1400 s
@@ -4005,32 +3670,30 @@ follows is what survived that.
       1,000 start-and-poll cycles each sleep 1 ms: 1.4 s on an idle host, 29 to 65 s under a
       heavy one on `qemu-arm64-smp12`, where the whole selftest then crosses ctest's 180 s
       limit on M10.6.12 and M10.7 alike (measured 2026-11-18).
-- [ ] **M10.8: The `qemu-arm64` expected faults `was` and `wro` never fault.** The gate accepts
-      the absence.
+- [x] **M10.8: The `qemu-arm64` expected faults `was` and `wro` never fault.** The gate accepts
+      the absence. **CLOSED (M10.8.10):** both fault on qemu-arm64 (`window_memory_ro`'s `peer0`,
+      a permission fault on the write; `window_addr`'s `was`, a translation fault), and each arm
+      requires its own peer's `KOS_EXIT_FAULT`, so a missing fault fails the arm.
 - [x] **M10.8: A far call answers empty where a local call waits.** The two paths of one call
       differ, an asymmetry of the ABI. **CLOSED (M10.8.8).**
-- [ ] **M10.8: The echo port takes a lane of every call ring.** A node serving one real port gives
-      it half its ring, two slots of four: a measured cost to revisit.
+- [x] **M10.8: A far send to an endpoint nobody serves returns its byte count.** **CLOSED
+      (M10.8.10, the rendezvous ruling of 2026-11-25):** a far send is a rendezvous, answered once a
+      receiver takes it, refused where the endpoint is dead for good.
+- [x] **M10.8: The echo port takes a lane of every call ring.** **CLOSED (M10.8.10, ruling
+      2026-11-25):** the kernel's echo port is gone; the tests call an echo service, and a node's
+      call ring carries a lane per port the partition names it.
 - [ ] **M10.8: `errnoprobe` arm F no longer guards a switch-in.** The guard it exercised is gone.
-- [ ] **M10.8: Whether the selftest's converted worker cells needed atomics is unanswered.** The
+- [x] **M10.8: Whether the selftest's converted worker cells needed atomics is unanswered.** The
       cells main reads only after joining their worker say so and stay plain; the others were made
-      atomic in one sweep without asking whether a join already orders them.
+      atomic in one sweep without asking whether a join already orders them. **CLOSED
+      (M10.8.10), answered:** of the selftest's 227 namespace-scope atomic cells, a join of every
+      writer already orders 178 and the create orders 3; 46 need the atomic (polled, a handshake
+      between live threads, or main writing to a running worker), and the AMP share-window words
+      stay atomic. Making the ordered ones plain again is optional.
 - [ ] **M10.8: `confused_deputy`'s partial still says the arena is too small for the grandchild's
       stack** where the refusal is a thread slot.
-## M10.6.9: MPU tasks as processes and the kernel isolation holes (maintainer, 2026-10-21)
 
-- [ ] **M10.6.9: CHECK WHETHER THE ESP32 CAN SPLIT USER FROM KERNEL (found 2026-10-21).** The LX6
-      port has no user/kernel split: `PS.UM` is 1 for kernel and thread alike, so a fault there
-      panics instead of killing its task. No record examines the ESP32's PID controller and its
-      MMU and MPU permission scheme. Establish from the ESP32 TRM whether they permit a user/kernel
-      split. If they do, the LX6 port owes the split. If they do not, it is the hardware floor
-      (maintainer, 2026-10-21) and `docs/reference/boards.md` states it.
-      Cortex-M0 without the privilege extension is a real floor.
-      **PARTLY:** the check is done: `docs/reference/boards.md` ("The ESP32 runs KickOS flat") says
-      the PID controller could isolate tasks, gives its cost, and keeps the ESP32 flat.
-      **RULED (maintainer, 2026-11-05), taken by M10.6.12:** the intent is to protect the kernel
-      from user code, not to isolate tasks from each other: every task runs on one unprivileged
-      PID. A design note comes first.
+## M10.6.9: MPU tasks as processes and the kernel isolation holes (maintainer, 2026-10-21)
 
 - [ ] **NO PACKAGED DRIVER'S STACK IS BOUNDED BY THE APP-STACK GATE (found in M10.6.9 step 8b, 2026-10-27).**
       `tests/static/app_stack_roots.txt` held a record for one app thread only; no packaged driver's
@@ -4065,17 +3728,6 @@ archives (objdump, nm and readelf), nothing built.
 
 Defects the ten-angle review of M10.6.10 found that the milestone did not introduce.
 
-- [x] **A WORD BROADCAST IS QUADRATIC WITH INTERRUPTS MASKED.** `wake_popped` in
-      `kernel/sync/sync.cc` pops each waiter with `wq_pop_highest`, which scans the whole queue,
-      all under the waker's `IrqLock`. A broadcast to n waiters of one condition variable is n
-      scans of up to n waiters, so its masked time grows with the square of the waiter count,
-      bounded only by the thread pool. The C++ condition variable's `notify_all` is a new caller.
-      No test pins the broadcast's worst case.
-      **LANDED:** a wake of every waiter sorts them once, one stable pass per priority bit that
-      differs among them, and wakes them in the same order as before, so its masked time is
-      linear; a wake of fewer than all still scans once per waiter, so the waiters it leaves keep
-      their queue order. The bench's `word-broadcast` row measures it at three steps.
-
 - [ ] **`task_cancel_group`'S MASKED WALK HAS NO IRQ-OFF MEASUREMENT.** In `kernel/thread/park.cc` it
       walks every thread slot under the caller's `IrqLock` and slays each member of the task.
       `exit()`, `abort()` and an uncaught exception now reach it from any thread of a task. No
@@ -4089,32 +3741,6 @@ Defects the ten-angle review of M10.6.10 found that the milestone did not introd
       refusal that names a missing multilib, and the failure comes at the first link, where ld
       skips the incompatible archive. Look the archive up with `_kickos_multilib_file`, as the
       nano branch does.
-
-- [x] **THE FULL NEWLIB PROFILE LEAKS A DEAD THREAD'S DTOA LISTS.** `user/src/newlib_reent.cc`
-      releases a thread's libc scratch at its exit only under `_REENT_SMALL`, the nano profile. In
-      the full profile `struct _reent` keeps `_result`, `_p5s`, `_freelist` (a calloc'd array and
-      its Bigints) and `_cvtbuf` as heap pointers, which the next thread in the slot loses when
-      its state is primed from the template. A full-profile image whose workers each format a
-      double or call `strtod` and then exit, again and again, shrinks its heap until `malloc`
-      fails (x86_64, aarch64, or a full image beside a nano one). `errnoprobe` skips `strtod` on
-      the full profile, so no arm sees it.
-      **LANDED:** a thread ending through `kos_exit` frees its dtoa lists, conversion buffer and
-      signal table under either profile, and `errnoprobe` arm E converts and formats a double and
-      sets a handler on both.
-
-- [x] **`_close` FAILS WITHOUT SETTING `errno`.** `user/src/newlib_stubs.cc` returns -1 and leaves
-      errno as it was, so `fclose(stdout)`, `close(1)` and a failed `std::ofstream` close report
-      a stale errno. POSIX names EBADF.
-      **LANDED:** closing a console fd closes it for the rest of the task, every call on it then
-      answering EBADF, and closing any other fd answers EBADF.
-      **RULED (maintainer, 2026-11-05):** that close stands: it is the POSIX behaviour.
-
-- [x] **THE CONSOLE LOOKS LIKE A SEEKABLE TERMINAL FILE.** In `user/src/newlib_stubs.cc` `_lseek`
-      answers 0 to every seek and `_isatty` 1 for every descriptor. `fseek(stdout, 100, SEEK_SET)`
-      succeeds while `ftell` stays 0, so the usual fseek and ftell size probe takes the console
-      for an empty file. A terminal answers a seek with ESPIPE.
-      **LANDED:** only fds 0 to 2 are open, a terminal each that answers a seek with ESPIPE; fd 0
-      reads end of file and fds 1 and 2 write, and every other fd answers EBADF.
 
 ## Found during M10.6.11, older than it (2026-11-07)
 
@@ -4137,12 +3763,12 @@ Defects and gaps M10.6.11's work met that the milestone did not introduce.
       It points to a bench-tool comparison of two clock reads taken across a second boundary. Not
       chased.
 
-- [ ] **`st_ram_seat` ASSUMES AN ADDRESS ORDER WHERE A TASK HAS ITS OWN ADDRESS SPACE.** Under
-      `KICKOS_HAVE_ASPACE` it seats one granule, reserves every arm's block, then seats a second,
-      and requires every block to lie between the two (`blocks_between` in
-      `user/apps/common/selftest/selftest_common.cc`): it assumes the virtual allocator hands out
-      addresses in rising order. An allocator that does not fails the image with a bail-out, not
-      silently. A seat that does not rest on the order, or a ruling.
+- [x] **`st_ram_seat` ASSUMED WHERE THE POOL PLACES A TASK'S BLOCKS WHERE IT HAS ITS OWN ADDRESS
+      SPACE.** It seated a granule on either side of the arms' blocks so that no arm's grant took
+      a table inside its census, which held only while the pool handed out rising addresses; the
+      buddy frame allocator does not, and qemu-riscv64 bailed out. Ruled: the frame census counts
+      a frame held as a translation table (`KOS_MEM_TABLES_HELD`) as not leaked, and the seat is
+      gone.
 
 - **A gate's scratch directory may have been deleted under it (no fix owed).** Before M10.6.11,
   `tests/lib/gate.sh` could remove a gate's scratch directory from a subshell wherever a gate
@@ -4183,17 +3809,6 @@ states a guarantee, so the clause left it on 2026-10-21 and the defect is record
       a raw system call naming an unmapped or read-only one faults the host process. Every other
       pointer syscall on the sim refuses host-heap memory.
 
-- [x] **A FAILED HANDLE WRITE LEAVES AN UNNAMED CAPABILITY INSTALLED.** `cap_out_deliver` writes the
-      handle after the object exists and the capability is installed, so an EFAULT there leaves
-      the caller holding a capability at an index it was never told, reclaimed only when its
-      holder dies. An agent rejected undoing it, since a close cannot retract a thread already
-      running; no ruling. Install after the handle write, or undo per type, as the reply cap, the
-      frame-run and the own-space mints already do.
-      **LANDED:** every capability mint closes the capability again when its handle cannot be
-      written, so a refused delivery leaves the table and the object as they were. A thread or
-      task create writes its handle before the new thread can run, and a notification wait or a
-      fused receive takes its bits only once they are written back.
-
 - [ ] **A SUPERVISOR CALLER TRAPPING WITH THE MASK RAISED IS NEITHER CLEARED NOR REFUSED.** The ARM
       and RX syscall slow paths do neither; the ARM IPC fastpath refuses on `ICSR.PENDSVSET`.
       Latent: no such caller exists in the tree. Refuse it on the slow paths as the fastpath
@@ -4205,13 +3820,6 @@ states a guarantee, so the clause left it on 2026-10-21 and the defect is record
       core ran the fixed-region init, a core's skip could compare the right words against the
       wrong slots. Latent: the only chip declaring fixed rows is single-core. A per-core form of
       both, or a build refusal of fixed rows on a multicore chip.
-
-- [x] **THE LOCK-FREE AUTHORITY READ WAS NEVER REVISITED FOR SMP.** The authority check reads the
-      caller's own word with no IrqLock. The invariant said an SMP kernel must revisit that with
-      the rest of the IrqLock contract, and `docs/design-multicore.md` does not. Confirm the read
-      is safe above one core.
-      **LANDED:** safe: once a thread runs, only its narrow writes its word and only clears bits,
-      so an unlocked read never shows a bit it did not hold; `cap.h` states that rule.
 
 - [ ] **A `KOS_DRV_EP_RETAIN` SEAT IS OUTSIDE THE BUILD'S ENDPOINT COUNT.** A driver an app brings up
       under it keeps a further endpoint slot in root that no build can read, so root can boot
@@ -4264,11 +3872,6 @@ states a guarantee, so the clause left it on 2026-10-21 and the defect is record
 - [ ] **A DEAD PUBLISHED CONSOLE STAYS CHARGED TO EVERY HOLDER'S TASK.** The stdout seat names the
       published endpoint, a dead one included, until the next publish, and each holder's task
       pays for it until then. Low.
-
-- [x] **A SECOND AUTHORITY NARROW ANSWERS -KOS_EBADF.** A narrow to 0 succeeds and leaves the word 0,
-      so a second one, which gives up nothing, is refused (`kernel/syscall/cap.cc`), where
-      narrowing an empty set elsewhere does nothing. Make it a no-op, or a ruling.
-      **RULED (maintainer, 2026-11-05):** the -KOS_EBADF stays, as the ABI documents it.
 
 - [ ] **PROPERTIES NO RUN WITNESSES.**
       - On armv8a, that the reserved ASID keeps a stale user entry from hitting: QEMU's TLB is not

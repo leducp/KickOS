@@ -123,6 +123,17 @@ namespace selftest
     }
     // The child's side of xsem(i), through its window `window` on a translating board.
     KICKOS_SELFTEST_LOCAL kos_sem_t* xsem_child(int i, uint16_t window = 0);
+#if KICKOS_HAVE_ASPACE && defined(__x86_64__)
+    // A COM port that is not the board's console.
+    constexpr uint16_t other_com()
+    {
+        if (KICKOS_BOARD_CONSOLE_BASE == 0x2f8u)
+        {
+            return 0x3f8u;
+        }
+        return 0x2f8u;
+    }
+#endif
 
 #if KICKOS_AMP_NODE && KICKOS_AMP_OWN_IMAGE
     constexpr bool SELFTEST_OWNS_RESET = KICKOS_AMP_NODE_ID == KICKOS_AMP_RESET_OWNER;
@@ -532,6 +543,10 @@ namespace selftest
                                        kos_cap_t note = KOS_CAP_NONE);
     // main's free capability slots, or -1 where an object pool ran out before the table did.
     KICKOS_SELFTEST_LOCAL long cap_census();
+    // kos_mem_self_grant. In main's task, the tables it builds outlive the arm and are added to
+    // what the tables census expects. Nothing else in the arm may build or free a table during
+    // the call: the count it reads is machine-wide.
+    KICKOS_SELFTEST_LOCAL int st_self_grant(void* base, size_t size, uint32_t flags);
     // What an arm holds at once: workers beside main, tasks out of the task pool, objects out of
     // main's task budgets, capability slots beyond those objects', the IRQ lines it holds at
     // once, and the one of them the ask claims and hands over. The slots are probed as badged
@@ -834,6 +849,7 @@ namespace selftest
     KICKOS_SELFTEST_LOCAL void t_cap_map_pins_run();
     KICKOS_SELFTEST_LOCAL void t_cap_share();
     KICKOS_SELFTEST_LOCAL void t_frame_mint_census();
+    KICKOS_SELFTEST_LOCAL void t_tables_held();
     KICKOS_SELFTEST_LOCAL void t_space_cap_dies_with_task();
     KICKOS_SELFTEST_LOCAL void t_aspace_seam();
     KICKOS_SELFTEST_LOCAL void t_aspace_churn();
@@ -919,6 +935,7 @@ namespace selftest
 #if KICKOS_AMP_OWN_IMAGE
     KICKOS_SELFTEST_LOCAL void t_amp_share_crossing();
     KICKOS_SELFTEST_LOCAL void t_amp_far_call_held();
+    KICKOS_SELFTEST_LOCAL void t_amp_far_send_held();
 #if KICKOS_HAVE_ASPACE
     KICKOS_SELFTEST_LOCAL void t_amp_far_reply_unmapped();
 #endif
@@ -926,6 +943,7 @@ namespace selftest
     KICKOS_SELFTEST_LOCAL void t_amp_far_wall();
 #endif
     KICKOS_SELFTEST_LOCAL void t_amp_far_share();
+    KICKOS_SELFTEST_LOCAL void t_amp_far_server_gone();
 #if KICKOS_MEMORY_ENFORCED && KICKOS_AMP_USER_SHARE_SIZE != 0
     KICKOS_SELFTEST_LOCAL void t_amp_share_window();
 #endif

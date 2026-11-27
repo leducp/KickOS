@@ -974,6 +974,10 @@ namespace kickos
                 }
                 count = VirtualRanges::capacity() - ranges->count();
             }
+            else if (which == KOS_MEM_TABLES_HELD)
+            {
+                count = frame_pool_tables();
+            }
             else
             {
                 return -KOS_EINVAL;

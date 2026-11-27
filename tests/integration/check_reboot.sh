@@ -209,9 +209,10 @@ fi
 
 # Per boot: A, C and D for the announcement, the countdown and the decline in arrival order, and
 # the banner's build, app and commit rows.
-verdict="$(printf '%s\n' "$lines" | KOS_A="$ANNOUNCE" KOS_C="$COUNTDOWN" KOS_D="$DECLINED" awk '
+verdict="$(printf '%s\n' "$lines" | KOS_A="$ANNOUNCE" KOS_C="$COUNTDOWN" KOS_D="$DECLINED" \
+    KOS_T="$KOS_BANNER_TITLE_ERE" awk '
     function prefix(s) { return substr("ACD", 1, length(s)) == s }
-    /^   KickOS [^ ]+  -  microkernel RTOS$/ || /^K [0-9]/ { n++; seq[n] = ""; next }
+    $0 ~ ENVIRON["KOS_T"] || /^K [0-9]/ { n++; seq[n] = ""; next }
     n == 0 { next }
     index($0, ENVIRON["KOS_A"]) == 1 { seq[n] = seq[n] "A"; next }
     index($0, ENVIRON["KOS_C"]) == 1 { seq[n] = seq[n] "C"; next }

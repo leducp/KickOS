@@ -1201,11 +1201,10 @@ namespace
         EXPECT_EQ(fake::console(), "init: `sensor` is dead and released\n");
     }
 
-    // The start is counted dead once the handover's wait for the death gives up; the members still
-    // sweeping are in the way of a restart, which waits on the instance's watch.
-    TEST_F(Walk, a_failed_start_whose_members_still_sweep_is_counted_dead_past_its_handover_s_wait)
+    // A console driver whose task ends before it is ready is counted dead at its death, not while
+    // its members still sweep, and then restarted.
+    TEST_F(Walk, a_console_start_that_ends_before_it_is_ready_is_counted_dead_at_its_death)
     {
-        // A console driver's handover fails after its task exists; a user task's start never does.
         harness::Patched patched{systems::find("golden_xmc")};
         patched.task("console").restart_max = 1u;
         use(patched);
@@ -1218,22 +1217,24 @@ namespace
             }
         };
         fake::script({
-            // The handover's wait for the death, to its deadline.
-            step::nothing(),
+            []
+            {
+                fake::on_spawn = nullptr;
+                fake::cancel("console", KOS_EXIT_FAULT);
+            },
             [this]
             {
-                EXPECT_EQ(status("console").deaths, 1u) << "not counted once the handover gave up";
-                EXPECT_EQ(fake::spawned("console").size(), 1u) << "restarted over its sweeping members";
-                ASSERT_EQ(fake::slays().size(), 1u) << "the handover's, the failed start holding no handle";
-                fake::on_spawn = nullptr;
+                EXPECT_EQ(status("console").deaths, 0u) << "counted dead while its members sweep";
+                EXPECT_TRUE(fake::slays().empty());
                 fake::sweep("console");
             },
             step::nothing(),
         });
         expect_idle(run());
-        EXPECT_EQ(fake::spawned("console").size(), 2u) << "the restart did not follow the sweep";
-        EXPECT_EQ(status("console").deaths, 2u) << "each failed start counted once";
-        EXPECT_TRUE(fake::releases().empty()) << "a slain task released again";
+        EXPECT_EQ(fake::spawned("console").size(), 2u) << "the restart did not follow the death";
+        EXPECT_EQ(status("console").deaths, 1u);
+        EXPECT_TRUE(fake::slays().empty()) << "a task that ended on its own was slain";
+        EXPECT_EQ(fake::releases().size(), 1u) << "the failed start releases the dead task";
     }
 
     // --- the generation ----------------------------------------------------------------------
@@ -1448,7 +1449,7 @@ namespace
         fake::script({step::ready_all(), step::ready_all(),
                       []
                       {
-                          // The console took the handover's probe and stops receiving, its receiver alive.
+                          // The console is up and stops receiving, its receiver alive.
                           fake::set_console_receives(false);
                           fake::die("sensor");
                       },
@@ -1499,7 +1500,7 @@ namespace
             {
                 lines++;
                 EXPECT_EQ(c.args[2] - c.at, static_cast<uint64_t>(std::chrono::nanoseconds(
-                                                 kickos::driver::KOS_DRV_HANDOVER_PROBE)
+                                                 kickos::driver::KOS_DRV_SEND_WAIT)
                                                  .count()));
                 EXPECT_EQ(c.result, -KOS_ETIMEDOUT);
             }

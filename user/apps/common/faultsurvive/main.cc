@@ -60,8 +60,8 @@
 //      which unprivileged Secure code may take. The worker's task alone must die.
 //  18  mode 6 with FP state live first, so the refused entry also leaves a lazy FP save pending
 //      at an address no memory answers.
-//  19  rp2350: `bxns` to the bootrom's Non-secure instruction range, which Non-secure state
-//      could run but for the Non-secure MPU bring-up enables with no region.
+//  19  rp2350: `bxns` to the IDAU-Exempt boot ROM, which Non-secure state could run but for
+//      the Non-secure MPU bring-up enables with no region.
 
 #include <kickos/apps/peer_run.h>
 #include <kickos/kos.h>

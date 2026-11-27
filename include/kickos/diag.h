@@ -28,6 +28,9 @@ namespace kickos
         inline constexpr char const kBootRootStack[] = "kmain: no arena for the root stack";
         inline constexpr char const kBootRootRun[] = "kmain: no capability run for root";
         inline constexpr char const kConsoleAttach[] = "console_buffer_init: irq_attach failed";
+        // The kernel's line on the device a published console driver's death gave back.
+        inline constexpr char const kConsoleReclaimed[] =
+            "\nkernel: console driver task ended, console reclaimed\n";
         inline constexpr char const kBlockInIsr[] = "kickos: blocking operation from ISR context";
         inline constexpr char const kResumeNoSwitch[] = "wq_confirm_resume: switch never landed";
         inline constexpr char const kUserPanicNoMsg[] = "user panic (no readable message)";
@@ -107,7 +110,8 @@ namespace kickos
 // SITE, so a constexpr array would silently retire -Wformat on every one of them.
 
 // Boot banner.
-#define KDIAG_F_BANNER_NAME  "   KickOS %s  -  microkernel RTOS\n"
+// The title: its indent, then the name and the version (kickos::diag::banner_title_indent).
+#define KDIAG_F_BANNER_NAME  "%sKickOS %s\n"
 #define KDIAG_F_BANNER_BOARD "   board   %s\n"
 #define KDIAG_F_BANNER_ARCH  "   arch    %s\n"
 #define KDIAG_F_BANNER_CPU   "   cpu     %s\n"
@@ -123,6 +127,48 @@ namespace kickos
 #define KDIAG_F_BANNER_HEAP  "   heap    %u KiB available\n"
 #define KDIAG_F_BANNER_NOHEAP "   heap    none\n"
 #define KDIAG_F_BANNER_KSTACK "   kstack  %u B x %u = %u B\n"
+
+#ifdef __cplusplus
+namespace kickos
+{
+    namespace diag
+    {
+        // kBannerRule is these spaces, then this many '=' and its newline.
+        inline constexpr unsigned kBannerRuleLead = 2u;
+        inline constexpr unsigned kBannerRuleWidth = 46u;
+        static_assert(sizeof(kBannerRule) - 1u == kBannerRuleLead + kBannerRuleWidth + 1u,
+                      "the banner rule is not its lead and width");
+        // The title's own characters: the format less its two %s and its newline.
+        inline constexpr unsigned kBannerTitleText = sizeof(KDIAG_F_BANNER_NAME) - 1u - 5u;
+
+        // How many spaces centre a title of `version_len` characters over the rule's '='.
+        constexpr unsigned banner_title_indent_width(unsigned version_len)
+        {
+            unsigned const text = kBannerTitleText + version_len;
+            if (text >= kBannerRuleWidth)
+            {
+                return kBannerRuleLead;
+            }
+            return kBannerRuleLead + (kBannerRuleWidth - text) / 2u;
+        }
+
+        inline constexpr char const kBannerIndent[] = "                         ";
+        static_assert(sizeof(kBannerIndent) - 1u >= banner_title_indent_width(0u),
+                      "the indent run is shorter than the widest indent");
+
+        // The indent KDIAG_F_BANNER_NAME's first %s takes for `version`.
+        constexpr char const* banner_title_indent(char const* version)
+        {
+            unsigned n = 0;
+            while (version[n] != '\0')
+            {
+                n++;
+            }
+            return kBannerIndent + (sizeof(kBannerIndent) - 1u - banner_title_indent_width(n));
+        }
+    }
+}
+#endif
 
 // The ordinary kprintf line buffer, and what the console TX ring is sized from
 // (kickos/console_tx.h). A line past it truncates.

@@ -20,7 +20,7 @@ foreach(_span no_program program)
              "${PROJECT_SOURCE_DIR}/arch/x86/x86_64/include"
              "${PROJECT_SOURCE_DIR}/arch/x86/chip/q35/include"
     POSTURE KICKOS_NUM_CORES=2 KICKOS_KERNEL_CORES=2 KICKOS_MULTICORE_MODEL_SHARED=1
-            KICKOS_HAVE_ASPACE=1 KICKOS_X86_64_SYSOPS_FROM_SEAM=1)
+            KICKOS_HAVE_ASPACE=1 KICKOS_ARCH_IRQ_WINDOW=1 KICKOS_X86_64_SYSOPS_FROM_SEAM=1)
 endforeach()
 kickos_add_unit_test(NAME map_shoot SOURCES map_shoot.cc
   LIBRARIES kickos_aspace_x86_64_no_program_host)

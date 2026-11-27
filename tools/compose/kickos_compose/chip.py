@@ -314,6 +314,21 @@ def table_rows(view):
     return tables
 
 
+def priv_register_rows(view):
+    """[(window base, offset, ref)] of every privileged register of each grantable device window."""
+    rows = []
+    for device in view.devices():
+        if device.owner == "kernel" or device.ports is not None:
+            continue
+        windows = window_rows(device)
+        if device.window is not None and device.count is not None:
+            windows = [(device.window[0] + k * device.stride, device.window[1]) for k in range(device.count)]
+        for base, size in windows:
+            for offset in device.registers:
+                rows.append((base, offset, device.ref))
+    return rows
+
+
 def emit_tables(view):
     lines = [opening(view, "cxx"),
              "\n#ifndef KICKOS_CHIP_TABLES_H\n#define KICKOS_CHIP_TABLES_H\n\n"
@@ -327,6 +342,13 @@ def emit_tables(view):
             lines.append("        {%s, %s},%s\n" % (hex_u(base), hex_u(size), comment(ref, "cxx")))
         lines.append("    };\n    inline constexpr struct arch_reserved_span %s{%s_rows};\n"
                      % (table, table))
+    privs = priv_register_rows(view)
+    if privs:
+        lines.append("    // Each privileged register of a grantable device window, as {window base, offset}.\n"
+                     "    inline constexpr uintptr_t priv_registers[][2] = {\n")
+        for base, offset, ref in privs:
+            lines.append("        {%s, %s},%s\n" % (hex_u(base), hex_u(offset), comment(ref, "cxx")))
+        lines.append("    };\n")
     lines.append("}\n\n#endif\n")
     return "".join(lines)
 
@@ -472,10 +494,9 @@ def emit_cmake(view):
     if rule is not None:
         facts.append("set(KICKOS_CHIP_REGION_GRANULE %d)\nset(KICKOS_CHIP_REGION_POW2 %d)\n" % rule)
     if view.board is not None:
-        led = "OFF"
-        if view.board.kernel_led is not None:
-            led = "ON"
-        facts.append("set(KICKOS_KERNEL_LED %s)\n" % led)
+        for macro, value, ref in board_values(view):
+            if macro == "KICKOS_BOARD_CONSOLE_BASE":
+                facts.append("set(KICKOS_BOARD_CONSOLE_BASE 0x%X)\n" % value)
     if view.board is not None and view.board.emulator is not None:
         facts.extend(emulator_cmake(view, view.board.emulator, lengths))
     return "%s%s%sset(KICKOS_CHIP_REGION_UNIT \"%s\")\nset(KICKOS_CHIP_TRANSLATES %s)\n" % (
@@ -577,10 +598,8 @@ def pinmux_port_bit(chip, pin):
 
 
 def kernel_pins(board):
-    """[(port, bit)] of the pins the kernel holds: the console's, its LED's, the reserved."""
+    """[(port, bit)] of the pins the kernel holds: the console's and the reserved."""
     pins = [pin for role, pin, selector in board.console_pins]
-    if board.kernel_led is not None:
-        pins.append(board.kernel_led[0])
     pins.extend(board.reserved)
     return [pinmux_port_bit(board.chip, pin) for pin in pins]
 
@@ -599,8 +618,9 @@ def pin_values(chip, stem, pin):
 
 
 def board_values(view):
-    """[(macro, value, ref)] of board_pins.h: the console device, each console pin's port, bit and
-    the value its selector and input select take, and the kernel's LED."""
+    """[(macro, value, ref)] of board_pins.h: the console device and each of its lines, each
+    console pin's port, bit and the value its selector and input select take, and the diagnostic
+    LED."""
     board = view.board
     if board is None:
         return []
@@ -608,9 +628,18 @@ def board_values(view):
     values = []
     if board.console is not None:
         window = window_of(chip, board.console)
+        device = chip.devices[board.console.split("/")[2]]
+        if window is None and len(board.console.split("/")) == 3 and device.ports is not None:
+            window = device.ports
         if window is not None:
             values.append(("KICKOS_BOARD_CONSOLE_BASE", window[0], board.console))
             values.append(("KICKOS_BOARD_CONSOLE_SIZE", window[1], None))
+        if view.reaches(device):
+            for line, number in device.sources.items():
+                values.append(("KICKOS_BOARD_CONSOLE_LINE_%s" % line.upper(), number + view.offset,
+                               device.line_names[line].ref))
+            if device.gate_register is not None:
+                values.append(("KICKOS_BOARD_CONSOLE_GATE_REGISTER", device.gate_register, None))
     for role, pin, selector in board.console_pins:
         stem = "KICKOS_BOARD_CONSOLE_%s" % role.upper()
         values.extend(pin_values(chip, stem, pin))
@@ -620,8 +649,8 @@ def board_values(view):
         detail = chip.pin_details.get((pin, selector))
         if detail is not None and detail[0] is not None:
             values.append((stem + "_INPUT_SELECT", detail[0], detail[1]))
-    if board.kernel_led is not None:
-        pin, active, kind = board.kernel_led
+    if board.diag_led is not None:
+        pin, active, kind = board.diag_led
         values.extend(pin_values(chip, "KICKOS_BOARD_LED", pin))
         if kind == "addressable":
             values.append(("KICKOS_BOARD_LED_ADDRESSABLE", 1, None))
@@ -640,7 +669,7 @@ def emit_board(view):
     lines = ["/* %s */\n" % banner, "\n#ifndef KICKOS_BOARD_PINS_H\n#define KICKOS_BOARD_PINS_H\n\n"]
     for macro, value, ref in board_values(view):
         shown = "%d" % value
-        if macro.endswith("_BASE") or macro.endswith("_SIZE"):
+        if macro.endswith("_BASE") or macro.endswith("_SIZE") or macro.endswith("_REGISTER"):
             shown = "0x%X" % value
         lines.append("#define %s %s%s\n" % (macro, shown, comment(ref, "c")))
     if view.board is not None:

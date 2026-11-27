@@ -165,8 +165,8 @@ class Cache:
 class Admitted:
     """What a composition checked against a manifest leaves for the emitter."""
 
-    def __init__(self, root, tasks, shared, stdout, ends, heap, init_priority, chip, cluster, manifest, translating,
-                 accepts, sizing):
+    def __init__(self, root, tasks, shared, stdout, ends, heap, init_priority, chip, board, cluster, manifest,
+                 translating, accepts, sizing):
         self.root = root
         self.tasks = tasks
         self.shared = shared
@@ -179,6 +179,7 @@ class Admitted:
         # The priority the init lowers itself to.
         self.init_priority = init_priority
         self.chip = chip
+        self.board = board
         self.cluster = cluster
         self.manifest = manifest
         # Whether each task runs in an address space of its own.
@@ -273,10 +274,11 @@ def admit_composition(path, text, platform, report, cache, manifest, partition=F
     if "tasks" in top:
         items = f.sequence(top["tasks"], "`tasks`")
         for index, item in enumerate(items or ()):
-            tasks.append(check_task(f, item, index, chip, cluster, board_less, stack))
+            tasks.append(check_task(f, item, index, chip, cluster, board_less, stack,
+                                    console=console_device(board, manifest)))
     for host in list(tasks):
         for node in host.driver_items:
-            tasks.append(check_hosted(f, node, len(tasks), host, chip, cluster))
+            tasks.append(check_hosted(f, node, len(tasks), host, chip, cluster, console_device(board, manifest)))
     # A driver inside a task is no task to watch or end on.
     named = {name: task for name, task in name_tasks(f, tasks).items() if task.hosted is None}
     served = serve_endpoints(f, tasks)
@@ -294,6 +296,7 @@ def admit_composition(path, text, platform, report, cache, manifest, partition=F
             if name not in needed:
                 unneeded(f, node, "the composition's", name)
         check_drivers(f, tasks, manifest)
+        check_console_drivers(f, chip, cluster, board, tasks, manifest)
         check_slots(f, tasks, served, manifest)
         check_priorities(f, tasks, manifest)
         check_scheduling(f, top, tasks, stdout, manifest)
@@ -303,8 +306,8 @@ def admit_composition(path, text, platform, report, cache, manifest, partition=F
                               cap_defaults, reserve, stdout)
         check_ports(f, tasks, manifest)
         check_partitioned(f, tasks, shared, manifest, partition)
-        return Admitted(root, tasks, shared, stdout, top.get("ends"), heap, init_priority, chip, cluster, manifest,
-                        translating, accepts, sizing)
+        return Admitted(root, tasks, shared, stdout, top.get("ends"), heap, init_priority, chip, board, cluster,
+                        manifest, translating, accepts, sizing)
     return None
 
 
@@ -620,9 +623,10 @@ def check_shared(f, top):
     return shared
 
 
-def check_task(f, item, index, chip, cluster, board_less, base_stack, host=None):
+def check_task(f, item, index, chip, cluster, board_less, base_stack, host=None, console=None):
     """The Task `item` declares; where `board_less`, an entry task stating no `stack` takes
-    `base_stack`. With `host`, `item` is an entry of that task's `drivers`."""
+    `base_stack`. With `host`, `item` is an entry of that task's `drivers`. `console` is the device
+    path `/dev/console` stands for."""
     task = Task(index, item)
     task.hosted = host
     if host is not None:
@@ -699,7 +703,7 @@ def check_task(f, item, index, chip, cluster, board_less, base_stack, host=None)
         items = f.sequence(values["devices"], "%s devices" % what)
         task.device_count = len(items or ())
         for node in items or ():
-            grant = resolve_grant(f, chip, cluster, task, node, "%s device" % what)
+            grant = resolve_grant(f, chip, cluster, task, node, "%s device" % what, console)
             if grant is None:
                 task.unresolved = True
             if grant is not None:
@@ -710,7 +714,7 @@ def check_task(f, item, index, chip, cluster, board_less, base_stack, host=None)
         for name, (key, value) in (lines or {}).items():
             if f.name(key, "%s line name" % what, IDENTIFIER) is not None:
                 task.line_names.append((name, key))
-            line = resolve_line(f, chip, cluster, task, value, "%s line `%s`" % (what, name))
+            line = resolve_line(f, chip, cluster, task, value, "%s line `%s`" % (what, name), console)
             if line is not None:
                 line.name = name
                 task.lines.append(line)
@@ -788,9 +792,9 @@ def check_task(f, item, index, chip, cluster, board_less, base_stack, host=None)
     return task
 
 
-def check_hosted(f, node, index, host, chip, cluster):
+def check_hosted(f, node, index, host, chip, cluster, console=None):
     """The Task of entry `node` of `host`'s `drivers`, which runs on `host`'s core."""
-    task = check_task(f, node, index, chip, cluster, False, None, host)
+    task = check_task(f, node, index, chip, cluster, False, None, host, console)
     host.hosts.append(task)
     if task.driver is None:
         return task
@@ -976,10 +980,39 @@ def chip_device(chip, parts, lengths):
     return None
 
 
-def resolve_grant(f, chip, cluster, task, node, what):
+CONSOLE_ALIAS = "/dev/console"
+
+
+def console_path(chip, path, console):
+    """`path` with a leading `/dev/console` replaced by the device path of the console the kernel
+    drives here; a chip naming a device `console` keeps the path for that device."""
+    if chip is None or "console" in chip.devices or console is None or console == "none":
+        return path
+    if path != CONSOLE_ALIAS and not path.startswith(CONSOLE_ALIAS + "/"):
+        return path
+    return console + path[len(CONSOLE_ALIAS):]
+
+
+def console_line_path(chip, path, console):
+    """`path` with a leading `/dev/console` replaced as console_path does, a channel's lines being
+    its module's."""
+    resolved = console_path(chip, path, console)
+    if resolved == path:
+        return path
+    parts = console.split("/")
+    device = None
+    if len(parts) == 4:
+        device = chip.devices.get(parts[2])
+    if device is not None and parts[3] in device.channel_windows:
+        return "/".join(parts[:3]) + path[len(CONSOLE_ALIAS):]
+    return resolved
+
+
+def resolve_grant(f, chip, cluster, task, node, what, console=None):
     path = f.path(node, what)
     if path is None or chip is None:
         return None
+    path = console_path(chip, path, console)
     parts = path.split("/")
     device = chip_device(chip, parts, (3, 4))
     if device is None or not reaches(device, cluster):
@@ -1028,10 +1061,11 @@ def grantable(device):
     return "it has none to grant"
 
 
-def resolve_line(f, chip, cluster, task, node, what):
+def resolve_line(f, chip, cluster, task, node, what, console=None):
     path = f.path(node, what)
     if path is None or chip is None:
         return None
+    path = console_line_path(chip, path, console)
     parts = path.split("/")
     device = chip_device(chip, parts, (4, 5))
     source = None
@@ -1415,6 +1449,55 @@ def check_ownership(f, tasks, chip, cluster, board, stdout, manifest):
             holder = "it belongs to %s, which serves `stdout`" % stdout.label()
         f.refuse(grant.node, "ownership.console",
                  "%s holds `%s`, %s console device, and %s" % (grant.task.label(), grant.path, whose, holder))
+
+
+def console_device(board, manifest):
+    """The device the kernel drives as the console here: the board's, or this AMP node's, or None."""
+    console = None
+    if board is not None:
+        console = board.console
+    if manifest is not None and manifest.amp_consoles:
+        console = None
+        own = manifest.amp_node
+        if own is not None and own < len(manifest.amp_consoles) and manifest.amp_consoles[own] != "none":
+            console = manifest.amp_consoles[own]
+    return console
+
+
+def check_console_drivers(f, chip, cluster, board, tasks, manifest):
+    """Every packaged console driver with a device window holds the console device and only its lines."""
+    console = console_device(board, manifest)
+    if console is None:
+        return
+    numbers = console_lines(chip, cluster, console)
+    for task in tasks:
+        driver = task.catalogue
+        if driver is None or not driver.console or driver.usb_device or not driver.windows:
+            continue
+        if not any(grant.path == console for grant in task.grants):
+            f.refuse(task.nodes.get("devices", task.nodes.get("driver", task.node)), "ownership.console",
+                     "%s runs console driver `%s` and holds no `%s`, the console device the kernel hands over"
+                     % (task.label(), task.driver, console))
+        for held in task.lines:
+            if held.line not in numbers:
+                f.refuse(held.node, "ownership.console",
+                         "%s runs console driver `%s` and holds line `%s`, which is no line of `%s`, the "
+                         "console device; `/dev/console/<line>` names one" % (task.label(), task.driver,
+                                                                            held.path, console))
+
+
+def console_lines(chip, cluster, console):
+    """The line numbers of the console device, as the cluster numbers them."""
+    parts = console.split("/")
+    device = chip.devices.get(parts[2])
+    if device is None:
+        return set()
+    first = chip.line_offsets.get(cluster, 0)
+    if device.count is not None and len(parts) == 4:
+        k = index_below(parts[3], device.count)
+        if k is not None:
+            first = first + k
+    return set(number + first for number in device.sources.values())
 
 
 def gate_unit(chip, task_views, a, b):

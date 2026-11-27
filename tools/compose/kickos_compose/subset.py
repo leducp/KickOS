@@ -39,7 +39,7 @@ RULES = (
     "board.chip-folder", "board.device-unknown",
     "board.pin-unknown", "board.pin-function", "board.pin-not-gpio", "board.reserved-pin-used",
     "board.memory-overlap", "board.link-duplicate", "board.symbol-collision", "board.pin-reused",
-    "board.pin-signal", "board.led-owner", "board.led-kind", "board.flash-size",
+    "board.pin-signal", "board.led-diagnostic", "board.led-kind", "board.flash-size",
     "form.duplicate-entry", "form.scope",
     "name.board-unknown", "name.board-ambiguous", "name.cluster-unknown", "name.device-unknown",
     "name.line-unknown", "name.namespace", "name.reserved", "name.duplicate",
@@ -63,6 +63,7 @@ RULES = (
     "manifest.target", "manifest.receiver", "manifest.right",
     "partition.device", "partition.port", "partition.unserved", "partition.region", "partition.cached-incoherent",
     "partition.gate-budget", "partition.lone", "partition.bootloader", "partition.stdout",
+    "partition.led",
 )
 
 HEX = re.compile(r"0x[0-9A-Fa-f]+")

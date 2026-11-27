@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// XMC4800 IRQ-driven buffered UART console driver on USIC0 CH0 (U0C0), taken at the
+// XMC4800 IRQ-driven buffered UART console driver on the board's console channel, taken at the
 // console handover.
 //
 // TX-ONLY: kos_uart_read() has no receive path, so KOS_UART_READ always returns 0 bytes.
@@ -12,8 +12,8 @@
 // owns the UART.
 //
 // The driver cannot CHANGE the baud rate: FDR and BRG are Write = PV (RM Table 18-20) and
-// the kos_periph_reg_write allowlist carries entries for them on the sibling channel U0C1
-// only, so a U0C0 rate request is refused -KOS_EPERM. Both registers are
+// the kos_periph_reg_write allowlist carries none for them on the console channel, so a rate
+// request is refused -KOS_EPERM. Both registers are
 // unprivileged-readable, so the achieved rate is read back rather than echoed. CCR is the
 // driver's ONLY privileged write.
 //

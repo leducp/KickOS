@@ -36,6 +36,49 @@ apertures:
 devices:
   wdt: { window: [0x00088020, 0x10], ref: "Table 5.1 List of I/O Registers (Address Order), p.224" }
   iwdt: { window: [0x00088030, 0x10], ref: "Table 5.1 List of I/O Registers (Address Order), p.224" }
+  # Every SCI channel, any of which a board may name as its console.
+  sci0:
+    window: [0x0008A000, 0x20]
+    symbol: SCI0
+    ref: "Table 5.1 List of I/O Registers (Address Order), p.232"
+    lines:
+      rxi: { number: 58, ref: "Table 15.5 Interrupt Vector Table (2/6), p.522" }
+      txi: { number: 59, ref: "Table 15.5 Interrupt Vector Table (2/6), p.522" }
+  sci1:
+    window: [0x0008A020, 0x20]
+    symbol: SCI1
+    ref: "Table 5.1 List of I/O Registers (Address Order), p.233"
+    lines:
+      rxi: { number: 60, ref: "Table 15.5 Interrupt Vector Table (2/6), p.522" }
+      txi: { number: 61, ref: "Table 15.5 Interrupt Vector Table (2/6), p.522" }
+  sci2:
+    window: [0x0008A040, 0x20]
+    symbol: SCI2
+    ref: "Table 5.1 List of I/O Registers (Address Order), p.234"
+    lines:
+      rxi: { number: 62, ref: "Table 15.5 Interrupt Vector Table (2/6), p.522" }
+      txi: { number: 63, ref: "Table 15.5 Interrupt Vector Table (2/6), p.522" }
+  sci3:
+    window: [0x0008A060, 0x20]
+    symbol: SCI3
+    ref: "Table 5.1 List of I/O Registers (Address Order), p.235"
+    lines:
+      rxi: { number: 80, ref: "Table 15.5 Interrupt Vector Table (3/6), p.523" }
+      txi: { number: 81, ref: "Table 15.5 Interrupt Vector Table (3/6), p.523" }
+  sci4:
+    window: [0x0008A080, 0x20]
+    symbol: SCI4
+    ref: "Table 5.1 List of I/O Registers (Address Order), p.236"
+    lines:
+      rxi: { number: 82, ref: "Table 15.5 Interrupt Vector Table (3/6), p.523" }
+      txi: { number: 83, ref: "Table 15.5 Interrupt Vector Table (3/6), p.523" }
+  sci5:
+    window: [0x0008A0A0, 0x20]
+    symbol: SCI5
+    ref: "Table 5.1 List of I/O Registers (Address Order), p.237"
+    lines:
+      rxi: { number: 84, ref: "Table 15.5 Interrupt Vector Table (3/6), p.523" }
+      txi: { number: 85, ref: "Table 15.5 Interrupt Vector Table (3/6), p.523" }
   sci6:
     window: [0x0008A0C0, 0x20]
     symbol: SCI6
@@ -43,6 +86,48 @@ devices:
     lines:
       rxi: { number: 86, ref: "Table 15.5 Interrupt Vector Table (3/6), p.523" }
       txi: { number: 87, ref: "Table 15.5 Interrupt Vector Table (3/6), p.523" }
+  sci7:
+    window: [0x000D00E0, 0x20]
+    symbol: SCI7
+    ref: "Table 5.1 List of I/O Registers (Address Order), p.279"
+    lines:
+      rxi: { number: 98, ref: "Table 15.5 Interrupt Vector Table (3/6), p.523" }
+      txi: { number: 99, ref: "Table 15.5 Interrupt Vector Table (3/6), p.523" }
+  sci8:
+    window: [0x000D0000, 0x20]
+    symbol: SCI8
+    ref: "Table 5.1 List of I/O Registers (Address Order), p.273"
+    lines:
+      rxi: { number: 100, ref: "Table 15.5 Interrupt Vector Table (3/6), p.523" }
+      txi: { number: 101, ref: "Table 15.5 Interrupt Vector Table (3/6), p.523" }
+  sci9:
+    window: [0x000D0020, 0x20]
+    symbol: SCI9
+    ref: "Table 5.1 List of I/O Registers (Address Order), p.275"
+    lines:
+      rxi: { number: 102, ref: "Table 15.5 Interrupt Vector Table (3/6), p.523" }
+      txi: { number: 103, ref: "Table 15.5 Interrupt Vector Table (3/6), p.523" }
+  sci10:
+    window: [0x000D0040, 0x20]
+    symbol: SCI10
+    ref: "Table 5.1 List of I/O Registers (Address Order), p.276"
+    lines:
+      rxi: { number: 104, ref: "Table 15.5 Interrupt Vector Table (3/6), p.523" }
+      txi: { number: 105, ref: "Table 15.5 Interrupt Vector Table (3/6), p.523" }
+  sci11:
+    window: [0x000D0060, 0x20]
+    symbol: SCI11
+    ref: "Table 5.1 List of I/O Registers (Address Order), p.278"
+    lines:
+      rxi: { number: 114, ref: "Table 15.5 Interrupt Vector Table (3/6), p.523" }
+      txi: { number: 115, ref: "Table 15.5 Interrupt Vector Table (3/6), p.523" }
+  sci12:
+    window: [0x0008B300, 0x20]
+    symbol: SCI12
+    ref: "Table 5.1 List of I/O Registers (Address Order), p.241"
+    lines:
+      rxi: { number: 116, ref: "Table 15.5 Interrupt Vector Table (3/6), p.523" }
+      txi: { number: 117, ref: "Table 15.5 Interrupt Vector Table (3/6), p.523" }
   riic0: { window: [0x00088300, 0x20], symbol: RIIC0, ref: "Table 5.1 List of I/O Registers (Address Order), p.227" }
   riic1: { window: [0x00088320, 0x20], symbol: RIIC1, ref: "Table 5.1 List of I/O Registers (Address Order), p.227" }
   riic2: { window: [0x00088340, 0x20], symbol: RIIC2, ref: "Table 5.1 List of I/O Registers (Address Order), p.228" }

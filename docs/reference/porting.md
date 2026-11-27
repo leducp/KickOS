@@ -15,10 +15,16 @@ provides two halves:
   + vector table, clock tree, UART console, `arch_init`/`arch_shutdown`, the
   linker script (which defines the user-RAM region `__kickos_ram_start/_end`), and
   `SystemCoreClock` (defined in the chip C, not the linker script). Optionally a
-  chip may override `arch_diag_led_init`/`arch_diag_led_set` (the kernel
-  diagnostic LED, `kdiag_led_*`), driving the pin its board file's `owner: kernel` LED names;
-  both have no-op fallback TUs (`arch/common/arch_diag_led_{init,set}_default.cc`), so a board
-  with no known LED just leaves them out.
+  chip may override `arch_diag_led_init`/`arch_diag_led_set` (the diagnostic LED), driving the
+  pin its board file's `diagnostic: true` LED names. The pin is a task's GPIO until the terminal
+  panic (ruled 2026-11-25), so the init runs on the panic path with interrupts masked and no
+  lock, re-asserts the pin's clock gate, mux and direction, and writes only that pin's bits:
+  per-pin set/clear registers where the chip has them, a read-modify-write only where the chip
+  has none and one core. The chip file's `c: { led: [...] }` lists the kinds (`level`,
+  `addressable`) its code drives, and the board's LED picks one; the chip's code follows that
+  choice and claims no other device. Both have no-op fallback TUs
+  (`arch/common/arch_diag_led_{init,set}_default.cc`), so a board with no known LED just
+  leaves them out.
 
 `arch/<family>/common/` is not a third layer. It holds what several backends of ONE ISA family
 share and would otherwise copy (`arch/arm64/common/`: the GIC backends, the architected-timer and
@@ -207,18 +213,21 @@ that has not been ported keeps today's panic path with no edit at all.
   thread stack where it is 0 (`invariants.md`, `syscall-in-priv-thread-context`) -- so a
   fault there is a kernel bug in code the thread merely called and it must still panic.
   armv7m and armv6m read
-  `CONTROL.nPRIV` plus the stacked `xPSR` IPSR field (exception entry does not modify
-  `CONTROL`, so the read gives the privilege at fault time); rv32imac reads `mstatus.MPP`,
+  `CONTROL.nPRIV` (exception entry does not modify `CONTROL`, so the read gives the privilege
+  at fault time), and thread mode on the PSP is the reporter's `EXC_RETURN` test, never the
+  stacked IPSR, which a task-mate can write; rv32imac reads `mstatus.MPP`,
   the privilege before the trap, out of a CSR; the sim has no ring and reads its own
   `raised` / `isr_depth` pair, which carries the same fact.
 - `void arch_fault_redirect_to_exit(void* frame)` rewrites the resume context so the
   exception return lands in `kickos_thread_fault_exit`, privileged, in thread mode, on the
   faulting thread's own stack, and hands the fault facts to `kickos_fault_record`. It is
   called ONLY after the predicate returned true. The thread is dying, so its register values
-  need not be preserved and the stub takes no arguments. Concretely: ARM rewrites the stacked
-  PC, keeps the T bit and CLEARS the IT/ICI bits (a fault inside an IT block would otherwise
-  resume with stale condition state and conditionally skip the stub's first instructions),
-  then clears `CONTROL.nPRIV`, which exception return does not restore; RISC-V writes `mepc`
+  need not be preserved and the stub takes no arguments. Concretely: ARM never reuses the
+  frame the fault left. It builds a basic frame whole at the top of the thread's kernel block
+  (`arch/arm/common/fault_resume.h`): zeroed registers, the stub's PC, and an xPSR with the T
+  bit alone, so no IPSR, IT/ICI or realign bit survives. It then clears `CONTROL.nPRIV`, which
+  exception return does not restore. Where the frame test refuses the fault's frame (a wild or
+  overflowed SP), the kill still runs on register state and records no PC. RISC-V writes `mepc`
   and sets `mstatus.MPP` to M. A backend whose fault-status registers are sticky and
   write-1-to-clear must also clear them here: unlike the panic path this fault is not the
   last, so a bit left set mislabels the NEXT thread's fault with this one's status.
@@ -243,10 +252,13 @@ believe before it reads them, and this is the part that is easy to get wrong.
   current thread, on idle, and on a thread with no recorded stack.
 - On a STACK OVERFLOW the abort happens during HARDWARE STACKING: the stacking decrements SP
   before the writes, so on an abort the frame pointer names memory that was never written.
-  armv7m therefore ALSO declines on the CFSR stacking-error bits MSTKERR/MUNSTKERR (bits 4/3)
-  and STKERR/UNSTKERR (bits 12/11), mask `0x1818`, read out of the register before the frame
-  is touched. `MLSPERR` and `LSPERR` are deliberately EXCLUDED: lazy FP preservation leaves
-  the integer frame valid, and including them would panic a legitimate user fault.
+  armv7m therefore ALSO refuses the frame on the CFSR stacking-error bits MSTKERR/MUNSTKERR
+  (bits 4/3) and STKERR/UNSTKERR (bits 12/11), mask `0x1818`, read out of the register before
+  the frame is touched. `MLSPERR` and `LSPERR` are deliberately EXCLUDED: lazy FP preservation
+  leaves the integer frame valid. On ARM a refused frame still stops only its task: the kill
+  rests on registers alone and records no PC (`fault-frame-untrusted-until-proved`). The
+  ARMv6-M limit is the hardware's: a fault while the HardFault handler itself runs is a LOCKUP,
+  which no software recovers from.
 - The two tests do NOT subsume each other and a port needs both wherever both apply. The
   CFSR bits catch a stacking abort whose SP was still in range; the bounds test catches a
   frame the hardware wrote in full at an SP the thread had no business holding, which sets no
@@ -288,6 +300,50 @@ believe before it reads them, and this is the part that is easy to get wrong.
   out of that stale RAM and declined only BY ACCIDENT, because those bytes happened to be
   non-zero. Had they held zero, the kernel would have rewritten and resumed a fabricated
   context, privileged.
+
+**A RETURN INTO A THREAD NEVER TAKES ITS PRIVILEGE FROM MEMORY THAT THREAD OR A SIBLING CAN
+WRITE.** Privilege state is whatever the return reads to choose the level and the resume point:
+`EXC_RETURN`, the stacked PC and xPSR, `mstatus`, the PSW. A frame that carries it sits in memory
+no unprivileged thread can write, or the return takes it from the kernel's own context. A
+software or hardware trap that saves a thread's frame on its user stack is no exception: a
+task-mate can rewrite that frame while the return is pending. How each arch meets it:
+
+- armv7m keeps `EXC_RETURN` in `ctx.exc_return`, never a stack word; armv6m's epilogue builds it
+  from a literal. Both run the SVC trampoline and build the fault exit's frame on the thread's
+  kernel block where one is seated, and save a context off that block at its resting privilege
+  (`ctx.resting_npriv`), so no privileged context rests in memory a task-mate writes. On ARMv6-M
+  the switcher also clears a parked frame's IPSR and PC bit 0 before it returns through it
+  (`SCRUB_FRAME`, `arch/arm/armv6m/switch.S`), since a return to thread mode with either set is
+  UNPREDICTABLE.
+- rv32imac seats an unprivileged thread's first frame, whose `mstatus` and `mepc` pick the
+  `mret`'s privilege and pc, on its kernel block (`arch_context_init`), and its trap entry puts
+  a U-mode thread's frame there too.
+- rxv3 keeps a thread's PC and PSW in its context, never on its stack: the PSW carries `PM`.
+
+The witnesses are the selftest's `parked_frame_exc_return`,
+`parked_frame_ipsr` and `svc_in_it_block` arms, `privwindow`, `faultsurvive` modes `swtrap`,
+`forge`, `mppforge` and `wildspin`, and `svcfp`.
+
+**A divide by zero kills the thread where the core or the run-time ABI traps it, and returns a
+value elsewhere.** The thread then dies as on any other fault of its own, and the record names
+the division:
+
+- armv7m (v8-M Mainline included): bring-up sets `CCR.DIV_0_TRP`, so a hardware divide faults
+  with `UFSR.DIVBYZERO`. libgcc's 64-bit helpers call `__aeabi_ldiv0`, which
+  `arch/arm/common/aeabi_div0.cc` defines to divide by zero in hardware and end in a `udf`.
+- armv6m has no divide instruction: libgcc's helpers call `__aeabi_idiv0` or `__aeabi_ldiv0`,
+  which end in the `udf` that the fault record names as `DIVBYZERO`. That object is linked into
+  the kernel and every image ahead of libgcc, whose own hooks return a value.
+- x86_64 takes the divide error, and the sim the host's `SIGFPE`.
+- The ISA defines a quotient and the thread runs on: armv8a `SDIV` and `UDIV` answer 0, and the
+  RISC-V M extension's `DIV` answers all bits set (rv64imac at both widths, rv32imac at 32 bits).
+- The quotient is undefined: rxv3's `DIV`, and rv32imac's 64-bit division, which is libgcc's
+  software routine.
+- lx6 takes its integer-divide-by-zero exception, but it has no privilege ring, so the fault
+  panics.
+
+`check_faultsurvive.sh`'s `div0` and `ldiv0` arms hold each arch to its row
+(`tests/integration/gates/faultsurvive.cmake`).
 
 **The classification a new port must state** (top-level `CMakeLists.txt`).
 
@@ -382,31 +438,47 @@ other path to compile.
 
 **`errno` is neither of these.** It is a member of newlib's reentrant state, and each pool
 thread's `struct _reent` is the base of its own stack block, below its TLS block. The carve is
-`KICKOS_REENT_CARVE` bytes, set per arch and newlib flavour in the root `CMakeLists.txt`, and
-`user/src/newlib_reent.cc` refuses a value that is not the linked newlib's `struct _reent` plus two
-words, rounded to the stack alignment. Those two words end the carve and end at the thread
-pointer: the state's address, then the thread's lock id, both written once by `thread_create`
-(`reent_cell_seat`). Every arch puts its thread pointer there: armv8a, lx6 and rv32imac seat it
-from the context, rv64imac seats `tp` and x86_64 the FS base, and on armv6m, armv7m and rxv3,
-whose thread pointer is SP masked to the stride, `__aeabi_read_tp` and the emutls leaf add
-`KICKOS_REENT_CARVE` to the masked base. So no state overlaps a `thread_local`, whatever the
-arch's TLS variant. Idle's stack carries no state: idle runs on the process-wide one.
+`KICKOS_REENT_CARVE` bytes, set per arch and newlib profile in the root `CMakeLists.txt`, and
+`user/src/newlib_reent.cc` refuses a value that is not the linked newlib's `struct _reent` plus the
+cell, rounded to the stack alignment. The cell is the carve's last `KICKOS_REENT_CELL_WORDS` words,
+ending where the TLS block starts: the user runtime's own words (the thread keys, the running once, the
+C++ exception state and the `thread_local` destructor list), then the state's address, then the
+thread's lock id. The kernel writes the cell when it creates the thread, the runtime's words zero
+(`reent_cell_seat`), and copies the image's pristine state into the carve under the map that
+admitted the stack (`reent_prime`, `kernel/thread/reent.cc`). Every arch puts its thread pointer
+there: armv8a, lx6 and rv32imac seat it from the context, rv64imac seats `tp` and x86_64 the FS
+base, and on armv6m, armv7m and rxv3, whose thread pointer is SP masked to the stride,
+`__aeabi_read_tp` and the emutls leaf add `KICKOS_REENT_CARVE` to the masked base. So no state
+overlaps a `thread_local`, whatever the arch's TLS variant. Idle's stack carries no state: idle
+runs on image 0's.
 
-Where libc finds the running thread's copy is per toolchain. A newlib that reads the global
-`_impure_ptr` directly (the pinned Cortex-M, RV32 and RX builds) has one such word per address
-space, which the kernel rewrites at every switch, so it is correct only while one core runs the
-threads sharing it. A newlib that asks `__getreent()` (`KICKOS_REENT_PER_THREAD`: lx6, armv8a,
-rv64imac and x86_64) reads the cell below the thread pointer, x86_64 at `%fs:-16`.
-`cmake/cross_newlib.cmake` swaps each pinned package in for the toolchain's libc and refuses one
-with the wrong reentrancy mode. **A new arch running one kernel on several cores owes a per-thread
-answer of that kind**, and `reent_per_thread_cores` is its witness. A new arch owes its
-`KICKOS_REENT_CARVE` and a thread pointer at the top of the carve.
+Every cross image links the KickOS toolchain's own newlib, and `cmake/cross_newlib.cmake` refuses one
+that is not dynamic-reent: each of its members reaches the state through `__getreent()`, which
+`user/src/newlib_reent.cc` defines. With `KICKOS_REENT_PER_THREAD` (lx6, armv8a, rv64imac and
+x86_64) it reads the cell below the thread pointer, x86_64 at `%fs:-16`. Elsewhere (the Cortex-M,
+RV32 and RX builds) it reads `_impure_ptr`, one word per image, which the image header names
+(`reent_seat`). The kernel writes the incoming thread's state into that word on every switch, where
+the switch lands, after the incoming thread's regions are committed (`reent_seat`, called from
+`kickos_switch_landed`): the outgoing thread's map may hold the word read-only. So the word is
+correct only while one core runs the threads sharing it, and `kernel/thread/reent.cc` refuses the
+build on an arch that does not define `KICKOS_ARCH_SWITCH_LANDS_LATER` or that translates. **A new
+arch running one kernel on several cores owes a per-thread answer**, and `reent_per_thread_cores`
+is its witness. A new arch owes its `KICKOS_REENT_CARVE` and a thread pointer at the top of the
+carve.
 
 **The thread's own lock id rides with that answer**: `kos_thread_self` reads it with one load and
-no syscall (`kickos_self_lock_id`, `user/src/newlib_reent.cc`). It is the cell's second word,
-below the thread pointer; at `KICKOS_REENT_PER_THREAD` 0 it is read through `_impure_ptr`, the
-word past the state that pointer names, with the same one-core limit. A prime copies only the
-descriptor's `width` bytes, and `reent_seam_read` refuses a width that runs into the cell.
+no syscall (`kickos_self_lock_id`, `user/src/newlib_reent.cc`). It is the cell's last word, just
+below the TLS block; at `KICKOS_REENT_PER_THREAD` 0 it is read through `_impure_ptr`, at the end of
+the carve that pointer names, with the same one-core limit. A prime copies only the image header's
+`reent_width` bytes, and `reent_seam_read` refuses a width that runs into the cell.
+
+**A thread that ends through `kos_exit` frees the scratch libc built on the heap into its state**
+(`kickos_reent_release`, `user/src/newlib_reent.cc`), and a thread that returns from its entry
+function ends that way. The release is armed by the heap seat before the image's first allocation
+(`kickos_reent_heap_used`, `user/src/newlib_sbrk.cc`), so an image that never allocates links no
+`_malloc_r` or `_free_r` for it. The kernel reaches neither the heap nor the allocator, so a
+thread that ends without `kos_exit`, slain or killed by a fault, leaves its scratch (the dtoa
+lists, the conversion buffer, the signal table) allocated in its task's heap.
 
 ### Adding a board/chip (the seven edit points)
 
@@ -434,16 +506,21 @@ descriptor's `width` bytes, and `reent_seam_read` refuses a width that runs into
    asserts -- every cross link passes `-Wl,--orphan-handling=error`, so an input
    section no rule names is a LINK failure printing a section name and no hint of
    what is owed, and configure refuses a script missing any of the four by name
-   instead (`arch/CMakeLists.txt`),
+   instead (`arch/CMakeLists.txt`). A section only the kernel may supply (the vector table,
+   a boot block, `.init`, `.fini`) is kept through `KICKOS_KERNEL_KEEP(<name>)`
+   (`arch/common/sections.ld.h`), never a bare `KEEP(*(<name>))`: it selects the kernel's
+   inputs alone, so an image's section of the same name is an orphan and the link refuses it,
    and the chip's constants and peripheral base addresses in its chip file
    `platform/<chip>/chip.yaml`, from which configure writes `kickos/chip_limits.h`,
    `kickos/chip_mmap.h`, `irq.h`, `chip_layout.h`, `chip_tables.h` and `chip.cmake`
    into the build tree (`docs/design-m10-fleet.md` section 1.2). **The chip code names no
    board pin.** Configure also writes `board_pins.h` from the board file: the console device's
-   base, each console pin's port, bit and mux value, the kernel LED's port, bit and active
-   level or addressable kind, and the reserved pins (`docs/design-m10-fleet.md` section 2.2). The chip code muxes the console pins and drives
-   the LED from those values, `static_assert`s that the console is the device it drives, and
-   refuses the same pins in `arch_pinmux_set`. A mux value per pin that the selector does not
+   base and lines, each console pin's port, bit and mux value, the diagnostic LED's port, bit and
+   active level or addressable kind, and the reserved pins (`docs/design-m10-fleet.md` section
+   2.2). The console UART is the board file's choice alone (maintainer, 2026-11-25): the chip
+   code drives whichever UART of the chip `board_pins.h` names, deriving its clock, reset and
+   line from it, refuses a console that is no UART of the chip, muxes the console pins and
+   drives the LED from those values, and refuses the console pins and the reserved ones in `arch_pinmux_set`. A mux value per pin that the selector does not
    carry, such as the i.MX RT's daisy input, goes in the chip file's pin function. Configure REFUSES a
    chip with no chip file. CMake derives every path from the chip
    name, puts it on the include path, and installs it, so **no root-CMake edit is
@@ -524,38 +601,31 @@ when a line there passes it. A preset's value lands in `CMakeCache.txt` as
 `NAME:UNINITIALIZED`, which means REMOVING an override later needs the build tree deleted,
 not just a reconfigure.
 
-**THE APP WINDOW'S BASE IS A DECLARED RESERVE, NOT AN ALIGNMENT ACCIDENT.** On an enforcing
-chip whose app window must be pow2-sized and pow2-aligned, basing it on `ALIGN(_appdata_size)`
-above kernel `.bss` makes one byte of kernel `.bss` cost a WHOLE window of the user-RAM arena
-above it, with no diagnostic: the window, the newlib heap and the arena all slide one window
-higher and the link stays green. Measured on `stm32f411`, 16 bytes of kernel `.bss` cost
-16,384 of 73,728 arena bytes. No principled assert exists on the resulting gap, whose size is
-arbitrary modulo the window, so the base is declared instead:
-`_kernel_data_top = <kernel data base> + _kernel_data_reserve`, the reserve a whole number of
-windows, and the arena then stops moving with kernel `.bss` at all. Three ASSERTs hold it:
-kernel `.bss` must not pass the reserve, the reserve must not exceed what kernel `.bss` needs
-by a whole window, and the reserve must be a whole number of windows. A chip whose fattest
-posture needs a second window says so in its own default, and no preset in the fleet currently
-overrides one; where a single posture were the only one that needed the window, the override
-belongs in that preset, where the cost is visible. The reserve is per-chip rather than fleet-wide because it
-tracks that chip's window size and kernel footprint, which span 4x across the nine enforcing
-scripts that carry the pow2 window. Read the reserve a chip needs from its WIDEST image, not from
-one link: on `rx72m` the kernel `.bss` differs between images of the same preset, and a reserve
-sampled from a narrow one is too low.
+**THE IMAGE WINDOWS' BASE IS A DECLARED RESERVE, NOT AN ALIGNMENT ACCIDENT.** On an enforcing
+chip whose windows must be pow2-sized and pow2-aligned, basing the first window on kernel `.bss`'s
+end makes one byte of kernel `.bss` able to cost a whole window of the user-RAM arena above it,
+with no diagnostic: every window slides one alignment higher and the link stays green. So a chip
+declares the base instead: `_kernel_data_top = <kernel data base> + _kernel_data_reserve`, and the
+first window starts at the greater of that and kernel `.bss`'s end (`KICKOS_CORTEXM_WINDOWS_BASE`,
+`KICKOS_RX_WINDOWS_BASE`). `tools/image-link.py` then places the windows largest first, each
+aligned to its own size. While kernel `.bss` stays inside the reserve, the windows do not move
+with it. Nothing refuses a kernel `.bss` past the reserve: the windows then start at its end and
+slide with it again. The reserve is per-chip rather than fleet-wide because it tracks that chip's
+window sizes and kernel footprint, and no preset in the fleet overrides a chip's default. Read the
+reserve a chip needs from its WIDEST image, not from one link: on `rx72m` the kernel `.bss` differs
+between images of the same preset, and a reserve sampled from a narrow one is too low.
 
-The declared base lives once in `arch/common/kernel_data_reserve.ld.h`, which every enforcing
-script includes and invokes as `KICKOS_KERNEL_DATA_RESERVE_DECL(<base>)`. A script states only its reserve default, its kernel-data base
-and its `.bss` end symbol. `arch/common/app_window.ld.h`, which the build preprocesses after
-every chip script whatever it includes, refuses a window that does not start at
-`_kernel_data_top`, or within 32 bytes of kernel `.bss` on a script that declares none, and a
-heap base other than `ALIGN(_appdata_used_end, 8)`.
+The declared base lives once in `arch/common/kernel_data_reserve.ld.h`, which a chip script that
+declares a reserve includes and invokes as `KICKOS_KERNEL_DATA_RESERVE_DECL(<base>)`. A script
+states only its reserve default and its kernel-data base. `arch/common/app_window.ld.h`, which the
+build preprocesses after every chip script whatever it includes, sets `_kernel_data_top` to kernel
+`.bss`'s end on a script that declares none. Each image's heap starts at its `.bss` end aligned to
+8 (`heap_start`, `arch/arm/common/cortexm.ld.h`).
 
 **TWO GNU ld FACTS THAT SHAPE HOW THAT BASE IS SPELLED**, both of which cost a probe script
-to find. First, the pin belongs in the section's ADDRESS expression as
-`.appdata MAX(., _kernel_data_top) :`, never as a bare address: ld evaluates every `ASSERT`
-after layout, so an overflowing `.bss` has to keep laying out (one window higher) for the
-overflow ASSERT to be the thing that prints, and a bare address would fail the link with ld's
-own backwards-move error instead. Second, the same `MAX` written as a pad INSIDE an output
+to find. First, the base is a `MAX` in the first window's section ADDRESS expression (the
+`base` of `KICKOS_CORTEXM_IMAGE`), never a bare `_kernel_data_top`, which would land the window on
+kernel `.bss` once that passes the reserve. Second, the same `MAX` written as a pad INSIDE an output
 section body does not work: an expression assigned to `.` inside a body is taken as an OFFSET
 FROM THE SECTION START whenever it evaluates absolute, so `. = MAX(., <absolute>)` lands the
 section a whole image higher and reports `will not fit in region` at a nonsense address. A
@@ -723,7 +793,7 @@ silicon-proven unless the row says otherwise:
 | `virt_rv64` | qemu-riscv64 / qemu-riscv64-sv48 / qemu-riscv64-smp | RV64IMAC | **Sv39 + Sv48 MMU** | QEMU (three runnable CI gates in one job: both paging postures at 52 arms each, re-derived 2026-08-29 by `ctest -N`, and a four-hart shared kernel), **plus runtime translation-enforcement gates**: an UNPRIVILEGED read of a dead thread's stack page after its unmap (`qemu_riscv64_deadstack`), a stack guard, a kernel-half denial and a surviving fault. Both paging postures run because a level-count bug shows in only one (`../reference/boards.md`, *CI coverage*) |
 | `virt_arm64` | qemu-arm64 (+ `-smp`, `-smpiso`, `-gicv3`, the `-amp` family) | Cortex-A53 | **VMSAv8 MMU** | QEMU (runnable CI gates at one kernel core -- the `qemu-arm64` job, 42 ctest arms re-derived 2026-08-29 by `ctest -N` -- at four cores, at four cores with one isolated, at four cores under a GICv3, and as an AMP partition of one, two and three images, **plus runtime translation-enforcement gates**) |
 | `imx8mp` | imx8mp-evk | quad Cortex-A53 (one brought up) | **VMSAv8 MMU** | QEMU, **NOT IN CI**: `.github/workflows/ci.yml` carries no job for it, so the board is LOCAL `ctest` only (`--preset imx8mp-evk`), 48 arms (`ctest -N` 2026-09-02), **plus runtime translation-enforcement gates**. The second armv8a chip, and what moved the shared-kernel predicate's per-part half out of the arch. Hands over at EL3 with no firmware, wires a GIC-500, and brings up ONE core because the machine models no secondary release (`../reference/boards.md`, *Per-board caveats*) |
-| `q35` | qemu-x86_64 | x86_64 | **x86-64 paging MMU** | QEMU (runnable CI gate, the `qemu-x86_64` job), booted as a PE32+ UEFI application under OVMF firmware the job resolves rather than names, because `-kernel` cannot start such an image at all. The chip translates (`HAS_ASPACE`, `arch/x86/x86_64/aspace_x86_64.cc`): the firmware's identity map is the kernel half and carries no U/S bit, the boot refuses a map that lets ring 3 reach it, each task runs in its own address space, and SMEP and SMAP keep the kernel out of user pages wherever CPUID offers them, the interrupt entry resetting RFLAGS so ring 3's AC cannot lift SMAP, **plus a runtime translation-enforcement gate**, a ring-3 reach into the kernel half (`tests/integration/check_kernel_half_x86_64.sh`) (`../reference/boards.md`, *CI coverage*) |
+| `q35` | qemu-x86_64 | x86_64 | **x86-64 paging MMU** | QEMU (runnable CI gate, the `qemu-x86_64` job), booted as a PE32+ UEFI application under OVMF firmware the job resolves rather than names, because `-kernel` cannot start such an image at all. The chip translates (`HAS_ASPACE`, `arch/x86/x86_64/aspace_x86_64.cc`): the firmware's identity map is the kernel half and carries no U/S bit, the boot refuses a map that lets ring 3 reach it, each task runs in its own address space, and SMEP and SMAP, which the boot refuses a processor without, keep the kernel out of user pages, the interrupt entry resetting RFLAGS so ring 3's AC cannot lift SMAP, **plus a runtime translation-enforcement gate**, a ring-3 reach into the kernel half (`tests/integration/check_kernel_half_x86_64.sh`) (`../reference/boards.md`, *CI coverage*) |
 | `xmc4800` | xmc4800-relax | M4F | PMSAv7 | **hardware** (LED + USIC VCOM console over the buffered ring; enforcement + the canonical per-thread peripheral-isolation proof) |
 | `stm32f411` | f411disco / blackpill | M4F | PMSAv7 | **hardware** (LED + UART + ping-pong; enforcement selftest + `mpu_fault` MemManage denial + an unprivileged root, all on `f411disco` 2026-07-29). Witnessed on one of the two boards; `blackpill` shares this backend and was not re-run |
 | `stm32f302` | f302nucleo | M4 | -- | **hardware** (LED PB13 + console; the full suite at the `f302nucleo-st` provisioning -- 63 ok / 0 not ok / 5 skipped on 16 KiB SRAM, measured at `124b68c`). Not an enforcement target: the F302R8 line has no MPU, so its chip file states `protection: { unit: none }` and `arch_mpu_min_region()` returns 0 |
@@ -738,8 +808,7 @@ silicon-proven unless the row says otherwise:
 | `sam3x8e` | due | M3 | -- | port proven on silicon (2026-07-09); test unit retired (peripheral-I/O fault) |
 
 Build-only chips are verified by construction (register review + image
-inspection); flash to a board to confirm. `apps/blink` is a no-UART LED smoke
-test available on every board with a known LED.
+inspection); flash to a board to confirm.
 
 **What CI does and does not re-check.** Not every row above is defended by a green CI run, and a
 porter needs to know which. Enforcement is gated at RUNTIME on the sim (`mprotect`), `virt_rv32`
@@ -776,7 +845,7 @@ pin, uint32_t func)`, reached from userspace as syscall `KOS_SYS_PINMUX_SET` (33
 gated on `AUTH_PINMUX`. `func` is a **chip-opaque** function code (the PORT/PCR/IOCR
 encoding), so the ABI `{port, pin, func}` stays vendor-neutral while each backend
 owns its own encoding. Returns 0, `-KOS_EINVAL` (out of range), or `-KOS_EBUSY` (a
-kernel-owned pin: a console pin, the kernel LED's or a reserved pin, from `board_pins.h`). The **declining fallback**
+kernel-owned pin: a console pin or a reserved pin, from `board_pins.h`). The **declining fallback**
 (`arch/common/arch_pinmux_set_default.cc`) **returns `-KOS_ENOSYS`**, so
 a task that muxes pins on a chip with no backend fails LOUD rather than silently
 mis-muxing.
@@ -954,9 +1023,9 @@ other node refuses them `-KOS_EPERM` and halts on its own, and the partition bui
 **The terminal outcome.** `kos_terminal_outcome` sets, once per boot, what a panic or a fault the
 system does not survive does; an ordered end does what it asks and reads none of it.
 `kickos_terminal_outcome_apply` (kernel.h) hands the chip to it and returns where it is unset,
-halt, a word whose two halves disagree, or an outcome the chip lacks. The software fault reporter
-calls it after its drain, and so must every `kfault_terminate` a port defines, after its own drain
-and before it stops the core.
+halt, a word whose two halves disagree, or an outcome the chip lacks. Every `kfault_terminate` a
+port defines calls it after its own drain and before it stops the core; the software fault reporter
+ends through `kfault_terminate` (ruled 2026-11-25), so a run it ends never reports success.
 
 ### The critical section (`arch_irq_save`, `arch_irq_restore`)
 
@@ -1035,7 +1104,7 @@ only because of the first clause. How each arch meets it:
 | armv7m, ARMv8-M | LDREX/STREX, LDAEX/STLEX on v8-M Mainline | a `clrex` on every resume of another thread (PendSV, the IPC fastpath, the contained resume), beside exception entry clearing the local monitor (DDI0403E A3.4.4) |
 | rv32imac, rv64imac | LR/SC | an `sc` to the frame's pc slot on `.Lrestore`, storing that slot's own value: xRET need not clear a reservation (privileged ISA 3.3.2), and a reservation may be wider than the word |
 | lx6 | `wsr.scompare1`, S32C1I, ATOMCTL at RCW; no MEMW in either form, since S32C1I is both acquire and release (Xtensa ISA 4.3.13.5) | `SCOMPARE1` banked in the level-1 frame (`F_SCOMPARE1`): a handler taking the kernel lock rewrites it and may return with no switch |
-| armv6m, rxv3 | a restartable sequence: load, compare, branch, store | the switcher rewinds a stacked PC in `[kickos_user_cas, kickos_user_cas_store]` to `kickos_user_cas` (PendSV after its PSP checks, SWINT before it restores R14) |
+| armv6m, rxv3 | a restartable sequence: load, compare, branch, store | the switcher rewinds a stacked PC in an image's `[kickos_user_cas, kickos_user_cas_store]` to that image's `kickos_user_cas` (PendSV after its PSP checks, SWINT before it restores R14) |
 | x86_64, sim | one locked CMPXCHG | nothing owed |
 
 **A restartable sequence has three rules.** The window is ONE routine with two global symbols, the
@@ -1043,11 +1112,20 @@ load at its entry and the store, and the bound includes the store: a stacked PC 
 the store has not run. No instruction in the window may overwrite its own input, since a rewound
 thread runs it again on the registers the switch restored. Only the deferred switcher may switch a
 thread out at a PC in the window: the system-call paths switch one out at its trap instruction,
-which the window does not hold, and a fault, wild-stack or slay redirect kills it. The kernel's asm
-names the two symbols, which resolve because `kickos_user` sits in the kernel's
-`$<LINK_GROUP:RESCAN>`, and the routine is its own object so the link pulls it. An unprivileged
-thread cannot mask instead: `CPSID` is ignored unprivileged on ARMv6-M, and RX user mode cannot
-write the IPL.
+which the window does not hold, and a fault, wild-stack or slay redirect kills it. Each image
+links its own copy of the routine, and its header names the window (`cas_start` and `cas_store`,
+`user/src/image_header.c`). The switcher first tests the PC against the span of every image's
+window (`g_kickos_ucas_span`, `kernel/task/image.cc`), then walks the image table for the window
+that holds it. An unprivileged thread cannot mask instead: `CPSID` is ignored unprivileged on
+ARMv6-M, and RX user mode cannot write PSW.I or the IPL.
+
+**Where user mode has no compare-and-swap instruction, the compiler's atomics call
+`kickos_user_cas` too.** GCC emits a call to an `__atomic_*` or `__sync_*` routine for a 1-, 2- or
+4-byte read-modify-write on armv6m and rxv3, and `user/src/user_atomic.cc` defines each as a loop
+over `kickos_user_cas`, a 1- or 2-byte object updated through the aligned word that holds it. They
+are atomic against the threads of their kernel instance and no further, and no 8-byte form is
+defined. A new arch of that kind adds itself to the list in `user/CMakeLists.txt` that links the
+file.
 
 **What QEMU can show.** The `user_cas_switched_out` self-test arm runs two round-robin threads of
 one priority through `kickos_user_cas` on one core, sliced at one clock granule, and requires the
@@ -1142,7 +1220,7 @@ What a port that sets the knob owes:
   `check_trap_redzone.sh` reads its frame from the compiler.
 - **An arch selects the knob in `arch/Kconfig`**; a chip whose arch does not, but whose core
   offers the read, selects it itself (`CHIP_VIRT_RV32`, whose QEMU CPU has S-mode). A part whose
-  only clock is a peripheral behind the MPU, or the emulator's semihosting clock, keeps the call.
+  only clock is a peripheral behind the MPU keeps the call.
 
 What a caller sees: the same values at the same resolution. The read is no death point of a
 cooperative kill (`kos_thread_cancel` with `KOS_CANCEL_KILL`); a slay still ends a thread that only reads the clock. The
@@ -1172,6 +1250,22 @@ register before it runs a thread, the read is no death point of a kill, and the 
 return by contract. The selftest's `pin_places` pins a worker on every core and compares the user
 read with the kernel's.
 
+### What EL0 reaches on armv8a (`SCTLR_EL1`, `MDSCR_EL1`, `PMUSERENR_EL0`)
+
+Each of the three resets UNKNOWN, or holds what a boot stage before the kernel left, so the
+kernel writes each whole and never ORs into it. The boot path writes `SCTLR_EL1` as
+`SCTLR_EL1_VALUE` (`arch/arm64/common/vmsa.h`), and each secondary core takes the boot core's
+whole value. `kickos_armv8a_percore_init` (`arch/arm64/common/arch_arm64_a53.cc`) writes
+`MDSCR_EL1` to `TDCC` alone on every core, and `PMUSERENR_EL0` to zero where `ID_AA64DFR0_EL1`
+names an architected PMU.
+
+What that leaves EL0: `wfi` and `wfe` (`nTWI`, `nTWE`), `CTR_EL0` reads (`UCT`), cache maintenance
+by VA (`UCI`) and `DC ZVA` (`DZE`). What it does not: `DAIF` (`UMA` clear), the PMU counters
+(`PMUSERENR_EL0` zero) and the debug comms channel (`TDCC` set), each of which traps. A debug
+enable left in `MDSCR_EL1` would reach EL1, and the PMU and the debug comms channel are per core,
+shared by every task. On the i.MX 8M Plus the EL3 handover also writes `MDCR_EL2` before it drops
+to EL1, since its trap fields reset UNKNOWN (`arch/arm64/chip/imx8mp/startup.S`).
+
 ### The cross-core doorbell (`arch_ipi_send`, `arch_ipi_wait`, `arch_ipi_answered`, `arch_ipi_raise`)
 
 **A port does nothing here today either, and for the same reason:** at
@@ -1200,7 +1294,9 @@ A64 invalidates and waits with two instructions and no far-side code at all, so 
 inside those two stays a local sequence; routing it through a doorbell would invent a deadlock
 that architecture cannot have. Where a port DOES need the far side to execute, its handler takes
 no kernel lock and the lock's own acquire loop services a pending doorbell, or an initiator
-holding the lock waits on a core spinning to take it.
+holding the lock waits on a core spinning to take it. `tests/integration/check_smp_doorbell.sh`
+witnesses that coupling on a kernel built with `KICKOS_WITNESS_DOORBELL`, whose primary drives
+every peer into the acquire loop and raises at it; a production kernel runs no such check.
 
 **The INSTRUCTION half of that maintenance does go through the pair, and a MAP owes it too.** A
 peer may keep executing instructions it has already fetched until it takes a context
@@ -1411,9 +1507,16 @@ windowed backend: `ACQUIRE_CAPACITY`, a per-core slot table, and the `static_ass
 figure. `arch/arm64/armv8a/aspace_armv8a.cc` carries the assert in the shape an UNBOUNDED port
 fills in, its acquire being an addition and its release a no-op.
 
+**The acquire takes the access it is for, and refuses two leaves.** The kernel passes
+`ARCH_ASPACE_READ` or `ARCH_ASPACE_WRITE`, and the acquire answers null for a page the leaf maps
+`ARCH_MAP_DEVICE` and for a write where the leaf does not grant the user write. So a copy that
+reaches a page late, after a park, re-proves at its access that the page is still mapped, that it
+is memory and that the task may write it, from the walk the acquire makes anyway.
+
 **The acquire names the frame it reached.** A non-null `frame` receives what `arch_aspace_frame_at`
 answers for the address, from the acquire's own walk, and it is written also where the acquire
-answers null: 0 for a page nothing maps, the frame for a page the backend cannot reach. The kernel
+answers null: 0 for a page nothing maps, the frame for a page the backend cannot reach or the
+leaf refuses. The kernel
 names a user word and reaches it through one walk this way (`word_open`).
 
 **The acquire reports the page's type against the pointer's.** Where the returned pointer reaches
@@ -1421,6 +1524,13 @@ the frame cacheably and the task's leaf maps it `ARCH_MAP_NOCACHE`, the backend 
 acquire's `uncached` argument, read from the leaf the walk already holds: armv8a from `AttrIndx`,
 x86_64 from the leaf's PAT bits against the ones `ARCH_MAP_NOCACHE` selects. rv64imac answers false:
 it has no Svpbmt, the PMAs type a frame for every view of it, and there is no alias to maintain.
+
+**A chip says whether a page entry carries the memory type** (`arch_aspace_entry_memtype`): true
+on armv8a and x86_64, false on `virt_rv64`, whose entries carry none. Where it answers false the
+physical address's own attribute is the type, so the kernel admits `ARCH_MAP_NOCACHE` and
+`ARCH_MAP_DEVICE` per address (`grant_memtype_at`, `kernel/grant/grant.cc`): only inside one of
+the chip file's apertures. A `NOCACHE` self-grant, task block, frame map or memory window over RAM
+there answers `-KOS_ENOTSUP`, since the mapping could not carry the type it asks for.
 
 **The kernel maintains the data cache around its access by address through that pointer**: before
 it reads or writes it cleans the lines to memory then drops them, so no line fetched through the
@@ -1449,15 +1559,13 @@ backend whose hardware can enforce that makes a privileged access to a user-acce
 set once per core at bring-up and never lifted, and opts in by defining `KICKOS_ARCH_UGUARD` in
 its `context.h` and answering `arch_uaccess_guard()` with the form in force, which the banner prints
 on its `uaccess` line. The mechanism is the ISA's: rv64imac never sets `sstatus.SUM`; x86_64 sets
-CR4.SMEP and CR4.SMAP where CPUID leaf 7 offers them, and on a core that offers one or neither the
-banner names what is in force (`smep`, `smap` or `none`) and the hardware does not stop the rest;
-armv8a has two forms, chosen per core at run time from `ID_AA64MMFR1_EL1.PAN` so one image serves
+CR4.SMEP and CR4.SMAP on every core, its floor refusing a processor without them (maintainer,
+2026-11-25); armv8a has two forms, chosen per core at run time from `ID_AA64MMFR1_EL1.PAN` so one image serves
 both.
 
 - **A flag the interrupted code controls must not reach ring 0.** x86_64's RFLAGS.AC lifts SMAP,
   ring 3 sets it with `popf`, and interrupt and exception delivery keep it: IA32_FMASK clears it
-  on SYSCALL and the interrupt entry resets RFLAGS (`push $2; popfq`) before any C, on a part
-  without SMAP too, where `clac` would raise #UD.
+  on SYSCALL and the interrupt entry resets RFLAGS (`push $2; popfq`) before any C.
 
 - **PAN (ARMv8.1 and later).** Clear `SCTLR_EL1.SPAN`, whose reset value is UNKNOWN, so every
   exception into EL1 sets `PSTATE.PAN`, set PAN, and read both back. **An exception return restores
@@ -2004,15 +2112,17 @@ the allocator actually produces; `tests/unit/ramalign` runs the C and Python cop
 table.
 
 The pow2 mode and the TLS leg are what pay a natural-alignment run-up, and there it can cost
-as much again as the request, so compute it rather than assuming the sum of the sizes. A
-base+limit backend with `KICKOS_TLS` off pays at most one granule per block.
+as much again as the request, so compute it rather than assuming the sum of the sizes. The
+allocator keeps the largest run-up it skipped as one free range, and the first later block that
+fits it takes it, so the run-up is not always lost. A base+limit backend with `KICKOS_TLS` off
+pays at most one granule per block.
 
 On a v8-M chip the mode is **posture-dependent**: `arch_arm_pmsav8.cc` (which defines
 `pow2() == 0`) enters the link only at `KICKOS_HAVE_MPU=1`, so a non-enforcement build
 of the same chip shapes regions with the v7-M pow2 fallback.
 
-The arena is a pure bump allocator (`arch/common/arch_ram_common.cc:42`) and **never
-takes a block back**. An exited thread's default stack returns to a single-size-class
+The arena is a bump allocator that keeps that one run-up (`ram_arena_alloc`,
+`arch/common/ram_arena.h`) and **never takes a block back**. An exited thread's default stack returns to a single-size-class
 free list on the thread pool instead (`kernel/include/kickos/thread.h:203-207`), which
 is why N is a peak-concurrency figure while every `kos_ram_alloc` is permanent.
 
@@ -2040,7 +2150,8 @@ records none.
 
 **The idle + root terms AND the thread-stack pool are checked at link time on every
 board.** `KICKOS_BOOT_ARENA_ASSERT` (`arch/common/boot_arena.ld.h`, fed by
-`cmake/boot_arena.cmake`) replays those two allocations including alignment padding.
+`cmake/boot_arena.cmake`) replays those two allocations through the allocator's rule, the
+alignment run-up and the kept range included.
 `KICKOS_POOL_ARENA_ASSERT` (same header) carries the same replay further, over the init's
 private block at one record, the least a system with a task reserves, then a
 block of `align(KICKOS_USER_STACK_SIZE)` for each thread slot the composition's THREADS budgets size. Neither may be opted out
@@ -2118,12 +2229,12 @@ read the shape before predicting a count.
 
 A zero `heap:` is a supported profile, not a broken one. Newlib falls back to
 unbuffered stdio when the stream-buffer `malloc` fails, so `printf` and `std::cout` still
-emit with no heap. The in-tree precedents are the full-newlib `microbit` build, whose
-composition states heap 0, and `bluepill-c8-st`. Under the nano profile heap 0 holds only for code that never calls a
-newlib function whose per-thread state nano builds on the heap (`strtok`,
+emit with no heap. The in-tree precedent is the selftest's composition, which states heap 0
+(`user/apps/common/selftest/system.yaml`). Under the nano profile heap 0 holds only for code that
+never calls a newlib function whose per-thread state nano builds on the heap (`strtok`,
 `localtime`/`asctime`, `rand`, `strtod` and the other floating-point conversions): the
-first such call fails a newlib assertion. Nano `microbit` therefore defaults to a 1 KiB
-heap (`boards.md`, *Pinned newlib for cross boards*).
+first such call fails a newlib assertion. `microbit`, whose images default to nano, therefore
+states a 1 KiB heap (`boards.md`, *newlib for cross boards*).
 
 A heapless profile costs stdio **buffering**, and `malloc` for an app that wants it. Under
 full newlib it does not cost the standard-API surface. The project's rule that user-facing
@@ -2131,8 +2242,7 @@ apps are written against `printf`/`std::cout` rather than `kos_*` requires those
 work, not a heap.
 
 So the SRAM floor is **16 KiB with a static-allocation profile**, and the carve is a
-decision a composition states in its `heap:`: 1024 on nano
-`microbit` and 2048 on `bluepill-c8`.
+decision a composition states in its `heap:`: 1024 on `microbit`.
 
 A part at the floor **plus MPU enforcement** is tighter still, because enforcement costs
 RAM of its own: region descriptors, per-domain data in `g_instance`
@@ -2334,8 +2444,8 @@ SRAM**, 63 ok / 0 not ok / 5 skipped (measured at `124b68c`, before `9da898e` sp
 board's suite into two images), the cases that do not need a 4th worker all running at
 N = 3. **The board states N = 2 now** and that capture has not been retaken there, so read
 the arithmetic and not the N. This arithmetic is exactly what
-`KICKOS_POOL_ARENA_ASSERT` now replays at link time for this chip, with the run-ups paid
-against the real arena base instead of a quoted one.
+`KICKOS_POOL_ARENA_ASSERT` replays at link time for this chip, with the run-ups and the kept
+range taken against the real arena base instead of a quoted one.
 
 A **zero-skip** run is what needs a bigger part. On top of the 16,384 above it wants a 4th
 user stack (1,024) and the permanent arena allocations the remaining skips decline (the
@@ -2411,7 +2521,7 @@ Given a new part's flash and SRAM, in order:
    the kernel plus a minimal app does not fit -- and the same image is 1.9x larger at
    `-O0`, so budget roughly double if the consumer does not set `CMAKE_BUILD_TYPE`.
    Below 64 KiB the part runs KickOS but cannot host the validation suite -- plan to
-   witness it with `apps/blink` and `hello`, or with the derived expected-skip sets
+   witness it with `hello`, or with the derived expected-skip sets
    `microbit` runs under.
 2. **Write the board's stack and pool knobs explicitly** in its defconfig. There is
    no useful default on a small part: the `config/system.h` fallbacks are 64 KiB stacks
@@ -2620,6 +2730,12 @@ and pends PendSV (the outgoing thread is always `g_arch_current`). PendSV:
 - loads the incoming thread's SP, restores the callee/FP registers, sets
   `CONTROL.nPRIV`, and exception-returns onto the incoming thread's PSP.
 
+A thread carries the FP frame once its own code has touched a VFP register, which includes code
+the compiler emits: on a Cortex-M4F GCC keeps a 64-bit value such as a `KOS_NEVER` deadline in
+`d8` across calls, so a thread with no floating point of its own can pay the FP save on every
+switch (65 to 72 cycles per call/reply round trip on f411disco). The kernel and the user runtime
+use no VFP register.
+
 **That PSP is either of the thread's two stacks, and PendSV must refuse neither.** A thread
 preempted mid-dispatch is running on its own kernel block, so where `KICKOS_KERNEL_STACKS`
 is 1 the handler first tests the PSP against THIS thread's `ctx.kernel_sp` window -- that
@@ -2656,8 +2772,8 @@ abandoned (the system never returns to boot).
   The unmask is inline (`arch/arm/armv7m/include/kickos/arch/irq_inline.h`), the raise is
   not; *The critical section* above says why.
 - **Monotonic clock** = a per-chip counter, never the DWT. `arch_clock_now` has no armv7m
-  default, so each chip reads its own source: the semihosting `SYS_CLOCK` on `mps2`, a
-  free-running timer on silicon (TIM2 on `stm32f411`, the PIT on `mk64f`, the GPT on
+  default, so each chip reads its own source: the CMSDK dual timer's first counter on `mps2`
+  and `an505`, a free-running timer on silicon (TIM2 on `stm32f411`, the PIT on `mk64f`, the GPT on
   `imxrt1062`, ...), extended to 64 bits in software where the counter is narrower. The
   DWT cycle counter backs `arch_trace_now` only (see the QEMU note below).
 - **One-shot timer** = **SysTick** in a disarm-on-fire (tickless) mode. Deadlines
@@ -2876,7 +2992,7 @@ retune window are priced at the wrong rate, and `now` keeps that small error as 
 | `stm32f411` | TIM2 (32-bit + software high word) | timer kernel clock = HCLK = `SystemCoreClock` | **no**, but LATENT -- see below |
 | `rp2040` | 64-bit TIMER via the watchdog tick | `clk_ref` (stays on the 12 MHz XOSC) | yes for the CLOCK; **no for the CONSOLE** |
 | `rp2350` | 64-bit TIMER0 via the TICKS generator | `clk_ref` | yes for the CLOCK, same console caveat |
-| `nrf51` | semihosting `SYS_CLOCK` | host, not core-derived | yes |
+| `nrf51` | TIMER0 (32-bit + software high word) | the 16 MHz HFCLK at PRESCALER 4, 1 MHz | yes: no retune exists on the chip |
 | `sim` | host `CLOCK_MONOTONIC` | host | yes |
 
 `xmc4800` and `mk64f` are also the only two chips that ship an `arch_cpu_clock_set` at all, so
@@ -2924,17 +3040,15 @@ site):
   two scripts collided at address 0). Keep the driver-level form. (See the `KickOS::kernel`
   interface `target_link_options`.)
 - **QEMU's DWT cycle counter is frozen.** `arch_clock_now` has NO armv7m fallback at
-  all -- it is a required per-chip definition (`arch_armv7m.cc`, "Monotonic clock: NO
-  armv7m default"), so a board that forgets it fails to LINK; `mps2` supplies it from
-  the semihosting `SYS_CLOCK` (the monotonic clock source is legitimately
-  chip-specific). The DWT `CYCCNT` read is a *different* seam, `arch_trace_now`, whose
-  fallback TU (`arch/arm/armv7m/arch_trace_now_default.cc`) real silicon keeps; `mps2`
-  displaces that too, deriving microseconds from `SYS_CLOCK`. Caveat: on QEMU the clock
-  (host wall-time, 10 ms granularity) and the one-shot timer (SysTick counting
-  virtual cycles) are **two uncorrelated timebases**, so sub-10 ms deadlines land
-  up to 10 ms late and can cause a bounded re-arm churn until the coarse clock
-  advances. This makes the QEMU gate a *functional* check, not a timing-accurate
-  one; real silicon runs the clock and the compare off the same source.
+  all -- it is a required per-chip definition (`arch_armv7m.cc`, "Monotonic clock"), so a
+  board that forgets it fails to LINK. `mps2` supplies it from the
+  CMSDK dual timer's first counter, free-running over 32 bits and extended to 64 in software
+  (`arch/arm/chip/mps2/chip_mps2.cc`), at the SYSCLK the chip file states
+  (`KICKOS_CHIP_TIMEBASE_HZ`: 25 MHz on `mps2`, 20 MHz on `an505`). SysTick counts the same
+  SYSCLK, so the clock and the one-shot timer share one timebase. The DWT `CYCCNT` read is a
+  *different* seam, `arch_trace_now`, whose fallback TU
+  (`arch/arm/armv7m/arch_trace_now_default.cc`) real silicon keeps; `mps2` displaces that too,
+  with the low word of the dual timer's count.
 
 ## The RP2040 chip (`board`: `picopi`, chip `rp2040`, armv6m) -- hardware-validated
 
@@ -2982,6 +3096,12 @@ permanently brick it.
 The first RISC-V ISA (ESP32-C6 + the QEMU `virt` run target), sharing one arch
 (`arch/riscv/rv32imac/`) across two chips. Closest to the RX72M model: a single
 save-frame, deferred switch.
+
+- **Instruction fetch after a store to code.** Every RISC-V chip's `-march` carries Zifencei
+  (`arch/riscv/chip/<chip>/cpu.cmake`), and every hart runs `fence.i` where it starts on code a
+  loader or another hart stored: `_start` on both QEMU `virt` chips, and the ESP32-C6 LP stub
+  before it enters node 1's image (`lp_boot.S`). A map edit on rv64imac owes none: `sfence.vma`
+  orders the fetches of later instructions, and no map edit stores to instruction memory.
 
 - **Trap model** = a VECTORED `mtvec` table, all 32 of whose slots enter the SAME
   handler (`trap_entry`, switch.S; `kickos_rv32_init` sets the mode bit, the ESP32-C6
@@ -3031,7 +3151,7 @@ save-frame, deferred switch.
   unprivileged thread can't fetch its first instruction. Per-task PMP enforcement
   landed at **M2**: `arch_mpu_apply` stashes the incoming set on switch-in and
   `kickos_arch_mpu_commit` programs the data and stack PMP entries (0..7, NAPOT) from the `.Lswitch` epilogue after the
-  physical swap (the deferred-commit seam) (+ `arch_mpu_region_encodable` for the grant check). The user code window is not in a thread's set: `kickos_rv32_init` writes it once as a TOR pair (entry 8 OFF at the first image's code, entry 9 TOR, R and X, at the end of the last image's), reads it back, and refuses the boot when the entries did not take. `arch_mpu_code_window_holds` lets the kernel's pointer checks accept a range inside it. **Enforced on qemu-riscv**; the
+  physical swap (the deferred-commit seam) (+ `arch_mpu_region_encodable` for the grant check). The user code window is not in a thread's set: `kickos_rv32_init` writes it once as a TOR pair (entry 8 OFF at the first image's code, entry 9 TOR, R and X, at the end of the last image's), turns off every entry the kernel does not program (1 to 7 until the first commit, and 10 to 15), reads them all back, and refuses the boot when the code window did not take or an entry did not clear: a core with fewer entries ignores the writes, and an entry a boot stage locked refuses them until reset. `arch_mpu_code_window_holds` lets the kernel's pointer checks accept a range inside it. **Enforced on qemu-riscv**; the
   ESP32-C6 image specifics (all-SRAM image, gp-relative small-data, code-from-RAM,
   and a separate APM/PMS bus permission unit) are still **blocked**, see
   `m2-readiness.md`. No F/D extension -> soft-float, so the switch banks no FP.

@@ -118,8 +118,7 @@ namespace consoleseam
     bool g_window_free = true;
     bool g_serves_console = false;
     uint32_t g_reclaims = 0;
-    uint32_t g_dark_wakes = 0;
-    int (*g_dark_wait)(void) = nullptr;
+    uint32_t g_wakes = 0;
     void (*g_flush_hook)(void) = nullptr;
 
     std::string const& wire()
@@ -135,6 +134,11 @@ namespace consoleseam
     uint32_t max_masked_pushes()
     {
         return g_max_masked;
+    }
+
+    void reset_masked_pushes()
+    {
+        g_max_masked = 0;
     }
 
     uint32_t gap_count()
@@ -320,29 +324,15 @@ namespace kickos
     // No ring to wait on: the write ends.
     int console_room_wait(uint32_t, uint64_t) { return -KOS_ECANCELED; }
 
-    int console_dark_wait(void)
+    void console_wake(Held)
     {
-        if (consoleseam::g_dark_wait != nullptr)
-        {
-            return consoleseam::g_dark_wait();
-        }
-        return 0;
-    }
-
-    void console_dark_wake(Held)
-    {
-        consoleseam::g_dark_wakes = consoleseam::g_dark_wakes + 1;
+        consoleseam::g_wakes = consoleseam::g_wakes + 1;
     }
 
     // No receiver is ever parked here: what a record leaves behind is what the held store says.
     void cap_console_deliver(Held)
     {
         consoleseam::g_deliveries = consoleseam::g_deliveries + 1;
-    }
-
-    bool cap_console_serves(Thread const*)
-    {
-        return false;
     }
 
     namespace sched

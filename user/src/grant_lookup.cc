@@ -13,8 +13,14 @@
 
 namespace
 {
-    constexpr uint32_t STATUS_RETRIES = 100u;
     constexpr int64_t STATUS_RETRY_MS = 1;
+
+    // The init created the caller's task, so the task is orphaned once the init is gone.
+    bool init_gone(void)
+    {
+        int const state = kos_task_state(KOS_TASK_NONE, nullptr);
+        return state > 0 and (state & KOS_TASK_ORPHANED) != 0;
+    }
 
     // The caller's declaration index plus one, set by the task's start in its own image.
     uintptr_t s_decl = 0u;
@@ -202,15 +208,19 @@ int kos_task_status(uint32_t i, struct kos_task_status* out)
     auto const record = static_cast<kickos::init::StatusRecord const*>(block.addr) + i;
 
     kickos::init::StatusFields fields;
-    uint32_t retries = 0;
+    // A sleep, not a yield: the init writing the record may run below the caller.
     while (not kickos::init::status_read(record, &fields))
     {
-        if (retries == STATUS_RETRIES)
+        if (init_gone())
         {
-            return -KOS_EAGAIN;
+            // Read again: the init may have ended its write before it died.
+            if (kickos::init::status_read(record, &fields))
+            {
+                break;
+            }
+            return -KOS_EOWNERDEAD;
         }
         kos_sleep_for(kos_ms(STATUS_RETRY_MS));
-        retries++;
     }
     out->name = &t.strings[t.task[task].name];
     out->alive = (fields.state & kickos::init::STATUS_ALIVE) != 0u;

@@ -68,8 +68,6 @@ namespace fake
         int line;
         bool bound;       // a notification the init has bound
         int64_t binding;  // a line's or a watch's: the notification it raises, holding a reference on it
-        uint32_t holders; // an endpoint's WAIT holders when last counted
-        bool vacated;     // an endpoint whose WAIT holders fell to none, until a receiver next waits
         // An INSTANCE watch's: the declaration it watches, the bit it raises on `binding`, and
         // whether it has yet to raise it.
         int decl = -1;

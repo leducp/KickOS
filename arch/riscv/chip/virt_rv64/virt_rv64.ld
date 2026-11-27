@@ -331,7 +331,7 @@ SECTIONS
     } > RAM
 
     /* Frames, page-aligned because a descriptor's output address is. The FrameAllocator writes
-       its bitmap into the first frames, so this is real RAM. */
+       its record into the last frames and its free lists into free ones, so this is real RAM. */
     .framepool (NOLOAD) : AT(ADDR(.framepool) - KICKOS_RV64_VA_BASE) ALIGN(4096)
     {
         __kickos_frame_pool_start = .;

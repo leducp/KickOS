@@ -1,13 +1,11 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// NXP i.MX RT1062 LPUART register map (RM: Low Power UART), instanced for LPUART6
-// (the Teensy 4.1 "Serial1" console). Register block is 32-bit access.
+// NXP i.MX RT1062 LPUART register map (RM: Low Power UART), as offsets from an instance's
+// base. Register block is 32-bit access.
 
 #ifndef KICKOS_ARCH_ARM_CHIP_IMXRT1062_REGS_LPUART_H
 #define KICKOS_ARCH_ARM_CHIP_IMXRT1062_REGS_LPUART_H
-
-#include <kickos/chip_mmap.h>
 
 #include <stddef.h>
 #include <stdint.h>
@@ -15,11 +13,11 @@
 namespace kickos::imxrt1062::reg::lpuart
 {
     // Register map, RM 49.6.1.1.
-    constexpr uintptr_t LPUART6_GLOBAL = mmap::LPUART6_BASE + 0x08u;
-    constexpr uintptr_t LPUART6_BAUD = mmap::LPUART6_BASE + 0x10u;
-    constexpr uintptr_t LPUART6_STAT = mmap::LPUART6_BASE + 0x14u;
-    constexpr uintptr_t LPUART6_CTRL = mmap::LPUART6_BASE + 0x18u;
-    constexpr uintptr_t LPUART6_DATA = mmap::LPUART6_BASE + 0x1Cu;
+    constexpr uintptr_t GLOBAL_OFFSET = 0x08u;
+    constexpr uintptr_t BAUD_OFFSET = 0x10u;
+    constexpr uintptr_t STAT_OFFSET = 0x14u;
+    constexpr uintptr_t CTRL_OFFSET = 0x18u;
+    constexpr uintptr_t DATA_OFFSET = 0x1Cu;
 
     constexpr uint32_t GLOBAL_RST = 1u << 1;
     constexpr uint32_t STAT_TDRE = 1u << 23;

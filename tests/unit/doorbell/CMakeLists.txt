@@ -8,3 +8,11 @@ kickos_add_unit_test(NAME doorbell_templates
   INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}/include"
   POSTURE KICKOS_NUM_CORES=2 KICKOS_KERNEL_CORES=2 KICKOS_DOORBELL_CORES=2
           KICKOS_MULTICORE_MODEL_SHARED=1)
+
+# The same park in a KICKOS_WITNESS_DOORBELL kernel, which the doorbell witness drives into the
+# lock's acquire loop.
+kickos_add_unit_test(NAME doorbell_templates_witness
+  SOURCES seam.cc park.cc poll.cc
+  INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}/include"
+  POSTURE KICKOS_NUM_CORES=2 KICKOS_KERNEL_CORES=2 KICKOS_DOORBELL_CORES=2
+          KICKOS_MULTICORE_MODEL_SHARED=1 KICKOS_WITNESS_DOORBELL=1)

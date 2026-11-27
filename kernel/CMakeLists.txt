@@ -18,7 +18,6 @@ set(KICKOS_KERNEL_SOURCES
   init/console_tx.cc
   init/terminal.cc
   init/fault.cc
-  init/led.cc
   init/instance.cc
   init/kmain.cc
   mem/aspace.cc
@@ -32,7 +31,6 @@ set(KICKOS_KERNEL_SOURCES
   sync/corestart.cc
   amp/ampwindow.cc
   amp/ampmap.cc
-  amp/ampdiag.cc
   amp/ampshare.cc
   sync/smptrace.cc
   time/time.cc

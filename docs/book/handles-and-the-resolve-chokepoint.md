@@ -234,11 +234,11 @@ The cautionary example is worth spelling out. Suppose a worker calls a blocking 
 ignores the return value, and proceeds:
 
 ```
-kos_notify_wait(h, mask, KOS_TIMEOUT_NONE, &bits);   // -KOS_EBADF: h did not resolve in THIS thread
-// ... worker runs on, believing it blocked, but it never did
+kos_call(h, buf, len, sizeof(buf), KOS_NEVER);   // -KOS_EBADF: h did not resolve in THIS thread
+// ... worker runs on, believing it blocked for a reply, but it never did
 ```
 
-If `h` failed to resolve, the wait did nothing and the worker runs **unblocked** -- a
+If `h` failed to resolve, the call did nothing and the worker runs **unblocked** -- a
 silent race, entirely inside the app's own logic. The kernel is not confused for a moment;
 the *app* is. The way this bug arrives in practice is an app sharing a handle *value*
 through a file-scope global -- a child reading the integer main happened to get -- which in

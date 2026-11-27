@@ -153,8 +153,8 @@ endif()
 # Peer-dependent arms skip when an AMP image runs alone; the merged partition gate requires them
 # to run when a peer is available.
 if(KICKOS_AMP_NODE AND KICKOS_AMP_OWN_IMAGE)
-  list(APPEND KICKOS_EXPECT_SKIPS amp_far_call amp_far_call_held amp_share_crossing
-       amp_far_share)
+  list(APPEND KICKOS_EXPECT_SKIPS amp_far_call amp_far_call_held amp_far_send_held
+       amp_share_crossing amp_far_share amp_far_server_gone)
   if(KICKOS_HAVE_ASPACE)
     list(APPEND KICKOS_EXPECT_SKIPS amp_far_reply_unmapped)
   endif()

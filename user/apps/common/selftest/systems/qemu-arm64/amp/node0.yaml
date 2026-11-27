@@ -16,7 +16,7 @@ tasks:
     ceiling: 31
     authority: [memory, system, pinmux, irq, console, tasks, bus_master, bootloader]
     serves: /amp/2
-    uses: [/amp/0, /amp/3]
+    uses: [/amp/3]
     # Every arena block of every arm is reserved at start, and a block is never freed.
     budgets: { ram_blocks: 48, endpoints: 7, notifications: 7, irq_bindings: 7 }
     caps: { width: 16 }

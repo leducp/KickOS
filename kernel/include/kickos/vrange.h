@@ -78,6 +78,10 @@ namespace kickos
     // would move it into .data, which is flash on every board that has any.
     constexpr uint32_t VR_RUN_NONE = 0u;
 
+    // The memory type a pending VR_FRAMECAP range carries while its holder takes it back: no
+    // map's, so a map of the same run refuses it -KOS_EBUSY rather than resuming it.
+    constexpr uint8_t VR_UNWIND_MEMTYPE = 0xFEu;
+
     struct VirtualRange
     {
         uintptr_t base = 0;
@@ -97,7 +101,8 @@ namespace kickos
         uint8_t memtype = 0;
         uint8_t flags = 0; // VR_*
         VirtualState state = VirtualState::Free;
-        // A VR_WINDOW range's holder, as a thread slot index plus one, and the domain whose
+        // A VR_WINDOW range's holder, as a thread slot index plus one (a pending VR_FRAMECAP
+        // range's too: the thread whose map it is), and the domain whose
         // reservation a memory window maps, as a domain slot index plus one, which the
         // mapping holds a reference on. Zero for none, as `run` is. A reservation keeps in
         // `lends` the handoffs and memory windows of other spaces mapping its frames.
@@ -107,6 +112,11 @@ namespace kickos
             uint16_t lends;
         };
         uint16_t donor = 0;
+        // A map under way, or an unmap of a range that must keep its extent: its memory type
+        // plus one, 0 for none, and the pages from `base` mapped. Every other field still
+        // describes the range as it was before that edit began.
+        uint32_t pending_pages = 0;
+        uint8_t pending = 0;
     };
 
     // Whether a CALLER may name this range in a syscall argument. Total: a null entry is an
@@ -115,6 +125,30 @@ namespace kickos
     inline bool vr_caller_nameable(VirtualRange const* e)
     {
         return e != nullptr and (e->flags & VR_NOT_RESERVED) == 0u;
+    }
+
+    // Whether a map or an unmap is under way over this range.
+    inline bool vr_pending(VirtualRange const* e)
+    {
+        return e != nullptr and e->pending != 0u;
+    }
+
+    // The pages from `base` this range's mapping holds now. Total: a null entry holds none.
+    inline uint32_t vr_mapped(VirtualRange const* e)
+    {
+        if (e == nullptr)
+        {
+            return 0;
+        }
+        if (e->state == VirtualState::Granted)
+        {
+            return e->pages;
+        }
+        if (vr_pending(e))
+        {
+            return e->pending_pages;
+        }
+        return 0;
     }
 
     // Whether a kernel access may reach this range with every right in `rights`: device memory
@@ -170,9 +204,9 @@ namespace kickos
         // containment: a revoke must name a whole range and not a byte inside one.
         VirtualRange const* at_base(uintptr_t base) const;
 
-        // Turn a reservation into a granted range. Exact: the pair must name a reservation
-        // this space made. A rights word carrying a bit the entry cannot hold is refused,
-        // never truncated.
+        // Turn a reservation into a granted range, ending any map under way over it. Exact: the
+        // pair must name a reservation this space made. A rights word carrying a bit the entry
+        // cannot hold is refused, never truncated.
         // No default memtype: 0 is Normal, and a caller omitting it over a non-cacheable leaf
         // records an agreement that is not the one installed.
         bool grant(uintptr_t base, size_t pages, uint32_t rights, uint8_t memtype);
@@ -184,6 +218,19 @@ namespace kickos
 
         // Set or clear VR_SYNC_OWED on the entry starting at `base`; false when there is none.
         bool set_sync_owed(uintptr_t base, bool owed);
+
+        // Record a map with `memtype` under way over the entry starting at `base`, its first
+        // `mapped` pages mapped; false when there is none. grant() ends it.
+        bool set_pending(uintptr_t base, uint8_t memtype, uint32_t mapped);
+        // The rights a map under way over the entry starting at `base` grants at its end.
+        bool set_rights(uintptr_t base, uint32_t rights);
+        // Forget the edit under way over the entry starting at `base`.
+        bool clear_pending(uintptr_t base);
+        // The entry starting at `base` maps its first `mapped` pages and no more, keeping its
+        // extent: a granted one becomes pending with its type.
+        bool recede(uintptr_t base, uint32_t mapped);
+        // Cut the entry starting at `base` to its first `pages` pages, at least one.
+        bool shrink(uintptr_t base, uint32_t pages);
 
         // One more, or one fewer, mapping of another space over the reservation at `base`: its
         // lends after the change, or 0 when there is none.

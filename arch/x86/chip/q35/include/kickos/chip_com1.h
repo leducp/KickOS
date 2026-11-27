@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
+//
+// The 16550 at the port the board file names as the console.
 
 #ifndef KICKOS_CHIP_COM1_H
 #define KICKOS_CHIP_COM1_H

@@ -50,9 +50,6 @@
  * land at two addresses. NOLOAD: a region carrying bytes is written at load time, and by then a
  * peer may already have published into it. Outside .bss, so no C runtime clears it;
  * arch_amp_shared_zero does, from the primary's Reset_Handler, before it releases any peer.
- * .amp_shared.diag is last with no ALIGN ahead of it: it is empty unless
- * KICKOS_AMP_DIAG_REPORT is on, and anywhere else turning that on would move every object
- * below it.
  */
 #define KICKOS_AMP_SHARED_SECTION(region)                                     \
     .amp_shared (NOLOAD) : ALIGN(64)                                          \
@@ -77,7 +74,6 @@
         __kickos_amp_chip_end = .;                                            \
         . = ALIGN(64);                                                        \
         KICKOS_KERNEL_KEEP(.amp_shared.clock)                                 \
-        KICKOS_KERNEL_KEEP(.amp_shared.diag)                                  \
         __kickos_amp_shared_end = .;                                          \
     } > region
 

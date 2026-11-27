@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// ESP32-C6 UART0 buffered userspace UART driver.
+// ESP32-C6 buffered userspace console UART driver.
 //
-// The grouped UART0 line cannot be claimed while the kernel's own TX ring holds it, so the
+// The grouped UART line cannot be claimed while the kernel's own TX ring holds it, so the
 // publish MUST precede the claim: that ordering is KOS_DRV_EP_HANDOVER's.
 
 #include <kickos/kos.h>
@@ -28,8 +28,9 @@ namespace
     };
 }
 
-// No kos_periph_enable: the PMP grant carries the window, PCR leaves UART0's bus clock
-// ungated out of reset, and arch_init's HP_APM REE0 permit already covers the block.
+// No kos_periph_enable: the PMP grant carries the window, the console UART is the one the
+// kernel ran its boot log through, so its clock is on, and arch_init's HP_APM REE0 permit
+// already covers the block.
 //
-// The baud 0 below keeps the divisor the ROM left.
+// The baud 0 below keeps the divisor the kernel left.
 KICKOS_UART_CONSOLE_SERVICE(c6uart, k_uart, /*fallback_baud=*/0u);

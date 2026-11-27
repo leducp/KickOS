@@ -2,8 +2,9 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // A console written outside its ring, once a driver's death reclaimed it or where no ring is
-// armed: each wire byte of a task's line is its own masked span, and an interrupt's kernel line
-// arriving inside that line is dropped rather than written into it.
+// armed: each wire byte of a thread's line is its own masked span, and an interrupt's kernel line
+// arriving inside that line is dropped rather than written into it. A reclaimed console takes no
+// user line, so its thread's line is the kernel's.
 
 #include "held_fixture.h"
 
@@ -22,16 +23,17 @@ namespace
     }
 }
 
-TEST(ConsolePolledLine, AReclaimedConsoleMasksOneByteOfATasksLineAtATime)
+TEST(ConsolePolledLine, AReclaimedConsoleMasksOneByteOfAThreadsLineAtATime)
 {
     run_isolated([]() {
         consoleseam::reset(kRing);
         publish();
         task_ends();
         ASSERT_EQ(consoleseam::g_reclaims, 1u) << "premise: the console was not reclaimed";
-        ASSERT_LE(consoleseam::max_masked_pushes(), 1u) << "premise: a wide span before the line";
-        write_user_line();
-        EXPECT_EQ(consoleseam::wire(), kLine);
+        consoleseam::reset_masked_pushes();
+        consoleseam::g_current = thread(1);
+        kickos::kputs(kLine.c_str());
+        EXPECT_EQ(consoleseam::wire(), kReclaimed + kLine);
         EXPECT_EQ(consoleseam::max_masked_pushes(), 1u)
             << "a masked span carried more than one byte of the task's line";
     });

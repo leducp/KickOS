@@ -8,13 +8,18 @@
 #include <kickos/chip_com1.h>
 #include <kickos/chip_mmap.h>
 
+#include "board_pins.h"
+
 #include <stdint.h>
 
 namespace kickos::q35
 {
     namespace
     {
-        constexpr uint16_t com1_base = mmap::COM1_BASE;
+        constexpr uint16_t console_base = KICKOS_BOARD_CONSOLE_BASE;
+        static_assert(console_base == mmap::COM1_BASE or console_base == mmap::COM2_BASE
+                          or console_base == mmap::COM3_BASE or console_base == mmap::COM4_BASE,
+                      "the board's console is not a COM port of this chip");
 
         constexpr uint16_t reg_data = 0;
         constexpr uint16_t reg_int_enable = 1;
@@ -35,12 +40,12 @@ namespace kickos::q35
 
         void put(uint16_t reg, uint8_t value)
         {
-            kickos::x86_64::outb(static_cast<uint16_t>(com1_base + reg), value);
+            kickos::x86_64::outb(static_cast<uint16_t>(console_base + reg), value);
         }
 
         uint8_t get(uint16_t reg)
         {
-            return kickos::x86_64::inb(static_cast<uint16_t>(com1_base + reg));
+            return kickos::x86_64::inb(static_cast<uint16_t>(console_base + reg));
         }
     }
 

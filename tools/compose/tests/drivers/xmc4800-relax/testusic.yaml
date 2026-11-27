@@ -13,7 +13,7 @@ accepts: [no_protection] # for the -flat build alone
 tasks:
   - name: testusic
     driver: testusic
-    devices: [/dev/usic0/ch0]
+    devices: [/dev/console]
     serves: /svc/console
     priority: 12
 

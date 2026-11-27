@@ -2,10 +2,11 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# Runtime kernel-block depth gate. Boots the two stackdepth images and reads the high-water
-# the panic reporter prints off each.
+# Runtime kernel-block depth gate. A kernel built with KICKOS_WITNESS_KSTACK prints the kernel
+# block's high-water line on a panic; this gate builds that kernel in a scratch tree of the preset,
+# boots the two stackdepth images and reads the line off each.
 #
-# usage: check_stackdepth.sh <stackdepth0.elf> <stackdepth1.elf> <floor-bytes>
+# usage: check_stackdepth.sh <source-dir> <cmake> <preset> <scratch-dir> <floor-bytes>
 #
 # The figure is the deepest word written on ONE thread's kernel block by the paths these two
 # images execute. It is NOT a bound: a path the images do not drive contributes nothing, and
@@ -16,17 +17,53 @@
 #
 # Mode 0 panics and nothing else; mode 1 drives a grant-carrying spawn first. The block
 # records a maximum over the slot, so mode 1 minus mode 0 is what the spawn arm reached.
+#
+# The knob is refused without the marker only this script passes. The control below holds that
+# refusal.
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
+: "${QEMU_TIMEOUT:=30}"
 
-elf0="${1:?usage: check_stackdepth.sh <stackdepth0.elf> <stackdepth1.elf> <floor-bytes>}"
-elf1="${2:?usage: check_stackdepth.sh <stackdepth0.elf> <stackdepth1.elf> <floor-bytes>}"
-FLOOR="${3:?usage: check_stackdepth.sh <stackdepth0.elf> <stackdepth1.elf> <floor-bytes>}"
+_usage="usage: check_stackdepth.sh <source-dir> <cmake> <preset> <scratch-dir> <floor-bytes>"
+SRC="${1:?$_usage}"
+CMAKE="${2:?$_usage}"
+PRESET="${3:?$_usage}"
+SCRATCH="${4:?$_usage}"
+FLOOR="${5:?$_usage}"
 
 case "$FLOOR" in
     ''|*[!0-9]*) fail "the margin floor must be a plain integer, got '$FLOOR'" ;;
 esac
+
+need_qemu_machine
+scratch_dir
+MARKER=check_stackdepth.sh
+
+if "$CMAKE" -S "$SRC" -B "$TMP/refused" --preset "$PRESET" -DKICKOS_WITNESS_KSTACK=ON \
+       -DKICKOS_BUILD_TESTS=OFF > "$TMP/refused.log" 2>&1; then
+    fail "a configure with KICKOS_WITNESS_KSTACK and no marker was accepted"
+fi
+if ! grep -q 'WITNESS_KSTACK_REFUSED' "$TMP/refused.log"; then
+    sed -n '1,30p' "$TMP/refused.log" >&2
+    fail "the unmarked configure failed, but not on the refusal"
+fi
+
+# Kept under the caller's build directory. A cache that names another source tree, or lacks the
+# knob, is not this witness's kernel.
+_cache="$SCRATCH/CMakeCache.txt"
+if ! { [ -f "$_cache" ] && grep -q '^KICKOS_WITNESS_KSTACK:BOOL=ON$' "$_cache" \
+       && grep -qxF -e "KICKOS_WITNESS_KSTACK_SCRATCH:UNINITIALIZED=$MARKER" "$_cache" \
+       && grep -qxF -e "CMAKE_HOME_DIRECTORY:INTERNAL=$SRC" "$_cache"; }; then
+    rm -rf "$SCRATCH"
+    "$CMAKE" -S "$SRC" -B "$SCRATCH" --preset "$PRESET" -DKICKOS_WITNESS_KSTACK=ON \
+        -DKICKOS_WITNESS_KSTACK_SCRATCH="$MARKER" -DKICKOS_BUILD_TESTS=OFF > "$TMP/cfg.log" 2>&1 \
+        || { sed -n '1,40p' "$TMP/cfg.log" >&2; fail "configure of the witness kernel failed for $PRESET"; }
+fi
+"$CMAKE" --build "$SCRATCH" --target stackdepth0 stackdepth1 > "$TMP/build.log" 2>&1 \
+    || { grep -E 'error' "$TMP/build.log" | sed -n '1,20p' >&2; fail "build of the stackdepth images failed in $SCRATCH"; }
+elf0="$SCRATCH/user/apps/common/stackdepth/stackdepth0"
+elf1="$SCRATCH/user/apps/common/stackdepth/stackdepth1"
 
 echo "1..3"
 

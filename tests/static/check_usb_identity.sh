@@ -42,8 +42,8 @@ KBANNER=$(awk '/void kbanner\(\)/ { on = 1 }
 kbanner_arg() {
     grep -oE "kprintf\($1, *[A-Za-z_][A-Za-z0-9_]*\)" <<< "$KBANNER" | sed -E 's/.*, *([A-Za-z0-9_]+)\)/\1/'
 }
-[ "$(kbanner_arg KDIAG_F_BANNER_NAME)" = KICKOS_VERSION ] \
-    || bad "kbanner no longer prints its title from KICKOS_VERSION"
+grep -qF 'kprintf(KDIAG_F_BANNER_NAME, diag::banner_title_indent(KICKOS_VERSION), KICKOS_VERSION);' \
+    <<< "$KBANNER" || bad "kbanner no longer prints its centred title from KICKOS_VERSION"
 [ "$(kbanner_arg KDIAG_F_BANNER_BOARD)" = KICKOS_BOARD_NAME ] \
     || bad "kbanner no longer prints its board row from KICKOS_BOARD_NAME"
 [ "$(kbanner_arg KDIAG_F_BANNER_BUILD)" = kickos_build_time ] \
@@ -56,8 +56,10 @@ kbanner_arg() {
     || bad "kbanner no longer prints its commit row from kickos_build_commit"
 # The renderer's rows, in order: kbanner's formats over its values.
 rows=$(grep -oE 'b\.row\(KDIAG_F_BANNER_[A-Z]+, [A-Za-z_]+' "$RENDER" | sed 's/^b\.row(//' | tr '\n' ' ')
-want='KDIAG_F_BANNER_NAME, KICKOS_VERSION KDIAG_F_BANNER_BOARD, KICKOS_BOARD_NAME KDIAG_F_BANNER_BUILD, kickos_identity_build_time KDIAG_F_BANNER_APP, app KDIAG_F_BANNER_COMMIT, kickos_identity_commit '
+want='KDIAG_F_BANNER_NAME, title KDIAG_F_BANNER_BOARD, KICKOS_BOARD_NAME KDIAG_F_BANNER_BUILD, kickos_identity_build_time KDIAG_F_BANNER_APP, app KDIAG_F_BANNER_COMMIT, kickos_identity_commit '
 [ "$rows" = "$want" ] || bad "$RENDER does not print kbanner's rows from its values as [$want]: [$rows]"
+grep -qF 'char const* const title[] = {diag::banner_title_indent(KICKOS_VERSION), KICKOS_VERSION};' \
+    "$RENDER" || bad "$RENDER does not render kbanner's centred title from KICKOS_VERSION"
 grep -qE 'char const\* const volatile app = kickos_app_stamp;' "$RENDER" \
     || bad "$RENDER does not take its app row from the app's stamp"
 grep -qF 'target_compile_definitions(kickos_kernel PRIVATE ${KICKOS_BANNER_IDENTITY}' kernel/CMakeLists.txt \
@@ -132,9 +134,13 @@ for app in 0 1; do
         "$TMP/main$app.cc" "$RENDER" $stamp_obj -o "$bin" 2> "$TMP/cc.err" \
         || fail "the renderer does not build on this host: $(head -n 5 "$TMP/cc.err")"
     "$bin" > "$TMP/rows$app" || fail "the renderer did not run"
+    # The title is held by its name and version; its centring by the probe below.
+    title=$(sed -n 2p "$TMP/rows$app" | tr -d '\r')
+    [ "$(banner_title_version "$title")" = 0.5.1 ] \
+        || bad "app stamp $app, crlf $crlf: the title [$title] does not name version 0.5.1"
     {
         printf '\n'
-        printf '%s\n' "$(identity_row "$DIAG" KDIAG_F_BANNER_NAME 0.5.1)"
+        printf '%s\n' "$title"
         printf '%s\n' "$(identity_row "$DIAG" KDIAG_F_BANNER_BOARD picopi)"
         printf '%s\n' "$(identity_row "$DIAG" KDIAG_F_BANNER_BUILD "$BUILT")"
         if [ -n "$stamp" ]; then
@@ -221,7 +227,9 @@ st=$?
 widest() { # <character> <count>
     printf "%${2}s" '' | tr ' ' "$1"
 }
-LONG_VERSION=$(widest 9 16)
+# A version a valid tag can carry, at its widest.
+LONG_VERSION="999.999.999-rc99"
+[ "${#LONG_VERSION}" -eq 16 ] || bad "the widest version [$LONG_VERSION] is not 16 characters"
 LONG_BOARD=$(widest b 32)
 LONG_COMMIT=$(widest c 48)
 LONG_STAMP=$(stamp_of "$(widest i 45)")
@@ -243,9 +251,12 @@ for crlf in 0 1; do
     || fail "the renderer does not build at the widest rows: $(head -n 5 "$TMP/cc.err")"
 "$TMP/renderlong" > "$TMP/rowslong"
 long_rc=$?
+long_title=$(sed -n 2p "$TMP/rowslong" | tr -d '\r')
+[ "$(banner_title_version "$long_title")" = "$LONG_VERSION" ] \
+    || bad "crlf $crlf: the widest title [$long_title] does not name version $LONG_VERSION"
 {
     printf '\n'
-    printf '%s\n' "$(identity_row "$DIAG" KDIAG_F_BANNER_NAME "$LONG_VERSION")"
+    printf '%s\n' "$long_title"
     printf '%s\n' "$(identity_row "$DIAG" KDIAG_F_BANNER_BOARD "$LONG_BOARD")"
     printf '%s\n' "$(identity_row "$DIAG" KDIAG_F_BANNER_BUILD "$BUILT")"
     printf '%s\n' "$(identity_row "$DIAG" KDIAG_F_BANNER_APP "$LONG_STAMP")"
@@ -256,6 +267,24 @@ cmp -s "$TMP/rowslong" "$TMP/wantlong" \
 [ "$long_rc" -eq 0 ] \
     || bad "crlf $crlf: the widest rows do not fill BANNER_IDENTITY_MAX to its NUL, so the buffer is not sized from them"
 done
+
+# --- the title is centred over the rule's '=' for every version length -----------------------
+{
+    printf '%s\n' '#include <kickos/diag.h>' 'namespace d = kickos::diag;'
+    printf '%s\n' 'constexpr bool centred(unsigned len)' '{' \
+        '    unsigned const in = d::banner_title_indent_width(len);' \
+        '    unsigned const text = d::kBannerTitleText + len;' \
+        '    if (text >= d::kBannerRuleWidth)' '    {' '        return in == d::kBannerRuleLead;' '    }' \
+        '    unsigned const left = in - d::kBannerRuleLead;' \
+        '    unsigned const right = d::kBannerRuleWidth - text - left;' \
+        '    return left == right or left + 1u == right;' '}' \
+        'constexpr bool all_centred()' '{' '    for (unsigned n = 0; n <= 64u; n++)' '    {' \
+        '        if (not centred(n))' '        {' '            return false;' '        }' '    }' \
+        '    return true;' '}' 'static_assert(all_centred(), "a title is off centre");' \
+        'int main() { return 0; }'
+} > "$TMP/centre.cc"
+"$CXX" -std=c++17 -Iinclude "$TMP/centre.cc" -o "$TMP/centre" 2> "$TMP/cc.err" \
+    || bad "the banner title is not centred over its rule: $(head -n 5 "$TMP/cc.err")"
 
 [ "$rc" -eq 0 ] || exit 1
 echo "PASS: a USB console's identity rows are kbanner's, rendered as the route's verdict renders them"

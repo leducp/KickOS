@@ -14,6 +14,7 @@ How a silicon capture is taken, and what a capture is allowed to claim. The scri
 | `tools/bench/bench.sh` | ONE board: configure, build, locate the image, then hand off -- locally, or over ssh to the bench host |
 | `tools/bench/bench-capture.sh` | ONE board, ONE built image: flash, capture, judge (the TAP stream through `check_tap_stream.sh`, a bench report through its own arms). THIS is the script that runs where the hardware is |
 | `tools/bench/cap_esp.py` | the Espressif capture: reset-into-run and read on ONE serial handle |
+| `tools/bench/cap_cdc.py` | the USB CDC capture: sets the device's tty raw on one open and copies it to the log until the device leaves |
 | `tools/bench/stamp_lines.py` | stamps each line every capture route appends to the log with its host arrival time, into `<log>.times`, which `bench.sh` fetches beside the log; `wallclock`'s judge times a kernel sleep by it |
 | `tools/bench/stamper.sh` | sourced: starts the stamper with no earlier `<log>.times` left, refuses a capture whose stamper is not running or failed, and truncates the log only with no stamper over it |
 | `tools/bench/rig.sh` | finds and reads the rig config; refuses by name when a required value is absent |
@@ -70,7 +71,7 @@ TRACKED, because it is what the project knows about its own boards:
 
 NOT TRACKED, because it describes one rig and would be a lie in any other checkout: which
 physical cable is on which board, this box's absolute paths, the bench host and its port,
-and where a python carrying pyserial lives. Those come from a gitignored config.
+and where the capture's python lives. Those come from a gitignored config.
 
 ## The rig config
 
@@ -86,13 +87,13 @@ naming the main checkout's copy.
 | --- | --- | --- |
 | `RIG_SESSION` | always | the directory holding `env.sh` and receiving the logs |
 | `RIG_TREE` | always | the tree built when the caller sets no `TREE` |
-| `RIG_PYBIN` | Espressif, local | a python carrying pyserial; empty falls back to `$PY` from `env.sh` |
+| `RIG_PYBIN` | Espressif or USB CDC, local | a python, carrying pyserial for an Espressif capture; empty falls back to `$PY` from `env.sh` |
 | `RIG_CONSOLE_<BOARD>` | see below | the console cable, as a by-id path or glob |
 | `RIG_PROBE_<VID>_<PID>` | see below | which unit a probe `vid:pid` means, where the bus carries more than one of them. The vid:pid upper-cased with `:` as `_` |
 | `RIG_BENCH_HOST` | remote mode | which machine is the bench. An ssh alias is preferred, and then no port or user belongs in the config |
 | `RIG_BENCH_PORT` | no | the ssh port, only where `ssh_config` does not answer it. Empty passes no `-p` at all |
 | `RIG_REMOTE_ROOT` | remote mode | the bench host directory holding the shipped tree and the run outputs |
-| `RIG_REMOTE_PYBIN` | Espressif, remote | a python carrying pyserial ON the bench host, absolute |
+| `RIG_REMOTE_PYBIN` | Espressif or USB CDC, remote | a python ON the bench host, absolute, carrying pyserial for an Espressif capture |
 | `RIG_WIRED_<BOARD>` | no | the bench fittings on that board, space-separated names; see below |
 
 `BENCH_HOST` in the environment is what SELECTS remote mode. `RIG_BENCH_HOST` names the
@@ -181,12 +182,14 @@ nothing about that board's drivers, which run in the `selftest_<driver>` images.
     LIST_IMAGES=1 tools/bench/bench.sh <board>    every image the configure emits
 
 It configures and flashes nothing, and prints `<build>/kickos-images.txt`, one
-`<image>|<stdout>|<judge>|<args>` row per image. The stdout is `kernel`, the driver serving
-stdout, or `-` for an image composing no system. The judge is the gate script that holds the
-capture: the TAP validator `tests/integration/check_tap_stream.sh` for a selftest image, which the
-capture runs against the image's row of `<build>/kickos-selftest-manifest.txt`, or the script an
-image's `kickos_app_judge` names, run with the row's `;`-separated args. `JUDGE_ARGS`, which goes
-with a caller's own `JUDGE`, is split at `;` the same way, so `a b` is one argument.
+`<image>|<stdout>|<judge>|<args>|<window>` row per image. The stdout is `kernel`, the driver
+serving stdout, or `-` for an image composing no system. The judge is the gate script that holds
+the capture: the TAP validator `tests/integration/check_tap_stream.sh` for a selftest image, which
+the capture runs against the image's row of `<build>/kickos-selftest-manifest.txt`, or the script
+an image's `kickos_app_judge` names, run with the row's `;`-separated args. `JUDGE_ARGS`, which
+goes with a caller's own `JUDGE`, is split at `;` the same way, so `a b` is one argument. The
+window is the capture time in seconds that an image's `kickos_app_judge` sets with `WINDOW`, or
+`-`. `bench.sh` takes it as `CAP_SECS` when its caller set none.
 
 A capture judge reads what an image printed and nothing else. Where its verdict also has a clause
 a capture does not carry, an exit status or the system ending, or one resting on a bench fitting the
@@ -202,21 +205,18 @@ The other judges are marks:
   without booting it is a `host` gate.
   Owed is decided per build: an emulator gate on another board runs another image, so it
   witnesses nothing of this one.
-- `human`, set by `kickos_human_judged`: an image whose only verdict a person reads, an LED; the
-  args say what.
 - `inapplicable`, set by `kickos_inapplicable`: an image whose claim this build's posture voids,
   a memory-fault arm on a board that enforces no memory; the args say why.
 - `-`: an image nothing judges.
 
 `bench-fleet.sh` captures every judged image `LIST_IMAGES` names for each board, then every other
 variant the tree declares as a `<board>-<variant>` preset: of the flat build, every image only it
-ships (`c6txidle`, which drives the console's UART) and each image its `FLAT_ALSO` names for that board;
+ships and each image its `FLAT_ALSO` names for that board;
 of the `amp2-n0` build, the AMP partitions, `amp_partition` and, where that build ships a
 selftest, `amp_partition_selftest`; of any other variant (`smp`),
 every image, each labelled `(<variant>)`. It prints an "image coverage"
 table naming each image as `captured`, `captured, partly owed: <clauses>`, `NOT RUN`, `NO JUDGE`,
-`emulator-judged`, `emulator-judged, no emulator: owed`, `human-judged (<what>): owed` or
-`inapplicable (<why>)`. Nothing owed is counted as covered, and the pass states how many images
+`emulator-judged`, `emulator-judged, no emulator: owed` or `inapplicable (<why>)`. Nothing owed is counted as covered, and the pass states how many images
 and clauses it owes. It exits 1 on a failed capture, an `ABSENT` board, or any `NOT RUN` or `NO JUDGE`, which
 make the pass `INCOMPLETE`; 3 when every capture passed and something is still owed; and 0 only when
 nothing is. One TAG covers the whole pass: a capture's log is keyed by tag, board and image
@@ -267,7 +267,10 @@ publishes.
 The kernel banner never reaches that console, so the driver opens the host's stream, at each
 configuration, with the banner's identity rows: title, board, build, app and commit, in `kbanner`'s
 formats from the same version, board, app stamp and stamped build time and label
-(`<kickos/sys/banner_identity.h>`); an image with no app stamp prints no app row. `bench.sh`
+(`<kickos/sys/banner_identity.h>`); an image with no app stamp prints no app row. The rows go out
+under the board's CRLF posture, as the ring's bytes do, each `\n` as `\r\n`, and flow with the
+rest of the output once the host configures the device (the USB CDC part of
+[console.md](console.md)). `bench.sh`
 refuses a capture on that route whose last identity block does not name the image it flashed, its
 build and app stamps read out of that image (`identity_verdict`, `tools/bench/banner.sh`), so
 another image of the same build and commit is refused too, the app stamp naming its image beside
@@ -405,8 +408,10 @@ are in-kernel era figures and do not compare with `userbench` rows.
   can land inside a status line. A line split by a WHOLE record, in the exact form
   `kernel/init/fault.cc` emits, of a thread on the image's fault list, whose two halves make a
   well-formed test-point line, is re-joined and named in a NOTE; any other split stays refused.
-  ONE ROUTE REACHES NO VERDICT: a USB CDC console is the device, so it loses the head of the
-  capture and with it the plan line. That capture says so and is reconciled by hand.
+  ONE CASE REACHES NO VERDICT: a USB CDC console drops what its ring could not hold before the
+  host opened it, and a selftest capture on that route that lost its plan line says so and is
+  reconciled by hand. The selftest waits up to 10 s after its plan line for its console to
+  drain before it runs its first arm (`tests/tap/tap.cc`).
 - a SPLIT board restarts TAP numbering at 1 in each image, so a lone first plan line is a
   FRACTION of a run and not a short one, and whatever reports the pass must say which image a
   figure came from. How many images a board ships as is a property of ITS configure, published

@@ -2,7 +2,7 @@
 # Copyright (c) 2026 Philippe Leduc
 #
 # The packaged simcon serving stdout with one restart, and main, which prints through each of its
-# two instances.
+# two instances and runs above the first while it serves.
 
 version: 1
 stdout: /svc/console
@@ -18,7 +18,7 @@ tasks:
   - name: main
     program: conrestart
     priority: 2
-    ceiling: 10
+    ceiling: 13
     uses: [{ path: /svc/console, rights: [write] }]
     watches: [simcon]
     authority: [memory, system, tasks]

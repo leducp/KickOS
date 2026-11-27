@@ -13,8 +13,8 @@ accepts: [no_protection, no_privilege_split]
 tasks:
   - name: c6uart
     driver: c6uart
-    devices: [/dev/uart0]
-    lines: { uart0: /dev/uart0/uart0 }
+    devices: [/dev/console]
+    lines: { irq: /dev/console/irq }
     core: 0
     serves: /svc/console
     priority: 12

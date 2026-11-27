@@ -18,8 +18,18 @@ namespace kickos::testfix
 {
     uintptr_t g_ipc_seam_refuse_rw = 0;
     uintptr_t g_ipc_seam_refuse_write = 0;
+    uintptr_t g_ipc_seam_refuse_read = 0;
     uintptr_t g_ipc_seam_refuse_write_from_copy = 0;
+    uintptr_t g_ipc_seam_refuse_store = 0;
 }
+
+#if ARCH_USER_STORE_CHECKED
+extern "C" bool arch_mpu_loaded_writable(uintptr_t base, size_t)
+{
+    return kickos::testfix::g_ipc_seam_refuse_store == 0
+           or base != kickos::testfix::g_ipc_seam_refuse_store;
+}
+#endif
 
 namespace kickos
 {
@@ -35,6 +45,10 @@ namespace kickos
 
     bool kaccess_from_user(void* kdst, UserOwner, uintptr_t usrc, size_t n)
     {
+        if (testfix::g_ipc_seam_refuse_read != 0 and usrc == testfix::g_ipc_seam_refuse_read)
+        {
+            return false;
+        }
         if (n != 0)
         {
             memcpy(kdst, reinterpret_cast<void const*>(usrc), n);

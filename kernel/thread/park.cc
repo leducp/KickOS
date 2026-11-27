@@ -197,7 +197,6 @@ namespace kickos
         enum ConsoleHold
         {
             HOLD_LINE,
-            HOLD_DARK,
             HOLD_ROOM,
             HOLD_WRITERS,
         };
@@ -217,8 +216,7 @@ namespace kickos
                 {
                     return -KOS_ECANCELED;
                 }
-                if ((hold == HOLD_DARK and console_dark() == 0)
-                    or (hold == HOLD_ROOM and console_tx_room_want(needed) == 0)
+                if ((hold == HOLD_ROOM and console_tx_room_want(needed) == 0)
                     or (hold == HOLD_WRITERS and console_chip_writers() == 0))
                 {
                     return UNHELD;
@@ -252,11 +250,6 @@ namespace kickos
             }
             return rc;
         }
-    }
-
-    int console_dark_wait(void)
-    {
-        return held_or_zero(console_park(HOLD_DARK, 0, KOS_LIMIT_NONE));
     }
 
     namespace
@@ -302,7 +295,7 @@ namespace kickos
         }
     }
 
-    void console_dark_wake(Held held)
+    void console_wake(Held held)
     {
         Kernel& k = kernel();
         for (int s = 0; s < k.threads.next; s++)

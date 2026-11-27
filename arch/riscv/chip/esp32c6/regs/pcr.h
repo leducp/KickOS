@@ -13,7 +13,10 @@
 
 namespace kickos::esp32c6::reg::pcr
 {
+    constexpr uintptr_t UART0_CONF = mmap::PCR_BASE + 0x00u;      // Register 8.1
     constexpr uintptr_t UART0_SCLK_CONF = mmap::PCR_BASE + 0x04u; // Register 8.2
+    constexpr uintptr_t UART1_CONF = mmap::PCR_BASE + 0x0Cu;      // Register 8.4
+    constexpr uintptr_t UART1_SCLK_CONF = mmap::PCR_BASE + 0x10u; // Register 8.5
     constexpr uintptr_t RMT_CONF = mmap::PCR_BASE + 0x2Cu;        // CLK_EN bit0, RST_EN bit1
     constexpr uintptr_t RMT_SCLK_CONF = mmap::PCR_BASE + 0x30u;
     constexpr uintptr_t TG0_TIMER_CLK_CONF = mmap::PCR_BASE + 0x40u; // Register 8.15
@@ -27,16 +30,20 @@ namespace kickos::esp32c6::reg::pcr
     constexpr uint32_t RMT_SCLK_SEL_S = 20u;     // [21:20] 1=PLL_F80M 2=RC_FAST 3=XTAL
     constexpr uint32_t RMT_SCLK_DIV_NUM_S = 12u; // [19:12] group divisor = value+1
 
-    // UART0 function clock (Register 8.2).
-    constexpr uint32_t UART0_SCLK_DIV_A_S = 0u;
-    constexpr uint32_t UART0_SCLK_DIV_A_MASK = 0x3Fu;
-    constexpr uint32_t UART0_SCLK_DIV_B_S = 6u;
-    constexpr uint32_t UART0_SCLK_DIV_B_MASK = 0x3Fu;
-    constexpr uint32_t UART0_SCLK_DIV_NUM_S = 12u;
-    constexpr uint32_t UART0_SCLK_DIV_NUM_MASK = 0xFFu;
-    constexpr uint32_t UART0_SCLK_SEL_S = 20u;
-    constexpr uint32_t UART0_SCLK_SEL_MASK = 0x3u;
-    constexpr uint32_t UART0_SCLK_EN = 1u << 22;
+    // A UART's bus clock and reset (Registers 8.1 and 8.4, pp.320-322).
+    constexpr uint32_t UART_CLK_EN = 1u << 0;
+    constexpr uint32_t UART_RST_EN = 1u << 1;
+
+    // A UART's function clock, the same fields in both UARTs' (Registers 8.2 and 8.5).
+    constexpr uint32_t UART_SCLK_DIV_A_S = 0u;
+    constexpr uint32_t UART_SCLK_DIV_A_MASK = 0x3Fu;
+    constexpr uint32_t UART_SCLK_DIV_B_S = 6u;
+    constexpr uint32_t UART_SCLK_DIV_B_MASK = 0x3Fu;
+    constexpr uint32_t UART_SCLK_DIV_NUM_S = 12u;
+    constexpr uint32_t UART_SCLK_DIV_NUM_MASK = 0xFFu;
+    constexpr uint32_t UART_SCLK_SEL_S = 20u;
+    constexpr uint32_t UART_SCLK_SEL_MASK = 0x3u;
+    constexpr uint32_t UART_SCLK_EN = 1u << 22;
     constexpr uint32_t SCLK_SEL_NONE = 0u;
     constexpr uint32_t SCLK_SEL_PLL_F80M = 1u;
     constexpr uint32_t SCLK_SEL_RC_FAST = 2u;

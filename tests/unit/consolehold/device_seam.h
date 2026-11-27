@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// What dark_seam.cc records beside the real console.
+// What device_seam.cc records beside the real console.
 
-#ifndef KICKOS_TESTS_UNIT_CONSOLEHOLD_DARK_SEAM_H
-#define KICKOS_TESTS_UNIT_CONSOLEHOLD_DARK_SEAM_H
+#ifndef KICKOS_TESTS_UNIT_CONSOLEHOLD_DEVICE_SEAM_H
+#define KICKOS_TESTS_UNIT_CONSOLEHOLD_DEVICE_SEAM_H
 
 #include <stdint.h>
 
@@ -17,7 +17,7 @@ namespace kickos
     struct Thread;
 }
 
-namespace darkseam
+namespace deviceseam
 {
     // Bytes the device took, in order.
     extern std::string g_wire;

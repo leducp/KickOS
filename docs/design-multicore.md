@@ -697,12 +697,27 @@ holding a received call while it sends or calls far is therefore a hold-and-wait
 two such servers, each serving the other's calls, wait until one is cancelled. The deadline is
 the caller's bound on it, and the kernel adds none.
 
+**RULED 2026-11-25: A BLOCKED SEND OR CALL IS A RENDEZVOUS, LOCAL AND FAR ALIKE.** It is refused
+`-KOS_ECONNREFUSED` only where the endpoint has no receiver AND nobody can hand one out any more,
+no `CAP_WAIT` and no `KOS_CAP_HANDOUT` holder left: dead for good. An endpoint someone can still
+serve, a restartable server's included, makes a blocking sender wait under its own deadline, as
+for a busy server. **A far SEND is therefore a rendezvous too**: its sender stays parked until a
+receiver on the far node takes it, or it is refused or withdrawn, exactly as a far call is; there
+is no publication that answers the sender and can then lose its bytes. The answer it waits for is
+the call's reply path carrying no payload: the receiver's landing publishes a `PORT_REPLY` whose
+length word is the count it took. **A far rendezvous cannot complete without waiting, so a far
+send under `KOS_POLL` is always refused `-KOS_EAGAIN`**: the user knows the send crosses nodes,
+and either avoids it or hands the wait to a thread of its own. The calling node marks a send's
+route `amp::REPLY_SEND`, a bit of its own tag word outside the sequence the reply validates, which
+the serving node reads at the landing alone to install no reply capability.
+
 **RULED 2026-11-22: A PORT FILLS ITS OWN SHARE OF THE CALL RING, NEVER THE WHOLE RING.** The call
-ring of an ordered pair is split into one lane per port of the receiving node, the echo port
-included, each an equal power-of-two run of the ring's slots with its own head and tail, derived
-at build time from the partition's port list. A port whose task never receives, or receives
-slowly, fills its lane, and its senders and callers wait as for a full ring, a send under
-`KOS_POLL` refused `-KOS_EAGAIN`, while every other port to that node publishes into its own.
+ring of an ordered pair is split into one lane per port the partition names the receiving node,
+each an equal power-of-two run of the ring's slots with its own head and tail, derived at build
+time from the partition's port list; a node serving no port has no lane. A port whose task never
+receives, or receives slowly, fills its lane with the requests its parked senders and callers
+hold, and further ones wait as for a full ring, while every other port to that node publishes into
+its own.
 
 **RING DEPTH IS THEREFORE A PARTITION-SIZING INPUT rather than an internal constant.** A ring
 holds a fixed number of slots at the local message bound, so a producer offering more than that
@@ -878,7 +893,7 @@ carry the tail further into the far side's arithmetic, which is the one thing th
 to stop. What it judges is the DEEPEST outstanding count any of this node's cursors reads out of
 the far head, and not the tail's alone: a head that has moved BACKWARD behind the held run reads
 as a small count from the tail while handing out slots the producer never wrote, and a zeroed slot
-reads as a well-formed zero-length echo. It is the only non-advancing outcome ON A REPLY RING --
+reads as a well-formed zero-length message. It is the only non-advancing outcome ON A REPLY RING --
 the call ring has two, this and the reserve -- it can only be produced by a malformed peer, and it
 resolves itself: after the strike bound the tail is resynchronised to the far head and the ring
 runs again. A malformed length, an unminted port or a message of the wrong class is dropped and the
@@ -926,13 +941,16 @@ are gone. The answers' own bytes are lost either way and are counted as such. **
 one question and are answered as one**: what a node owes a caller whose route it has stopped
 believing is an answer, and making the route believable again is what lets it give one.
 
-**A REPLY CARRIES ONE REASON, THE REFUSAL OF A PORT NOBODY SERVES, AND THE EMPTY REPLY STILL
-CARRIES NONE.** The user-visible contract is the local one (N7; ruled 2026-11-22): a call to an
-endpoint nobody serves answers ECONNREFUSED. A reply's badge word, the serving node's own writing and never
-the caller's route, carries the refusal; the caller spends it through one comparison, so a malformed
-peer can forge a refusal exactly as it can forge an empty answer, and nothing else. The tag's spare
-half stays spare: writing it would make the serving node an author of the calling node's own route
-word, and spending neither field is the whole of why an unvalidated tag may cross at all. The
+**A REPLY CARRIES TWO REASONS, THE REFUSAL OF A PORT DEAD FOR GOOD AND A COPY REFUSED ON THE
+SERVING NODE, AND THE EMPTY REPLY STILL CARRIES NONE.** The user-visible contract is the local one
+(N7; ruled 2026-11-22, refined 2026-11-25): a call to an endpoint dead for good answers
+ECONNREFUSED, and a rendezvous whose copy is refused answers both ends EFAULT. A reply's badge word,
+the serving node's own writing and never the caller's route, carries the reason; the caller spends
+it through one comparison, so a malformed peer can forge one exactly as it can forge an empty
+answer, and nothing else. The serving node never writes the tag: writing it would make it an author
+of the calling node's own route word, and the window layer spending neither field is the whole of
+why an unvalidated tag may cross at all. The calling node's own `REPLY_SEND` bit in it is read by
+the serving node's landing alone. The
 zero-length PORT_REPLY is still a genuine empty answer, a call refused past its take, a caller
 whose route was abandoned, and a deferred answer, and adding a code to those earns nothing: each is
 unretryable from inside the kernel and the policy is the workload's by the clause above. **That
@@ -992,22 +1010,18 @@ image every time an arm is added.
 **A SEND OR A CALL FINDING NOTHING PARKED ON THE PORT IS HELD FOR THE PORT'S NEXT RECEIVE**, as a
 local one waits for a receiver. A held one keeps its slot until a receiver of the port takes it, a
 call as a call, or the port's last receiver leaves and refuses it, and it fills that port's lane
-alone (N6e). A port bound to nothing or with no receiver refuses on the spot. A held call whose
-caller leaves is withdrawn, as a local request is: the caller marks the slot it still holds and
-rings, and the serving node gives the slot back unanswered.
+alone (N6e). A port bound to nothing or whose endpoint is dead for good refuses on the spot. A held
+send or call whose sender leaves is withdrawn, as a local request is: the sender marks the slot it
+still holds and rings, and the serving node gives the slot back unanswered.
 
 **AND THE MEASUREMENT RULE THAT FOLLOWS FROM IT: AN ARM COUNTING A QUANTITY THE WHOLE PARTITION
-CONTRIBUTES TO MUST OWN THE WHOLE WINDOW.** A far SEND to a port a peer THREAD serves is answered
-by that thread, and that answer names no caller, so it lands at the sender as a dropped reply at
-a moment the sender does not control. An arm counting dropped replies over a window therefore
-counts somebody else's traffic unless nothing of its own is still in flight. The general form:
-where a counter is fed by every node, an arm reading a DELTA of it owes an empty partition for
-the length of that delta, and the way to get one is to leave nothing outstanding rather than to
-widen the tolerance. The contributor set widened once every post-take refusal began publishing an
-answer: a far SEND parks nobody and carries the no-route tag, so the answer published for it, by
-the receive that lands it or by its port's last receiver leaving, lands at the SENDER as a dropped
-reply, and a node now feeds that counter with the consequences of its own sends as well as with a
-peer thread's replies.
+CONTRIBUTES TO MUST OWN THE WHOLE WINDOW.** An answer whose sender has left, a withdrawn request's
+late answer or one to a caller that timed out, lands at the calling node as a dropped reply at a
+moment that node does not control. An arm counting dropped replies over a window therefore counts
+somebody else's traffic unless nothing of its own is still in flight. The general form: where a
+counter is fed by every node, an arm reading a DELTA of it owes an empty partition for the length of
+that delta, and the way to get one is to leave nothing outstanding rather than to widen the
+tolerance.
 
 **AND THE SECOND WAY TO OWN A WINDOW, which the rule above does not name: read the delta INSIDE
 the critical section that produced it.** A forge that publishes, takes and dispatches under one
@@ -1020,8 +1034,8 @@ sequence could separate those: a window SUM is not an attribution, however narro
 
 **A PEER THAT IS A WINDOW LAYER IS A WEAKER ENVIRONMENT THAN A PEER THAT IS A THREAD, and that
 is the half worth writing down.** It is weaker in what it HOLDS and not in whether it answers: the
-window layer answers the echo port with the payload and refuses every other taken call with a
-reply carrying the tag, so it is a stray source of its own. What it does not do is occupy a
+window layer refuses every taken call with a reply carrying the tag, so it is a stray source of its
+own. What it does not do is occupy a
 receiver, keep state between calls, or choose the moment it answers. So the conclusion stands and
 its reason narrows: an arm that will one day face a thread is not validated by passing against a
 body, and what it is not validated against is WHEN the answer comes and WHOM it names, never
@@ -1167,12 +1181,13 @@ does not name has no capability at all**, and a user meets that where they ASK f
 in an answer that never comes. Silent non-delivery is what this work has been bitten by three
 times (N6f), and this is the fourth place it was refused.
 
-**THE WINDOW LAYER KEEPS TWO PORTS AND THE PARTITION MAY NOT SERVE ONE OF THEM.** Port 1 carries
-every reply and is routed to the caller its token names, so no node can serve it and an entry
-naming it is refused at configure. Port 0 is the echo the window layer answers with no thread
-involved; the partition MAY name it for a peer, which is how it names what a node running no
-kernel of its own can answer, and may not name it for a node that runs one, since such a node
-binds every port the partition names it and would take the echo from the layer that owns it.
+**THE WINDOW LAYER KEEPS ONE PORT, AND THE PARTITION MAY NOT SERVE IT.** Port 1 carries every
+reply and is routed to the caller its token names, so no node can serve it and an entry naming it
+is refused at configure. Every other port of the mint's width is the partition's. **The window
+layer answers no request with bytes of its own (ruled 2026-11-25)**: an echo answered inside the
+doorbell service was test code in the kernel, and a peer the tests call is an ordinary echo
+SERVICE on a node that runs a kernel. A node that runs none, a peer core under the shared image,
+answers every request with a refusal.
 
 **THE OUTBOUND SIDE TAKES THE SAME SHAPE, AND THAT CLOSES A HOLE RATHER THAN WORKING AROUND ONE.**
 Section 7 recorded that the far-endpoint mint syscall had no reachable caller, root being

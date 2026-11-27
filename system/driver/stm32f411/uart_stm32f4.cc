@@ -4,16 +4,15 @@
 // STM32F411 USART backend of <kickos/driver/uart.h>. Register facts are clean-room from
 // RM0383 Rev 4 sec.19; no vendor HAL/CMSIS source.
 //
-// The instance base arrives in the cfg, so this one body serves any USART on the part; the
-// console channel is USART2, the only one a composition grants.
+// The instance base arrives in the cfg, so this one body serves any USART on the part.
 //
-// Clock gating belongs to the kernel: RCC_APB1ENR (RM0383 sec.6.3.11) is an
+// Clock gating belongs to the kernel: RCC (RM0383 sec.6.3.11, 6.3.12) is an
 // arch_reserved_blocks entry no domain can be granted, and arch_init has already clocked the
-// console channel before open() runs. APB1 carries no bus-side supervisor-protect register,
-// so a granted window is live the moment it is granted.
+// console channel before open() runs. Neither APB carries a bus-side supervisor-protect
+// register, so a granted window is live the moment it is granted.
 //
-// THE PIN MUX LIVES IN GPIOA, OUTSIDE THIS WINDOW: PA2/PA3 are the console channel's pins,
-// and arch_pinmux_set holds both as kernel-owned.
+// THE PIN MUX LIVES IN GPIO, OUTSIDE THIS WINDOW: the console channel's pins are the board
+// file's, and arch_pinmux_set holds both as kernel-owned.
 //
 // ORE (SR bit 3) is the trap on this part: a bare DR read clears RXNE but NOT ORE, and with
 // RXNEIE armed a stuck ORE holds the single USART vector asserted forever. Every error latch

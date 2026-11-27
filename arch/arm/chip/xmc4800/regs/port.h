@@ -20,6 +20,7 @@ namespace kickos::xmc::reg::port
         constexpr uintptr_t OMR = 0x04;    // Output Modification (set/reset in one write)
         constexpr uintptr_t IOCR0 = 0x10;  // IOCRx group = IOCR0 + (pin/4)*4 (IOCR0/4/8/12)
         constexpr uintptr_t IN = 0x24;     // RM 26.8.6: read-only pad input (readable even as PP output)
+        constexpr uintptr_t HWSEL = 0x74;  // RM 26.8.8: 2 bits/pin, non-zero hands the pin to a peripheral
     }
 
     // The IOCR register controlling `pin` and the PC-field position within it.

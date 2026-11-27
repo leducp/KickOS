@@ -659,6 +659,14 @@ size_t arch_aspace_create_pages(void);
 // already mapped, or one the map refuses. O(the range's tables).
 size_t arch_aspace_map_tables(struct arch_aspace* space, uintptr_t va, size_t pages);
 
+// The table frames a map of [va, va + pages) can add to any space, whatever it holds already:
+// an upper bound of arch_aspace_map_tables over every space. 0 for a range the map refuses.
+size_t arch_aspace_range_tables(uintptr_t va, size_t pages);
+
+// The table frames a map of `pages` granules can add to any space at any address: an upper
+// bound of arch_aspace_range_tables over every va.
+size_t arch_aspace_run_tables(size_t pages);
+
 // Map pages granules from va to pa, or unmap them. Changes, including maps
 // into empty slots, must be visible locally on return. The active space may
 // be edited. Wait for peers on multicore; remote unmap maintenance may be
@@ -875,8 +883,10 @@ void arch_console_reclaim(void);
 // comes from the backend, never userspace. A size of zero means no window.
 void arch_console_reclaim_window(uintptr_t* base, size_t* size);
 
-// Optional diagnostic LED, usable before drivers and during faults.
-// Initialize once at boot; set the raw level with on != 0. Both default to no-op.
+// Optional diagnostic LED, driven only at the terminal panic: its pin is an ordinary GPIO a task
+// may hold until then. The init takes the pin back from whatever state a task left it in (clock
+// gate, mux, direction) and writes no other pin's bits; it runs with interrupts masked, under no
+// lock, possibly while another core runs. Set the lit state with on != 0. Both default to no-op.
 void arch_diag_led_init(void);
 void arch_diag_led_set(int on);
 
@@ -961,11 +971,16 @@ uint32_t kickos_amp_node_core(uint32_t node);
 #endif
 
 // Allocate/free a physical frame for translation tables through the kernel
-// allocator. Frames are granule-sized and aligned; contents are undefined.
+// allocator, the calling thread's armed reserve first (kickos/aspace.h,
+// presync_tables_arm). Frames are granule-sized and aligned; contents are undefined.
 // Zero means exhaustion (ARCH_ASPACE_ENOMEM). Backends must not keep separate
 // frame pools. Available with KICKOS_HAVE_ASPACE.
+// kickos_frame_free takes a table frame only: the kernel counts tables by these two calls
+// (KOS_MEM_TABLES_HELD). A frame a leaf names goes back through kickos_leaf_free, which
+// ignores one the pool does not own, such as a device page.
 arch_phys_addr_t kickos_frame_alloc(void);
 void kickos_frame_free(arch_phys_addr_t frame);
+void kickos_leaf_free(arch_phys_addr_t frame);
 
 // The frame pool's kernel addresses, [*base, *top). The default reads the chip linker
 // script's carve (__kickos_frame_pool_start/_end); a chip whose pool is known only at boot

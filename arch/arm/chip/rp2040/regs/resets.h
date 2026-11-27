@@ -24,6 +24,7 @@ namespace kickos::rp2040::reg::resets
     constexpr uint32_t PLL_USB = 1u << 13;
     constexpr uint32_t TIMER = 1u << 21;
     constexpr uint32_t UART0 = 1u << 22;
+    constexpr uint32_t UART1 = 1u << 23;
     constexpr uint32_t USBCTRL = 1u << 24;
 }
 

@@ -19,6 +19,7 @@
 #include "regs.h"
 #include <kickos/chip_mmap.h>
 #include "board_pins.h"
+#include "uart_class.h"
 #include "irq.h"
 #include "regs/aips.h"
 #include "regs/gpio.h"
@@ -67,8 +68,6 @@ namespace
     constexpr uint32_t CLKDIV1_120MHZ =
         (0u << 28) | ((BUS_DIV - 1u) << 24) | (1u << 20) | (4u << 16);
 
-    static_assert(KICKOS_BOARD_CONSOLE_BASE == mmap::UART0_BASE,
-                  "the board's console is not the UART this backend drives");
 
     constexpr uintptr_t pcr(uint32_t port, uint32_t pin)
     {
@@ -89,40 +88,78 @@ namespace
     }
     constexpr bool LED_LIT = KICKOS_BOARD_LED_ACTIVE_LOW == 0;
 
-    constexpr uintptr_t UART0_BDH = mmap::UART0_BASE + reg::uart::BDH_OFFSET;
-    constexpr uintptr_t UART0_BDL = mmap::UART0_BASE + reg::uart::BDL_OFFSET;
-    constexpr uintptr_t UART0_C1 = mmap::UART0_BASE + reg::uart::C1_OFFSET;
-    constexpr uintptr_t UART0_C2 = mmap::UART0_BASE + reg::uart::C2_OFFSET;
-    constexpr uintptr_t UART0_S1 = mmap::UART0_BASE + reg::uart::S1_OFFSET;
-    constexpr uintptr_t UART0_S2 = mmap::UART0_BASE + reg::uart::S2_OFFSET;
-    constexpr uintptr_t UART0_C3 = mmap::UART0_BASE + reg::uart::C3_OFFSET;
-    constexpr uintptr_t UART0_D = mmap::UART0_BASE + reg::uart::D_OFFSET;
-    constexpr uintptr_t UART0_C4 = mmap::UART0_BASE + reg::uart::C4_OFFSET;
-    constexpr uintptr_t UART0_C5 = mmap::UART0_BASE + reg::uart::C5_OFFSET;
-    constexpr uintptr_t UART0_MODEM = mmap::UART0_BASE + reg::uart::MODEM_OFFSET;
-    constexpr uintptr_t UART0_IR = mmap::UART0_BASE + reg::uart::IR_OFFSET;
-    constexpr uintptr_t UART0_PFIFO = mmap::UART0_BASE + reg::uart::PFIFO_OFFSET;
-    constexpr uintptr_t UART0_CFIFO = mmap::UART0_BASE + reg::uart::CFIFO_OFFSET;
-    constexpr uintptr_t UART0_C7816 = mmap::UART0_BASE + reg::uart::C7816_OFFSET;
+    // A UART's SIM clock gate, and whether the core clock or the bus clock runs it: UART0 and
+    // UART1 the core clock, the others the bus clock (RM 5.7.10).
+    struct uart_row
+    {
+        uintptr_t base;
+        uintptr_t scgc;
+        uint32_t scgc_bit;
+        bool core_clocked;
+    };
+
+    constexpr uart_row UARTS[] = {
+        {mmap::UART0_BASE, reg::sim::SCGC4, reg::sim::SCGC4_UART0, true},
+        {mmap::UART1_BASE, reg::sim::SCGC4, reg::sim::SCGC4_UART1, true},
+        {mmap::UART2_BASE, reg::sim::SCGC4, reg::sim::SCGC4_UART2, false},
+        {mmap::UART3_BASE, reg::sim::SCGC4, reg::sim::SCGC4_UART3, false},
+        {mmap::UART4_BASE, reg::sim::SCGC1, reg::sim::SCGC1_UART4, false},
+        {mmap::UART5_BASE, reg::sim::SCGC1, reg::sim::SCGC1_UART5, false},
+    };
+
+    constexpr uart_row uart_of(uintptr_t base)
+    {
+        for (uart_row const& row : UARTS)
+        {
+            if (row.base == base)
+            {
+                return row;
+            }
+        }
+        return {0, 0, 0, false};
+    }
+
+    constexpr uintptr_t CONSOLE_BASE = KICKOS_BOARD_CONSOLE_BASE;
+    constexpr uart_row CONSOLE_UART = uart_of(CONSOLE_BASE);
+    static_assert(CONSOLE_UART.base != 0u, "the board's console is not a UART of this chip");
+
+    namespace con
+    {
+        constexpr uintptr_t BDH = CONSOLE_BASE + reg::uart::BDH_OFFSET;
+        constexpr uintptr_t BDL = CONSOLE_BASE + reg::uart::BDL_OFFSET;
+        constexpr uintptr_t C1 = CONSOLE_BASE + reg::uart::C1_OFFSET;
+        constexpr uintptr_t C2 = CONSOLE_BASE + reg::uart::C2_OFFSET;
+        constexpr uintptr_t S1 = CONSOLE_BASE + reg::uart::S1_OFFSET;
+        constexpr uintptr_t S2 = CONSOLE_BASE + reg::uart::S2_OFFSET;
+        constexpr uintptr_t C3 = CONSOLE_BASE + reg::uart::C3_OFFSET;
+        constexpr uintptr_t D = CONSOLE_BASE + reg::uart::D_OFFSET;
+        constexpr uintptr_t C4 = CONSOLE_BASE + reg::uart::C4_OFFSET;
+        constexpr uintptr_t C5 = CONSOLE_BASE + reg::uart::C5_OFFSET;
+        constexpr uintptr_t MODEM = CONSOLE_BASE + reg::uart::MODEM_OFFSET;
+        constexpr uintptr_t IR = CONSOLE_BASE + reg::uart::IR_OFFSET;
+        constexpr uintptr_t PFIFO = CONSOLE_BASE + reg::uart::PFIFO_OFFSET;
+        constexpr uintptr_t CFIFO = CONSOLE_BASE + reg::uart::CFIFO_OFFSET;
+        constexpr uintptr_t C7816 = CONSOLE_BASE + reg::uart::C7816_OFFSET;
+    }
 
     // The window arch_console_reclaim rewrites and the one the driver is granted: ONE constant,
     // so a reclaim cannot reach registers whose holder was never checked.
-    constexpr uintptr_t CONSOLE_WIN_BASE = mmap::UART0_BASE;
+    constexpr uintptr_t CONSOLE_WIN_BASE = CONSOLE_BASE;
     constexpr size_t CONSOLE_WIN_SIZE = KICKOS_BOARD_CONSOLE_SIZE;
 
-    static_assert(UART0_BDH >= CONSOLE_WIN_BASE and UART0_BDH < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
-                  and UART0_BDL < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
-                  and UART0_C1 < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
-                  and UART0_C2 < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
-                  and UART0_C3 < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
-                  and UART0_C4 < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
-                  and UART0_C5 < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
-                  and UART0_S2 < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
-                  and UART0_IR < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
-                  and UART0_MODEM < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
-                  and UART0_PFIFO < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
-                  and UART0_CFIFO < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
-                  and UART0_C7816 < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE,
+    static_assert(con::BDH >= CONSOLE_WIN_BASE and con::BDH < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
+                  and con::BDL < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
+                  and con::C1 < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
+                  and con::C2 < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
+                  and con::C3 < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
+                  and con::C4 < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
+                  and con::C5 < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
+                  and con::S2 < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
+                  and con::IR < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
+                  and con::MODEM < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
+                  and con::PFIFO < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
+                  and con::CFIFO < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
+                  and con::C7816 < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE,
                   "arch_console_reclaim writes outside the window it reports");
 
     // Chained PIT channels 0/1 as a 64-bit monotonic down-counter (RM ch.44); DWT_CYCCNT can
@@ -186,33 +223,45 @@ namespace
 
     // From the live SystemCoreClock, with TE/RE clear. BDH goes before BDL, whose write latches
     // the divisor. ALWAYS inlined: reclaim stays straight-line stores.
-    inline __attribute__((always_inline)) void uart0_set_baud(void)
+    inline __attribute__((always_inline)) void console_set_baud(void)
     {
         uint32_t const baud = 115200u;
-        uint32_t const sbr = reg::uart::baud_sbr(SystemCoreClock, baud);
-        uint32_t const brfa = reg::uart::baud_brfa(SystemCoreClock, baud);
-        r8(UART0_BDH) = static_cast<uint8_t>((sbr >> 8) & 0x1F);
-        r8(UART0_BDL) = static_cast<uint8_t>(sbr & 0xFF);
-        r8(UART0_C4) = static_cast<uint8_t>(brfa & 0x1F);
+        uint32_t clk = SystemCoreClock;
+        if constexpr (not CONSOLE_UART.core_clocked)
+        {
+            clk = SystemCoreClock / BUS_DIV;
+        }
+        uint32_t const sbr = reg::uart::baud_sbr(clk, baud);
+        uint32_t const brfa = reg::uart::baud_brfa(clk, baud);
+        r8(con::BDH) = static_cast<uint8_t>((sbr >> 8) & 0x1F);
+        r8(con::BDL) = static_cast<uint8_t>(sbr & 0xFF);
+        r8(con::C4) = static_cast<uint8_t>(brfa & 0x1F);
     }
 
-    void uart0_init()
+    void console_uart_init()
     {
         r32(reg::sim::SCGC5) |= (1u << (reg::sim::SCGC5_PORT_SHIFT + KICKOS_BOARD_CONSOLE_RX_PORT))
                                 | (1u << (reg::sim::SCGC5_PORT_SHIFT + KICKOS_BOARD_CONSOLE_TX_PORT));
-        r32(reg::sim::SCGC4) |= reg::sim::SCGC4_UART0;
+        r32(CONSOLE_UART.scgc) |= CONSOLE_UART.scgc_bit;
         r32(pcr(KICKOS_BOARD_CONSOLE_RX_PORT, KICKOS_BOARD_CONSOLE_RX_BIT)) = pcr_mux(KICKOS_BOARD_CONSOLE_RX_SELECT);
         r32(pcr(KICKOS_BOARD_CONSOLE_TX_PORT, KICKOS_BOARD_CONSOLE_TX_BIT)) = pcr_mux(KICKOS_BOARD_CONSOLE_TX_SELECT);
 
-        r8(UART0_C2) = 0; // disable TX/RX while configuring
-        uart0_set_baud();
-        r8(UART0_C2) = reg::uart::C2_TE | reg::uart::C2_RE; // TIE stays clear; the console ring primes it
+        r8(con::C2) = 0; // disable TX/RX while configuring
+        console_set_baud();
+        r8(con::C2) = reg::uart::C2_TE | reg::uart::C2_RE; // TIE stays clear; the console ring primes it
     }
 
-    int k64_tx_slot_free(void) { return (r8(UART0_S1) & reg::uart::S1_TDRE) != 0; }
-    void k64_tx_push(uint8_t b) { r8(UART0_D) = b; }
-    void k64_tx_irq_enable(void) { r8(UART0_C2) = static_cast<uint8_t>(r8(UART0_C2) | reg::uart::C2_TIE); }
-    void k64_tx_irq_disable(void) { r8(UART0_C2) = static_cast<uint8_t>(r8(UART0_C2) & ~reg::uart::C2_TIE); }
+    int k64_tx_slot_free(void)
+    {
+        if (kickos::mk64f::driver::uart0_tx_ready(CONSOLE_BASE))
+        {
+            return 1;
+        }
+        return 0;
+    }
+    void k64_tx_push(uint8_t b) { r8(con::D) = b; }
+    void k64_tx_irq_enable(void) { r8(con::C2) = static_cast<uint8_t>(r8(con::C2) | reg::uart::C2_TIE); }
+    void k64_tx_irq_disable(void) { r8(con::C2) = static_cast<uint8_t>(r8(con::C2) & ~reg::uart::C2_TIE); }
     console_tx_backend const k64_console_backend = {
         k64_tx_slot_free, k64_tx_push, k64_tx_irq_enable, k64_tx_irq_disable,
         &kickos_console_tx_storage};
@@ -231,14 +280,23 @@ namespace
         uintptr_t scgc;
         uint32_t scgc_bit;
         uint32_t slot;
+        uintptr_t bridge;
     };
 
     bool periph_gate_of(uintptr_t base, PeriphGate* g)
     {
-        if (base == mmap::UART0_BASE)
+        g->bridge = mmap::AIPS0_BASE;
+        uart_row const uart = uart_of(base);
+        if (uart.base != 0u)
         {
-            g->scgc = reg::sim::SCGC4;
-            g->scgc_bit = reg::sim::SCGC4_UART0; // RM 12.2.11
+            g->scgc = uart.scgc;
+            g->scgc_bit = uart.scgc_bit;
+            if (reg::aips::slot_of(base) == reg::aips::SLOT_NONE)
+            {
+                g->bridge = mmap::AIPS1_BASE;
+                g->slot = reg::aips::aips1_slot_of(base);
+                return g->slot != reg::aips::SLOT_NONE;
+            }
         }
         else if (base == mmap::DSPI0_BASE)
         {
@@ -268,7 +326,7 @@ void arch_init(void)
     SystemCoreClock = clocktree::bring_up(CLKDIV1_120MHZ);
     pit_clock_init();
     g_clk.init(SystemCoreClock / BUS_DIV);
-    uart0_init();
+    console_uart_init();
     kickos_armv7m_init();
 }
 
@@ -329,33 +387,32 @@ uint64_t arch_cpu_clock_set(uint32_t target)
     return landed;
 }
 
-// UART0 is system-clocked: its baud must be re-derived on a clock-select, and no byte may be
-// mid-shift at the old baud. Both run under the caller's IrqLock.
+// The console UART's baud must be re-derived on a clock-select, and no byte may be mid-shift at
+// the old baud. Both run under the caller's IrqLock.
 void arch_console_flush_sync(void)
 {
     // TC, not TDRE: TDRE leaves one byte still clocking out.
-    (void)kickos::arch::wait_set(r8(UART0_S1), reg::uart::S1_TC);
+    (void)kickos::arch::wait_set(r8(con::S1), reg::uart::S1_TC);
 }
 
 void arch_console_retune(void)
 {
     // TIE stays clear: the ring re-primes it.
-    r8(UART0_C2) = 0;
-    uart0_set_baud();
-    r8(UART0_C2) = reg::uart::C2_TE | reg::uart::C2_RE;
+    r8(con::C2) = 0;
+    console_set_baud();
+    r8(con::C2) = reg::uart::C2_TE | reg::uart::C2_RE;
 }
 
-// UART0/UART1 are system-clocked; UART2/3/4 and the bus peripherals (DSPI0, PIT) run at the bus
-// clock. Read from the LIVE SystemCoreClock so a retune is reflected; an unmodelled block returns
-// 0. Exact block-base match.
+// Read from the LIVE SystemCoreClock so a retune is reflected; an unmodelled block returns 0.
+// Exact block-base match.
 uint32_t arch_periph_clock_hz(uintptr_t base)
 {
-    if (base == mmap::UART0_BASE or base == mmap::UART1_BASE)
+    uart_row const uart = uart_of(base);
+    if (uart.base != 0u and uart.core_clocked)
     {
         return SystemCoreClock;
     }
-    if (base == mmap::UART2_BASE or base == mmap::UART3_BASE or base == mmap::UART4_BASE
-        or base == mmap::DSPI0_BASE or base == mmap::PIT_BASE)
+    if (uart.base != 0u or base == mmap::DSPI0_BASE or base == mmap::PIT_BASE)
     {
         return SystemCoreClock / BUS_DIV;
     }
@@ -373,11 +430,11 @@ int arch_periph_enable(uintptr_t base)
     }
     // Clock FIRST: a PACR-open but ungated block BusFaults on the holder's first access.
     r32(g.scgc) |= g.scgc_bit;
-    r32(reg::aips::pacr_of(g.slot)) &= ~reg::aips::pacr_sp_bit(g.slot);
+    r32(reg::aips::pacr_of(g.slot, g.bridge)) &= ~reg::aips::pacr_sp_bit(g.slot);
     return 0;
 }
 
-// Sets the slot's SP bit back. The clock stays: the kernel console reclaims UART0 after its
+// Sets the slot's SP bit back. The clock stays: the kernel console reclaims its UART after its
 // driver's death.
 int arch_periph_disable(uintptr_t base)
 {
@@ -386,7 +443,7 @@ int arch_periph_disable(uintptr_t base)
     {
         return -KOS_EINVAL;
     }
-    r32(reg::aips::pacr_of(g.slot)) |= reg::aips::pacr_sp_bit(g.slot);
+    r32(reg::aips::pacr_of(g.slot, g.bridge)) |= reg::aips::pacr_sp_bit(g.slot);
     return 0;
 }
 
@@ -568,7 +625,7 @@ bool arch_console_write_sync(char const* buf, size_t n)
 
 console_tx_backend const* arch_console_tx_backend(int* irq_line)
 {
-    *irq_line = irq::UART0_RXTX_IRQ;
+    *irq_line = KICKOS_BOARD_CONSOLE_LINE_RXTX;
     return &k64_console_backend;
 }
 
@@ -580,27 +637,32 @@ void arch_console_reclaim_window(uintptr_t* base, size_t* size)
     *size = CONSOLE_WIN_SIZE;
 }
 
-// Restores UART0 to polled 8N1 TX for panic output. Runs privileged with IRQs masked and must
+// Restores the console UART to polled 8N1 TX for panic output. Runs privileged with IRQs masked and must
 // tolerate nested re-entry: absolute stores, never read-modify-write on registers the driver may
 // have changed. Clock gates and pin mux are outside the driver's window.
 void arch_console_reclaim(void)
 {
-    r8(UART0_C2) = 0;    // the config registers below require TE/RE clear
-    r8(UART0_C5) = 0;    // DMA request enables
-    r8(UART0_MODEM) = 0; // TXCTSE=0: else the polled writer waits forever on an absent CTS
-    r8(UART0_C3) = 0;    // TXINV=0
-    r8(UART0_S2) = 0;
-    r8(UART0_IR) = 0;    // infrared modulation on the TX pin
-    r8(UART0_C7816) = 0;
-    r8(UART0_PFIFO) = 0;
-    r8(UART0_CFIFO) = reg::uart::CFIFO_TXFLUSH | reg::uart::CFIFO_RXFLUSH;
+    r8(con::C2) = 0;    // the config registers below require TE/RE clear
+    r8(con::C5) = 0;    // DMA request enables
+    r8(con::MODEM) = 0; // TXCTSE=0: else the polled writer waits forever on an absent CTS
+    r8(con::C3) = 0;    // TXINV=0
+    r8(con::S2) = 0;
+    r8(con::IR) = 0;    // infrared modulation on the TX pin
+    if constexpr (CONSOLE_BASE == mmap::UART0_BASE)
+    {
+        r8(con::C7816) = 0; // ISO-7816 is UART0's alone (RM 3.9.6.2)
+    }
+    r8(con::PFIFO) = 0;
+    r8(con::CFIFO) = reg::uart::CFIFO_TXFLUSH | reg::uart::CFIFO_RXFLUSH;
 
-    uart0_set_baud();
+    console_set_baud();
 
-    r8(UART0_C1) = 0;                // 8N1
-    r8(UART0_C2) = reg::uart::C2_TE; // TX only
+    r8(con::C1) = 0;                // 8N1
+    r8(con::C2) = reg::uart::C2_TE; // TX only
 }
 
+// PDDR has no per-pin alias: a read-modify-write, safe only because this runs on the one core with
+// interrupts masked.
 void arch_diag_led_init(void)
 {
     r32(reg::sim::SCGC5) |= (1u << (reg::sim::SCGC5_PORT_SHIFT + KICKOS_BOARD_LED_PORT));

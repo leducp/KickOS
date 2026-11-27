@@ -65,7 +65,7 @@ SYSCALL_NAME = {
     9: "irq_raise", 10: "amp_count",
     11: "notify_create", 12: "monotonic_now", 13: "ram_alloc", 14: "irq_claim",
     15: "notify_wait", 16: "irq_ack", 17: "handle_close",
-    19: "diag_led_set", 22: "cpu_clock_hz",
+    22: "cpu_clock_hz",
     24: "mutex_lock", 25: "mutex_unlock", 26: "endpoint_create",
     28: "notify_bind", 30: "cpu_clock_set",
     32: "periph_clock_hz", 33: "pinmux_set",

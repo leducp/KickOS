@@ -486,8 +486,9 @@ namespace
         EXPECT_EQ(fake::calls_of("kos_send").size(), sends);
     }
 
-    // The console's task ends first, so the endpoint answers as any other one does.
-    TEST_F(Fake, a_vacated_endpoint_answers_at_once_until_its_next_receiver_waits)
+    // The console's task ends first, so the endpoint answers as any other one does: a send waits
+    // while a WAIT or HANDOUT holder remains, and is refused once neither does.
+    TEST_F(Fake, an_endpoint_a_holder_can_still_serve_waits_until_its_next_receiver)
     {
         kos_cap_t ep = KOS_CAP_NONE;
         ASSERT_EQ(kos_endpoint_create(&ep), 0);
@@ -496,36 +497,29 @@ namespace
         ASSERT_EQ(kos_task_slay(served), 0);
         // The creator's WAIT goes before any receiver is seated.
         ASSERT_EQ(kos_cap_narrow(ep, KOS_CAP_SIGNAL | KOS_CAP_TRANSFER | KOS_CAP_HANDOUT), 0);
+        fake::set_console_receives(false);
+        uint64_t const before = fake::now();
+        EXPECT_EQ(kos_send(KOS_CAP_STDOUT, "x", 1u, KOS_POLL), -KOS_EAGAIN)
+            << "a HANDOUT holder remains";
+        EXPECT_EQ(fake::now(), before);
         kos_cap_grant const wait[] = {{ep, KOS_CAP_WAIT}};
         kos_thread_params p = params(task());
         p.caps = wait;
         p.cap_count = 1;
         ASSERT_EQ(spawn(p), 0);
-        fake::set_console_receives(false);
-        uint64_t const before = fake::now();
-        EXPECT_EQ(kos_send(KOS_CAP_STDOUT, "x", 1u, soon()), -KOS_ECONNREFUSED);
-        EXPECT_EQ(kos_send(KOS_CAP_STDOUT, "x", 1u, KOS_NEVER), -KOS_ECONNREFUSED);
-        EXPECT_EQ(fake::now(), before);
         fake::set_console_receives(true);
         EXPECT_EQ(kos_send(KOS_CAP_STDOUT, "x", 1u, soon()), 1);
 
-        // The receiver dies, and the next one seated has not waited yet.
+        // The receiver dies; the handout holder keeps the endpoint servable.
         fake::die("t");
-        EXPECT_EQ(kos_send(KOS_CAP_STDOUT, "x", 1u, soon()), -KOS_ECONNREFUSED)
-            << "the receiver died";
-        kos_thread_params q = params(task());
-        q.caps = wait;
-        q.cap_count = 1;
-        ASSERT_EQ(spawn(q), 0);
-        fake::set_console_receives(false);
-        EXPECT_EQ(kos_send(KOS_CAP_STDOUT, "x", 1u, soon()), -KOS_ECONNREFUSED);
-        EXPECT_EQ(fake::now(), before);
-        fake::set_console_receives(true);
-        EXPECT_EQ(kos_send(KOS_CAP_STDOUT, "x", 1u, soon()), 1);
         fake::set_console_receives(false);
         EXPECT_EQ(kos_send(KOS_CAP_STDOUT, "x", 1u, soon()), -KOS_ETIMEDOUT);
         EXPECT_EQ(fake::now() - before, 1000000u);
         EXPECT_THROW(kos_send(KOS_CAP_STDOUT, "x", 1u, KOS_NEVER), fake::Panic);
+
+        // Nobody left to seat a receiver: dead for good.
+        ASSERT_EQ(kos_cap_narrow(ep, KOS_CAP_SIGNAL | KOS_CAP_TRANSFER), 0);
+        EXPECT_EQ(kos_send(KOS_CAP_STDOUT, "x", 1u, KOS_NEVER), -KOS_ECONNREFUSED);
     }
 
     // While the task it was published for lives, the console parks a send with no receiver,
@@ -543,9 +537,12 @@ namespace
         EXPECT_THROW(kos_send(KOS_CAP_STDOUT, "x", 1u, KOS_NEVER), fake::Panic);
         EXPECT_EQ(fake::reclaims(), 0u) << "the last WAIT going reclaimed the console";
         ASSERT_EQ(kos_task_slay(served), 0);
-        EXPECT_EQ(kos_send(KOS_CAP_STDOUT, "x", 1u, KOS_NEVER), -KOS_ECONNREFUSED)
-            << "the task ended";
+        EXPECT_EQ(kos_send(KOS_CAP_STDOUT, "x", 1u, KOS_POLL), -KOS_EAGAIN)
+            << "the task ended, and a HANDOUT holder remains";
         EXPECT_EQ(fake::reclaims(), 1u);
+        ASSERT_EQ(kos_cap_narrow(ep, KOS_CAP_SIGNAL | KOS_CAP_TRANSFER), 0);
+        EXPECT_EQ(kos_send(KOS_CAP_STDOUT, "x", 1u, KOS_NEVER), -KOS_ECONNREFUSED)
+            << "nobody can serve it";
     }
 
     TEST_F(Fake, a_walk_that_never_stops_calling_fails_rather_than_hangs)

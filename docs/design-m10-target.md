@@ -160,7 +160,7 @@ the code passed to `exit` or `kos_exit`, any `int` and negatives included, `KOS_
 a fault, `KOS_EXIT_CANCELLED` when the entry was cancelled. An `ends` task marked
 dependency-down, or whose start fails, never runs its entry, and the system ends with
 `KOS_EXIT_CANCELLED`. Where a console driver holds stdout the init drains it with `kos_console_flush`, one
-`KOS_UART_DRAIN` call on `KOS_CAP_STDOUT` bounded by `KOS_DRV_HANDOVER_PROBE` (1 s). The driver
+`KOS_UART_DRAIN` call on `KOS_CAP_STDOUT` bounded by `KOS_DRV_SEND_WAIT` (1 s). The driver
 replies once its TX ring and the device's transmit path have drained, as far as the device can
 tell, or once its own bound has expired, and the reply carries which. Drained is the last stop bit
 leaving the pin on every UART, and on USB the host's acknowledgement of the last packet, a
@@ -216,7 +216,7 @@ reports, one line each, a failed start with its step and answer, a death it rele
 that leaves members, each once the slay or the kill has run,
 since a console driver's failed start may still hold stdout. It prints the lines a pass makes once
 the pass's deaths are handled and the restarts they allow are started, so a stalled console delays
-no recovery. Each line is one send on stdout bounded by `KOS_DRV_HANDOVER_PROBE`, what it leaves
+no recovery. Each line is one send on stdout bounded by `KOS_DRV_SEND_WAIT`, what it leaves
 going to the kernel console, so a console driver stalled or holding members past its slay never
 parks the init. Three results are not refusals:
 
@@ -502,7 +502,9 @@ spelled with the manifest's `symbol_prefix`:
 2. **The arena fit, on a region board.** From the arena base the chip script places, the idle and
    root stacks as `arch/common/boot_arena.ld.h` places them, then the private block, each
    watcher's status block, the shared regions, the ring blocks, the reserved stacks and the
-   default stacks, each rounded and aligned as `arch_ram_alloc` places it, end at or below the arena's end. The replay is admission's, with
+   default stacks, each rounded and aligned as `arch_ram_alloc` places it, end at or below the arena's end.
+   The allocator keeps the largest alignment run-up a block skipped, and the first later block that
+   fits takes it (`arch/common/ram_arena.h`); the replay models that too. The replay is admission's, with
    the image's static footprint known. Arm: a composition one stack past the arena.
 3. **The heap.** Where the chip script carves `.userheap` it sizes it by the
    `KICKOS_USER_HEAP_SIZE` link symbol, and the span holds the system's heap, the composition's
@@ -724,6 +726,7 @@ through `add_executable`; the out-of-tree examples on `KickOS::system_default`.
 KOS_SYS_WINDOW_GET,          /* (index, struct kos_window* out) -> 0, or -KOS_EINVAL past the list */
                              /* replaces KOS_SYS_WINDOW_ADDR */
 KOS_SYS_TASK_EXIT_STATUS,    /* (task, int* status) -> 0 once ended, or -KOS_EBUSY / -KOS_EBADF / -KOS_EPERM / -KOS_EFAULT */
+                             /* (superseded: KOS_SYS_TASK_STATE carries the status) */
 KOS_SYS_THREAD_SET_PRIORITY, /* (priority) -> 0, or -KOS_EINVAL / -KOS_EPERM */
 KOS_TASK_DEAD = 1 << 2,      /* enum kos_task_state: set by task_report_death once every member is swept */
 KOS_TASK_ENDED = 1 << 3,     /* enum kos_task_state: set when the entry exits or a member faults */
@@ -732,7 +735,7 @@ KOS_SYS_CONSOLE_PUBLISH,     /* now also -KOS_EACCES: the cap lacks HANDOUT; it 
 
 /* user/include/kickos/sys.h */
 int kos_window_get(uint32_t index, struct kos_window* out);  /* replaces kos_window_addr(base, out) */
-int kos_task_exit_status(kos_task_t task, int* status);
+int kos_task_exit_status(kos_task_t task, int* status);  /* superseded: kos_task_state(task, &status) */
 int kos_thread_set_priority(uint8_t priority);  /* the caller's own base priority */
 /* and the lookups of section 4 */
 

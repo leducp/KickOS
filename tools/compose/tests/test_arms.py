@@ -106,7 +106,7 @@ ARMS = [
      [("protection: { unit: pmsav7, granule: 32, covers_devices: true, memory_type: true }",
        "protection: { unit: pmsav7, granule: 32, covers_devices: true, memory_type: true, regions: 8 }")], False),
     ("form.unknown-field", "mk64f/chip.yaml",
-     [("  uart1: { window: [0x4006B000, 0x20],", "  uart1: { window: [0x4006B000, 0x20], irq: 31,")], False),
+     [("    window: [0x4006B000, 0x20]\n", "    window: [0x4006B000, 0x20]\n    irq: 31\n")], False),
     ("form.unknown-field", "xmc4800/chip.yaml",
      [("ch0: { window: [0x40030000, 0x200] }", "ch0: { window: [0x40030000, 0x200], fifo: 64 }")], False),
     ("form.inapplicable", "xmc4800/chip.yaml",
@@ -119,7 +119,7 @@ ARMS = [
      [("partition_gate: { kind: rdc, device: rdc }", "partition_gate: { kind: rdc, device: rdc, domains: 4 }")], False),
     ("chip.gate-straddle", "esp32c6/chip.yaml", [("ranges: [[0x60000000, 0xB0000]]", "ranges: [[0x60000800, 0xAF800]]")],
      True),
-    ("chip.gate-register", "rp2350/chip.yaml", [("    gate_register: 0xA0\n", "    gate_register: 0xA4\n")], False),
+    ("chip.gate-register", "rp2350/chip.yaml", [("    gate_register: 0xA0\n", "    gate_register: 0x98\n")], False),
     ("chip.gate-register", "rp2350/chip.yaml", [("    gate_register: 0x48\n", "    gate_register: 0xA0\n")], False),
     ("form.unknown-field", "q35/chip.yaml",
      [("cores: { count: [1, 12], smp: true }", "cores: { count: [1, 12], smp: true, threads: 2 }")], False),
@@ -161,7 +161,7 @@ ARMS = [
       ("    pins: [PA5, PA6, PA7]", "    pins: *serial")], False),
     ("form.alias", "stm32f411/f411disco.yaml", [("    pins: [PA5, PA6, PA7]", "    pins: *serial")], False),
     ("form.merge-key", "xmc4800/xmc4800-relax.yaml",
-     [("  led2: { pin: P5.8, active: high }", "  led2: { pin: P5.8, active: high, <<: { owner: kernel } }")], False),
+     [("  led2: { pin: P5.8, active: high }", "  led2: { pin: P5.8, active: high, <<: { diagnostic: true } }")], False),
     ("form.duplicate-key", "stm32f411/chip.yaml", [("lines: { global: 35 }", "lines: { global: 35, global: 39 }")], False),
     ("form.duplicate-key", "stm32f411/chip.yaml", [("arch: armv7m\n", "arch: armv7m\narch: armv7m\n")], False),
     ("form.tag", "stm32f411/chip.yaml", [("chip: stm32f411", "chip: !!str stm32f411")], False),
@@ -253,7 +253,7 @@ ARMS = [
     ("form.name", "stm32f411/chip.yaml", [("PD12: { gpio: gpio.3.12 }", "PD12: { gpio: gpio }")], False),
     ("form.enum", "stm32f411/chip.yaml", [("unit: pmsav7", "unit: pmsav9")], False),
     ("form.enum", "stm32f411/f411disco.yaml", [("active: high", "active: on")], False),
-    ("form.enum", "stm32f411/f411disco.yaml", [("active: high, owner: kernel", "active: high, owner: user")], False),
+    ("form.boolean", "stm32f411/f411disco.yaml", [("active: high, diagnostic: true", "active: high, diagnostic: yes")], False),
     ("form.missing", "stm32f411/chip.yaml", [("chip: stm32f411\n", "")], True),
     ("form.missing", "stm32f411/chip.yaml", [("version: 1\n", "")], True),
     ("form.missing", "stm32f411/f411disco.yaml", [("  device: /dev/usart2\n", "")], True),
@@ -376,7 +376,7 @@ ARMS = [
     ("chip.zero-size", "virt_rv64/chip.yaml", [("page: 0x1000,", "page: 0,")], False),
     ("chip.page-size", "virt_rv64/chip.yaml", [("page: 0x1000,", "page: 0x1800,")], False),
     ("chip.register-outside", "q35/chip.yaml", [("{ index: 0x0 }", "{ index: 0x2 }")], False),
-    ("chip.register-outside", "xmc4800/chip.yaml", [("ccr: 0x040 }", "ccr: 0x200 }")], False),
+    ("chip.register-outside", "xmc4800/chip.yaml", [("ccr: 0x040 }\n  usic1:", "ccr: 0x200 }\n  usic1:")], False),
     ("chip.register-outside", "imx8mp/chip.yaml",
      [("sysreg: true }", "sysreg: true, privileged_registers: { ctl: 0x0 } }")], False),
     (None, "q35/chip.yaml", [("{ index: 0x0 }", "{ index: 0x1 }")], False),
@@ -408,12 +408,16 @@ ARMS = [
      [("  device: /dev/uart0\n", "  device: /dev/uart0\n  pins: { tx: TX0 }\n")], False),
     ("board.pin-reused", "xmc4800/xmc4800-relax.yaml", [("pin: P5.8,", "pin: P1.4,")], False),
     ("board.pin-function", "stm32f411/f411disco.yaml", [("tx: PA2", "tx: PC13")], False),
-    ("board.led-owner", "xmc4800/xmc4800-relax.yaml",
-     [("led2: { pin: P5.8, active: high }", "led2: { pin: P5.8, active: high, owner: kernel }")], False),
+    ("board.led-diagnostic", "xmc4800/xmc4800-relax.yaml",
+     [("led2: { pin: P5.8, active: high }", "led2: { pin: P5.8, active: high, diagnostic: true }")], False),
     ("form.inapplicable", "esp32/chip.yaml", [("  GPIO2: { gpio: gpio.2 }", "  GPIO2: { gpio: { function: gpio.2 } }")], False),
     ("form.missing", "rp2040/chip.yaml", [("GPIO0: { f2: uart0.tx,", "GPIO0: { f2: { input_select: 1 },")], False),
     (None, "rp2040/chip.yaml", [("GPIO0: { f2: uart0.tx,", "GPIO0: { f2: { function: uart0.tx, input_select: 1, ref: \"p.1\" },")],
      False),
+    # An input select wider than the DAISY field its chip file declares.
+    ("form.range", "imx8mp/chip.yaml", [("uart4.rx, input_bits: 4,", "uart4.rx, input_bits: 3,")], False),
+    ("form.range", "imx8mp/chip.yaml", [("uart4.rx, input_bits: 4,", "uart4.rx, input_bits: 0,")], False),
+    ("form.inapplicable", "imx8mp/chip.yaml", [("uart4.tx, gpio:", "{ function: uart4.tx, input_bits: 4 }, gpio:")], False),
     (("board.pin-function", "board.pin-reused"), "mk64f/frdmk64f.yaml", [("[PTD1, PTD2, PTD3]", "[PTD1, PTD2, PTB16]")],
      False),
     ("board.pin-function", "xmc4800/xmc4800-relax.yaml", [("device: /dev/usic0/ch0", "device: /dev/usic0/ch1")], True),
@@ -422,7 +426,11 @@ ARMS = [
     ("form.inapplicable", "esp32c6/esp32c6-wroom.yaml", [("kind: addressable,", "kind: addressable, active: high,")],
      False),
     ("form.missing", "esp32/esp32-wroom.yaml", [("pin: GPIO2, active: high,", "pin: GPIO2,")], False),
-    ("board.led-kind", "esp32c6/esp32c6-wroom.yaml", [("kind: addressable,", "kind: level, active: high,")], False),
+    (None, "esp32c6/esp32c6-wroom.yaml", [("kind: addressable,", "kind: level, active: high,")], False),
+    ("form.enum", "esp32c6/chip.yaml", [("led: [level, addressable]", "led: [level, rgb]")], False),
+    ("form.type", "esp32c6/chip.yaml", [("led: [level, addressable]", "led: addressable")], False),
+    ("form.missing", "esp32c6/chip.yaml", [(", addressable_led: rmt", "")], False),
+    ("chip.device-unknown", "esp32c6/chip.yaml", [("addressable_led: rmt", "addressable_led: rmt0")], False),
     ("board.led-kind", "esp32/esp32-wroom.yaml", [("pin: GPIO2, active: high,", "pin: GPIO2, kind: addressable,")],
      False),
     ("form.enum", "esp32c6/esp32c6-wroom.yaml", [("kind: addressable,", "kind: rgb,")], False),
@@ -974,6 +982,15 @@ ADMISSION_ARMS = [
        "        lines: { irq: /dev/usic0/sr0 }\n        serves: /svc/console\n        priority: 10\n"
        "        accepts: [coarse_gate]\n")], [], False),
     (None, "xmc4800-relax.yaml", XMC_HOSTED, [XMC_SSC_BLOCK], False),
+    # `/dev/console` names the board's console device, here USIC0's channel 0.
+    (None, "xmc4800-relax.yaml", [("devices: [/dev/usic0/ch0]", "devices: [/dev/console]")], [], False),
+    # The console driver serving `stdout` on another channel than the board's console.
+    ("ownership.console", "xmc4800-relax.yaml",
+     [XMC_CONSOLE_ACCEPTS, ("devices: [/dev/usic0/ch0]", "devices: [/dev/usic1/ch0]")], [], False),
+    # A console driver serving no `stdout` holds the console device all the same.
+    (("ownership.console", "scheduling.console-driver"), "xmc4800-relax.yaml",
+     [XMC_CONSOLE_ACCEPTS, ("stdout: /svc/console", "stdout: kernel"), ("/dev/usic0/ch0]", "/dev/usic1/ch0]"),
+      ("{ irq: /dev/usic0/sr0 }", "{ irq: /dev/usic1/sr0 }")], [], True),
     ("supply.hosted-block", "qemu-arm64.yaml", [ARM64_HOSTED, ARM64_CEILING, ARM64_HOSTED_CORE],
      [PLAIN_DRIVER, PLAIN_BLOCK], False),
     ("encoding.window", "xmc4800-relax.yaml", [], [("  smallest_window: 32\n", "  smallest_window: 0x400\n")], True),
@@ -1890,6 +1907,23 @@ def on_xmc(edits, expect, chip_edits, manifest, names=None):
                     platform_edits=(("xmc4800/chip.yaml", chip_edits),), manifest=manifest, names=names)
 
 
+def on_xmc_board(edits, expect, board_edits):
+    return composed("xmc4800-relax.yaml", read(os.path.join(SYSTEMS, "xmc4800-relax.yaml")), edits, expect,
+                    platform_edits=(("xmc4800/xmc4800-relax.yaml", board_edits),), manifest=XMC_MANIFEST)
+
+
+# The board's console moved to USIC1's channel 0, and the console driver on `/dev/console`.
+XMC_CONSOLE_USIC1 = [("  device: /dev/usic0/ch0\n  pins: { dout0: P1.5, dx0: P1.4 }\n", "  device: /dev/usic1/ch0\n")]
+XMC_ALIASED = ("    devices: [/dev/usic0/ch0]\n    lines: { irq: /dev/usic0/sr0 }\n    serves: /svc/console",
+               "    devices: [/dev/console]\n    lines: { irq: /dev/usic0/sr0 }\n    serves: /svc/console")
+# The board with no console device, its console on semihosting.
+XMC_NO_CONSOLE = [("console:\n  device: /dev/usic0/ch0\n  pins: { dout0: P1.5, dx0: P1.4 }\n",
+                   "console:\n  semihosting: true\n")]
+# USIC0's channels and USIC1's, each module's other channel left unheld.
+XMC_UNSHARED = [XMC_SPI_ACCEPTS, ("    serves: /svc/console\n    priority: 12\n    accepts: [coarse_gate]\n",
+                                  "    serves: /svc/console\n    priority: 12\n")]
+
+
 K64F_SCRATCH = [("  dspi0: { window: [0x4002C000, 0x40],",
                  "  scratch: { window: [0x4002C800, 0x40] }\n  dspi0: { window: [0x4002C000, 0x40],")]
 K64F_BESIDE_PIT = [("  dspi0: { window: [0x4002C000, 0x40],",
@@ -2042,6 +2076,10 @@ IMX_AMP = amp_of(manifest_of("imx8mp-evk", "imx8mp", "armv8a", XMC_PROTECTION.re
                              1, ARM64_POOLS, (2816, 12288, 4096, 20480, "none")),
                  1, "[[0, 2], [1, 3]]", "0x10000", "cached",
                  "[[0x40000000, 0x4000000], [0x44000000, 0x4000000]]", "[0x48000000, 0x20000]")
+RP_CONSOLES = mutate(RP_AMP, [("    nodes: 2\n", "    nodes: 2\n    consoles: [/dev/uart1, none]\n")])[0]
+RP_OWN_CONSOLE = [("stdout: kernel", "stdout: /svc/console"),
+                  ("tasks:\n", "tasks:\n  - name: con\n    driver: xmcuartirq\n    devices: [/dev/uart1]\n"
+                   "    lines: { irq: /dev/console/irq }\n    serves: /svc/console\n    priority: 12\n")]
 
 PING = """version: 1
 board: %s
@@ -2114,6 +2152,9 @@ FAR_STDOUT = {0: [("    uses: [/amp/3]\n", "    uses: [/amp/3]\n    serves: /amp
               1: [("stdout: kernel", "stdout: /amp/2")]}
 SPARE = ("    maps: { /shm/book: rw }\n", "    maps: { /shm/book: rw }\n  - name: spare\n    program: spare_main\n"
          "    stack: 8192\n    priority: 8\n    ceiling: 8\n    serves:  /amp/3\n")
+# A hosted driver serving node 1's second crossing.
+HOSTED_CROSSING = ("    serves: /amp/3\n", "    serves: /amp/3\n    drivers:\n"
+                   "      - { driver: plain, serves: /amp/4, priority: 9 }\n")
 C6_HP_SMALL = [("regions: { value: 16,", "regions: { value: 2,")]
 # The HP gate fronting less than timg1.
 C6_HP_NARROW = [("ranges: [[0x60000000, 0xB0000]]", "ranges: [[0x60000000, 0x9000]]")]
@@ -2238,6 +2279,7 @@ SCENARIOS = [
     ("ownership.kernel", on_imx([("[/dev/sai5, /dev/sai6]", "[/dev/sai5, /dev/sai6, /dev/mu1_a]")],
                                 [("    devices: ", "ownership.kernel")])),
     (None, on_rx([], [])),
+    (None, on_c6([("    devices: [/dev/gpio]", "    devices: [/dev/gpio, /dev/rmt]")], [])),
     ("ownership.kernel", on_c6([("    devices: [/dev/gpio]", "    devices: [/dev/gpio, /dev/gpio_matrix]")],
                                [("    devices: ", "ownership.kernel")])),
     ("ownership.kernel", on_c6([("    devices: [/dev/gpio]", "    devices: [/dev/gpio, /dev/lp_tee]")],
@@ -2367,6 +2409,15 @@ SCENARIOS = [
      on_imx([("[/dev/sai5, /dev/sai6]", "[/dev/sai5, /dev/sai6, /dev/sdma1]\n    accepts: [bus_master]"),
              ("ends: never\n", "ends: never\nshared:\n  - name: /shm/ring\n    size: 64\n    cache: cached\n")],
             [("    cache: cached", "memory.cached-incoherent")], IMX_MANIFEST)),
+    # The console's line left on USIC0 when the console moves: refused; named through the alias, it follows.
+    ("ownership.console", on_xmc_board([XMC_ALIASED] + XMC_UNSHARED,
+                                       [("    lines: { irq: /dev/usic0/sr0", "ownership.console")], XMC_CONSOLE_USIC1)),
+    (None, on_xmc_board([XMC_ALIASED, ("{ irq: /dev/usic0/sr0 }", "{ irq: /dev/console/sr0 }")] + XMC_UNSHARED, [],
+                        XMC_CONSOLE_USIC1)),
+    # `/dev/console` on a board with no console is no device.
+    ("name.device-unknown", on_xmc_board(XMC_KERNEL_CONSOLE + [XMC_SPI_ACCEPTS, ("    uses: [/svc/sensor]\n",
+                                                                "    uses: [/svc/sensor]\n    devices: [/dev/console]\n")],
+                                         [("    devices: [/dev/console]", "name.device-unknown")], XMC_NO_CONSOLE)),
     ("encoding.window", on_xmc([], [("    devices: [/dev/usic0/ch1]", "encoding.window")],
                                [("ch1: { window: [0x40030200, 0x200] }", "ch1: { window: [0x40030280, 0x100] }")], XMC_MANIFEST)),
     (None, on_xmc([], [], [("ch1: { window: [0x40030200, 0x200] }", "ch1: { window: [0x40030280, 0x100] }")],
@@ -2429,6 +2480,12 @@ SCENARIOS = [
                        {0: [("    uses: [/amp/3]\n", "    uses: [/amp/3]\n    serves: /amp/2\n    devices: [/dev/uart1]\n")],
                         1: FAR_STDOUT[1]}, [], ARM64_NONE1)),
     (None, partitioned("arm64", ARM64_PAIR, {0: OWN_CONSOLE}, [], ARM64_CONSOLES)),
+    # `/dev/console` on a node whose console is `none` is no device.
+    ("name.device-unknown", partitioned("arm64", ARM64_PAIR,
+                                        {0: FAR_STDOUT[0],
+                                         1: FAR_STDOUT[1] + [("    serves: /amp/3\n",
+                                                              "    serves: /amp/3\n    devices: [/dev/console]\n")]},
+                                        [(1, "    devices: ", "name.device-unknown")], ARM64_NONE1)),
     ("ownership.console", partitioned("arm64", ARM64_PAIR,
                                       {0: [("    uses: [/amp/3]\n", "    uses: [/amp/3]\n    devices: [/dev/uart0]\n")]},
                                       [(0, "    devices: ", "ownership.console")], ARM64_CONSOLES)),
@@ -2440,12 +2497,15 @@ SCENARIOS = [
                                    [(0, "    uses: ", "partition.port")], ARM64_AMP)),
     ("partition.port", partitioned("arm64", ARM64_PAIR, {0: [("uses: [/amp/3]", "uses: [/amp/1]")]},
                                    [(0, "    uses: ", "partition.port")], ARM64_AMP)),
-    (None, partitioned("arm64", ARM64_PAIR, {0: [("uses: [/amp/3]", "uses: [/amp/0, /amp/3]")]}, [],
-                       ARM64_AMP.replace("[[0, 2], [1, 3], [1, 4]]", "[[0, 2], [1, 0], [1, 3], [1, 4]]"))),
+    ("partition.unserved", partitioned("arm64", ARM64_PAIR, {0: [("uses: [/amp/3]", "uses: [/amp/0, /amp/3]")]},
+                                       [(0, "    uses: ", "partition.unserved")],
+                                       ARM64_AMP.replace("[[0, 2], [1, 3], [1, 4]]", "[[0, 2], [1, 0], [1, 3], [1, 4]]"))),
     ("partition.port", partitioned("arm64", ARM64_PAIR, {1: [("serves: /amp/3", "serves: /amp/2")]},
                                    [(1, "    serves: ", "partition.port")], ARM64_AMP)),
     ("partition.port", partitioned("arm64", ARM64_PAIR, {1: [SPARE]}, [(1, "    serves:  /amp/3", "partition.port")],
                                    ARM64_AMP)),
+    ("partition.port", partitioned("arm64", ARM64_PAIR, {1: [HOSTED_CROSSING]},
+                                   [(1, "      - { driver: plain", "partition.port")], mutate(ARM64_AMP, [PLAIN_DRIVER])[0])),
     (None, partitioned("arm64", ARM64_PAIR, FAR_STDOUT, [], ARM64_AMP)),
     ("partition.port", partitioned("arm64", ARM64_PAIR, {1: [("stdout: kernel", "stdout: /amp/9")]},
                                    [(1, "stdout: ", "partition.port")], ARM64_AMP)),
@@ -2527,11 +2587,21 @@ SCENARIOS = [
     ("partition.cached-incoherent", partitioned("imx", IMX_PAIR, {0: [IMX_ACCEPT]},
                                                 [(1, "    cache: ", "partition.cached-incoherent")], IMX_AMP)),
     (None, partitioned("c6", C6_PAIR, {}, [], C6_AMP)),
+    # A node's own console UART, to its own console driver: the gate assigns it that node.
+    (None, partitioned("rp", RP_PAIR, {0: RP_OWN_CONSOLE + FAR_STDOUT[0], 1: FAR_STDOUT[1]}, [], RP_CONSOLES)),
     ("partition.gate-budget", partitioned("c6", C6_PAIR, {1: [("    serves: /amp/3\n",
                                                                 "    serves: /amp/3\n    devices: [/dev/lp_uart]\n")]},
                                           [(1, "    devices: ", "partition.gate-budget")], C6_AMP)),
     (None, partitioned("c6", C6_PAIR, {1: [("    serves: /amp/3\n", "    serves: /amp/3\n    devices: [/dev/timg1]\n")]},
                        [], C6_AMP)),
+    ("partition.led", partitioned("c6", C6_PAIR, {1: [("    serves: /amp/3\n", "    serves: /amp/3\n    devices: [/dev/rmt]\n")]},
+                                  [(1, "    devices: ", "partition.led")], C6_AMP, names="`rmt`")),
+    (None, partitioned("c6", C6_PAIR, {1: [("    serves: /amp/3\n", "    serves: /amp/3\n    devices: [/dev/gpio]\n")]},
+                       [], C6_AMP)),
+    (None, partitioned("c6", C6_PAIR, {0: [("    uses: [/amp/3]\n", "    uses: [/amp/3]\n    devices: [/dev/rmt, /dev/gpio]\n")]},
+                       [], C6_AMP)),
+    (None, partitioned("c6", C6_PAIR, {1: [("    serves: /amp/3\n", "    serves: /amp/3\n    devices: [/dev/rmt]\n")]},
+                       [], C6_AMP, [("esp32c6/esp32c6-wroom.yaml", [("kind: addressable,", "active: high,")])])),
     ("partition.gate-budget", partitioned("c6", C6_PAIR, {}, [(0, "version: ", "partition.gate-budget")], C6_AMP,
                                           [("esp32c6/chip.yaml", C6_HP_SMALL)])),
     ("partition.gate-budget", partitioned("c6", C6_PAIR, {0: LONE}, [(0, "version: ", "partition.gate-budget")],

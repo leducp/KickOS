@@ -67,7 +67,7 @@ code wins, then this file.
 
 ## Status matrix
 
-| Board (preset) | SoC / core | LED (blink) | Console | Flash tool | HW-validated |
+| Board (preset) | SoC / core | Diagnostic LED | Console | Flash tool | HW-validated |
 |---|---|---|---|---|---|
 | `sim` | host process | -- | host stdout | `ctest --preset sim` | [x] CI |
 | `qemu` | mps2-an386 / M4 | -- | semihosting | `ctest --preset qemu` | [x] CI, plain and under PMSAv7 enforcement (the ARM runtime enforcement gate -- see *CI coverage* below) |
@@ -80,7 +80,7 @@ code wins, then this file.
 | `imx8mp-evk` | QEMU imx8mp-evk / NXP i.MX 8M Plus, quad Cortex-A53 | -- | i.MX UART1 at `0x30860000` | `ctest --preset imx8mp-evk` | (!) **emulated only, and BUILD-ONLY in CI** (the `host` gates; the run gate is a bench step, no runner's emulator modelling the die): witnessed 2026-09-02 under `qemu-system-aarch64` 11.1.0 at 48 of 48. The SECOND armv8a part and the first whose interrupt controller is the die's rather than a machine option. **ONE CORE OF THE FOUR**: the machine models no way to release a secondary -- see *Per-board caveats* below |
 | `qemu-riscv64` | QEMU virt / RV64IMAC (QEMU's generic `rv64` core, no `-cpu`) | -- | NS16550A UART at `0x10000000` | `ctest --preset qemu-riscv64` | (!) **emulated only, and gated in CI**: witnessed 2026-08-29 under `qemu-system-riscv64` 11.0.3 with `-M virt -bios none` at 52 of 52. Sv39 paging, the **base** posture. There is no rv64 silicon on this bench, so there is no hardware run. See *Per-board caveats* below |
 | `qemu-riscv64-sv48` | the SAME board and image, `KICKOS_CONFIG_VARIANT=sv48` | -- | as above | `ctest --preset qemu-riscv64-sv48` | (!) **emulated only, and gated in CI**: witnessed 2026-08-29 at 52 of 52, same QEMU, the same set as the base posture. **Sv48 paging: one more table level and one more boot table page**, out of one source tree with no edit between the two postures. See *Per-board caveats* below |
-| `qemu-x86_64` | QEMU q35 (ICH9) / x86_64 | -- | COM1, a 16550 at I/O port `0x3f8`, 115200 | `ctest --preset qemu-x86_64` | (!) **emulated only, and gated in CI**: witnessed 2026-08-28 under `qemu-system-x86_64` 11.0.3 on TCG with OVMF (EDK II) firmware, the image booted as a PE32+ UEFI application off an EFI system partition built per run. There is no x86 silicon on this bench, so there is no hardware run; the chip translates, and the kernel half carries no U/S bit, so ring 3 cannot reach kernel memory; SMEP and SMAP keep the kernel out of user pages where the processor offers them (`qemu_x86_64_uaccess`). See *Per-board caveats* below |
+| `qemu-x86_64` | QEMU q35 (ICH9) / x86_64 | -- | COM1, a 16550 at I/O port `0x3f8`, 115200 | `ctest --preset qemu-x86_64` | (!) **emulated only, and gated in CI**: witnessed 2026-08-28 under `qemu-system-x86_64` 11.0.3 on TCG with OVMF (EDK II) firmware, the image booted as a PE32+ UEFI application off an EFI system partition built per run. There is no x86 silicon on this bench, so there is no hardware run; the chip translates, and the kernel half carries no U/S bit, so ring 3 cannot reach kernel memory; SMEP and SMAP, which the floor requires, keep the kernel out of user pages (`qemu_x86_64_uaccess`). See *Per-board caveats* below |
 | `esp32c6-wroom` | ESP32-C6-WROOM-1 / RV32IMAC | GP8 (WS2812B, LED2) | UART0, GP16/GP17, 115200 -> CH343P VCOM (`/dev/ttyACM0`) | esptool | [x] **the selftest is FOUR images on the enforcing variants (FIVE on the bench one)** (see *The selftest ships as SEVERAL images on three boards*), full selftest + PMP NAPOT enforcement + `mpu_fault` trap + diag-LED + bench; the `c6blink` granted-GPIO window is the canonical per-thread PMP proof. **The core runs at 40 MHz**, the reset selection (XTAL / 1) the ROM leaves: KickOS sets no clock tree, `MTIME` counts `CPU_CLK`, and `Reset_Handler` reads that rate off PCR before the constructors, so a boot that keeps the PLL converts at its rate instead, and a rate that is not 160 MHz >> n stops the boot with a printed refusal that only a reset leaves; `wallclock` holds a kernel sleep against the capture host's arrival stamps. **Second board with an UNPRIVILEGED root, and the first on RISC-V PMP** (2026-07-28) -- see *Unprivileged root* below. **Multiple physical units exist, and the 2026-07-28 pass was luck-dependent**: `esp32c6.ld` linked `.data` with an LMA outside every loaded segment, so `Reset_Handler` copied uninitialised SRAM over correctly-placed `.data`. Whether that corrupted anything load-bearing varied by die and power-on history. Fixed 2026-07-30 and pinned by an `ASSERT` (`_sidata == _sdata` in the shared RV32 body `arch/riscv/common/rv32imac.ld.h`, which `esp32c6.ld` enables with `KICKOS_RV32_LOADS_AT_VMA`), and the post-fix re-witness closes the owed `c6blink` mux-write arm -- see *M4.5.6* below |
 | `esp32-wroom` | ESP32 / Xtensa LX6 @240 MHz | GP2 (D2, active-high) | UART0, GP1/GP3, 115200 -> CH340 (`/dev/ttyUSB1`) | esptool | [x] 8/8 apps incl fault dump + bench |
 | `rx72m` | RX72M / RXv3 @240 MHz | -- (LED6, P80, is `rxdrv`'s) | SCI6 ASC, PB1/PB0, 115200 -> FT232 (`/dev/ttyUSB0`); ring | `rfp-cli` (Renesas Flash Programmer) | [x] full selftest + stress + `RX EXCEPTION` dump (2026-07-09); RX-MPU enforcement selftest + `mpu_fault` cross-domain trap + `rxdrv` granted peripheral window (2026-07-17); DPFPU switch + bench. **Fourth board with an UNPRIVILEGED root, and the only one on the RX MPU** (2026-07-28) -- see *Unprivileged root* below. Re-witnessed 2026-07-30 at a clean `270b6fa`, closing the owed stage-4 `rxdrv` mux-write arm and the M4.5.5 granular-shaping debt in one visit -- see *M4.5.6* below. **No CI gate** -- see *CI coverage* below |
@@ -140,11 +140,10 @@ and gates on CDC host-drain, so app/boot output is dropped; UART0 does not.
   (UsageFault UNDEFINSTR escalated to HardFault, on PSP). Connect-under-reset was needed only
   once, to displace unknown prior firmware -- a KickOS-flashed board reflashes with a **plain
   connect** (KickOS leaves the SWD pins PTA0/PTA3 alone). Its distinguishing feature -- the
-  **SYSMPU** -- is the M2 enforcement backend, and it signed off there. The kernel
-  diagnostic LED is the onboard RGB **red, PTB22, active-low**
-  (`arch_diag_led_init`/`_set` in `arch/arm/chip/mk64f/chip_mk64f.cc`, the pin from the board
-  file), and `arch_pinmux_set` refuses PTB22 along with the console pins PTB16/PTB17 so a pinmux
-  request cannot steal it.
+  **SYSMPU** -- is the M2 enforcement backend, and it signed off there. The diagnostic LED is
+  the onboard RGB **red, PTB22, active-low** (`arch_diag_led_init`/`_set` in
+  `arch/arm/chip/mk64f/chip_mk64f.cc`, the pin from the board file); `arch_pinmux_set` refuses
+  the console pins PTB16/PTB17, and PTB22 is a task's to mux.
 - **`teensy41`** -- the fleet's only **Cortex-M7**, and the M7 is the one core here that
   speculates. Under enforcement a dropped (non-pow2) whole-arena grant leaves a privileged
   thread on the PRIVDEFENA background, which types the whole 1 GiB FlexSPI/SEMC aperture as
@@ -194,7 +193,9 @@ and gates on CDC host-drain, so app/boot output is dropped; UART0 does not.
     implemented, and `-kernel` makes this image the first thing on the part. The kernel is an
     EL1 kernel and cannot be otherwise, EL3 having no `TTBR1` while the whole port rests on the
     kernel owning the high half. So the handover programs what a lower level cannot reach for
-    itself and then `eret`s: `ICC_SRE_EL3` and `ICC_SRE_EL2` (both, because the part implements
+    itself and then `eret`s: `CPTR_EL3` and `MDCR_EL3` cleared, `MDCR_EL2` with every trap field
+    clear and `HPMN` kept at `PMCR_EL0.N` (its trap fields reset UNKNOWN, and EL1 writes
+    `MDSCR_EL1` and `PMUSERENR_EL0`), `ICC_SRE_EL3` and `ICC_SRE_EL2` (both, because the part implements
     EL2 whether or not anything executes there, and without the second the GICv3 backend's first
     `ICC_*` write traps to an EL2 vector nothing has written), `HCR_EL2.RW`, `CPTR_EL2`,
     `CNTHCTL_EL2`'s two enables (without which every `CNTPCT_EL0` read at EL1 traps the same
@@ -202,13 +203,13 @@ and gates on CDC host-drain, so app/boot output is dropped; UART0 does not.
     `CNTFRQ_EL0`, and `SCR_EL3` with `NS` set. **`SP_EL1` is UNKNOWN across that `eret`** and is
     re-seated past it rather than assumed to survive from `_start`. An EL1 handover is accepted
     too, which is what a board booted through ATF and U-Boot arrives at; EL2 is refused by name.
-  - **ITS CONSOLE IS AN i.MX UART AND NOT A PL011.** UART1 at `0x30860000` (RM rev 3 section
-    2.5), which is the one the machine backs with its first chardev; the other three are decoded
-    and connected to nothing, so a console pointed at one of them is silent rather than
-    faulting. Which UART carries the EVK's debug header is a schematic fact the RM does not
-    carry. No baud rate is programmed: the divider runs off a CCM clock this port configures
-    nothing else in, and the machine ignores it entirely, so no arm here can witness a wrong
-    one. `UCR1.UARTEN` and `UCR2.TXEN` ARE written, correctly for silicon and unwitnessably
+  - **ITS CONSOLE IS AN i.MX UART AND NOT A PL011.** The board file names it, UART1 at
+    `0x30860000` (RM rev 3 section 2.5), which is the one the machine backs with its first
+    chardev; the other three are decoded and connected to nothing, so a console pointed at one of
+    them is silent rather than faulting. Which UART carries the EVK's debug header is a schematic
+    fact the RM does not carry. The console's CCM gate is opened, and no baud rate is programmed:
+    the divider runs off a clock root this port leaves as reset or a boot stage set it, and the
+    machine ignores it entirely, so no arm here can witness a wrong one. `UCR1.UARTEN` and `UCR2.TXEN` ARE written, correctly for silicon and unwitnessably
     here, the model emitting on the `UTXD` write whatever those hold.
   - **ITS GIC IS THE DIE'S, WHICH IS THE WHOLE REASON THIS PART EARNS A PORT.** A GIC-500, so
     the GICv3 posture is mandatory rather than a variant and there is no `gic-version` option to
@@ -373,12 +374,13 @@ and gates on CDC host-drain, so app/boot output is dropped; UART0 does not.
     (`../../arch/x86/chip/q35/cpu.cmake`), threads get x87, SSE and AVX while the kernel half is
     compiled without them, and `efi_main` first runs a check compiled for the base level
     (`../../arch/x86/x86_64/floor_x86_64.cc`) that hands a processor below it back to firmware
-    with a line on firmware's console. The floor also requires RDTSCP, which the level does not
-    name. Every emulation runs `qemu64` plus the level's features, XSAVEOPT, without which QEMU
-    11.1's TCG spins on the write that enables XSAVE, SMEP and SMAP, which `qemu64` does not
-    offer, and RDTSCP, `KICKOS_X86_64_QEMU_CPU` in `../../cmake/kickos.cmake`. `x86_64_x1_floor`
-    boots plain `qemu64` and `x86_64_x1_floor_rdtscp` that model without RDTSCP, and both require
-    the refusal.
+    with a line on firmware's console. The floor also requires RDTSCP, SMEP and SMAP, which the
+    level does not name, so it is a Broadwell-class processor (maintainer, 2026-11-25). Every
+    emulation runs `qemu64` plus the level's features, XSAVEOPT, without which QEMU 11.1's TCG
+    spins on the write that enables XSAVE, SMEP and SMAP, which `qemu64` does not offer, and
+    RDTSCP, `KICKOS_X86_64_QEMU_CPU` in `../../cmake/kickos.cmake`. `x86_64_x1_floor` boots plain
+    `qemu64`, and `x86_64_x1_floor_rdtscp`, `x86_64_x1_floor_smep` and `x86_64_x1_floor_smap` that
+    model less the one feature each names; every one requires the refusal.
   - **Its exit status crosses a seven-bit device.** `isa-debug-exit` reports `(status << 1) | 1`
     into an 8-bit process exit code, so only 0 through 127 round-trip and 139 arrives as 11.
     `arch_shutdown` therefore prints the full byte on the console as `KICKOS-EXIT status <n>`, and
@@ -416,23 +418,20 @@ and gates on CDC host-drain, so app/boot output is dropped; UART0 does not.
     pointer from.
     `../../tests/integration/check_kernel_half_x86_64.sh` witnesses the kernel half: a ring-3 read
     of kernel state is killed by a page fault on a PRESENT page, not a missing one.
-  - **SMEP and SMAP keep the kernel out of user pages wherever the processor offers them.**
-    Every core sets both in CR4 where CPUID leaf 7 offers them and never lifts them; the kernel
-    reaches a task's memory only through `arch_aspace_acquire`'s kernel-half view. RFLAGS.AC would
-    lift SMAP and ring 3 can set it, so SYSCALL clears it through IA32_FMASK and the interrupt
-    entry resets RFLAGS before any C, with a `popfq`: a constant cost per entry of the order of
-    tens of cycles, not measured on silicon. The banner's `uaccess` line names the guard from CR4
-    (`smep smap`, `smep`, `smap` or `none`), every other core must match the boot core, and a
-    processor offering neither, which the x86-64-v3 floor admits (Haswell has SMEP and no SMAP),
-    runs with the line saying so. `qemu_x86_64_uaccess` witnesses it (2026-10-13, QEMU 11.1.2,
-    one and four cores): a ring 0 read, write and call of a user page, a read after a park, in the
-    fault-exit stub and in a timer interrupt taken by a thread that set AC each end in one page
-    fault dump with the error code the guard gives and the fatal status 132, and a read under the
-    firmware's root faults not present, that root mapping nothing in the user half. Its control
-    boots the read on the model less SMEP and SMAP, where the banner must say `none` and ring 0
-    must reach the word, which shows the faults are the guard's. The kernel-half gate runs that
-    model too and requires `none` on it. Not witnessed: a real NMI or machine check taken at ring 3,
-    which no gate can raise; their route to the panic is the unit `fault_frame`.
+  - **SMEP and SMAP keep the kernel out of user pages.** The floor requires both, every core sets
+    both in CR4 and never lifts them, and the kernel reaches a task's memory only through
+    `arch_aspace_acquire`'s kernel-half view. RFLAGS.AC would lift SMAP and ring 3 can set it, so
+    SYSCALL clears it through IA32_FMASK and the interrupt entry resets RFLAGS before any C, with
+    a `popfq`: a constant cost per entry of the order of tens of cycles, not measured on silicon.
+    The banner's `uaccess` line names the guard from CR4 (`smep smap`), and every other core must
+    match the boot core. `qemu_x86_64_uaccess` witnesses it (2026-10-13, QEMU 11.1.2, one and four
+    cores): a ring 0 read, write and call of a user page, a read after a park, in the fault-exit
+    stub and in a timer interrupt taken by a thread that set AC each end in one page fault dump
+    with the error code the guard gives and the fatal status 132, and a read under the firmware's
+    root faults not present, that root mapping nothing in the user half. The error code is what
+    shows a fault is the guard's: ring 0 faults on a present user page only under SMAP for a data
+    access and only under SMEP for a fetch. Not witnessed: a real NMI or machine check taken at
+    ring 3, which no gate can raise; their route to the panic is the unit `fault_frame`.
 - **`pizero2350`** -- Cortex-M33, but it reuses the **armv7m** arch backend verbatim (armv8-M is
   a superset for the switch/NVIC/SVC/PendSV path); only the MPU differs, and PMSAv8 has its own
   backend (`base+limit` RBAR/RLAR + MAIR, compile-gated so the v7-M/v6-M fleet is byte-identical).
@@ -468,11 +467,17 @@ and gates on CDC host-drain, so app/boot output is dropped; UART0 does not.
   dump. Announce-before-poke lines should therefore not be the *only* record of an address.
 - **RTT backend** -- generic and wired on the XMC (`KICKOS_CONSOLE=both`); the
   UART VCOM path is the one confirmed on hardware.
-- The diagnostic LED is a kernel-owned facility (`kdiag_led_*`, over the chip's
-  `arch_diag_led_*`); a board with no kernel LED (`qemu`, `microbit`,
-  `pizero2350`, `rx72m`) links the no-op fallback (`arch/seam_defaults.cmake`) and the LED
-  silently does nothing -- not a failure.
-  `blink` is built only where the chip's own sources define `arch_diag_led_set`.
+- **The diagnostic LED works like the console** (ruled 2026-11-25): its pin is an ordinary GPIO
+  that a task may be granted and mux, and the kernel's only use is the terminal blink in
+  `kfault_terminate`. There `arch_diag_led_init` takes the pin back from whatever state a task
+  left it in, re-asserting its clock gate, mux and direction and writing no other pin's bits, and
+  `arch_diag_led_set` drives it. No user call reaches the LED. Where the board file gives the
+  LED `kind: addressable` (`esp32c6-wroom`'s WS2812B), the chip drives it through RMT channel 0,
+  and the RMT too is a device a task may be granted: the kernel resets the block and takes that
+  channel only at the terminal panic, and on a C6 board whose LED is a plain pin, or that has
+  none, it never touches the RMT (ruled 2026-11-25). A board whose file marks no LED
+  `diagnostic: true` (`qemu`, `microbit`, `pizero2350`, `rx72m`) links the no-op fallback
+  (`arch/seam_defaults.cmake`).
 
 ## Per-board hardware facts a porter cannot derive
 
@@ -480,13 +485,24 @@ Boot-image field values, recomputed register bases and the register-level gotcha
 silence a board if they are wrong. Each is checked against the chip source; the manual citations
 are the clean-room derivation the source carries.
 
-**A board's console pins and the kernel's LED are its board file's**, `platform/<chip>/<board>.yaml`:
-the `console` device and pins, and the one LED marked `owner: kernel`. The chip code reads them
-from the `board_pins.h` configure writes, muxes and drives them, and refuses them in
-`arch_pinmux_set`, so moving the console or the LED is an edit to the board file alone. The
+**A board's console pins and its diagnostic LED are its board file's**, `platform/<chip>/<board>.yaml`:
+the `console` device and pins, and the one LED marked `diagnostic: true`. The chip code reads them
+from the `board_pins.h` configure writes; it muxes the console pins and refuses them in
+`arch_pinmux_set`, and takes the LED's pin only at the terminal panic, so moving the console or
+the LED is an edit to the board file alone. The
 status matrix's LED and console columns repeat them for the reader. The F411 pair's crystal is
 the one wiring fact still hand-written, in `boards/<board>/include/kickos/board_wiring.h`. The pin
 guard also refuses the board file's `reserved_pins`, the ESP32 module's flash pins among them.
+
+**A device window lies inside one of the chip file's `apertures:` spans**,
+`platform/<chip>/chip.yaml`. Each span is a run of user peripherals, cited from the manual in its
+`ref:`. A clock, reset, power, pad or bus-control block outside every span is never grantable
+(see [architecture.md](architecture.md)). Inside a span, a row marked `owner: kernel` stays the
+kernel's. RP2040's watchdog block is one: its TICK generator clocks TIMER, the kernel's
+timebase, so a window over it would be a window over the kernel's clock. Every other declared
+watchdog is a device a task may be granted, the i.MX 8M Plus WDOG1 included: the A53 kernel
+still resets through its software reset, by its own mapping of the device space, which no grant
+changes (maintainer, 2026-11-25).
 
 ### `pizero2350` (RP2350) -- the boot block and the recomputed bases
 
@@ -510,21 +526,35 @@ The 20-byte block emitted verbatim in `arch/arm/chip/rp2350/startup.S` (datashee
 | 4 | `0xab123579` | `PICOBIN_BLOCK_MARKER_END` |
 
 `image_type_flags = 0x1021` decodes as EXE(1) | Security **S**(2) | CPU **ARM**(0) | CHIP
-**RP2350**(1) (5.9.3.1). Security=S matches the state the M33 boots in -- no TrustZone, never a
-drop to Non-secure. "Unsigned" is orthogonal to that field: on a chip that is not secured
+**RP2350**(1) (5.9.3.1). Security=S matches the state the M33 boots in. The kernel never drops
+to Non-secure. "Unsigned" is orthogonal to that field: on a chip that is not secured
 (`CRIT1.SECURE_BOOT_ENABLE` clear) no SIGNATURE or HASH_DEF item is required and this block is
 accepted as-is. The NS and Security-UNSPECIFIED variants are `0x1011` and `0x1001`; a Hazard3
 RISC-V image would be the same block with the CPU field = RISC-V(1), i.e. `0x1121`.
 
 Placement is PINNED rather than merely asserted: `rp2350.ld` puts `.text` at `ORIGIN(FLASH)` with
-`KEEP(*(.isr_vector))` first, so the vector table IS the image base, and `KEEP(*(.image_def))`
-lands the block immediately after it, well inside the 4 KiB window. Two `ASSERT`s enforce both
+`KICKOS_KERNEL_KEEP(.isr_vector)` first, so the vector table IS the image base, and
+`KICKOS_KERNEL_KEEP(.image_def)` lands the block immediately after it, well inside the 4 KiB
+window. Two `ASSERT`s enforce both
 (`ADDR(.text) == ORIGIN(FLASH)` and `g_image_def < ORIGIN(FLASH) + 0x1000`), and
 `Reset_Handler` writes `SCB->VTOR = 0x1000_0000` explicitly so a warm reboot or a debugger entry
 that skipped the bootrom still lands right. Nothing references the block, so it survives only
 because it rides into the link inside `startup.o` (already force-pulled by the arm-family
-`-Wl,-u,g_isr_vector`) and `KEEP` protects it from `--gc-sections`. No checksum tool and no `-u`
-addition -- unlike RP2040.
+`-Wl,-u,g_isr_vector`) and the `KEEP` inside `KICKOS_KERNEL_KEEP` protects it from
+`--gc-sections`. No checksum tool and no `-u` addition -- unlike RP2040.
+
+**Bring-up closes Non-secure state, and refuses the boot if a write does not hold.** An
+unprivileged `bxns` or `blxns` needs no privilege, and the bootrom leaves the SAU on with
+0x4780..0x7fff of its ROM Non-secure and the ROM below it IDAU-exempt (datasheet 10.2), so a
+thread could otherwise branch into Non-secure code that runs privileged. On every Armv8-M Mainline core with the Security Extension, `an505` included,
+`kickos_armv7m_init` (`arch/arm/armv7m/arch_armv7m.cc`) sets `CONTROL_NS.nPRIV` and sets
+`AIRCR.SYSRESETREQS` with `BFHFNMINS` clear. Where memory is enforced,
+`kickos_arm_pmsav8_init` (`arch/arm/common/arch_arm_pmsav8.cc`) turns every Non-secure MPU region
+off and turns `MPU_CTRL_NS` on, so Non-secure state reaches no memory. A Non-secure MPU with no
+region also refuses the boot. On the RP2350 node 0 also clears NSP and NSU in every ACCESSCTRL
+bus port register (`arch/arm/chip/rp2350/chip_rp2350.cc`), whose reset images admit Non-secure
+masters (10.6.2). Bring-up reads back `CONTROL_NS`, `AIRCR`, `MPU_CTRL_NS` and each ACCESSCTRL
+port register, and panics the boot on a mismatch.
 
 **Every APB peripheral base moved relative to the RP2040** (datasheet 2.2.4), so no RP2040
 address can be reused. Stated in `platform/rp2350/chip.yaml`, which the generated `chip_mmap.h` reads:
@@ -605,17 +635,20 @@ Field values (`arch/arm/chip/imxrt1062/chip_imxrt1062.cc`; RM chapter 9):
 |---|---|---|
 | FCB (RM 9.6.3, Table 9-15/9-18), 512 B | tag | `'FCFB'` = `0x42464346` |
 | | version | `0x56010000` (`'V'` 1.0.0) |
+| | `readSampleClkSrc` | **1** = loopback from the DQS pad |
 | | `deviceType` @ `0x044` | **1** = serial NOR |
-| | `sflashPadType` @ `0x045` | **1** = single pad |
-| | `serialClkFreq` @ `0x046` | 1 = 30 MHz |
-| | read LUT seq 0 (1-1-1 `0x03` + 24-bit address) | `lookupTable[0] = 0x08180403`, `[1] = 0x00002404` |
+| | `sflashPadType` @ `0x045` | **4** = quad |
+| | `serialClkFreq` @ `0x046` | 3 = 60 MHz |
+| | read LUT seq 0 (1-4-4 `0xEB` + 24-bit address, 6 dummy cycles) | `lookupTable[0] = 0x0A1804EB`, `[1] = 0x26043206` |
 | IVT (RM 9.7.1, Table 9-37), 32 B | header | `0x412000D1` (tag `0xD1`, len `0x0020`, version `0x41`) |
 | | `entry` / `dcd` / `boot_data` / `self` / `csf` | `&_boot_entry` / 0 / `&Boot Data` / `0x6000_1000` / 0 |
 | Boot Data (RM 9.7.1.2, Table 9-38) | `start` / `length` / `plugin` | `0x6000_0000` / `__boot_image_length` / 0 |
 
-The LUT instruction encoding is `(opcode << 10) | (pads << 8) | operand` (RM 9.6.3.1).
-Single-pad `0x03` at 30 MHz is the universally compatible read -- no quad-enable -- which is what
-makes a first image flashable without a bench. **DCD is NULL** deliberately: the ROM register
+The LUT instruction encoding is `(opcode << 10) | (pads << 8) | operand` (RM 9.6.3.1). The read
+is Fast Read Quad I/O (`0xEB`) at 60 MHz: the command on one pad, then the address, the mode
+bits, the dummy cycles and the data on four. **It needs the W25Q64JV's non-volatile QE bit set,
+and nothing in KickOS writes it.**
+**DCD is NULL** deliberately: the ROM register
 defaults suffice with no SDRAM/SEMC, and RM Table 9-37 makes it optional.
 
 **Console = LPUART6 = Teensy "Serial1" (pins 0/1)**, and every step of the wiring is a distinct
@@ -738,7 +771,12 @@ memory and the kernel's. Its PID controller could isolate tasks, but it costs:
 - a violation reported with no fault address;
 - per-task memory slices for stacks and blocks.
 
-KickOS does not carry that cost for a legacy part. The ESP32-C6 is the Espressif board where
+One user PID for every task would cost less, but it would only fence user code from the kernel
+against faults, not wall it off: the LX6 has no privilege ring, so every thread runs at the
+kernel's level (`arch/xtensa/lx6/arch_xtensa.cc`), and a task could rewrite its vector base or
+jump into a PID-0 gate.
+
+KickOS carries neither for a legacy part. The ESP32-C6 is the Espressif board where
 KickOS isolates tasks, with RISC-V PMP.
 
 `esptool elf2image` refuses an image of more than 16 segments. It builds the image from the ELF's
@@ -766,10 +804,15 @@ unprivileged thread's code and its read-only data. The ROM loads the kernel alon
 however many task images the build holds. A template costs the image's `.data` once more, in
 flash.
 
-The `amp2` partition does the same for its HP node, node 0. Its LP node keeps every image in its
-slice of HP SRAM, since the LP CPU cannot reach external memory (TRM v1.2 5.3.1). The partition's
-boot image is two segments, one per node's slice, with node 0's flash text after it at flash
-`0x90000`: `tools/amp/merge-partition.sh` keeps that span apart from node 0's slice.
+The `amp2` partition does the same for its HP node, node 0: its task images run from flash, and
+its kernel text stays in SRAM. Its LP node keeps every image in its slice of HP SRAM, since the
+LP CPU cannot reach external memory (TRM v1.2 5.3.1). The slices are `0x33000` for node 0 and
+`0x45000` for node 1 (`CONFIG_KICKOS_AMP_NODE_SLICES` in `boards/esp32c6-wroom/configs/amp2/defconfig`).
+The partition's boot image is two segments, one per node's slice, with node 0's flash text after
+it at flash `0x90000`: node 0's link names that span `__kickos_amp_load_apart_start` to `_end`,
+and `tools/amp/merge-partition.sh` loads it apart from node 0's slice. Node 0's kernel drives
+UART0 as its console (`CONFIG_KICKOS_AMP_CONSOLES`). Node 1's kernel has no console: its tasks
+name `stdout: /amp/N` and write through an `amprelay` task on node 0.
 
 The cache is 32 KiB, four-way set-associative, in 32-byte blocks, and serves the instruction and
 the data bus one at a time (TRM v1.2 5.3.3.2).
@@ -799,6 +842,20 @@ Two addresses the probes on this board all use:
   window. It is the canonical ungranted poke: on PMSAv7 an unprivileged access to it MemManages
   before any bus access, and `CFSR=0x82` with `MMFAR=0x5000_4648` is the signature every
   enforcement capture on this board carries.
+
+### `rx72m` -- interrupt entries and the IRQ pins' detection
+
+**Every INTB vector from 32 up that a line can claim has an entry of its own**
+(`arch/rx/chip/rx72m/startup.S`), which loads its vector number and dispatches
+`kickos_isr_irq(n)`: the handler cannot read the accepted vector. The group parents (GROUPBE0,
+GROUPBL0 to GROUPBL2, GROUPAL0 and GROUPAL1, in the ICU the chip file marks `owner: kernel`) are
+the kernel's: the level groups' demux posts each source as its own line, and GROUPBE0 is never
+armed. The IR flag of a level vector is never written (UM 15.2.1).
+
+**No driver can choose edge detection on IRQ0 to IRQ15** (vectors 64 to 79). Their detection stays
+at the reset setting, low level: `IRQCRi` is in the kernel-owned ICU, and no claim writes it.
+A claim's `KOS_IRQ_EDGE` or `KOS_IRQ_LEVEL` flag sets only how the kernel rearms the line, so a
+claim without `KOS_IRQ_LEVEL` is rearmed as an edge on a pin the ICU detects as a level.
 
 ## CI coverage & cross toolchains
 
@@ -894,7 +951,7 @@ the board".
      the thread arena. On 16 KiB SRAM that left ~1.5 KiB of arena -- not one 2 KiB thread stack --
      so **every** `kos::thread::create` failed and the suite cascaded to 39 `not ok`. Under full
      newlib the heap is empty on this chip, so the arena gets the RAM; nano carves the 1 KiB its
-     per-thread libc scratch needs (see *Pinned newlib for cross boards* below).
+     per-thread libc scratch needs (see *newlib for cross boards* below).
      (`_sbrk` shares a TU with `_exit` and the link force-links it, so the section has to stay,
      at zero length -- an allocating app here fails at runtime, not at link. See `nrf51.ld`.)
   2. With the arena restored the run then **hung** at `call_infoless_revert`, whose four workers
@@ -965,15 +1022,17 @@ Every cross image links the KickOS toolchain's own newlib. AArch64, RV64 and Xte
 checks that the libc the board's flags select has the board's reentrancy, by its `__getreent`
 references and a header probe, and for nano that the nano header and archives answer.
 
-The Cortex-M family carries a small-memory `nano` profile beside the full one in every
-multilib, which `--specs=nano.specs` on the compile flags selects: the nano `newlib.h`, and
-`libc_nano.a` and `libstdc++_nano.a` at the link. Use a fresh CMake build directory after
-switching profiles; configure refuses one whose cached flags name the other. Nano reduces the per-thread `_reent` footprint and uses smaller formatted I/O and malloc
+The `arm-none-eabi`, `riscv64-none-elf`, `xtensa-esp32-elf` and `rx-elf` families carry a
+small-memory `nano` profile beside the full one in every multilib; `aarch64-none-elf` and
+`x86_64-elf` carry the full profile only. `--specs=nano.specs` on an image's compile and link
+selects nano: the nano `newlib.h`, and `libc_nano.a` and `libstdc++_nano.a` at the link. Each
+image picks its profile with `kickos_image_libc(<executable> full|nano)`, so one build directory
+links images of both profiles. Nano reduces the per-thread `_reent` footprint and uses smaller formatted I/O and malloc
 implementations. Its formatted I/O omits C99 and long-long formats, and without `-u
 _printf_float` at the link a floating-point conversion in `printf` prints nothing for that
 argument; `scanf` takes `-u _scanf_float` the same way. The package's nano C++ archives unwind
 as its full ones do, so full C++ exists on either profile: `cxxtest` passed every
-check on `qemu-m3` built nano (M10.2). Other cross targets carry the full profile only.
+check on `qemu-m3` built nano (M10.2).
 
 Nano's per-thread `_reent` holds pointers where the full profile holds storage. A thread's
 first `strtok`, `localtime`, `asctime`, `rand`, `strsignal` or floating-point conversion
@@ -987,15 +1046,17 @@ reclaims nothing from the heap. The ESP32 newlib allocates the same scratch and 
 exit path, but every thread's entry return goes through the kernel there, so only an explicit
 exit returns it.
 
-`microbit` links nano on every preset: its board descriptor
-names it as `KICKOS_BOARD_NEWLIB`, which the toolchain file reads. `microbit`'s 32 KiB emulated
-SRAM is larger than a physical micro:bit v1's 16 KiB. For a full-profile comparison, set
-`-DKICKOS_FULL_NEWLIB=ON` in another build directory. An installed package of such a board links
-only the profile it was built with and refuses a consumer that asks for the other one. Pico and
-the other Cortex-M boards keep the full profile.
+An image that names no profile takes its configuration's default. On `microbit` the default is
+nano on every preset: its board descriptor names it as `KICKOS_BOARD_NEWLIB`, which the
+toolchain file reads. The `esp32c6-wroom` `amp2` configuration sets `KICKOS_LIBC_NANO_DEFAULT`.
+Every other board defaults to full. `microbit`'s 32 KiB emulated SRAM is larger than a physical
+micro:bit v1's 16 KiB. For a full-profile comparison, an image names `full` through
+`kickos_image_libc`. An installed package carries the KickOS user library of every profile its
+toolchain holds, and keeps its build's default: a nano default is written into the package's
+board descriptor as `KICKOS_BOARD_NEWLIB`.
 
-Under nano, `microbit`'s composition states a 1,024-byte `heap:`; the full-profile
-build keeps the scratch inline and carves none. One thread's `strtok`, `localtime`,
+`microbit`'s composition states a 1,024-byte `heap:`. Under nano a thread's scratch lives there;
+the full profile keeps it inline in `_reent`. One thread's `strtok`, `localtime`,
 `asctime` and `rand` scratch measures 200 bytes there, so the heap holds it for root and
 all four pool threads at once, and `microbit_errnoprobe` fails if an ended thread keeps
 it. A floating-point conversion adds up to 1,428 bytes a thread (`strtod("1.25e300")`),
@@ -1003,8 +1064,8 @@ which this heap cannot supply even once: an app that converts floating point sta
 a larger `heap:` in its composition, and `errnoprobe` skips that conversion below
 2 KiB. The first buffered `stdout` write asks for 1,032 bytes, so it never fits and
 stdout stays unbuffered, as with no heap. The carve costs a `hello`-sized image no thread
-arena, the 2 KiB stack alignment absorbing it; each selftest image and `errnoprobe`
-gives up one 2 KiB arena block and runs the same arms with the same skips.
+arena, the 2 KiB stack alignment absorbing it; `errnoprobe` gives up one 2 KiB arena block.
+The selftest's composition states no heap.
 
 ## Flashing
 
@@ -1346,7 +1407,9 @@ holding no window, which is first refused `kos_periph_enable` and is then the on
 the system. The bank also holds the console's and the reserved pins, and the task still accepts no
 `coarse_gate`: the platform-wide `no_protection` the LP core's cluster brings subsumes it, and
 admission refuses it as unneeded. `tests/integration/check_c6blink.sh` judges the capture.
-`c6txidle` runs on the board's default composition in the flat build, its kernel-side half
+`c6txidle` is built only in a flat tree configured with `KICKOS_WITNESS_TXIDLE`, which the
+configure refuses without the marker its judge names (no test code in a production kernel, ruled
+2026-11-25), and runs on the board's default composition, the kernel's probe
 (`arch/riscv/chip/esp32c6/txidle_probe_esp32c6.cc`) in M-mode as the console ring is set up: it
 loads a line straight into UART0's FIFO, calls `arch_console_flush_sync`, and holds the
 transmitter in reset the moment the flush returns, so `tests/integration/check_c6txidle.sh` finds
@@ -1355,7 +1418,11 @@ wait against the measured frame and reads `ST_UTX_OUT` while the line shifts and
 quiet line. It cannot be a U-mode thread: the APM answers an ungranted REE0 read of UART0 with 0
 and drops the store, without a trap, and 0 is the idle encoding under test. The C6 keeps
 `ST_UTX_OUT` in `FSM_STATUS[7:4]`; `[3:0]` is the receiver's state machine, which reads idle through
-a whole transmission.
+a whole transmission. Its capture:
+
+    EXTRA_CMAKE="-DKICKOS_WITNESS_TXIDLE=ON -DKICKOS_WITNESS_TXIDLE_SCRATCH=check_c6txidle.sh" \
+        APP=c6txidle JUDGE=tests/integration/check_c6txidle.sh VARIANT=flat \
+        tools/bench/bench.sh esp32c6-wroom
 
 #### `pizero2350` -- PMSAv8
 

@@ -66,7 +66,8 @@ endfunction()
 set(KICKOS_X86_64_INCLUDES
   "${KICKOS_X86_64_DIR}/include"
   "${KICKOS_Q35_DIR}/include"
-  "${CMAKE_CURRENT_SOURCE_DIR}/arch/include")
+  "${CMAKE_CURRENT_SOURCE_DIR}/arch/include"
+  "${PROJECT_BINARY_DIR}/generated/chip")
 
 # The UEFI handover, shared by every image. Its tail is the kickos_x86_64_landed seam, which
 # each family defines differently. The first check must run on a base-level processor.
@@ -96,12 +97,13 @@ add_library(kickos_x86_64_nokernel OBJECT "${KICKOS_X86_64_DIR}/nokernel_x86_64.
 kickos_apply_freestanding(kickos_x86_64_nokernel)
 target_include_directories(kickos_x86_64_nokernel PRIVATE ${KICKOS_X86_64_INCLUDES})
 
-# X2's subset: the tables, the report and the declining interrupt fallback.
+# X2's subset: the tables, the report, the declining interrupt fallback and the faults.
 if(KICKOS_KERNEL_CORES EQUAL 1)
 add_library(kickos_x86_64_x2 OBJECT
   "${KICKOS_X86_64_DIR}/desc_x86_64.cc"
   "${KICKOS_X86_64_DIR}/fault_x86_64.cc"
   "${KICKOS_X86_64_DIR}/trap_x86_64.S"
+  "${KICKOS_X86_64_DIR}/probe_faults_x86_64.S"
   "${KICKOS_X86_64_DIR}/kickos_x86_64_isr_default.cc"
   "${KICKOS_X86_64_DIR}/landed_x2_x86_64.cc")
 kickos_apply_freestanding(kickos_x86_64_x2)
@@ -221,6 +223,16 @@ if(KICKOS_BUILD_TESTS)
             "${KICKOS_X1_IMAGE}" "${PROJECT_BINARY_DIR}/x1floor-rdtscp-ctest")
   set_tests_properties(x86_64_x1_floor_rdtscp PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
 
+  # The emulated processor without SMEP alone, then without SMAP alone, each refused for that bit.
+  foreach(_bit smep smap)
+    string(REPLACE ",+${_bit}" "" _x1_no_bit "${KICKOS_X86_64_QEMU_CPU}")
+    add_test(NAME x86_64_x1_floor_${_bit}
+      COMMAND "${CMAKE_COMMAND}" -E env "KICKOS_X86_64_FLOOR_CPU=${_x1_no_bit}"
+              "${CMAKE_CURRENT_SOURCE_DIR}/tools/run-qemu-x86_64-floor.sh"
+              "${KICKOS_X1_IMAGE}" "${PROJECT_BINARY_DIR}/x1floor-${_bit}-ctest")
+    set_tests_properties(x86_64_x1_floor_${_bit} PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
+  endforeach()
+
   # One case per fault class rather than one over the ten: the report ends the image, so each
   # class is its own boot either way, and a failure then names the class. The `none` image is
   # the negative control and refuses a report.
@@ -321,11 +333,12 @@ foreach(_kos_t IN LISTS _kos_kernel_half _kos_probe_objects)
     "$<$<COMPILE_LANGUAGE:C,CXX>:${KICKOS_X86_64_KERNEL_FLAGS}>")
 endforeach()
 
-# The five-level entry a witness image's kernel link takes in place of the arch archive's
-# kickos_x86_64_paging_entry_default.cc (user/apps/common/selftest/CMakeLists.txt).
+# The five-level witness, a kernel constructor the selftest_la57 image's kernel link takes
+# (user/apps/common/selftest/CMakeLists.txt).
 add_library(kickos_x86_64_la57_witness OBJECT "${KICKOS_X86_64_DIR}/la57_witness_x86_64.cc")
 kickos_apply_freestanding(kickos_x86_64_la57_witness)
-target_include_directories(kickos_x86_64_la57_witness PRIVATE ${KICKOS_X86_64_INCLUDES})
+target_include_directories(kickos_x86_64_la57_witness PRIVATE ${KICKOS_X86_64_INCLUDES}
+  "${CMAKE_CURRENT_SOURCE_DIR}/arch/common")
 target_compile_options(kickos_x86_64_la57_witness PRIVATE
   "$<$<COMPILE_LANGUAGE:C,CXX>:${KICKOS_X86_64_KERNEL_FLAGS}>")
 

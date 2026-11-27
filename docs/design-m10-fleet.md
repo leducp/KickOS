@@ -738,11 +738,12 @@ it programmed move into it. Which gate fronts a device is stated once, by the ga
 the chip file, a window crossing a range's edge being `chip.gate-straddle`; a per-peripheral gate
 names each device's register as the device's `gate_register`.
 
-**The ESP32-C6's APM** (TRM v1.2 chapter 16). The chip file states two gates. HP_APM holds 16
+**The ESP32-C6's APM** (TRM v1.2 chapter 16). The chip file states three gates. HP_APM holds 16
 regions and fronts the HP peripherals (0x6000_0000 to 0x600A_FFFF), the CPU peripherals
 (0x600C_0000 to 0x600C_FFFF) and HP SRAM as the LP CPU reaches it. LP_APM holds 4 and fronts the LP
 peripherals (0x600B_0000 to 0x600B_FFFF) and LP SRAM in low-speed mode (Table 5.3-2, Figure
-16.3-1). Region 0 of each is the reset catch-all that denies, permissions OR across regions, and a
+16.3-1). LP_APM0 holds 4 and fronts LP SRAM's high-speed path (0x5000_0000 to 0x5000_3FFF), which
+no node is given, so it holds no row. Region 0 of each is the reset catch-all that denies, permissions OR across regions, and a
 denial reads zero and drops a write without a trap (16.3.2.3, 16.5). A permission is per security
 mode and never per master: the HP CPU's user mode is REE0, and the LP CPU is REE2 at reset
 (16.3.1, Reg 16.56), which every other bus master shares at power-up (the note of 16.3.2, p.564),
@@ -753,11 +754,12 @@ touches, counted against the gate's regions less its catch-all:
 | gate | REE0, the HP node's tasks | REE1, the LP node | kernel ranges kept in the set |
 | --- | --- | --- | --- |
 | HP_APM | each HP device the HP node's composition grants, and nothing else: none where an image links no composition; no CPU peripheral, which no composition grants and among which INTPRI is the kernel's doorbell | the LP node's slice and the shared window in HP SRAM, and each HP device its composition grants | the slice and window rows |
-| LP_APM | each LP device the HP node's composition grants | the LP kernel's own pages (the PMU page, its reset vector, the LP timer page) and each LP device its composition grants | the LP kernel's three pages, which are the derived set before any grant |
+| LP_APM | each LP device the HP node's composition grants | the LP kernel's own rows (its PMU words, PMU_LP_INT_ST to PMU_HP_LP_CPU_COMM, 0x600B_0170 for 0x18 bytes; its reset vector; the LP timer page) and each LP device its composition grants | the LP kernel's three rows, which are the derived set before any grant |
+| LP_APM0 | none | none | none: the catch-all alone denies every REE mode |
 
-So an LP grant is admitted only where it coalesces with one of the LP kernel's three pages, and
-refused otherwise: the LP kernel's pages are part of the derived set rather than fixed regions the
-grants must fit around, and none is dropped to make room. As the pages stand, none coalesces: the
+So an LP grant is admitted only where it coalesces with one of the LP kernel's three rows, and
+refused otherwise: the LP kernel's rows are part of the derived set rather than fixed regions the
+grants must fit around, and none is dropped to make room. As the rows stand, none coalesces: the
 LP UART, which the chip file gains from Table 5.3-2, sits past LP_AON, which is the kernel's, so
 every LP peripheral granted to the LP node is refused rather than taking a region from the kernel.
 With no grant, HP_APM holds the LP node's two REE1 rows alone, leaving thirteen. Each gate's
@@ -791,8 +793,8 @@ XIP_MAIN, XIP_CTRL, XIP_QMI and XIP_AUX, both images running from flash; SRAM0 t
 banks 0 to 3 and 4 to 7 are word-striped (2.2.3, p.31), so a bank is never one node's range, and
 SRAM8 and SRAM9, which are not striped and hold the cores' stacks; DMA, deferred;
 RESETS, CLOCKS, XOSC, PLL_SYS, PLL_USB, TICKS and WATCHDOG; TIMER0, which both kernels read; UART1,
-the console both nodes write under their claim; and IO_BANK0 with PADS_BANK0, whose pins the
-consoles and the boot share. The chip file's `never_assigned` names each of their registers, and
+node 0's kernel console, which node 1's tasks can reach through the `amprelay` service; and
+IO_BANK0 with PADS_BANK0, whose pins the consoles and the boot share. The chip file's `never_assigned` names each of their registers, and
 the tool refuses a device whose `gate_register` it names, or one two devices name
 (`chip.gate-register`); node 0 refuses the same before it writes any register, a row naming a
 register of that list or one an earlier row names. Each the chip file describes is

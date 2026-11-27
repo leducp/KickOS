@@ -113,6 +113,10 @@ namespace kickos
         int32_t watch_ep = 0;
         // The status the task ended with, which kos_task_state answers once it has ended.
         int32_t exit_status = 0;
+#if KICKOS_HAVE_ASPACE
+        // Table frames reserved for maps into spaces this task pays for, not yet linked.
+        uint32_t tables_reserved = 0;
+#endif
         // Its image's word the switch seats with the running thread's libc state, null where
         // libc asks for its state instead (reent_seat in <kickos/sys/image.h>).
         void* reent_seat = nullptr;
@@ -133,6 +137,9 @@ namespace kickos
 #if KICKOS_KERNEL_CORES > 1
         raw = raw + sizeof(Task::core_set);
 #endif
+#if KICKOS_HAVE_ASPACE
+        raw = raw + sizeof(Task::tables_reserved);
+#endif
         return ((raw + sizeof(void*) - 1) / sizeof(void*)) * sizeof(void*);
     }
 
@@ -142,6 +149,32 @@ namespace kickos
                   "sizeof(Task) moved. Either drop the member that grew it, or re-measure on a "
                   "32-BIT target and edit task_scalar_bytes: a host measurement prices this "
                   "differently from a 32-bit target");
+#if KICKOS_HAVE_ASPACE
+    // `n` more (`more`) or fewer table frames reserved for `t`'s PAGES, where `t` is still the
+    // incarnation `gen` names. Inline: kickos_frame_alloc's chain prices every frame. Caller
+    // holds IrqLock.
+    inline void task_tables_reserved(Task const* t, uint16_t gen, uint32_t n, bool more)
+    {
+        if (t == nullptr or t->gen != gen)
+        {
+            return;
+        }
+        Task* const w = const_cast<Task*>(t);
+        if (more)
+        {
+            w->tables_reserved = w->tables_reserved + n;
+        }
+        else if (w->tables_reserved >= n)
+        {
+            w->tables_reserved = w->tables_reserved - n;
+        }
+        else
+        {
+            w->tables_reserved = 0;
+        }
+    }
+#endif
+
     // No no-tail-padding assert to match Thread's: Domain*'s alignment leaves 4 bytes after
     // `gen` on the host and none on 32-bit, so such an assert cannot hold on both.
 
@@ -246,8 +279,9 @@ namespace kickos
     // The notification `notify_handle` names is freed: no watch raises it from here on, so a slot
     // seated again is never raised into. Caller holds IrqLock.
     void task_watch_notify_gone(int notify_handle);
-    // KOS_TASK_LIVE | READY | DEAD | ENDED for the task `task` names, with *status the status
-    // it ended with where ENDED is set, or -KOS_EBADF / -KOS_EPERM.
+    // KOS_TASK_LIVE | READY | DEAD | ENDED for the task `task` names, KOS_TASK_NONE for the
+    // caller's own, which adds ORPHANED, with *status the status it ended with where ENDED is
+    // set, or -KOS_EBADF / -KOS_EPERM.
     int task_state_call(kos_task_t task, int32_t* status);
     // The task ends, its entry thread having died by any cause, or a member faulted or exited
     // with the task scope: it takes no member from here on, a watch asking for ENDED is raised, and
@@ -279,6 +313,7 @@ namespace kickos
     // holds IrqLock.
     void task_report_death(Task* t, uint16_t gen, Held held);
     uint16_t task_gen(Task const* t); // null-safe: 0
+
     // A member of `t` is waiting to receive on the endpoint `ep_obj` names: raise the watch
     // the first time that is the armed endpoint, without a reschedule, since the receive has
     // not parked yet. Answers the creator woken to run first, for the receive's deferred wake,
@@ -358,6 +393,19 @@ namespace kickos
     // SCHEDULING DOMAIN: its threads share a single grant, so a placement gated on this predicate
     // stays inside that grant. False when either side holds no task.
     bool task_same_group(Thread const* a, Thread const* b);
+
+    // The calling thread leaves the thread its create built, never runnable, to die without
+    // running its entry: added, slain, and a member no death ends its task for. Where a
+    // translating backend lets an interrupt in. Caller holds IrqLock.
+    void task_abandon_building(Held held);
+
+    // The thread a create built and has not started, by its handle: null once it was started or
+    // its slot freed. Caller holds IrqLock.
+    Thread* task_built(int handle);
+
+    // Whether `t` has ended and every member is dying: no thread can reach its space again.
+    // Null-safe: false. Caller holds IrqLock.
+    bool task_sheds(Task const* t);
 
     // Live members. Null-safe (0).
     TaskThreads task_member_count(Task const* t);

@@ -143,7 +143,10 @@ nothing; on a translating build the second does.
 its task. On a region part a thread's stack is a block of the user
 RAM arena, rounded and aligned so one row covers it, and a row of that thread's own set.
 Because the set is reloaded on every switch, even between two threads of one task, a
-sibling that writes into another's stack faults. On a translating part a stack is a run of
+sibling that writes into another's stack faults. A sync object follows the same rule: a mutex
+word or a semaphore on a thread's stack faults any other thread that touches it, one of the
+same task included. An object two threads share belongs in the task's static data or its
+heap. On a translating part a stack is a run of
 frames mapped into the task's space, with one page below it left unmapped as a **guard**
 (`ustack_alloc`, `kernel/mem/ustack.cc`): an overflow hits a missing translation and
 faults. That stack is mapped task-wide, so a sibling does reach it; the per-thread stack is

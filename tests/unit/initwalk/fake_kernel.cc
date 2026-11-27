@@ -185,7 +185,7 @@ namespace fake
 
         size_t make(Kind kind)
         {
-            g_objects.push_back(Object{kind, 0u, 0u, -1, false, -1, 0u, false});
+            g_objects.push_back(Object{kind, 0u, 0u, -1, false, -1});
             return g_objects.size() - 1u;
         }
 
@@ -253,9 +253,7 @@ namespace fake
             return (g_tasks[static_cast<size_t>(g_console_task)].state & KOS_TASK_ENDED) == 0u;
         }
 
-        // The kernel's vacated mark (kernel/syscall/cap.cc): set when an endpoint's WAIT holders
-        // fall to none, whatever drops them. The published console's task ending gives the kernel
-        // its console back.
+        // The published console's task ending gives the kernel its console back.
         void settle()
         {
             if (g_owner == Owner::USER and not console_task_live())
@@ -263,37 +261,17 @@ namespace fake
                 g_owner = Owner::RECLAIMED;
                 g_reclaims++;
             }
-            for (size_t o = 0; o < g_objects.size(); o++)
-            {
-                Object& obj = g_objects[o];
-                if (obj.kind != Kind::ENDPOINT)
-                {
-                    continue;
-                }
-                uint32_t const now = receivers(o);
-                if (obj.holders != 0u and now == 0u)
-                {
-                    obj.vacated = true;
-                }
-                obj.holders = now;
-            }
         }
 
-        // Whether a live receiver waits on `object` now, which clears its vacated mark
-        // (kernel/sync/sync.cc, endpoint_receiver_waits).
+        // Whether a live receiver waits on `object` now.
         bool waits(size_t object)
         {
-            if (not serving(object) or not g_config.console_receives)
-            {
-                return false;
-            }
-            g_objects[object].vacated = false;
-            return true;
+            return serving(object) and g_config.console_receives;
         }
 
         // Whether a send that finds no waiting receiver parks rather than being refused
-        // (kernel/include/kickos/endpoint.h, endpoint_receiving), the published console parking
-        // it while its task lives.
+        // (kernel/include/kickos/endpoint.h, endpoint_servable): a WAIT or HANDOUT holder
+        // remains, or it is the published console while its task lives.
         bool receiving(size_t object)
         {
             if (static_cast<int64_t>(object) == g_stdout and g_owner == Owner::USER
@@ -301,7 +279,7 @@ namespace fake
             {
                 return true;
             }
-            return receivers(object) != 0u and not g_objects[object].vacated;
+            return receivers(object) != 0u or handout(object);
         }
 
         uint32_t live(Kind kind)
@@ -664,6 +642,25 @@ namespace fake
             {
                 g_objects[static_cast<size_t>(task.watch_object)].pending |= 1u << task.watch_badge;
             }
+        }
+
+        // The published console's task is ready once its receiver takes what is sent it, as a
+        // member waiting on its endpoint makes it (kernel/task/task.cc).
+        void console_ready()
+        {
+            if (g_stdout < 0 or g_console_task == CONSOLE_SELF or not g_config.console_receives
+                or not serving(static_cast<size_t>(g_stdout)))
+            {
+                return;
+            }
+            Task& task = g_tasks[static_cast<size_t>(g_console_task)];
+            if (task.released or task.ready_object != g_stdout
+                or (task.state & (KOS_TASK_READY | KOS_TASK_ENDED)) != 0u)
+            {
+                return;
+            }
+            task.state = task.state | KOS_TASK_READY;
+            raise(task, KOS_TASK_READY);
         }
 
         Task& current(char const* name)
@@ -1301,6 +1298,7 @@ int kos_notify_wait(uint32_t mask, kos_monotonic_t until, uint32_t* out_bits)
             g_step++;
             g_steps[g_step - 1u]();
         }
+        console_ready();
         uint32_t const raised = g_objects[object].pending & mask;
         if (raised != 0u)
         {
@@ -1449,7 +1447,7 @@ int kos_program_find(char const* name, kos_program_t* out_prog)
     {
         return finish(call, -KOS_EMFILE);
     }
-    g_objects.push_back(Object{Kind::PROGRAM, 0u, 0u, -1, false, -1, 0u, false});
+    g_objects.push_back(Object{Kind::PROGRAM, 0u, 0u, -1, false, -1});
     *out_prog = install(g_objects.size() - 1u, KOS_CAP_TRANSFER, -1);
     return finish(call, 0);
 }
@@ -2293,6 +2291,7 @@ int kos_task_state(kos_task_t task, int* status)
     {
         return finish(call, rc);
     }
+    console_ready();
     Task* const t = find_task(task);
     if (t == nullptr or t->released or not t->held)
     {
@@ -2344,7 +2343,7 @@ int32_t kos_send(kos_cap_t ep, void const* buf, size_t len, kos_monotonic_t unti
     }
     if (receiving(object))
     {
-        // A receiver seated and not vacated parks a send until its deadline, never for a
+        // An endpoint that can still be served parks a send until its deadline, never for a
         // passed one, and refuses KOS_POLL (kernel/syscall/syscall_ipc.cc).
         if (until.ns == KOS_NEVER.ns)
         {
@@ -2420,7 +2419,6 @@ static void publish(kos_cap_t ep, int64_t served_by)
     if ((c->rights & KOS_CAP_WAIT) == 0u)
     {
         c->rights = c->rights | KOS_CAP_WAIT;
-        g_objects[static_cast<size_t>(object)].vacated = false;
     }
     g_stdout = object;
     g_owner = Owner::USER;
@@ -2431,7 +2429,7 @@ static void publish(kos_cap_t ep, int64_t served_by)
 void kos_print(char const* s)
 {
     size_t const call = record("kos_print", {});
-    if (g_owner != Owner::USER)
+    if (g_owner == Owner::KERNEL)
     {
         g_console.append(s);
     }
@@ -2441,10 +2439,12 @@ void kos_print(char const* s)
 int32_t kos_kconsole_write(void const* buf, size_t len, uint32_t)
 {
     size_t const call = record("kos_kconsole_write", {len});
-    if (g_owner != Owner::USER)
+    // A user line once a console is published, its reclaim included (kernel/init/console.cc).
+    if (g_owner != Owner::KERNEL)
     {
-        g_console.append(static_cast<char const*>(buf), len);
+        return finish(call, -KOS_EBUSY);
     }
+    g_console.append(static_cast<char const*>(buf), len);
     return finish(call, static_cast<int>(len));
 }
 

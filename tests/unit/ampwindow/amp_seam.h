@@ -23,6 +23,8 @@ namespace kickos
         extern void (*g_on_raise)();
         // A delivered call is seated and answered empty on the spot, inside the service pass.
         extern bool g_deliver_answers;
+        // As g_deliver_answers, but the answer carries the call's own payload.
+        extern bool g_deliver_echoes;
         // A send or call arriving on this port is held in its slot, as for a receiver that never
         // comes, and its record's token kept in g_held; PORT_MAX holds none.
         extern uint32_t g_hold_port;

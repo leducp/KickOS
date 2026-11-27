@@ -118,6 +118,10 @@ kickos_add_unit_test(NAME sys_shutdown
   SOURCES shutdown.cc "${PROJECT_SOURCE_DIR}/arch/common/kfault_terminate_shutdown.cc"
   INCLUDES "${PROJECT_SOURCE_DIR}/arch/common"
   LIBRARIES kickos_kseam_sysdispatch_region)
+# The fault dead-end of a real board, which blinks the diagnostic LED.
+kickos_add_unit_test(NAME sys_led_terminate
+  SOURCES led_terminate.cc "${PROJECT_SOURCE_DIR}/arch/common/kfault_terminate_default.cc"
+  LIBRARIES kickos_kseam_sysdispatch_region)
 # The wall clock's set, gated on AUTH_REALTIME alone, and its read over the monotonic clock.
 kickos_add_unit_test(NAME sys_realtime SOURCES wall_clock.cc
   LIBRARIES kickos_kseam_sysdispatch_region)
@@ -147,7 +151,7 @@ kickos_add_unit_test(NAME sys_witness_on SOURCES witness_gate.cc
 target_compile_definitions(sys_witness_on PRIVATE KICKOS_WITNESS_UACCESS=1)
 kickos_add_unit_test(NAME sys_witness_off SOURCES witness_gate.cc
   LIBRARIES kickos_kseam_sysdispatch_region)
-foreach(_gate IN ITEMS sys_ram_clear spawn_unwind sys_shutdown sys_realtime sys_thread_join sys_periph_disable sys_kconsole_flags sys_watch_decode sys_witness_on
+foreach(_gate IN ITEMS sys_ram_clear spawn_unwind sys_shutdown sys_led_terminate sys_realtime sys_thread_join sys_periph_disable sys_kconsole_flags sys_watch_decode sys_witness_on
                        sys_witness_off sys_spawn_share)
   target_link_options(${_gate} PRIVATE -Wl,--gc-sections)
 endforeach()

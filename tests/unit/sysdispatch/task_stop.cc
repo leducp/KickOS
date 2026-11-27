@@ -342,3 +342,34 @@ TEST_F(TaskStop, a_slay_switched_out_by_a_member_s_abort_leaves_a_reused_slot_al
 
     expect_seated_untouched();
 }
+
+// A member reads its own task through KOS_TASK_NONE, ORPHANED once the thread that created it is
+// gone.
+TEST_F(TaskStop, a_member_reads_its_own_task_orphaned_once_its_creator_dies)
+{
+    Thread* const creator = seat_pool(0, PRIO_CREATOR);
+    attach_caps(creator, KICKOS_SEAM_CAP_WIDTH);
+    {
+        IrqLock lock;
+        sched::reschedule(nullptr, lock);
+    }
+    ASSERT_EQ(sched::current(), creator);
+    int err = 0;
+    Task* group = nullptr;
+    {
+        IrqLock lock;
+        group = kickos::testfix::task_held(kernel().threads.kill_tag_of(creator), &err, lock);
+    }
+    ASSERT_NE(group, nullptr) << "fixture: the create refused (" << err << ")";
+    Thread* const member = seat_pool(1, PRIO_MEMBER);
+    join_task(member, group);
+
+    int32_t status = 0;
+    kernel().current(kickos_kernel_core()) = member;
+    EXPECT_EQ(task_state_call(KOS_TASK_NONE, &status), KOS_TASK_LIVE);
+    kernel().current(kickos_kernel_core()) = creator;
+    run_exit(0);
+    kernel().current(kickos_kernel_core()) = member;
+    EXPECT_EQ(task_state_call(KOS_TASK_NONE, &status), KOS_TASK_LIVE | KOS_TASK_ORPHANED)
+        << "the member cannot tell its creator is gone";
+}

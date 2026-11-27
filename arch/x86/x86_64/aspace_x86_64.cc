@@ -601,8 +601,12 @@ namespace
             if (entry_table(copy[i], height))
             {
                 free_subtree(table_at(entry_pa(copy[i])), height - 1, false);
+                kickos_frame_free(entry_pa(copy[i]));
             }
-            kickos_frame_free(entry_pa(copy[i]));
+            else
+            {
+                kickos_leaf_free(entry_pa(copy[i]));
+            }
         }
         kickos_frame_free(phys_of(copy));
         root[g_split_slot] = 0;
@@ -954,6 +958,20 @@ size_t arch_aspace_map_tables(struct arch_aspace* space, uintptr_t va, size_t pa
         return 0;
     }
     return tables_needed(root_of(space), walk_top(), va, pages);
+}
+
+size_t arch_aspace_range_tables(uintptr_t va, size_t pages)
+{
+    if (not range_ok(va, pages))
+    {
+        return 0;
+    }
+    return tables_spanned(walk_top(), va, pages);
+}
+
+size_t arch_aspace_run_tables(size_t pages)
+{
+    return tables_run(walk_top(), pages);
 }
 
 enum arch_aspace_result arch_aspace_map(struct arch_aspace* space, uintptr_t va,

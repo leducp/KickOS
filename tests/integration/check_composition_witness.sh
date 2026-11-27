@@ -16,10 +16,10 @@
 #            above one core, of one on another core, then on readings 1 to 4, 6 to 9 and 11 to
 #            14 in order, each instance's last read before health's report of its death with the
 #            fifth reading of the instance last in /shm/history, of its restart with one and then
-#            none left, and of its end for good, and before the app's `sensor: not served`, which
-#            comes ahead of the next instance's first reading, or follows its end for good.
-#            `sensor: not served` is a call answered -KOS_ECONNREFUSED while no instance
-#            receives. Health's lines are ordered against the app's only where the
+#            none left, and of its end for good, and on the app's `sensor: not served` after the
+#            last reading alone. `sensor: not served` is a call answered -KOS_ECONNREFUSED, which
+#            only an endpoint dead for good answers: while the init can restart the sensor, a call
+#            waits for the next instance. Health's lines are ordered against the app's only where the
 #            death orders them, since above one core the two print at once. Fails on any task's
 #            `statics not its own`: a word of own.cc set at a task's start, or by another task.
 #            With `depth`, root's stack is filled and scanned while the init runs, and the run
@@ -176,14 +176,12 @@ instance() { # <from> <first>
     after "$LAST" "health: sensor died, last reading $(($2 + 4)) in /shm/history" "death at reading $(($2 + 4))"
     DIED=$AT
 }
-# A restart: health's line after its report of the death, and the app's `sensor: not served`
-# after its last reading of the dead instance and before reading <first>, the first the restarted
-# instance serves. Sets NEXT, the line of `sensor: not served`.
+# A restart: health's line after its report of the death, and reading <first>, the first the
+# restarted instance serves, after the last reading of the dead one. Sets NEXT, its line.
 restart() { # <deaths> <left> <first>
     after "$DIED" "health: sensor restarted ($1 deaths, $2 restarts left)" "restart after $1 death(s)"
-    after "$LAST" 'sensor: not served' "'sensor: not served' after restart $1"
+    after "$LAST" "sensor: $3 from /svc/sensor" "reading $3 after restart $1"
     NEXT=$AT
-    after "$NEXT" "sensor: $3 from /svc/sensor" "reading $3 after 'sensor: not served'"
 }
 
 instance "$REFUSED" 1
@@ -193,6 +191,9 @@ restart 2 0 11
 instance "$NEXT" 11
 after "$DIED" "$END_HEALTH" "end for good"
 after "$LAST" "$END_APP" "'$END_APP' from the app"
+# A refusal while the init could still restart the sensor is a call that did not wait.
+after_at 1 "$END_APP"
+[ "$AT" -gt "$LAST" ] || fail "'$END_APP' at line $AT, ahead of the last reading at line $LAST"
 
 # The readings the app prints, each once: the chain above finds every one in order.
 numbered_matcher_control
@@ -208,7 +209,7 @@ for _line in '^=== THREAD FAULT ===' '^sensor: no reading' '^sensor: died holdin
     fi
 done
 echo "PASS: the sensor was refused its widened threads, died three times with its readings kept, \
-restarted twice with its caller refused until it received, and was then gone for good"
+restarted twice with its caller waiting for each instance, and was then gone for good"
 
 if [ "$DEPTH" = depth ]; then
     require_root_depth

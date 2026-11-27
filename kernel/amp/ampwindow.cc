@@ -125,6 +125,11 @@ namespace kickos
                     return Lane{0u, 0u, RING_SLOTS};
                 }
                 uint32_t const slots = g_lanes[to].slots;
+                // A node serving no port has no call lane.
+                if (slots == 0u)
+                {
+                    return Lane{0u, 0u, 0u};
+                }
                 uint32_t const index = (slot & RING_MASK) / slots;
                 return Lane{index, index * slots, slots};
             }
@@ -201,7 +206,7 @@ namespace kickos
             {
                 r.pending = state;
                 r.defers = 0u;
-                r.refused = static_cast<uint8_t>(answer == REPLY_REFUSED);
+                r.word = static_cast<uint8_t>(answer);
                 r.gen++;
             }
 
@@ -315,7 +320,7 @@ namespace kickos
                     {
                         // The route is reset: whatever answer was deferred is now "no answer".
                         r.pending = Inbound::PENDING_GONE;
-                        r.refused = 0u;
+                        r.word = KOS_BADGE_NONE;
                         continue;
                     }
                     ReplyTag const tag = r.tag;
@@ -367,25 +372,13 @@ namespace kickos
                 {
                     return false;
                 }
-                void const* echo = nullptr;
-                uint32_t answer_len = 0u;
-                uint32_t answer = REPLY_REFUSED;
-                if (port_endpoint(port) != EP_BOUND_NONE)
+                if (port_endpoint(port) != EP_BOUND_NONE
+                    and (endpoint_far_call_deliver(from, port, tag, badge, len, slot, held)
+                         or endpoint_far_hold(from, port, tag, badge, len, slot, held)))
                 {
-                    if (endpoint_far_call_deliver(from, port, tag, badge, len, slot, held)
-                        or endpoint_far_hold(from, port, tag, badge, len, slot, held))
-                    {
-                        return true;
-                    }
+                    return true;
                 }
-                else if (port == PORT_ECHO)
-                {
-                    // No thread receives an echo, so nothing but the handler can answer it.
-                    echo = ring_for(Class::CALL, me, from).slot[slot & RING_MASK].payload;
-                    answer_len = len;
-                    answer = KOS_BADGE_NONE;
-                }
-                (void)send(from, PORT_REPLY, tag, answer, echo, answer_len);
+                (void)send(from, PORT_REPLY, tag, REPLY_REFUSED, nullptr, 0u);
                 return false;
             }
         }
@@ -507,11 +500,6 @@ namespace kickos
             count_up(g_counts[self()].deliver_fault);
         }
 
-        void count_send_refused(void)
-        {
-            count_up(g_counts[self()].send_refused);
-        }
-
         namespace
         {
             // The ring is a parameter so the selftest forge can run this arithmetic over a ring
@@ -558,7 +546,7 @@ namespace kickos
                 s.badge.store(badge);
                 s.withdrawn.store(0u);
                 s.len.store(len);
-                if (len != 0u)
+                if (payload != nullptr and len != 0u)
                 {
                     kmemcpy(s.payload, payload, len);
                 }
@@ -614,7 +602,7 @@ namespace kickos
                 Inbox& ib = inbox_of(cls, me, from, ln.index);
                 // BOTH CURSORS. A head that regressed BEHIND `taken` wraps to a huge count there
                 // while head - tail is still small, and the slots it would hand out were never
-                // written: a zeroed one reads as a well-formed zero-length echo.
+                // written: a zeroed one reads as a well-formed zero-length message.
                 uint32_t deepest = outstanding(head, tail);
                 uint32_t const unread = outstanding(head, ib.taken);
                 if (unread > deepest)
@@ -812,8 +800,8 @@ namespace kickos
             bool dispatch_reply(uint32_t me, uint32_t from, ReplyTag const& tag, uint32_t badge,
                                 uint32_t len, uint32_t slot, Held held)
             {
-                if (endpoint_far_reply_deliver(from, tag, reply_hold_of(me, from, slot), len,
-                                               badge == REPLY_REFUSED, held))
+                if (endpoint_far_reply_deliver(from, tag, reply_hold_of(me, from, slot), len, badge,
+                                               held))
                 {
                     return true;
                 }
@@ -1005,12 +993,7 @@ namespace kickos
                     {
                         continue;
                     }
-                    uint32_t answer = KOS_BADGE_NONE;
-                    if (r.refused != 0u)
-                    {
-                        answer = REPLY_REFUSED;
-                    }
-                    if (send(from, PORT_REPLY, r.tag, answer, nullptr, 0u) != Sent::OK)
+                    if (send(from, PORT_REPLY, r.tag, r.word, nullptr, 0u) != Sent::OK)
                     {
                         r.defers = static_cast<uint8_t>(r.defers + 1u);
                         if (r.defers < DEFER_PASSES)
@@ -1158,7 +1141,7 @@ namespace kickos
             r.from = static_cast<uint8_t>(from);
             r.slot = static_cast<uint8_t>(slot & RING_MASK);
             r.live = 1u;
-            r.refused = 0u;
+            r.word = KOS_BADGE_NONE;
             // The generation is not touched here: it counts deaths, so a seat inherits the
             // count the last death left, which a holder of the dead record does not carry.
             return record_token(record_index(me, from, slot), static_cast<uint16_t>(r.gen));
@@ -1240,6 +1223,11 @@ namespace kickos
         void inbound_refuse(uint32_t token)
         {
             inbound_answer(token, REPLY_REFUSED, nullptr, 0u);
+        }
+
+        void inbound_fault(uint32_t token)
+        {
+            inbound_answer(token, REPLY_FAULTED, nullptr, 0u);
         }
 
         void inbound_withdraw(uint32_t token)

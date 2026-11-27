@@ -699,48 +699,21 @@ namespace selftest
         }
 
 #if KICKOS_HAVE_ASPACE
-        // A grant never unmaps, so the tables an arm's grant of its block keeps would otherwise
-        // be taken inside that arm's census. One granule mapped for the run on each side of the
-        // blocks keeps them, while the blocks lie between the two within two leaf tables' reach.
-        constexpr uintptr_t LEAF_TABLE_SPAN = ASPACE_GRANULE / sizeof(uint64_t) * ASPACE_GRANULE;
-
-        uintptr_t seat_granule()
+        uintptr_t xsem_granule()
         {
-            void* const seat = kos_ram_alloc(ASPACE_GRANULE);
-            if (seat == nullptr)
+            void* const page = kos_ram_alloc(ASPACE_GRANULE);
+            if (page == nullptr)
             {
-                tap::bail_out("the seat could not reserve its granule");
+                tap::bail_out("the semaphore page could not reserve its granule");
                 return 0;
             }
-            int const rc = kos_mem_self_grant(seat, ASPACE_GRANULE, 0);
+            int const rc = st_self_grant(page, ASPACE_GRANULE, 0);
             if (rc != 0)
             {
-                tap::bail_out("the seat's grant answered %d", rc);
+                tap::bail_out("the semaphore page's grant answered %d", rc);
                 return 0;
             }
-            return reinterpret_cast<uintptr_t>(seat);
-        }
-
-        bool blocks_between(uintptr_t lo, uintptr_t hi)
-        {
-            uintptr_t const first = lo & ~(LEAF_TABLE_SPAN - 1u);
-            uintptr_t const last = hi & ~(LEAF_TABLE_SPAN - 1u);
-            if (last - first > LEAF_TABLE_SPAN)
-            {
-                return false;
-            }
-            for (RamNode const* n = g_ram_first; n != nullptr; n = n->next)
-            {
-                for (int i = 0; i < n->count; i++)
-                {
-                    uintptr_t const b = reinterpret_cast<uintptr_t>(n->block[i]);
-                    if (b < lo or b + st_ram_bytes(n->size[i]) > hi)
-                    {
-                        return false;
-                    }
-                }
-            }
-            return true;
+            return reinterpret_cast<uintptr_t>(page);
         }
 #endif
     }
@@ -798,23 +771,8 @@ namespace selftest
         }
 #endif
 #if KICKOS_HAVE_ASPACE
-        uintptr_t const lo = seat_granule();
-        if (lo == 0 or not reserve_asks())
-        {
-            return false;
-        }
-        g_xsem_page = lo;
-        uintptr_t const hi = seat_granule();
-        if (hi == 0)
-        {
-            return false;
-        }
-        if (not blocks_between(lo, hi))
-        {
-            tap::bail_out("the arms' blocks do not lie between the two seats keeping their tables");
-            return false;
-        }
-        return true;
+        g_xsem_page = xsem_granule();
+        return g_xsem_page != 0 and reserve_asks();
 #else
         return reserve_asks();
 #endif

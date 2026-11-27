@@ -40,6 +40,11 @@ namespace
 
     std::deque<Arrival> g_script;
     std::deque<Receive> g_receives;
+    // Each call the relay makes on its own standard output, and the answer it is given: a
+    // negative error, else these bytes.
+    std::deque<std::string> g_calls;
+    int32_t g_call_error = 0;
+    std::string g_call_answer;
     std::string g_out;
     std::string g_endpoint_name;
     std::jmp_buf g_spun;
@@ -56,6 +61,9 @@ namespace
     {
         g_script = std::move(script);
         g_receives.clear();
+        g_calls.clear();
+        g_call_error = 0;
+        g_call_answer.clear();
         g_out.clear();
         g_endpoint_name.clear();
         g_table = {};
@@ -122,6 +130,23 @@ extern "C"
         return static_cast<int>(n);
     }
 
+    int32_t kos_call(kos_cap_t ep, void* buf, size_t send_len, size_t recv_cap, kos_monotonic_t)
+    {
+        EXPECT_EQ(ep, static_cast<kos_cap_t>(KOS_CAP_STDOUT));
+        g_calls.emplace_back(static_cast<char const*>(buf), send_len);
+        if (g_call_error != 0)
+        {
+            return g_call_error;
+        }
+        size_t n = g_call_answer.size();
+        if (n > recv_cap)
+        {
+            n = recv_cap;
+        }
+        std::memcpy(buf, g_call_answer.data(), n);
+        return static_cast<int32_t>(n);
+    }
+
     ssize_t amprelay_write(int fd, void const* buf, size_t n)
     {
         EXPECT_EQ(fd, 1);
@@ -149,16 +174,34 @@ namespace
         EXPECT_EQ(g_receives.size(), 3u);
     }
 
-    TEST(AmpRelay, ACallIsAnsweredWithAnEmptyReply)
+    // A console request crosses as a call: the relay makes it again on its own standard output
+    // and answers with what that answered, writing nothing.
+    TEST(AmpRelay, ACallIsForwardedAsACallAndItsAnswerIsTheReply)
     {
-        reset({{0, "line\n", REPLY}, {0, "next\n", KOS_CAP_NONE}, {-KOS_EBADF, "", KOS_CAP_NONE}}, KOS_CAP_WAIT);
+        reset({{0, std::string("\x02\0\0\0req", 7), REPLY}, {0, "next\n", KOS_CAP_NONE},
+               {-KOS_EBADF, "", KOS_CAP_NONE}},
+              KOS_CAP_WAIT);
+        g_call_answer = std::string("\0\0\0\0ans", 7);
+        EXPECT_EQ(run(), 1);
+        ASSERT_EQ(g_calls.size(), 1u) << "the call was not forwarded as a call";
+        EXPECT_EQ(g_calls[0], std::string("\x02\0\0\0req", 7));
+        ASSERT_GE(g_receives.size(), 3u);
+        EXPECT_EQ(g_receives[1].reply_cap, REPLY) << "the call was never answered";
+        EXPECT_EQ(g_receives[1].reply_len, 7u) << "the answer was not relayed whole";
+        EXPECT_EQ(g_receives[2].reply_cap, KOS_CAP_NONE) << "a send was answered as a call";
+        EXPECT_EQ(g_out.rfind("next\n", 0), 0u) << "the call's bytes reached the console: " << g_out;
+    }
+
+    // A forward the relay's standard output refuses is answered empty.
+    TEST(AmpRelay, ARefusedForwardIsAnsweredEmpty)
+    {
+        reset({{0, "req", REPLY}, {-KOS_EBADF, "", KOS_CAP_NONE}}, KOS_CAP_WAIT);
+        g_call_error = -KOS_EBADF;
         EXPECT_EQ(run(), 1);
         ASSERT_GE(g_receives.size(), 2u);
-        EXPECT_EQ(g_receives[1].reply_cap, REPLY) << "the call was never answered";
+        EXPECT_EQ(g_receives[1].reply_cap, REPLY);
         EXPECT_EQ(g_receives[1].reply_len, 0u);
-        ASSERT_GE(g_receives.size(), 3u);
-        EXPECT_EQ(g_receives[2].reply_cap, KOS_CAP_NONE) << "a send was answered as a call";
-        EXPECT_EQ(g_out.rfind("line\nnext\n", 0), 0u) << g_out;
+        EXPECT_EQ(g_out.find("req"), std::string::npos) << g_out;
     }
 
     TEST(AmpRelay, EveryReceiveIsOnTheServedEndpoint)

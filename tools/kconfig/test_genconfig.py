@@ -348,15 +348,15 @@ class Genconfig(unittest.TestCase):
         # The shared image seats for node 0, whatever node an entry names.
         run, out = gen(AMP)
         self.assertEqual(run.returncode, 0, run.stderr)
-        for line in ("set(KICKOS_AMP_SELF_NODE 0)", "set(KICKOS_AMP_PORT_COUNT 3)",
-                     "set(KICKOS_AMP_PORT_LOCAL 1)", 'set(KICKOS_AMP_PORT_NODE_INIT "0,1,1")',
-                     'set(KICKOS_AMP_PORT_PORT_INIT "2,0,3")'):
+        for line in ("set(KICKOS_AMP_SELF_NODE 0)", "set(KICKOS_AMP_PORT_COUNT 2)",
+                     "set(KICKOS_AMP_PORT_LOCAL 1)", 'set(KICKOS_AMP_PORT_NODE_INIT "0,1")',
+                     'set(KICKOS_AMP_PORT_PORT_INIT "2,3")'):
             self.assertIn(line, fragment(out))
         self.assertFalse(os.path.exists(os.path.join(out, "amp-peer-seed.cmake")))
         frag = self.accepted(AMP_OWN, "assert:KICKOS_AMP_NODE_ID=1")
         for line in ("set(KICKOS_AMP_SELF_CORE 1)", "set(KICKOS_AMP_SELF_NODE 1)",
-                     "set(KICKOS_AMP_PORT_COUNT 3)", "set(KICKOS_AMP_PORT_LOCAL 2)",
-                     'set(KICKOS_AMP_PORT_NODE_INIT "0,1,1")', 'set(KICKOS_AMP_PORT_PORT_INIT "2,3,4")'):
+                     "set(KICKOS_AMP_PORT_COUNT 4)", "set(KICKOS_AMP_PORT_LOCAL 3)",
+                     'set(KICKOS_AMP_PORT_NODE_INIT "0,1,1,1")', 'set(KICKOS_AMP_PORT_PORT_INIT "2,3,4,7")'):
             self.assertIn(line, frag)
 
     def test_amp_slices(self):
@@ -414,7 +414,6 @@ class Genconfig(unittest.TestCase):
                 (["assert:KICKOS_AMP_PORTS=0:2,x"], "entry 'x' is not a node:port pair"),
                 (["assert:KICKOS_AMP_PORTS=0:2,2:3"], "names node 2 and the partition holds 2"),
                 (["assert:KICKOS_AMP_PORTS=0:2,1:1"], "names port 1"),
-                (["assert:KICKOS_AMP_PORTS=0:0,1:3"], "names port 0 for this image's own node"),
                 (["assert:KICKOS_AMP_PORTS=0:2,1:32"], "31 is its last port"),
                 (["assert:KICKOS_AMP_PORTS=0:2,0:02"], "node 0 port 2 is named twice")):
             with self.subTest(requests=requests):
@@ -422,8 +421,9 @@ class Genconfig(unittest.TestCase):
                 self.assertNotEqual(run.returncode, 0, "%s was accepted" % requests)
                 self.assertIn("REFUSED", run.stderr)
                 self.assertIn(phrase, run.stderr)
-        # Port 0 is the echo of a node that runs no kernel, so a peer may serve it.
+        # Port 0 is a service port like any but port 1.
         self.accepted(AMP_OWN, "assert:KICKOS_AMP_PORTS=0:2,1:0")
+        self.accepted(AMP_OWN, "assert:KICKOS_AMP_PORTS=0:0,1:3")
         self.accepted(AMP_OWN, "assert:KICKOS_AMP_TEXT_BASE=0x10000000", "assert:KICKOS_AMP_TEXT_SHARE=0x100000")
 
     def test_amp_fingerprint_leaves_the_node_out(self):
@@ -447,7 +447,7 @@ class Genconfig(unittest.TestCase):
         self.assertEqual(run.returncode, 0, run.stderr)
         seed = read(os.path.join(out, "amp-peer-seed.cmake")).splitlines()
         self.assertEqual(seed[0], "# Written by node 1's configure. Read by tools/amp/build-partition.sh.")
-        for line in ('set(KICKOS_AMP_PORTS "0:2,1:3,1:4" CACHE STRING "" FORCE)',
+        for line in ('set(KICKOS_AMP_PORTS "0:2,1:3,1:4,1:7" CACHE STRING "" FORCE)',
                      'set(KICKOS_CONSOLE "chip" CACHE STRING "" FORCE)',
                      'set(KICKOS_TELEMETRY "off" CACHE STRING "" FORCE)',
                      'set(KICKOS_AMP_USER_SHARE_UNCACHED ON CACHE BOOL "" FORCE)',

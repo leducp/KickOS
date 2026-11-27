@@ -35,7 +35,7 @@
 #   ROOT        directory holding tools/ and boards/ (the flash recipes). Default: this
 #               script's grandparent.
 #   KICKOS_RIG  the rig config naming the console cables. Default: $ROOT/.session/rig.conf.
-#   PYBIN       a python carrying pyserial. Espressif capture only.
+#   PYBIN       the python for an Espressif or a USB CDC capture; an Espressif one needs pyserial.
 #   CAP_SECS    capture window override.
 #   EXPECT_COMMIT  the label cmake/build_stamp.cmake stamped into the image, which a banner
 #               whose commit row arrived damaged is recovered against. Default: none.
@@ -197,8 +197,7 @@ arm_waiting_reader() {
       fi
       # ONE OPEN, held across the raw setting and the read: cdc_acm discards what it received
       # when the last opener closes, and the first bytes the device sends are its identity
-      # rows. The device holds its output until a line coding, which cdc_acm sends from inside
-      # the call that makes the tty raw; cap_cdc.py makes sure that call carries one.
+      # rows.
       if [ "${#m[@]}" -eq 1 ]; then
         "$2" "$3" "${m[0]}" 2>/dev/null
       fi

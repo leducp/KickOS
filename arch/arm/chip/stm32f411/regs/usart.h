@@ -1,19 +1,14 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// STM32F411 USART register map (RM0383 sec.19.6), classic SR/DR layout.
-//
-// TWO SPELLINGS OF THE SAME REGISTER. The *_OFFSET constants are instance-relative and are
-// what a driver granted one window uses; the bare names below are the console instance
-// (USART2) resolved absolutely, for the kernel console which is wired to that one channel.
+// STM32F411 USART register map (RM0383 sec.19.6), classic SR/DR layout, as offsets from an
+// instance's base.
 //
 // Every access must be a half-word or word (RM0383 sec.19.6): the byte lanes are not
 // individually addressable.
 
 #ifndef KICKOS_ARCH_ARM_CHIP_STM32F411_REGS_USART_H
 #define KICKOS_ARCH_ARM_CHIP_STM32F411_REGS_USART_H
-
-#include <kickos/chip_mmap.h>
 
 #include <stdint.h>
 
@@ -27,15 +22,6 @@ namespace kickos::stm32f411::reg::usart
     constexpr uintptr_t CR2_OFFSET = 0x10u;
     constexpr uintptr_t CR3_OFFSET = 0x14u;
     constexpr uintptr_t GTPR_OFFSET = 0x18u;
-
-    // The console instance, absolute.
-    constexpr uintptr_t SR = mmap::USART2_BASE + SR_OFFSET;
-    constexpr uintptr_t DR = mmap::USART2_BASE + DR_OFFSET;
-    constexpr uintptr_t BRR = mmap::USART2_BASE + BRR_OFFSET;
-    constexpr uintptr_t CR1 = mmap::USART2_BASE + CR1_OFFSET;
-    constexpr uintptr_t CR2 = mmap::USART2_BASE + CR2_OFFSET;
-    constexpr uintptr_t CR3 = mmap::USART2_BASE + CR3_OFFSET;
-    constexpr uintptr_t GTPR = mmap::USART2_BASE + GTPR_OFFSET;
 
     // SR (RM0383 sec.19.6.1).
     constexpr uint32_t SR_PE = 1u << 0;

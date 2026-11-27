@@ -84,6 +84,7 @@ namespace kickos
         return kstack_words(index)[0] == KSTACK_CANARY;
     }
 
+#if defined(KICKOS_WITNESS_KSTACK) && KICKOS_WITNESS_KSTACK
     // A run of written words that happen to equal KSTACK_FILL at the boundary reads shallow, so
     // this under-reports and never over-reports.
     size_t kstack_high_water(int index)
@@ -102,6 +103,7 @@ namespace kickos
         }
         return (KSTACK_WORDS - i) * sizeof(uint32_t);
     }
+#endif
 #endif
 
     // One holder per device window, matched on RANGES and not on region slots, so equal,

@@ -13,7 +13,7 @@
 #include <kickos/sync.h>
 #include <kickos/thread.h>
 
-#include "dark_seam.h"
+#include "device_seam.h"
 #include "isolated_arm.h"
 #include "kseam_test.h"
 
@@ -40,7 +40,7 @@ namespace
             g_published_during_flush = true;
         }
         g_pushes = g_pushes + 1;
-        darkseam::g_wire.push_back(static_cast<char>(b));
+        deviceseam::g_wire.push_back(static_cast<char>(b));
         if (g_refuse_on_core1)
         {
             g_refuse_on_core1 = false;
@@ -59,7 +59,7 @@ namespace
     // A line queued and not yet sent, the device then free to take bytes.
     void stage(void)
     {
-        darkseam::reset();
+        deviceseam::reset();
         g_slot_free = false;
         g_pushes = 0;
         g_published_during_flush = false;
@@ -82,9 +82,9 @@ TEST_F(ConsolePanicUnlocked, ARefusalUnderTheBareLockWritesItsLineAndTakesNoLock
         arch_kernel_lock();
         kpanic_enter_unlocked();
         kpanic_write_unlocked("refused\n", 8);
-        EXPECT_EQ(darkseam::g_wire, "refused\n");
+        EXPECT_EQ(deviceseam::g_wire, "refused\n");
         EXPECT_EQ(g_pushes, 0u) << "the refusal read the ring";
-        EXPECT_EQ(darkseam::g_reclaims, 1u);
+        EXPECT_EQ(deviceseam::g_reclaims, 1u);
         EXPECT_EQ(console_tx_armed(), 0);
     });
 }
@@ -100,8 +100,8 @@ TEST_F(ConsolePanicUnlocked, ALaterPanicsBannerIsWrittenWithoutTheLock)
         kpanic_write_unlocked("refused\n", 8);
         kpanic_enter();
         kickos::kputs("KERNEL PANIC: later\n");
-        EXPECT_EQ(darkseam::g_wire, "refused\nKERNEL PANIC: later\n");
-        EXPECT_EQ(darkseam::g_reclaims, 1u);
+        EXPECT_EQ(deviceseam::g_wire, "refused\nKERNEL PANIC: later\n");
+        EXPECT_EQ(deviceseam::g_reclaims, 1u);
     });
 }
 
@@ -112,7 +112,7 @@ TEST_F(ConsolePanicUnlocked, AnOrdinaryPanicStoresPanickedOnlyAfterItsFlush)
     run_isolated([]() {
         stage();
         kpanic_enter();
-        EXPECT_EQ(darkseam::g_wire, "queued\n");
+        EXPECT_EQ(deviceseam::g_wire, "queued\n");
         EXPECT_FALSE(g_published_during_flush) << "PANICKED was stored before the ring was out";
         EXPECT_NE(console_handover_refused(), 0);
     });
@@ -127,6 +127,6 @@ TEST_F(ConsolePanicUnlocked, ARefusalDuringAPanicsFlushDoesNotReclaimAgain)
         g_refuse_on_core1 = true;
         kpanic_enter();
         EXPECT_FALSE(g_refuse_on_core1) << "the flush pushed nothing; the arm staged no race";
-        EXPECT_EQ(darkseam::g_reclaims, 1u) << "a refusal racing the panic reclaimed again";
+        EXPECT_EQ(deviceseam::g_reclaims, 1u) << "a refusal racing the panic reclaimed again";
     });
 }

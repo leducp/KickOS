@@ -19,9 +19,9 @@ chapter shows the code. It assumes you know how to boot an image and attach gdb
 ## The image and the syscall we follow
 
 We use the `hello` app on the `qemu` build (`user/apps/common/hello/main.cc`). Its `main` prints
-two lines, starts two threads called `ping` and `pong`, and parks. The two threads take turns
-through two semaphores, which are words in the app's static data, not kernel objects. The very
-first thing `main` does is:
+two lines, starts two threads called `ping` and `pong`, and waits on a semaphore until they have
+played ten rounds. The two threads take turns through two semaphores, which are words in the
+app's static data, not kernel objects. The very first thing `main` does is:
 
 ```
     kos::print("hello from KickOS userspace!\n");
@@ -60,18 +60,20 @@ in: `kos_print`, the C library's `write`, and the test harness.
 0 of the calling thread, which by convention is the thread's stdout endpoint
 (`KOS_CAP_STDOUT` in `system/include/kickos/sys/cap_index.h`). An endpoint is a kernel object two
 threads use to pass messages; when a console driver runs in userspace, it receives on the other
-side. Only if the send is refused for one of three "nobody is serving" reasons does it fall back
-to the kernel's own debug console:
+side. The send goes through `stdout_send`, which passes the deadline `KOS_NEVER` (or `KOS_POLL`
+for a task that set `O_NONBLOCK`). Only if the send is refused for one of two "nobody is serving"
+reasons, an empty handle 0 (`-KOS_EBADF`) or an endpoint nobody serves (`-KOS_ECONNREFUSED`),
+does `stdout_write` fall back to the kernel's own debug console:
 
 ```
-        int32_t const r = kos_send(0, s + sent, chunk, KOS_TIMEOUT_NONE);
+        int32_t const r = stdout_send(s + sent, chunk, nonblock);
         // ...
         if (r >= 0)
         {
             sent += static_cast<size_t>(r);
             continue;
         }
-        if (r != -KOS_EBADF and r != -KOS_EAGAIN and r != -KOS_ECONNREFUSED)
+        if (r != -KOS_EBADF and r != -KOS_ECONNREFUSED)
         {
             return {sent, r};
         }
@@ -85,14 +87,15 @@ the first syscall fail at Stop 8.
 **Try it:** `break kos_send`, `continue`, then `bt`. You stop in the stub, called from the print:
 
 ```
-#0  kos_send (ep=0, buf=0xf343, len=29, timeout_us=4294967295) at .../user/src/syscall_stubs.cc:113
-#1  0x00001930 in kickos::stdout_write (s=0xf343 "hello from KickOS userspace!\n", total=29) at .../emit.h:88
-#2  kos_print (s=0xf343 "hello from KickOS userspace!\n") at .../user/src/print.cc:11
-#3  0x0000019a in kos::print (...) at .../user/include/kickos/kos.h:23
-#4  main () at .../user/apps/common/hello/main.cc:58
+#0  kos_send (ep=0, buf=0x13603, len=29, until=...) at .../user/src/syscall_stubs.cc:94
+#1  0x00011bae in kickos::stdout_send (s=s@entry=0x13603 "hello from KickOS userspace!\n", n=n@entry=29, nonblock=nonblock@entry=false) at .../emit.h:116
+#2  0x00011bfa in kickos::stdout_write (s=0x13603 "hello from KickOS userspace!\n", total=29) at .../emit.h:133
+#3  kos_print (s=0x13603 "hello from KickOS userspace!\n") at .../user/src/print.cc:11
+#4  0x0001183a in kos::print (s=0x13603 "hello from KickOS userspace!\n") at .../user/include/kickos/kos.h:190
+#5  main () at .../user/apps/common/hello/main.cc:51
 ```
 
-`buf=0xf343` is an address in flash, where the string literal lives. `p $control` prints `3`:
+`buf=0x13603` is an address in flash, where the string literal lives. `p $control` prints `3`:
 bit 0 (`nPRIV`) set means unprivileged, bit 1 (`SPSEL`) set means the thread runs on the process
 stack pointer, `PSP`. This is user mode.
 
@@ -101,7 +104,8 @@ stack pointer, `PSP`. This is user mode.
 path), [Reference: console](../reference/console.md)
 
 ### Stop 2: the stub puts the request in registers
-**Where:** `user/src/syscall_stubs.cc`, `kos_send`; `arch/arm/armv7m/switch.S`, `arch_syscall`
+**Where:** `user/src/syscall_stubs.cc`, `kos_send`; `user/include/kickos/sys/abi.h`,
+`kos_limit_word`; `user/src/arch/armv7m/syscall.S`, `arch_syscall`
 
 Every syscall stub is the same shape: cast the arguments to plain words and call `arch_syscall`
 with the syscall number first. The number for a send is `KOS_SYS_SEND`, which is 50, from the
@@ -109,56 +113,63 @@ with the syscall number first. The number for a send is `KOS_SYS_SEND`, which is
 compiled app and the kernel.
 
 ```
-int32_t kos_send(kos_cap_t ep, void const* buf, size_t len, uint32_t timeout_us)
+int32_t kos_send(kos_cap_t ep, void const* buf, size_t len, kos_monotonic_t until)
 {
+    uint64_t const limit = kos_limit_word(until.ns);
     return static_cast<int32_t>(arch_syscall(KOS_SYS_SEND,
                                              static_cast<uintptr_t>(ep),
                                              reinterpret_cast<uintptr_t>(buf),
-                                             static_cast<uintptr_t>(len),
-                                             static_cast<uintptr_t>(timeout_us)));
+                                             static_cast<uintptr_t>(len), kos_u64_lo(limit),
+                                             kos_u64_hi(limit)));
 }
 ```
 
-`arch_syscall` takes five words. The ARM calling convention (AAPCS) passes the first four in
-`r0`-`r3` and the fifth on the stack, so on entry `r0` is the number, `r1` the handle, `r2` the
-buffer, `r3` the length, and the fifth word, the timeout, sits at `[sp]`. The stub's whole body is three
-instructions:
+The deadline is a point on the monotonic clock, 64 bits wide. `kos_limit_word` turns it into the
+*limit word* the kernel takes: all ones for `KOS_NEVER`, "no limit", and 0 for `KOS_POLL`, "do
+not wait". The word crosses the trap as two 32-bit halves, `kos_u64_lo` and `kos_u64_hi`, so
+`arch_syscall` takes six words: the number and five arguments. The ARM calling convention (AAPCS)
+passes the first four in `r0`-`r3` and the rest on the stack, so on entry `r0` is the number, `r1`
+the handle, `r2` the buffer, `r3` the length, and the two halves of the deadline, `a3` and `a4`,
+sit at `[sp]` and `[sp+4]`. The stub moves them into registers before it traps:
 
 ```
-arch_syscall64:
-    .thumb_func
-    .global arch_syscall
 arch_syscall:
-    ldr     r12, [sp]               /* a3 (5th arg) -> stacked r12 */
+    push    {r4, lr}                /* shifts a3 to [sp+8], a4 to [sp+12] */
+    adr     r4, .Lsys_back
+    orr     lr, r4, #1              /* the trampoline exits with bx: Thumb bit required */
+    ldrd    r12, r4, [sp, #8]
     svc     #0
-    bx      lr
+.Lsys_back:
+    pop     {r4, pc}
 ```
 
-The `ldr` moves the fifth argument into `r12`, because `r12` is one of the registers the hardware
-will save on the trap, and the stack slot is not. Notice that `arch_syscall64` is the same code:
-a 64-bit result comes back in the pair `r0:r1`, and the narrow version simply ignores `r1`.
+`a3` goes into `r12`, because `r12` is one of the registers the hardware will save on the trap,
+and the stack slot is not. `a4` goes into `r4`, which the kernel copies itself (Stop 4). `lr` is
+set to `.Lsys_back`, the `pop` that gives the caller its `r4` back: that is where the kernel
+returns. `arch_syscall64` is the same code: a 64-bit result comes back in the pair `r0:r1`, and
+the narrow version simply ignores `r1`.
 
-Nothing here is copied into a buffer. All five words travel in registers, so there is nothing
-in memory the caller could change while the kernel reads it.
+Nothing here is copied into a buffer. All six words travel in registers, so there is nothing in
+memory the caller could change while the kernel reads it.
 
 **Try it:** `break arch_syscall`, `continue`, `info registers r0 r1 r2 r3`:
 
 ```
 r0             0x32                50
 r1             0x0                 0
-r2             0xf343              62275
+r2             0x13603             79363
 r3             0x1d                29
 ```
 
-`x/2wx $sp` shows `0xffffffff` first: the fifth argument, the timeout `KOS_NEVER`, since
-`kos_print` waits for its reader.
+`x/2wx $sp` shows `0xffffffff` twice: the two halves of `KOS_NEVER`, since `kos_print` waits for
+its reader.
 
 **Why, and the contract:** [Book: the syscall path](../book/the-syscall-path-trap-dispatch-return.md)
 ("The number and the arguments: a register ABI"), [Reference: invariants](../reference/invariants.md)
 (`syscall-return-abi`)
 
 ### Stop 3: the trap, and what the hardware saves
-**Where:** `arch/arm/armv7m/switch.S`, the `svc #0` in `arch_syscall`, then `SVC_Handler`
+**Where:** `user/src/arch/armv7m/syscall.S`, the `svc #0` in `arch_syscall`; `arch/arm/armv7m/switch.S`, `SVC_Handler`
 
 `svc` is the Cortex-M trap instruction ("supervisor call"). It raises exception number 11,
 SVCall, synchronously: the CPU stops the thread at that instruction and enters the handler the
@@ -182,42 +193,44 @@ only when it is about to run a *different* thread on this core, which is the job
 The comment at the top of `switch.S` draws the full picture of a switched-out thread's stack:
 `{r4-r11, EXC_RETURN}` pushed by software below the hardware's `{r0-r3, r12, lr, pc, xPSR}`.
 
-**Try it:** from the `arch_syscall` stop, `stepi` twice. You are on the first instruction of
+**Try it:** from the `arch_syscall` stop, `stepi` five times. You are on the first instruction of
 `SVC_Handler`. Then:
 
 ```
-(gdb) info registers msp psp lr
-msp            0x203fff60
-psp            0x20027ed8
+(gdb) info registers r4 msp psp lr
+r4             0xffffffff
+msp            0x203fff70
+psp            0x2001df10
 lr             0xfffffffd
 (gdb) p/x $xpsr
-$2 = 0x100000b
+$2 = 0x2100000b
 (gdb) x/8wx $psp
-0x20027ed8:    0x00000032    0x00000000    0x0000f343    0x0000001d
-0x20027ee8:    0xffffffff    0x000016c7    0x0000253c    0x01000000
+0x2001df10:    0x00000032    0x00000000    0x00013603    0x0000001d
+0x2001df20:    0xffffffff    0x00011ca5    0x00011ca4    0x21000000
 ```
 
-Read the frame left to right: `r0`=50 (the number), `r1`=0 (the handle), `r2`=0xf343 (the
-buffer), `r3`=29 (the length), `r12`=0xffffffff (the fifth argument), `lr`=0x16c7 (where `kos_send`
-continues after its call to `arch_syscall`, with bit 0 set for Thumb), `pc`=0x253c (the `bx lr`
-right after the `svc`), `xPSR`=0x01000000 (Thumb bit, thread mode). The `PSP` moved down by 32
-bytes, one frame. `xPSR` ends in `0xb`, exception 11, and `EXC_RETURN` 0xfffffffd means "return to
-thread mode, on the `PSP`, with no floating-point state in the frame".
+Read the frame left to right: `r0`=50 (the number), `r1`=0 (the handle), `r2`=0x13603 (the
+buffer), `r3`=29 (the length), `r12`=0xffffffff (`a3`), `lr`=0x11ca5 (`.Lsys_back`, with bit 0
+set for Thumb), `pc`=0x11ca4 (the instruction right after the `svc`, which is `.Lsys_back`
+itself), `xPSR`=0x21000000 (Thumb bit, thread mode, and the carry flag the caller left). `a4` is
+still in the live `r4`. `xPSR` ends in `0xb`, exception 11, and `EXC_RETURN` 0xfffffffd means
+"return to thread mode, on the `PSP`, with no floating-point state in the frame".
 
 **Why, and the contract:** [Book: interrupts and traps](../book/interrupts-and-traps.md),
 [Book: context switching and the silicon contract](../book/context-switching-and-the-silicon-contract.md)
 
-### Stop 4: the handler checks the stack, then gets out
+### Stop 4: the handler checks the stack, then moves the call onto the kernel stack
 **Where:** `arch/arm/armv7m/switch.S`, `SVC_Handler`, the `PSP_GUARD` macro, the `.Lsvc_slow` label
 
 You might expect the handler to look at the number and call the right kernel function. It does
 not, and the reason is the rule this whole path is built on: **the kernel's dispatch must run in
 privileged thread mode, on the caller's own continuation, never in the handler**
-(`syscall-in-priv-thread-context`). The *continuation* is the rest of the caller's work: its own
-stack and the chain of calls on it, which carry on where the trap left them. A thread that blocks
-inside a syscall has to really stop before it returns to user code. On Cortex-M a switch requested from handler mode is only
-*pended* and happens after the handler returns, so a blocking call made inside the handler would
-return to the caller first and switch away later. The Book chapter spells out this trap.
+(`syscall-in-priv-thread-context`). The *continuation* is the rest of the caller's work: a stack
+of its own and the chain of calls on it, which carry on where the trap left them. A thread that
+blocks inside a syscall has to really stop before it returns to user code. On Cortex-M a switch
+requested from handler mode is only *pended* and happens after the handler returns, so a
+blocking call made inside the handler would return to the caller first and switch away later.
+The Book chapter spells out this trap.
 
 So the handler does three small things. First it reads the `PSP` and checks it with `PSP_GUARD`:
 the frame the hardware just wrote, and everything the kernel will push next, must fit inside the
@@ -227,31 +240,45 @@ so it is checked before anything else (Book: [Whoever stacks the trap frame owns
 
 Second it compares the stacked `r0` with 56. That is `KOS_SYS_CALL_REG`, the one syscall a
 Cortex-M build may finish inside the handler, an IPC fast path covered in
-[Call and reply](05-call-and-reply.md). Ours is 50, so it branches to the ordinary path.
+[Call and reply](05-call-and-reply.md). That path raises the kernel's mask before it reads
+whether a switch is pending (`kickos_armv7m_svc_pend_read`), so no interrupt can move the
+running thread between the read and the mask. Ours is 50, so it branches to the ordinary path.
 
-Third, the ordinary path, which is the heart of the trick:
+Third, the ordinary path, which is the heart of the trick. On this build each thread owns a
+small *kernel stack*, a block in kernel memory that only privileged code can touch
+(`KICKOS_KERNEL_STACKS` is 1 on `qemu`, as on any armv7m chip with an MPU). The banner at boot
+says how big: `kstack 1008 B x 5`. Still in handler mode, with interrupts masked, `.Lsvc_slow`
+builds the move onto that block. `g_arch_current` points at the running thread's
+`struct arch_context`, and its `kernel_sp` field is the top `T` of that thread's kernel block.
+Just below the top the handler writes a *continuation header*:
 
 ```
-.Lsvc_slow:
-    ldr     r1, =svc_trampoline
-    bic     r1, r1, #1              /* stacked PC must be halfword-aligned (bit0=0;
-                                       the T-bit comes from the stacked xPSR) */
-    str     r1, [r0, #24]           /* frame.PC := svc_trampoline (offset 6*4) */
+       [T-24]  a3, the AAPCS fifth argument, which syscall_dispatch reads at [sp], from r12
+       [T-20]  a4, the sixth, at [sp+4], from the r4 the stub loaded
+       [T-16]  the caller-return this exits to
+       [T-12]  the PSP the thread resumes on
+       [T-8]   with a stack limit, the caller's PSPLIM, put back on the way out
+       [T-4]   the word that keeps sp 8-byte aligned for the call
+```
+
+Below the header it builds a fresh hardware frame: the caller's `r0`-`r3`, `r12` and `lr`, a `pc`
+of `svc_trampoline`, and an `xPSR` with only the Thumb bit. It points the `PSP` at that frame,
+clears `nPRIV` so thread mode becomes privileged, and returns from the exception:
+
+```
+    msr     psp, r3
     mrs     r1, control
     bic     r1, r1, #1              /* CONTROL.nPRIV = 0 -> trampoline privileged */
     msr     control, r1
     isb
-    bx      lr                      /* exception-return into svc_trampoline:
-                                       r0=nr r1=a0 r2=a1 r3=a2 r12=a3
-                                       LR=arch_syscall caller-return */
+    bx      lr                      /* -> svc_trampoline on the block, r0-r3 the arguments */
 ```
 
-It overwrites the saved `pc` in the frame (word 6, offset 24) with the address of
-`svc_trampoline`, clears `nPRIV` so thread mode becomes privileged, and returns from the
-exception. The hardware pops the frame as usual: every argument register comes back exactly as
-the caller left it, but execution resumes at `svc_trampoline` instead of after the `svc`, in
-thread mode, privileged, on the caller's own `PSP`. Nothing was copied. The handler never read a
-kernel data structure.
+The hardware pops the built frame: every argument register comes back as the caller left it, but
+execution resumes at `svc_trampoline`, in thread mode, privileged, with `sp` at the header on the
+caller's kernel block. Only the arguments and the return address were copied from the user frame.
+No word that steers this privileged return is read back from it, because another thread of the
+same task can write that frame.
 
 **Try it:** `break svc_trampoline`, `continue`, then:
 
@@ -259,69 +286,62 @@ kernel data structure.
 (gdb) info registers r0 r1 r2 r3 r12 lr sp
 r0             0x32                50
 r1             0x0                 0
-r2             0xf343              62275
+r2             0x13603             79363
 r3             0x1d                29
 r12            0xffffffff          4294967295
-lr             0x16c7              5831
-sp             0x20027ef8          0x20027ef8
+lr             0x11ca5             72869
+sp             0x20001308          0x20001308 <kickos::(anonymous namespace)::system_pools+1992>
 (gdb) p $control
 $1 = 2
 ```
 
-The registers are the caller's, `sp` is back where it was before the trap (the frame was popped),
-and `CONTROL` is 2: still on the `PSP`, but privileged now.
+The registers are the caller's, and `CONTROL` is 2: still on the `PSP`, but privileged now. The
+`PSP` is no longer the user stack: `sp` is inside `system_pools`, the kernel's pool storage, which
+holds every thread's kernel block.
 
 **Why, and the contract:** [Book: the syscall path](../book/the-syscall-path-trap-dispatch-return.md)
 ("The contract: dispatch runs in privileged THREAD context", "Per-arch entry"),
-[Reference: invariants](../reference/invariants.md) (`syscall-in-priv-thread-context`,
-`fault-frame-untrusted-until-proved`)
+[Book: whoever stacks the trap frame owns the bounds check](../book/whoever-stacks-the-trap-frame-owns-the-bounds-check.md)
+(why a per-thread kernel stack), [Reference: invariants](../reference/invariants.md)
+(`syscall-in-priv-thread-context`, `fault-frame-untrusted-until-proved`)
 
-### Stop 5: the trampoline moves onto the kernel stack
+### Stop 5: the trampoline runs on the kernel stack
 **Where:** `arch/arm/armv7m/switch.S`, `svc_trampoline`; `arch/arm/armv7m/include/kickos/arch/context.h`, `struct arch_context`
 
-On this build each thread owns a small *kernel stack*, a block in kernel memory that only
-privileged code can touch (`KICKOS_KERNEL_STACKS` is 1 on `qemu`, as on any armv7m chip with an
-MPU). The banner at boot says how big: `kstack 1008 B x 17`. The trampoline switches `sp` onto that
-block before it calls any C, so the kernel's own stack frames never sit in memory the user thread
-can read or write.
+The kernel's own stack frames never sit in memory the user thread can read or write: the
+trampoline starts on the kernel block, and the dispatch runs there. Its first lines are short:
 
 ```
-    push    {r0, r1}                /* the two scratch registers the loads below need */
-    ldr     r0, =g_arch_current
-    ldr     r0, [r0]
-    ldr     r0, [r0, #F_CTX_KERNEL_SP]
+    cpsie   i
+    isb                             /* a lowered mask is only sure to be seen after it, and a
+                                       switch pended meanwhile must land before the dispatch
+                                       reads current (DDI0403E B5.2.1) */
     // ...
-    add     r1, sp, #8              /* the PSP the thread resumes on: the push undone */
-    str     r1, [r0, #-8]
-    str     lr, [r0, #-12]
-    str     r12, [r0, #-16]         /* a3 into the fifth-argument slot */
-    sub     r12, r0, #16            /* r12 is free once a3 is in the header */
-    pop     {r0, r1}
-    mov     sp, r12                 /* on the calling thread's kernel block from here */
-    bl      syscall_dispatch        /* (r0..r3, [sp]=a3) -> result in r0:r1 */
+    bl      syscall_dispatch        /* (r0..r3, [sp]=a3, [sp+4]=a4) -> result in r0:r1 */
 ```
 
-`g_arch_current` points at the running thread's `struct arch_context`, and its `kernel_sp` field
-is the top of that thread's kernel block. Just below the top the trampoline writes a four-word
-header: the fifth argument (where the C calling convention expects it, at `[sp]`), the address to
-return to, and the user `PSP` to come back to. Then it calls `syscall_dispatch` with an ordinary
-`bl`. From here on the kernel is plain C++.
+It lowers the mask the handler raised and calls `syscall_dispatch` with an ordinary `bl`. The
+header puts `a3` and `a4` exactly where the C calling convention expects a fifth and sixth
+argument, at `[sp]` and `[sp+4]`. From here on the kernel is plain C++.
 
 **Try it:** `break syscall_dispatch`, `continue`:
 
 ```
-Breakpoint 3, syscall_dispatch (nr=50, a0=0, a1=62275, a2=29, a3=4294967295) at .../kernel/syscall/syscall.cc:371
+Breakpoint 4, syscall_dispatch (nr=50, a0=0, a1=79363, a2=29, a3=4294967295, a4=4294967295) at .../kernel/syscall/syscall.cc:405
 (gdb) info registers sp
-sp             0x20000830          0x20000830 <kickos::(anonymous namespace)::g_kstacks+2000>
-(gdb) x/4wx $sp
-0x20000830 <...g_kstacks+2000>:    0xffffffff    0x000016c7    0x20027ef8    0x4b53464c
+sp             0x20001308          0x20001308 <kickos::(anonymous namespace)::system_pools+1992>
+(gdb) x/6wx $sp
+0x20001308 <...system_pools+1992>:    0xffffffff    0xffffffff    0x00011ca5    0x2001df30
+0x20001318 <...system_pools+2008>:    0x4b53464c    0x4b53464c
 ```
 
-`sp` is now inside `g_kstacks`, the array of kernel blocks. The header reads: fifth argument 0xffffffff,
-return address 0x16c7, user `PSP` 0x20027ef8, and an alignment pad. `bt` shows
-`syscall_dispatch` called from `svc_trampoline`, and nothing above it: the user frames are on
-another stack. While you are stopped privileged, `p/x *(struct arch_context*)*(unsigned*)&g_arch_current`
-prints the running thread's context, `kernel_sp = 0x20000840` among it.
+The header reads: `a3` and `a4`, the two halves of the deadline, the return address 0x11ca5
+(`.Lsys_back`), and the user `PSP` 0x2001df30, 32 bytes above the frame the trap pushed. This
+Cortex-M4 has no stack limit register, so the last two words are not written and hold whatever
+was there. `bt` shows `syscall_dispatch` called from `svc_trampoline`, and nothing above it: the
+user frames are on another stack. While you are stopped privileged,
+`p/x *(struct arch_context*)*(unsigned*)&g_arch_current` prints the running thread's context,
+`kernel_sp = 0x20001320` among it: the header sits 24 bytes below the top.
 
 **Why, and the contract:** [Book: whoever stacks the trap frame owns the bounds check](../book/whoever-stacks-the-trap-frame-owns-the-bounds-check.md)
 (why a per-thread kernel stack), [Reference: architecture](../reference/architecture.md)
@@ -345,19 +365,20 @@ kernel.
             // park, and a spanning caller lock would livelock ARM.
             return static_cast<uint64_t>(endpoint_send(static_cast<uint32_t>(a0), a1,
                                                        static_cast<size_t>(a2),
-                                                       static_cast<uint32_t>(a3)));
+                                                       ktime_limit_word(a3, a4)));
         }
 ```
 
-The arguments arrive as `uintptr_t` words and each case casts them to what they mean. The return
+The arguments arrive as `uintptr_t` words and each case casts them to what they mean. Here
+`ktime_limit_word` joins `a3` and `a4` back into the 64-bit limit word. The return
 type is `uint64_t` on every target, so one dispatcher serves the syscalls that return 64-bit
 values (the clock read) and the ones that return a small signed count.
 
 `IrqLock` is the kernel's critical section: on Cortex-M it raises `BASEPRI` so that interrupts
 which could touch kernel state wait until it is released. You will see one in almost every case.
 
-**Try it:** at the `syscall_dispatch` stop, `info args` prints `nr = 50, a0 = 0, a1 = 62275, a2 = 29,
-a3 = 4294967295`: the same five words, now C++ parameters.
+**Try it:** at the `syscall_dispatch` stop, `info args` prints `nr = 50, a0 = 0, a1 = 79363, a2 = 29,
+a3 = 4294967295, a4 = 4294967295`: the same six words, now C++ parameters.
 
 **Why, and the contract:** [Book: the syscall path](../book/the-syscall-path-trap-dispatch-return.md)
 ("Validate, then use"), [Reference: invariants](../reference/invariants.md)
@@ -377,7 +398,7 @@ have the kernel copy it out. Every pointer a syscall receives is checked against
 `endpoint_send` checks the length and the pointer first, before it looks at anything else:
 
 ```
-    int32_t endpoint_send(uint32_t cap, uintptr_t buf, size_t len, uint32_t timeout_us)
+    int32_t endpoint_send(uint32_t cap, uintptr_t buf, size_t len, uint64_t deadline)
     {
         if (len > KOS_EP_MSG_MAX)
         {
@@ -400,17 +421,17 @@ region table.
 `break kickos::user_readable_ok` and `continue`:
 
 ```
-Breakpoint 2, kickos::user_readable_ok (ptr=62275, len=29) at .../kernel/syscall/syscall_mem.cc:364
+Breakpoint 2, kickos::user_readable_ok (ptr=79363, len=29) at .../kernel/syscall/syscall_mem.cc:409
 (gdb) p kickos::sched::current()->name
 $1 = "main", '\000' <repeats 11 times>
 (gdb) p kickos::sched::current()->mpu.regions_[0]
-$3 = {base = 0, size = 4194304, attr = 5}
+$2 = {base = 0, size = 4194304, attr = 5}
 (gdb) p kickos::sched::current()->mpu.regions_[1]
-$4 = {base = 536936448, size = 65536, attr = 3}
+$3 = {base = 536936448, size = 32768, attr = 3}
 ```
 
 Region 0 is the 4 MiB of flash with `attr = 5`, which is read plus execute (`ARCH_MPU_R` is 1,
-`ARCH_MPU_W` 2, `ARCH_MPU_X` 4, in `arch/include/kickos/arch/arch.h`). The string at 0xf343 lies
+`ARCH_MPU_W` 2, `ARCH_MPU_X` 4, in `arch/include/kickos/arch/arch.h`). The string at 0x13603 lies
 inside it, so `finish` prints `Value returned is ... = true`.
 
 **Why, and the contract:** [Book: alignment across the syscall boundary](../book/alignment-across-the-syscall-boundary.md)
@@ -460,22 +481,22 @@ generation. `cap_resolve_e` then checks the slot's type against what the syscall
 endpoint here), checks the rights (a send needs `CAP_SIGNAL`, value 2), and finally asks the
 object pool, which checks a second generation on the object itself. Any failure sets the error
 and returns null: `-KOS_EBADF` for "names nothing usable", `-KOS_EACCES` for "names the right
-thing but you may not do that with it". The caller in `endpoint_send` is inside an `IrqLock`, so
-nobody can close the object between the resolve and its use.
+thing but you may not do that with it". The caller, `send_once` inside `endpoint_send`, holds an
+`IrqLock`, so nobody can close the object between the resolve and its use.
 
 For `hello`'s `main`, slot 0 has never been filled.
 
 **Try it:** `break kickos::cap_resolve_e if cap_handle == 0`, `continue`:
 
 ```
-Breakpoint 1, kickos::cap_resolve_e (c=c@entry=0x20005030 <...>, cap_handle=cap_handle@entry=0,
-    want=want@entry=kickos::CapType::CAP_ENDPOINT, need=need@entry=2 '\002', err=...) at .../kernel/syscall/cap.cc:959
+Breakpoint 1, kickos::cap_resolve_e (c=c@entry=0x200024e8 <...>, cap_handle=cap_handle@entry=0,
+    want=want@entry=kickos::CapType::CAP_ENDPOINT, need=need@entry=2 '\002', err=...) at .../kernel/syscall/cap.cc:1232
 (gdb) p c->name
 $1 = "main", '\000' <repeats 11 times>
-(gdb) p c->caps.chunk[0][0]
-$3 = {obj = 0, type = 0 '\000', seq_lo = 0 '\000', rights = 0 '\000', seq_hi = 0 '\000', gen = 0}
+(gdb) p c->caps[0][0]
+$2 = {obj = 0, obj_gen = 0, type = 0 '\000', seq_lo = 0 '\000', rights = 0 '\000', seq_hi = 0 '\000', gen = 0, badge = 0}
 (gdb) finish
-Value returned is $4 = (void *) 0x0
+Value returned is $3 = (void *) 0x0
 ```
 
 `type = 0` is `CapType::CAP_EMPTY`. The threads of `hello` name no kernel object: its
@@ -497,13 +518,13 @@ with a byte count (`syscall-return-abi`). The codes follow POSIX `errno` values 
 such as one returning a pointer, and why.
 
 The `-9` travels back up the same path you will see in Stop 11, and `stdout_write` reads it as
-"nobody serves my stdout", which is one of its three fallback reasons.
+"nobody serves my stdout", which is one of its two fallback reasons.
 
 **Try it:** `break kos_send`, `continue`, `finish`:
 
 ```
-kickos::stdout_write (s=0xf343 "hello from KickOS userspace!\n", total=29) at .../emit.h:92
-92            if (r >= 0)
+0x00011bae in kickos::stdout_send (s=s@entry=0x13603 "hello from KickOS userspace!\n", n=n@entry=29, nonblock=nonblock@entry=false) at .../emit.h:117
+117     }
 Value returned is $1 = -9
 ```
 
@@ -529,38 +550,46 @@ Value returned is $1 = -9
             {
                 len = MAX_CONSOLE_WRITE;
             }
+            if ((a2 & ~static_cast<uintptr_t>(KOS_KCONSOLE_NOWAIT)) != 0)
+            {
+                return static_cast<uint64_t>(-KOS_EINVAL);
+            }
             if (not user_readable_ok(a0, len))
             {
                 // NOT 0: a len-0 write legitimately returns 0.
                 return static_cast<uint64_t>(-KOS_EFAULT);
             }
-            return static_cast<uint64_t>(console_write_user(a0, len));
+            bool const wait = (a2 & KOS_KCONSOLE_NOWAIT) == 0;
+            return static_cast<uint64_t>(console_write_user(a0, len, wait));
         }
 ```
 
-The length is clamped (a scalar check), the range is checked as in Stop 7 (a pointer check), and
-only then does `console_write_user` read the bytes. It does not read them in place: it copies
+The length is clamped (a scalar check), the flags word may hold only `KOS_KCONSOLE_NOWAIT`, the
+range is checked as in Stop 7 (a pointer check), and only then does `console_write_user` read
+the bytes. It does not read them in place: it copies
 them in chunks into a small buffer on the kernel stack with `kaccess_from_user`, and hands that
 kernel copy to `kconsole_write_user`, the kernel console's writer (`console_emit` takes it from
 there to the chip's console device). The comment on
 the `-KOS_EFAULT` is worth reading twice: a zero-length write is a real success that returns 0, so
 0 cannot also mean "refused".
 
-`kconsole_write_user` can make the caller wait when the console has no room. That is a blocking syscall,
-and it works exactly like the sleep in the next chapter.
+`kconsole_write_user` can make the caller wait when the console has no room, unless the caller
+passed `KOS_KCONSOLE_NOWAIT`, as a task that set `O_NONBLOCK` does. The wait is a blocking
+syscall, and it works exactly like the sleep in the next chapter.
 
 **Try it:** `break kos_kconsole_write`, `continue`, then `break kickos::kaccess_from_user`,
 `continue`, `bt 4`:
 
 ```
-#0  kickos::kaccess_from_user (kdst=kdst@entry=0x20000768 <...g_kstacks+1800>, sspace=sspace@entry=0x0,
-    usrc=usrc@entry=62275, n=n@entry=29) at .../kernel/syscall/syscall_mem.cc:643
-#1  0x00007cb4 in kickos::(anonymous namespace)::console_write_user (buf=buf@entry=62275, len=len@entry=29) at .../syscall.cc:84
-#2  0x00007e3e in (anonymous namespace)::syscall_body (nr=1, a0=62275, ...) at .../syscall.cc:432
-#3  syscall_dispatch (nr=1, a0=62275, a1=<optimized out>, a2=0, a3=0) at .../syscall.cc:400
+#0  kickos::kaccess_from_user (kdst=kdst@entry=0x20001240 <...system_pools+1792>, sspace=sspace@entry=0x0,
+    usrc=usrc@entry=79363, n=n@entry=29) at .../kernel/syscall/syscall_mem.cc:747
+#1  0x000069dc in kickos::(anonymous namespace)::console_write_user (buf=buf@entry=79363, len=len@entry=29, wait=wait@entry=true) at .../syscall.cc:109
+#2  0x00006cd0 in (anonymous namespace)::syscall_body (nr=1, a0=79363, ...) at .../syscall.cc:474
+#3  syscall_dispatch (nr=1, a0=79363, a1=<optimized out>, a2=0, a3=0, a4=0) at .../syscall.cc:431
 ```
 
-`kdst` is inside `g_kstacks`: the chunk buffer lives on `main`'s kernel stack.
+`kdst` is inside `system_pools`, below the header: the chunk buffer lives on `main`'s kernel
+stack.
 `sspace=0x0` means "a plain address in the one shared address space": on an MPU board there is
 no translation, so the copy reads the user address directly once the range has been checked. On
 an MMU board the same call walks the caller's page tables ([The MMU](10-the-mmu.md)).
@@ -575,50 +604,55 @@ an MMU board the same call walks the caller's page tables ([The MMU](10-the-mmu.
 way in, in a careful order:
 
 ```
-    bl      syscall_dispatch        /* (r0..r3, [sp]=a3) -> result in r0:r1 */
-    ldr     lr, [sp, #4]            /* the caller-return */
-    ldr     r2, [sp, #8]            /* the resume PSP, read before sp leaves this block */
-    mov     sp, r2
+    bl      syscall_dispatch        /* (r0..r3, [sp]=a3, [sp+4]=a4) -> result in r0:r1 */
+    ldr     lr, [sp, #8]            /* the caller-return */
+    ldr     r2, [sp, #12]           /* the resume PSP, read before sp leaves this block */
     // ...
-    ldr     r2, =g_arch_current
-    ldr     r2, [r2]                /* current ctx* */
-    ldr     r2, [r2, #8]            /* ctx.resting_npriv (offset 8) */
+    ldr     r12, =g_arch_current
+    ldr     r12, [r12]
+    ldr     r12, [r12, #8]          /* ctx.resting_npriv */
+    // ...
+    mov     sp, r2
+kickos_armv7m_svc_drop:
     mrs     r3, control
-    bfi     r3, r2, #0, #1          /* CONTROL.nPRIV = resting privilege */
+    bfi     r3, r12, #0, #1         /* CONTROL.nPRIV = resting privilege */
     msr     control, r3
     isb
     bx      lr                      /* -> arch_syscall's caller, r0:r1=result */
 ```
 
-It reloads the return address and the user `PSP` from the header, moves `sp` back to the user
-stack, and only then drops privilege, because the header is kernel memory that unprivileged code
-may not read. It drops to the thread's *resting* privilege, `resting_npriv`, not to a hard-coded
+It reloads the return address and the user `PSP` from the header, and reads the thread's
+*resting* privilege, `resting_npriv`, while it is still privileged. Then it moves `sp` back to the
+user stack, and only then drops privilege, because the header is kernel memory that
+unprivileged code may not read. It drops to the resting privilege, not to a hard-coded
 "unprivileged": a privileged thread that makes a syscall stays privileged
 (`syscall-restores-resting-priv`). Lowering privilege is a plain register write; raising it took a
-trap. Then `bx lr` returns straight into `kos_kconsole_write`, skipping the `bx lr` in
-`arch_syscall`, which only runs if something unusual returns there.
+trap. Then `bx lr` returns to `.Lsys_back` in `arch_syscall`, whose `pop` gives the caller its
+`r4` back and returns into `kos_kconsole_write`.
 
 No exception return happens on the way out. The exception ended at Stop 4; this is an ordinary
 function return in thread mode.
 
-**Try it:** the last `bx lr` has no symbol of its own. `disassemble svc_trampoline` and find the
-`bx lr` just before the `cpsid i`; in this build it is at 0x2594. While stopped inside the console
-write (Stop 10), `delete`, `break *0x2594`, `continue`, then:
+**Try it:** `disassemble kickos_armv7m_svc_drop` and find its final `bx lr`; in this build it is
+at 0xe32. While stopped inside the console write (Stop 10), `delete`, `break *0xe32`, `continue`,
+then:
 
 ```
 (gdb) info registers r0 r1 lr sp
 r0             0x1d                29
 r1             0x0                 0
-lr             0x1615              5653
-sp             0x20027ef8          0x20027ef8
+lr             0x11ca5             72869
+sp             0x2001df30          0x2001df30
 (gdb) p $control
 $2 = 3
 (gdb) stepi
-0x00001614 in kos_kconsole_write (buf=<optimized out>, len=<optimized out>) at .../user/src/syscall_stubs.cc:35
+arch_syscall64 () at .../user/src/arch/armv7m/syscall.S:35
+35          pop     {r4, pc}
 ```
 
-The result is 29, every byte written. `CONTROL` is 3 again before the `bx`: unprivileged, on the
-`PSP`, back in user code. The text is on the console.
+The result is 29, every byte written. `sp` is the user stack again, at the `PSP` the header
+named. `CONTROL` is 3 before the `bx`: unprivileged, on the `PSP`, back in user code. The text is
+on the console.
 
 **Why, and the contract:** [Book: the syscall path](../book/the-syscall-path-trap-dispatch-return.md)
 ("The way back: resting privilege, atomically"), [Reference: invariants](../reference/invariants.md)
@@ -627,20 +661,20 @@ The result is 29, every byte written. `CONTROL` is 3 again before the `bx`: unpr
 ### Stop 12: when the syscall blocks instead
 **Where:** `arch/arm/armv7m/switch.S`, `PendSV_Handler`; `kernel/sync/sync.cc`, `wq_block`
 
-Both syscalls above returned straight away. Many do not: `main` itself ends in `idle.wait()`, a
-semaphore wait nobody ever posts, and `ping` sleeps 0.4 s on every round. Nothing in Stops 1-11
+Both syscalls above returned straight away. Many do not: `main` waits on a semaphore until
+`pong` posts it after the last round, and `ping` sleeps 0.4 s on every round. Nothing in Stops 1-11
 changes for them. Because the dispatch runs in thread mode on the thread's own kernel stack, a
 blocking call is just C++ code that decides to park the thread and asks the scheduler for another
 one. The other thread runs; the half-finished syscall stays frozen on the parked thread's kernel
-stack, below the header the trampoline wrote; and when the thread is woken it resumes inside the
+stack, below the header the handler wrote; and when the thread is woken it resumes inside the
 kernel function that parked it, returns into `syscall_body`, and takes the same way back as
 Stop 11. There is no separate "continuation" object: the call stack is the continuation.
 
 [The next chapter](03-sleep.md) follows exactly that, with a sleep.
 
-**Try it:** `break kos_sleep_for`, `continue`, then `break PendSV_Handler`, `continue`, `info
-registers psp`. The `PSP` reads 0x20000bb8, an address inside `g_kstacks`, not a user stack: the
-thread being switched out was parked in the middle of its syscall.
+**Try it:** `break kos_sleep_for`, `continue`, `delete`, then `break PendSV_Handler`, `continue`,
+`info registers psp`. The `PSP` reads 0x20001670, an address inside `system_pools`, not a user
+stack: the thread being switched out was parked in the middle of its syscall.
 
 **Why, and the contract:** [Book: the syscall path](../book/the-syscall-path-trap-dispatch-return.md)
 ("Blocking syscalls are ordinary context switches"), [Book: the blocking substrate](../book/the-blocking-substrate-one-wait-wake-primitive.md)
@@ -649,7 +683,7 @@ thread being switched out was parked in the middle of its syscall.
 
 `f411disco` runs the same `arch/arm/armv7m/switch.S` and the same kernel; its STM32F411 has an
 MPU, so it also gets per-thread kernel stacks. The one difference on this walk is where the
-console bytes end up: on `qemu` the chip file `arch/arm/chip/mps2/chip_mps2.cc` hands them to QEMU
+console bytes end up: on `qemu` the family's `arch/common/semihost_console.cc` hands them to QEMU
 through semihosting, and on the F411 `arch/arm/chip/stm32f411/chip_stm32f411.cc` drives USART2.
 
 ## Where to next
@@ -667,8 +701,8 @@ through semihosting, and on the F411 `arch/arm/chip/stm32f411/chip_stm32f411.cc`
 
 ## Exercises
 
-1. `main`'s capability table has 10 slots (`p c->cap_width` at a `cap_resolve_e` stop). Predict
-   what `kos_send(40, "x", 1, 0)` from `main` returns and which test in `cap_lookup` refuses it. Then
+1. `main`'s capability table has 16 slots (`p c->cap_width` at a `cap_resolve_e` stop). Predict
+   what `kos_send(40, "x", 1, KOS_POLL)` from `main` returns and which test in `cap_lookup` refuses it. Then
    predict the answer for `(1u << 16) | 2`, which names slot 2 with generation 1. Slot 2 is
    empty, so which test refuses it first, the empty slot or the generation? Check both with
    `break kickos::cap_resolve_e if cap_handle == 40` (and the second value) and `finish`.
@@ -676,6 +710,7 @@ through semihosting, and on the F411 `arch/arm/chip/stm32f411/chip_stm32f411.cc`
    `kickos::kconsole_offer(reinterpret_cast<char const*>(0x20004000), 4)` (the raw
    `kos_kconsole_write` is poisoned in app code). Predict the `error` field of the result and the
    function that decides it. In gdb, `finish` out of `kickos::user_readable_ok` and read the answer.
-3. At the `svc_trampoline` stop, `x/8wx $sp-32` shows the words the hardware frame occupied a moment
-   ago. Which one now holds `svc_trampoline`'s address (0x24bc in this build), and why does the
-   word before it still point into `kos_send`?
+3. At the `svc_trampoline` stop, `x/8wx $sp-32` shows the frame the exception return popped a
+   moment ago, the one `SVC_Handler` built on the kernel block. Which word holds
+   `svc_trampoline`'s address (0xe04 in this build), and why does the word before it point into
+   `arch_syscall`, not into `kos_send`?

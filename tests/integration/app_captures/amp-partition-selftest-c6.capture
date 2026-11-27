@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
-# Recorded on esp32c6-wroom; the amp_far_call_held lines written by hand.
+# Recorded on esp32c6-wroom; the amp_far_call_held and amp_far_server_gone lines and the port
+# counts written by hand for the partition list that names port 7 on node 1.
 ESP-ROM:esp32c6-20220919
 Build:Sep 19 2022
 rst:0x1 (POWERON),boot:0xc (SPI_FAST_FLASH_BOOT)
@@ -22,8 +23,7 @@ entry 0x40800000
    kstack  1184 B x 7 = 8288 B
 
 # c6amp: LP RTC 149538 Hz
-# ampdiag: peer node=1 vectors=0x40833901 tag=0 clk=20000000 self clk=160000000
-1..27
+1..28
 # tap route: kernel debug console (stdout not published)
 ok 1 - mem_self_grant_nonpow2
 ok 2 - region_mode # SKIP VACUOUS no enforcement: every self-grant is already reachable
@@ -42,7 +42,7 @@ ok 9 - reent_stack
 ok 10 - caller_stack_overlap
 ok 11 - irq_kernel_line_reserved # PARTIAL this chip routes every line through the first-level ISR
 ok 12 - amp_count_reads
-# partition ports: node 0 holds 1 local and 2 far of the 3 its composition names, from 3 entr(ies)
+# partition ports: node 0 holds 1 local and 3 far of the 4 its composition names, from 5 entr(ies)
 ok 13 - amp_port_seating
 # unnamed crossing: port 5 is named for no node, and its capability is none
 ok 14 - amp_port_unnamed
@@ -54,20 +54,24 @@ ok 15 - amp_far_call
 ok 16 - amp_far_call_held
 # share: node 1's word through this node's window: 0x53480001
 ok 17 - amp_share_crossing
+# far server gone: marked call from life 1, then call 16 after 212480000 ns, 1 taken
+# far server gone: marked call from life 2, then call -111 after 204096000 ns, 1 taken
+# far server gone: then call -111, send -111, lives 2
+ok 18 - amp_far_server_gone
 # main's crossing 1: -9 from another task, -13 from main
-ok 18 - amp_crossing_task_local
+ok 19 - amp_crossing_task_local
 # one buffer both ends: recv -14, send -14
-ok 19 - ipc_one_buffer_both_ends
+ok 20 - ipc_one_buffer_both_ends
 # [confdep] unpriv rodata buffer accepted by the readable floor
-ok 20 - confused_deputy
-ok 21 - mem_self_grant
-ok 22 - program_api
-ok 23 - image_statics
-ok 24 - image_preempts_creator
+ok 21 - confused_deputy
+ok 22 - mem_self_grant
+ok 23 - program_api
+ok 24 - image_statics
+ok 25 - image_preempts_creator
 # two instances' own statics: 0, 0
-ok 25 - image_statics_instances
-ok 26 - image_restart_churn
-ok 27 - image_nonblock
+ok 26 - image_statics_instances
+ok 27 - image_restart_churn
+ok 28 - image_nonblock
 # todo: 0
 # todo-fixed: 0
 # skipped: 0

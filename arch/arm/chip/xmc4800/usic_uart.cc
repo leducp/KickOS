@@ -1,15 +1,14 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Infineon XMC4800 USIC ASC-mode (UART) console on USIC0 channel 0 (U0C0), on the DOUT0 and DX0
-// pins the board file names. "RM p.NN" is the XMC4700/XMC4800 RM V1.3 printed page.
+// Infineon XMC4800 USIC ASC-mode (UART) console on the USIC channel and the DOUT0 and DX0 pins the
+// board file names. "RM p.NN" is the XMC4700/XMC4800 RM V1.3 printed page.
 
 #include "usic.h"
+#include "usic_class.h"
 
 #include "board_pins.h"
-#include "irq.h"
 #include "regs/port.h"
-#include "regs/scu.h"
 #include "regs/usic.h"
 
 #include <kickos/arch/arch.h>
@@ -25,13 +24,14 @@ namespace
     namespace u = kickos::xmc::usic;
     namespace ru = kickos::xmc::reg::usic;
     namespace rp = kickos::xmc::reg::port;
-    namespace rs = kickos::xmc::reg::scu;
 
-    constexpr uintptr_t U0C0 = u::U0C0_BASE;
+    constexpr uintptr_t CONSOLE = KICKOS_BOARD_CONSOLE_BASE;
+    constexpr u::Module CONSOLE_MODULE = u::module_of(CONSOLE);
+    static_assert(CONSOLE_MODULE.bit != 0u, "the board's console is not a USIC channel");
 
     // The window arch_console_reclaim rewrites and the one the driver is granted: ONE constant, so
     // a reclaim cannot reach registers whose holder was never checked.
-    constexpr uintptr_t CONSOLE_WIN_BASE = U0C0;
+    constexpr uintptr_t CONSOLE_WIN_BASE = CONSOLE;
     constexpr size_t CONSOLE_WIN_SIZE = KICKOS_BOARD_CONSOLE_SIZE;
 
     static_assert(u::off::KSCFG < CONSOLE_WIN_SIZE and u::off::FDR < CONSOLE_WIN_SIZE
@@ -41,8 +41,6 @@ namespace
                       and u::off::PSCR < CONSOLE_WIN_SIZE and u::off::FMR < CONSOLE_WIN_SIZE
                       and u::off::TBCTR < CONSOLE_WIN_SIZE and u::off::RBCTR < CONSOLE_WIN_SIZE,
                   "arch_console_reclaim writes outside the window it reports");
-
-    static_assert(KICKOS_BOARD_CONSOLE_BASE == U0C0, "the board's console is not the channel this backend drives");
 
     constexpr uintptr_t TX_IOCR = KICKOS_BOARD_CONSOLE_DOUT0_PORT_BASE + rp::iocr_off(KICKOS_BOARD_CONSOLE_DOUT0_BIT);
     constexpr uintptr_t RX_IOCR = KICKOS_BOARD_CONSOLE_DX0_PORT_BASE + rp::iocr_off(KICKOS_BOARD_CONSOLE_DX0_BIT);
@@ -63,7 +61,7 @@ namespace
     {
         for (uint32_t i = 0; i < KICKOS_POLL_SPIN_MAX; i++)
         {
-            if (u::tx_ready(U0C0))
+            if (kickos::xmc::driver::usic_tx_ready(CONSOLE))
             {
                 return true;
             }
@@ -77,7 +75,7 @@ namespace
     {
         for (uint32_t i = 0; i < KICKOS_POLL_SPIN_MAX; i++)
         {
-            if (u::tx_idle(U0C0))
+            if (u::tx_idle(CONSOLE))
             {
                 return true;
             }
@@ -87,15 +85,15 @@ namespace
 
     int xmc_tx_slot_free(void)
     {
-        if (u::tx_ready(U0C0))
+        if (kickos::xmc::driver::usic_tx_ready(CONSOLE))
         {
             return 1;
         }
         return 0;
     }
-    void xmc_tx_push(uint8_t b) { u::tx_put(U0C0, b); }
-    void xmc_tx_irq_enable(void) { u::tx_irq_enable(U0C0); }
-    void xmc_tx_irq_disable(void) { u::tx_irq_disable(U0C0); }
+    void xmc_tx_push(uint8_t b) { u::tx_put(CONSOLE, b); }
+    void xmc_tx_irq_enable(void) { u::tx_irq_enable(CONSOLE); }
+    void xmc_tx_irq_disable(void) { u::tx_irq_disable(CONSOLE); }
     console_tx_backend const xmc_console_backend = {
         xmc_tx_slot_free, xmc_tx_push, xmc_tx_irq_enable, xmc_tx_irq_disable,
         &kickos_console_tx_storage};
@@ -106,31 +104,31 @@ extern "C"
 
 void kickos_xmc_usic_init(void)
 {
-    u::module_clock_enable(rs::CGATCLR0, rs::PRCLR0, rs::USIC0_GATE_BIT);
-    u::kernel_clock_enable(U0C0);
+    u::module_clock_enable(CONSOLE_MODULE.cgatclr, CONSOLE_MODULE.prclr, CONSOLE_MODULE.bit);
+    u::kernel_clock_enable(CONSOLE);
 
     // For the branch clock this boot landed on. An fPERIPH the table does not cover leaves the
     // generator alone, the same refusal arch_console_retune makes.
     u::Baud b;
-    if (u::baud_for_periph(arch_periph_clock_hz(U0C0), &b))
+    if (u::baud_for_periph(arch_periph_clock_hz(CONSOLE), &b))
     {
-        u::set_baud(U0C0, b);
+        u::set_baud(CONSOLE, b);
     }
 
     // Config while the channel is still disabled.
-    r32(U0C0 + u::off::SCTR) = ru::SCTR_WLE_8 | ru::SCTR_FLE_8 | ru::SCTR_TRM_ACTIVE | ru::SCTR_PDL;
-    r32(U0C0 + u::off::TCSR) = ru::TCSR_TDEN_TDV | ru::TCSR_TDSSM;
-    r32(U0C0 + u::off::PCR) = ru::PCR_ASC_SP | ru::PCR_ASC_SMD | ru::PCR_ASC_TSTEN;
-    r32(U0C0 + u::off::PSCR) = 0xFFFFFFFFu;
+    r32(CONSOLE + u::off::SCTR) = ru::SCTR_WLE_8 | ru::SCTR_FLE_8 | ru::SCTR_TRM_ACTIVE | ru::SCTR_PDL;
+    r32(CONSOLE + u::off::TCSR) = ru::TCSR_TDEN_TDV | ru::TCSR_TDSSM;
+    r32(CONSOLE + u::off::PCR) = ru::PCR_ASC_SP | ru::PCR_ASC_SMD | ru::PCR_ASC_TSTEN;
+    r32(CONSOLE + u::off::PSCR) = 0xFFFFFFFFu;
 
     // Input-stage config needs CCR.MODE=0 (RM p.18-57).
-    u::select_input(U0C0, u::off::DX0CR, KICKOS_BOARD_CONSOLE_DX0_INPUT_SELECT);
+    u::select_input(CONSOLE, u::off::DX0CR, KICKOS_BOARD_CONSOLE_DX0_INPUT_SELECT);
 
     // TBIEN stays clear; the console ring primes it on the first write.
-    u::tx_irq_route(U0C0, 0);
+    u::tx_irq_route(CONSOLE, 0);
 
     // The channel enables here, so the config above must be complete.
-    r32(U0C0 + u::off::CCR) = ru::CCR_MODE_ASC;
+    r32(CONSOLE + u::off::CCR) = ru::CCR_MODE_ASC;
 
     // Pins LAST: the output ALT function goes on only AFTER the ASC mode is active, or the idle
     // DOUT level can spike a spurious start bit (RM p.18-57/58).
@@ -233,15 +231,15 @@ void arch_console_flush_sync(void)
 void arch_console_retune(void)
 {
     u::Baud b;
-    if (u::baud_for_periph(arch_periph_clock_hz(U0C0), &b))
+    if (u::baud_for_periph(arch_periph_clock_hz(CONSOLE), &b))
     {
-        u::set_baud(U0C0, b);
+        u::set_baud(CONSOLE, b);
     }
 }
 
 console_tx_backend const* arch_console_tx_backend(int* irq_line)
 {
-    *irq_line = kickos::xmc::irq::USIC0_SR0;
+    *irq_line = KICKOS_BOARD_CONSOLE_LINE_SR0;
     return &xmc_console_backend;
 }
 

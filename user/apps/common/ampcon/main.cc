@@ -22,7 +22,7 @@ namespace
     constexpr int LINES = 32;
     constexpr int NONBLOCKING = 64;
     constexpr int PAYLOAD = 40;
-    // Past KICKOS_KCONSOLE_CHUNK, so it goes as two chunks.
+    // Past KICKOS_KCONSOLE_CHUNK.
     constexpr int LONG = 200;
     constexpr uint8_t WRITER_PRIO = 10;
     // Below main, which preempts it to kill it whether or not its write waits.

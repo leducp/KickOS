@@ -93,9 +93,9 @@ qemu-system-arm -M mps2-an386 -nographic -semihosting \
 ```
 
 `-kernel` loads the ELF into the emulated flash and RAM. `-semihosting` lets the program ask
-the host for services through a special trap: on this machine the kernel console, the clock
-and the final exit code all go through it. `-nographic` puts the console on your terminal.
-Press `Ctrl-A` then `X` to quit QEMU.
+the host for services through a special trap: on this machine the kernel console and the
+final exit code go through it. `-nographic` puts the console on your terminal. Press `Ctrl-A`
+then `X` to quit QEMU early.
 
 What `hello` prints (the build lines are trimmed):
 
@@ -109,21 +109,24 @@ What `hello` prints (the build lines are trimmed):
    mpu     enforce
    sched   tickless
    ...
-   heap    56 KiB available
-   kstack  1008 B x 17 = 17136 B
+   heap    30 KiB available
+   kstack  1008 B x 5 = 5040 B
 
 hello from KickOS userspace!
-two threads play ping-pong; press Ctrl+C to stop.
+two threads play ten rounds of ping-pong, then the run ends.
 
   ping 1
   pong 1
   ping 2
   pong 2
+  ...
+  ping 10
+  pong 10
 ```
 
 The banner comes from the kernel (`kbanner` in `kernel/init/kmain.cc`). The lines after it
-come from the application, running unprivileged. `hello` never ends; the two threads keep
-playing.
+come from the application, running unprivileged. After ten rounds `main` returns 0, and
+QEMU exits with that status.
 
 The `selftest` image is the kernel's own test suite. It prints TAP lines and then ends the
 emulator with its exit status:
@@ -134,14 +137,14 @@ qemu-system-arm -M mps2-an386 -nographic -semihosting \
 ```
 
 ```
-1..126
+1..149
 # tap route: kernel debug console (stdout not published)
 ...
 ok 1 - svc_roundtrip
 ok 2 - fifo_order
 ok 3 - preempt_on_ready
 ...
-# all tests passed (0 skipped, 0 vacuous, 2 partial)
+# all tests passed (0 skipped, 0 vacuous, 1 partial)
 ```
 
 ## Run an image under gdb
@@ -160,16 +163,25 @@ In a second terminal, load the same ELF into gdb (it reads the symbols from it) 
 gdb-multiarch build/qemu/user/apps/common/hello/hello -ex 'target remote :1234'
 ```
 
-gdb shows where the core is held:
+Ask gdb where the core is held:
 
 ```
-kickos_armv7m_enable_fpu () at .../arch/arm/common/regs.h:130
-130	    kickos::arm::reg32(kickos::arm::SCB_CPACR) |= kickos::arm::CPACR_CP10_CP11_FULL;
+(gdb) info symbol $pc
+Reset_Handler in section .text
+(gdb) x/2i $pc
+=> 0x250 <Reset_Handler>:	push	{r3, lr}
+   0x252 <_malloc_r+594>:	bl	0x658 <kickos_armv7m_ccr_init()>
+(gdb) p/x $sp
+$1 = 0x20400000
 ```
 
-The core has not run an instruction, but gdb already shows it inside `Reset_Handler` (the
-FPU enable is its first line, inlined) with a stack pointer. A Cortex-M core loads both from the first two words of its vector table when it
-leaves reset. [01, Stop 1](01-power-on.md) starts there.
+The core has not run an instruction, but it already sits at the first instruction of
+`Reset_Handler`, with a stack pointer. A Cortex-M core loads both from the first two words of
+its vector table when it leaves reset. [01, Stop 1](01-power-on.md) starts there.
+
+The line gdb prints as it attaches, and the `<_malloc_r+594>` above, name a C library source
+line at this address. That is wrong: debug information of code the link discarded still claims
+the lowest addresses. `info symbol` reads the symbol table and names the right function.
 
 To rerun a recipe without typing it, put the commands in a file and run gdb in batch mode:
 
@@ -249,7 +261,7 @@ and every architecture chapter.
 | Directory | What it holds |
 |---|---|
 | `user/include/kickos/` | The application API: `sys.h` (the C `kos_*` calls), `kos.h` (the C++ `kos::` wrappers), `app.h` (the `main` contract) |
-| `user/src/` | The syscall stubs (`syscall_stubs.cc`), the user side of the door: each `kos_*` call packs its arguments and calls `arch_syscall`, which executes the trap; the root thread's entry (`root_entry.cc`), the task entry (`task_trampoline.cc`, `kickos_task_entry`), and the glue newlib needs: `_sbrk`, the libc lock, the per-thread `_reent`, the other stubs |
+| `user/src/` | The syscall stubs (`syscall_stubs.cc`), the user side of the door: each `kos_*` call packs its arguments and calls `arch_syscall`, which executes the trap; the root thread's entry (`root_entry.cc`), the task entry (`task_trampoline.cc`, `kickos_task_entry`), and the glue newlib needs: `_sbrk`, the libc locks, the per-thread `_reent`, the other stubs |
 | `user/lib/` | User-side libraries, such as the SPI proxy |
 | `user/apps/common/` | Applications built for every board: `hello`, `hello_c`, `selftest`, `stress`, the fault probes, and many small witnesses |
 | `user/apps/<board>/` | Demos for one board |

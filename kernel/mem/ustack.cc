@@ -55,13 +55,13 @@ namespace kickos
         // on a refusal. Keyed on the RUN's base, which is the guard page.
         if (not ranges->reserve(aspace_user_va(run), run_pages, VR_USTACK))
         {
-            frame_pool_free_run(run, run_pages, g);
+            frame_pool_free_run(run, run_pages);
             return out;
         }
         if (not aspace_tables_admit(payer, space, va, pages))
         {
             (void)ranges->release(aspace_user_va(run));
-            frame_pool_free_run(run, run_pages, g);
+            frame_pool_free_run(run, run_pages);
             out.over_budget = true;
             return out;
         }
@@ -69,7 +69,7 @@ namespace kickos
                             ARCH_MAP_NORMAL) != ARCH_ASPACE_OK)
         {
             (void)ranges->release(aspace_user_va(run));
-            frame_pool_free_run(run, run_pages, g);
+            frame_pool_free_run(run, run_pages);
             return out;
         }
         out.base = va;
@@ -93,7 +93,7 @@ namespace kickos
         enum arch_aspace_result const rc = arch_aspace_unmap(space, base, pages);
         // The guard frame is never mapped, so no space will ever free it and it comes back
         // here whatever the unmap did.
-        kickos_frame_free(aspace_frame_of(base) - g);
+        frame_pool_free_run(aspace_frame_of(base) - g, 1);
         if (rc != ARCH_ASPACE_OK)
         {
             // The unmap is total-or-fail, so a refusal left every entry standing: the space
@@ -106,7 +106,7 @@ namespace kickos
         {
             (void)ranges->release(base - g);
         }
-        frame_pool_free_run(aspace_frame_of(base), pages, g);
+        frame_pool_free_run(aspace_frame_of(base), pages);
     }
 
     // ustack_alloc maps the run at its own physical base plus the user offset, which is what

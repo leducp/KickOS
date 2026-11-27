@@ -21,9 +21,8 @@
 #              first, which delivery keeps and which lifts SMAP (x86_64); armed before a park
 #              and, above one core, a move to another core, which it must outlive
 #
-# On x86_64 a CONTROL follows: the read arm on the same processor model less SMEP and SMAP, where
-# the banner must say `none` and the kernel must reach the word. It is what shows the faults
-# above are the guard's and not the plant's.
+# On x86_64 the error code names the guard: ring 0 faults on a present user page only under SMAP
+# for a data access and only under SMEP for a fetch.
 #
 # A RETURN IS THE GUARD MISSING. The image then prints an ERROR line with what the kernel read
 # or wrote, and that line is refused first.
@@ -218,25 +217,5 @@ for _arm in $ARMS; do
     "judge_$ARCH" "$_arm"
 done
 
-if [ "$ARCH" = x86_64 ]; then
-    echo "== uaccess_read, control: the model less SMEP and SMAP =="
-    for _f in smep smap; do
-        case ",${KICKOS_X86_64_CPU:-}," in
-            *",+$_f,"*) ;;
-            *) fail "control: the processor model offers no $_f to take away" ;;
-        esac
-    done
-    KICKOS_X86_64_CPU="$(printf '%s' "$KICKOS_X86_64_CPU" | sed 's/,+smep//; s/,+smap//')"
-    export KICKOS_X86_64_CPU
-    run_image "$SCRATCH/user/apps/common/uaccess/uaccess_read$_suffix"
-    require_on_wire "   uaccess none" "control: the banner does not say the guard is absent"
-    _reached="$(printf '%s\n' "$OUT" \
-        | sed -n 's/.*\[uaccess\] ERROR: ring 0 reached 0x[0-9a-f]*: rc \([0-9][0-9]*\),.*/\1/p' | tail -n 1)"
-    if [ -z "$_reached" ]; then
-        printf '%s\n' "$OUT" | grep -F -e '[uaccess]' || :
-        fail "control: with neither guard the kernel did not reach the word, so the faults above may be the plant's"
-    fi
-    echo "PASS: control: with neither guard ring 0 reached the word (read 0x$(printf '%x' "$_reached"))"
-fi
 echo "PASS: every ring-0 access to a user page faulted ($ARMS)"
 exit 0

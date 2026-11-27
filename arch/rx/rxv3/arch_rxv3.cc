@@ -7,6 +7,7 @@
 #include <kickos/arch/rx_trap_stack.h>
 #include <kickos/units.h>
 
+#include "board_pins.h"
 #include "chip_layout.h"
 #include "regs.h"
 #include "rx_mpu_encode.h"
@@ -39,11 +40,6 @@ namespace kickos::rxv3
     // ICU: "SWINT2,SWINT share IPR level"). An IPR left at 0 means "never accepted", so a
     // wrong address or index makes the switch silently dead on the first arch_switch.
     constexpr uintptr_t ICU_IPR_SWINT = ICU_IPR_BASE + 3;
-
-    // SCI6, the board console: TXI6's INTB slot is shared with the console drain (chip
-    // startup.S); its TEI6/ERI6 are GROUPBL0 sources with no vector (UM Table 15.5 p.523,
-    // Table 15.7 p.530).
-    constexpr int SCI6_TXI_VECTOR = KICKOS_LAYOUT_LINE_SCI6_TXI;
 
     constexpr uintptr_t CMTW0_BASE = KICKOS_LAYOUT_CMTW_BASE;
     constexpr uintptr_t CMTW1_BASE = KICKOS_LAYOUT_CMTW_BASE + 0x80;
@@ -216,17 +212,17 @@ namespace
 #if KICKOS_RX_MPU_TRACE
     void rx_mpu_mark(char c)
     {
-        constexpr uintptr_t SCI6_SSR = KICKOS_LAYOUT_SCI6_BASE + 0x04; // TDRE = b7
-        constexpr uintptr_t SCI6_TDR = KICKOS_LAYOUT_SCI6_BASE + 0x03;
+        constexpr uintptr_t SSR = KICKOS_BOARD_CONSOLE_BASE + 0x04; // TDRE = b7
+        constexpr uintptr_t TDR = KICKOS_BOARD_CONSOLE_BASE + 0x03;
         uint32_t spin = 0;
-        while ((r8(SCI6_SSR) & (1u << 7)) == 0)
+        while ((r8(SSR) & (1u << 7)) == 0)
         {
             if (++spin > 200000u)
             {
                 return; // a wedged FIFO must not block the localizer itself
             }
         }
-        r8(SCI6_TDR) = static_cast<uint8_t>(c);
+        r8(TDR) = static_cast<uint8_t>(c);
     }
 #else
     inline void rx_mpu_mark(char) {}
@@ -626,7 +622,7 @@ void kickos_rx_fault_report(uint32_t cause, uint32_t* saved)
                 }
             }
             r32(MPU_MPECLR) = MPU_MPECLR_CLR;
-            kickos_isr_fault(addr, is_write); // names the task, then arch_shutdown (noreturn)
+            kickos_isr_fault(addr, is_write); // names the task, then kfault_terminate (noreturn)
         }
     }
 #endif
@@ -1074,28 +1070,6 @@ __attribute__((interrupt)) void kickos_rx_timer_isr(void)
 __attribute__((interrupt)) void kickos_rx_clock_isr(void)
 {
     g_clk_wrap.on_overflow();
-}
-
-// SCI6 transmit-data-empty (TXI6, vector 87). TXI6 is edge-triggered (UM sec.15.3.1 p.523)
-// and the ICU clears IR087 on accept, so no source flag is touched here; console_tx_isr
-// gates SCR.TIE, which re-arms the edge.
-//
-// The INTB slot is fixed in flash, so this vector is SHARED between two owners over the life
-// of the boot. Once a publish has run console_tx_deinit a raise here belongs to a
-// driver that claimed vector 87, and routing it to console_tx_isr would find an empty ring
-// and call the backend's irq_disable, clearing SCR.TIE behind the driver's back.
-__attribute__((interrupt)) void kickos_rx_console_txi_isr(void)
-{
-    g_in_isr = g_in_isr + 1;
-    if (console_tx_armed() != 0)
-    {
-        console_tx_isr();
-    }
-    else
-    {
-        kickos_isr_irq(SCI6_TXI_VECTOR);
-    }
-    g_in_isr = g_in_isr - 1;
 }
 
 // SWINT2 doorbell: the software IRQ controller's delivery vector, pended by

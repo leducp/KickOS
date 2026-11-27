@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The <kickos/driver/uart.h> bodies the ESP32 (Xtensa LX6) and the ESP32-C6 (RV32) UART0
+// The <kickos/driver/uart.h> bodies the ESP32 (Xtensa LX6) and the ESP32-C6 (RV32) UART
 // backends share: everything below kos_uart_open. The two parts are on DIFFERENT ISAs and
 // link no archive in common, so uart_esp.cc enters each DRIVER's own archive, named by that
 // driver's CMakeLists, and reads the configured chip's own <regs/uart.h>.

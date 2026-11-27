@@ -24,6 +24,9 @@ endif()
 if(DEFINED _selftest_spare_dev)
   list(APPEND _selftest_defs KICKOS_SELFTEST_SPARE_DEV=${_selftest_spare_dev})
 endif()
+if(DEFINED KICKOS_BOARD_CONSOLE_BASE)
+  list(APPEND _selftest_defs KICKOS_BOARD_CONSOLE_BASE=${KICKOS_BOARD_CONSOLE_BASE})
+endif()
 # A block the kernel owns for life inside an aperture, a device window over which grant_reserved
 # asks a spawn for.
 if(DEFINED KICKOS_CHIP_RESERVED_IN_APERTURE0)

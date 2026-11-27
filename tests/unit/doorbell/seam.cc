@@ -10,11 +10,13 @@ namespace kickos::doorbellfix
 {
     bool g_masked = false;
     std::string g_log;
+    void (*g_on_spin)(void) = nullptr;
 
     void reset(void)
     {
         g_masked = false;
         g_log.clear();
+        g_on_spin = nullptr;
     }
 }
 
@@ -23,6 +25,10 @@ namespace kickos::doorbell
     void host_note(char step)
     {
         doorbellfix::g_log.push_back(step);
+        if (step == 'S' and doorbellfix::g_on_spin != nullptr)
+        {
+            doorbellfix::g_on_spin();
+        }
     }
 }
 

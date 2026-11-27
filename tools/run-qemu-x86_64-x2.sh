@@ -14,8 +14,8 @@
 # tools/run-qemu-x86_64-common.sh.
 #
 # Environment:
-#   KICKOS_X2_TOKEN     the token the report must carry (default below). Held against the IMAGE,
-#                       never scraped from the source.
+#   KICKOS_X2_TOKEN     the token the image's own lines carry (default below). Held against the
+#                       IMAGE, never scraped from the source.
 #   KICKOS_X2_FIRMWARE  `pflash` (split OVMF_CODE_4M plus OVMF_VARS_4M, the default) or
 #                       `bios` (the combined /usr/share/ovmf/OVMF.fd through -bios).
 #   KICKOS_X2_MACHINE   qemu machine type, default q35.
@@ -94,9 +94,16 @@ fi
 
 # --- the fault classes -------------------------------------------------------------------
 need "no banner" "^=== X86_64 EXCEPTION ===\$"
-need "the report carries no token, so it may be firmware's" "^  token=$TOK\$"
 need "the report did not reach its halt" "^  $TOK halting\$"
 need "no probe expectation line" "^  $TOK probe=$CLASS expect_vector=[0-9][0-9]* expect_rip=$HEX\$"
+# The report is this image's when it is the one banner, after the probe armed its fault and before
+# the halt this image's report ends with.
+[ "$(grep -c '^=== X86_64 EXCEPTION ===$' "$PLAIN")" -eq 1 ] || fail "more than one report banner"
+_probe_at="$(grep -n "^  $TOK probe=$CLASS " "$PLAIN" | head -1 | cut -d: -f1)"
+_banner_at="$(grep -n '^=== X86_64 EXCEPTION ===$' "$PLAIN" | head -1 | cut -d: -f1)"
+_halt_at="$(grep -n "^  $TOK halting\$" "$PLAIN" | head -1 | cut -d: -f1)"
+[ "$_probe_at" -lt "$_banner_at" ] || fail "the report banner comes before the probe armed its fault"
+[ "$_banner_at" -lt "$_halt_at" ] || fail "the report's halt line comes before its banner"
 need "no ring line" "^  ring=[0-9] if=[0-9]\$"
 need "the report did not run at ring 0" "^  ring=0 if=0\$"
 

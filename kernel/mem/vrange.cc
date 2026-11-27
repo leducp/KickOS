@@ -75,6 +75,8 @@ namespace kickos
                 ranges_[i].state = VirtualState::Reserved;
                 ranges_[i].holder = holder;
                 ranges_[i].donor = donor;
+                ranges_[i].pending = 0;
+                ranges_[i].pending_pages = 0;
                 return true;
             }
         }
@@ -131,6 +133,82 @@ namespace kickos
         ranges_[i].rights = static_cast<uint8_t>(rights);
         ranges_[i].memtype = memtype;
         ranges_[i].state = VirtualState::Granted;
+        ranges_[i].pending = 0;
+        ranges_[i].pending_pages = 0;
+        return true;
+    }
+
+    bool VirtualRanges::set_pending(uintptr_t base, uint8_t memtype, uint32_t mapped)
+    {
+        size_t const i = index_at(base);
+        if (i == KICKOS_ASPACE_RANGES or mapped > ranges_[i].pages)
+        {
+            return false;
+        }
+        ranges_[i].pending = static_cast<uint8_t>(memtype + 1u);
+        ranges_[i].pending_pages = mapped;
+        return true;
+    }
+
+    bool VirtualRanges::set_rights(uintptr_t base, uint32_t rights)
+    {
+        size_t const i = index_at(base);
+        if (i == KICKOS_ASPACE_RANGES or rights != static_cast<uint32_t>(static_cast<uint8_t>(rights)))
+        {
+            return false;
+        }
+        ranges_[i].rights = static_cast<uint8_t>(rights);
+        return true;
+    }
+
+    bool VirtualRanges::clear_pending(uintptr_t base)
+    {
+        size_t const i = index_at(base);
+        if (i == KICKOS_ASPACE_RANGES)
+        {
+            return false;
+        }
+        ranges_[i].pending = 0;
+        ranges_[i].pending_pages = 0;
+        return true;
+    }
+
+    bool VirtualRanges::recede(uintptr_t base, uint32_t mapped)
+    {
+        size_t const i = index_at(base);
+        if (i == KICKOS_ASPACE_RANGES or mapped > ranges_[i].pages)
+        {
+            return false;
+        }
+        VirtualRange& e = ranges_[i];
+        if (e.state == VirtualState::Granted)
+        {
+            if (e.pending == 0)
+            {
+                e.pending = static_cast<uint8_t>(e.memtype + 1u);
+            }
+            e.state = VirtualState::Reserved;
+        }
+        else if (e.pending == 0)
+        {
+            return false;
+        }
+        e.pending_pages = mapped;
+        return true;
+    }
+
+    bool VirtualRanges::shrink(uintptr_t base, uint32_t pages)
+    {
+        size_t const i = index_at(base);
+        if (i == KICKOS_ASPACE_RANGES or pages == 0 or pages > ranges_[i].pages)
+        {
+            return false;
+        }
+        ranges_[i].pages = pages;
+        if (ranges_[i].pending_pages > pages)
+        {
+            ranges_[i].pending_pages = pages;
+        }
         return true;
     }
 

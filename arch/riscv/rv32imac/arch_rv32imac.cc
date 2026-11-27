@@ -635,7 +635,7 @@ bool kickos_rv_fault_report(uint32_t mcause, uint32_t mepc, uint32_t mtval,
     bool const from_user = (mstatus & MSTATUS_MPP_M) == 0;
     if (from_user and (mcause == 1 or mcause == 5 or mcause == 7))
     {
-        kickos_isr_fault(mtval, mcause == 7); // never returns (arch_shutdown)
+        kickos_isr_fault(mtval, mcause == 7); // never returns (kfault_terminate)
     }
     char const* what = "trap";
     if (mcause == 0)

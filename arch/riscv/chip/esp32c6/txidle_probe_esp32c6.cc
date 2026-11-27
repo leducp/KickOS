@@ -2,12 +2,12 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // Transmission-complete witness for the console flush (c6txidle), run in M-mode after the banner
-// and before the ring is armed: an ungranted U-mode UART0 read returns 0, the idle encoding
-// under test.
+// and before the ring is armed: an ungranted U-mode UART read returns 0, the idle encoding
+// under test. Compiled only into a KICKOS_WITNESS_TXIDLE kernel.
 
 #include <kickos/arch/arch.h>
 
-#if !KICKOS_HAVE_MPU && !KICKOS_AMP_OWN_IMAGE
+#if !KICKOS_HAVE_MPU && !KICKOS_AMP_OWN_IMAGE && defined(KICKOS_WITNESS_TXIDLE) && KICKOS_WITNESS_TXIDLE
 
 #include <kickos/config/limits.h>
 #include <kickos/io/mmio.h>
@@ -16,9 +16,20 @@
 #include <stdint.h>
 
 #include "regs/clint.h"
+#include "board_pins.h"
 #include "regs/uart.h"
 
 namespace reg = kickos::esp32c6::reg;
+
+namespace con
+{
+    constexpr uintptr_t BASE = KICKOS_BOARD_CONSOLE_BASE;
+    constexpr uintptr_t FIFO = BASE + reg::uart::OFF_FIFO;
+    constexpr uintptr_t STATUS = BASE + reg::uart::OFF_STATUS;
+    constexpr uintptr_t FSM_STATUS = BASE + reg::uart::OFF_FSM_STATUS;
+    constexpr uintptr_t IDLE_CONF = BASE + reg::uart::OFF_IDLE_CONF;
+    constexpr uintptr_t CLK_CONF = BASE + reg::uart::OFF_CLK_CONF;
+}
 
 extern "C"
 {
@@ -74,12 +85,12 @@ namespace
 
     uint32_t tx_queued()
     {
-        return (r32(reg::uart::STATUS) >> reg::uart::TXFIFO_CNT_S) & reg::uart::TXFIFO_CNT_MASK;
+        return (r32(con::STATUS) >> reg::uart::TXFIFO_CNT_S) & reg::uart::TXFIFO_CNT_MASK;
     }
 
     uint32_t tx_state()
     {
-        return (r32(reg::uart::FSM_STATUS) >> reg::uart::ST_UTX_OUT_S) & reg::uart::ST_UTX_OUT_MASK;
+        return (r32(con::FSM_STATUS) >> reg::uart::ST_UTX_OUT_S) & reg::uart::ST_UTX_OUT_MASK;
     }
 
     bool quiet()
@@ -113,15 +124,15 @@ extern "C" void kickos_c6_txidle_probe(void)
         return;
     }
     rec[REC_STATE_QUIET] = tx_state();
-    rec[REC_IDLE_BITS] = (r32(reg::uart::IDLE_CONF) >> reg::uart::IDLE_CONF_TX_IDLE_NUM_S) & 0x3FFu;
-    uint32_t const clk_conf = r32(reg::uart::CLK_CONF);
+    rec[REC_IDLE_BITS] = (r32(con::IDLE_CONF) >> reg::uart::IDLE_CONF_TX_IDLE_NUM_S) & 0x3FFu;
+    uint32_t const clk_conf = r32(con::CLK_CONF);
 
     size_t const n = sizeof(TAIL) - 1u;
     static_assert(sizeof(TAIL) - 1u <= reg::uart::TXFIFO_LIMIT,
                   "the TAIL line is longer than the FIFO");
     for (size_t i = 0; i < n; i++)
     {
-        r32(reg::uart::FIFO) = static_cast<uint8_t>(TAIL[i]);
+        r32(con::FIFO) = static_cast<uint8_t>(TAIL[i]);
     }
     uint64_t const loaded = ticks();
     rec[REC_STATE_BUSY] = tx_state();
@@ -130,16 +141,16 @@ extern "C" void kickos_c6_txidle_probe(void)
     }
     uint64_t const emptied = ticks();
     arch_console_flush_sync();
-    r32(reg::uart::CLK_CONF) = clk_conf | reg::uart::CLK_CONF_TX_RST_CORE;
+    r32(con::CLK_CONF) = clk_conf | reg::uart::CLK_CONF_TX_RST_CORE;
     uint64_t const returned = ticks();
     rec[REC_STATE_RETURN] = tx_state();
     uint64_t const until = returned + hold_ticks();
     while (ticks() < until)
     {
     }
-    r32(reg::uart::CLK_CONF) = clk_conf;
-    r32(reg::uart::FIFO) = '\r';
-    r32(reg::uart::FIFO) = '\n';
+    r32(con::CLK_CONF) = clk_conf;
+    r32(con::FIFO) = '\r';
+    r32(con::FIFO) = '\n';
 
     // The FIFO's count falls to 0 as its last byte enters the shifter: n - 1 frames after the
     // first did.

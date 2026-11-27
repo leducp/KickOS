@@ -71,10 +71,12 @@ constexpr size_t banner_identity_crs(char const* f)
 constexpr char BANNER_IDENTITY_FORMATS[] = "\n" KDIAG_F_BANNER_NAME KDIAG_F_BANNER_BOARD
     KDIAG_F_BANNER_BUILD KDIAG_F_BANNER_APP KDIAG_F_BANNER_COMMIT;
 
-// The longest block banner_identity renders, its leading newline and its NUL included.
+// The longest block banner_identity renders, its leading newline and its NUL included. The
+// title is widest at the widest version, its indent shrinking by half a character per character.
 constexpr size_t BANNER_IDENTITY_MAX
     = banner_identity_text(BANNER_IDENTITY_FORMATS)
-      + banner_identity_crs(BANNER_IDENTITY_FORMATS) + BANNER_IDENTITY_VERSION_MAX
+      + banner_identity_crs(BANNER_IDENTITY_FORMATS)
+      + diag::banner_title_indent_width(BANNER_IDENTITY_VERSION_MAX) + BANNER_IDENTITY_VERSION_MAX
       + BANNER_IDENTITY_BOARD_MAX + BANNER_IDENTITY_TIME_MAX + BANNER_IDENTITY_APP_MAX
       + BANNER_IDENTITY_COMMIT_MAX + 1u;
 

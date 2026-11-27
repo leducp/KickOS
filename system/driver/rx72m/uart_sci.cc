@@ -2,8 +2,7 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // The RX72M SCI backend of the raw UART class <kickos/driver/uart.h>, for a channel the
-// kernel has already clocked and pinned (sci6_console_init) and released at the console
-// handover.
+// kernel has already clocked and pinned and released at the console handover.
 //
 // Every function here touches the granted register window, so all of them run in the single
 // thread holding that grant. The register file is BYTE-mapped.
@@ -21,7 +20,7 @@
 //   4. SMR, SCMR, SEMR and BRR are writable ONLY with SCR.TE and SCR.RE both 0 (notes on
 //      sec.42.2.9/12/13/15), so open takes the channel down first.
 //
-// SCR.TEIE stays 0 and RIE covers ERI: both are GROUPBL0 LEVEL sources no driver claims.
+// SCR.TEIE stays 0 and RIE covers ERI: both are group LEVEL sources no driver claims.
 
 #include <kickos/driver/uart.h>
 
@@ -164,7 +163,8 @@ int32_t kos_uart_open(struct kos_uart* u, struct kos_uart_config const* cfg)
     u->base = cfg->base;
     u->stats = cfg->stats;
 
-    // MSTPCRB.SCI6 is released by arch_init, and the module-stop block is kernel-reserved.
+    // The channel's module stop is released by arch_init, and the module-stop block is
+    // kernel-reserved.
 
     // Wait out the byte in flight: a divisor or frame change with a frame still shifting
     // corrupts it on the wire, and the kernel banner is normally still draining here.

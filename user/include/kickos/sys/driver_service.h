@@ -145,8 +145,8 @@ enum kos_drv_ep
     // is USER_OWNED and a kernel-console write from the driver's task is DROPPED.
     KOS_DRV_EP_HANDOVER = 0,
     // No publish. The init keeps SIGNAL, TRANSFER and HANDOUT on the endpoint and never
-    // receives, so a caller is refused -KOS_ECONNREFUSED while no server receives. A failing driver
-    // thread under this posture traps, never exits.
+    // receives, so a caller waits while no server receives. A failing driver thread under this
+    // posture traps, never exits.
     KOS_DRV_EP_RETAIN = 1
 };
 
@@ -465,7 +465,7 @@ constexpr bool valid_l6(Descriptor const& d)
 
 // L7. A multi-thread console handover needs a readiness latch, which L8 has the endpoint's
 // receiver wait on. A one-thread driver has no device half to wait for, its only thread being
-// that receiver, so L7 and L8 would be jointly unsatisfiable: there the handover probe is the
+// that receiver, so L7 and L8 would be jointly unsatisfiable: there its first receive is the
 // witness instead.
 constexpr bool valid_l7(Descriptor const& d)
 {
@@ -479,8 +479,8 @@ constexpr bool valid_l7(Descriptor const& d)
 // barrier_after == 0 would leave nobody to set it, and barrier_after >= thread_count nobody to
 // wait. An unaligned 32-bit load is tolerated on ARMv7-M and FAULTS on RX and Xtensa.
 //
-// HANDOVER-ONLY arm: the receiver must wait, because it takes the handover's probe, and a probe
-// taken before the device half is ready would prove a console that cannot write yet, with
+// HANDOVER-ONLY arm: the receiver must wait, because its first receive ends the handover, and a
+// receive before the device half is ready would prove a console that cannot write yet, with
 // clients sending to it. The ep_holder arm is the SOLE rejecter of a receiver that does not wait.
 constexpr bool valid_l8(Descriptor const& d)
 {
@@ -819,14 +819,14 @@ void report(char const* s);
 // whichever member traps.
 [[noreturn]] void trap();
 
-constexpr std::chrono::seconds KOS_DRV_HANDOVER_PROBE{1};
+// The bound of one send or call to a driver's endpoint whose sender must not park on it.
+constexpr std::chrono::seconds KOS_DRV_SEND_WAIT{1};
 
 // What the init keeps of a console's endpoint once its handover ends: SIGNAL, TRANSFER, HANDOUT.
 constexpr uint32_t KOS_DRV_HANDOVER_KEPT = KOS_CAP_SIGNAL | KOS_CAP_TRANSFER | KOS_CAP_HANDOUT;
 
-// The readiness wait's whole budget, and how far apart a probe the endpoint refused is retried.
+// The readiness wait's whole budget.
 constexpr std::chrono::seconds KOS_DRV_READY_WAIT{1};
-constexpr std::chrono::milliseconds KOS_DRV_READY_RETRY{1};
 
 // The latch at `off` inside `blk`, which MUST come from a class-substrate constant and never
 // from a descriptor literal.

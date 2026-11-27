@@ -16,8 +16,8 @@ from .manifest import read_manifest
 from .subset import File, Report, line_of
 from .supply import FarStdout
 
-# The port the window layer answers itself, which needs no serving task.
-AMP_PORT_ECHO = 0
+# The node whose kernel drives the board's diagnostic LED at its terminal panic.
+LED_NODE = 0
 
 
 class Row:
@@ -82,6 +82,7 @@ def admit_partition(paths, manifest_path, node):
     partition = Partition(paths, admitted, manifest)
     check_devices(files, admitted)
     check_reset_owner(files, admitted, manifest)
+    check_led(files, admitted)
     check_unserved(files, admitted, manifest)
     check_stdout(files, admitted, manifest)
     place_regions(files, admitted, manifest)
@@ -137,6 +138,39 @@ def check_reset_owner(files, admitted, manifest):
                                 % (task.label(), k, owner))
 
 
+def led_windows(made):
+    """[(device name, base, end)] the board's addressable diagnostic LED is driven through, or [] where
+    the LED is not addressable. Never the pin's port: no chip grants a pin alone, only its whole bank."""
+    board = made.board
+    if board is None or board.diag_led is None or board.diag_led[2] != "addressable":
+        return []
+    chip = made.chip
+    if chip.addressable_led not in chip.devices:
+        return []
+    device = chip.devices[chip.addressable_led]
+    return [(device.name, device.window[0], device.window[0] + device.window[1])]
+
+
+def check_led(files, admitted):
+    """partition.led: a node other than LED_NODE holding the device the board's addressable diagnostic
+    LED is driven through, which LED_NODE's kernel takes back at its terminal panic."""
+    for k, made in enumerate(admitted):
+        if k == LED_NODE:
+            continue
+        windows = led_windows(made)
+        for task in made.tasks:
+            for grant in task.grants:
+                if grant.space != "mem":
+                    continue
+                for name, base, end in windows:
+                    if grant.base < end and base < grant.end():
+                        files[k].refuse(grant.node, "partition.led",
+                                        "%s holds `%s` on node %d, and node %d's kernel drives the board's "
+                                        "addressable diagnostic LED through `%s` at its terminal panic"
+                                        % (task.label(), grant.path, k, LED_NODE, name))
+                        break
+
+
 def check_unserved(files, admitted, manifest):
     """partition.unserved: a crossing a node uses that no task of its server serves."""
     servers = {}
@@ -156,7 +190,7 @@ def check_unserved(files, admitted, manifest):
         for task in made.tasks:
             for path, node in task.uses:
                 port = amp_port(path)
-                if port is None or port == AMP_PORT_ECHO or len(servers.get(port, [])) != 1:
+                if port is None or len(servers.get(port, [])) != 1:
                     continue
                 server = servers[port][0]
                 if path not in served[server]:

@@ -228,11 +228,11 @@ TEST(ConsoleHeldStore, AReclaimWritesAPartTakenRecordThenEachOpenOne)
         three_records();
         take(1u);
         task_ends();
-        EXPECT_EQ(consoleseam::wire(), "a2\nb1\nb2\nc1\nc2\n");
+        EXPECT_EQ(consoleseam::wire(), "a2\nb1\nb2\nc1\nc2\n" + kReclaimed);
         as(2);
         kickos::kprintf_fault("b3\n");
         kickos::krecord_end();
-        EXPECT_EQ(consoleseam::wire(), "a2\nb1\nb2\nc1\nc2\nb3\n");
+        EXPECT_EQ(consoleseam::wire(), "a2\nb1\nb2\nc1\nc2\n" + kReclaimed + "b3\n");
         EXPECT_EQ(held(), "");
     });
 }
@@ -248,7 +248,7 @@ TEST(ConsoleHeldStore, AReclaimWritesAFullStore)
         kickos::kprintf_fault("%s", wide.c_str());
         kickos::kprintf_fault("lost\n");
         task_ends();
-        EXPECT_EQ(consoleseam::wire(), wide);
+        EXPECT_EQ(consoleseam::wire(), wide + kReclaimed);
     });
 }
 

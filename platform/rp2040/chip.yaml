@@ -30,6 +30,10 @@ devices:
     window: [0x40034000, 0x4000]
     ref: "2.2.2 Detail, p.25"
     lines: { irq: { number: 20, ref: "Table 80 Interrupts, p.60" } }
+  uart1:
+    window: [0x40038000, 0x4000]
+    ref: "2.2.2 Detail, p.25"
+    lines: { irq: { number: 21, ref: "Table 80 Interrupts, p.60" } }
   # The DPRAM and, 64 KiB above it, the register block.
   usbctrl:
     window: [0x50100000, 0x20000]

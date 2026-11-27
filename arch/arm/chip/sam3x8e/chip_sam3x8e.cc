@@ -67,6 +67,7 @@ namespace
     constexpr uintptr_t PIO_ODR_OFF = 0x14;
     constexpr uintptr_t PIO_SODR_OFF = 0x30;
     constexpr uintptr_t PIO_CODR_OFF = 0x34;
+    constexpr uintptr_t PIO_MDDR_OFF = 0x54;
     constexpr uintptr_t PIO_ABSR_OFF = 0x70;
     constexpr uint32_t PMC_PID_PIO_SHIFT = 11u;
     constexpr uint32_t PINMUX_PORT_MAX = 3u; // PIOA..PIOD
@@ -229,6 +230,7 @@ void arch_diag_led_init(void)
 {
     r32(PMC_PCER0) = 1u << (PMC_PID_PIO_SHIFT + KICKOS_BOARD_LED_PORT);
     r32(KICKOS_BOARD_LED_PORT_BASE + PIO_PER_OFF) = 1u << KICKOS_BOARD_LED_BIT;
+    r32(KICKOS_BOARD_LED_PORT_BASE + PIO_MDDR_OFF) = 1u << KICKOS_BOARD_LED_BIT;
     r32(KICKOS_BOARD_LED_PORT_BASE + PIO_OER_OFF) = 1u << KICKOS_BOARD_LED_BIT;
 }
 

@@ -226,12 +226,6 @@ namespace kickos
         ep->server = t;
     }
 
-    void endpoint_receiver_waits(Endpoint* ep, Thread* t)
-    {
-        endpoint_server_set(ep, t);
-        ep->vacated = 0;
-    }
-
     int endpoint_slot_claim(Task const* charged, Endpoint** out)
     {
         int const i = kernel().endpoints.alloc(charged);

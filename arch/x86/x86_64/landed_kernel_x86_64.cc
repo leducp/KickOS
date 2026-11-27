@@ -73,15 +73,10 @@ namespace
     }
 }
 
-// The paging regime the kernel adopts: firmware's, unless a witness image moves it first
-// (kickos_x86_64_paging_entry_default.cc).
-extern "C" void kickos_x86_64_paging_entry(void);
-
 // A named extern "C" symbol so the switch below reaches it with a direct relative call: an
 // indirect call through its address is a GOT load, which tools/check-x86_64-no-got.sh refuses.
 extern "C" [[noreturn]] void kickos_x86_64_kernel_main(void)
 {
-    kickos_x86_64_paging_entry();
     arch_init();
     report_load();
     kickos::kmain(0, nullptr);

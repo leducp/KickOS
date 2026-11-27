@@ -263,7 +263,7 @@ namespace tap
         {
             if (g_census[c].count == count)
             {
-                g_census[c].delta = delta;
+                g_census[c].delta = g_census[c].delta + delta;
             }
         }
     }

@@ -25,8 +25,8 @@ interrupts: { count: 24 }
 
 devices:
   # No device names a line: the kernel's interrupt controller is software and drives no I/O
-  # APIC, so no claim receives a device's interrupt. COM1 raises ISA IRQ 4, COM2 IRQ 3 and
-  # the CMOS clock IRQ 8.
+  # APIC, so no claim receives a device's interrupt. COM1 and COM3 raise ISA IRQ 4, COM2 and
+  # COM4 IRQ 3, and the CMOS clock IRQ 8.
   #
   # The CMOS clock: an index port and a data port. Writing the index port also sets the
   # NMI mask in its top bit, so the index is a privileged register inside the range: the
@@ -35,9 +35,13 @@ devices:
   cmos_rtc:
     ports: [0x70, 2]
     privileged_registers: { index: 0x0 }
-  # 16550, the kernel console, which the kernel also writes its exit line to whoever holds it.
+  # The four 16550s at their fixed PC ports, any of which a board may name as its console. The
+  # kernel writes its exit line to the console's port whoever holds it. Only COM1 is populated
+  # unless QEMU is given more serial ports.
   com1: { ports: [0x3F8, 8] }
-  com2: { ports: [0x2F8, 8] } # unpopulated unless QEMU is given a second serial port
+  com2: { ports: [0x2F8, 8] }
+  com3: { ports: [0x3E8, 8] }
+  com4: { ports: [0x2E8, 8] }
   hpet: { window: [0xFED00000, 0x1000] }
 
   # The reset value of IA32_APIC_BASE, which the kernel reads at boot. Under x2APIC the

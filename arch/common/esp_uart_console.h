@@ -2,7 +2,8 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // The kernel console's edge on the ESP UART, for a part that aliases its register namespace into
-// kickos::espuart (its regs/uart.h, included first): the ring's TX backend and the polled writer.
+// kickos::espuart (its regs/uart.h, included first): the console UART the board names, the
+// ring's TX backend and the polled writer.
 
 #ifndef KICKOS_ARCH_COMMON_ESP_UART_CONSOLE_H
 #define KICKOS_ARCH_COMMON_ESP_UART_CONSOLE_H
@@ -14,11 +15,26 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "board_pins.h"
+
+namespace kickos::espuart::con
+{
+    constexpr uintptr_t BASE = KICKOS_BOARD_CONSOLE_BASE;
+    constexpr uintptr_t FIFO = BASE + reg::uart::OFF_FIFO;
+    constexpr uintptr_t INT_ST = BASE + reg::uart::OFF_INT_ST;
+    constexpr uintptr_t INT_ENA = BASE + reg::uart::OFF_INT_ENA;
+    constexpr uintptr_t INT_CLR = BASE + reg::uart::OFF_INT_CLR;
+    constexpr uintptr_t CLKDIV = BASE + reg::uart::OFF_CLKDIV;
+    constexpr uintptr_t STATUS = BASE + reg::uart::OFF_STATUS;
+    constexpr uintptr_t CONF0 = BASE + reg::uart::OFF_CONF0;
+    constexpr uintptr_t CONF1 = BASE + reg::uart::OFF_CONF1;
+}
+
 namespace kickos::espuart::console
 {
     inline int tx_slot_free(void)
     {
-        uint32_t const queued = (r32(reg::uart::STATUS) >> reg::uart::TXFIFO_CNT_S)
+        uint32_t const queued = (r32(con::STATUS) >> reg::uart::TXFIFO_CNT_S)
                                 & reg::uart::TXFIFO_CNT_MASK;
         if (queued < reg::uart::TXFIFO_LIMIT)
         {
@@ -32,21 +48,21 @@ namespace kickos::espuart::console
     // as long as the ring holds bytes.
     inline void tx_push(uint8_t b)
     {
-        r32(reg::uart::FIFO) = b;
-        r32(reg::uart::INT_CLR) = reg::uart::TXFIFO_EMPTY_INT;
+        r32(con::FIFO) = b;
+        r32(con::INT_CLR) = reg::uart::TXFIFO_EMPTY_INT;
     }
 
     // The stale latch of a stopped burst is dropped first, or it raises the instant the source
     // is armed.
     inline void tx_irq_enable(void)
     {
-        r32(reg::uart::INT_CLR) = reg::uart::TXFIFO_EMPTY_INT;
-        r32(reg::uart::INT_ENA) = r32(reg::uart::INT_ENA) | reg::uart::TXFIFO_EMPTY_INT;
+        r32(con::INT_CLR) = reg::uart::TXFIFO_EMPTY_INT;
+        r32(con::INT_ENA) = r32(con::INT_ENA) | reg::uart::TXFIFO_EMPTY_INT;
     }
 
     inline void tx_irq_disable(void)
     {
-        r32(reg::uart::INT_ENA) = r32(reg::uart::INT_ENA) & ~reg::uart::TXFIFO_EMPTY_INT;
+        r32(con::INT_ENA) = r32(con::INT_ENA) & ~reg::uart::TXFIFO_EMPTY_INT;
     }
 
     inline constexpr console_tx_backend backend = {tx_slot_free, tx_push, tx_irq_enable,

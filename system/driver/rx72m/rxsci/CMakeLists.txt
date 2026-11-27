@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 
-# kickos_rxsci: the RX72M SCI6 buffered IRQ-driven userspace UART/console driver (an
+# kickos_rxsci: the RX72M SCI buffered IRQ-driven userspace UART/console driver (an
 # unprivileged two-thread driver; see rxsci.h). REGDIR carries the chip's clean-room mmap.h + regs/sci.h, register facts
 # only, so they are not duplicated per driver.
 #
@@ -12,10 +12,10 @@
 # that class.
 #
 # Both lines EDGE: a raise taken while a line is masked latches and redelivers on the rearm.
-# TEI6 and ERI6 are LEVEL and are not claimed (see rxsci.h). One wait covers both lines and the
+# TEI and ERI are LEVEL and are not claimed (see rxsci.h). One wait covers both lines and the
 # doorbell, so the window holder services RXI itself.
 kickos_add_driver(rxsci SOURCES rxsci.cc ../uart_sci.cc REGDIR arch/rx/chip/rx72m
-                  BASE mmap::SCI6 WINDOWS regs LINES txi:edge rxi:edge
+                  WINDOWS regs LINES txi:edge rxi:edge
                   BLOCK ${KICKOS_UART_BLOCK_SIZE} INIT block_init BARRIER 1 READY uart::KOS_UART_READY_OFFSET
                   POSTURE handover CONSOLE START rxsci_console_start
                   RIGHTS write read control

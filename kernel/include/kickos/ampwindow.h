@@ -125,11 +125,10 @@ namespace kickos
         // have one writer each and different owners.
         constexpr uint32_t LINE_BYTES = 64u;
 
-        // The window layer's own two ports, which every node mints and no node binds, and the
-        // width of the mint mask. Every other port is the partition's (PORT_NODE above).
+        // The window layer's own port, which every node mints and no node binds, and the width
+        // of the mint mask. Every other port is the partition's (PORT_NODE above).
         enum : uint32_t
         {
-            PORT_ECHO = KOS_AMP_PORT_ECHO,
             PORT_REPLY = KOS_AMP_PORT_REPLY,
             PORT_MAX = 32u // the mint is a 32-bit mask, so this is its width
         };
@@ -200,11 +199,13 @@ namespace kickos
             return static_cast<uint16_t>(seq & REPLY_SEQ_MASK);
         }
 
-        // The route of a sender that does not park, and it is NOT the zero one: zero is index
-        // 0 at generation 0, which a live thread slot can be, so an echo of it could complete
-        // some unrelated caller's call. KOS_THREAD_NONE carries the all-ones index the thread
-        // pool reserves and never seats, so no generation resolves it.
-        constexpr ReplyTag REPLY_TAG_NONE = {KOS_THREAD_NONE, 0u};
+        // A SEND's route, in the half of `seq` reply_seq leaves out: the calling node's writing,
+        // read by the serving node's landing alone, which then installs no reply capability and
+        // answers the record with the count its receiver took. A malformed peer flipping it costs
+        // its own caller alone.
+        constexpr uint32_t REPLY_SEND = 1u << 16;
+        static_assert((REPLY_SEND & REPLY_SEQ_MASK) == 0u,
+                      "the send route must sit outside the sequence the reply validates");
 
         // ATOMIC BECAUSE A TAKE VALIDATES THEM AND THEN SPENDS THEM, and a producer that
         // rewrites a slot it wrongly believes free may land between the two: a plain field lets
@@ -221,7 +222,7 @@ namespace kickos
             Atomic<uint32_t, Order::RELAXED> port; // far: bounded against this node's own mint
             ReplyTag tag; // far: handed back to the taker, spent by nothing in this file
             // far: on a call, the badge of the sender's capability, delivered to the receiver as
-            // it stands; on a reply, KOS_BADGE_NONE for an answer or REPLY_REFUSED.
+            // it stands; on a reply, KOS_BADGE_NONE for an answer, REPLY_REFUSED or REPLY_FAULTED.
             Atomic<uint32_t, Order::RELAXED> badge;
             // far: set by the producer on a call slot still outstanding whose caller left, and
             // cleared by its publication. RELAXED: the doorbell request raised after the set,
@@ -234,17 +235,23 @@ namespace kickos
         // -KOS_ECONNREFUSED. Any other word reads as an answer.
         constexpr uint32_t REPLY_REFUSED = 1u;
         static_assert(REPLY_REFUSED != KOS_BADGE_NONE, "a refusal is not an answer");
+        // A reply's badge where the answer's bytes could not be read, or the request's could not
+        // be landed: its caller is answered -KOS_EFAULT, as the local rendezvous answers both ends
+        // of a refused copy.
+        constexpr uint32_t REPLY_FAULTED = 2u;
+        static_assert(REPLY_FAULTED != KOS_BADGE_NONE and REPLY_FAULTED != REPLY_REFUSED,
+                      "a fault is neither an answer nor a refusal");
 
-        // A CALL ring is split into LANES, one per port its receiving node mints but the reply
-        // port, each owning an equal power-of-two run of the ring's slots with a head and a tail
-        // of its own. Reclamation is in order within a lane only, so a port whose receiver keeps
-        // every slot of its lane holds no other port's. A REPLY ring is one lane of every slot.
+        // A CALL ring is split into LANES, one per port the partition names its receiving node,
+        // each owning an equal power-of-two run of the ring's slots with a head and a tail of its
+        // own. Reclamation is in order within a lane only, so a port whose receiver keeps every
+        // slot of its lane holds no other port's. A REPLY ring is one lane of every slot.
         constexpr uint32_t LANE_MAX = RING_SLOTS;
 
         // The ports a call ring toward `node` carries, bit n for port n.
         constexpr uint32_t call_ports(uint32_t node)
         {
-            uint32_t mask = 1u << PORT_ECHO;
+            uint32_t mask = 0u;
             for (uint32_t i = 0; i < PORT_COUNT; i++)
             {
                 if (PORT_NODE[i] == node and PORT_PORT[i] < PORT_MAX)
@@ -265,9 +272,13 @@ namespace kickos
             return n;
         }
 
-        // The slots of each lane of the call ring toward `node`.
+        // The slots of each lane of the call ring toward `node`, 0 for a node serving no port.
         constexpr uint32_t lane_slots(uint32_t node)
         {
+            if (lane_count(node) == 0u)
+            {
+                return 0u;
+            }
             uint32_t slots = 1u;
             while (slots * 2u <= RING_SLOTS / lane_count(node))
             {
@@ -346,9 +357,8 @@ namespace kickos
         Ring& ring_for(Class cls, uint32_t to, uint32_t from);
 
         // Bind a port of THIS node to one of its own endpoints, so a call arriving on it
-        // reaches a thread rather than the window layer. Static per N8: no capability
-        // authorises the crossing. A port bound to nothing is not an error and is what
-        // PORT_ECHO is, the window layer answering it with no thread involved.
+        // reaches a thread. Static per N8: no capability authorises the crossing. A port bound
+        // to nothing is not an error: the window layer refuses every call arriving on it.
         void port_bind(uint32_t port, uint16_t endpoint);
 
         // The endpoint `port` is bound to on THIS node, or EP_BOUND_NONE. Binding to
@@ -377,7 +387,8 @@ namespace kickos
         uint32_t core_of(uint32_t node);
 
         // Publish `len` bytes into `to`'s inbox from THIS node, on the lane `port` names, and
-        // ring its doorbell.
+        // ring its doorbell. A null `payload` publishes the length alone, which a send's answer
+        // carries as the count its receiver took.
         //
         // THE LOCAL NODE IS REFUSED: node_service skips its own self-ring, so a self-send
         // fills four slots nothing will ever take.
@@ -463,8 +474,9 @@ namespace kickos
             // Service passes this obligation has been carried over, against DEFER_PASSES.
             // Meaningless unless pending, and record_defer is the one writer that arms it.
             uint8_t defers;
-            // The deferred answer is REPLY_REFUSED rather than empty. Meaningless unless pending.
-            uint8_t refused;
+            // The deferred answer's badge word: KOS_BADGE_NONE, REPLY_REFUSED or REPLY_FAULTED.
+            // Meaningless unless pending.
+            uint8_t word;
         };
 
         // Seat a record for a held call and answer a TOKEN for it, or FAR_RECORD_NONE where the
@@ -505,6 +517,9 @@ namespace kickos
         void inbound_reply(uint32_t token, void const* payload, uint32_t len);
 
         void inbound_refuse(uint32_t token);
+
+        // Answer the record `token` names REPLY_FAULTED, as inbound_refuse answers REPLY_REFUSED.
+        void inbound_fault(uint32_t token);
 
         // Free the record `token` names and release its call slot, answering nobody: its caller
         // withdrew the call. Total over a token naming nothing.
@@ -625,14 +640,10 @@ namespace kickos
         // Count one Counts::deliver_fault on THIS node, under its lock: one writer per row is
         // why a row may sit where a peer reads it.
         void count_deliver_fault(void);
-        // Count one Counts::send_refused on THIS node, under its lock: a full lane of a call ring
-        // refused to a sender that may not wait, which send never sees.
-        void count_send_refused(void);
 
         // Drain every inbox of THIS node, routing a PORT_REPLY to whatever local caller its tag
-        // names and answering every taken CALL on the sender's PORT_REPLY: a PORT_ECHO with its
-        // own payload, and anything the endpoint layer neither delivered nor held with a
-        // REPLY_REFUSED reply carrying the same tag.
+        // names and answering every taken CALL the endpoint layer neither delivered nor held with
+        // a REPLY_REFUSED reply carrying the same tag on the sender's PORT_REPLY.
         //
         // AND DISCHARGE EVERY ANSWER A REFUSED PUBLICATION DEFERRED, between the two drains:
         // after the replies, whose drain makes the deferred answer sendable, and before the

@@ -17,12 +17,27 @@ namespace kickos::imxrt1062::aipstz_gate
 {
     using Reg = volatile uint32_t& (*)(uintptr_t address);
 
-    // The OPACR word holding `base`'s slot, or 0 for a base with no entry. Exact base match,
-    // never a range: a base earns an entry only once the rest of its 16 KiB AIPS slot is
+    // The bases whose slot a holder may have opened. Exact base match, never a range: a base earns
+    // an entry only once its device is the whole 16 KiB AIPS slot or the rest of that slot is
     // reserved in arch_reserved_blocks.
+    constexpr uintptr_t GATED[] = {
+        mmap::USB1_BASE,     mmap::LPUART1_BASE, mmap::LPUART2_BASE, mmap::LPUART3_BASE,
+        mmap::LPUART4_BASE, mmap::LPUART5_BASE, mmap::LPUART6_BASE, mmap::LPUART7_BASE,
+        mmap::LPUART8_BASE,
+    };
+
+    // The OPACR word holding `base`'s slot, or 0 for a base with no entry.
     inline uintptr_t word_of(uintptr_t base)
     {
-        if (base != mmap::USB1_BASE)
+        bool gated = false;
+        for (uintptr_t const g : GATED)
+        {
+            if (g == base)
+            {
+                gated = true;
+            }
+        }
+        if (not gated)
         {
             return 0u;
         }
@@ -31,7 +46,7 @@ namespace kickos::imxrt1062::aipstz_gate
         {
             return 0u; // outside all four AIPS regions: refuse rather than pick a word
         }
-        return reg::aipstz::opacr_of(bridge, reg::aipstz::USB1_SLOT);
+        return reg::aipstz::opacr_of(bridge, reg::aipstz::slot_of(base));
     }
 
     // Clears the slot's Supervisor-Protect bit.
@@ -42,7 +57,7 @@ namespace kickos::imxrt1062::aipstz_gate
         {
             return -KOS_EINVAL;
         }
-        r(word) = r(word) & ~reg::aipstz::sp_bit_of(reg::aipstz::USB1_SLOT);
+        r(word) = r(word) & ~reg::aipstz::sp_bit_of(reg::aipstz::slot_of(base));
         return 0;
     }
 
@@ -54,7 +69,7 @@ namespace kickos::imxrt1062::aipstz_gate
         {
             return -KOS_EINVAL;
         }
-        r(word) = r(word) | reg::aipstz::sp_bit_of(reg::aipstz::USB1_SLOT);
+        r(word) = r(word) | reg::aipstz::sp_bit_of(reg::aipstz::slot_of(base));
         return 0;
     }
 }

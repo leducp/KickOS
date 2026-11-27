@@ -147,14 +147,14 @@ never re-reads its own descriptor.
 Sketch of the send path (the receive path is its mirror):
 
 ```
-send(cap, buf, len, timeout_us):                     // timeout_us may be "no deadline"
+send(cap, buf, len, deadline):                       // deadline may be "never"
     if len > KOS_EP_MSG_MAX:            return -EINVAL  // reject oversize; do not clamp
     if not user_readable_ok(buf, len):  return -EFAULT  // sender's own buffer, checked once
     {
         IrqLock lock
         e = cap_resolve(current, cap, CAP_ENDPOINT, CAP_SIGNAL)   // need the send right
         if e == nullptr:            return -EBADF / -EPERM
-        if not receiving(e):        return unserved(e) // no receiver (below)
+        if not receiving(e):        return -ECONNREFUSED // nobody serves it (below)
         w = wq_pop_highest(e->recv_waiters)
         if w != nullptr:                             // a receiver is parked -> deliver now
             n = min(len, w->ipc.len)
@@ -162,12 +162,14 @@ send(cap, buf, len, timeout_us):                     // timeout_us may be "no de
             w->wait_result = n
             sched::wake(w)
             return n                                  // did not block: no clock read at all
+        if deadline is a poll:      return -EAGAIN   // no receiver parked, and no wait asked
+        if deadline has passed:     return -ETIMEDOUT
         current->ipc = { buf, len, ... }             // no receiver -> park
-        if timeout_us is a deadline:  arm it on current
+        if deadline is not never:  arm it on current
         sample epoch; wq_block(e->send_waiters, WAIT_EP_SEND, e)
     }
     wq_confirm_resume(current, epoch)                // Chapter 2.2 barrier
-    return current->wait_result                       // n (>= 0), unserved(e), or -ETIMEDOUT
+    return current->wait_result                       // n (>= 0), -ECONNREFUSED, or -ETIMEDOUT
 ```
 
 Two details in that sketch carry more weight than they look. The deadline is armed only on
@@ -197,26 +199,26 @@ is the mistake to avoid.
 (`CAP_WAIT`). It answers a different question than the refcount: not "does anything
 still name this endpoint?" but "is there a receiver?" `handout_holders` counts the ones
 carrying the **handout right** (`CAP_HANDOUT`), the one right a delegation may turn into
-another: its holder can seat a receiver by granting `CAP_WAIT` it does not itself hold. It
-answers "can a receiver still appear?" -- which is what an init restarting a server needs,
-holding the endpoint open across the restart without being counted as its receiver.
-Together they drive two behaviours a plain refcount cannot:
+another: its holder can seat a receiver by granting `CAP_WAIT` it does not itself hold. That
+is what an init restarting a server needs: it holds the endpoint across the restart without
+being counted as its receiver. A handout holder is never a receiver, so it never makes a
+sender wait. The receiver count drives two behaviours a plain refcount cannot:
 
 - **The no-receiver answer.** A sender finds no receiver when `recv_holders == 0`, or when
-  the endpoint is *vacated*: its last receiver left and no receiver has waited on it since,
-  which is a server a handout has seated but that has not yet reached its first receive. It
-  does not park, since nothing promises to release it. It is told which case it is in:
-  `-EAGAIN` while a receive or handout holder remains, because a receiver may yet wait and a
-  retry may meet it, and `-ECONNREFUSED` once neither does, because rights only narrow on
-  delegation apart from that one exception and no receive capability can ever be minted
-  again. A send-only
-  client closing its own capability drops `endpoint_refs` but neither holder count, so it
-  must *not* trigger this; that is exactly why the counts are separate.
+  the endpoint is *vacated*: its last receiver left and no receiver has waited on it since.
+  A server that a handout has seated, but that has not yet reached its first receive, is the
+  second case. The sender does not park, since nothing promises to release it. It is answered
+  `-ECONNREFUSED` at once, whatever its deadline. So from a server's death to the first
+  receive of the server that replaces it, every send and every call is refused. One endpoint
+  is the exception: the published console, while the task it names lives, parks its senders
+  even with no receiver. A send-only client closing its own capability drops
+  `endpoint_refs` but not `recv_holders`, so it must *not* trigger this; that is exactly why
+  the counts are separate.
 - **The parked senders.** When the *last* receive-holder goes away -- closes its
   capability, narrows `CAP_WAIT` away, or exits -- any senders already parked would
   otherwise wait forever. So the close protocol ([Chapter 8.2](adding-a-kernel-object-type-the-additive-recipe.md)) for an endpoint, on dropping
   `recv_holders` to zero, wakes every parked sender with the same answer a new sender would
-  get:
+  get, `-ECONNREFUSED`:
 
 ```
 case CAP_ENDPOINT:   // obj_close_protocol arm; runs on close, narrow AND teardown
@@ -226,9 +228,9 @@ case CAP_ENDPOINT:   // obj_close_protocol arm; runs on close, narrow AND teardo
         ep->recv_holders--
         if ep->recv_holders == 0:
             ep->vacated = 1      // cleared when a receiver next waits here
-            answer = ep->handout_holders > 0 ? -EAGAIN : -ECONNREFUSED
+            if ep is the published console and its task lives:  return 0
             while ((s = wq_pop_highest(ep->send_waiters)) != nullptr):
-                s->wait_result = answer
+                s->wait_result = -ECONNREFUSED
                 sched::wake(s)
     return 0     // a close is never refused
 ```
@@ -287,7 +289,8 @@ intended client/server topology but worth naming:
   no cheap detection, because `recv_holders` counts capabilities, not threads.
 - **A park is unbounded unless the caller bounds it.** Send and receive both take an
   optional deadline, and a caller that supplies one gets `-ETIMEDOUT` instead of an
-  indefinite park. A caller that does not is choosing to wait forever, which is the right
+  indefinite park. A poll (`KOS_POLL`) that finds no peer answers `-EAGAIN` and never
+  parks. A caller that does not is choosing to wait forever, which is the right
   default for a server's receive loop and the wrong one for a bring-up probe.
 
 ## The porting contract: a cross-domain privileged write

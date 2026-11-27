@@ -7,7 +7,7 @@
 # one block and poke another. LEVEL: USBSTS is an OR of sources cleared at the peripheral, and
 # the NVIC line follows it. Uncached: the controller reads its dQH/dTD lists and writes transfer
 # results out of the block as a bus master, and this tree has no cache-maintenance primitive. The
-# handover blinds the kernel console, LPUART6 on pins 0/1, a different peripheral from this one.
+# handover blinds the kernel console, the board's LPUART, a different peripheral from this one.
 # irq_loop latches ready before enumeration, so the poll does not wait for a cable.
 kickos_add_driver(rt1062usb SOURCES rt1062usb.cc
                   TAG rtusb BASE reg::USB1_BASE WINDOWS regs LINES irq:level

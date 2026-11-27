@@ -48,6 +48,25 @@ using kickos::rp2xxx::ATOMIC_CLR;
 using kickos::rp2xxx::unreset;
 using kickos::rp2xxx::wait_mask;
 
+namespace
+{
+    namespace mmap = kickos::rp2350::mmap;
+
+    constexpr uint32_t uart_reset(uintptr_t base)
+    {
+        if (base == mmap::UART0_BASE)
+        {
+            return reg::resets::UART0;
+        }
+        return reg::resets::UART1;
+    }
+
+    static_assert(KICKOS_BOARD_CONSOLE_BASE == mmap::UART0_BASE
+                      or KICKOS_BOARD_CONSOLE_BASE == mmap::UART1_BASE,
+                  "the board's console is not a UART of this chip");
+    constexpr uint32_t CONSOLE_RESET = uart_reset(KICKOS_BOARD_CONSOLE_BASE);
+}
+
 namespace kickos
 {
     int kmain(int argc, char** argv);
@@ -124,8 +143,8 @@ void arch_init(void)
 {
     // Reset-release ordering is load-bearing: a RESET_DONE only asserts once the peripheral has a
     // running clock. IO_BANK0/PADS_BANK0/TIMER0 run off clk_sys/clk_ref, live off the ROSC at
-    // reset; UART1 runs off clk_peri, OFF until clocks_init, so releasing it BEFORE that hangs the
-    // boot.
+    // reset; a UART runs off clk_peri, OFF until clocks_init, so releasing it BEFORE that hangs
+    // the boot.
     // The clock tree is partition-wide, so only the PRIMARY brings it up: a peer re-entering
     // clocks_init stops clk_sys under a primary executing off those PLLs, an unrecoverable lock-up.
     //
@@ -147,9 +166,10 @@ void arch_init(void)
         unreset(reg::resets::IO_BANK0 | reg::resets::PADS_BANK0 | reg::resets::TIMER0);
         kickos::rp2xxx::clocks_init();
     }
-    // UART1 is brought up by the node whose console it is, its clk_peri by the primary alone.
+    // The console UART is brought up by the node whose console it is, its clk_peri by the
+    // primary alone.
 #if KICKOS_RP2XXX_CONSOLE
-    unreset(reg::resets::UART1);
+    unreset(CONSOLE_RESET);
     kickos::rp2xxx::console_uart_init();
 #endif
 #if KICKOS_AMP_OWN_IMAGE
@@ -179,7 +199,7 @@ void arch_init(void)
 console_tx_backend const* arch_console_tx_backend(int* irq_line)
 {
 #if KICKOS_RP2XXX_CONSOLE
-    *irq_line = irq::UART1_IRQ;
+    *irq_line = KICKOS_BOARD_CONSOLE_LINE_IRQ;
     return &kickos::rp2xxx::console_backend;
 #else
     (void)irq_line;
@@ -190,15 +210,20 @@ console_tx_backend const* arch_console_tx_backend(int* irq_line)
 // Must stay in this TU: arch_init anchors it here, and anywhere else the arch/common fallback
 // resolves the call first and the link still succeeds.
 //
-// UART0's RESET_DONE asserts only while clk_peri runs (7.5).
+// The UART that is not the console. Its RESET_DONE asserts only while clk_peri runs (7.5).
 int arch_periph_enable(uintptr_t base)
 {
-    if (base != kickos::rp2350::mmap::UART0_BASE)
+    if (base != mmap::UART0_BASE and base != mmap::UART1_BASE)
     {
         return -KOS_EINVAL;
     }
-    r32(reg::resets::RESET + ATOMIC_CLR) = reg::resets::UART0;
-    if (not wait_mask(reg::resets::RESET_DONE, reg::resets::UART0))
+    if (base == KICKOS_BOARD_CONSOLE_BASE)
+    {
+        return -KOS_EINVAL;
+    }
+    uint32_t const bit = uart_reset(base);
+    r32(reg::resets::RESET + ATOMIC_CLR) = bit;
+    if (not wait_mask(reg::resets::RESET_DONE, bit))
     {
         return -KOS_EIO;
     }

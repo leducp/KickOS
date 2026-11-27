@@ -168,10 +168,11 @@ namespace tap
     // gets a diagnostic. A negative reading judges nothing. Call before run_all(); a census past
     // CENSUS_MAX is a dropped registration.
     using CensusFn = long (*)();
-    constexpr int CENSUS_MAX = 4;
+    constexpr int CENSUS_MAX = 5;
     void add_census(CensusFn count, char const* what);
-    // Called inside a test that hands what `count` counts to a later test, by design: the
-    // count it is to end on, relative to its start. The later test declares the reverse.
+    // Called inside a test that hands what `count` counts to a later test, by design: adds
+    // `delta` to the count it is to end on, relative to its start. The later test declares the
+    // reverse.
     void census_expect(CensusFn count, long delta);
 
     // Run every registered test in order, emit TAP, and return the number that

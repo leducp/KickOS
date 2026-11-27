@@ -138,7 +138,7 @@ refuses load picopi "$PWD/tools/bench/bench-capture.sh" 'picotool could not flas
 refuses load-why picopi "$PWD/tools/bench/bench-capture.sh" 'picotool could not flash picopi: ERROR: planted words' \
     STUB_LOAD_RC=1 'STUB_LOAD_MSG=ERROR: planted words'
 SN=000177003338
-refuses jlink-cut blackpill "$PWD/tools/bench/bench-capture.sh" 'no whole banner title follows the reset'
+refuses jlink-cut blackpill "$PWD/tools/bench/bench-capture.sh" 'no banner title follows the reset'
 SN=
 # <board> <record> <what> [VAR=value]...: a capture over the planted bus, which printed nothing and
 # is refused once its window is over, records exactly <record> for the board's presence rows.
@@ -199,7 +199,7 @@ cp "$TMP"/bus/* "$TMP/cdc/"
 sed "s|^KICKOS_CDC_CONSOLE=.*|KICKOS_CDC_CONSOLE=\"$TMP/cdcdev/usb-KickOS_KickOS_console_*-if00\"|" \
     tools/bench/board-rows.sh > "$TMP/cdc/board-rows.sh"
 grep -qF "$TMP/cdcdev/" "$TMP/cdc/board-rows.sh" || fail "the planted CDC console glob was not set"
-CDC_TITLE='   KickOS 0.5.1  -  microkernel RTOS'
+CDC_TITLE='                   KickOS 0.5.1'
 python3 -c 'import ctypes, os, pty, select, sys, termios, time
 libc = ctypes.CDLL(None, use_errno=True)
 m, s = pty.openpty()

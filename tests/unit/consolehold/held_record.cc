@@ -141,8 +141,8 @@ TEST(ConsoleHeld, AReclaimWritesWhatTheDriverNeverTook)
         publish();
         record("t1", 0x100u);
         console_note_driver_death();
-        console_on_driver_death(kickos::IrqLock());
-        EXPECT_EQ(consoleseam::wire(), text("t1", 0x100u));
+        { kickos::IrqLock lock; console_on_driver_death(); }
+        EXPECT_EQ(consoleseam::wire(), text("t1", 0x100u) + kReclaimed);
         EXPECT_EQ(held(), "");
     });
 }
@@ -191,7 +191,8 @@ TEST(ConsoleHeld, AReclaimInsideARecordWritesEachLineOnce)
         kickos::kprintf_fault(kPc, 0x100u);
         kickos::kprintf_fault(kAddr, 0x101u);
         kickos::krecord_end();
-        EXPECT_EQ(consoleseam::wire(), text("t1", 0x100u));
+        EXPECT_EQ(consoleseam::wire(), "\n=== THREAD FAULT === thread 't1' killed\n" + kReclaimed
+                                           + "  PC=0x100\n  ADDR=0x101\n");
         EXPECT_EQ(consoleseam::g_reclaims, 1u) << "the record's end reclaimed the device again";
         EXPECT_EQ(held(), "");
     });
@@ -243,18 +244,18 @@ TEST(ConsoleHeld, ATaskEndingDuringTheHandOffIsReclaimedWhenItCompletes)
         }
         task_ends();
         EXPECT_EQ(consoleseam::g_reclaims, 0u) << "the reclaim ran under a hand-off still draining";
-        uint32_t const wakes = consoleseam::g_dark_wakes;
+        uint32_t const wakes = consoleseam::g_wakes;
         console_owner_set_user();
         EXPECT_EQ(consoleseam::g_reclaims, 1u) << "the death noted in the hand-off was erased";
-        EXPECT_GT(consoleseam::g_dark_wakes, wakes);
-        EXPECT_EQ(console_dark(), 0);
+        EXPECT_GT(consoleseam::g_wakes, wakes) << "the writers parked before the hand-off slept on";
         kickos::kputs("after\n");
-        EXPECT_EQ(consoleseam::wire(), "after\n") << "the console stayed with a dead driver";
+        EXPECT_EQ(consoleseam::wire(), kReclaimed + "after\n")
+            << "the console stayed with a dead driver";
     });
 }
 
-// The same, with a thread of that task still holding the device: the console is dark from the
-// hand-off's end until that thread's exit, which reclaims.
+// The same, with a thread of that task still holding the device: the reclaim waits for that
+// thread's exit, and a user write in between is refused at once, nothing written.
 TEST(ConsoleHeld, ATaskEndingDuringTheHandOffWaitsForItsWindow)
 {
     run_isolated([]() {
@@ -266,15 +267,17 @@ TEST(ConsoleHeld, ATaskEndingDuringTheHandOffWaitsForItsWindow)
         }
         task_ends();
         console_owner_set_user();
-        EXPECT_NE(console_dark(), 0) << "a writer finds a console it can neither use nor wait for";
         EXPECT_EQ(consoleseam::g_reclaims, 0u);
+        consoleseam::g_current = thread(1);
+        EXPECT_EQ(kickos::kconsole_write_user("line\n", 5, true), -KOS_EBUSY);
         consoleseam::g_window_free = true;
         {
             kickos::IrqLock lock;
-            console_on_driver_death(lock);
+            console_on_driver_death();
         }
         EXPECT_EQ(consoleseam::g_reclaims, 1u);
-        EXPECT_EQ(console_dark(), 0);
+        EXPECT_EQ(kickos::kconsole_write_user("line\n", 5, true), -KOS_EBUSY);
+        EXPECT_EQ(consoleseam::wire(), kReclaimed) << "a user line reached the reclaimed console";
     });
 }
 
@@ -308,7 +311,7 @@ TEST(ConsoleHeld, AReclaimAfterAPartTakenStartsOnALine)
             console_held_take(5u);
         }
         task_ends();
-        EXPECT_EQ(consoleseam::wire(), "  PC=0x100\n  ADDR=0x101\n");
+        EXPECT_EQ(consoleseam::wire(), "  PC=0x100\n  ADDR=0x101\n" + kReclaimed);
         EXPECT_EQ(held(), "");
     });
 }

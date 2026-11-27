@@ -52,6 +52,22 @@ namespace
     }
 
     constexpr bool LED_LIT = KICKOS_BOARD_LED_ACTIVE_LOW == 0;
+
+    namespace mmap = kickos::rp2040::mmap;
+
+    constexpr uint32_t uart_reset(uintptr_t base)
+    {
+        if (base == mmap::UART0_BASE)
+        {
+            return reg::resets::UART0;
+        }
+        return reg::resets::UART1;
+    }
+
+    static_assert(KICKOS_BOARD_CONSOLE_BASE == mmap::UART0_BASE
+                      or KICKOS_BOARD_CONSOLE_BASE == mmap::UART1_BASE,
+                  "the board's console is not a UART of this chip");
+    constexpr uint32_t CONSOLE_RESET = uart_reset(KICKOS_BOARD_CONSOLE_BASE);
 }
 
 extern "C"
@@ -61,11 +77,11 @@ void arch_init(void)
 {
     // Reset-release ordering is load-bearing: a RESET_DONE only asserts once the peripheral has a
     // running clock. IO_BANK0/PADS_BANK0/TIMER run off clk_sys/clk_ref, live off the ROSC at
-    // reset; UART0 runs off clk_peri, OFF until clocks_init, so releasing it BEFORE that hangs the
-    // boot.
+    // reset; a UART runs off clk_peri, OFF until clocks_init, so releasing it BEFORE that hangs
+    // the boot.
     unreset(reg::resets::IO_BANK0 | reg::resets::PADS_BANK0 | reg::resets::TIMER);
     kickos::rp2xxx::clocks_init();
-    unreset(reg::resets::UART0);
+    unreset(CONSOLE_RESET);
     kickos::rp2xxx::console_uart_init();
     if (kickos_usb_device_console != 0)
     {
@@ -76,7 +92,7 @@ void arch_init(void)
 
 console_tx_backend const* arch_console_tx_backend(int* irq_line)
 {
-    *irq_line = irq::UART0_IRQ;
+    *irq_line = KICKOS_BOARD_CONSOLE_LINE_IRQ;
     return &kickos::rp2xxx::console_backend;
 }
 

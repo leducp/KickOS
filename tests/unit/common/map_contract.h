@@ -361,6 +361,7 @@ TEST_F(MAP_CONTRACT_FIXTURE, ASpaceCycleGivesBackEveryFrameItTookAndNoneTwice)
 {
     uint32_t const allocated = kickos::testfix::frames_allocated();
     uint32_t const freed = kickos::testfix::frames_freed();
+    uint32_t const leaves = kickos::testfix::leaves_freed();
 
     for (int i = 0; i < 4; i++)
     {
@@ -377,8 +378,31 @@ TEST_F(MAP_CONTRACT_FIXTURE, ASpaceCycleGivesBackEveryFrameItTookAndNoneTwice)
     }
 
     EXPECT_GT(kickos::testfix::frames_allocated(), allocated);
-    EXPECT_EQ(kickos::testfix::frames_freed() - freed,
+    EXPECT_EQ(kickos::testfix::frames_freed() - freed + kickos::testfix::leaves_freed() - leaves,
               kickos::testfix::frames_allocated() - allocated);
+}
+
+// The kernel counts tables by kickos_frame_alloc and kickos_frame_free (KOS_MEM_TABLES_HELD), so
+// a space's end gives every table back through the one and every frame a leaf names through
+// kickos_leaf_free, never the other way round.
+TEST_F(MAP_CONTRACT_FIXTURE, ASpaceEndGivesItsTablesAndItsLeavesBackApart)
+{
+    struct arch_aspace* const ending = arch_aspace_create();
+    ASSERT_NE(ending, nullptr);
+    size_t const g = arch_aspace_granule();
+    size_t const pages = 2 * (g / sizeof(uint64_t)) + 3;
+    FrameCensus const census;
+    ASSERT_EQ(arch_aspace_map(ending, va_a, PA_UNPOOLED, pages, RIGHTS_RW, ARCH_MAP_NORMAL),
+              ARCH_ASPACE_OK);
+    uint32_t const tables = census.taken() + static_cast<uint32_t>(arch_aspace_create_pages());
+    ASSERT_GT(census.taken(), 0u);
+    uint32_t const leaves = kickos::testfix::leaves_freed();
+    uint32_t const freed = kickos::testfix::frames_freed();
+
+    arch_aspace_destroy(ending);
+
+    EXPECT_EQ(kickos::testfix::frames_freed() - freed, tables) << "a leaf freed as a table";
+    EXPECT_EQ(kickos::testfix::leaves_freed() - leaves, pages) << "a table freed as a leaf";
 }
 
 TEST_F(MAP_CONTRACT_FIXTURE, AMapOutOfFramesBeforeItsFirstLeafGivesBackItsTables)
@@ -652,9 +676,10 @@ TEST_F(MAP_CONTRACT_FIXTURE, ASpacePastTheResidencyRowsIsRefusedAndKeepsNoFrame)
 }
 
 // What a map will build is what it builds, and what a space counts as its own: a new space takes
-// arch_aspace_create_pages frames, a map exactly the tables arch_aspace_map_tables predicted, a
-// range spanning several leaf tables included, and a mapped range predicts none. An unmap, and a
-// map that runs out of frames and unwinds, take off the count every table they give back.
+// arch_aspace_create_pages frames, a map exactly the tables arch_aspace_map_tables predicted, which
+// arch_aspace_range_tables bounds and arch_aspace_run_tables bounds in turn, a range spanning
+// several leaf tables included, and a mapped range predicts none. An unmap, and a map that runs
+// out of frames and unwinds, take off the count every table they give back.
 TEST_F(MAP_CONTRACT_FIXTURE, AMapBuildsTheTablesItPredictsAndTheSpaceCountsThem)
 {
     FrameCensus const created;
@@ -674,6 +699,9 @@ TEST_F(MAP_CONTRACT_FIXTURE, AMapBuildsTheTablesItPredictsAndTheSpaceCountsThem)
     for (Map const& m : maps)
     {
         size_t const want = arch_aspace_map_tables(fresh, m.va, m.pages);
+        EXPECT_GE(arch_aspace_range_tables(m.va, m.pages), want) << "at " << m.va;
+        EXPECT_GE(arch_aspace_run_tables(m.pages), arch_aspace_range_tables(m.va, m.pages))
+            << "at " << m.va;
         FrameCensus const census;
         ASSERT_EQ(arch_aspace_map(fresh, m.va, PA_DEVICE, m.pages, ARCH_MAP_R, ARCH_MAP_DEVICE),
                   ARCH_ASPACE_OK);
@@ -688,6 +716,8 @@ TEST_F(MAP_CONTRACT_FIXTURE, AMapBuildsTheTablesItPredictsAndTheSpaceCountsThem)
         uintptr_t const far = va_b + 4 * table_span - g;
         size_t const want = arch_aspace_map_tables(fresh, far, 2);
         ASSERT_GT(want, 0u);
+        EXPECT_GE(arch_aspace_range_tables(far, 2), want);
+        EXPECT_GE(arch_aspace_run_tables(2), arch_aspace_range_tables(far, 2));
         kickos::testfix::set_frame_budget(static_cast<uint32_t>(want - 1u));
         EXPECT_EQ(arch_aspace_map(fresh, far, PA_DEVICE, 2, ARCH_MAP_R, ARCH_MAP_DEVICE),
                   ARCH_ASPACE_ENOMEM);

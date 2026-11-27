@@ -27,8 +27,15 @@ namespace kickos::imxrt1062::reg::aipstz
     // field table: OPACR resets to 0x4444_4444, so the bit the reset sets is nibble bit 2.
     constexpr uint32_t SP_IN_NIBBLE = 1u << 2;
 
-    // USB1 (OTG1) is AIPS-3 slot 24: (0x402E_0000 - 0x4020_0000 - 0x80000) / 0x4000.
-    constexpr uint32_t USB1_SLOT = 24u;
+    // A bridge's slots fill the upper half of its 1 MiB region, 16 KiB each: USB1 (OTG1) is AIPS-3
+    // slot (0x402E_0000 - 0x4020_0000 - 0x80000) / 0x4000 = 24.
+    constexpr uintptr_t SLOT_SIZE = 0x4000u;
+    constexpr uintptr_t SLOTS_FROM = 0x80000u;
+
+    constexpr uint32_t slot_of(uintptr_t base)
+    {
+        return static_cast<uint32_t>(((base & 0xFFFFFu) - SLOTS_FROM) / SLOT_SIZE);
+    }
 
     // The bridge a base sits behind, from the AIPS region it falls in. Returns 0 for an
     // address outside all four, which the caller must refuse: a wrong bridge would clear a
@@ -68,6 +75,7 @@ namespace kickos::imxrt1062::reg::aipstz
 
     static_assert(bridge_of(mmap::USB1_BASE) == mmap::AIPSTZ3_BASE,
                   "USB1 must resolve to the AIPS-3 bridge");
+    static_assert(slot_of(mmap::USB1_BASE) == 24u, "USB1 is AIPS-3 slot 24");
     static_assert(sp_bit_of(0) == 0x40000000u, "slot 8n is the top nibble");
     static_assert(sp_bit_of(7) == 0x00000004u, "slot 8n+7 is the bottom nibble");
 }

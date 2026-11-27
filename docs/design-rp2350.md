@@ -30,7 +30,7 @@ BOOTSEL-recoverable, so a wrong clock or boot config cannot brick it.
    (`arch/arm/chip/rp2350/chip_rp2350.cc`).
 
 3. **PIN the vector table's VMA, do not merely ASSERT it.** Same lever as `rp2040.ld`: `.text` at
-   `ORIGIN(FLASH)` with `KEEP(*(.isr_vector))` first, so the vector table IS the image base the
+   `ORIGIN(FLASH)` with `KICKOS_KERNEL_KEEP(.isr_vector)` first, so the vector table IS the image base the
    bootrom enters through, and the IMAGE_DEF block sits immediately after it. `Reset_Handler` also
    writes `SCB->VTOR` explicitly, which is what makes a warm reboot or a debugger entry that
    skipped the bootrom safe. The RP2040 hazard -- a CRC-checked boot2 displacing the vector table
@@ -148,13 +148,13 @@ which is why the read faults with `BFARVALID` rather than returning rubbish.
 
 **THE SHARED REGION IS THE WAY TO READ A PEER, AND THE DEBUG WINDOW IS NOT.** Three sessions were
 spent trying to read a running peer from outside and none produced a believable value; a peer
-writing four words into the region both nodes already share worked on the first attempt.
-`CONFIG_KICKOS_AMP_DIAG_REPORT` is that instrument, off by default. Three of its five cells carry
-values the primary ALREADY KNOWS, and that is the whole design: with a peer that provably cannot
-write -- a three-instruction assembly park -- it reads `cell0=0x0`, and with a live peer it reads
-back the node index, the build's own tag and the core clock this node derives its timing from. A
-plausible reading is the trap here, not an implausible one, and an instrument with no known-value
-cells cannot tell you which it gave you.
+writing four words into the region both nodes already share worked on the first attempt. That
+bring-up report has since left the kernel, and its design is the lesson: three of its five cells
+carried values the primary ALREADY KNEW. With a peer that provably cannot write (a
+three-instruction assembly park) it read `cell0=0x0`, and with a live peer it read back the node
+index, the build's own tag and the core clock the peer derives its timing from. A plausible
+reading is the trap here, not an implausible one, and an instrument with no known-value cells
+cannot tell you which it gave you.
 
 
 **THE TWO 4 KiB NON-STRIPED SRAM BANKS ARE A CONTENTION WIN AND NOT SPARE MEMORY.** SRAM is 520

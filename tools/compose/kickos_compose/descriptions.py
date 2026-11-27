@@ -72,7 +72,7 @@ WORD = re.compile(r"[A-Za-z0-9_.,=+:/-]+")
 BOARD_MEMORY_FIELDS = ("size", "base", "cluster", "link", "ref", "symbol")
 # A pin function stated as a mapping: the value its device's input-select register takes to pick
 # this pin, where the device has one.
-PIN_FUNCTION_FIELDS = ("function", "input_select", "ref")
+PIN_FUNCTION_FIELDS = ("function", "input_select", "input_bits", "ref")
 # A level LED lights at its `active` level; an addressable one is sent its state as data.
 LED_KINDS = ("level", "addressable")
 
@@ -195,8 +195,9 @@ class Board:
         self.console = console
         # [(role, pin, selector)] of the console's pins, in the board file's order.
         self.console_pins = []
-        # (pin, active, kind) of the LED the kernel owns, or None; active is None when addressable.
-        self.kernel_led = None
+        # (pin, active, kind) of the LED the kernel blinks at its terminal panic, or None; active is
+        # None when addressable. Its pin stays a GPIO a task may hold.
+        self.diag_led = None
         # [pin] the board reserves, in the board file's order.
         self.reserved = []
         # [Memory] soldered on the board, in the board file's order.
@@ -266,8 +267,11 @@ class Chip:
         self.refs = {}
         self.namespace = None
         self.line_enum = None
-        # The LED kind the chip's code drives as the kernel's.
-        self.led_kind = "level"
+        # The LED kinds the chip's code drives as the diagnostic LED.
+        self.led_kinds = ("level",)
+        # The device the chip's code drives an addressable diagnostic LED through, and its node.
+        self.addressable_led = None
+        self.addressable_led_node = None
         # [Memory], in the chip file's order.
         self.memory = []
         # [Window] of every device and memory entry, and {(view, region): node} of each link region.
@@ -365,6 +369,9 @@ def check_chip(path, text, report):
             device = check_device(f, chip, key, value, windows)
             if device is not None:
                 chip.devices[device_name] = device
+    if chip.addressable_led is not None and devices is not None and chip.addressable_led not in devices:
+        f.refuse(chip.addressable_led_node, "chip.device-unknown",
+                 "`c` addressable_led names `%s`, which is no device of this chip" % chip.addressable_led)
 
     if "partition_gate" in top:
         chip.partition_gate = check_partition_gate(f, top["partition_gate"], chip, devices)
@@ -703,7 +710,7 @@ def check_named(f, values, what):
 
 
 def check_c(f, node, chip):
-    values = f.fields(node, "`c`", ("namespace", "line_enum", "led"), ())
+    values = f.fields(node, "`c`", ("namespace", "line_enum", "led", "addressable_led"), ())
     if values is None:
         return
     if "namespace" in values:
@@ -711,7 +718,19 @@ def check_c(f, node, chip):
     if "line_enum" in values:
         chip.line_enum = f.name(values["line_enum"], "`c` line_enum", LINE_ENUM)
     if "led" in values:
-        chip.led_kind = f.enum(values["led"], "`c` led", LED_KINDS)
+        kinds = []
+        for item in f.sequence(values["led"], "`c` led") or ():
+            kind = f.enum(item, "`c` led", LED_KINDS)
+            if kind is not None:
+                kinds.append(kind)
+        chip.led_kinds = tuple(kinds)
+    if "addressable_led" in values:
+        chip.addressable_led_node = values["addressable_led"]
+        chip.addressable_led = f.name(values["addressable_led"], "`c` addressable_led", IDENTIFIER)
+    elif "addressable" in chip.led_kinds:
+        f.refuse(node, "form.missing",
+                 "`c` led lists `addressable`, so `c` needs addressable_led, the device the chip's code drives "
+                 "it through")
 
 
 def check_interrupts(f, node, chip):
@@ -1426,8 +1445,17 @@ def check_pin_function(f, node, chip, pin_name, selector):
         f.refuse(node, "form.inapplicable", "%s is a port bit, which selects no input" % what)
         return None
     select = None
-    if "input_select" in values:
-        select = f.integer(values["input_select"], "%s input_select" % what, 32)
+    bits = 32
+    if "input_bits" in values:
+        bits = f.integer(values["input_bits"], "%s input_bits" % what, 6)
+        if "input_select" not in values:
+            f.refuse(values["input_bits"], "form.inapplicable",
+                     "%s states `input_bits` and no `input_select` it is the width of" % what)
+        elif bits is not None and not 1 <= bits <= 32:
+            f.refuse(values["input_bits"], "form.range", "%s input_bits is %d, not 1 to 32" % (what, bits))
+            bits = None
+    if "input_select" in values and bits is not None:
+        select = f.integer(values["input_select"], "%s input_select" % what, bits)
     chip.pin_details[(pin_name, selector)] = (select, check_ref(f, values))
     return values["function"]
 
@@ -1580,7 +1608,7 @@ def check_board(path, text, report, chips, boards):
     bus_lines = {}
     console_path = None
     console_pins = []
-    kernel_led = None
+    diag_led = None
 
     if "console" in top:
         console = f.fields(top["console"], "`console`", ("device", "pins", "semihosting"), ())
@@ -1617,7 +1645,7 @@ def check_board(path, text, report, chips, boards):
             for led_name, (key, value) in leds.items():
                 f.name(key, "led", IDENTIFIER)
                 what = "led `%s`" % led_name
-                values = f.fields(value, what, ("pin", "kind", "active", "owner"), ("pin",))
+                values = f.fields(value, what, ("pin", "kind", "active", "diagnostic"), ("pin",))
                 if values is None:
                     continue
                 pin = None
@@ -1634,19 +1662,19 @@ def check_board(path, text, report, chips, boards):
                     f.refuse(value, "form.missing", "%s needs `active`, the level that lights it" % what)
                 elif "active" in values:
                     active = f.enum(values["active"], "%s active level" % what, ("high", "low"))
-                owner = None
-                if "owner" in values:
-                    owner = f.enum(values["owner"], "%s owner" % what, ("kernel",))
-                if owner is not None and kernel_led is not None:
-                    f.refuse(values["owner"], "board.led-owner",
-                             "%s is the kernel's, and led `%s` on line %d already is: the kernel drives one LED"
-                             % (what, kernel_led[2], line_of(kernel_led[3])))
-                elif owner is not None:
-                    kernel_led = (pin, active, led_name, values["owner"], kind)
-                    if chip is not None and kind is not None and kind != chip.led_kind:
+                diagnostic = False
+                if "diagnostic" in values:
+                    diagnostic = f.boolean(values["diagnostic"], "%s diagnostic" % what) is True
+                if diagnostic and diag_led is not None:
+                    f.refuse(values["diagnostic"], "board.led-diagnostic",
+                             "%s is the diagnostic LED, and led `%s` on line %d already is: the kernel blinks one LED"
+                             % (what, diag_led[2], line_of(diag_led[3])))
+                elif diagnostic:
+                    diag_led = (pin, active, led_name, values["diagnostic"], kind)
+                    if chip is not None and kind is not None and kind not in chip.led_kinds:
                         f.refuse(values.get("kind", value), "board.led-kind",
-                                 "%s is the kernel's and `kind: %s`, and chip `%s` drives the kernel's LED "
-                                 "as `led: %s`" % (what, kind, chip.name, chip.led_kind))
+                                 "%s is the diagnostic LED and `kind: %s`, and chip `%s` drives the diagnostic "
+                                 "LED as %s" % (what, kind, chip.name, ", ".join(chip.led_kinds)))
 
     if "parts" in top:
         parts = f.mapping(top["parts"], "`parts`")
@@ -1721,10 +1749,10 @@ def check_board(path, text, report, chips, boards):
             seen[pin] = (node, what)
     board = Board(chip, console_path)
     board.console_pins = console_pins
-    if kernel_led is not None:
-        pin, active, led_name, node, kind = kernel_led
+    if diag_led is not None:
+        pin, active, led_name, node, kind = diag_led
         if pin is not None and kind is not None and (active is not None or kind == "addressable"):
-            board.kernel_led = (pin, active, kind)
+            board.diag_led = (pin, active, kind)
     board.buses = wired_buses
     if "memory" in top:
         check_board_memory(f, top["memory"], chip, board)

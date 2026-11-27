@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// kernel/init/console.cc on a build that also carries RTT: a user line the kernel console is
-// offered again, across a dark-window wait or a full ring, reaches RTT exactly once, and only
-// once the chip took it.
+// kernel/init/console.cc on a build that also carries RTT: a user line reaches RTT only once the
+// chip took it, so a line a full ring refuses is not there yet, and a line a published or
+// reclaimed console refuses never is.
 
 #include "held_fixture.h"
 
@@ -18,15 +18,6 @@ namespace
     constexpr uint32_t kRing = 256u;
 
     std::string g_rtt;
-
-    // The writer's wait ends with the reclaim, as the last holder's exit lands it.
-    int reclaim_in_the_wait(void)
-    {
-        consoleseam::g_window_free = true;
-        kickos::IrqLock lock;
-        console_on_driver_death(lock);
-        return 0;
-    }
 }
 
 extern "C" void kickos_rtt_write(char const* buf, size_t n)
@@ -34,26 +25,32 @@ extern "C" void kickos_rtt_write(char const* buf, size_t n)
     g_rtt.append(buf, n);
 }
 
-// A user line offered in the dark window waits, then goes out once the reclaim lands: once on
-// the wire and once on RTT, not once per offer.
-TEST(ConsoleHeldRtt, ADarkWindowWriterReachesRttOnce)
+// A user line once a console is published, its driver alive, dead or reclaimed, reaches neither
+// the wire nor RTT.
+TEST(ConsoleHeldRtt, APublishedConsoleKeepsUserLinesOffRtt)
 {
     run_isolated([]() {
         consoleseam::reset(kRing);
         publish();
+        consoleseam::g_current = thread(1);
+        g_rtt.clear();
+        EXPECT_EQ(kickos::kconsole_write_user("live\n", 5, true), -KOS_EBUSY);
         consoleseam::g_window_free = false;
         {
             kickos::IrqLock lock;
             console_note_driver_death();
-            console_on_driver_death(lock);
+            console_on_driver_death();
         }
-        ASSERT_NE(console_dark(), 0);
-        consoleseam::g_current = thread(1);
-        consoleseam::g_dark_wait = reclaim_in_the_wait;
-        g_rtt.clear();
-        EXPECT_EQ(kickos::kconsole_write_user("line\n", 5, true), 5);
-        EXPECT_EQ(consoleseam::wire(), "line\n");
-        EXPECT_EQ(g_rtt, "line\n") << "each offer put the line on RTT";
+        EXPECT_EQ(kickos::kconsole_write_user("dead\n", 5, true), -KOS_EBUSY);
+        consoleseam::g_window_free = true;
+        {
+            kickos::IrqLock lock;
+            console_on_driver_death();
+        }
+        ASSERT_EQ(consoleseam::g_reclaims, 1u);
+        EXPECT_EQ(kickos::kconsole_write_user("back\n", 5, true), -KOS_EBUSY);
+        EXPECT_EQ(g_rtt, kReclaimed) << "a user line reached RTT past the publish";
+        EXPECT_EQ(consoleseam::wire(), kReclaimed);
     });
 }
 

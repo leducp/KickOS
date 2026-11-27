@@ -117,31 +117,36 @@ Measured with this tree's own toolchains, for `fetch_add` on a 32-bit atomic:
 | Xtensa LX6 | inline |
 | host (x86-64) | inline |
 | armv6m (Cortex-M0+) | a call to `__atomic_fetch_add_4` |
-| RXv3 | a call into the same library |
+| RXv3 | a call to `__atomic_fetch_add_4` |
 
-The two libcall rows are not a slow path, they are a **link** failure waiting to
-happen. A freestanding link carries no libatomic. So one source file compiles
-cleanly for every board in the fleet and then fails to *link* on two of them,
-with an unresolved symbol as the only clue. The compiler accepted it; the ISA it
-was aimed at simply has no instruction to do it; and the boards where this bites
-are the small ones, which are rarely the first thing anyone builds.
+RX does have an inline form. It masks interrupts around the load and the store, and the
+CPU ignores a write to its interrupt mask in user mode, so in user code that form is a plain
+read-modify-write that a timer interrupt can split. The toolchain therefore makes the call on
+RX too.
 
-It is worth knowing what that library call would do if it were available,
-because it explains why the missing library is a mercy. An implementation that
-cannot perform the operation in hardware performs it under a **lock table**:
-a small array of locks, chosen by hashing the object's address. That is correct
-for threads and it is not interrupt-safe. On a single core, an ISR whose atomic
-hashes to a bucket the interrupted thread is already holding can never acquire
-it, and the thread can never release it because the ISR will not return. The
-deadlock has no timeout and no diagnostic. So the answer to "can an atomic just
-fall back on a mutex" is: not on THAT mutex. What makes the lock table unusable
-is not that it is a lock, it is that the lock is chosen by hashing an address, so
-an ISR can collide with a bucket the thread it interrupted already holds. A lock
-the kernel picks deliberately -- the one already covering the field, or a
-dedicated cross-core one -- has no such collision, because the code that takes it
-knows what else takes it. Generic fallback is the bug; a chosen lock is a design.
+Each libcall row names a function that something must define, and a freestanding link carries
+no libatomic. The usual library would perform the operation under a **lock table**: a small
+array of locks, chosen by hashing the object's address. That is correct for threads and it is
+not interrupt-safe. On a single core, an ISR whose atomic hashes to a bucket the interrupted
+thread already holds can never acquire it, and the thread can never release it because the
+ISR will not return. The deadlock has no timeout and no diagnostic. So the answer to "can an
+atomic just fall back on a mutex" is: not on THAT mutex. The lock is not the problem. The
+problem is that the lock is chosen by hashing an address, so an ISR can collide with a bucket
+the thread it interrupted already holds. A lock the kernel picks deliberately, the one already
+covering the field or a dedicated cross-core one, has no such collision, because the code that
+takes it knows what else takes it. Generic fallback is the bug; a chosen lock is a design.
 
-That is also why the read-modify-write stays out of the surface, and the reason is
+So user code on those two cores gets its own definitions instead. The KickOS user library
+defines the 1-, 2- and 4-byte calls, and each one is a loop over the user compare-and-swap of
+a later section: read the word, compute the new value, and try the compare-and-swap again
+until no other thread has stored in between. It takes no lock, so a thread switched out in
+the middle of the loop holds nothing that another thread waits for. A 1- or 2-byte object is
+updated through the aligned word that holds it. The loop is atomic against the threads of one
+kernel instance and no further. Kernel code makes none of these calls. The exact contract is
+`user-atomics-ride-the-user-cas` in
+[`../reference/invariants.md`](../reference/invariants.md).
+
+The tree's own atomic type still exposes no read-modify-write, and the reason is
 worth stating precisely, because the obvious one is wrong. It is not that an RMW
 cannot be built: bracket it with the lock and it exists on every backend. It is
 that the cheapest CORRECT mechanism is different on each one -- an inline
@@ -241,8 +246,8 @@ Width changes the answer, and not gradually. A relaxed 64-bit atomic load is a
 call to `__atomic_load_8` on **every** backend here, the host aside, including
 Cortex-M4 where the 32-bit form is fully inline. There is no 64-bit single-copy
 access to reach for, so the whole argument from the second section collapses: the
-hardware never gave you atomicity in the first place, and the libcall brings back
-both the missing library and the lock table.
+hardware never gave you atomicity in the first place. The user library defines no 8-byte
+call, so nothing in KickOS answers it with a lock table either.
 
 A cross-context 64-bit field is therefore a *different design problem* from a
 32-bit one, not the same problem one size up. The shape that answers it is a
@@ -349,9 +354,10 @@ where it applies: relaxed load and store are the same instruction `volatile`
 compiled to.
 
 The cost lives entirely in the operations the hardware does *not* have. A
-read-modify-write is inline on part of this fleet and a library call on the rest,
-and the library the call needs is absent from a freestanding link, so the failure
-is a link error on the smallest boards. The standard trait that looks like the
+read-modify-write is inline on part of this fleet and a library call on the rest.
+A generic library would answer that call under a lock table an ISR can deadlock on, so
+the user library answers it with a loop over its own compare-and-swap, and kernel code
+makes no such call. The standard trait that looks like the
 right guard reports the whole operation set and so refuses those same boards for
 an operation they never use. A 64-bit field is a libcall everywhere and is a
 different problem. And a field with two writers was always a lock problem: the

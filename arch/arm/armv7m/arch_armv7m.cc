@@ -393,10 +393,16 @@ void arch_fault_redirect_to_exit(void* frame)
     if (frame == nullptr)
     {
 #if defined(__ARM_ARCH_8M_MAIN__)
-        // A Secure attribution refused it, or the Non-secure MPU, whose fault escalated here.
+        // The Non-secure MPU refused it, its fault escalated here, or a Secure attribution did.
+        // The SFSR is no witness of which: this entry's own stacking to a Non-secure stack in
+        // Secure memory sets AUVIOL beside a Non-secure fault too.
         uint32_t const sfsr = kickos::arm::reg32(ARMV8M_SFSR);
         uint32_t const cfsr_ns = kickos::arm::reg32(ARMV8M_CFSR_NS);
-        if (sfsr != 0u)
+        if (cfsr_ns != 0u)
+        {
+            kickos_fault_record_no_pc("CFSR_NS", cfsr_ns, 0, 0);
+        }
+        else
         {
             uintptr_t sfar = 0;
             int sfar_valid = 0;
@@ -406,10 +412,6 @@ void arch_fault_redirect_to_exit(void* frame)
                 sfar_valid = 1;
             }
             kickos_fault_record_no_pc("SFSR", sfsr, sfar, sfar_valid);
-        }
-        else
-        {
-            kickos_fault_record_no_pc("CFSR_NS", cfsr_ns, 0, 0);
         }
         kickos::arm::reg32(ARMV8M_CFSR_NS) = cfsr_ns;
 #endif

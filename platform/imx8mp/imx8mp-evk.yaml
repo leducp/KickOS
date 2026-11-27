@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# QEMU `imx8mp-evk`. The console is UART1, the one the machine backs (chip_imx8mp.cc).
-# Which UART carries the real EVK's debug header no source in the tree states, nor its pads.
+# QEMU `imx8mp-evk`. The console is UART1 on its own pads, the UART the machine backs. Which
+# UART carries the real EVK's debug header no source in the tree states.
 
 version: 1
 board: imx8mp-evk
@@ -13,6 +13,7 @@ emulator: { qemu: qemu-system-aarch64, machine: imx8mp-evk, options: [-m, 512M] 
 
 console:
   device: /dev/uart1
+  pins: { tx: UART1_TXD, rx: UART1_RXD }
 
 # The span of the board's DDR the A53 image is linked into.
 memory:

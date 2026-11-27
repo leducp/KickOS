@@ -55,26 +55,6 @@ namespace kickos
 
     namespace
     {
-#if KICKOS_HAVE_ASPACE
-        // aspace_cap_unmap, ending the mutex waits of `space` that named a word through it.
-        int frame_unmap_ending_waits(struct arch_aspace* space, VirtualRanges* ranges,
-                                     uintptr_t va, int run_obj, Held held)
-        {
-            VirtualRange const* const e = ranges->at_base(va);
-            size_t bytes = 0;
-            if (e != nullptr)
-            {
-                bytes = static_cast<size_t>(e->pages) * arch_aspace_granule();
-            }
-            int const rc = aspace_cap_unmap(space, ranges, va, run_obj);
-            if (rc == 0)
-            {
-                word_reach_lost(space, va, bytes, held);
-            }
-            return rc;
-        }
-#endif
-
         // The ring refuses an insert it cannot take WHOLE and a CRLF console spends two bytes
         // on a newline, so a chunk of N can need 2N and the smallest configured ring holds
         // 2 * (KICKOS_DIAG_LINE_MAX - 1). Anything wider than that is refused on a board at the
@@ -85,8 +65,8 @@ namespace kickos
                       "refused whatever the ring holds");
 
         // noinline keeps the chunk buffer off syscall_dispatch's frame. The write(2) shape:
-        // the bytes that went out, or with none, -KOS_EBUSY where the caller's stdout is served
-        // again, -KOS_EFAULT where the buffer went away and -KOS_ECANCELED where the writer was
+        // the bytes that went out, or with none, -KOS_EBUSY once the kernel console is not the
+        // users', -KOS_EFAULT where the buffer went away and -KOS_ECANCELED where the writer was
         // cancelled waiting. With KOS_KCONSOLE_NOWAIT it answers -KOS_EAGAIN where it would wait.
         __attribute__((noinline)) int32_t console_write_user(uintptr_t buf, size_t len, bool wait)
         {
@@ -376,6 +356,12 @@ namespace
         return again;
     }
 
+#endif
+}
+
+namespace kickos
+{
+#if KICKOS_PRESYNC
     __attribute__((noinline)) void presync_yield()
     {
         Thread* const c = sched::current();
@@ -387,6 +373,298 @@ namespace
         {
             arch_irq_window();
         }
+    }
+#endif
+}
+
+namespace
+{
+
+    // KOS_SYS_MEM_SELF_GRANT's checks, which every pass asks again. Under IrqLock.
+    int self_grant_args(Thread* c, uintptr_t base, size_t size, uintptr_t flags, uint32_t* attr)
+    {
+        // AUTHORITY is thread-local by contract, but the reach is the backend's: a
+        // translating one maps into the task's space, so no caller may infer sibling denial.
+        if (not cap_check_authority(c, AUTH_MEMORY))
+        {
+            return -KOS_EPERM;
+        }
+        if (size == 0 or (base + size) < base)
+        {
+            return -KOS_EINVAL;
+        }
+        *attr = ARCH_MPU_R | ARCH_MPU_W;
+        if (not mem_flags_to_attr(flags, attr))
+        {
+            return -KOS_EINVAL;
+        }
+        // BEFORE the already-reachable short-circuit: a chip that cannot honour the
+        // memory type would otherwise answer 0 to a request it silently drops.
+        if (not grant_nocache_admissible(*attr))
+        {
+            return -KOS_ENOTSUP;
+        }
+        return 0;
+    }
+
+#if KICKOS_HAVE_ASPACE
+    // What a locked pass answers where its edit goes on past it.
+    constexpr int PASS_MORE = 1;
+
+    // One locked pass of KOS_SYS_MEM_SELF_GRANT. noinline: its frame is not on the interrupt
+    // window's.
+    __attribute__((noinline)) int self_grant_pass(uintptr_t base, size_t size, uintptr_t flags)
+    {
+        IrqLock lock;
+        Thread* const c = sched::current();
+        uint32_t attr = 0;
+        int const arc = self_grant_args(c, base, size, flags, &attr);
+        if (arc != 0)
+        {
+            return arc;
+        }
+        // The range must be one this task RESERVED, which refuses an address another task
+        // reserved; the arena and natural-alignment arms of a region backend do not apply to
+        // frame-pool frames.
+        struct arch_aspace* const space = domain_space(thread_domain(c));
+        VirtualRanges* const ranges = domain_ranges_mut(thread_domain(c));
+        enum arch_map_memtype const type = map_memtype_of(attr);
+        // A retype in place releases nothing, but may take the write a waiter parked by.
+        bool takes_write = false;
+        if (ranges != nullptr)
+        {
+            VirtualRange const* const before = ranges->find(base, size);
+            takes_write = before != nullptr
+                          and aspace_remap_takes_write(*before, ARCH_MAP_R | ARCH_MAP_W,
+                                                       static_cast<uint8_t>(type));
+        }
+        MapPass pass;
+        int const grc = aspace_self_grant(domain_payer(thread_domain(c)), space, ranges, base,
+                                          size, ARCH_MAP_R | ARCH_MAP_W, type, &pass);
+        if (grc != 0)
+        {
+            return grc;
+        }
+        if (pass.done)
+        {
+            presync_commit();
+        }
+        if (takes_write and pass.bytes != 0)
+        {
+            word_reach_lost(space, pass.base, pass.bytes, lock);
+        }
+        if (pass.done)
+        {
+            return 0;
+        }
+        return PASS_MORE;
+    }
+
+    // A window between passes. noinline: the window's frame stays off syscall_body's.
+    __attribute__((noinline)) int self_grant_call(uintptr_t base, size_t size, uintptr_t flags)
+    {
+        while (true)
+        {
+            int const rc = self_grant_pass(base, size, flags);
+            if (rc != PASS_MORE)
+            {
+                return rc;
+            }
+            presync_yield();
+        }
+    }
+
+    // The frame run and the space KOS_SYS_FRAME_MAP and KOS_SYS_FRAME_UNMAP name, which every
+    // pass resolves again. Under IrqLock.
+    int frame_call_caps(Thread* c, uintptr_t fcap, uintptr_t acap, FrameRun** run, int* run_obj,
+                        Domain** target)
+    {
+        // The authority word, not a rights bit: the rights field is full.
+        if (not cap_check_authority(c, AUTH_MEMORY))
+        {
+            return -KOS_EPERM;
+        }
+        int ferr = 0;
+        *run = static_cast<FrameRun*>(
+            cap_resolve_e(c, static_cast<uint32_t>(fcap), CapType::CAP_FRAME, 0, &ferr));
+        if (*run == nullptr)
+        {
+            return -ferr;
+        }
+        CapEntry const* const fe = cap_lookup(c, static_cast<uint32_t>(fcap));
+        if (fe == nullptr)
+        {
+            return -KOS_EBADF;
+        }
+        *run_obj = fe->obj;
+        int aerr = 0;
+        *target = static_cast<Domain*>(
+            cap_resolve_e(c, static_cast<uint32_t>(acap), CapType::CAP_ASPACE, 0, &aerr));
+        if (*target == nullptr)
+        {
+            return -aerr;
+        }
+        if (domain_space(*target) == nullptr or domain_ranges_mut(*target) == nullptr)
+        {
+            return -KOS_EINVAL;
+        }
+        return 0;
+    }
+
+    // One locked pass of KOS_SYS_FRAME_UNMAP, which ends the mutex waits that named a word
+    // through the pages it unmapped. noinline as self_grant_pass.
+    __attribute__((noinline)) int frame_unmap_pass(uintptr_t fcap, uintptr_t acap, uintptr_t va)
+    {
+        IrqLock lock;
+        FrameRun* run = nullptr;
+        int run_obj = 0;
+        Domain* target = nullptr;
+        int const crc = frame_call_caps(sched::current(), fcap, acap, &run, &run_obj, &target);
+        if (crc != 0)
+        {
+            return crc;
+        }
+        struct arch_aspace* const space = domain_space(target);
+        MapPass pass;
+        int const rc = aspace_cap_unmap(space, domain_ranges_mut(target), va, run_obj, &pass);
+        if (rc != 0)
+        {
+            return rc;
+        }
+        word_reach_lost(space, pass.base, pass.bytes, lock);
+        if (pass.done)
+        {
+            return 0;
+        }
+        return PASS_MORE;
+    }
+
+    // One locked pass of KOS_SYS_FRAME_MAP at *va. noinline as self_grant_pass.
+    __attribute__((noinline)) int frame_map_pass(uintptr_t fcap, uintptr_t acap, uintptr_t flags,
+                                                 uintptr_t* va, bool resuming)
+    {
+        IrqLock lock;
+        FrameRun* run = nullptr;
+        int run_obj = 0;
+        Domain* target = nullptr;
+        int const crc = frame_call_caps(sched::current(), fcap, acap, &run, &run_obj, &target);
+        if (crc != 0)
+        {
+            return crc;
+        }
+        uint32_t attr = 0u;
+        if (not mem_flags_to_attr(static_cast<uint32_t>(flags), &attr))
+        {
+            return -KOS_EINVAL;
+        }
+        MapPass pass;
+        uint16_t const holder =
+            static_cast<uint16_t>(kernel().threads.index_of(sched::current()) + 1);
+        int const mrc = aspace_cap_map(domain_payer(target), domain_space(target),
+                                       domain_ranges_mut(target), va, run_obj, run->base,
+                                       run->pages, ARCH_MAP_R | ARCH_MAP_W,
+                                       map_memtype_of(attr), &pass, holder, resuming);
+        if (mrc != 0)
+        {
+            return mrc;
+        }
+        PresyncRecord* const r = presync_record();
+        // Still held at the end, so the death unwind finds it until its address is delivered.
+        r->map_into = target;
+        r->map_at = *va;
+        if (pass.done)
+        {
+            presync_commit();
+            return 0;
+        }
+        return PASS_MORE;
+    }
+
+    __attribute__((noinline)) bool frame_map_unwind_step()
+    {
+        IrqLock lock;
+        return presync_map_unwind_pass(lock);
+    }
+
+    __attribute__((noinline)) void frame_map_retract_step()
+    {
+        IrqLock lock;
+        (void)presync_map_retract();
+    }
+
+    // A window between passes, as self_grant_call.
+    __attribute__((noinline)) int frame_unmap_call(uintptr_t fcap, uintptr_t acap, uintptr_t va)
+    {
+        while (true)
+        {
+            int const rc = frame_unmap_pass(fcap, acap, va);
+            if (rc != PASS_MORE)
+            {
+                return rc;
+            }
+            presync_yield();
+        }
+    }
+
+    __attribute__((noinline)) int frame_map_call(uintptr_t fcap, uintptr_t acap, uintptr_t out,
+                                                 uintptr_t flags)
+    {
+        Thread* const c = sched::current();
+        if (not cap_check_authority(c, AUTH_MEMORY))
+        {
+            return -KOS_EPERM;
+        }
+        int const orc = cap_out_check(out, sizeof(uintptr_t));
+        if (orc != 0)
+        {
+            return orc;
+        }
+        uintptr_t va = 0;
+        if (not kaccess_from_user(&va, user_space_of(c), out, sizeof(va)))
+        {
+            return -KOS_EFAULT;
+        }
+        // A round the dispatch sends again resumes the map this one left in flight.
+        bool resuming = presync_record()->map_into != nullptr;
+        int rc = PASS_MORE;
+        while (rc == PASS_MORE)
+        {
+            rc = frame_map_pass(fcap, acap, flags, &va, resuming);
+            if (rc == PASS_MORE)
+            {
+                resuming = true;
+                presync_yield();
+            }
+        }
+        if (rc == -KOS_ENOMEM and presync_record()->refused)
+        {
+            return rc;
+        }
+        if (rc != 0)
+        {
+            // Refused, or a capability closed between two passes: the map leaves nothing.
+            while (frame_map_unwind_step())
+            {
+                presync_yield();
+            }
+            return rc;
+        }
+        if (kaccess_word_to_user(user_space_of(c), out, &va))
+        {
+            presync_record()->map_into = nullptr;
+            presync_record()->map_at = 0;
+        }
+        else
+        {
+            // A mapping whose address the caller never learnt could not be unmapped.
+            frame_map_retract_step();
+            rc = -KOS_EFAULT;
+        }
+        while (frame_map_unwind_step())
+        {
+            presync_yield();
+        }
+        return rc;
     }
 #endif
 }
@@ -670,8 +948,9 @@ uint64_t syscall_body(uintptr_t nr,
         }
         case KOS_SYS_TASK_STATE:
         {
-            // UNGATED by authority, gated by creatorship inside (task.cc). Any int is a status,
-            // so it rides an out-parameter, a null one asking for the bits alone.
+            // UNGATED by authority, gated by creatorship inside (task.cc) but for the caller's
+            // own task. Any int is a status, so it rides an out-parameter, a null one asking for
+            // the bits alone.
             if (a1 != 0)
             {
                 int const orc = cap_out_check(a1);
@@ -899,92 +1178,12 @@ uint64_t syscall_body(uintptr_t nr,
         }
 #if KICKOS_HAVE_ASPACE
         case KOS_SYS_FRAME_MAP:
+        {
+            return static_cast<uint64_t>(frame_map_call(a0, a1, a2, a3));
+        }
         case KOS_SYS_FRAME_UNMAP:
         {
-            Thread* const c = sched::current();
-            if (not cap_check_authority(c, AUTH_MEMORY))
-            {
-                // The authority word and not a rights bit: the rights field is full, and
-                // widening it spends the reply sequence packed beside it.
-                return static_cast<uint64_t>(-KOS_EPERM);
-            }
-            uintptr_t va = a2;
-            if (nr == KOS_SYS_FRAME_MAP)
-            {
-                int const orc = cap_out_check(a2, sizeof(uintptr_t));
-                if (orc != 0)
-                {
-                    return static_cast<uint64_t>(orc);
-                }
-                if (not kaccess_from_user(&va, user_space_of(c), a2, sizeof(va)))
-                {
-                    return static_cast<uint64_t>(-KOS_EFAULT);
-                }
-            }
-            int mrc = 0;
-            {
-                // One lock spans resolve-to-use for BOTH capabilities and the edit they drive.
-                IrqLock lock;
-                int ferr = 0;
-                FrameRun* const run = static_cast<FrameRun*>(
-                    cap_resolve_e(c, static_cast<uint32_t>(a0), CapType::CAP_FRAME, 0, &ferr));
-                if (run == nullptr)
-                {
-                    return static_cast<uint64_t>(-ferr);
-                }
-                CapEntry const* const fe = cap_lookup(c, static_cast<uint32_t>(a0));
-                if (fe == nullptr)
-                {
-                    return static_cast<uint64_t>(-KOS_EBADF);
-                }
-                int const run_obj = fe->obj;
-                int aerr = 0;
-                Domain* const target = static_cast<Domain*>(
-                    cap_resolve_e(c, static_cast<uint32_t>(a1), CapType::CAP_ASPACE, 0, &aerr));
-                if (target == nullptr)
-                {
-                    return static_cast<uint64_t>(-aerr);
-                }
-                struct arch_aspace* const sp = domain_space(target);
-                VirtualRanges* const vr = domain_ranges_mut(target);
-                if (sp == nullptr or vr == nullptr)
-                {
-                    return static_cast<uint64_t>(-KOS_EINVAL);
-                }
-                if (nr == KOS_SYS_FRAME_UNMAP)
-                {
-                    return static_cast<uint64_t>(frame_unmap_ending_waits(sp, vr, a2, run_obj,
-                                                                          lock));
-                }
-                uint32_t attr = 0u;
-                if (not mem_flags_to_attr(static_cast<uint32_t>(a3), &attr))
-                {
-                    return static_cast<uint64_t>(-KOS_EINVAL);
-                }
-                mrc = aspace_cap_map(domain_payer(target), sp, vr, &va, run_obj, run->base,
-                                     run->pages, ARCH_MAP_R | ARCH_MAP_W, map_memtype_of(attr));
-                if (mrc == 0)
-                {
-                    presync_commit();
-                }
-            }
-            if (mrc == 0 and not kaccess_word_to_user(user_space_of(c), a2, &va))
-            {
-                // A mapping whose address the caller never learnt could not be unmapped.
-                IrqLock lock;
-                int uerr = 0;
-                Domain* const target = static_cast<Domain*>(
-                    cap_resolve_e(c, static_cast<uint32_t>(a1), CapType::CAP_ASPACE, 0, &uerr));
-                CapEntry const* const fe = cap_lookup(c, static_cast<uint32_t>(a0));
-                if (target != nullptr and fe != nullptr and domain_space(target) != nullptr
-                    and domain_ranges_mut(target) != nullptr)
-                {
-                    (void)frame_unmap_ending_waits(domain_space(target),
-                                                   domain_ranges_mut(target), va, fe->obj, lock);
-                }
-                return static_cast<uint64_t>(-KOS_EFAULT);
-            }
-            return static_cast<uint64_t>(mrc);
+            return static_cast<uint64_t>(frame_unmap_call(a0, a1, a2));
         }
         case KOS_SYS_FRAME_CREATE:
         {
@@ -1001,67 +1200,19 @@ uint64_t syscall_body(uintptr_t nr,
 #endif
         case KOS_SYS_MEM_SELF_GRANT:
         {
-            // AUTHORITY is thread-local by contract, but the reach is the backend's: a
-            // translating one maps into the task's space, so no caller may infer sibling denial.
+#if KICKOS_HAVE_ASPACE
+            return static_cast<uint64_t>(self_grant_call(a0, static_cast<size_t>(a1), a2));
+#else
             IrqLock lock;
             Thread* const c = sched::current();
-            if (not cap_check_authority(c, AUTH_MEMORY))
-            {
-                return static_cast<uint64_t>(-KOS_EPERM);
-            }
             uintptr_t const base = a0;
             size_t const size = static_cast<size_t>(a1);
-            if (size == 0 or (base + size) < base)
+            uint32_t attr = 0;
+            int const arc = self_grant_args(c, base, size, a2, &attr);
+            if (arc != 0)
             {
-                return static_cast<uint64_t>(-KOS_EINVAL);
+                return static_cast<uint64_t>(arc);
             }
-            uint32_t attr = ARCH_MPU_R | ARCH_MPU_W;
-            if (not mem_flags_to_attr(a2, &attr))
-            {
-                return static_cast<uint64_t>(-KOS_EINVAL);
-            }
-            // BEFORE the already-reachable short-circuit: a chip that cannot honour the
-            // memory type would otherwise answer 0 to a request it silently drops.
-            if (not grant_nocache_admissible(attr))
-            {
-                return static_cast<uint64_t>(-KOS_ENOTSUP);
-            }
-#if KICKOS_HAVE_ASPACE
-            // The range must be one this task RESERVED, which refuses an address another task
-            // reserved; the arena and natural-alignment arms below do not apply to frame-pool
-            // frames. Its own already-mapped answer comes after that test: one here would
-            // admit a frame capability's mapping.
-            struct arch_aspace* const space = domain_space(thread_domain(c));
-            VirtualRanges* const ranges = domain_ranges_mut(thread_domain(c));
-            enum arch_map_memtype const type = map_memtype_of(attr);
-            // A retype in place releases nothing, but may take the write a waiter parked by.
-            VirtualRange const* before = nullptr;
-            if (ranges != nullptr)
-            {
-                before = ranges->find(base, size);
-            }
-            uintptr_t lost_base = 0;
-            size_t lost_bytes = 0;
-            if (before != nullptr
-                and aspace_remap_takes_write(*before, ARCH_MAP_R | ARCH_MAP_W,
-                                             static_cast<uint8_t>(type)))
-            {
-                lost_base = before->base;
-                lost_bytes = static_cast<size_t>(before->pages) * arch_aspace_granule();
-            }
-            int const grc = aspace_self_grant(domain_payer(thread_domain(c)), space, ranges, base,
-                                              size, ARCH_MAP_R | ARCH_MAP_W, type);
-            if (grc == 0)
-            {
-                presync_commit();
-                word_reach_lost(space, lost_base, lost_bytes, lock);
-            }
-            // The range list already carries this mapping, at the EXACT extent, so there is no
-            // region record beside it. That is what moves the -KOS_ENOMEM budget onto
-            // KICKOS_ASPACE_RANGES and what makes the grant reach every sibling, the array
-            // being per-THREAD while the mapping is task-wide.
-            return static_cast<uint64_t>(grc);
-#else
             // Already reachable costs no descriptor. Where the mapping CARRIES the memory type
             // the question is asked of the TYPE in both directions: a request naming no type
             // over a block mapped non-cacheable is the way back from a DMA buffer to ordinary
@@ -1230,12 +1381,6 @@ uint64_t syscall_body(uintptr_t nr,
             return static_cast<uint64_t>(witness_rewinds());
         }
 #endif
-        case KOS_SYS_DIAG_LED_SET:
-        {
-            // Unprivileged like the console. A no-op on boards with no LED.
-            kdiag_led_set(a0 != 0);
-            return 0;
-        }
         default:
         {
             // An unknown syscall is a caller error: refuse it, never panic the kernel.

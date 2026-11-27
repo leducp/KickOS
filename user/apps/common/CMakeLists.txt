@@ -92,11 +92,6 @@ add_subdirectory(selftest)
 add_subdirectory(stress)
 add_subdirectory(mutexbench)
 add_subdirectory(userbench)
-# Its only witness is the kernel block's high-water line, which a panic prints only where the
-# board carves the blocks and reports them.
-if(KICKOS_KERNEL_STACKS AND KICKOS_KSTACK_REPORT)
-  add_subdirectory(stackdepth)
-endif()
 
 add_subdirectory(fault)
 add_subdirectory(panicgate)
@@ -167,6 +162,11 @@ endif()
 # Only the rewind witness's scratch tree builds it: no other kernel answers its call.
 if(KICKOS_WITNESS_REWIND)
   add_subdirectory(ucasrewind)
+endif()
+# Only the stack-depth witness's scratch tree builds it: no other kernel's panic prints the
+# kernel block's high-water line.
+if(KICKOS_WITNESS_KSTACK)
+  add_subdirectory(stackdepth)
 endif()
 # Sim only: each drives something that is only automatable on the host, a loopback "device"
 # that is the host wire, a published posture, __builtin_trap, or many kernels in one process.
@@ -295,13 +295,6 @@ endif()
 # --- GPIO from userspace: the boards whose layout gpioblink carries -------------------------
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/gpioblink/systems/${KICKOS_BOARD}.yaml")
   add_subdirectory(gpioblink)
-endif()
-
-# --- Bring-up LED blink -------------------------------------------------------------------
-# Where the board file gives the kernel no LED, arch_diag_led_set is the no-op fallback and blink
-# would read as a dead board.
-if(KICKOS_KERNEL_LED)
-  add_subdirectory(blink)
 endif()
 
 # Its composition names the board's packaged USB CDC console driver.

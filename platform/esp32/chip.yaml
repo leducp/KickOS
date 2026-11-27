@@ -27,13 +27,22 @@ exits_on_fault: false
 interrupts: { count: { value: 32, ref: "8.3.2 CPU Interrupt, p.178" } }
 
 devices:
-  # A line is the kernel's logical line, not the matrix source the device raises. The console
-  # line stays clear of the block an app may inject into, from KICKOS_IRQ_FREE_BASE.
+  # A line is the kernel's logical line, not the matrix source the device raises, and the
+  # kernel routes every UART's. Each line stays clear of the block an app may inject into, from
+  # KICKOS_IRQ_FREE_BASE.
   uart0:
     window: [0x3FF40000, 0x1000]
     ref: "Table 3.3-6 Peripheral Address Mapping, p.72"
-    lines: { uart0: { number: 30, symbol: CONSOLE_TX_LINE } }
-  # The window also holds every pad's GPIO matrix routing and the kernel's LED pin, GPIO2.
+    lines: { irq: 30 }
+  uart1:
+    window: [0x3FF50000, 0x1000]
+    ref: "Table 3.3-6 Peripheral Address Mapping, p.72"
+    lines: { irq: 28 }
+  uart2:
+    window: [0x3FF6E000, 0x1000]
+    ref: "Table 3.3-6 Peripheral Address Mapping, p.73"
+    lines: { irq: 29 }
+  # The window also holds every pad's GPIO matrix routing.
   gpio: { window: [0x3FF44000, 0x1000], ref: "Table 3.3-6 Peripheral Address Mapping, p.72" }
 
   dport: { window: [0x3FF00000, 0x1000], owner: kernel, ref: "Table 3.3-6 Peripheral Address Mapping, p.72" }
@@ -79,7 +88,9 @@ memory:
     link: { region: DRAM1, access: rw }
     ref: "Table 3.3-2 Embedded Memory Address Mapping, p.68, and 3.3.2.4 Internal SRAM 1, p.69"
 
-# Pins are GPIOn. A selector other than `gpio` is the IO MUX function its MCU_SEL selects.
+# Pins are GPIOn. A selector other than `gpio` is the IO MUX function its MCU_SEL selects. f2 is
+# every pad's GPIO function: a UART signal listed under it reaches the pad through the GPIO
+# matrix (Table 6.9-1, pp.124-131), so any UART may use the pad.
 pins:
   GPIO1: { f0: uart0.tx, gpio: gpio.1 }
   GPIO2: { gpio: gpio.2 }

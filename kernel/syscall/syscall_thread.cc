@@ -36,6 +36,11 @@ namespace kickos
 {
     namespace
     {
+        // spawn_locked built the thread, not yet runnable, with maps left to passes.
+        constexpr int SPAWN_PENDING = 1;
+        // A pass was refused for a sync another call's completed edit took from its record.
+        constexpr int SPAWN_RESYNC = 2;
+
         // Give back what a spawn took before thread_create committed: the kernel's stack and
         // the thread slot. noinline: its frame lands on the armv7m SVC chain the trap red zone
         // measures.
@@ -72,11 +77,13 @@ namespace kickos
 #if KICKOS_HAVE_ASPACE
         // Maps the admitted windows into tk's space where the kernel chooses, held by `slot`: a
         // device at its own frames, a memory window at the frames of the spawner's reservation,
-        // whose domain it holds until unmapped. spawn_unwind takes back a partial list.
+        // whose domain it holds until unmapped. One pass of pages in all, the rest left pending.
+        // spawn_unwind takes back a partial list.
         int spawn_map_windows(Task* tk, kos_window const* list, uint16_t n, int slot)
         {
             Domain* const into = task_domain(tk);
             Domain* const own = thread_domain(sched::current());
+            size_t budget = ASPACE_MAP_PASS_PAGES;
             for (uint16_t i = 0; i < n; i++)
             {
                 kos_window const& w = list[i];
@@ -104,7 +111,8 @@ namespace kickos
                 }
                 int const rc = aspace_window_map(domain_payer(into), domain_space(into),
                                                  domain_ranges_mut(into), pa, w.size, rights,
-                                                 type, static_cast<uint16_t>(slot + 1), i, donor);
+                                                 type, static_cast<uint16_t>(slot + 1), i, donor,
+                                                 &budget);
                 if (rc != 0)
                 {
                     return rc;
@@ -487,11 +495,15 @@ namespace kickos
             return 0;
         }
 
-        // The flags, the quantum, the authority word and the grant list's shape; its entries are
-        // the locked pass's.
+        // The flags, the policy, the quantum, the authority word and the grant list's shape; its
+        // entries are the locked pass's.
         int spawn_authority_admit(kos_thread_params const* p)
         {
             if ((p->flags & ~(KOS_THREAD_ESSENTIAL | KOS_THREAD_INHERIT_PRIO)) != 0u)
+            {
+                return -KOS_EINVAL;
+            }
+            if (p->policy != KOS_POLICY_FIFO and p->policy != KOS_POLICY_RR)
             {
                 return -KOS_EINVAL;
             }
@@ -1167,12 +1179,28 @@ namespace kickos
             attr.kstack_owned = true;
 #endif
         }
+        bool pending = false;
 #if KICKOS_HAVE_ASPACE
         int const wrc = spawn_map_windows(tk, kernel().window_stage, p->window_count, i);
         if (wrc != 0)
         {
             spawn_unwind(k, attr, tk, stack, stack_size, i);
             return wrc;
+        }
+        pending = aspace_create_pending(domain_ranges(task_domain(tk)),
+                                        static_cast<uint16_t>(i + 1));
+        if (pending)
+        {
+            // Every table its later passes can need, taken before this bracket: no pass after it
+            // is refused.
+            int const trc = presync_tables_arm(
+                domain_payer(task_domain(tk)),
+                aspace_create_tables(domain_ranges(task_domain(tk)), static_cast<uint16_t>(i + 1)));
+            if (trc != 0)
+            {
+                spawn_unwind(k, attr, tk, stack, stack_size, i);
+                return trc;
+            }
         }
 #endif
         // Where the thread pointer is SP masked down to KICKOS_TLS_STRIDE, a caller-supplied
@@ -1273,7 +1301,7 @@ namespace kickos
             spawn_unwind(k, attr, tk, stack, stack_size, i);
             return -KOS_EOVERFLOW;
         }
-        if (into == nullptr)
+        if (into == nullptr and not pending)
         {
             kos_thread_t const named = k.threads.handle_for(i);
             if (not kaccess_to_user(user_space_of(spawner), out, &named, sizeof(named)))
@@ -1298,6 +1326,18 @@ namespace kickos
                            static_cast<CapType>(kcap_grant_type(deleg_kind[ci])),
                            kcap_grant_rights(deleg_kind[ci]), deleg_badge[ci]);
         }
+        *child = made;
+        if (pending)
+        {
+#if KICKOS_PRESYNC
+            // The spawner's exit abandons it (task_abandon_building) until spawn_finish adds it.
+            if (into == nullptr)
+            {
+                presync_record()->building = static_cast<uint32_t>(k.threads.handle_for(i)) + 1u;
+            }
+#endif
+            return SPAWN_PENDING;
+        }
         // Stays inside the lock: a spawner slain between an allocated child and sched::add never
         // returns to its continuation (switch_book redirects a CANCEL_SLAY thread to the exit
         // stub), leaving a fully built INACTIVE orphan that nothing frees.
@@ -1306,11 +1346,12 @@ namespace kickos
             sched::add(made, lock);
         }
         presync_commit();
-        *child = made;
         return 0;
     }
 
-    static int spawn_masked(kos_thread_params const* p, uintptr_t out)
+    // noinline: its frame is not on spawn_finish's interrupt windows.
+    __attribute__((noinline)) static int spawn_masked(kos_thread_params const* p, uintptr_t out,
+                                                      int* child)
     {
         IrqLock lock;
         if (p == nullptr)
@@ -1372,13 +1413,241 @@ namespace kickos
                 kname = namebuf;
             }
         }
-        Thread* child = nullptr;
-        return spawn_locked(&params, kname, nullptr, nullptr, out, lock, &child);
+        Thread* made = nullptr;
+        int const rc = spawn_locked(&params, kname, nullptr, nullptr, out, lock, &made);
+        if (rc == SPAWN_PENDING)
+        {
+            *child = kernel().threads.handle_for(kernel().threads.index_of(made));
+        }
+        return rc;
     }
+
+#if KICKOS_HAVE_ASPACE
+    namespace
+    {
+        // A create's maps again from its record, after another call's completed edit dropped
+        // it: noted under the lock, synced outside it. For a task create, its data block too.
+        void create_resync(bool task)
+        {
+#if KICKOS_ARCH_ALIAS_DCACHE
+            {
+                IrqLock lock;
+                Thread* const c = sched::current();
+                PresyncRecord* const r = presync_record();
+                r->noted.count = 0;
+                r->refused = false;
+                presync_windows_note(c, r);
+                uint32_t attr = 0;
+                kos_task_params const& tp = r->task_params;
+                if (task and tp.block != nullptr and tp.size != 0
+                    and mem_flags_to_attr(tp.flags, &attr))
+                {
+                    enum arch_map_memtype type = ARCH_MAP_NORMAL;
+                    if ((attr & ARCH_MPU_NOCACHE) != 0)
+                    {
+                        type = ARCH_MAP_NOCACHE;
+                    }
+                    aspace_reservation_note(domain_ranges(thread_domain(c)),
+                                            reinterpret_cast<uintptr_t>(tp.block), tp.size, type);
+                }
+            }
+            presync_run();
+#else
+            (void)task;
+#endif
+        }
+
+        // One locked pass of a create's table reserve, toward a bound over every place its
+        // ranges can land, before anything is built: 1 while short, else 0, a refusal kept for
+        // the build's arm to answer. A task create's new task does not exist yet: its reserve is
+        // charged to no task until the arm, and bounded by its declaration's PAGES.
+        __attribute__((noinline)) int create_tables_pass(bool task, uint32_t prog)
+        {
+            IrqLock lock;
+            Thread* const c = sched::current();
+            PresyncRecord* const r = presync_record();
+            if (c == nullptr or c->task == nullptr or r == nullptr)
+            {
+                return 0;
+            }
+            size_t const g = arch_aspace_granule();
+            size_t pages = 0;
+            size_t need = 0;
+            for (uint16_t i = 0; r->has_windows and i < r->window_count; i++)
+            {
+                if (r->windows[i].kind != KOS_WINDOW_PORTS)
+                {
+                    // Two more pages: an unaligned base, and the first pass's one-page minimum.
+                    size_t const p = r->windows[i].size / g + 2u;
+                    pages = pages + p;
+                    need = need + arch_aspace_run_tables(p);
+                }
+            }
+            Task const* payer = domain_payer(task_domain(c->task));
+            if (task)
+            {
+                kos_task_params const& tp = r->task_params;
+                if (not r->has_task_params)
+                {
+                    return 0;
+                }
+                if (tp.block != nullptr and tp.size != 0)
+                {
+                    size_t const p = tp.size / g + 2u;
+                    pages = pages + p;
+                    need = need + arch_aspace_run_tables(p);
+                }
+                int const sel = program_instance(c, prog, tp);
+                if (sel < 0)
+                {
+                    return 0;
+                }
+                payer = nullptr;
+                kos_task_decl const* const d = image_decl(static_cast<size_t>(sel));
+                if (pages > ASPACE_MAP_PASS_PAGES
+                    and (d == nullptr
+                         or need > d->budgets[static_cast<size_t>(BudgetKind::PAGES)]))
+                {
+                    r->table_refusal = -KOS_EAGAIN;
+                    return 0;
+                }
+            }
+            if (pages <= ASPACE_MAP_PASS_PAGES)
+            {
+                return 0;
+            }
+            int const rc = presync_tables_take_pass(payer, need);
+            if (rc < 0)
+            {
+                r->table_refusal = static_cast<int16_t>(rc);
+                return 0;
+            }
+            return rc;
+        }
+
+        // A create's table reserve, a bounded pass at a time with a window between.
+        __attribute__((noinline)) void create_tables_take(bool task, uint32_t prog)
+        {
+            presync_record()->table_refusal = 0;
+            while (create_tables_pass(task, prog) > 0)
+            {
+                presync_yield();
+            }
+        }
+
+        __attribute__((noinline)) bool create_tables_release_step()
+        {
+            IrqLock lock;
+            return presync_tables_release_pass();
+        }
+
+        // What the create left of its reserve, a bounded pass at a time with a window between.
+        void create_tables_release()
+        {
+            while (create_tables_release_step())
+            {
+                presync_yield();
+            }
+        }
+
+        // One locked pass of the maps a create left pending for the thread `built` names, not
+        // yet runnable: SPAWN_PENDING while some remain, 0 once none does, or the refusal.
+        // noinline: its frame is not on the interrupt window's.
+        __attribute__((noinline)) int create_pass(int built)
+        {
+            IrqLock lock;
+            Thread* const entry = task_built(built);
+            if (entry == nullptr)
+            {
+                return -KOS_ECANCELED;
+            }
+            Domain* const d = thread_domain(entry);
+            uint16_t const holder = static_cast<uint16_t>(kernel().threads.index_of(entry) + 1);
+            MapPass pass;
+            int const rc = aspace_create_pass(domain_payer(d), domain_space(d), domain_ranges_mut(d),
+                                              holder, &pass);
+            if (rc > 0)
+            {
+                return SPAWN_PENDING;
+            }
+            if (rc == -KOS_ENOMEM and presync_record()->refused)
+            {
+                return SPAWN_RESYNC;
+            }
+            return rc;
+        }
+
+        // Every pass of create_pass with an interrupt window between: 0 or the refusal.
+        inline __attribute__((always_inline)) int create_passes(int built, bool task)
+        {
+            while (true)
+            {
+                int const rc = create_pass(built);
+                if (rc == SPAWN_RESYNC)
+                {
+                    create_resync(task);
+                    continue;
+                }
+                if (rc != SPAWN_PENDING)
+                {
+                    return rc;
+                }
+                presync_yield();
+            }
+        }
+
+        // A thread create's child is mapped, named to its spawner and made runnable, or
+        // abandoned unnamed and the create refused.
+        __attribute__((noinline)) int spawn_finish(int built, uintptr_t out)
+        {
+            int rc = create_passes(built, false);
+            IrqLock lock;
+            Thread* const spawner = sched::current();
+            Thread* const child = task_built(built);
+            if (rc == 0 and child == nullptr)
+            {
+                rc = -KOS_ECANCELED;
+            }
+            if (rc == 0 and task_ended(child->task))
+            {
+                rc = -KOS_EBUSY;
+            }
+            if (rc == 0)
+            {
+                kos_thread_t const named = built;
+                if (not kaccess_to_user(user_space_of(spawner), out, &named, sizeof(named)))
+                {
+                    rc = -KOS_EFAULT;
+                }
+            }
+            if (rc != 0)
+            {
+                task_abandon_building(lock);
+                return rc;
+            }
+            presync_record()->building = 0;
+            sched::add(child, lock);
+            presync_commit();
+            return 0;
+        }
+    }
+#endif
 
     int thread_create_call(kos_thread_params const* p, uintptr_t out)
     {
-        return spawn_masked(p, out);
+#if KICKOS_HAVE_ASPACE
+        create_tables_take(false, 0u);
+#endif
+        int child = -1;
+        int rc = spawn_masked(p, out, &child);
+#if KICKOS_HAVE_ASPACE
+        if (rc == SPAWN_PENDING)
+        {
+            rc = spawn_finish(child, out);
+        }
+        create_tables_release();
+#endif
+        return rc;
     }
 
     namespace
@@ -2157,17 +2426,22 @@ namespace kickos
     namespace
     {
         // What a create leaves the caller once the lock is dropped.
+        // Handles, not pointers: the slots may be freed and seated again across a window.
         struct Created
         {
-            Thread* entry = nullptr;
+            int entry = -1;
+            kos_task_t task = KOS_TASK_NONE;
             bool published = false;
         };
+
+        int task_name_and_start(Task* t, Thread* entry, bool console, uintptr_t uout, Held lock);
 
         // The locked pass of an instance's create, which writes the task's handle to the
         // caller's word at `uout` before its entry runs, a refused write ending the task. A
         // console create returns with `out->published` and its entry thread out of the
         // scheduler, a failure having ended the task.
-        int task_create_locked(uint32_t prog, uintptr_t pu, uintptr_t uout, Created* out)
+        __attribute__((noinline)) int task_create_locked(uint32_t prog, uintptr_t pu,
+                                                         uintptr_t uout, Created* out)
         {
             IrqLock lock;
             Thread* const c = sched::current();
@@ -2255,7 +2529,8 @@ namespace kickos
             }
             Thread* held = nullptr;
             rc = spawn_locked(&p, image_decl_name(&d), &args, t, 0, lock, &held);
-            if (rc != 0)
+            bool const pending = rc == SPAWN_PENDING;
+            if (rc != 0 and not pending)
             {
                 task_drop_hold(t, lock);
                 return rc;
@@ -2285,27 +2560,75 @@ namespace kickos
                     return rc;
                 }
             }
+            out->entry = kernel().threads.handle_for(kernel().threads.index_of(held));
+            if (pending)
+            {
+                out->task = task_handle(t);
+                return SPAWN_PENDING;
+            }
+            return task_name_and_start(t, held, console, uout, lock);
+        }
+
+        // The create's last step: its handle into the caller's word, then its entry runnable
+        // unless a console publish holds it.
+        int task_name_and_start(Task* t, Thread* entry, bool console, uintptr_t uout, Held lock)
+        {
             kos_task_t const named = task_handle(t);
-            if (not kaccess_to_user(user_space_of(c), uout, &named, sizeof(named)))
+            if (not kaccess_to_user(user_space_of(sched::current()), uout, &named, sizeof(named)))
             {
                 task_drop_hold(t, lock);
                 return -KOS_EFAULT;
             }
-            out->entry = held;
             if (not console)
             {
                 task_mark_started(t);
-                sched::add(held, lock);
+                sched::add(entry, lock);
             }
             return 0;
         }
+
+#if KICKOS_HAVE_ASPACE
+        // A task create's maps, then its handle and its start; a refusal ends the task before
+        // the handle is written. The entry stays its task's member until it starts.
+        __attribute__((noinline)) int task_finish(Created const& made, uintptr_t uout)
+        {
+            int rc = create_passes(made.entry, true);
+            IrqLock lock;
+            Thread* const entry = task_built(made.entry);
+            if (rc == 0 and (entry == nullptr or task_ended(entry->task)))
+            {
+                rc = -KOS_ECANCELED;
+            }
+            if (rc != 0)
+            {
+                Task* const t = task_resolve(made.task);
+                if (t != nullptr)
+                {
+                    task_drop_hold(t, lock);
+                }
+                return rc;
+            }
+            presync_commit();
+            return task_name_and_start(entry->task, entry, made.published, uout, lock);
+        }
+#endif
     }
 
     // An instance of the program, its entry thread started at the declared priority.
     int task_create_call(uint32_t prog, uintptr_t pu, uintptr_t out)
     {
         Created made;
-        int const rc = task_create_locked(prog, pu, out, &made);
+#if KICKOS_HAVE_ASPACE
+        create_tables_take(true, prog);
+#endif
+        int rc = task_create_locked(prog, pu, out, &made);
+#if KICKOS_HAVE_ASPACE
+        if (rc == SPAWN_PENDING)
+        {
+            rc = task_finish(made, out);
+        }
+        create_tables_release();
+#endif
         if (made.published)
         {
             // With the lock RELEASED: a writer counted before the refusal may be preempted below
@@ -2316,8 +2639,19 @@ namespace kickos
             if (rc == 0)
             {
                 IrqLock lock;
-                task_mark_started(made.entry->task);
-                sched::add(made.entry, lock);
+                // Named before this lock: a holder of the handle may have started it slain, or
+                // ended its task.
+                Thread* const entry = task_built(made.entry);
+                if (entry != nullptr and task_ended(entry->task))
+                {
+                    sched::add(entry, lock);
+                    thread_cancel_kind(entry, CANCEL_SLAY, lock);
+                }
+                else if (entry != nullptr)
+                {
+                    task_mark_started(entry->task);
+                    sched::add(entry, lock);
+                }
             }
         }
         return rc;

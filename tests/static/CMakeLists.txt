@@ -119,6 +119,9 @@ set_tests_properties(rig_shells PROPERTIES SKIP_RETURN_CODE 77)
 
 _add_test(NAME bench_banner_controls COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/check_bench_banner.sh"
           WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
+_add_test(NAME version_tag_controls COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/check_version_tag.sh"
+          WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
+set_tests_properties(version_tag_controls PROPERTIES SKIP_RETURN_CODE 77)
 _add_test(NAME stlink_capture_controls
           COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/check_stlink_capture.sh"
           WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")

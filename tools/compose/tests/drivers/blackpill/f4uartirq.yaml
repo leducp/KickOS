@@ -13,8 +13,8 @@ accepts: [no_protection] # for the -flat build alone
 tasks:
   - name: f4uartirq
     driver: f4uartirq
-    devices: [/dev/usart2]
-    lines: { global: /dev/usart2/global }
+    devices: [/dev/console]
+    lines: { global: /dev/console/global }
     core: 0
     serves: /svc/console
     priority: 12

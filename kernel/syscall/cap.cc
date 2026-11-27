@@ -23,6 +23,8 @@
 #include <kickos/sys/errno.h>
 #include <kickos/sys/rights.h>
 
+#include "syscall_internal.h"
+
 namespace kickos
 {
     namespace
@@ -245,7 +247,7 @@ namespace kickos
             FrameRun const* const f = k.frame_runs.slot(idx);
             if (f->pages > 0)
             {
-                frame_pool_free_run(f->base, f->pages, arch_aspace_granule());
+                frame_pool_free_run(f->base, f->pages);
             }
             run_unpay(idx);
             k.frame_runs.free(obj_handle);
@@ -263,8 +265,8 @@ namespace kickos
             {
             case CapType::CAP_ENDPOINT:
             {
-                // recv_holders -> 0 has already emptied send_waiters, and a receiver parks only
-                // with a WAIT cap of its own.
+                // The last WAIT or HANDOUT holder leaving has already emptied send_waiters, and a
+                // receiver parks only with a WAIT cap of its own.
                 int const idx = obj_ref_last(k.endpoints, k.endpoints.refs(), obj_handle);
                 if (idx < 0)
                 {
@@ -331,11 +333,45 @@ namespace kickos
             }
         }
 
-        // `dropped` leaves a cap naming endpoint `obj`, by a close, a teardown or a narrow.
-        // Dropping the LAST WAIT-bearing cap leaves the endpoint with no receiver, so every
-        // parked sender is refused -KOS_ECONNREFUSED. Fired exactly once (recv_holders -> 0), on
-        // a voluntary close, an exit teardown and a narrow alike. The published console while
-        // its task lives is the exception: its senders stay parked.
+        // Every sender parked on `from` moves, in its order, to `to`'s queue and keeps waiting
+        // there under its own deadline, its donation following it to `to`'s server; the serve
+        // that follows hands it to a receiver already waiting there.
+        void senders_move(Endpoint* from, Endpoint* to, Held held)
+        {
+            if (to == nullptr)
+            {
+#if KICKOS_AMP_NODE
+                endpoint_far_held_refuse(from, held);
+#endif
+                refuse_senders(from, held);
+                return;
+            }
+            while (not from->send_waiters.empty())
+            {
+                Thread* const s = thread_of(from->send_waiters.head);
+                from->send_waiters.unlink(&s->link);
+                to->send_waiters.push_back(&s->link);
+                s->wait_queue = &to->send_waiters;
+                s->wait_obj = to;
+                if (s->call_state == CALL_SEND_WAIT and to->server != nullptr
+                    and s->prio > to->server->prio)
+                {
+                    pi_raise(to->server, s->prio, held);
+                }
+            }
+            if (from->server != nullptr)
+            {
+                pi_settle(from->server, held);
+            }
+#if KICKOS_AMP_NODE
+            endpoint_far_held_move(from, to, held);
+#endif
+        }
+
+        // `dropped` leaves a cap naming endpoint `obj`, by a close, a teardown or a narrow. The
+        // drop that leaves no WAIT and no HANDOUT holder makes the endpoint dead for good, and
+        // every parked sender is refused -KOS_ECONNREFUSED, the published console while its task
+        // lives excepted.
         void endpoint_rights_dropped(Thread* closer, int obj, uint8_t dropped, bool teardown,
                                      Held held)
         {
@@ -344,43 +380,37 @@ namespace kickos
             {
                 return;
             }
+            bool const servable = endpoint_servable(ep);
             if ((dropped & CAP_HANDOUT) != 0 and ep->handout_holders > 0)
             {
                 ep->handout_holders--;
             }
-            if ((dropped & CAP_WAIT) == 0)
+            if ((dropped & CAP_WAIT) != 0)
             {
-                return;
-            }
-            // This closer was the conventional server: drop the dangling pointer (else a
-            // later D2 boost writes a reused TCB) and kill any lingering D2 donation. A dying
-            // closer is never rescheduled, so it skips its own recompute.
-            if (ep->server == closer)
-            {
-                endpoint_server_clear(ep);
-                // A live closer self-lowers: give up the CPU if a higher thread is now the
-                // top runnable.
-                if (not teardown)
+                // This closer was the conventional server: drop the dangling pointer (else a
+                // later D2 boost writes a reused TCB) and kill any lingering D2 donation. A dying
+                // closer is never rescheduled, so it skips its own recompute.
+                if (ep->server == closer)
                 {
-                    uint8_t const np = thread_effective_prio(closer);
-                    if (np != closer->prio)
+                    endpoint_server_clear(ep);
+                    // A live closer self-lowers: give up the CPU if a higher thread is now the
+                    // top runnable.
+                    if (not teardown)
                     {
-                        sched::set_prio(closer, np, held);
-                        sched::reschedule(nullptr, held);
+                        uint8_t const np = thread_effective_prio(closer);
+                        if (np != closer->prio)
+                        {
+                            sched::set_prio(closer, np, held);
+                            sched::reschedule(nullptr, held);
+                        }
                     }
                 }
+                if (ep->recv_holders != 0)
+                {
+                    ep->recv_holders--;
+                }
             }
-            if (ep->recv_holders == 0)
-            {
-                return;
-            }
-            ep->recv_holders--;
-            if (ep->recv_holders != 0)
-            {
-                return;
-            }
-            ep->vacated = 1;
-            if (ep->console == EP_CONSOLE_SERVED)
+            if (not servable or endpoint_servable(ep))
             {
                 return;
             }
@@ -1818,16 +1848,6 @@ namespace kickos
             }
         }
 
-        // The far endpoint a spawn into `t` seats as its standard output, or KCAP_STDOUT_NONE.
-        int stdout_far_seat_for(Task const* t)
-        {
-            int const seat = stdout_seat_for(t);
-            if (seat == KCAP_STDOUT_NONE or seat != g_stdout_far.get())
-            {
-                return KCAP_STDOUT_NONE;
-            }
-            return seat;
-        }
     }
 
     // CAP_SIGNAL bumps endpoint_refs but NOT recv_holders, so a client does not hold the
@@ -1865,27 +1885,18 @@ namespace kickos
 
     void cap_install_defaults(Thread* child, Held held)
     {
-        // Pre-publish: nothing seated (index 0 empty). The selftest/bring-up world that
-        // never publishes is untouched, and its apps fall back to kconsole_write. A member of
-        // the console's own task would send to itself.
+        // Pre-publish: nothing seated (index 0 empty), and the apps write the kernel console. A
+        // member of the console's own task would send to itself.
         int const seat = stdout_seat_for(child->task);
-        if (seat == KCAP_STDOUT_NONE)
-        {
-            return;
-        }
-        if (seat == stdout_far_seat_for(child->task))
+        if (seat != KCAP_STDOUT_NONE)
         {
             stdout_seat_taken(child, seat, held);
-            return;
         }
-        // A ceiling refusal leaves slot 0 empty, which is the state the child already handles
-        // pre-publish, so the spawn is NOT failed over it.
-        (void)cap_seat_stdout(child, seat, held);
     }
 
     bool cap_stdout_reserve(Task const* t)
     {
-        int const seat = stdout_far_seat_for(t);
+        int const seat = stdout_seat_for(t);
         if (seat == KCAP_STDOUT_NONE)
         {
             return true;
@@ -1895,7 +1906,7 @@ namespace kickos
 
     void cap_stdout_unreserve(Task const* t)
     {
-        int const seat = stdout_far_seat_for(t);
+        int const seat = stdout_seat_for(t);
         if (seat != KCAP_STDOUT_NONE)
         {
             obj_ref_undo(CapType::CAP_ENDPOINT, seat, CAP_SIGNAL);
@@ -1941,6 +1952,52 @@ namespace kickos
         }
     }
 
+    namespace
+    {
+        bool stdout_empty(Thread const* th)
+        {
+            return thread_cap_capacity(th) != 0 and th->state != ThreadState::EXITED
+                   and cap_slot(th->caps, KOS_CAP_STDOUT)->type
+                           == static_cast<uint8_t>(CapType::CAP_EMPTY);
+        }
+
+        // The first publish: every live thread whose standard output is empty takes endpoint
+        // `seat`, one admission per task, as stdout_move does.
+        void stdout_seat_empty(int seat, Held held)
+        {
+            Kernel& k = kernel();
+            for (Task& t : k.tasks())
+            {
+                bool empty = false;
+                for (ListNode* m = task_members(&t); m != nullptr and not empty; m = m->next)
+                {
+                    empty = stdout_empty(KICKOS_CONTAINER_OF(m, Thread, member));
+                }
+                if (not empty or task_serves_console(&t)
+                    or not admit_stdout_swap(&t, KCAP_STDOUT_NONE, seat))
+                {
+                    continue;
+                }
+                for (ListNode* m = task_members(&t); m != nullptr; m = m->next)
+                {
+                    Thread* const th = KICKOS_CONTAINER_OF(m, Thread, member);
+                    if (stdout_empty(th))
+                    {
+                        (void)cap_seat_stdout(th, seat, held);
+                    }
+                }
+            }
+            for (int i = 0; i < k.threads.count(); i++)
+            {
+                Thread* const th = &k.threads.slots()[i];
+                if (th->task == nullptr and stdout_empty(th))
+                {
+                    (void)cap_seat_stdout(th, seat, held);
+                }
+            }
+        }
+    }
+
     // The publisher's slot is seated here because root predates console publication.
     bool cap_console_publish(Thread* publisher, int obj_handle, Held held)
     {
@@ -1960,8 +2017,12 @@ namespace kickos
             if (stdout_target() != obj_handle)
             {
                 stdout_move(obj_handle, held);
-                refuse_senders(old, held);
+                senders_move(old, kernel().endpoints.resolve(obj_handle), held);
             }
+        }
+        if (stdout_target() == KCAP_STDOUT_NONE)
+        {
+            stdout_seat_empty(obj_handle, held);
         }
         if (stdout_target() != KCAP_STDOUT_NONE)
         {
@@ -2009,7 +2070,6 @@ namespace kickos
         {
             e->rights = static_cast<uint8_t>(e->rights | CAP_WAIT);
             ep->recv_holders++;
-            ep->vacated = 0;
         }
         cap_console_serve(served_by, held);
         return 0;
@@ -2045,6 +2105,8 @@ namespace kickos
             cap_run_free_release(th->caps, KOS_CAP_STDOUT, e, &th->cap_free_head);
             obj_ref_drop(prior, /*teardown=*/false, held);
         }
+        // Last: the vacate above runs before any waiting work is handed over.
+        endpoint_pair_waiting(ep, held);
     }
 
     void cap_console_task_ended(Held held)
@@ -2057,9 +2119,12 @@ namespace kickos
             ep->console = EP_CONSOLE_ENDED;
         }
         console_note_driver_death();
-        console_on_driver_death(held);
-        if (ep != nullptr)
+        console_on_driver_death();
+        if (ep != nullptr and not endpoint_servable(ep))
         {
+#if KICKOS_AMP_NODE
+            endpoint_far_held_refuse(ep, held);
+#endif
             refuse_senders(ep, held);
         }
     }
@@ -2071,20 +2136,5 @@ namespace kickos
             return nullptr;
         }
         return kernel().endpoints.resolve(stdout_target());
-    }
-
-    bool cap_console_serves(Thread const* t)
-    {
-        if (stdout_target() == KCAP_STDOUT_NONE)
-        {
-            return false;
-        }
-        CapEntry const* const e = stdout_on_console(t);
-        if (e == nullptr or (e->rights & CAP_SIGNAL) == 0)
-        {
-            return false;
-        }
-        Endpoint const* const ep = kernel().endpoints.resolve(e->obj);
-        return ep != nullptr and ep->console == EP_CONSOLE_SERVED;
     }
 }

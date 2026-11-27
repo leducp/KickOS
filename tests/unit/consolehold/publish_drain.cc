@@ -20,7 +20,7 @@
 #include <kickos/sync.h>
 #include <kickos/thread.h>
 
-#include "dark_seam.h"
+#include "device_seam.h"
 #include "isolated_arm.h"
 #include "kseam_test.h"
 
@@ -74,7 +74,7 @@ namespace
     // The writer running and stopped inside the bracket, the publisher not yet seated.
     void stage_writer_inside(GapAction inside, ucontext_t* after = &g_waker_ctx)
     {
-        darkseam::reset();
+        deviceseam::reset();
         g_writer_done = false;
         g_parks = 0;
         g_publisher = nullptr;
@@ -123,9 +123,9 @@ namespace
     void expect_published()
     {
         EXPECT_EQ(console_chip_writers(), 0);
-        size_t const before = darkseam::g_wire.size();
+        size_t const before = deviceseam::g_wire.size();
         kputs("late\n");
-        EXPECT_EQ(darkseam::g_wire.size(), before) << "the console was not handed over";
+        EXPECT_EQ(deviceseam::g_wire.size(), before) << "the console was not handed over";
     }
 
     // The publisher parked: the writer runs on to its leave, which has to wake it.
@@ -135,7 +135,7 @@ namespace
         EXPECT_EQ(parked, g_publisher);
         EXPECT_EQ(parked->wait_kind, WAIT_CONSOLE) << "the publisher did not park on the console";
         EXPECT_EQ(console_owner_is_kernel(), 0);
-        EXPECT_EQ(darkseam::g_wire, "") << "the writer ran before the publisher parked";
+        EXPECT_EQ(deviceseam::g_wire, "") << "the writer ran before the publisher parked";
         swapcontext(&g_waker_ctx, &g_writer_ctx);
         EXPECT_TRUE(g_writer_done);
         EXPECT_EQ(parked->wait_kind, WAIT_NONE) << "the writer's leave did not wake the publisher";
@@ -152,7 +152,7 @@ TEST_F(ConsoleDrain, the_publisher_parks_until_the_writer_inside_the_bracket_lea
         wake_next_park(wake_by_the_writers_leave);
         publish();
         EXPECT_EQ(g_parks, 1);
-        EXPECT_EQ(darkseam::g_wire, "line\n");
+        EXPECT_EQ(deviceseam::g_wire, "line\n");
         expect_published();
     });
 }
@@ -174,7 +174,7 @@ TEST_F(ConsoleDrain, a_panic_during_the_drain_still_wakes_the_publisher)
         publish();
         EXPECT_EQ(g_parks, 1);
         kputs("after\n");
-        EXPECT_EQ(darkseam::g_wire, "line\nafter\n") << "the publish handed a panicked console over";
+        EXPECT_EQ(deviceseam::g_wire, "line\nafter\n") << "the publish handed a panicked console over";
     });
 }
 
@@ -210,7 +210,7 @@ TEST_F(ConsoleDrain, a_writer_slain_inside_the_bracket_leaves_it_with_its_exit)
         wake_next_park([](Thread*) { g_parks = g_parks + 1; });
         publish();
         EXPECT_EQ(g_parks, 0) << "the drain waited for a writer that was slain";
-        EXPECT_EQ(darkseam::g_wire, "isr\n");
+        EXPECT_EQ(deviceseam::g_wire, "isr\n");
         expect_published();
     });
 }
@@ -231,7 +231,7 @@ TEST_F(ConsoleDrain, a_contained_wild_stack_leaves_the_current_writers_bracket_a
                   nullptr);
         EXPECT_NE(g_writer->console_writing, 0) << "the containment ended the current thread's bracket";
         EXPECT_EQ(console_chip_writers(), 1);
-        EXPECT_EQ(darkseam::g_wire, "") << "the containment printed";
+        EXPECT_EQ(deviceseam::g_wire, "") << "the containment printed";
 
         swapcontext(&g_main_ctx, &g_writer_ctx);
         ASSERT_TRUE(g_writer_done);
@@ -242,7 +242,7 @@ TEST_F(ConsoleDrain, a_contained_wild_stack_leaves_the_current_writers_bracket_a
         }
         ASSERT_EQ(sched::current(), offender);
         run_noreturn([]() { kickos_thread_slay_exit(nullptr); });
-        EXPECT_EQ(darkseam::g_wire,
+        EXPECT_EQ(deviceseam::g_wire,
                   "line\n\n=== T CONTAINED (wild stack) ===\n  thread 'wild' USP=0x102b4\n");
         EXPECT_EQ(console_chip_writers(), 0);
     });
@@ -253,7 +253,7 @@ TEST_F(ConsoleDrain, a_contained_wild_stack_leaves_the_current_writers_bracket_a
 TEST_F(ConsoleDrain, a_contained_thread_whose_record_was_taken_still_names_itself)
 {
     run_isolated([]() {
-        darkseam::reset();
+        deviceseam::reset();
         Thread* const bystander = seat_pool(0, PRIO_PUBLISHER);
         Thread* const offender = seat_pool(1, PRIO_WRITER);
         snprintf(offender->name, sizeof(offender->name), "wild");
@@ -274,7 +274,7 @@ TEST_F(ConsoleDrain, a_contained_thread_whose_record_was_taken_still_names_itsel
         }
         ASSERT_EQ(sched::current(), offender);
         run_noreturn([]() { kickos_thread_slay_exit(nullptr); });
-        EXPECT_EQ(darkseam::g_wire,
+        EXPECT_EQ(deviceseam::g_wire,
                   "\n=== THREAD CONTAINED === thread 'wild' killed, wild stack\n"
                   "  SP lost to a later fault\n");
     });
@@ -294,7 +294,7 @@ namespace
 
     void ring_push(uint8_t b)
     {
-        darkseam::g_wire.push_back(static_cast<char>(b));
+        deviceseam::g_wire.push_back(static_cast<char>(b));
     }
 
     void ring_gate(void)
@@ -341,13 +341,12 @@ TEST_F(ConsoleDrain, a_publisher_slain_in_its_drain_leaves_the_console_the_kerne
         }
         ASSERT_EQ(sched::current(), g_publisher);
         run_noreturn([]() { kickos_thread_slay_exit(nullptr); });
-        EXPECT_EQ(darkseam::g_wire, "held record\n") << "the hand-off's held record was lost";
+        EXPECT_EQ(deviceseam::g_wire, "held record\n") << "the hand-off's held record was lost";
         swapcontext(&g_main_ctx, &g_writer_ctx);
         ASSERT_TRUE(g_writer_done);
         EXPECT_EQ(console_chip_writers(), 0);
-        EXPECT_EQ(console_dark(), 0);
         kputs("after\n");
-        EXPECT_EQ(darkseam::g_wire, "held record\nline\nafter\n")
+        EXPECT_EQ(deviceseam::g_wire, "held record\nline\nafter\n")
             << "the console stayed handing over with no publisher left";
         g_publisher = seat_pool(2, PRIO_PUBLISHER);
         publish();

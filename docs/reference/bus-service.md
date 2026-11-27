@@ -249,7 +249,10 @@ What is actually per-device depends on where the controller keeps each field, be
 driver thread is UNPRIVILEGED:
 
 - **K64F DSPI0** -- rate, CPOL/CPHA, word size and bit order are ALL in `CTAR0`, inside the
-  granted window once AIPS slot 44 is open, so all four are per-device.
+  granted window once AIPS slot 44 is open, so all four are per-device. A device opened at
+  `cfg.hz == 0` is refused `-KOS_EINVAL` before the clock is asked: `CTAR0` holds the last
+  transferred slot's profile, so the live rate is another device's. The RX72M RIICa engine
+  refuses `cfg.hz == 0` the same way, for the same reason.
 - **XMC4800 USIC0-CH1** -- word size, bit order and the CS framing are in `SCTR`/`PCR` and
   are per-device. Rate (`FDR`, `BRG`) and CPOL/CPHA (`BRG.SCLKCFG`) are NOT: those registers
   are write-privileged-only at the bus and an unprivileged store to them is silently

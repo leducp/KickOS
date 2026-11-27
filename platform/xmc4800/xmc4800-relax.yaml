@@ -15,5 +15,5 @@ console:
   pins: { dout0: P1.5, dx0: P1.4 }
 
 leds:
-  led1: { pin: P5.9, active: high, owner: kernel } # the kernel's diagnostic LED
+  led1: { pin: P5.9, active: high, diagnostic: true }
   led2: { pin: P5.8, active: high }

@@ -11,8 +11,8 @@ heap: 0
 tasks:
   - name: console
     driver: f4uartirq
-    devices: [/dev/usart2]
-    lines: { global: /dev/usart2/global }
+    devices: [/dev/console]
+    lines: { global: /dev/console/global }
     core: 0
     serves: /svc/console
     priority: 30

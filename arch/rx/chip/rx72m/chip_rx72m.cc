@@ -5,8 +5,8 @@
 // Manual: Hardware (r01uh0804ej0120, Rev.1.20).
 //
 // Board: RX72M CPU Card with RDC-IC (RTK0EMXDE0C00000BJ), R5F572MNDDBD, 24 MHz
-// main crystal (board UM r12uz0098ej0110 Table 1-1). Console = SCI6, on the pins the board
-// file names.
+// main crystal (board UM r12uz0098ej0110 Table 1-1). The console is the SCI channel and the
+// pins the board file names.
 //
 // Clock target: ICLK 240 MHz from the 24 MHz crystal via PLL (the part's max; UM sec.9,
 // datasheet fPLL 120-240, ICLK max 240). PLL VCO = 24 MHz /1 x10 = 240; ICLK = /1. Above
@@ -68,22 +68,94 @@ namespace
 
     constexpr uint32_t CONSOLE_BAUD = 115200u;
 
+    // The board's console channel, its module-stop bit and the peripheral clock it runs on:
+    // PCLKA for SCI7 to SCI11, PCLKB for the others (UM Table 5.1 pp.232-279).
+    struct sci_channel
+    {
+        uintptr_t mstpcr;
+        uint32_t mstp_bit;
+        bool pclka;
+    };
+
+    struct sci_row
+    {
+        uintptr_t base;
+        sci_channel channel;
+    };
+
+    constexpr sci_row SCI_CHANNELS[] = {
+        {mmap::SCI0, {cgc::MSTPCRB, cgc::MSTPB_SCI0, false}},
+        {mmap::SCI1, {cgc::MSTPCRB, cgc::MSTPB_SCI1, false}},
+        {mmap::SCI2, {cgc::MSTPCRB, cgc::MSTPB_SCI2, false}},
+        {mmap::SCI3, {cgc::MSTPCRB, cgc::MSTPB_SCI3, false}},
+        {mmap::SCI4, {cgc::MSTPCRB, cgc::MSTPB_SCI4, false}},
+        {mmap::SCI5, {cgc::MSTPCRB, cgc::MSTPB_SCI5, false}},
+        {mmap::SCI6, {cgc::MSTPCRB, cgc::MSTPB_SCI6, false}},
+        {mmap::SCI7, {cgc::MSTPCRB, cgc::MSTPB_SCI7, true}},
+        {mmap::SCI8, {cgc::MSTPCRC, cgc::MSTPC_SCI8, true}},
+        {mmap::SCI9, {cgc::MSTPCRC, cgc::MSTPC_SCI9, true}},
+        {mmap::SCI10, {cgc::MSTPCRC, cgc::MSTPC_SCI10, true}},
+        {mmap::SCI11, {cgc::MSTPCRC, cgc::MSTPC_SCI11, true}},
+        {mmap::SCI12, {cgc::MSTPCRB, cgc::MSTPB_SCI12, false}},
+    };
+
+    constexpr sci_channel sci_channel_of(uintptr_t base)
+    {
+        for (sci_row const& row : SCI_CHANNELS)
+        {
+            if (row.base == base)
+            {
+                return row.channel;
+            }
+        }
+        return {0, 0, false};
+    }
+
+    uint32_t pclk_hz(bool pclka)
+    {
+        if (pclka)
+        {
+            return clocktree::pclka_hz();
+        }
+        return clocktree::pclkb_hz();
+    }
+
+    constexpr uintptr_t CONSOLE_BASE = KICKOS_BOARD_CONSOLE_BASE;
+    constexpr sci_channel CONSOLE_CHANNEL = sci_channel_of(CONSOLE_BASE);
+    static_assert(CONSOLE_CHANNEL.mstp_bit != 0u, "the board's console is not an SCI of this chip");
+
+    namespace con
+    {
+        constexpr uintptr_t SMR = CONSOLE_BASE + sci::SMR_OFFSET;
+        constexpr uintptr_t BRR = CONSOLE_BASE + sci::BRR_OFFSET;
+        constexpr uintptr_t SCR = CONSOLE_BASE + sci::SCR_OFFSET;
+        constexpr uintptr_t TDR = CONSOLE_BASE + sci::TDR_OFFSET;
+        constexpr uintptr_t SSR = CONSOLE_BASE + sci::SSR_OFFSET;
+        constexpr uintptr_t SCMR = CONSOLE_BASE + sci::SCMR_OFFSET;
+        constexpr uintptr_t SEMR = CONSOLE_BASE + sci::SEMR_OFFSET;
+        constexpr uintptr_t SNFR = CONSOLE_BASE + sci::SNFR_OFFSET;
+        constexpr uintptr_t SIMR1 = CONSOLE_BASE + sci::SIMR1_OFFSET;
+        constexpr uintptr_t SIMR2 = CONSOLE_BASE + sci::SIMR2_OFFSET;
+        constexpr uintptr_t SIMR3 = CONSOLE_BASE + sci::SIMR3_OFFSET;
+        constexpr uintptr_t SPMR = CONSOLE_BASE + sci::SPMR_OFFSET;
+    }
+
     // The window arch_console_reclaim reports. 16 bytes is the RX MPU minimum region
     // (arch_mpu_min_region), and it stops short of SPTR at +0x1C, whose SPB2IO/SPB2DT pair
-    // drives TXD6 low while SCR.TE is 0 (UM Table 42.30 p.2212).
-    constexpr uintptr_t CONSOLE_WIN_BASE = mmap::SCI6;
+    // drives the TXD pin low while SCR.TE is 0 (UM Table 42.30 p.2212).
+    constexpr uintptr_t CONSOLE_WIN_BASE = CONSOLE_BASE;
     constexpr size_t CONSOLE_WIN_SIZE = 16u;
 
-    static_assert(sci::SCR >= CONSOLE_WIN_BASE and sci::SCR < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
-                  and sci::SMR < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
-                  and sci::BRR < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
-                  and sci::SCMR < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
-                  and sci::SEMR < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
-                  and sci::SNFR < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
-                  and sci::SIMR1 < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
-                  and sci::SIMR2 < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
-                  and sci::SIMR3 < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
-                  and sci::SPMR < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE,
+    static_assert(con::SCR >= CONSOLE_WIN_BASE and con::SCR < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
+                  and con::SMR < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
+                  and con::BRR < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
+                  and con::SCMR < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
+                  and con::SEMR < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
+                  and con::SNFR < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
+                  and con::SIMR1 < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
+                  and con::SIMR2 < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
+                  and con::SIMR3 < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
+                  and con::SPMR < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE,
                   "arch_console_reclaim writes outside the window it reports");
 
     void unlock_registers(bool on)
@@ -129,14 +201,12 @@ namespace
         r16(flash::ROMCE) = flash::ROMCE_ROMCEN;
     }
 
-    static_assert(KICKOS_BOARD_CONSOLE_BASE == mmap::SCI6, "the board's console is not the SCI this backend drives");
-
     constexpr uint32_t TXD_PORT = port::port_of(KICKOS_BOARD_CONSOLE_TXD_BIT);
     constexpr uint32_t RXD_PORT = port::port_of(KICKOS_BOARD_CONSOLE_RXD_BIT);
     constexpr uint8_t TXD_MASK = port::mask_of(KICKOS_BOARD_CONSOLE_TXD_BIT);
     constexpr uint8_t RXD_MASK = port::mask_of(KICKOS_BOARD_CONSOLE_RXD_BIT);
 
-    void sci6_console_init()
+    void console_sci_init()
     {
         // Pin mux (UM sec.23.4.1 procedure). PSEL is only writable while the pin's PMR bit
         // is 0, which it is at reset. Without the PMR step the pins stay GPIO.
@@ -156,18 +226,18 @@ namespace
 
         // SMR, SCMR, SEMR and BRR are all writable only with TE and RE both 0
         // (UM sec.42.2.9/12/13/15 notes).
-        r8(sci::SCR) = 0;
-        r8(sci::SCMR) = sci::SCMR_UART;
+        r8(con::SCR) = 0;
+        r8(con::SCMR) = sci::SCMR_UART;
 
         // The divisor comes from the LIVE clock tree, which a fallback moves to the HOCO. A
         // tree pclkb_hz() cannot describe, or no divisor within tolerance (the LOCO), leaves the
         // reset divisor alone.
         sci::BaudSetting bs;
-        if (sci::baud_select(clocktree::pclkb_hz(), CONSOLE_BAUD, &bs))
+        if (sci::baud_select(pclk_hz(CONSOLE_CHANNEL.pclka), CONSOLE_BAUD, &bs))
         {
-            r8(sci::SMR) = bs.cks; // async, 8 data bits, no parity, one stop bit
-            r8(sci::SEMR) = bs.semr;
-            r8(sci::BRR) = bs.brr;
+            r8(con::SMR) = bs.cks; // async, 8 data bits, no parity, one stop bit
+            r8(con::SEMR) = bs.semr;
+            r8(con::BRR) = bs.brr;
         }
         // Volatile so -Os keeps the wait. The hardware itself holds TXD high for one frame
         // after TE goes 1 (UM Fig.42.13 p.2234).
@@ -179,13 +249,13 @@ namespace
         // SCR.TIE bit to 1 while the setting of the SCR.TE bit is 1" (UM sec.42.12.2(1)
         // p.2308), so the pass that arms TIE must also write the first byte or nothing ever
         // fires. The ring's idle -> busy prime does both.
-        r8(sci::SCR) = sci::SCR_TE;
+        r8(con::SCR) = sci::SCR_TE;
     }
 
-    int rx_tx_slot_free(void) { return (r8(sci::SSR) & sci::SSR_TDRE) != 0; }
-    void rx_tx_push(uint8_t b) { r8(sci::TDR) = b; }
-    void rx_tx_irq_enable(void) { r8(sci::SCR) = static_cast<uint8_t>(r8(sci::SCR) | sci::SCR_TIE); }
-    void rx_tx_irq_disable(void) { r8(sci::SCR) = static_cast<uint8_t>(r8(sci::SCR) & ~sci::SCR_TIE); }
+    int rx_tx_slot_free(void) { return (r8(con::SSR) & sci::SSR_TDRE) != 0; }
+    void rx_tx_push(uint8_t b) { r8(con::TDR) = b; }
+    void rx_tx_irq_enable(void) { r8(con::SCR) = static_cast<uint8_t>(r8(con::SCR) | sci::SCR_TIE); }
+    void rx_tx_irq_disable(void) { r8(con::SCR) = static_cast<uint8_t>(r8(con::SCR) & ~sci::SCR_TIE); }
     console_tx_backend const rx_console_backend = {
         rx_tx_slot_free, rx_tx_push, rx_tx_irq_enable, rx_tx_irq_disable,
         &kickos_console_tx_storage};
@@ -228,7 +298,7 @@ void arch_init(void)
     // The landed tree is read back below, not assumed here.
     clocktree::bring_up();
     r32(cgc::MSTPCRA) &= ~(cgc::MSTPA_CMTW0 | cgc::MSTPA_CMTW1);
-    r32(cgc::MSTPCRB) &= ~cgc::MSTPB_SCI6;
+    r32(CONSOLE_CHANNEL.mstpcr) &= ~CONSOLE_CHANNEL.mstp_bit;
     unlock_registers(false);
 
     rom_cache_enable(); // MEMWAIT set above; ROM cache is not PRCR-gated
@@ -246,7 +316,7 @@ void arch_init(void)
         kickos_rx_timer_hz = pclkb / 8u; // CMTW input is PCLKB/8
     }
 
-    sci6_console_init();
+    console_sci_init();
 
     // CMWI0, vector 30. The CMTW's own CMWIE is set per arm (arch_timer_arm).
     r8(icu::IPR006) = 4; // IPL_DEVICE (< IPL_LOCK)
@@ -351,8 +421,8 @@ void kickos_rx_dev_dispatch(void)
     }
 }
 
-// SCI0..SCI6 run on PCLKB (UM sec.42 preamble p.2144), READ OUT OF THE LIVE TREE on every
-// call rather than cached from arch_init.
+// An SCI's clock, PCLKA or PCLKB, READ OUT OF THE LIVE TREE on every call rather than cached
+// from arch_init.
 //
 // The SYSTEM block this reads is kernel-reserved (arch_reserved_blocks), so the holder of
 // an SCI window has no way to read the select itself. A block this chip does not model
@@ -364,9 +434,10 @@ void kickos_rx_dev_dispatch(void)
 // still link cleanly.
 uint32_t arch_periph_clock_hz(uintptr_t base)
 {
-    if (base == mmap::SCI6)
+    sci_channel const sci = sci_channel_of(base);
+    if (sci.mstp_bit != 0u)
     {
-        return clocktree::pclkb_hz();
+        return pclk_hz(sci.pclka);
     }
     // RIICa is on PCLKB too (UM sec.43 preamble, "PCLK" there being PCLKB).
     if (base == mmap::RIIC0 or base == mmap::RIIC1 or base == mmap::RIIC2)
@@ -405,6 +476,11 @@ int arch_periph_enable(uintptr_t base)
         reg = cgc::MSTPCRC;
         bit = cgc::MSTPC_RIIC2;
     }
+    else if (sci_channel_of(base).mstp_bit != 0u and base != CONSOLE_BASE)
+    {
+        reg = sci_channel_of(base).mstpcr;
+        bit = sci_channel_of(base).mstp_bit;
+    }
     else
     {
         return -KOS_EINVAL;
@@ -430,12 +506,12 @@ bool arch_console_write_sync(char const* buf, size_t n)
 // also sets it (UM sec.42.2.11 p.2171).
 void arch_console_flush_sync(void)
 {
-    (void)clocktree::poll_flag(sci::SSR, sci::SSR_TEND, CONSOLE_POLL_LIMIT);
+    (void)clocktree::poll_flag(con::SSR, sci::SSR_TEND, CONSOLE_POLL_LIMIT);
 }
 
 console_tx_backend const* arch_console_tx_backend(int* irq_line)
 {
-    *irq_line = irq::SCI6_TXI;
+    *irq_line = KICKOS_BOARD_CONSOLE_LINE_TXI;
     return &rx_console_backend;
 }
 
@@ -445,53 +521,53 @@ void arch_console_reclaim_window(uintptr_t* base, size_t* size)
     *size = CONSOLE_WIN_SIZE;
 }
 
-// Panic-path reclaim: force SCI6 back to a polled-ready 8N1 TX channel after a driver may
+// Panic-path reclaim: force the console SCI back to a polled-ready 8N1 TX channel after a driver may
 // have garbled every writable register in its granted window. Must be re-entrant from a
 // nested fault, so it is straight-line ABSOLUTE stores only, never a read-modify-write.
-// SCR.CKE = 1x points the transfer clock at the unwired SCK6 pin and starves the shifter
+// SCR.CKE = 1x points the transfer clock at the unwired SCK pin and starves the shifter
 // (UM sec.42.2.10 p.2167 Note 2); both SCR stores here put CKE back to 00b.
 void arch_console_reclaim(void)
 {
     // SMR, SCMR, SEMR, BRR, SNFR, SIMR1 and SPMR are writable ONLY with TE and RE both 0
     // (notes on UM sec.42.2.9/.12/.13/.15/.16/.17/.21), so nothing below lands unless this
     // store comes first.
-    r8(sci::SCR) = 0;
+    r8(con::SCR) = 0;
 
     // Ahead of SMR, because SMIF picks SMR's field layout.
-    r8(sci::SCMR) = sci::SCMR_UART;
+    r8(con::SCMR) = sci::SCMR_UART;
 
-    // IICM = 0 leaves simple I2C mode, in which the TXD6/SSDA6/SMOSI6 pin frames I2C data
+    // IICM = 0 leaves simple I2C mode, in which the TXD/SSDA/SMOSI pin frames I2C data
     // rather than an async character (UM sec.42.2.17 p.2199); IICDL = 0.
-    r8(sci::SIMR1) = 0;
-    r8(sci::SIMR2) = 0; // I2C interrupt mode, clock synchronization, ACK transmission data
+    r8(con::SIMR1) = 0;
+    r8(con::SIMR2) = 0; // I2C interrupt mode, clock synchronization, ACK transmission data
 
     // IICSDAS = 00b restores serial data output on the pin: 10b PINS IT LOW and 11b puts it
     // in high impedance (UM sec.42.2.19 p.2201).
-    r8(sci::SIMR3) = 0;
+    r8(con::SIMR3) = 0;
 
     // CTSE set gates every byte on a CTS input this board does not wire (UM sec.42.2.21
     // p.2204). SSE, MSS, CKPOL and CKPH = 0 leave simple SPI mode.
-    r8(sci::SPMR) = 0;
+    r8(con::SPMR) = 0;
 
     // NFCS = 000b, the asynchronous-mode setting (UM sec.42.2.16 p.2198).
-    r8(sci::SNFR) = 0;
+    r8(con::SNFR) = 0;
 
     // Priced off the LIVE clock tree, NOT folded to a 60 MHz constant: a bring-up can land on
     // the HOCO or the LOCO.
     sci::BaudSetting bs;
-    if (not sci::baud_select(clocktree::pclkb_hz(), CONSOLE_BAUD, &bs))
+    if (not sci::baud_select(pclk_hz(CONSOLE_CHANNEL.pclka), CONSOLE_BAUD, &bs))
     {
         // A clock tree baud_select cannot price gets the reset triple.
         bs.cks = 0;
         bs.semr = 0;
         bs.brr = sci::BRR_RESET;
     }
-    r8(sci::SMR) = bs.cks;   // CM 0 async, CHR 0 for 8 bits with SCMR.CHR1, PE/PM/STOP/MP 0
-    r8(sci::SEMR) = bs.semr; // NFEN, RXDESEL, ABCSE, ACS0 and BRME all 0
-    r8(sci::BRR) = bs.brr;
+    r8(con::SMR) = bs.cks;   // CM 0 async, CHR 0 for 8 bits with SCMR.CHR1, PE/PM/STOP/MP 0
+    r8(con::SEMR) = bs.semr; // NFEN, RXDESEL, ABCSE, ACS0 and BRME all 0
+    r8(con::BRR) = bs.brr;
 
     // TX only, TIE off, and LAST.
-    r8(sci::SCR) = sci::SCR_TE;
+    r8(con::SCR) = sci::SCR_TE;
 }
 
 // Covers BOTH mux stages an RX pin passes, MPC PmnPFS.PSEL and PORTm.PMR. Mediating PMR

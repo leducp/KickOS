@@ -18,6 +18,7 @@ extern "C"
 {
     arch_phys_addr_t kickos_frame_alloc(void);
     void kickos_frame_free(arch_phys_addr_t frame);
+    void kickos_leaf_free(arch_phys_addr_t frame);
 }
 
 namespace
@@ -191,6 +192,42 @@ namespace
         return n;
     }
 
+    // The tables below a root at height `top` that a map of [va, va + pages) can add in any
+    // space: one per entry the range spans at each height. Arithmetic, no walk.
+    size_t tables_spanned(int top, uintptr_t va, size_t pages)
+    {
+        if (pages == 0)
+        {
+            return 0;
+        }
+        uintptr_t const last = va + static_cast<uintptr_t>(pages - 1u) * GRANULE;
+        size_t n = 0;
+        for (int h = top; h > 0; h--)
+        {
+            unsigned const shift = GRANULE_SHIFT + static_cast<unsigned>(h) * INDEX_BITS;
+            n = n + static_cast<size_t>((last >> shift) - (va >> shift) + 1u);
+        }
+        return n;
+    }
+
+    // tables_spanned's bound over every va: a run of `pages` straddles at most one entry more
+    // than it fills at each height.
+    size_t tables_run(int top, size_t pages)
+    {
+        if (pages == 0)
+        {
+            return 0;
+        }
+        size_t n = 0;
+        for (int h = top; h > 0; h--)
+        {
+            unsigned const bits = static_cast<unsigned>(h) * INDEX_BITS;
+            size_t const span = static_cast<size_t>(1) << bits;
+            n = n + (pages + span - 2u) / span + 1u;
+        }
+        return n;
+    }
+
     // Frees every table under `table` and every output it names. Kept root slots stay.
     void free_subtree(uint64_t* table, int height, bool root)
     {
@@ -208,9 +245,12 @@ namespace
             if (height > 0 and entry_table(desc, height))
             {
                 free_subtree(table_at(entry_pa(desc)), height - 1, false);
+                kickos_frame_free(entry_pa(desc));
             }
-            // The allocator ignores outputs it does not own, such as device pages.
-            kickos_frame_free(entry_pa(desc));
+            else
+            {
+                kickos_leaf_free(entry_pa(desc));
+            }
             table[i] = 0;
         }
     }

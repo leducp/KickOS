@@ -70,9 +70,10 @@ if(KICKOS_NUM_CORES GREATER 1 AND KICKOS_ARCH MATCHES "^(armv8a|rv64imac)$")
     BOOTS 2)
 endif()
 
-# The doorbell-and-lock gate, on the same image: the round runs in arch_init, so the app is only
-# what carries it there. It reads QEMU's own GIC trace beside the console, which is why it needs
-# no app of its own and why its verdict does not rest on a number the image printed.
+# The doorbell-and-lock gate, on a witness tree's build of the same image: the round runs in
+# arch_init of a KICKOS_WITNESS_DOORBELL kernel, so the app is only what carries it there. It
+# reads QEMU's own GIC trace beside the console, which is why it needs no app of its own and why
+# its verdict does not rest on a number the image printed.
 #
 # The rv64 arm has one channel rather than two and its header says so: the CLINT store that
 # raises a doorbell carries no trace event, so no arm there counts raises. What the trap log
@@ -87,7 +88,9 @@ endif()
 if(_hello_doorbell)
   kickos_add_qemu_test(NAME ${_tag}_smp_doorbell TARGET hello
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_smp_doorbell.sh"
-    ARGS ${KICKOS_NUM_CORES} "pong 3" ${KICKOS_ARCH})
+    ARGS ${KICKOS_NUM_CORES} "pong 3" ${KICKOS_ARCH} "${PROJECT_SOURCE_DIR}" "${CMAKE_COMMAND}"
+         "${_fs_preset_key}" "${PROJECT_BINARY_DIR}" "${PROJECT_BINARY_DIR}/doorbell-witness"
+    WORK 300)
   # Serial: the emulator arm reads whether a core took the doorbell interrupt, and a core that
   # is already spinning in the lock's acquire loop answers by polling instead and acknowledges
   # nothing. Which path runs depends on host scheduling, the guest clock tracking host time, so

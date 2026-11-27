@@ -20,7 +20,8 @@ namespace kickos::rp2350::reg::accessctrl
     constexpr uint32_t FIRST_BUS_REG = 0x14u;
     constexpr uint32_t LAST_BUS_REG = 0xE8u;
 
-    // No node is assigned these: platform/rp2350/chip.yaml's `never_assigned`.
+    // No node is assigned these, nor the board's console UART: platform/rp2350/chip.yaml's
+    // `never_assigned`.
     constexpr uint32_t NEVER_ASSIGNED[] = {
         0x14u, // ROM
         0x18u, // XIP_MAIN
@@ -30,7 +31,6 @@ namespace kickos::rp2350::reg::accessctrl
         0x68u, // IO_BANK0
         0x70u, // PADS_BANK0
         0x98u, // TIMER0
-        0xA4u, // UART1
         0xC0u, // CLOCKS
         0xC4u, // XOSC
         0xCCu, // PLL_SYS

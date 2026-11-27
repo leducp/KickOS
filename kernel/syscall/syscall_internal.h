@@ -244,6 +244,17 @@ namespace kickos
         return a;
     }
 
+    // A parked receiver's wait_result that sends it back through its own receive; never returned
+    // to user.
+    constexpr int32_t RECV_AGAIN = INT32_MIN + 2;
+
+    // Whether `w`, parked receiving on `e`, may take a message. A dying receiver takes none, and
+    // neither does one of a published console whose task ended: either would die with the line.
+    inline bool endpoint_takes_to(Endpoint const* e, Thread const* w)
+    {
+        return w != nullptr and not w->dying and e->console != EP_CONSOLE_ENDED;
+    }
+
     inline void reply_wait_seat(Thread* t, uintptr_t buf, size_t recv_cap)
     {
         t->ipc.buf = buf;
@@ -283,6 +294,9 @@ namespace kickos
     int program_find_call(uintptr_t name, uint32_t* out_prog);
 
 #if KICKOS_PRESYNC
+    // An interrupt window between two rounds or passes of a call, and its cancelled caller's
+    // death point.
+    void presync_yield();
     // Under the kernel lock, on a spawn's first round: its parameters and window list into the
     // caller's record, which every round's plan and locked pass then read.
     void spawn_presync_enter(kos_thread_params const* p);

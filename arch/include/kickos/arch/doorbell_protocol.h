@@ -17,6 +17,8 @@
 
 #include <stdint.h>
 
+#include <atomic>
+
 // ONE guard over everything below, the part header included: this file ships from the
 // always-installed root and <kickos/arch/doorbell_part.h> only for the configured arch, so an
 // image with no doorbell has no part header and must still compile standalone
@@ -24,11 +26,22 @@
 #if (KICKOS_NUM_CORES > 1 || KICKOS_AMP_NODE)
 
 #include <kickos/arch/doorbell_part.h>
+#if KICKOS_KERNEL_CORES > 1
+#include <kickos/arch/atomic_cas.h>
+#endif
 
 namespace kickos::doorbell
 {
     using PartRow = Row<KICKOS_DOORBELL_LINE>;
     using PartCell = Cell<KICKOS_DOORBELL_LINE>;
+
+    // How long a peer may leave a request unanswered before it is taken as lost. Sized far
+    // over, not tuned: under emulation without icount the guest clock tracks host time, and
+    // a host that deschedules a peer's vCPU makes it late without making it dead. Keep it a
+    // duration, never an iteration count: a spinning waiter's rate is not the peer's.
+    constexpr uint64_t PEER_WAIT_NS = 5ull * 1000ull * 1000ull * 1000ull;
+    // A clock that has not moved across this many spins is dead, so a bounded wait ends anyway.
+    constexpr uint32_t DEAD_CLOCK_SPINS = 1u << 24;
 
     // Both nodes write these, so under one image per node they sit in the region the two link
     // scripts agree on rather than being allocated per image.
@@ -41,7 +54,7 @@ namespace kickos::doorbell
     // Whether any peer has asked this core for something it has not answered.
     bool pending(void);
 
-#if KICKOS_NUM_CORES > 1
+#if KICKOS_NUM_CORES > 1 && defined(KICKOS_WITNESS_DOORBELL) && KICKOS_WITNESS_DOORBELL
     // What the boot check asks of a parked secondary. 0 parks it in its sleep; 1 spins it,
     // opening its interrupts on every turn; 2 makes it take the lock under its own mask.
     //
@@ -61,6 +74,98 @@ namespace kickos::doorbell
     // check needs an arrival to wait for rather than a race to win.
     extern PartCell g_held[KICKOS_NUM_CORES];
     extern PartCell g_spinning[KICKOS_NUM_CORES];
+#endif
+
+#if KICKOS_KERNEL_CORES > 1
+    // The terminal panic's halt: g_halter is the halting core plus one, or 0; g_halted[i] that
+    // core i has stopped; g_reachable[i] that core i services its doorbell, so the halter waits
+    // on it.
+    extern Seq g_halter;
+    extern Seq g_halted[KICKOS_DOORBELL_CORES];
+    extern Seq g_reachable[KICKOS_DOORBELL_CORES];
+
+    // Masked caller. Never answers, never takes the kernel lock again.
+    [[noreturn]] __attribute__((always_inline)) inline void halt_here(uint32_t me)
+    {
+        g_halted[me] = 1u;
+        while (true)
+        {
+            part_spin();
+        }
+    }
+
+    __attribute__((always_inline)) inline void halt_if_asked(uint32_t me)
+    {
+        uint32_t const halter = g_halter.load();
+        if (halter != 0u and halter != me + 1u)
+        {
+            halt_here(me);
+        }
+    }
+
+    // Before the core's first halt_if_asked: one of it and the halter sees the other's store.
+    inline void reachable(uint32_t me)
+    {
+        g_reachable[me] = 1u;
+        std::atomic_thread_fence(std::memory_order_seq_cst);
+    }
+
+    // The claiming core plus one, or 0.
+    extern uint32_t g_halt_claim;
+
+    // kickos_doorbell_halt_peers's body. Request cells and not a bare raise: a peer spinning
+    // masked for the kernel lock services only a request it finds pending. A second core halts
+    // here, so two terminal panics never wait on each other. A peer not yet reachable is not
+    // waited on: it halts on reaching park.
+    inline void halt_peers(void)
+    {
+        uint32_t const me = arch_doorbell_core();
+        // The claim carries its core: a panic nested on the claimant anywhere past the claim,
+        // before its g_halter store included, must run the halt again, not halt the claimant.
+        uint32_t claim = 0u;
+        while (not arch_cas_u32(&g_halt_claim, &claim, me + 1u))
+        {
+            if (claim != 0u)
+            {
+                break;
+            }
+        }
+        if (claim != 0u and claim != me + 1u)
+        {
+            halt_here(me);
+        }
+        g_halter = me + 1u;
+        // Pairs with reachable(): a peer that missed g_halter is one this loop sees reachable.
+        std::atomic_thread_fence(std::memory_order_seq_cst);
+        uint32_t const peers = KICKOS_CORE_SET_ALL & ~(1u << me);
+        arch_ipi_send(peers);
+        uint64_t const start = arch_clock_now();
+        uint32_t still = 0;
+        for (uint32_t core = 0; core < KICKOS_KERNEL_CORES; core++)
+        {
+            if ((peers & (1u << core)) == 0 or g_reachable[core].load() == 0u)
+            {
+                continue;
+            }
+            while (g_halted[core].load() == 0u)
+            {
+                uint64_t const now = arch_clock_now();
+                if (now - start > PEER_WAIT_NS)
+                {
+                    return;
+                }
+                if (now == start)
+                {
+                    still++;
+                    if (still >= DEAD_CLOCK_SPINS)
+                    {
+                        return;
+                    }
+                }
+                part_spin();
+            }
+        }
+    }
 #endif
 
     // The service body's steps, each taking the token the step before it returns: snapshot,
@@ -129,7 +234,17 @@ void kickos_doorbell_poll(void);
 // reaches here only on an AMP node; everywhere else arch_ipi_send services it inline.
 void kickos_doorbell_raise(uint32_t cores);
 
-#if KICKOS_NUM_CORES > 1
+#if KICKOS_KERNEL_CORES > 1
+// The terminal panic's stop of every other kernel core, masked and for good, returning once each
+// has stopped or PEER_WAIT_NS has passed. Masked caller; one that finds another core's halt under
+// way stops instead.
+void kickos_doorbell_halt_peers(void);
+
+// The primary's reachable mark, once every peer has arrived; a secondary's is its park's.
+void kickos_doorbell_reachable(void);
+#endif
+
+#if KICKOS_NUM_CORES > 1 && defined(KICKOS_WITNESS_DOORBELL) && KICKOS_WITNESS_DOORBELL
 // The primary's one-shot boot check of the mechanism the kernel is about to depend on, run once
 // with every secondary parked. Fatal on failure.
 void kickos_doorbell_boot_check(void);
@@ -193,19 +308,25 @@ namespace kickos::doorbell
     // and unmasks and sleeps with nothing landing between the two; Part::open takes a pending
     // raise through the vector; Part::before_start readies this core for its scheduler.
     //
-    // g_contend picks the state the boot check wants this core in: asleep, interrupts open so
-    // the vector answers, or the kernel lock taken under this core's own mask, where only the
-    // poll in the turn wait can.
+    // Under KICKOS_WITNESS_DOORBELL, g_contend picks the state the boot check wants this core
+    // in: asleep, interrupts open so the vector answers, or the kernel lock taken under this
+    // core's own mask, where only the poll in the turn wait can.
     template <typename Part>
     [[noreturn]] __attribute__((always_inline)) inline void park(void)
     {
+#if KICKOS_KERNEL_CORES > 1 || (defined(KICKOS_WITNESS_DOORBELL) && KICKOS_WITNESS_DOORBELL)
         uint32_t const me = arch_cpu_id();
+#endif
+#if KICKOS_KERNEL_CORES > 1
+        reachable(me);
+#endif
         while (true)
         {
             // Masked across every test below. A raise taken between a test and the sleep is a
             // wake this core never sleeps on, and the core-start raise is a single edge.
             (void)arch_irq_save();
 #if KICKOS_KERNEL_CORES > 1
+            halt_if_asked(me);
             if (kickos_kernel_core_startable() != 0)
             {
                 // Masked and never restored: the scheduler's first resume stands on a frame
@@ -214,6 +335,7 @@ namespace kickos::doorbell
                 kickos_kernel_core_start();
             }
 #endif
+#if defined(KICKOS_WITNESS_DOORBELL) && KICKOS_WITNESS_DOORBELL
             uint32_t const contend = g_contend.load();
             if (contend == CONTEND_PARK)
             {
@@ -233,6 +355,10 @@ namespace kickos::doorbell
             }
             Part::open();
             part_spin();
+#else
+            // Must unmask and sleep with nothing landing between the two.
+            Part::sleep();
+#endif
         }
     }
 #endif

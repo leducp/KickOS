@@ -10,6 +10,7 @@
 #include <kickos/io/mmio.h>
 
 #include "accessctrl_rows.h"
+#include "board_pins.h"
 #include "regs/accessctrl.h"
 #include "regs/sio_mc.h"
 
@@ -131,7 +132,8 @@ namespace
     {
         uint16_t at = 0;
         accessctrl::Refusal const refusal =
-            accessctrl::refusal_of(kickos_gate_rows, kickos_gate_row_count, NODE_CORE, NODE_CORE_COUNT, at);
+            accessctrl::refusal_of(kickos_gate_rows, kickos_gate_row_count, NODE_CORE, NODE_CORE_COUNT,
+                                   KICKOS_BOARD_CONSOLE_GATE_REGISTER, at);
         char const* why = nullptr;
         switch (refusal)
         {

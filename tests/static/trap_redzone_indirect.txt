@@ -526,31 +526,31 @@ site armv7m frdmk64f-flat console_tx.cc:drain_in_producer@1/2 chip_mk64f.cc:k64_
 site armv7m frdmk64f-flat console_tx.cc:drain_in_producer@2/2 chip_mk64f.cc:k64_tx_push
 
 
-site armv7m teensy41 console_tx.cc:wait_slot@1/1  chip_imxrt1062.cc:lp6_tx_slot_free
-site armv7m teensy41 console_tx_flush_sync@2/2 chip_imxrt1062.cc:lp6_tx_push
-site armv7m teensy41 console_tx_isr@1/3           chip_imxrt1062.cc:lp6_tx_slot_free
-site armv7m teensy41 console_tx_isr@2/3           chip_imxrt1062.cc:lp6_tx_push
-site armv7m teensy41 console_tx_isr@3/3           chip_imxrt1062.cc:lp6_tx_irq_disable
-site armv7m teensy41 console_tx_flush_sync@1/2    chip_imxrt1062.cc:lp6_tx_irq_disable
-site armv7m teensy41 console_tx_deinit@1/1        chip_imxrt1062.cc:lp6_tx_irq_disable
-site armv7m teensy41 console_tx.cc:insert_locked@1/3 chip_imxrt1062.cc:lp6_tx_irq_enable
-site armv7m teensy41 console_tx.cc:insert_locked@2/3 chip_imxrt1062.cc:lp6_tx_slot_free
-site armv7m teensy41 console_tx.cc:insert_locked@3/3 chip_imxrt1062.cc:lp6_tx_push
-site armv7m teensy41 console_tx.cc:drain_in_producer@1/2 chip_imxrt1062.cc:lp6_tx_slot_free
-site armv7m teensy41 console_tx.cc:drain_in_producer@2/2 chip_imxrt1062.cc:lp6_tx_push
+site armv7m teensy41 console_tx.cc:wait_slot@1/1  chip_imxrt1062.cc:con_tx_slot_free
+site armv7m teensy41 console_tx_flush_sync@2/2 chip_imxrt1062.cc:con_tx_push
+site armv7m teensy41 console_tx_isr@1/3           chip_imxrt1062.cc:con_tx_slot_free
+site armv7m teensy41 console_tx_isr@2/3           chip_imxrt1062.cc:con_tx_push
+site armv7m teensy41 console_tx_isr@3/3           chip_imxrt1062.cc:con_tx_irq_disable
+site armv7m teensy41 console_tx_flush_sync@1/2    chip_imxrt1062.cc:con_tx_irq_disable
+site armv7m teensy41 console_tx_deinit@1/1        chip_imxrt1062.cc:con_tx_irq_disable
+site armv7m teensy41 console_tx.cc:insert_locked@1/3 chip_imxrt1062.cc:con_tx_irq_enable
+site armv7m teensy41 console_tx.cc:insert_locked@2/3 chip_imxrt1062.cc:con_tx_slot_free
+site armv7m teensy41 console_tx.cc:insert_locked@3/3 chip_imxrt1062.cc:con_tx_push
+site armv7m teensy41 console_tx.cc:drain_in_producer@1/2 chip_imxrt1062.cc:con_tx_slot_free
+site armv7m teensy41 console_tx.cc:drain_in_producer@2/2 chip_imxrt1062.cc:con_tx_push
 
-site armv7m teensy41-flat console_tx.cc:wait_slot@1/1  chip_imxrt1062.cc:lp6_tx_slot_free
-site armv7m teensy41-flat console_tx_flush_sync@2/2 chip_imxrt1062.cc:lp6_tx_push
-site armv7m teensy41-flat console_tx_isr@1/3           chip_imxrt1062.cc:lp6_tx_slot_free
-site armv7m teensy41-flat console_tx_isr@2/3           chip_imxrt1062.cc:lp6_tx_push
-site armv7m teensy41-flat console_tx_isr@3/3           chip_imxrt1062.cc:lp6_tx_irq_disable
-site armv7m teensy41-flat console_tx_flush_sync@1/2    chip_imxrt1062.cc:lp6_tx_irq_disable
-site armv7m teensy41-flat console_tx_deinit@1/1        chip_imxrt1062.cc:lp6_tx_irq_disable
-site armv7m teensy41-flat console_tx.cc:insert_locked@1/3 chip_imxrt1062.cc:lp6_tx_irq_enable
-site armv7m teensy41-flat console_tx.cc:insert_locked@2/3 chip_imxrt1062.cc:lp6_tx_slot_free
-site armv7m teensy41-flat console_tx.cc:insert_locked@3/3 chip_imxrt1062.cc:lp6_tx_push
-site armv7m teensy41-flat console_tx.cc:drain_in_producer@1/2 chip_imxrt1062.cc:lp6_tx_slot_free
-site armv7m teensy41-flat console_tx.cc:drain_in_producer@2/2 chip_imxrt1062.cc:lp6_tx_push
+site armv7m teensy41-flat console_tx.cc:wait_slot@1/1  chip_imxrt1062.cc:con_tx_slot_free
+site armv7m teensy41-flat console_tx_flush_sync@2/2 chip_imxrt1062.cc:con_tx_push
+site armv7m teensy41-flat console_tx_isr@1/3           chip_imxrt1062.cc:con_tx_slot_free
+site armv7m teensy41-flat console_tx_isr@2/3           chip_imxrt1062.cc:con_tx_push
+site armv7m teensy41-flat console_tx_isr@3/3           chip_imxrt1062.cc:con_tx_irq_disable
+site armv7m teensy41-flat console_tx_flush_sync@1/2    chip_imxrt1062.cc:con_tx_irq_disable
+site armv7m teensy41-flat console_tx_deinit@1/1        chip_imxrt1062.cc:con_tx_irq_disable
+site armv7m teensy41-flat console_tx.cc:insert_locked@1/3 chip_imxrt1062.cc:con_tx_irq_enable
+site armv7m teensy41-flat console_tx.cc:insert_locked@2/3 chip_imxrt1062.cc:con_tx_slot_free
+site armv7m teensy41-flat console_tx.cc:insert_locked@3/3 chip_imxrt1062.cc:con_tx_push
+site armv7m teensy41-flat console_tx.cc:drain_in_producer@1/2 chip_imxrt1062.cc:con_tx_slot_free
+site armv7m teensy41-flat console_tx.cc:drain_in_producer@2/2 chip_imxrt1062.cc:con_tx_push
 
 
 site armv7m xmc4800-relax console_tx.cc:wait_slot@1/1  usic_uart.cc:xmc_tx_slot_free
@@ -870,10 +870,9 @@ site lx6 * kickos::task_init@indirect             NONE reason: no indirect call 
 site lx6 * kickos::domain_init@indirect           NONE reason: no indirect call in the emitted body
 site lx6 * kickos::image_records_publish@indirect NONE reason: no indirect call in the emitted body
 site lx6 * ?kmain.cc:idle_build@indirect          NONE reason: no indirect call in the emitted body
-site lx6 * ?kickos_doorbell_boot_check@indirect   NONE reason: no indirect call in the emitted body
-site lx6 * ?doorbell_protocol.cc:doorbell_round@indirect NONE reason: no indirect call in the emitted body
-site lx6 * kickos::task_create_call@indirect NONE reason: no indirect call in the emitted body
 site lx6 * kickos::task_create_declared@indirect NONE reason: no indirect call in the emitted body
+# gcc labels task_create_locked's .constprop.0 clone "constprop", so the gate keys it by that leaf.
+site lx6 * syscall_thread.cc:constprop@indirect NONE reason: no indirect call in the emitted body, decoded from its entry and its branch targets
 site lx6 * syscall_thread.cc:spawn_locked@indirect NONE reason: no indirect call in the emitted body
 site lx6 * kickos::watch_call@indirect NONE reason: no indirect call in the emitted body, each placeholder sits beside target_of's own edge
 
@@ -946,7 +945,14 @@ site lx6 * ?Reset_Handler@1/1 NONE reason: the walk calls nothing, the MAIN clas
 site lx6 * ?chip_esp32.cc:bbpll_write@1/1 NONE reason: _regi2c_impl_write, ROM code with no .ci, run on the boot stack below Reset_Handler's frames alone
 site rv32imac * ?Reset_Handler@1/1 NONE reason: the walk calls nothing, the MAIN class's init record refusing any constructor no walk reaches
 site rv64imac * ?Reset_Handler@1/1 NONE reason: the walk calls nothing, the MAIN class's init record refusing any constructor no walk reaches
-site x86_64 * ?kickos_x86_64_landed@1/1 NONE reason: the walk calls nothing, the UEFI class's init record refusing any constructor no walk reaches
+# selftest_la57, the one image linking the five-level witness, is built only by the presets with
+# no KICKOS_TEST_SHAPE.
+site x86_64 qemu-x86_64 ?kickos_x86_64_landed@1/1 ?la57_witness_x86_64.cc:enter_la57 reason: the walk calls the five-level witness's constructor in selftest_la57 and nothing else, the UEFI class's init record refusing any constructor no walk reaches
+site x86_64 qemu-x86_64-smp2 ?kickos_x86_64_landed@1/1 ?la57_witness_x86_64.cc:enter_la57 reason: the walk calls the five-level witness's constructor in selftest_la57 and nothing else, the UEFI class's init record refusing any constructor no walk reaches
+site x86_64 qemu-x86_64-smp2root1 ?kickos_x86_64_landed@1/1 NONE reason: no image links the five-level witness, so the walk calls nothing, the UEFI class's init record refusing any constructor no walk reaches
+site x86_64 qemu-x86_64-smp4 ?kickos_x86_64_landed@1/1 NONE reason: no image links the five-level witness, so the walk calls nothing, the UEFI class's init record refusing any constructor no walk reaches
+site x86_64 qemu-x86_64-smp8 ?kickos_x86_64_landed@1/1 NONE reason: no image links the five-level witness, so the walk calls nothing, the UEFI class's init record refusing any constructor no walk reaches
+site x86_64 qemu-x86_64-smp12 ?kickos_x86_64_landed@1/1 NONE reason: no image links the five-level witness, so the walk calls nothing, the UEFI class's init record refusing any constructor no walk reaches
 site x86_64 * ?efi_main@1/2 NONE reason: GetMemoryMap, firmware code with no .ci, inside the stack UEFI promises
 site x86_64 * ?efi_main@2/2 NONE reason: ExitBootServices, firmware code with no .ci, inside the stack UEFI promises
 site x86_64 * ?kickos_x86_64_floor@1/1 NONE reason: the console's OutputString, firmware code with no .ci, inside the stack UEFI promises

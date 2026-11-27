@@ -32,7 +32,9 @@ struct ampbook_row
     // the address it stored to and loaded from, and what the load returned.
     _Atomic uint32_t gate_word;
     _Atomic uint32_t gate_word_read;
-    uint32_t rsv[9];
+    // The core clock the node's kernel states, in Hz.
+    _Atomic uint32_t gate_clock;
+    uint32_t rsv[8];
 };
 
 _Static_assert(sizeof(struct ampbook_row) == 64u, "a row is its own 64 bytes");

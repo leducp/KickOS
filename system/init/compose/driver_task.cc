@@ -113,8 +113,7 @@ namespace
         }
     }
 
-    // The kernel console, or the host's stdout where a console task already serving it holds the
-    // console: never the endpoint of a driver this host is still bringing up.
+    // The kernel console until a console is published, then the host's stdout.
     void hosted_say(char const* s)
     {
         kickos::kconsole_write_all(s, strlen(s));
@@ -129,26 +128,12 @@ namespace
         return -1;
     }
 
-    // A zero-length send, which only a receive takes, bounded as a console handover's probe is.
-    // The endpoint answers -KOS_ECONNREFUSED until its server has first received, so that is
-    // retried.
+    // A zero-length send, which only a receive takes, bounded past the readiness wait.
     int32_t probe(kos_cap_t ep)
     {
-        kos_monotonic_t const until = kos::after(kickos::driver::KOS_DRV_HANDOVER_PROBE
-                                                 + kickos::driver::KOS_DRV_READY_WAIT);
-        while (true)
-        {
-            if (kos_monotonic_now().ns >= until.ns)
-            {
-                return -KOS_ETIMEDOUT;
-            }
-            int32_t const rc = kos_send(ep, "", 0, until);
-            if (rc != -KOS_ECONNREFUSED)
-            {
-                return rc;
-            }
-            kos::sleep_for(kickos::driver::KOS_DRV_READY_RETRY);
-        }
+        return kos_send(ep, "", 0,
+                        kos::after(kickos::driver::KOS_DRV_SEND_WAIT
+                                   + kickos::driver::KOS_DRV_READY_WAIT));
     }
 
     // Stages hosted record `h` of task `host` as its own task's create and init would: the

@@ -17,6 +17,7 @@
 #include "regs/tim.h"
 #include "regs/usart.h"
 #include "board_pins.h"
+#include "usart_class.h"
 #include "stm32_gpio.h"
 #include "stm32_usart.h"
 #include "clock_bringup.h"
@@ -80,11 +81,59 @@ namespace
         rcc::PLLCFGR_PLLP_DIV4 | (rcc::PLLN << rcc::PLLCFGR_PLLN_SHIFT) |
         (PLLM << rcc::PLLCFGR_PLLM_SHIFT);
 
-    // USART2's PCLK1: the HSI rate until the PLL locks.
+    // The APB rates: the HSI's until the PLL locks.
     uint32_t pclk1_hz = clocktree::HSI_HZ;
+    uint32_t pclk2_hz = clocktree::HSI_HZ;
 
-    static_assert(KICKOS_BOARD_CONSOLE_BASE == mmap::USART2_BASE,
-                  "the board's console is not the USART this backend drives");
+    // A USART's clock enable, and the APB bus that clocks it (RM0383 sec.6.3.11, 6.3.12).
+    struct usart_clock
+    {
+        uintptr_t enr;
+        uint32_t enr_bit;
+        bool apb2;
+    };
+
+    constexpr usart_clock usart_clock_of(uintptr_t base)
+    {
+        if (base == mmap::USART1_BASE)
+        {
+            return {rcc::APB2ENR, rcc::APB2ENR_USART1EN, true};
+        }
+        if (base == mmap::USART6_BASE)
+        {
+            return {rcc::APB2ENR, rcc::APB2ENR_USART6EN, true};
+        }
+        return {rcc::APB1ENR, rcc::APB1ENR_USART2EN, false};
+    }
+
+    constexpr bool is_usart(uintptr_t base)
+    {
+        return base == mmap::USART1_BASE or base == mmap::USART2_BASE or base == mmap::USART6_BASE;
+    }
+
+    uint32_t usart_pclk(uintptr_t base)
+    {
+        if (usart_clock_of(base).apb2)
+        {
+            return pclk2_hz;
+        }
+        return pclk1_hz;
+    }
+
+    constexpr uintptr_t CONSOLE_BASE = KICKOS_BOARD_CONSOLE_BASE;
+    static_assert(is_usart(CONSOLE_BASE), "the board's console is not a USART of this chip");
+    constexpr usart_clock CONSOLE_CLOCK = usart_clock_of(CONSOLE_BASE);
+
+    namespace con
+    {
+        constexpr uintptr_t SR = CONSOLE_BASE + usart::SR_OFFSET;
+        constexpr uintptr_t DR = CONSOLE_BASE + usart::DR_OFFSET;
+        constexpr uintptr_t BRR = CONSOLE_BASE + usart::BRR_OFFSET;
+        constexpr uintptr_t CR1 = CONSOLE_BASE + usart::CR1_OFFSET;
+        constexpr uintptr_t CR2 = CONSOLE_BASE + usart::CR2_OFFSET;
+        constexpr uintptr_t CR3 = CONSOLE_BASE + usart::CR3_OFFSET;
+        constexpr uintptr_t GTPR = CONSOLE_BASE + usart::GTPR_OFFSET;
+    }
 
     void console_pins_init()
     {
@@ -161,37 +210,44 @@ namespace
         arch_irq_unmask(irq::TIM2_IRQ);
     }
 
-    void usart2_init()
+    void console_usart_init()
     {
         r32(rcc::AHB1ENR) |= (1u << KICKOS_BOARD_CONSOLE_TX_PORT) | (1u << KICKOS_BOARD_CONSOLE_RX_PORT);
-        r32(rcc::APB1ENR) |= rcc::APB1ENR_USART2EN;
+        r32(CONSOLE_CLOCK.enr) |= CONSOLE_CLOCK.enr_bit;
         console_pins_init();
 
-        r32(usart::CR1) = 0;         // OVER8=0, as usart_brr assumes
-        r32(usart::BRR) = stm32::usart_brr(pclk1_hz, usart::BAUD_115200);
-        r32(usart::CR1) = usart::CR1_UE | usart::CR1_TE | usart::CR1_RE; // TXEIE clear; ring primes it
+        r32(con::CR1) = 0;         // OVER8=0, as usart_brr assumes
+        r32(con::BRR) = stm32::usart_brr(usart_pclk(CONSOLE_BASE), usart::BAUD_115200);
+        r32(con::CR1) = usart::CR1_UE | usart::CR1_TE | usart::CR1_RE; // TXEIE clear; ring primes it
     }
 
     // TXE is level-triggered: enabling TXEIE while TXE=1 raises the IRQ at once.
-    int f4_tx_slot_free(void) { return (r32(usart::SR) & usart::SR_TXE) != 0; }
-    void f4_tx_push(uint8_t b) { r32(usart::DR) = b; }
-    void f4_tx_irq_enable(void) { r32(usart::CR1) |= usart::CR1_TXEIE; }
-    void f4_tx_irq_disable(void) { r32(usart::CR1) &= ~usart::CR1_TXEIE; }
+    int f4_tx_slot_free(void)
+    {
+        if (kickos::stm32f411::driver::usart_tx_ready(CONSOLE_BASE))
+        {
+            return 1;
+        }
+        return 0;
+    }
+    void f4_tx_push(uint8_t b) { r32(con::DR) = b; }
+    void f4_tx_irq_enable(void) { r32(con::CR1) |= usart::CR1_TXEIE; }
+    void f4_tx_irq_disable(void) { r32(con::CR1) &= ~usart::CR1_TXEIE; }
     console_tx_backend const f4_console_backend = {
         f4_tx_slot_free, f4_tx_push, f4_tx_irq_enable, f4_tx_irq_disable,
         &kickos_console_tx_storage};
 
     // The window arch_console_reclaim rewrites: ONE constant, so a reclaim cannot reach registers
     // whose holder was never checked.
-    constexpr uintptr_t CONSOLE_WIN_BASE = mmap::USART2_BASE;
+    constexpr uintptr_t CONSOLE_WIN_BASE = CONSOLE_BASE;
     constexpr size_t CONSOLE_WIN_SIZE = KICKOS_BOARD_CONSOLE_SIZE;
 
-    static_assert(usart::CR1 >= CONSOLE_WIN_BASE
-                  and usart::CR1 < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
-                  and usart::CR2 < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
-                  and usart::CR3 < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
-                  and usart::GTPR < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
-                  and usart::BRR < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE,
+    static_assert(con::CR1 >= CONSOLE_WIN_BASE
+                  and con::CR1 < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
+                  and con::CR2 < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
+                  and con::CR3 < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
+                  and con::GTPR < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
+                  and con::BRR < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE,
                   "arch_console_reclaim writes outside the window it reports");
 
 }
@@ -205,11 +261,12 @@ void arch_init(void)
     clocktree::Landed const landed = clocktree::bring_up(PLLCFGR_VALUE);
     SystemCoreClock = landed.sysclk_hz;
     pclk1_hz = landed.pclk1_hz;
+    pclk2_hz = landed.pclk2_hz;
     tim2_clock_init();
     // With HPRE=/1 and PPRE1 in {/1,/2} the APB timer-clock doubler makes TIM2's clock equal
     // SystemCoreClock; PPRE1 /4 or more would break that.
     g_clk.init(SystemCoreClock);
-    usart2_init();
+    console_usart_init();
     kickos_armv7m_init();
 }
 
@@ -233,12 +290,12 @@ bool arch_console_write_sync(char const* buf, size_t n)
 // the core right after this, so waiting on TXE would still lose the last character.
 void arch_console_flush_sync(void)
 {
-    (void)kickos::arch::wait_set(r32(usart::SR), usart::SR_TC);
+    (void)kickos::arch::wait_set(r32(con::SR), usart::SR_TC);
 }
 
 console_tx_backend const* arch_console_tx_backend(int* irq_line)
 {
-    *irq_line = irq::USART2_IRQ;
+    *irq_line = KICKOS_BOARD_CONSOLE_LINE_GLOBAL;
     return &f4_console_backend;
 }
 
@@ -255,35 +312,40 @@ void arch_console_reclaim_window(uintptr_t* base, size_t* size)
 // stores, NO read-modify-write, since an RMW on a garbled value is not safe to repeat from a
 // nested-fault re-entry.
 //
-// Beyond what usart2_init sets (BRR, CR1), it clears the registers a driver can set to cause
+// Beyond what console_usart_init sets (BRR, CR1), it clears the registers a driver can set to cause
 // SILENT LOSS. The clock gate and the pin mux sit outside the window: RCC is an
 // arch_reserved_blocks entry and arch_pinmux_set refuses the console pins.
 void arch_console_reclaim(void)
 {
     // FIRST, and the order is load-bearing: CR2's CPOL, CPHA and LBCL must not be written while
     // the transmitter is enabled (RM0383 sec.19.6.5), and this clears TE.
-    r32(usart::CR1) = 0;
+    r32(con::CR1) = 0;
     // CTSE postpones every byte until an unwired CTS is asserted, the true silent-loss case here;
     // IREN modulates the TX pin; HDSEL ties TX to RX; SCEN/NACK add smartcard framing; DMAT/DMAR
     // hand the data register to a DMA request.
-    r32(usart::CR3) = 0;
-    r32(usart::CR2) = 0;
-    r32(usart::GTPR) = 0;
+    r32(con::CR3) = 0;
+    r32(con::CR2) = 0;
+    r32(con::GTPR) = 0;
 
-    // From the live APB1 clock, which is the HSI when the crystal never came up.
-    r32(usart::BRR) = stm32::usart_brr(pclk1_hz, usart::BAUD_115200);
+    // From the live APB clock, which is the HSI when the crystal never came up.
+    r32(con::BRR) = stm32::usart_brr(usart_pclk(CONSOLE_BASE), usart::BAUD_115200);
 
     // TXEIE stays clear; console_tx re-arms it when the ring is used again.
-    r32(usart::CR1) = usart::CR1_UE | usart::CR1_TE | usart::CR1_RE;
+    r32(con::CR1) = usart::CR1_UE | usart::CR1_TE | usart::CR1_RE;
 }
 
+// The port has no per-pin alias for MODER or OTYPER: both are read-modify-writes, safe only
+// because this runs on the one core with interrupts masked.
 void arch_diag_led_init(void)
 {
     r32(rcc::AHB1ENR) |= (1u << KICKOS_BOARD_LED_PORT);
-    uint32_t m = r32(KICKOS_BOARD_LED_PORT_BASE + gpio::MODER);
-    m &= ~(0x3u << (KICKOS_BOARD_LED_BIT * 2));
-    m |= (gpio::MODER_OUTPUT << (KICKOS_BOARD_LED_BIT * 2));
-    r32(KICKOS_BOARD_LED_PORT_BASE + gpio::MODER) = m;
+    // The gate needs a bus transaction before the port is read, or the read returns stale bits
+    // that the write-back then stores over every other pin.
+    uint32_t const gate = r32(rcc::AHB1ENR);
+    __asm volatile("" ::"r"(gate) : "memory");
+    stm32::rmw(KICKOS_BOARD_LED_PORT_BASE + gpio::OTYPER, 1u << KICKOS_BOARD_LED_BIT, 0u);
+    stm32::rmw(KICKOS_BOARD_LED_PORT_BASE + gpio::MODER, 0x3u << (KICKOS_BOARD_LED_BIT * 2u),
+               gpio::MODER_OUTPUT << (KICKOS_BOARD_LED_BIT * 2u));
 }
 
 void arch_diag_led_set(int on)
@@ -357,25 +419,30 @@ int arch_pinmux_set(uint32_t port, uint32_t pin, uint32_t func)
     return 0;
 }
 
-// USART2 is on APB1, whose rate clock_init() landed in pclk1_hz. 0 for every other block: a
-// WRONG branch clock silently garbles the wire, so an unknown must not answer with the core
-// clock. USART1/USART6 are APB2 and would need their own entry.
+// A USART's APB rate as arch_init landed it. 0 for every other block: a WRONG branch clock
+// silently garbles the wire, so an unknown must not answer with the core clock.
 uint32_t arch_periph_clock_hz(uintptr_t base)
 {
-    if (base == mmap::USART2_BASE)
+    if (is_usart(base))
     {
-        return pclk1_hz;
+        return usart_pclk(base);
     }
     return 0u;
 }
 
 // KOS_SYS_PERIPH_ENABLE, keyed on the EXACT block base. Clock gate only. GPIO port clocks are
-// arch_pinmux_set's.
+// arch_pinmux_set's. The console USART is the kernel's, which arch_init clocked.
 int arch_periph_enable(uintptr_t base)
 {
     if (base == mmap::SPI1_BASE)
     {
         r32(rcc::APB2ENR) |= rcc::APB2ENR_SPI1EN;
+        return 0;
+    }
+    if (is_usart(base) and base != CONSOLE_BASE)
+    {
+        usart_clock const gate = usart_clock_of(base);
+        r32(gate.enr) |= gate.enr_bit;
         return 0;
     }
     return -KOS_EINVAL;

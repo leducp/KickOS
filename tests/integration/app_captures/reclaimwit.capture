@@ -16,15 +16,14 @@
 [reclaimwit]  2. the app now publishes the console to a driver it spawns
 [reclaimwit]  3. that driver never writes to a console, so the wire must go
 [reclaimwit]     silent: a MUTE line below must occur ZERO times
-[reclaimwit]  4. the app then SLAYS the driver and prints a LIVE line to
-[reclaimwit]     the kernel console the MUTE line was dropped from
+[reclaimwit]  4. the app then SLAYS the driver and ends its task with a
+[reclaimwit]     panic, whose LIVE record only the kernel writes
 [reclaimwit]  5. LIVE present + MUTE absent == arch_console_reclaim fired.
 [reclaimwit]     MUTE present == the publish never took, verdict void.
 [reclaimwit]     both absent == the reclaim did not fire, console still dark.
-[reclaimwit] LIVE kernel console after the driver died
-[reclaimwit]   handle_close rc=0
-[reclaimwit]   driver serve bytes rc=58
-[reclaimwit]   slay rc=0
-[reclaimwit]   post-death send (want -KOS_ECONNREFUSED) rc=-111
-[reclaimwit] PASS reclaim fired: driver slain, endpoint refused, wire back
-[reclaimwit] park arm: nothing further is printed, then main returns its verdict
+[reclaimwit] park arm: the LIVE record is the last line of the app
+
+kernel: console driver task ended, console reclaimed
+
+=== TASK PANIC === thread 'main' ended its task
+  [reclaimwit] LIVE PASS reclaim fired

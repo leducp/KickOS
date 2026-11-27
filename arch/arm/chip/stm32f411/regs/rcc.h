@@ -24,6 +24,8 @@ namespace kickos::stm32f411::reg::rcc
     // Peripheral clock-enable bits.
     constexpr uint32_t APB1ENR_USART2EN = 1u << 17;
     constexpr uint32_t APB1ENR_TIM2EN = 1u << 0; // also the APB1LPENR TIM2 bit
+    constexpr uint32_t APB2ENR_USART1EN = 1u << 4; // RM0383 sec.6.3.12
+    constexpr uint32_t APB2ENR_USART6EN = 1u << 5;
     constexpr uint32_t APB2ENR_SPI1EN = 1u << 12;
 
     // RCC_CR flags (RM lines 5157-5194).

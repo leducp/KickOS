@@ -158,6 +158,7 @@ namespace kickos::init
         void report(Report::Kind kind, uint16_t task, char const* step, int rc);
         void flush();
         void drop(uint16_t i);
+        void narrow_crossing(uint16_t i, bool restartable);
         void propagate();
         void end_if_cancelled();
         [[noreturn]] void end(int status);

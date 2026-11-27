@@ -7,7 +7,9 @@
 #ifndef KICKOS_ARCH_ARM_CHIP_XMC4800_USIC_H
 #define KICKOS_ARCH_ARM_CHIP_XMC4800_USIC_H
 
+#include "regs/scu.h"
 #include "regs/usic.h"
+#include <kickos/chip_mmap.h>
 #include <kickos/io/mmio.h>
 
 #include <stddef.h>
@@ -20,6 +22,36 @@ namespace xmc
 namespace usic
 {
     using namespace kickos::xmc::reg::usic;
+
+    // A module's two channels, and the SCU gate and reset bit that holds them both.
+    struct Module
+    {
+        uintptr_t ch0;
+        uintptr_t cgatclr;
+        uintptr_t prclr;
+        uint32_t bit;
+    };
+
+    inline constexpr Module MODULES[] = {
+        {mmap::USIC0_CH0_BASE, reg::scu::CGATCLR0, reg::scu::PRCLR0, reg::scu::USIC0_GATE_BIT},
+        {mmap::USIC1_CH0_BASE, reg::scu::CGATCLR1, reg::scu::PRCLR1, reg::scu::USIC1_GATE_BIT},
+        {mmap::USIC2_CH0_BASE, reg::scu::CGATCLR1, reg::scu::PRCLR1, reg::scu::USIC2_GATE_BIT},
+    };
+
+    inline constexpr uintptr_t CHANNEL_STRIDE = mmap::USIC0_CH1_BASE - mmap::USIC0_CH0_BASE;
+
+    // The module whose channel sits at exactly `base`; bit 0 where no channel does.
+    constexpr Module module_of(uintptr_t base)
+    {
+        for (Module const& m : MODULES)
+        {
+            if (base == m.ch0 or base == m.ch0 + CHANNEL_STRIDE)
+            {
+                return m;
+            }
+        }
+        return {0, 0, 0, 0};
+    }
 
     // The point for a branch clock, or false where no point covers it. Keyed on fPERIPH
     // and not on fCPU: PBCLKCR.PBDIV is written by clock_init AFTER both of its degrade
@@ -45,7 +77,6 @@ namespace usic
     void configure_fifo(uintptr_t base, uintptr_t ctr_off, uint32_t dptr, uint32_t size, uint32_t limit);
 
     // Raw TX status/data (single-shot, no polling loop; the caller bounds waits).
-    bool tx_ready(uintptr_t base); // TCSR.TDV clear: transmit buffer can take a word
     void tx_put(uintptr_t base, uint8_t v);
     bool tx_idle(uintptr_t base);  // PSR.BUSY clear: shifter has emptied
 

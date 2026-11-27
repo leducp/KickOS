@@ -64,17 +64,18 @@ real table.
 The table itself is shorter in meaning. `KICKOS_CORE_VECTORS_V6M` leaves slots 4, 5 and 6 empty:
 ARMv6-M has no MemManage, BusFault or UsageFault exception. Every fault is a HardFault (Stop 11).
 
-`Reset_Handler` on the nRF51 is C, as on the reference chip, but it copies `.data` and clears
-`.bss` with two plain loops instead of calling `kickos_ranges_init`. Then `kickos_crt_tail` runs
-the constructors, calls `arch_init` and enters `kmain`, exactly as in [Power-on](01-power-on.md).
+`Reset_Handler` on the nRF51 is C, as on the reference chip, but it copies the kernel's `.data`
+and clears its `.bss` with two plain loops instead of calling `kickos_ranges_init`. Then
+`kickos_crt_images_data` copies every image's data, and `kickos_crt_tail` runs the constructors,
+calls `arch_init` and enters `kmain`, exactly as in [Power-on](01-power-on.md).
 
 **Try it:** connect, then before `continue`:
 ```
 (gdb) x/4wx 0
-0x0:  0x20008000  0x00001be9  0x00001c45  0x00001d79
+0x0:  0x20008000  0x00000259  0x0000030d  0x00000485
 (gdb) info registers sp pc
 sp   0x20008000
-pc   0x1be8   <Reset_Handler()>
+pc   0x258   <Reset_Handler()>
 ```
 Word 0 is the top of the 32 KiB SRAM, and it is already in `sp`. Word 1 is `Reset_Handler` with
 bit 0 set (the Thumb bit), and the core has cleared it into `pc`.
@@ -86,8 +87,8 @@ bit 0 set (the Thumb bit), and the core has cleared it into `pc`.
 **Where:** `arch/arm/armv6m/arch_armv6m.cc`, `kickos_armv6m_init`; `arch/arm/armv6m/regs.h`,
 `PRIO_SVCALL`, `PRIO_PENDSV`, `PRIO_SYSTICK`
 
-`arch_init` on the nRF51 does one thing: it calls `kickos_armv6m_init`, which sets the
-priorities of the three system exceptions the kernel uses. On the reference these are three
+`arch_init` on the nRF51 starts the clock's timer (Stop 9) and then calls `kickos_armv6m_init`,
+which sets the priorities of the three system exceptions the kernel uses. On the reference these are three
 different levels (SVCall and SysTick at `0xE0`, PendSV at `0xF0`, the lowest). ARMv6-M
 implements only the top two bits of each priority byte, so there are four levels in total, and
 KickOS puts all three exceptions on the lowest one, `0xC0`. Equal priority means none of them
@@ -168,9 +169,9 @@ epilogue always loads `0xFFFFFFFD` (thread mode, process stack), and the boot st
 **Try it:** `break arch_start`, `continue`, `break PendSV_Handler`, `continue`:
 ```
 (gdb) p g_arch_current
-$2 = {v_ = {_M_b = {_M_p = 0x0 <...>}}}
+$1 = {v_ = {_M_b = {_M_p = 0x0 <...>}}}
 (gdb) p/x $lr
-$4 = 0xfffffff9
+$2 = 0xfffffff9
 ```
 `continue` again, and later entries read `0xfffffffd`.
 
@@ -199,11 +200,13 @@ batch:
     mov     r6, r10
     mov     r7, r11
     stmia   r0!, {r4-r7}            /* [base+16..+28] = r8-r11 */
-    mrs     r0, control             /* save current privilege */
-    movs    r1, #1
-    ands    r0, r1
-    str     r0, [r3, #4]            /* outgoing->npriv */
+    str     r1, [r3, #4]            /* outgoing->npriv */
 ```
+
+The privilege saved in `npriv` is chosen before this, by where the thread's stack pointer is. A
+thread stopped on its own kernel block is inside a syscall and keeps the `CONTROL.nPRIV` it has
+there, privileged. A thread stopped anywhere else is saved at its resting privilege,
+`ctx.resting_npriv`, so no privileged context rests in memory a task-mate can write.
 
 The restore runs the same dance backwards. The same subset rules show up all over the file:
 no `cbz`, no `bfi`, no `movw`, no `it` blocks; constants and addresses come from `ldr =`
@@ -221,21 +224,23 @@ entry, `xPSR` = `0x01000000` (the Thumb bit).
 
 **Try it:** PendSV calls `kickos_arch_mpu_commit` right after it has restored the incoming
 thread, so stop there and look at that thread's saved frame. `break *kickos_arch_mpu_commit`,
-`continue` twice (the first hit is the first thread):
+`continue` three times (the hits switch in `root`, then `main`, then `ping`):
 ```
+(gdb) p ((kickos::Thread*)g_arch_current.v_._M_b._M_p)->name
+$1 = "ping", '\000' <repeats 11 times>
 (gdb) p *g_arch_current.v_._M_b._M_p
-$2 = {sp = 536893376, npriv = 1, resting_npriv = 1, stack_lo = 536891392, stack_hi = 536893440, kernel_sp = 536874368}
+$2 = {sp = 536891328, npriv = 1, resting_npriv = 1, stack_lo = 536889488, stack_hi = 536891392, kernel_sp = 536875760}
 (gdb) x/16wx g_arch_current.v_._M_b._M_p->sp
-0x200057c0:  0x00000000  0x00000000  0x00000000  0x00000000
-0x200057d0:  0x00000000  0x00000000  0x00000000  0x00000000
-0x200057e0:  0x00000000  0x00000000  0x00000000  0x00000000
-0x200057f0:  0x00000000  0x0000171b  0x00000104  0x01000000
+0x20004fc0:  0x00000000  0x00000000  0x00000000  0x00000000
+0x20004fd0:  0x00000000  0x00000000  0x00000000  0x00000000
+0x20004fe0:  0x00000000  0x00000000  0x00000000  0x00000000
+0x20004ff0:  0x00000000  0x00010443  0x000101cc  0x01000000
 (gdb) info registers psp
-psp  0x200057e0
+psp  0x20004fe0
 ```
 A fresh thread: eight zeros for `r4`-`r11`, then `r0`-`r3` and `r12`, then `lr` =
-`kickos_user_thread_return`, `pc` = `ping` (the hello app's first thread), `xPSR`. `psp`
-already points 32 bytes up, at the hardware frame the exception return will pop.
+`kickos_user_thread_return`, `pc` = `ping`, `xPSR`. `psp` already points 32 bytes up, at the
+hardware frame the exception return will pop.
 
 **Why, and the contract:** [Reference: invariants, `switch-frame-matches-init`](../reference/invariants.md),
 [Book: Whoever stacks the trap frame owns the bounds check](../book/whoever-stacks-the-trap-frame-owns-the-bounds-check.md)
@@ -250,34 +255,46 @@ eight-word frame on the caller's process stack; `SVC_Handler` checks that stack 
 stacked `pc` to `svc_trampoline`, clears `CONTROL.nPRIV` and returns from the exception into
 the trampoline.
 
-The one ARMv6-M wrinkle is in the stub. A syscall has up to five arguments: the number in `r0`,
-three in `r1`-`r3`, and the fourth argument `a3` on the stack, per the calling convention. The
-trampoline expects it in `r12`, because `r12` is in the hardware frame and so survives the
-trap. On v7-M that is one `ldr r12, [sp]`. Thumb-1 loads only into a low register:
+The one ARMv6-M wrinkle is in the stub. A syscall has a number and up to five arguments: the
+number in `r0`, three arguments in `r1`-`r3`, and the last two, `a3` and `a4`, on the stack, per
+the calling convention. The kernel expects `a3` in `r12`, because `r12` is in the hardware frame
+and so survives the trap, and `a4` in `r4`, which the SVC slow path copies. Thumb-1 loads only
+into a low register, so `r12` is reached through `r4`:
 
 ```
 arch_syscall:
-    push    {r4}                    /* free a low reg (shifts [sp] a3 by +4) */
-    ldr     r4, [sp, #4]            /* a3 */
+    push    {r4, lr}                /* shifts a3 to [sp+8], a4 to [sp+12]; 8B aligned */
+    ldr     r4, [sp, #8]
     mov     r12, r4
-    pop     {r4}                    /* restore r4 + SP (8B aligned again) */
+    ldr     r4, =.Lsys_back
+    adds    r4, #1                  /* the trampoline exits with bx: Thumb bit required */
+    mov     lr, r4
+    ldr     r4, [sp, #12]
     svc     #0
-    bx      lr
+.Lsys_back:
+    pop     {r4, pc}
 ```
+
+The trampoline returns with `bx lr` to `.Lsys_back`, whose `pop` gives the caller its `r4` back
+and returns to it.
 
 **Try it:** `break main` (the hello app's `main`), `continue`, `delete`,
 `break SVC_Handler`, `continue`:
 ```
 (gdb) p/x *(unsigned*)($psp)@8
-$1 = {0x32, 0x0, 0xdee3, 0x1d, 0xffffffff, 0x15c3, 0x2260, 0x1000000}
+$1 = {0x32, 0x0, 0x11dab, 0x1d, 0xffffffff, 0x10685, 0x10684, 0x1000000}
 (gdb) info symbol *(unsigned*)($psp+20)
-kos_send + 19 in section .text
+arch_syscall64 + 17 in section .kickos_image1_text
 (gdb) info symbol *(unsigned*)($psp+24)
-arch_syscall64 + 10 in section .text
+arch_syscall64 + 16 in section .kickos_image1_text
+(gdb) p/x $r4
+$2 = 0xffffffff
 ```
-The stacked frame: `r0` = 50 (the syscall number of `kos_send`, which `main`'s first `kos::print`
-makes to its stdout endpoint at index 0), `r1`-`r3` its endpoint, buffer and 29 bytes, the
-stacked `lr` is the user caller, the stacked `pc` is the instruction after the `svc`.
+The stacked frame: `r0` = 50 (`KOS_SYS_SEND`, the send `main`'s first `kos::print` makes to its
+stdout endpoint at index 0), `r1`-`r3` its endpoint, buffer and 29 bytes, `r12` = `a3`. The
+stacked `pc` is the instruction after the `svc`, the `pop` at `.Lsys_back`, and the stacked `lr`
+is that same address with the Thumb bit set. `a4` waits in `r4`. `a3` and `a4` are the two
+halves of the send's deadline, all ones for none.
 
 **Why, and the contract:** [Book: The syscall path](../book/the-syscall-path-trap-dispatch-return.md),
 [Reference: porting, the ARMv7-M syscall spike](../reference/porting.md)
@@ -287,31 +304,34 @@ stacked `lr` is the user caller, the stacked `pc` is the instruction after the `
 
 On the reference, whether the dispatch runs on a separate per-thread kernel stack depends on the
 chip: `KICKOS_KERNEL_STACKS` is 1 on an ARMv7-M chip with an MPU
-([02, Stop 5](02-first-syscall.md#stop-5-the-trampoline-moves-onto-the-kernel-stack)). ARMv6-M has only one path: the arch selects
+([02, Stop 5](02-first-syscall.md#stop-5-the-trampoline-runs-on-the-kernel-stack)). ARMv6-M has only one path: the arch selects
 `ARCH_KERNEL_STACKS_MANDATORY`, and `svc_trampoline` always moves `sp` to the calling thread's
 own kernel block (`ctx.kernel_sp`) before calling `syscall_dispatch`. This holds even on the
 micro:bit, which has no MPU to protect that block. There the block buys robustness, not
 isolation.
 
-The trampoline lays a four-word header at the top of the block and calls `syscall_dispatch`
-with `sp` pointing at it. The header holds `a3` (where the C calling convention expects a fifth
-argument), the address to return to, the process stack pointer to come back to, and an
-alignment pad. A blocking syscall is frozen by PendSV below this header, so the header survives
-the block.
+`SVC_Handler` builds the move in handler mode: a four-word continuation header at the top of
+the block, and below it the frame that its exception return pops into `svc_trampoline`. The
+trampoline then calls `syscall_dispatch` with `sp` pointing at the header. The header holds `a3`
+and `a4` (where the C calling convention expects the fifth and sixth arguments), the address to
+return to, and the process stack pointer to come back to. Only the arguments and the
+return address are copied from the user frame, which a task-mate can rewrite; nothing that steers
+the privileged return is read back from it. A blocking syscall is frozen by PendSV below this
+header, so the header survives the block.
 
 **Try it:** `break main`, `continue`, `delete`, `break *syscall_dispatch`,
 `continue`:
 ```
 (gdb) info registers sp
-sp   0x200009f0   <kickos::(anonymous namespace)::g_kstacks+1776>
+sp   0x20000f60   <kickos::(anonymous namespace)::system_pools+1776>
 (gdb) p/x g_arch_current.v_._M_b._M_p->kernel_sp
-$2 = 0x20000a00
+$1 = 0x20000f70
 (gdb) x/4wx $sp
-0x200009f0:  0xffffffff  0x000015c3  0x20004ef0  0x4b53464c
+0x20000f60:  0xffffffff  0xffffffff  0x00010685  0x20004710
 ```
-`sp` is 16 bytes under the block top. The header reads: `a3` = 0xffffffff, the timeout, the return address (inside
-`kos_send`), the thread's process stack pointer, and the pad word, which holds whatever was
-there before.
+`sp` is 16 bytes under the block top. The header reads: `a3` and `a4`, the two halves of the
+deadline, the return address (`.Lsys_back` with its Thumb bit), and the thread's process stack
+pointer.
 
 **Why, and the contract:** [Reference: porting, thread pointer and kernel stacks](../reference/porting.md),
 [Book: Thread stacks](../book/thread-stacks-and-the-kiss-tension.md)
@@ -320,20 +340,27 @@ there before.
 **Where:** `arch/arm/armv6m/switch.S`, `svc_trampoline`; `platform/nrf51/chip.yaml`,
 `protection`; `user/apps/common/ringpriv/`
 
-On the way out, the trampoline drops back to the caller's resting privilege. `r0` and `r1`
-carry the 64-bit result and `r2`/`r3` hold the saved value and `CONTROL`, so no register is left
-for the `#1` mask that `bics` needs; it clears bit 0 with a shift pair instead:
+On the way out, the trampoline moves `sp` back to the thread's own stack and then drops to the
+caller's resting privilege. `r0` and `r1` carry the 64-bit result and `r2`/`r3` hold the saved
+value and `CONTROL`, so no register is left for the `#1` mask that `bics` needs; it clears bit 0
+with a shift pair instead. Last, it clears `r2` and `r3`, as it cleared `r12` after the
+dispatch, so no kernel value but the result reaches the thread:
 
 ```
-    ldr     r2, =g_arch_current
-    ldr     r2, [r2]
-    ldr     r2, [r2, #8]            /* ctx.resting_npriv */
-    mrs     r3, control
-    lsrs    r3, r3, #1
-    lsls    r3, r3, #1              /* CONTROL.nPRIV = 0 */
-    orrs    r3, r2                  /* CONTROL.nPRIV = resting privilege */
-    msr     control, r3
+    ldr     r3, =g_arch_current
+    ldr     r3, [r3]
+    ldr     r3, [r3, #8]            /* ctx.resting_npriv */
+    ldr     r2, [sp, #12]           /* the resume PSP, read before sp leaves this block */
+    mov     sp, r2
+kickos_armv6m_svc_drop:
+    mrs     r2, control
+    lsrs    r2, r2, #1
+    lsls    r2, r2, #1              /* CONTROL.nPRIV = 0 */
+    orrs    r2, r3                  /* CONTROL.nPRIV = resting privilege */
+    msr     control, r2
     isb
+    movs    r2, #0                  /* no kernel value but r0:r1 returns to the thread */
+    movs    r3, #0
     bx      lr                      /* -> arch_syscall's caller, r0:r1=result */
 ```
 
@@ -346,13 +373,16 @@ file (`privilege: false` for the nRF51), and the build derives from it that the 
 no privilege ring and so no fault isolation. The `ringpriv` test checks the outcome each board
 claims.
 
-**Try it:** `break arch_start`, `continue`, `break svc_trampoline`, `continue`, then
-`tbreak *$lr` and `continue` to land back in the user caller:
+**Try it:** `break arch_start`, `continue`, `break svc_trampoline`, `continue`, `delete`, then
+`tbreak *($lr & ~1)` and `continue` to land back in the user caller, at `.Lsys_back`:
 ```
-(gdb) info registers control
+(gdb) info registers control r2 r3 r12
 control  0x2
+r2       0x0
+r3       0x0
+r12      0x0
 (gdb) p g_arch_current.v_._M_b._M_p->resting_npriv
-$4 = 1
+$1 = 1
 ```
 The kernel asked for unprivileged (`resting_npriv` = 1, which would make `control` read `0x3`).
 The core kept `nPRIV` at 0: `control` is `0x2`, only the stack-select bit set.
@@ -367,19 +397,24 @@ The core kept `nPRIV` at 0: `control` is `0x2`, only the stack-select bit set.
 `arch_clock_now`
 
 The one-shot timer is SysTick on both M profiles, and the code is the shared
-`arch_timer_arm` you met in [Sleep](03-sleep.md). The monotonic clock is where v6-M differs. The
-reference can count CPU cycles with the DWT unit; ARMv6-M has no DWT, so `arch_clock_now` is
-always a chip function. On the nRF51 under QEMU it asks the host through semihosting
-(`SYS_CLOCK`). On the RP2040 it reads the chip's own 64-bit microsecond TIMER, which runs from
-the crystal and so does not move when the CPU clock is changed.
+`arch_timer_arm` you met in [Sleep](03-sleep.md). The monotonic clock is not shared: on every
+Cortex-M, `arch_clock_now` is a chip function that reads a peripheral counter, and ARMv6-M has
+not even the DWT cycle counter that a v7-M core carries. On the nRF51 it reads TIMER0, which the chip file runs as a 32-bit
+counter at 1 MHz. The counter has no register of its own, so each read starts a capture into
+`CC[0]` and reads that. A compare event at 0 marks each wrap, and its interrupt extends the count
+to 64 bits (`kickos::arch_wrap_extend`, `arch/include/kickos/arch/wrap_extend.h`). On the RP2040
+it reads the chip's own 64-bit microsecond TIMER, which runs from the crystal and so does not move
+when the CPU clock is changed.
 
 **Try it:** `break arch_timer_arm`, `continue`, `finish`:
 ```
 (gdb) x/3wx 0xE000E010
-0xe000e010:  0x00000007  0x0061a800  0x0061a6ce
+0xe000e010:  0x00000007  0x00618080  0x00617f1d
 ```
-SysTick `CTRL` = 7 (enabled, interrupt on, core clock), `LOAD` = 6 400 000 cycles, which is
-400 ms at the 16 MHz `SystemCoreClock` that `chip_nrf51.cc` sets, and `VAL` counting down from it.
+SysTick `CTRL` = 7 (enabled, interrupt on, core clock), `LOAD` = 6 389 888 cycles, and `VAL`
+counting down from it. At the 16 MHz `SystemCoreClock` that `chip_nrf51.cc` sets, that is just
+under 400 ms: `arch_timer_arm` reads the clock again on entry and arms for the time left to the
+deadline.
 
 **Why, and the contract:** [Book: The time base](../book/the-time-base-a-monotonic-clock-you-can-trust.md),
 [Reference: porting, clock retune](../reference/porting.md)
@@ -408,7 +443,7 @@ overlap the highest-numbered one decides (`ARCH_MPU_OVERLAP_HIGHER`).
 **Try it:** on the micro:bit, `break *kickos_arch_mpu_commit`, `continue`:
 ```
 (gdb) x/i $pc
-=> 0x22de <kickos_arch_mpu_commit()>:  bx  lr
+=> 0xa32 <kickos_arch_mpu_commit()>:  bx  lr
 ```
 The whole commit is one return.
 <!-- unverified: the RP2040 PMSAv6 commit; QEMU has no RP2040 model, so only the micro:bit's empty commit runs here -->
@@ -418,7 +453,8 @@ The whole commit is one return.
 
 ### Stop 11: every fault is a HardFault
 **Where:** `arch/arm/armv6m/arch_armv6m.cc`, `HardFault_Handler`, `kickos_armv6m_fault_report`;
-`arch/arm/armv6m/arch_armv6m_fault.cc`, `arch_fault_is_user_thread`
+`arch/arm/armv6m/arch_armv6m_fault.cc`, `arch_fault_is_user_thread`;
+`arch/arm/common/aeabi_div0.cc`, `__aeabi_idiv0`
 
 On the reference a bad access raises MemManage or BusFault, and the fault status registers
 (`CFSR`, `MMFAR`, `BFAR`) say what went wrong and where. ARMv6-M has HardFault and nothing
@@ -426,11 +462,20 @@ else, and no fault status registers at all. The stacked frame is the whole repor
 
 `HardFault_Handler` is naked (no compiler prologue) so it can read the right stack pointer
 before anything moves it. It tests bit 2 of `EXC_RETURN` to pick the process or main stack,
-again in Thumb-1 (`movs` plus `tst`, since `tst` takes no immediate here), and jumps to the C
-reporter through a register: a Thumb-1 unconditional branch reaches only 2 KB. The reporter
-first asks the kernel whether the fault can be pinned on one thread and that thread killed
+again in Thumb-1 (`movs` plus `tst`, since `tst` takes no immediate here), and calls the C
+reporter with `bl`. The reporter returns only when it contained the faulting thread, with the
+`EXC_RETURN` that the handler's final `bx r0` takes. The reporter first asks the kernel whether the fault can be pinned on one thread and that thread killed
 (`kickos_fault_kill_thread`); on the micro:bit, which has no privilege ring, fault isolation is
 not built and every fault ends the system with the dump.
+
+With no status register, a divide by zero would look like any other fault. The core has no
+divide instruction, so the compiler calls libgcc's division helpers, and on a zero divisor those
+call the run-time ABI's hook `__aeabi_idiv0` (or `__aeabi_ldiv0` for 64 bits). KickOS links its
+own hook into the kernel and every image, `arch/arm/common/aeabi_div0.cc`, and it ends in a `udf`
+with an immediate of its own, `KICKOS_ARM_UDF_DIV0`. When the stacked `pc` points at that `udf`
+(`kickos_arm_div0_trap_at`), the dump adds a line that names the hook. On a board that kills the
+thread instead, its fault record names `DIVBYZERO` for the same reason
+(`arch/arm/armv6m/arch_armv6m_fault.cc`).
 
 **Try it:** launch the `fault` app the same way
 (`build/microbit/user/apps/common/fault/fault`), `break HardFault_Handler`,
@@ -441,11 +486,22 @@ $1 = 0xfffffffd
 (gdb) break kickos_armv6m_fault_report
 (gdb) continue
 (gdb) p/x frame[0]@8
-$2 = {0x3f, 0x0, 0x3f, 0x2, 0x200009b0, 0x1329, 0xc8, 0x61000000}
+$2 = {0x3f, 0x0, 0x0, 0x0, 0x0, 0x103b1, 0x10154, 0x61000000}
+(gdb) info symbol frame[6]
+main + 8 in section .kickos_image1_text
 ```
-The fault came from a thread on its process stack. The stacked `pc` (`0xc8`, inside
-`main`) is the illegal instruction the app executes on purpose; the console then
-prints `=== HARD FAULT ===` with those same registers.
+The fault came from a thread on its process stack. The stacked `pc` (`0x10154`, `main + 8`) is
+the illegal instruction the app executes on purpose; the console then prints
+`=== HARD FAULT ===` with those same registers.
+
+The micro:bit build also makes `fault_div0`, the same app with a 32-bit divide by zero in place
+of the illegal instruction. Run it with no debugger and the dump ends with the hook's line:
+```
+=== HARD FAULT ===
+  PC=0x10410 LR=0x10147 xPSR=0x41000000 (PSP)
+  R0=0x0 R1=0x0 R2=0xffff0000 R3=0x0 R12=0x0
+  DIVBYZERO: the UDF of __aeabi_idiv0/__aeabi_ldiv0
+```
 
 **Why, and the contract:** [Book: Interrupts and traps](../book/interrupts-and-traps.md),
 [Reference: porting, fault-isolation contract](../reference/porting.md)

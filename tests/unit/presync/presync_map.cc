@@ -49,6 +49,8 @@ extern "C"
     uintptr_t arch_aspace_user_offset(void) { return 0; }
     arch_phys_addr_t arch_aspace_frame_at(struct arch_aspace*, uintptr_t) { return 0; }
     size_t arch_aspace_map_tables(struct arch_aspace*, uintptr_t, size_t) { return 0; }
+    size_t arch_aspace_range_tables(uintptr_t, size_t) { return 0; }
+    size_t arch_aspace_run_tables(size_t) { return 0; }
 
     enum arch_aspace_result arch_aspace_map(struct arch_aspace*, uintptr_t, arch_phys_addr_t,
                                             size_t, uint32_t, enum arch_map_memtype)
@@ -139,8 +141,9 @@ namespace
 
         int map_at(int which, uintptr_t* va, enum arch_map_memtype type)
         {
+            kickos::MapPass pass;
             return kickos::aspace_cap_map(nullptr, space_, &ranges_[which], va, which, RUN, PAGES,
-                                          ARCH_MAP_R | ARCH_MAP_W, type);
+                                          ARCH_MAP_R | ARCH_MAP_W, type, &pass);
         }
 
         // Ends the round of `t`'s call, which `completed` or failed; true when it was refused.
@@ -229,9 +232,11 @@ namespace
         g_current = a();
         kickos::presync_begin();
         uintptr_t va = VA_A;
+        kickos::MapPass pass;
         EXPECT_EQ(kickos::aspace_cap_map(nullptr, space_, &ranges_[0], &va, 0, POOL_HI, PAGES,
-                                         ARCH_MAP_R | ARCH_MAP_W, ARCH_MAP_NOCACHE),
+                                         ARCH_MAP_R | ARCH_MAP_W, ARCH_MAP_NOCACHE, &pass),
                   0);
+        EXPECT_TRUE(pass.done);
         EXPECT_FALSE(end(a(), true));
     }
 

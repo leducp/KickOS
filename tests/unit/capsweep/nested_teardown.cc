@@ -426,7 +426,8 @@ namespace kickos
         }
 
         // A task whose slot goes back without it ever ending, a start that failed before its
-        // first thread, is the console's death too.
+        // first thread, is the console's death too. A sender parked on it waits while a WAIT
+        // holder outside that task can still serve it, and is refused once none can.
         TEST_F(CapSweep, the_consoles_task_slot_going_back_is_its_death)
         {
             g_closer = spawn(0, PRIO_PEER);
@@ -441,12 +442,20 @@ namespace kickos
             }
             EXPECT_EQ(g_console_noted, 1u);
             EXPECT_EQ(g_console_reclaimed, 1u);
+            EXPECT_EQ(sender->state, ThreadState::BLOCKED)
+                << "the sender was answered while a WAIT holder can still serve the console";
+            {
+                IrqLock lock;
+                EXPECT_EQ(handle_close(g_closer, cap_handle_at(g_closer, KICKOS_CAP_FIRST_DYNAMIC),
+                                       lock),
+                          0);
+            }
             EXPECT_EQ(sender->wait_result, -KOS_ECONNREFUSED)
-                << "the sender parked on the console was not answered at the slot's return";
+                << "the sender parked on the console was not answered once nothing can serve it";
             EXPECT_NE(sender->state, ThreadState::BLOCKED);
         }
 
-        // --- the vacated endpoint ---------------------------------------------------------
+        // --- an endpoint dead for good ----------------------------------------------------
 
         namespace
         {
@@ -473,10 +482,10 @@ namespace kickos
 
             EXPECT_EQ(ep->recv_holders, 1u) << "the creator is a receiver";
             EXPECT_EQ(ep->handout_holders, 1u) << "and a handout holder";
-            EXPECT_TRUE(endpoint_receiving(ep)) << "so a caller parks for it rather than retrying";
+            EXPECT_TRUE(endpoint_servable(ep)) << "so a caller parks for it";
         }
 
-        TEST_F(CapSweep, closing_the_last_receiver_vacates_the_endpoint)
+        TEST_F(CapSweep, closing_the_last_receiver_with_no_handout_holder_kills_the_endpoint)
         {
             Endpoint* const ep = endpoint();
             Thread* const server = spawn(0, PRIO_PEER);
@@ -489,11 +498,10 @@ namespace kickos
                 EXPECT_EQ(handle_close(server, wait_cap, lock), 0);
             }
 
-            EXPECT_EQ(ep->vacated, 1u) << "the last receiver left";
-            EXPECT_FALSE(endpoint_receiving(ep));
+            EXPECT_FALSE(endpoint_servable(ep)) << "the last receiver left, and nobody seats one";
         }
 
-        TEST_F(CapSweep, narrowing_wait_away_vacates_the_endpoint_and_a_receive_clears_it)
+        TEST_F(CapSweep, an_endpoint_stays_servable_while_a_wait_or_handout_holder_remains)
         {
             Endpoint* const ep = endpoint();
             Thread* const init = spawn(0, PRIO_PEER);
@@ -504,28 +512,25 @@ namespace kickos
                 IrqLock lock;
                 EXPECT_EQ(cap_narrow(init, all, CAP_SIGNAL | CAP_TRANSFER | CAP_HANDOUT, lock), 0);
             }
-            EXPECT_EQ(ep->vacated, 1u) << "the narrow dropped the last receiver";
-            EXPECT_FALSE(endpoint_receiving(ep)) << "a HANDOUT holder is no receiver";
+            EXPECT_EQ(ep->recv_holders, 0u) << "the narrow dropped the last receiver";
+            EXPECT_TRUE(endpoint_servable(ep)) << "a HANDOUT holder can still seat one";
 
-            (void)hold_endpoint(server, ep, CAP_WAIT);
-            EXPECT_FALSE(endpoint_receiving(ep)) << "a seated receiver counts once it waits";
+            uint32_t const wait_cap = hold_endpoint(server, ep, CAP_WAIT);
             {
                 IrqLock lock;
                 EXPECT_EQ(cap_narrow(init, all, CAP_SIGNAL, lock), 0);
             }
             EXPECT_EQ(ep->handout_holders, 0u) << "fixture: no HANDOUT holder remains";
-            EXPECT_FALSE(endpoint_receiving(ep)) << "the seated WAIT holder has not waited yet";
+            EXPECT_TRUE(endpoint_servable(ep)) << "the seated receiver serves it";
 
             {
                 IrqLock lock;
-                endpoint_receiver_waits(ep, server);
+                EXPECT_EQ(handle_close(server, wait_cap, lock), 0);
             }
-            EXPECT_EQ(ep->vacated, 0u) << "the receiver waited";
-            EXPECT_TRUE(endpoint_receiving(ep));
-            EXPECT_EQ(ep->server, server);
+            EXPECT_FALSE(endpoint_servable(ep)) << "neither holder remains";
         }
 
-        TEST_F(CapSweep, a_reclaimed_slot_is_not_vacated)
+        TEST_F(CapSweep, a_reclaimed_slot_is_a_fresh_servable_endpoint)
         {
             Endpoint* const ep = endpoint();
             int const index = kernel().endpoints.index_of(ep);
@@ -537,7 +542,7 @@ namespace kickos
                 IrqLock lock;
                 EXPECT_EQ(handle_close(server, wait_cap, lock), 0);
             }
-            ASSERT_EQ(ep->vacated, 1u) << "fixture: the slot was vacated";
+            ASSERT_FALSE(endpoint_servable(ep)) << "fixture: the endpoint died for good";
             kernel().endpoints.free(kernel().endpoints.handle_for(index));
 
             Endpoint* again = nullptr;
@@ -547,8 +552,7 @@ namespace kickos
                 claimed = endpoint_claim_created(nullptr, &again);
             }
             ASSERT_EQ(claimed, index) << "fixture: the freed slot came back";
-            EXPECT_EQ(again->vacated, 0u) << "a reused slot starts as a fresh endpoint";
-            EXPECT_TRUE(endpoint_receiving(again));
+            EXPECT_TRUE(endpoint_servable(again)) << "a reused slot starts as a fresh endpoint";
         }
 
         // --- reset()'s guard against a leaked IrqLock -----------------------------------

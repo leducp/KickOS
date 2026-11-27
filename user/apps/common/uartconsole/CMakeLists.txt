@@ -26,17 +26,18 @@ if(_uc_up STREQUAL "")
 endif()
 kickos_app_judge(uartconsole tests/integration/check_uartconsole.sh ARGS "${_uc_up}")
 
-# Scramble-then-panic reclaim mode: an unprivileged thread holding no grant garbles the K64's UART0
-# through the slot the driver opened and panics, and the panic must still reach the wire, reclaimed
-# out of the published console. Always defined: the app is built -Wundef -Werror.
+# Scramble-then-panic reclaim mode: an unprivileged thread holding no grant garbles the K64's
+# console UART through the slot the driver opened and panics, and the panic must still reach the
+# wire, reclaimed out of the published console. Always defined: the app is built -Wundef -Werror.
 option(UARTCONSOLE_SCRAMBLE_TEST "uartconsole: scramble-then-panic console-reclaim test mode (K64F)"
        OFF)
 if(UARTCONSOLE_SCRAMBLE_TEST)
   if(NOT KICKOS_CHIP STREQUAL "mk64f")
-    message(FATAL_ERROR "UARTCONSOLE_SCRAMBLE_TEST garbles the K64's UART0, and this chip is "
+    message(FATAL_ERROR "UARTCONSOLE_SCRAMBLE_TEST garbles the K64's console UART, and this chip is "
                         "${KICKOS_CHIP}")
   endif()
-  target_compile_definitions(uartconsole PRIVATE UARTCONSOLE_SCRAMBLE_TEST=1)
+  target_compile_definitions(uartconsole PRIVATE UARTCONSOLE_SCRAMBLE_TEST=1
+                                                 KICKOS_BOARD_CONSOLE_BASE=${KICKOS_BOARD_CONSOLE_BASE})
 else()
   target_compile_definitions(uartconsole PRIVATE UARTCONSOLE_SCRAMBLE_TEST=0)
 endif()

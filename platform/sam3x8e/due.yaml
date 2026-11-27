@@ -13,4 +13,4 @@ console:
   pins: { tx: PA9, rx: PA8 }
 
 leds:
-  l: { pin: PB27, active: high, owner: kernel } # the "L" LED, the kernel's diagnostic LED
+  l: { pin: PB27, active: high, diagnostic: true } # the "L" LED

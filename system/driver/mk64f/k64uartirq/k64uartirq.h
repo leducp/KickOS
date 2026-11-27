@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// K64F/UART0 buffered IRQ-driven userspace UART driver. An IRQ thread owns the granted
-// UART0 register window and drains a TX ring / fills an RX ring from the UART0 status
-// interrupt (IRQ 31); a service thread owns the request endpoint and never touches a
+// K64F UART buffered IRQ-driven userspace UART driver. An IRQ thread owns the granted
+// UART register window and drains a TX ring / fills an RX ring from the UART status
+// interrupt; a service thread owns the request endpoint and never touches a
 // register.
 //
 // The endpoint serves TWO client shapes on one object, discriminated by whether the

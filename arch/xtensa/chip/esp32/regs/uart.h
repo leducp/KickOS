@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// ESP32 UART0 register map, from the ESP32 TRM v5.8 chapter 19 (UART Controller):
-// offsets per section 19.4.1, fields per the per-register descriptions cited below.
-// Console UART; the ROM leaves it at 115200 8N1 on GPIO1 TX / GPIO3 RX, which is also
-// Register 19.9's reset framing (BIT_NUM=3, STOP_BIT_NUM=1, PARITY_EN=0).
+// ESP32 UART register map, the same for UART0, UART1 and UART2, from the ESP32 TRM v5.8
+// chapter 19 (UART Controller): offsets per section 19.4.1, fields per the per-register
+// descriptions cited below. The ROM leaves UART0 at 115200 8N1 on GPIO1 TX / GPIO3 RX, which
+// is also Register 19.9's reset framing (BIT_NUM=3, STOP_BIT_NUM=1, PARITY_EN=0).
 //
 // The RAW/ST/ENA/CLR quad behaves as the TRM appendix "Interrupt Configuration
 // Registers" (Table 31.6-4) defines chip-wide:
@@ -20,14 +20,11 @@
 #ifndef KICKOS_ARCH_XTENSA_CHIP_ESP32_REGS_UART_H
 #define KICKOS_ARCH_XTENSA_CHIP_ESP32_REGS_UART_H
 
-#include <kickos/chip_mmap.h>
-
 #include <stdint.h>
 
 namespace kickos::esp32::reg::uart
 {
-    // TRM 19.4.1. OFF_* is the single source: a driver holding a granted window adds
-    // them to its own base, the kernel uses the absolute aliases below.
+    // TRM 19.4.1, from the UART's base.
     constexpr uintptr_t OFF_FIFO = 0x00u;    // [7:0] UART_RXFIFO_RD_BYTE; read = RX, write = TX
     constexpr uintptr_t OFF_INT_RAW = 0x04u; // RO
     constexpr uintptr_t OFF_INT_ST = 0x08u;  // RO
@@ -37,16 +34,6 @@ namespace kickos::esp32::reg::uart
     constexpr uintptr_t OFF_STATUS = 0x1Cu; // RO
     constexpr uintptr_t OFF_CONF0 = 0x20u;
     constexpr uintptr_t OFF_CONF1 = 0x24u;
-
-    constexpr uintptr_t FIFO = mmap::UART0_BASE + OFF_FIFO;
-    constexpr uintptr_t INT_RAW = mmap::UART0_BASE + OFF_INT_RAW;
-    constexpr uintptr_t INT_ST = mmap::UART0_BASE + OFF_INT_ST;
-    constexpr uintptr_t INT_ENA = mmap::UART0_BASE + OFF_INT_ENA;
-    constexpr uintptr_t INT_CLR = mmap::UART0_BASE + OFF_INT_CLR;
-    constexpr uintptr_t CLKDIV = mmap::UART0_BASE + OFF_CLKDIV;
-    constexpr uintptr_t STATUS = mmap::UART0_BASE + OFF_STATUS;
-    constexpr uintptr_t CONF0 = mmap::UART0_BASE + OFF_CONF0;
-    constexpr uintptr_t CONF1 = mmap::UART0_BASE + OFF_CONF1;
 
     // Interrupt bits, identical across RAW / ST / ENA / CLR (TRM Registers 19.2 to 19.5).
     constexpr uint32_t RXFIFO_FULL_INT = 1u << 0;

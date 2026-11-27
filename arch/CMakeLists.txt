@@ -194,10 +194,10 @@ if(KICKOS_BUILD_TESTS AND NOT (KICKOS_ARCH STREQUAL "sim"))
   set_tests_properties(no_privileged_tls PROPERTIES TIMEOUT 60 LABELS host)
 endif()
 
-# No archive holding kernel text may emit a GOT reference or name the app's runtime: a weak
-# extern in a TU left off kickos_split_image_tu emits the first and the link stays clean until
-# something forces .got to be placed, and the kernel's own runtime goes by the kickos/kruntime.h
-# names. kickos_lib is left out: on these boards it is user code.
+# No archive holding kernel text may emit a GOT reference, name the app's runtime or name a C++
+# allocation operator: a weak extern in a TU left off kickos_split_image_tu emits the first and
+# the link stays clean until something forces .got to be placed, and the kernel's own runtime goes
+# by the kickos/kruntime.h names. kickos_lib is left out: on these boards it is user code.
 if(KICKOS_BUILD_TESTS AND KICKOS_HAVE_ASPACE)
   add_test(
     NAME    kernel_got
@@ -215,8 +215,7 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
     "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chip/${KICKOS_CHIP}/*.cc"
     "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chip/${KICKOS_CHIP}/*.S")
 
-  # class/ is built as its own kickos_class_<chip> below and must never land in the chip
-  # archive, even if the glob turns recursive.
+  # class/ is compiled once, on its own bare include path, as the leaf's objects below.
   list(FILTER _chip_src EXCLUDE REGEX "/class/")
 
   # The PMSAv8 backend (a v8-M chip file's pmsav8 unit) goes into the chip archive, never the
@@ -333,24 +332,29 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
   # --- Class-driver leaf -------------------------------------------------------
   # <family>/chip/<chip>/class/ holds register logic shared by the kernel and an unprivileged
   # driver: a freestanding, stateless leaf (POD and free functions taking an explicit base, no
-  # ctor/dtor, no mutable static). It is one read-only copy reached from two trust domains, so
-  # it carries no writable state, and it builds on a bare include path: repo include/ and this
-  # chip's register directory, never kernel/include.
+  # ctor/dtor, no mutable static). The same objects go into the chip archive, for the kernel,
+  # and into kickos_class_<chip>, for a driver, so they carry no writable state, and they build
+  # on a bare include path: repo include/ and this chip's register directory, never
+  # kernel/include.
   set(_class_dir
     "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chip/${KICKOS_CHIP}/class")
   if(EXISTS "${_class_dir}")
     file(GLOB _class_src CONFIGURE_DEPENDS "${_class_dir}/*.cc")
-    add_library(kickos_class_${KICKOS_CHIP} STATIC ${_class_src})
-    kickos_apply_freestanding(kickos_class_${KICKOS_CHIP})
-    target_include_directories(kickos_class_${KICKOS_CHIP}
-      PUBLIC
-        "$<BUILD_INTERFACE:${_class_dir}>"
-        "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>"
-      PRIVATE
-        "${CMAKE_SOURCE_DIR}/include"
-        "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chip/${KICKOS_CHIP}")
-    target_include_directories(kickos_class_${KICKOS_CHIP} PRIVATE "${PROJECT_BINARY_DIR}/generated/chip")
+    add_library(kickos_class_${KICKOS_CHIP}_objects OBJECT ${_class_src})
+    kickos_apply_freestanding(kickos_class_${KICKOS_CHIP}_objects)
+    target_include_directories(kickos_class_${KICKOS_CHIP}_objects PRIVATE
+      "${CMAKE_SOURCE_DIR}/include"
+      "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chip/${KICKOS_CHIP}"
+      "${PROJECT_BINARY_DIR}/generated/chip")
+    add_library(kickos_class_${KICKOS_CHIP} STATIC
+      $<TARGET_OBJECTS:kickos_class_${KICKOS_CHIP}_objects>)
+    target_include_directories(kickos_class_${KICKOS_CHIP} PUBLIC
+      "$<BUILD_INTERFACE:${_class_dir}>"
+      "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>")
     kickos_export_targets(kickos_class_${KICKOS_CHIP})
+    target_sources(kickos_chip_${KICKOS_CHIP} PRIVATE
+      $<TARGET_OBJECTS:kickos_class_${KICKOS_CHIP}_objects>)
+    target_include_directories(kickos_chip_${KICKOS_CHIP} PRIVATE "${_class_dir}")
   endif()
 
   # boards/<board>/<chip>.ld overrides the chip's script. It keeps the <chip>.ld name so the
@@ -634,4 +638,20 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
     install(FILES "${_ld_program}" DESTINATION "${KICKOS_CMAKE_DIR}")
     set(KICKOS_PROGRAM_SCRIPT "${_ld_program}" PARENT_SCOPE)
   endif()
+endif()
+
+# Where the kernel shares the program's link, its archives may not name a C++ allocation
+# operator, which the program's libstdc++ would answer with a heap allocation. A translating
+# backend runs this leg inside kernel_got.
+if(KICKOS_BUILD_TESTS AND NOT KICKOS_HAVE_ASPACE)
+  set(_alloc_scan "$<TARGET_FILE:kickos_kernel>" "$<TARGET_FILE:kickos_arch_${KICKOS_ARCH}>"
+                  "$<TARGET_FILE:kickos_lib>")
+  if(TARGET kickos_chip_${KICKOS_CHIP})
+    list(APPEND _alloc_scan "$<TARGET_FILE:kickos_chip_${KICKOS_CHIP}>")
+  endif()
+  add_test(
+    NAME    kernel_alloc
+    COMMAND "${CMAKE_SOURCE_DIR}/tests/static/check_kernel_got.sh" --alloc-only
+            "${CMAKE_READELF}" "${CMAKE_NM}" ${_alloc_scan})
+  set_tests_properties(kernel_alloc PROPERTIES TIMEOUT 60 LABELS host)
 endif()

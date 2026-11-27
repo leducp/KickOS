@@ -13,9 +13,9 @@ accepts: [no_protection] # for the -flat build alone
 tasks:
   - name: k64uartirq
     driver: k64uartirq
-    devices: [/dev/uart0]
+    devices: [/dev/console]
     accepts: [coarse_gate, device_not_isolated]
-    lines: { rxtx: /dev/uart0/rxtx, err: /dev/uart0/err }
+    lines: { rxtx: /dev/console/rxtx, err: /dev/console/err }
     core: 0
     serves: /svc/console
     priority: 12

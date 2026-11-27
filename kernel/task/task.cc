@@ -536,8 +536,16 @@ namespace kickos
     int task_state_call(kos_task_t task, int32_t* status)
     {
         IrqLock lock;
-        int err = 0;
-        Task* const t = task_resolve_created(sched::current(), task, &err);
+        int err = KOS_EBADF;
+        Task* t = nullptr;
+        if (task == KOS_TASK_NONE)
+        {
+            t = sched::current()->task;
+        }
+        else
+        {
+            t = task_resolve_created(sched::current(), task, &err);
+        }
         if (t == nullptr)
         {
             return -err;
@@ -546,6 +554,11 @@ namespace kickos
         if (t->refcount != 0)
         {
             state |= KOS_TASK_LIVE;
+        }
+        // Only the caller's own task can lack a creator here: a handle resolves to a held task.
+        if (t->creator_tag == ThreadPool::KILL_TAG_NONE)
+        {
+            state |= KOS_TASK_ORPHANED;
         }
         if ((state & KOS_TASK_ENDED) != 0)
         {
@@ -1166,6 +1179,53 @@ namespace kickos
         return first;
     }
 
+    Thread* task_built(int handle)
+    {
+        Thread* const t = kernel().threads.resolve(handle);
+        if (t == nullptr or t->state != ThreadState::INACTIVE)
+        {
+            return nullptr;
+        }
+        return t;
+    }
+
+#if KICKOS_PRESYNC
+    void task_abandon_building(Held held)
+    {
+        PresyncRecord* const r = presync_record();
+        if (r == nullptr or r->building == 0)
+        {
+            return;
+        }
+        Thread* const t = task_built(static_cast<int>(r->building - 1u));
+        r->building = 0;
+        if (t == nullptr)
+        {
+            return;
+        }
+        t->task_role = TASK_ROLE_MEMBER;
+        // Added first: a thread not yet added takes no cancel.
+        sched::add(t, held);
+        thread_cancel_kind(t, CANCEL_SLAY, held);
+    }
+#endif
+
+    bool task_sheds(Task const* t)
+    {
+        if (not task_ended(t))
+        {
+            return false;
+        }
+        for (ListNode* m = t->members.head; m != nullptr; m = m->next)
+        {
+            if (not KICKOS_CONTAINER_OF(m, Thread, member)->dying)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
     ListNode* task_members(Task const* t)
     {
         if (t == nullptr)
@@ -1337,7 +1397,7 @@ namespace kickos
 #if KICKOS_HAVE_ASPACE
             uint32_t pages = task_object_usage(t, kind) + domain_pages_paid(t);
 #if KICKOS_PRESYNC
-            pages = pages + presync_task_staged(t, kind);
+            pages = pages + presync_task_staged(t, kind) + t->tables_reserved;
 #endif
             return pages;
 #else

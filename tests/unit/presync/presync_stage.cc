@@ -139,6 +139,8 @@ extern "C"
     void arch_aspace_destroy(struct arch_aspace*) {}
     size_t arch_aspace_table_pages(struct arch_aspace*) { return 0; }
     size_t arch_aspace_map_tables(struct arch_aspace*, uintptr_t, size_t) { return 0; }
+    size_t arch_aspace_range_tables(uintptr_t, size_t) { return 0; }
+    size_t arch_aspace_run_tables(size_t) { return 0; }
     void arch_aspace_activate(struct arch_aspace*) {}
     struct arch_aspace* arch_aspace_boot(void) { return nullptr; }
     uint64_t arch_clock_now(void) { return 0; }

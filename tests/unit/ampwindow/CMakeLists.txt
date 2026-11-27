@@ -28,7 +28,7 @@ kickos_add_unit_test(NAME amp_window
           KICKOS_MULTICORE_MODEL_SHARED=0
           KICKOS_AMP_NODE=1
           KICKOS_AMP_NODES=4
-          KICKOS_AMP_PORT_COUNT=4
+          KICKOS_AMP_PORT_COUNT=6
           KICKOS_AMP_SELF_NODE=0
-          "KICKOS_AMP_PORT_NODE_LIST=3,1,2,2"
-          "KICKOS_AMP_PORT_PORT_LIST=2,3,4,5")
+          "KICKOS_AMP_PORT_NODE_LIST=3,3,2,2,0,2"
+          "KICKOS_AMP_PORT_PORT_LIST=0,2,4,5,6,8")

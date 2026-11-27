@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// K64F/UART0 buffered IRQ-driven userspace UART driver (see k64uartirq.h).
+// K64F UART buffered IRQ-driven userspace UART driver (see k64uartirq.h).
 //
 // This task's stdout is the kernel console, which the wire does not carry while this driver
 // owns the UART.
